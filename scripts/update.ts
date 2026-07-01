@@ -38,6 +38,7 @@ const { readJSON } = require('../modules/utils/fs_utils');
 const UPDATE_COLORS = {
     reset: '\x1b[0m',
     ok: '\x1b[1;92m',
+    warn: '\x1b[1;33m',
     error: '\x1b[1;31m',
 };
 
@@ -114,6 +115,12 @@ function detectMonolithicRuntime() {
     return detected;
 }
 
+function detectAnyMonolithicFiles() {
+    return fs.existsSync(PATHS.PROFILES.MONOLITHIC_PID)
+        || fs.existsSync(PATHS.PROFILES.MONOLITHIC_BOT_INFO)
+        || fs.existsSync(PATHS.PROFILES.MONOLITHIC_CRED_PID);
+}
+
 function restartMonolithicRuntime(monolithic) {
     const details = [
         `wrapper PID ${monolithic.wrapperPid}`,
@@ -126,6 +133,81 @@ function restartMonolithicRuntime(monolithic) {
         ? path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js')
         : path.join(PATHS.PROJECT_ROOT, 'unlock.js');
     run(`node "${unlockPath}" restart all`);
+}
+
+/**
+ * Start the monolithic daemon by invoking `node unlock`.
+ *
+ * Returns true only when the unlock command exited successfully. In
+ * non-interactive (non-TTY) mode the function prints a manual-start hint
+ * and returns false; the caller can then surface its own fallback message.
+ * On a thrown error (e.g. wrong password, user cancellation) the function
+ * logs a warning and returns false.
+ */
+function startMonolithicRuntime() {
+    const unlockPath = fs.existsSync(path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js'))
+        ? path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js')
+        : path.join(PATHS.PROJECT_ROOT, 'unlock.js');
+    const isTTY = process.stdin && process.stdin.isTTY;
+    if (!isTTY) {
+        console.log(colorUpdateOutput(
+            '\n⚠️  Monolithic daemon was running before update but cannot be auto-started\n' +
+            '   in non-interactive mode (no TTY).\n' +
+            '   To start it manually:\n' +
+            '     node unlock\n' +
+            '   (or with --headless --password-file <path> for automation)\n',
+            UPDATE_COLORS.warn,
+        ));
+        return false;
+    }
+    log('Starting monolithic daemon (node unlock)...');
+    try {
+        execSync(`node "${unlockPath}"`, {
+            cwd: PATHS.PROJECT_ROOT,
+            stdio: 'inherit',
+        });
+        logSuccess('Monolithic daemon started.');
+        return true;
+    } catch (err) {
+        log(`Warning: Could not auto-start monolithic daemon (${err.message}). Start manually with: node unlock`);
+        return false;
+    }
+}
+
+function hasLocalChanges() {
+    try {
+        const tracked = execSync('git diff --name-only', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT }).toString().trim();
+        if (tracked) return true;
+        const untracked = execSync('git ls-files --others --exclude-standard', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT }).toString().trim();
+        return !!untracked;
+    } catch (_) {
+        return false;
+    }
+}
+
+/**
+ * Resolve a stash ref (e.g. `stash@{0}`) for a given stash message.
+ *
+ * Capturing the ref by message — rather than always using `stash@{0}` —
+ * makes the apply+drop pair robust against any other stash operation that
+ * may occur between push and pop (e.g. an external tool, hook, or operator
+ * action). Falls back to `stash@{0}` if the lookup fails so the script
+ * still attempts a restore.
+ */
+function resolveStashRef(message) {
+    try {
+        const list = execSync('git stash list --format="%gd %gs" 2>/dev/null', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT }).toString().trim();
+        if (list) {
+            for (const line of list.split('\n')) {
+                if (line.includes(message)) {
+                    return line.split(' ')[0];
+                }
+            }
+        }
+    } catch (_) {
+        log('Debug: Could not enumerate stash list to resolve stash ref. Falling back to stash@{0}.');
+    }
+    return 'stash@{0}';
 }
 
 async function detectIsolatedSupervisor(): Promise<Record<string, any> | null> {
@@ -275,30 +357,37 @@ try {
     console.log('----------------------------------------------------------------\n');
 
     /**
-     * STEP 6: Prepare Working Directory
+     * STEP 6a: Snapshot pre-update runtime state
+     *
+     * Detect whether the monolithic daemon is alive BEFORE we touch git.
+     * The daemon may shut down during git/npm operations (e.g. prepare
+     * hook or build), erasing its PID file. By capturing state up front,
+     * we can still restart it after the build completes.
+     */
+    const monolithicWasRunning = !!detectMonolithicRuntime();
+    const hadMonolithicFiles = detectAnyMonolithicFiles();
+    if (monolithicWasRunning) {
+        log('Monolithic daemon detected running before update. Will restart after build.');
+    } else if (hadMonolithicFiles) {
+        log('Monolithic PID/file artifacts found but daemon is not alive. Will attempt restart after build.');
+    }
+
+    /**
+     * STEP 6b: Prepare Working Directory
      * Stashes local changes to ensure a clean pull.
-     * Uses --include-untracked to capture build artifacts etc.
+     * Skips stash entirely if there are no local changes (avoids creating
+     * orphaned empty stash entries).
      * Ignores gitignored directories (profiles/, dist/) — they are
      * never touched by stash, so bot configs and keys are safe.
      */
+    let stashed = false;
     const STASH_MESSAGE = 'dexbot-update-auto';
-    let ourStashRef = '';
-    log('Stashing local changes before pull...');
-    run(`git stash push --include-untracked --message "${STASH_MESSAGE}" 2>/dev/null; true`);
-    // Capture the stash ref by message so we pop the exact entry after pull,
-    // avoiding ambiguity if any other stash operation occurs between push and pop.
-    try {
-        const list = execSync(`git stash list --format="%gd %gs" 2>/dev/null`, { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT }).toString().trim();
-        if (list) {
-            for (const line of list.split('\n')) {
-                if (line.includes(STASH_MESSAGE)) {
-                    ourStashRef = line.split(' ')[0];
-                    break;
-                }
-            }
-        }
-    } catch (_) {
-        log('Debug: Could not enumerate stash list to resolve stash ref. Skipping pop.');
+    if (hasLocalChanges()) {
+        log('Stashing local changes before pull...');
+        run(`git stash push --include-untracked --message "${STASH_MESSAGE}" 2>/dev/null; true`);
+        stashed = true;
+    } else {
+        log('No local changes — skipping stash.');
     }
 
     /**
@@ -314,25 +403,52 @@ try {
     run(`git pull --rebase origin ${branch}`);
 
     /**
-     * Restore our stashed entry by ref (if we created one).
-     * Using the captured ref prevents accidentally popping a stash that was
-     * created by another process between push and pop.
+     * Restore stashed changes using apply + explicit drop.
+     *
+     * Using `git stash apply` instead of `git stash pop` avoids the stash
+     * leak bug: `pop` keeps the stash entry when conflicts occur, causing
+     * orphaned entries to accumulate across runs. `apply` always preserves
+     * the stash, so we clean it up unconditionally with `git stash drop`.
+     *
+     * If the apply produces merge conflicts we auto-resolve by keeping
+     * the stashed (user-local) version with `--theirs`. In a `git stash
+     * apply` 3-way merge, `--ours` is the current worktree (the pulled-in
+     * remote content) and `--theirs` is the stashed content (the user's
+     * local edits). Local changes take precedence over incoming remote.
      */
-    if (ourStashRef) {
+    if (stashed) {
+        const stashRef = resolveStashRef(STASH_MESSAGE);
+        log('Restoring stashed changes...');
         try {
-            execSync(`git stash pop ${ourStashRef}`, { stdio: 'inherit', cwd: PATHS.PROJECT_ROOT });
-            // Check for unmerged paths that git stash pop may have left behind.
-            // git diff --diff-filter=U catches all asymmetric variants (AU, UA, DU, UD)
-            // in addition to the symmetric ones (UU, AA, DD).
-            const unmerged = execSync('git diff --name-only --diff-filter=U', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT }).toString().trim();
-            if (unmerged) {
-                log('Warning: Stash pop completed with merge conflicts. Run `git status` to resolve unresolved files.');
-            }
-        } catch (err) {
-            log(`Warning: Could not restore stashed changes (merge conflicts may exist). ` +
-                `Check \`git stash list\` for "${STASH_MESSAGE}" entry.`);
-            if (err.message) log(`Details: ${err.message}`);
+            execSync(`git stash apply ${stashRef} 2>/dev/null`, { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT });
+        } catch (_) {
+            // Apply had conflicts — auto-resolve in favor of the stashed (local) content
+            log('Stash apply had conflicts, auto-resolving in favor of local changes...');
+            try {
+                execSync('git checkout --theirs -- . 2>/dev/null', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT });
+            } catch (_2) {}
         }
+        // Unconditionally drop the stash entry — no orphan accumulation
+        try {
+            execSync(`git stash drop ${stashRef} 2>/dev/null`, { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT });
+        } catch (_) {
+            log('Warning: Could not drop stash entry — it may have been already dropped.');
+        }
+        // Check for leftover unmerged paths and resolve them
+        try {
+            const unmergedRaw = execSync('git diff --name-only --diff-filter=U', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT }).toString().trim();
+            if (unmergedRaw) {
+                const unmerged = unmergedRaw.split('\n').filter(Boolean);
+                log(`Cleaning up ${unmerged.length} unresolved merge marker(s) after stash restore...`);
+                execSync(`git checkout --theirs -- ${unmerged.join(' ')} 2>/dev/null`, { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT });
+                // If package-lock.json was conflicted, regenerate it so it's
+                // consistent with the (potentially updated) package.json
+                if (unmerged.includes('package-lock.json')) {
+                    log('package-lock.json was conflicted — regenerating...');
+                    execSync('npm install --prefer-offline --ignore-scripts 2>&1', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT });
+                }
+            }
+        } catch (_) {}
     }
 
     /**
@@ -416,17 +532,25 @@ try {
      * - Restarts active bots to pick up code changes
      * - Handles missing bots.json gracefully
      * - Never restarts dexbot-cred through bulk PM2 actions
+     *
+     * Uses the pre-update snapshot (monolithicWasRunning) as a fallback:
+     * if the daemon shut down during git/npm ops and its PID file is gone,
+     * we still attempt to restart it.
      */
+    let restarted = false;
     log('Restarting active runtime processes...');
     try {
         if (Config.DEXBOT_UPDATE_SKIP_RELOAD) {
             log('Restart skipped (managed by launcher).');
+            restarted = true;
         } else {
             const monolithic = detectMonolithicRuntime();
             if (monolithic) {
                 restartMonolithicRuntime(monolithic);
+                restarted = true;
             } else if (await restartActiveIsolatedProcesses()) {
                 log('Isolated supervisor runtime restarted.');
+                restarted = true;
             } else {
                 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
                 if (fs.existsSync(BOTS_FILE)) {
@@ -480,6 +604,7 @@ try {
                                     log(`Warning: Failed to restart process "${name}" (it might not be running).`);
                                 }
                             }
+                            restarted = true;
                         } else {
                             log('No active processes currently running in PM2. Skipping restart.');
                         }
@@ -504,6 +629,40 @@ try {
         log(`Warning: runtime restart logic failed (${err.message}). Skipping bulk restart to avoid touching dexbot-cred.`);
     }
 
+    /**
+     * STEP 9b: Fallback restart for monolithic daemon
+     *
+     * If the monolithic daemon was running (or had state files) before the
+     * update but is no longer alive (common when the daemon is killed during
+     * git/npm operations like the prepare hook), try to auto-start it.
+     * This prevents the "bot updated but is not running" failure mode.
+     *
+     * Only mark `restarted` true when startMonolithicRuntime reports
+     * success — otherwise fall through to the manual-start instructions
+     * below so the operator knows the daemon did not actually come back.
+     */
+    if (!restarted && !Config.DEXBOT_UPDATE_SKIP_RELOAD) {
+        if (monolithicWasRunning || hadMonolithicFiles) {
+            log('Monolithic daemon was detected before update but is no longer running. Auto-starting...');
+            if (startMonolithicRuntime()) {
+                restarted = true;
+            } else {
+                log('Auto-start did not succeed; the manual-start instructions below apply.');
+            }
+        }
+    }
+
+    if (!restarted) {
+        console.log(colorUpdateOutput(
+            '\n⚠️  No active runtime was restarted.\n' +
+            '   If the daemon was running before, start it manually from a terminal:\n' +
+            '     node unlock\n' +
+            '   (will prompt for master password; add --foreground for interactive mode)\n' +
+            '   For non-interactive automation:\n' +
+            '     node unlock --headless --password-file <path>\n',
+            UPDATE_COLORS.warn,
+        ));
+    }
 
     logSuccess('DEXBot2 update completed successfully.');
     process.exit(0);
