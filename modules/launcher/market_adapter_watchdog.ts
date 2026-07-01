@@ -83,20 +83,14 @@ function createMarketAdapterWatchdog({
         safeUnlink(lockFile)
     }
 
-    function spawnChild(outLog, errorLog) {
+    function spawnChild(errorLog) {
         const args = buildRuntimeScriptArgs({ codeRoot, scriptSegments: ['market_adapter', 'market_adapter'] });
         const child = spawn(Config.EXEC_PATH, args, {
             cwd: root,
             env: process.env,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ['ignore', 'ignore', 'pipe'],
         });
         const childLogStreams = [];
-        if (child.stdout) {
-            const outStream = fs.createWriteStream(outLog, { flags: 'a' });
-            childLogStreams.push(outStream);
-            child.stdout.pipe(outStream);
-            child.stdout.on('error', () => {});
-        }
         if (child.stderr) {
             const errStream = fs.createWriteStream(errorLog, { flags: 'a' });
             childLogStreams.push(errStream);
@@ -146,7 +140,7 @@ function createMarketAdapterWatchdog({
         return !!(status.pid && status.alive);
     }
 
-    function schedule(outLog, errorLog) {
+    function schedule(errorLog) {
         clearTimer();
 
         const tick = () => {
@@ -207,7 +201,7 @@ function createMarketAdapterWatchdog({
                 _restartCount = nextAttempt;
                 logWarn(`[market-adapter-watchdog] spawning market adapter (attempt ${_restartCount}/${MARKET_ADAPTER.WATCHDOG_DEFAULTS.maxRestarts})`);
                 try {
-                    spawnChild(outLog, errorLog);
+                    spawnChild(errorLog);
                 } catch (err) {
                     logError(`[market-adapter-watchdog] spawn failed: ${err.message}`);
                 }

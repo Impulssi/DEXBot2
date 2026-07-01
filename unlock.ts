@@ -572,7 +572,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             root: PATHS.PROJECT_ROOT,
             logsDir: LOGS_DIR,
         });
-        const cancelWatchdog = watchdog.schedule(MONOLITHIC_OUT_LOG, MONOLITHIC_ERROR_LOG);
+        const cancelWatchdog = watchdog.schedule(MONOLITHIC_ERROR_LOG);
 
         let restartCount = 0;
         let lastStartTime = 0;
