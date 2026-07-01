@@ -578,7 +578,9 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
         let lastStartTime = 0;
         let keepRunning = true;
         let monolithicRestartSignalRegistered = false;
+        let pendingRestart = false;
         const onSigusr2 = () => {
+            pendingRestart = true;
             if (updater) updater.pendingRestart = true;
             forwardSignal(botProcessRef.current, 'SIGTERM');
         };
@@ -649,7 +651,8 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                 });
                 cleanupBotHandlers();
 
-                if (updater?.pendingRestart) {
+                if (pendingRestart || updater?.pendingRestart) {
+                    pendingRestart = false;
                     if (updater) updater.pendingRestart = false;
                     console.log('Update applied, restarting bot...');
                 } else if (exitCode !== 0) {
