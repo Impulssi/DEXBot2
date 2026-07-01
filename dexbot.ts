@@ -944,6 +944,8 @@ async function handleCLICommands() {
             return true;
         }
         case 'status': {
+            console.log(`DEXBot2 v${Config.VERSION}`);
+            console.log();
             const { spawnSync, execSync } = require('child_process');
             const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
             const SUPERVISOR_SOCK = PATHS.PROFILES.SUPERVISOR_SOCK;
@@ -980,7 +982,7 @@ async function handleCLICommands() {
             }
 
             try {
-                const output = execSync('pm2 jlist', { encoding: 'utf8', timeout: 5000 }).toString().trim();
+                const output = execSync('pm2 jlist 2>/dev/null', { encoding: 'utf8', timeout: 5000 }).toString().trim();
                 const jsonStart = output.indexOf('[');
                 if (jsonStart === -1) {
                     console.log('No DEXBot2 processes running.');

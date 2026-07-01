@@ -10,6 +10,7 @@
  * Browser: would be populated from URL params, localStorage, etc.
  */
 
+const path = require('path');
 const { hasProcess } = require('./env');
 
 function str(key: string): string | undefined {
@@ -38,6 +39,7 @@ const Config: {
     BOT_NAME: string | undefined;
     PREFERRED_ACCOUNT: string | undefined;
     LIVE_BOT_NAME: string | undefined;
+    VERSION: string;
 
     // ── Feature flags ───────────────────────────────────────────────
     DEXBOT_SKIP_PROFILE_VALIDATION: boolean;
@@ -100,6 +102,7 @@ const Config: {
     BOT_NAME: str('BOT_NAME'),
     PREFERRED_ACCOUNT: str('PREFERRED_ACCOUNT'),
     LIVE_BOT_NAME: str('LIVE_BOT_NAME'),
+    VERSION: hasProcess() ? require(path.join(__dirname, '..', '..', 'package.json')).version : '0.0.0',
 
     // ── Feature flags ───────────────────────────────────────────────
     DEXBOT_SKIP_PROFILE_VALIDATION: bool('DEXBOT_SKIP_PROFILE_VALIDATION'),
