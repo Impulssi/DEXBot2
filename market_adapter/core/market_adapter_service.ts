@@ -1620,6 +1620,30 @@ class MarketAdapterService {
                 ? deps.detectMissingCandleTimestamps(nextCandles, cfg.intervalSeconds)
                 : { gapCount: 0, missingTimestamps: [] };
 
+            // Step 1: Fill gaps within the trusted no-trade threshold directly (no Kibana needed).
+            // The native incremental fetch already confirmed no trades for these timestamps.
+            if (gapAnalysis.gapCount > 0) {
+                const filledNoTrade = this.fillVerifiedInternalNoTradeGaps(
+                    nextCandles,
+                    gapAnalysis.missingTimestamps,
+                    cfg.intervalSeconds,
+                    trustedNoTradeGapThresholdCandles
+                );
+                if (filledNoTrade.filledTimestamps.length > 0) {
+                    nextCandles = filledNoTrade.candles;
+                    kibanaGapRepairTimestamps = filledNoTrade.filledTimestamps.slice();
+                    logGapRepairEvent(
+                        `[market_adapter] ${bot.botKey}: synthesized ${filledNoTrade.filledTimestamps.length} no-trade candle(s) within trusted threshold `
+                        + `[${filledNoTrade.filledTimestamps.map((ts: any) => new Date(ts).toISOString()).join(', ')}]`
+                    );
+                }
+                // Re-detect gaps — only beyond-threshold gaps remain
+                gapAnalysis = typeof deps.detectMissingCandleTimestamps === 'function'
+                    ? deps.detectMissingCandleTimestamps(nextCandles, cfg.intervalSeconds)
+                    : { gapCount: 0, missingTimestamps: [] };
+            }
+
+            // Step 2: Only query Kibana for gaps beyond the trusted threshold
             if (gapAnalysis.gapCount > 0 && hasKibanaSource) {
                 const timeRange = this.buildGapRepairTimeRange(
                     gapAnalysis.missingTimestamps,
@@ -1628,12 +1652,8 @@ class MarketAdapterService {
                 );
                 if (timeRange) {
                     kibanaGapRepairAttempted = true;
-                    const verifiedGapTimestamps = this.getMissingTimestampsWithinTimeRange(
-                        gapAnalysis.missingTimestamps,
-                        timeRange
-                    );
                     logGapRepairEvent(
-                        `[market_adapter] ${bot.botKey}: detected ${gapAnalysis.gapCount} unresolved candle gap(s); `
+                        `[market_adapter] ${bot.botKey}: ${gapAnalysis.gapCount} candle gap(s) beyond trusted threshold; `
                         + `requesting Kibana repair for ${timeRange.gte} -> ${timeRange.lte} `
                         + `missing=[${gapAnalysis.missingTimestamps.map((ts: any) => new Date(ts).toISOString()).join(', ')}]`
                     );
@@ -1656,30 +1676,38 @@ class MarketAdapterService {
                             const beforeTimestamps = new Set(nextCandles.map((c: any) => c[0]));
                             nextCandles = deps.mergeCandles(nextCandles, kibanaGapCandles);
                             const afterTimestamps = new Set(nextCandles.map((c: any) => c[0]));
-                            kibanaGapRepairTimestamps = gapAnalysis.missingTimestamps.filter((ts: any) => !beforeTimestamps.has(ts) && afterTimestamps.has(ts));
+                            const kibanaPatchedTs = gapAnalysis.missingTimestamps.filter((ts: any) => !beforeTimestamps.has(ts) && afterTimestamps.has(ts));
+                            kibanaGapRepairTimestamps = [...kibanaGapRepairTimestamps, ...kibanaPatchedTs];
                             logGapRepairEvent(
-                                `[market_adapter] ${bot.botKey}: Kibana gap repair patched ${kibanaGapRepairTimestamps.length}/${gapAnalysis.gapCount} gap(s)`
-                                + (kibanaGapRepairTimestamps.length > 0
-                                    ? ` [${kibanaGapRepairTimestamps.map((ts: any) => new Date(ts).toISOString()).join(', ')}]`
+                                `[market_adapter] ${bot.botKey}: Kibana gap repair patched ${kibanaPatchedTs.length}/${gapAnalysis.gapCount} gap(s)`
+                                + (kibanaPatchedTs.length > 0
+                                    ? ` [${kibanaPatchedTs.map((ts: any) => new Date(ts).toISOString()).join(', ')}]`
                                     : '')
                             );
                         } else {
-                            logGapRepairEvent(
-                                `[market_adapter] ${bot.botKey}: Kibana gap repair returned no candles for the requested gap window`,
-                                'warn'
+                            // Kibana returned no data — that IS verification: no trades happened.
+                            // Synthesize no-trade candles for all gaps within the queried window.
+                            const verifiedGapTimestamps = this.getMissingTimestampsWithinTimeRange(
+                                gapAnalysis.missingTimestamps,
+                                timeRange
                             );
                             const verifiedNoTrade = this.fillVerifiedInternalNoTradeGaps(
                                 nextCandles,
                                 verifiedGapTimestamps,
                                 cfg.intervalSeconds,
-                                trustedNoTradeGapThresholdCandles
+                                verifiedGapTimestamps.length
                             );
                             if (verifiedNoTrade.filledTimestamps.length > 0) {
                                 nextCandles = verifiedNoTrade.candles;
-                                kibanaGapRepairTimestamps = verifiedNoTrade.filledTimestamps.slice();
+                                kibanaGapRepairTimestamps = [...kibanaGapRepairTimestamps, ...verifiedNoTrade.filledTimestamps];
                                 logGapRepairEvent(
                                     `[market_adapter] ${bot.botKey}: synthesized ${verifiedNoTrade.filledTimestamps.length} no-trade candle(s) after empty Kibana repair `
-                                    + `[${verifiedNoTrade.filledTimestamps.map((ts) => new Date(ts).toISOString()).join(', ')}]`
+                                    + `[${verifiedNoTrade.filledTimestamps.map((ts: any) => new Date(ts).toISOString()).join(', ')}]`
+                                );
+                            } else {
+                                logGapRepairEvent(
+                                    `[market_adapter] ${bot.botKey}: Kibana empty but could not synthesize gaps (missing neighbors)`,
+                                    'warn'
                                 );
                             }
                         }

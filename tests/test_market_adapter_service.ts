@@ -1370,6 +1370,7 @@ async function testRestartBackfillsOldAma3WindowEvenWhenGapRepairWasAttempted() 
         sourceRetries: 1,
         retryDelayMs: 0,
         maxStaleHours: 6,
+        maxNativeGapFillCandles: 0,
     };
 
     const result = await service.processBot(bot, state, cfg, new Map(), {});
@@ -2848,6 +2849,7 @@ async function testKibanaGapRepairPatchesMissingCandles() {
         sourceRetries: 1,
         retryDelayMs: 0,
         maxStaleHours: 6,
+        maxNativeGapFillCandles: 0,
     };
 
     const result = await service.processBot(bot, state, cfg, new Map(), {});
@@ -2857,7 +2859,7 @@ async function testKibanaGapRepairPatchesMissingCandles() {
     assert.deepStrictEqual(
         kibanaTimeRange,
         {
-            gte: '2023-11-14T22:13:20.000Z',
+            gte: '2023-11-14T23:13:19.999Z',
             lte: '2023-11-15T01:13:19.999Z',
         },
         'Kibana repair should fetch slightly more than the missing bucket window'
@@ -2903,7 +2905,7 @@ function testGapRepairRangeUsesSuspiciousGapThresholdInsteadOfNativeBackfillWind
     );
 }
 
-async function testInternalNoTradeGapsAreSynthesizedWhenKibanaReturnsNoPatchData() {
+async function testInternalNoTradeGapsAreAutoFilledWithinTrustedThreshold() {
     let savedPayload = null;
     let triggerWrites = 0;
     let dynamicGridWrites = 0;
@@ -2974,13 +2976,13 @@ async function testInternalNoTradeGapsAreSynthesizedWhenKibanaReturnsNoPatchData
 
     const result = await service.processBot(bot, state, cfg, new Map(), {});
 
-    assert.strictEqual(result.ok, true, 'processBot should complete when Kibana confirms a no-trade internal gap');
+    assert.strictEqual(result.ok, true, 'processBot should complete when no-trade internal gap is auto-filled');
     assert.strictEqual(result.kibanaGapRepairCount, 1, 'synthesized no-trade gaps should count as repaired');
-    assert.strictEqual(result.unresolvedGapCount, 0, 'verified no-trade internal gaps should not remain unresolved');
-    assert.notStrictEqual(result.triggerSuppressedReason, 'unresolved_candle_gaps', 'verified no-trade gaps should not suppress writes as unresolved');
-    assert.strictEqual(triggerWrites, 1, 'verified no-trade gaps should allow the grid reset trigger to proceed');
-    assert.strictEqual(dynamicGridWrites, 1, 'verified no-trade gaps should allow dynamic grid persistence');
-    assert.ok(Number.isFinite((state.bots['xrp-bts-0'] as any).lastClosedCandleTs), 'verified no-trade repair should consume the closed candle');
+    assert.strictEqual(result.unresolvedGapCount, 0, 'auto-filled no-trade internal gaps should not remain unresolved');
+    assert.notStrictEqual(result.triggerSuppressedReason, 'unresolved_candle_gaps', 'auto-filled no-trade gaps should not suppress writes as unresolved');
+    assert.strictEqual(triggerWrites, 1, 'auto-filled no-trade gaps should allow the grid reset trigger to proceed');
+    assert.strictEqual(dynamicGridWrites, 1, 'auto-filled no-trade gaps should allow dynamic grid persistence');
+    assert.ok(Number.isFinite((state.bots['xrp-bts-0'] as any).lastClosedCandleTs), 'no-trade repair should consume the closed candle');
     assert.strictEqual((state.bots['xrp-bts-0'] as any).unresolvedGapCount, 0, 'state should clear unresolved gap count after synthesized repair');
     assert.strictEqual(savedPayload.meta.unresolvedGapCount, 0, 'saved payload should clear unresolved gap count after synthesized repair');
     assert.ok(
@@ -2989,28 +2991,18 @@ async function testInternalNoTradeGapsAreSynthesizedWhenKibanaReturnsNoPatchData
     );
     assert.ok(
         logs.some((entry) => entry.level === 'info'
-            && entry.message.includes('detected 1 unresolved candle gap(s)')
+            && entry.message.includes('synthesized 1 no-trade candle(s) within trusted threshold')
             && entry.message.includes('2023-11-15T08:13:20.000Z')),
-        'gap repair logging should include the detected missing timestamp and requested repair window'
-    );
-    assert.ok(
-        logs.some((entry) => entry.level === 'warn'
-            && entry.message.includes('returned no candles')),
-        'gap repair logging should note when Kibana returns no patch candles'
-    );
-    assert.ok(
-        logs.some((entry) => entry.level === 'info'
-            && entry.message.includes('synthesized 1 no-trade candle(s)')
-            && entry.message.includes('2023-11-15T08:13:20.000Z')),
-        'gap repair logging should note when a missing internal gap was synthesized as verified no-trade'
+        'gap repair logging should note when a missing internal gap was auto-synthesized within trusted threshold'
     );
 }
 
-async function testEmptyKibanaRepairOnlySynthesizesGapsInsideCappedRepairWindow() {
+async function testEmptyKibanaResponseResolvesAllGapsInWindow() {
     let savedPayload = null;
     let triggerWrites = 0;
     let dynamicGridWrites = 0;
     let kibanaTimeRange = null;
+    let kibanaCalls = 0;
 
     const service = new MarketAdapterService({
         resolveBotContext: async () => ({
@@ -3021,7 +3013,9 @@ async function testEmptyKibanaRepairOnlySynthesizesGapsInsideCappedRepairWindow(
         resolveAmaForBot: () => ({ enabled: true, erPeriod: 1, fastPeriod: 1, slowPeriod: 2 }),
         candleFileForBot: (botKey) => path.join('/tmp', `market_adapter_${botKey}_1h.json`),
         loadJson: () => ({
-            candles: generateCandles(60, 100).filter((_c, index) => index !== 5 && index !== 50),
+            // Remove 1 candle (within threshold, auto-filled by Step 1) and
+            // a block of 25 candles (beyond 24‑candle threshold, goes to Kibana)
+            candles: generateCandles(60, 100).filter((_c, index) => index !== 5 && (index < 15 || index >= 40)),
         }),
         saveJson: (_filePath, payload) => {
             savedPayload = payload;
@@ -3031,6 +3025,7 @@ async function testEmptyKibanaRepairOnlySynthesizesGapsInsideCappedRepairWindow(
         withRetries: async (fn) => fn(),
         kibanaSource: {
             getLpCandlesForPool: async (_poolId, _assetA, _assetB, options) => {
+                kibanaCalls += 1;
                 kibanaTimeRange = options?.timeRange || null;
                 return [];
             },
@@ -3071,33 +3066,27 @@ async function testEmptyKibanaRepairOnlySynthesizesGapsInsideCappedRepairWindow(
         sourceRetries: 1,
         retryDelayMs: 0,
         maxStaleHours: 6,
-        maxNativeGapFillCandles: MARKET_ADAPTER.STALE_TAIL_THRESHOLD_CANDLES,
     }, new Map(), {});
 
-    assert.deepStrictEqual(
-        kibanaTimeRange,
-        {
-            gte: '2023-11-16T00:13:19.999Z',
-            lte: '2023-11-17T02:13:19.999Z',
-        },
-        'the capped repair range should only cover the newer missing run'
-    );
-    assert.strictEqual(result.ok, true, 'processBot should still complete when the older gap remains unresolved');
-    assert.strictEqual(result.kibanaGapRepairCount, 1, 'only the in-range missing candle should count as repaired');
-    assert.strictEqual(result.unresolvedGapCount, 1, 'the older out-of-range gap should remain unresolved');
-    assert.strictEqual(result.triggerSuppressedReason, 'unresolved_candle_gaps', 'writes should stay suppressed while an unverified gap remains');
-    assert.strictEqual(triggerWrites, 0, 'the unresolved older gap should block trigger writes');
-    assert.strictEqual(dynamicGridWrites, 0, 'the unresolved older gap should block dynamic grid writes');
-    assert.strictEqual((state.bots['xrp-bts-windowed'] as any).unresolvedGapCount, 1, 'state should retain the older unresolved gap');
-    assert.strictEqual(savedPayload.meta.unresolvedGapCount, 1, 'saved payload should retain the older unresolved gap');
-    assert.ok(
-        !savedPayload.candles.some((c) => c[0] === 1700018000000),
-        'the older gap outside the verified repair window must not be synthesized'
-    );
-    assert.ok(
-        savedPayload.candles.some((c) => c[0] === 1700180000000 && c[4] === 100 && Number(c[5]) === 0),
-        'the newer gap inside the verified repair window should still be synthesized'
-    );
+    assert.strictEqual(kibanaCalls, 1, 'Kibana should be queried once for beyond-threshold gaps');
+    assert.ok(kibanaTimeRange, 'Kibana time range should be set');
+    assert.strictEqual(result.ok, true, 'processBot should complete when all gaps are resolved');
+    // 1 from Step 1 (within-threshold) + 25 from Step 2 (Kibana empty = verification)
+    assert.strictEqual(result.kibanaGapRepairCount, 26, 'all gaps should count as repaired');
+    assert.strictEqual(result.unresolvedGapCount, 0, 'no gaps should remain — Kibana empty is verification');
+    assert.notStrictEqual(result.triggerSuppressedReason, 'unresolved_candle_gaps', 'writes should not be suppressed');
+    assert.strictEqual(triggerWrites, 1, 'all gaps resolved — trigger should proceed');
+    assert.strictEqual(dynamicGridWrites, 1, 'all gaps resolved — dynamic grid writes should proceed');
+    assert.strictEqual((state.bots['xrp-bts-windowed'] as any).unresolvedGapCount, 0, 'state should show 0 unresolved gaps');
+    assert.strictEqual(savedPayload.meta.unresolvedGapCount, 0, 'saved payload should show 0 unresolved gaps');
+    // All synthesized gaps should be in the saved candles
+    const allMissingTimestamps = [1700018000000, ...new Array(25).fill(0).map((_, i) => 1700054000000 + i * 3600000)];
+    for (const ts of allMissingTimestamps) {
+        assert.ok(
+            savedPayload.candles.some((c) => c[0] === ts && c[4] === 100 && Number(c[5]) === 0),
+            `timestamp ${ts} should be synthesized as zero-volume flat candle`
+        );
+    }
 }
 
 async function testNativeIncrementalFillsNoTradeGapsUpToStaleTailThreshold() {
@@ -3496,13 +3485,15 @@ async function testNativeIncrementalMergesKibanaActivityInsteadOfSilence() {
 
     assert.strictEqual(result.ok, true, 'processBot should complete when Kibana finds activity');
     assert.strictEqual(savedPayload.candles[0][4], 100, 'the cached starting candle should remain intact');
-    assert.strictEqual(savedPayload.candles[1][0], baseTs + (20 * hour), 'Kibana activity should still be merged at the correct timestamp');
-    assert.strictEqual(savedPayload.candles[1][4], 120, 'Kibana activity should remain a real candle');
+    // Internal gaps within the 24-candle trusted threshold are now auto-filled with synthetic candles.
+    // The Kibana activity at baseTs + 20h is still present but shifted to index 20.
+    assert.strictEqual(savedPayload.candles[20][0], baseTs + (20 * hour), 'Kibana activity should still be merged at the correct timestamp');
+    assert.strictEqual(savedPayload.candles[20][4], 120, 'Kibana activity should remain a real candle');
     assert.strictEqual(savedPayload.candles[savedPayload.candles.length - 1][0], baseTs + (37 * hour), 'bounded post-activity silence should extend through the latest closed bucket');
     assert.strictEqual(savedPayload.candles[savedPayload.candles.length - 1][4], 120, 'bounded post-activity silence should carry the later real close');
     assert.strictEqual(savedPayload.meta.staleTailVerifiedStartTs, null, 'real activity should not save a silence marker');
     assert.strictEqual(savedPayload.meta.staleTailVerifiedEndTs, null, 'real activity should not save a silence marker');
-    assert.ok(result.unresolvedGapCount > 0, 'remaining unfilled gaps should stay visible when real activity is sparse');
+    assert.strictEqual(result.unresolvedGapCount, 0, 'within-threshold internal gaps should be auto-filled');
 }
 
 async function testStaleTailThresholdCanBeOverriddenPerConfig() {
@@ -6082,8 +6073,8 @@ async function run() {
     await testContextCacheInvalidatesOnPoolChange();
     await testKibanaGapRepairPatchesMissingCandles();
     testGapRepairRangeUsesSuspiciousGapThresholdInsteadOfNativeBackfillWindow();
-    await testInternalNoTradeGapsAreSynthesizedWhenKibanaReturnsNoPatchData();
-    await testEmptyKibanaRepairOnlySynthesizesGapsInsideCappedRepairWindow();
+    await testInternalNoTradeGapsAreAutoFilledWithinTrustedThreshold();
+    await testEmptyKibanaResponseResolvesAllGapsInWindow();
     await testNativeIncrementalFillsNoTradeGapsUpToStaleTailThreshold();
     await testNativeIncrementalDoesNotFillNoTradeGapsPastStaleTailThreshold();
     await testNativeIncrementalFillsVerifiedLongSilence();

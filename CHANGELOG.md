@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.3] - 2026-07-01 - Two-Step Candle Gap Repair
+
+### 2026-07-01
+
+- **Fix**: stop market adapter logs from duplicating into dexbot.log — watchdog spawned the adapter with stdout piped to dexbot.log, but the adapter already writes its own log file. Changed stdio to `'ignore'` and removed dead `outLog` parameter (`modules/launcher/market_adapter_watchdog.ts`, `unlock.ts`).
+- **Feat**: two-step candle gap repair in market adapter — auto-fill gaps ≤24 candles (trusted no-trade threshold) directly without Kibana, then query Kibana only for larger gaps. Empty Kibana response is now treated as verified no-trade instead of leaving gaps "unresolved" (`market_adapter/core/market_adapter_service.ts`).
+- **Chore**: version bumped to 1.0.3 across all manifests (`package.json`, `package-lock.json`, `claw/package.json`, `analysis/ama_fitting/package.json`, `claw/runtimes/openclaw-plugin/package.json`, `claw/runtimes/openclaw-plugin/openclaw.plugin.json`).
+- **Test**: refactored gap repair tests for two-step auto-fill flow (`tests/test_market_adapter_service.ts`).
+- **Docs**: corrected `disallowedDealIds` behavior (blocks reborrow only, not repay) in `docs/MPA_CREDIT_USAGE.md` and `docs/developer_guide.md`; documented `STALE_TAIL_THRESHOLD_CANDLES` constant and two-step gap repair in `market_adapter/README.md`; bumped version/commit references in `docs/README.md`, `docs/EVOLUTION.md`, `docs/DEXBOT_COMPARISON.md`, `docs/FUND_MOVEMENT_AND_ACCOUNTING.md`.
+
 ## [1.0.2] - 2026-06-25 - Auto-Update Default & Update Script Hardening
 
 ### 2026-06-25

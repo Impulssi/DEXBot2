@@ -415,7 +415,7 @@ Per cycle, per processed bot, the adapter can produce:
 3. Resolve AMA settings from `profiles/market_profiles.json`.
 4. Read `startPrice` to choose the candle source: `pool`, `book`, or fixed.
 5. Sync candle data from Kibana or native BitShares data, using the selected source.
-6. Repair missing candle gaps when possible.
+6. Repair missing candle gaps: auto-fill gaps ≤24 candles directly (no Kibana), query Kibana only for gaps beyond that threshold. Kibana returning empty is treated as verified no-trade. Writes are suppressed while gaps remain unresolved.
 7. Ignore still-forming 1h candles.
 8. Compute AMA center, trend, ATR, weights, and collateral hint.
 9. Persist the first accepted center, compare center delta, and compare whitelisted range-scaling slope delta.
@@ -726,9 +726,15 @@ See also [research guide](../analysis/trend_detection/DYNAMIC_WEIGHT_RESEARCH.md
 ### Candle and Staleness Handling
 
 The adapter keeps candle caches current using Kibana bootstrap plus native
-incremental updates. It repairs gaps through targeted Kibana fetches when
-possible, prunes old candles to the required AMA window, and acts only on closed
-1h candles.
+incremental updates. Missing candle gaps are repaired in two steps: (1)
+**auto-fill** gaps ≤24 candles (trusted threshold) by carrying the preceding
+close forward with zero volume — Kibana is redundant since native fetch already
+confirmed no trades; (2) **Kibana query** for gaps >24 candles — real candles
+are merged in, or an empty response is treated as verified no-trade (all gaps
+in the queried window are synthesized). Gaps remaining after both steps
+suppress writes via `unresolved_candle_gaps` until repaired on a future cycle.
+The adapter prunes old candles to the required AMA window and acts only on
+closed 1h candles.
 
 #### AMA Warmup Window — Why Candle Length Matters
 
@@ -809,6 +815,7 @@ The two **calibration constants** live in `modules/constants.ts` under
 |----------|-------|---------|
 | `AMA_CONVERGENCE_ER_AVG` | `0.151` | Typical-market Efficiency Ratio. Lower = more conservative (assumes more noise, slower convergence, more candles needed). Calibrated against the fetched 3-year pool 133 1h dataset (`2023-05-07` -> `2026-05-06`); corrects for Jensen's inequality — `E[f(ER)] ≠ f(E[ER])` when `f` is the squaring function. |
 | `AMA_CONVERGENCE_EPSILON` | `0.01` | Target remaining bias fraction. `0.01` means 99 % of the initial bias has decayed by the end of the convergence window. |
+| `STALE_TAIL_THRESHOLD_CANDLES` | `24` | Trusted no-trade gap threshold. Gaps ≤24 candles are auto-filled without Kibana; gaps beyond query Kibana. Also used as stale-tail pruning threshold. |
 
 To recalibrate `AMA_CONVERGENCE_ER_AVG` against new market data, use the
 research script:
@@ -880,3 +887,5 @@ Important fields in `market_adapter/state/market_adapter_state.json`:
 | `weightVariance` | Normalized volatility ratio |
 | `weights` | Current dynamic buy/sell weights |
 | `collateralRecommendation` | Advisory collateral-ratio hint |
+| `kibanaGapRepairCount` | Gaps patched this cycle (auto-fill or Kibana-verified) |
+| `unresolvedGapCount` | Gaps still missing after all repair attempts; writes suppressed while > 0 |
