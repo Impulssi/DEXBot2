@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.4] - 2026-07-01 - Update Script Hardening & Stash Leak Fix
+
+### 2026-07-01
+
+- **Fix**: prevent daemon-downtime-after-update — `detectMonolithicRuntime()` relied solely on the PID file; when the daemon shut down during git/npm operations the PID file was cleaned up, so detection returned null and no restart was attempted, leaving the user with no running bots. Added pre-update state snapshot (`monolithicWasRunning`, `hadMonolithicFiles`) captured before any git operations. Fallback auto-start via `node unlock` (TTY-gated) when daemon was alive before update but gone after build (`scripts/update.ts`).
+- **Fix**: stash leak and broken working tree — `git stash push` now only runs when the working tree actually has local changes; replaces `git stash pop` with `git stash apply` + unconditional `git stash drop` to eliminate orphaned stash entries; auto-resolves conflicts via `git checkout --theirs` (stash = user's local changes should win); regenerates conflicted `package-lock.json` via `npm install` (`scripts/update.ts`).
+- **Chore**: version bumped to 1.0.4 across all manifests (`package.json`, `package-lock.json`, `claw/package.json`, `analysis/ama_fitting/package.json`, `claw/runtimes/openclaw-plugin/package.json`, `claw/runtimes/openclaw-plugin/openclaw.plugin.json`).
+
 ## [1.0.3] - 2026-07-01 - Two-Step Candle Gap Repair
 
 ### 2026-07-01
