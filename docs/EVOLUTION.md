@@ -167,8 +167,8 @@ Auto-update disabled by default, update script hardened, DAEMON_ERRORS retry-pat
 ### v1.0.2 → v1.0.3 (5 commits)
 Two-step candle gap repair in market adapter (auto-fill ≤24h, then Kibana), market adapter log deduplication, doc version/commit reference refresh.
 
-### v1.0.3 → v1.0.4 (1 commit)
-Update script hardening: daemon-downtime-after-update fix (pre-update state snapshot, TTY-gated auto-restart fallback), stash leak elimination (conditional push, apply+drop, auto-resolve with `--theirs`, conflicted `package-lock.json` regeneration).
+### v1.0.3 → v1.0.4 (2 commits)
+Update script hardening: daemon-downtime-after-update fix (pre-update state snapshot, TTY-gated auto-restart fallback), stash leak elimination (conditional push, apply+drop, auto-resolve with `--theirs`, conflicted `package-lock.json` regeneration). SIGUSR2 monolithic restart fix when `UPDATER.ACTIVE` is false — added local `pendingRestart` flag in `unlock.ts` independent of the updater.
 
 ---
 
@@ -219,6 +219,6 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: July 1, 2026 (v1.0.4)
-**Total Commits**: 1660
+**Total Commits**: 1661
 **Date Range**: December 2, 2025 - July 1, 2026 (ongoing)
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
