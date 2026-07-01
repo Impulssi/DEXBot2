@@ -2,7 +2,7 @@
 
 This directory contains the comprehensive technical documentation for the DEXBot2 trading bot. It is designed to guide developers from high-level architecture down to the nuances of fund accounting and state management.
 
-**Version context:** v1.0.4 is the current release.
+**Version context:** v1.0.5 is the current release.
 
 ---
 
@@ -108,7 +108,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ### 🧭 [Evolution Report](EVOLUTION.md)
 *Project timeline and major architecture phases.*
-- **Coverage**: Historical milestones from the initial December 2025 bootstrap through the v1.0.4 stable release, including credit maintenance hardening
+- **Coverage**: Historical milestones from the initial December 2025 bootstrap through the v1.0.5 stable release, including credit maintenance hardening
 - **Focus**: Architecture evolution, release history, test growth, and documentation changes
 
 ### 🗒️ [Changelog](../CHANGELOG.md)

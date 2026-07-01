@@ -674,9 +674,14 @@ function getPrecision(assets: any, { type, side, proceeds = false }: { type?: st
  * Calculate price tolerance for order matching on-chain.
  * Accounts for precision limits of both assets to determine acceptable price deviation.
  * Used when matching grid orders to blockchain orders.
+ *
+ * NOTE on the orderSize parameter: larger sizes produce tighter (more precise)
+ * tolerance values. When using this function for duplicate-price-level
+ * detection, always pass Math.max(sizeA, sizeB) as orderSize — a tiny dust
+ * order would inflate the tolerance window and falsely match distant prices.
  * 
  * @param {number} gridPrice - Grid order price
- * @param {number} orderSize - Order size on primary side
+ * @param {number} orderSize - Order size on primary side (larger = tighter tolerance)
  * @param {string} orderType - Order type ("buy" or "sell")
  * @param {Object} [assets=null] - Asset metadata with precision (required)
  * @returns {number|null} Price tolerance value or null if invalid inputs

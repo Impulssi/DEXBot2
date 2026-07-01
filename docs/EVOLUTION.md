@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.0.4 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.0.5 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 1,600+ commits over ~6 active months
 - **Code Maturity**: Evolution from basic utilities to a ~58,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 200+ automated test files
-- **Releases**: 39 release entries (v0.1.0 to v1.0.4)
+- **Releases**: 40 release entries (v0.1.0 to v1.0.5)
 
 ---
 
@@ -170,6 +170,9 @@ Two-step candle gap repair in market adapter (auto-fill ≤24h, then Kibana), ma
 ### v1.0.3 → v1.0.4 (2 commits)
 Update script hardening: daemon-downtime-after-update fix (pre-update state snapshot, TTY-gated auto-restart fallback), stash leak elimination (conditional push, apply+drop, auto-resolve with `--theirs`, conflicted `package-lock.json` regeneration). SIGUSR2 monolithic restart fix when `UPDATER.ACTIVE` is false — added local `pendingRestart` flag in `unlock.ts` independent of the updater.
 
+### v1.0.4 → v1.0.5 (1 commit)
+Grid invariant enforcement: prevent stale dust duplicates at the same price level. Sync engine rejects orphan adoption when an active order already occupies that price (uses `Math.max(size)` for tight tolerance). Reconcile unconditionally cancels duplicate chain orders on chain. Dust detection expanded to interior partials sharing a price level with an active sibling. Three coordinated layers enforce "one order per grid price level" invariant.
+
 ---
 
 
@@ -218,7 +221,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 1, 2026 (v1.0.4)
+**Last Updated**: July 1, 2026 (v1.0.5)
 **Total Commits**: 1661
 **Date Range**: December 2, 2025 - July 1, 2026 (ongoing)
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

@@ -1179,6 +1179,85 @@ async function testGridMaintenanceWaitsForQuietPeriod() {
     }
 }
 
+async function testInteriorDustWithDuplicatePriceLevel() {
+    console.log('Testing Interior Dust With Duplicate Price Level...');
+
+    _setFeeCache({
+        BTS: {
+            limitOrderCreate: { bts: 0.1 },
+            limitOrderCancel: { bts: 0 },
+            limitOrderUpdate: { bts: 0.001 }
+        }
+    });
+
+    const manager = new OrderManager({
+        assetA: 'TESTA',
+        assetB: 'TESTB',
+        startPrice: 1.0,
+        botFunds: { buy: 1000, sell: 1000 },
+        activeOrders: { buy: 5, sell: 5 },
+        incrementPercent: 1,
+        weightDistribution: { buy: 1, sell: 1 }
+    });
+    manager.assets = {
+        assetA: { id: '1.3.1', symbol: 'TESTA', precision: 5 },
+        assetB: { id: '1.3.2', symbol: 'TESTB', precision: 5 }
+    };
+
+    await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    manager.logger = { log: () => {}, logFundsStatus: () => {} };
+
+    // Setup: top-sell (ACTIVE), dup-dust-sell (PARTIAL, same price as active sibling → eligible)
+    await manager._updateOrder({ id: 'top-sell', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, size: 10, price: 1.01, orderId: '1.7.940' });
+    await manager._updateOrder({ id: 'dup-dust-sell', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, size: 0.00001, price: 1.01, orderId: '1.7.941' });
+    await manager._updateOrder({ id: 'outer-sell', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, size: 10, price: 1.03, orderId: '1.7.942' });
+
+    const health = await Grid.checkWindowDust(manager);
+    assert.strictEqual(health.sellDustOrders.length, 1, 'Interior dust with duplicate price level should be eligible');
+    assert.strictEqual(health.sellDustOrders[0].orderId, '1.7.941', 'Duplicate-price-level interior dust should be detected');
+    console.log('  ✓ Interior partial with active sibling at same price is eligible for dust');
+}
+
+async function testInteriorDustAdjacentGridLevelNotEligible() {
+    console.log('Testing Interior Dust At Adjacent Grid Level Is Not Eligible...');
+
+    _setFeeCache({
+        BTS: {
+            limitOrderCreate: { bts: 0.1 },
+            limitOrderCancel: { bts: 0 },
+            limitOrderUpdate: { bts: 0.001 }
+        }
+    });
+
+    const manager = new OrderManager({
+        assetA: 'TESTA',
+        assetB: 'TESTB',
+        startPrice: 1.0,
+        botFunds: { buy: 1000, sell: 1000 },
+        activeOrders: { buy: 5, sell: 5 },
+        incrementPercent: 1,
+        weightDistribution: { buy: 1, sell: 1 }
+    });
+    manager.assets = {
+        assetA: { id: '1.3.1', symbol: 'TESTA', precision: 5 },
+        assetB: { id: '1.3.2', symbol: 'TESTB', precision: 5 }
+    };
+
+    await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    manager.logger = { log: () => {}, logFundsStatus: () => {} };
+
+    // Setup: two active sells at 1.01 and 1.03, a tiny partial at 1.02 (adjacent, no duplicate)
+    await manager._updateOrder({ id: 's1', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, size: 10, price: 1.01, orderId: '1.7.950' });
+    await manager._updateOrder({ id: 's2', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, size: 0.00001, price: 1.02, orderId: '1.7.951' });
+    await manager._updateOrder({ id: 's3', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, size: 10, price: 1.03, orderId: '1.7.952' });
+
+    const health = await Grid.checkWindowDust(manager);
+    // s2 at 1.02 is between 1.01 and 1.03 — adjacent but NOT same price level.
+    // The tolerance uses Math.max(0.00001, 10)=10 → tight tolerance (~2e-6) → 0.01 >> 2e-6 → no match.
+    assert.strictEqual(health.sellDustOrders.length, 0, 'Interior partial at adjacent price level should not be eligible for dust');
+    console.log('  ✓ Interior partial at adjacent grid level (within tolerance) is not eligible');
+}
+
 Promise.resolve()
     .then(() => testDustTrigger())
     .then(() => testDustCancelSyntheticRotation())
@@ -1189,6 +1268,8 @@ Promise.resolve()
     .then(() => testDustTimerStartsAtDustFill())
     .then(() => testDustThresholdUsesConfiguredPercentage())
     .then(() => testDustTrackingOnlyUsesTopLiveOrder())
+    .then(() => testInteriorDustWithDuplicatePriceLevel())
+    .then(() => testInteriorDustAdjacentGridLevelNotEligible())
     .then(() => testStartupDustSchedulesTimer())
     .then(() => testConsecutiveDustCancelSeeding())
     .then(() => testDustReseedHealthFailureDoesNotAbort())

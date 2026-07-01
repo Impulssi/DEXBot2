@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.5] - 2026-07-01 - Grid Invariant Enforcement
+
+### 2026-07-01
+
+- **Fix**: prevent stale dust duplicates at the same price level — sync engine rejects orphan adoption when an active order already occupies that price (uses `Math.max(size)` for tight tolerance). Reconcile unconditionally cancels duplicate chain orders on chain via `_cancelChainOrder` with `releaseUntrackedFunds: true`. Dust detection expanded to interior partials sharing a price level with an active sibling. Three coordinated layers enforce "one order per grid price level" invariant (`modules/order/sync_engine.ts`, `modules/order/grid_reconcile.ts`, `modules/order/grid.ts`).
+- **Chore**: version bumped to 1.0.5 across all manifests.
+- **Docs**: updated `CHANGELOG.md`, `docs/EVOLUTION.md`, `docs/README.md`, `docs/DEXBOT_COMPARISON.md`, `docs/FUND_MOVEMENT_AND_ACCOUNTING.md`.
+
 ## [1.0.4] - 2026-07-01 - Update Script Hardening & Stash Leak Fix
 
 ### 2026-07-01

@@ -786,6 +786,40 @@ class SyncEngine {
                 // No grid slot matched by type+price+size. Fallback: find the nearest
                 // VIRTUAL slot (including spread slots) by price so the orphaned order
                 // becomes visible to checkWindowDust and can be dust-cancelled.
+                //
+                // BUT: the grid allows at most one order per price level. If an active
+                // grid order already exists at the same price (within tolerance), this
+                // orphan is a stale duplicate — skip adoption so the reconcile layer
+                // cancels it. Size is irrelevant; any duplicate violates the invariant.
+                const duplicatePriceOrder: any = Array.from(mgr.orders.values()).find((o: any) =>
+                    o.type === chainOrder.type &&
+                    isOrderPlaced(o) &&
+                    !matchedGridOrderIds.has(o.id) &&
+                    Math.abs(o.price - chainOrder.price) <= calculatePriceTolerance(
+                        Math.min(o.price, chainOrder.price),
+                        Math.max(o.size, chainOrder.size),
+                        o.type, mgr.assets
+                    )
+                );
+                if (duplicatePriceOrder) {
+                    unmatchedChainOrders.push({
+                        chainOrderId,
+                        type: chainOrder.type,
+                        price: chainOrder.price,
+                        size: chainOrder.size,
+                        raw: rawChainOrders.get(chainOrderId),
+                        reason: 'duplicate-price-level',
+                        candidateSlotId: duplicatePriceOrder.id,
+                    });
+                    mgr.logger?.log?.(
+                        `[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +
+                        `size=${chainOrder.size}) — NOT adopted: duplicates price level of active ` +
+                        `${duplicatePriceOrder.id} (${duplicatePriceOrder.orderId} at ${duplicatePriceOrder.price})`,
+                        'warn'
+                    );
+                    continue;
+                }
+
                 const adoptedSlot = findMatchingGridOrderByOpenOrder(
                     { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },
                     {

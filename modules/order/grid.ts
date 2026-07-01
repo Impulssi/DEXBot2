@@ -116,7 +116,8 @@ const {
     getGridBestPrices,
     calculateSpreadFromOrders,
     allocateFundsByWeights,
-    calculateGapSlots
+    calculateGapSlots,
+    calculatePriceTolerance
 } = require('./utils/math');
 const {
     filterOrdersByType,
@@ -1476,10 +1477,15 @@ class Grid {
     }
 
     /**
-     * Dust check scoped to the top live order on each side.
+     * Dust check covering all partial orders, with interior-only guard.
      *
-     * Dust auto-cancel must only act on the closest live on-chain order per side.
-     * Cancelling an interior partial could punch a hole inside the active grid.
+     * The top-of-window partial (closest to market) is always eligible for dust
+     * detection since cancelling it is just the grid edge moving inward.
+     *
+     * Interior partials (further from market) are only eligible if they have a
+     * duplicate price level — another active order at essentially the same price.
+     * Cancelling such an interior partial won't leave a gap in the grid because
+     * the sibling active order already covers that price level.
      *
      * Returns boolean flags plus the actual dust order objects so callers can act
      * on individual orders (e.g. DUST_CANCEL_DELAY_SEC auto-cancel).
@@ -1498,21 +1504,48 @@ class Grid {
             order.price != null &&
             (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL);
 
-        let buyDustOrders = [];
+        // Identify top-of-window orders (closest to market per side).
         const topBuyOrder = allOrders
             .filter(o => o.type === ORDER_TYPES.BUY && isLiveOrder(o))
             .sort((a, b) => b.price - a.price)[0];
-        if (topBuyOrder && topBuyOrder.state === ORDER_STATES.PARTIAL) {
-            buyDustOrders = await Grid._getDustOrders(manager, [topBuyOrder], ORDER_TYPES.BUY);
-        }
-
-        let sellDustOrders = [];
         const topSellOrder = allOrders
             .filter(o => o.type === ORDER_TYPES.SELL && isLiveOrder(o))
             .sort((a, b) => a.price - b.price)[0];
-        if (topSellOrder && topSellOrder.state === ORDER_STATES.PARTIAL) {
-            sellDustOrders = await Grid._getDustOrders(manager, [topSellOrder], ORDER_TYPES.SELL);
-        }
+
+        // Check if an order has a duplicate price level — an active sibling at the
+        // same price within tolerance. If so, cancelling won't create a grid gap.
+        // Only checks ACTIVE siblings. If two PARTIALs share a price with no active
+        // sibling, neither qualifies and the gap is left to the rebalancer.
+        // Uses the LARGER size of the two orders for tolerance calculation to prevent
+        // a tiny dust order from inflating the tolerance window.
+        const hasDuplicatePriceLevel = (order: any, assets: any): boolean =>
+            allOrders.some(o => {
+                if (o.id === order.id || o.type !== order.type) return false;
+                if (o.state !== ORDER_STATES.ACTIVE || !o.orderId || o.price == null) return false;
+                const toleranceSize = Math.max(order.size, o.size);
+                const tolerance = calculatePriceTolerance(
+                    Math.min(order.price, o.price), toleranceSize, order.type, assets
+                );
+                return tolerance != null && Math.abs(o.price - order.price) <= tolerance;
+            });
+
+        const assets = manager.assets;
+        const allPartials = allOrders.filter((o: any) => isLiveOrder(o) && o.state === ORDER_STATES.PARTIAL);
+
+        const isTopBuy = (o: any) => topBuyOrder && o.id === topBuyOrder.id;
+        const isTopSell = (o: any) => topSellOrder && o.id === topSellOrder.id;
+
+        // Safety filter: top-of-window partials always qualify; interior partials
+        // only qualify if they have a duplicate price level (no gap risk).
+        const eligibleBuyPartials = allPartials.filter((o: any) =>
+            o.type === ORDER_TYPES.BUY && (isTopBuy(o) || hasDuplicatePriceLevel(o, assets))
+        );
+        const eligibleSellPartials = allPartials.filter((o: any) =>
+            o.type === ORDER_TYPES.SELL && (isTopSell(o) || hasDuplicatePriceLevel(o, assets))
+        );
+
+        const buyDustOrders = await Grid._getDustOrders(manager, eligibleBuyPartials, ORDER_TYPES.BUY);
+        const sellDustOrders = await Grid._getDustOrders(manager, eligibleSellPartials, ORDER_TYPES.SELL);
 
         return {
             buyDust: buyDustOrders.length > 0,

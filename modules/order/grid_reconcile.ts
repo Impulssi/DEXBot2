@@ -70,7 +70,6 @@ const { resolveAccountRef } = require('./utils/system');
 const Format = require('./format');
 
 const SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5;
-const SUSPECTED_DUPLICATE_TOLERANCE_FLOOR = 0.01;
 
 /**
  * Count active orders on the grid for a given type.
@@ -1309,11 +1308,12 @@ async function reconcileGridOrders({
         }
 
         const unmatchedChain = (Array.isArray(chainOpenOrders) ? chainOpenOrders : []).filter(co => co && !matchedChainOrderIds.has(co.id));
-        const unmatchedParsed = unmatchedChain
+        let unmatchedParsed = unmatchedChain
             .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
             .filter(x => x.parsed);
 
         // Log individual unmatched chain orders with enough context for later adoption analysis.
+        const cancelledDuplicateIds = new Set<string>();
         const activeGridOrders = (Array.from(manager.orders.values()) as any[]).filter((o: any) => o && o.orderId && isOrderPlaced(o));
         for (const u of unmatchedParsed) {
             const p = u.parsed;
@@ -1327,10 +1327,7 @@ async function reconcileGridOrders({
                     gridOrder,
                     priceDiff,
                     tolerance,
-                    looseTolerance: Math.max(
-                        tolerance * SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER,
-                        SUSPECTED_DUPLICATE_TOLERANCE_FLOOR
-                    ),
+                    looseTolerance: tolerance * SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER,
                 };
                 if (!nearest || priceDiff < nearest.priceDiff) nearest = candidate;
             }
@@ -1342,6 +1339,34 @@ async function reconcileGridOrders({
                     `looseTolerance=${Format.formatPrice6(nearest.looseTolerance)})`,
                     'error'
                 );
+                // Resolve the duplicate price level by cancelling the stale orphan on chain.
+                // The grid has one slot per price level — any duplicate is a violation.
+                if (!dryRun) {
+                    try {
+                        await _cancelChainOrder({
+                            chainOrders,
+                            account,
+                            privateKey,
+                            manager,
+                            chainOrderId: p.orderId,
+                            dryRun,
+                            chainOrderObj: u.chain,
+                            releaseUntrackedFunds: true,
+                            fillLockAlreadyHeld,
+                        });
+                        cancelledDuplicateIds.add(p.orderId);
+                        logger?.log?.(
+                            `Cancelled unmatched duplicate chain order ${p.orderId} at price ${Format.formatPrice6(p.price)} — ` +
+                            `stale dust remnant duplicate of grid ${nearest.gridOrder.id} (${nearest.gridOrder.orderId})`,
+                            'warn'
+                        );
+                    } catch (cancelErr: any) {
+                        logger?.log?.(
+                            `Failed to cancel duplicate chain order ${p.orderId}: ${cancelErr.message}`,
+                            'error'
+                        );
+                    }
+                }
             } else if (nearest) {
                 logger?.log?.(
                     `${desc}; nearest active same-side grid ${nearest.gridOrder.id} ` +
@@ -1353,6 +1378,11 @@ async function reconcileGridOrders({
             } else {
                 logger?.log?.(`${desc}; no active same-side grid order exists`, 'warn');
             }
+        }
+
+        // Remove cancelled duplicates so they are not processed by _reconcileStartupSide
+        if (cancelledDuplicateIds.size > 0) {
+            unmatchedParsed = unmatchedParsed.filter(u => !cancelledDuplicateIds.has(u.parsed.orderId));
         }
 
         let unmatchedBuys = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
