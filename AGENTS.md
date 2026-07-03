@@ -196,6 +196,28 @@ Research scripts for parameter tuning — output interactive HTML charts, not us
 ### Testing
 - `tests/` - Comprehensive test suite (unit, integration, scenario tests)
 
+## Version Management
+
+When bumping the version for a release:
+
+1. Update `version` in `package.json` to the new version.
+2. Run `npm run version:sync` — syncs all manifest files (`package-lock.json`,
+   `claw/package.json`, `claw/runtimes/openclaw-plugin/*.json`,
+   `analysis/ama_fitting/package.json`, `claw/tests/test_claw_mcp_transport.ts`,
+   `docs/README.md`, `docs/DEXBOT_COMPARISON.md`,
+   `docs/FUND_MOVEMENT_AND_ACCOUNTING.md`, `docs/EVOLUTION.md`).
+3. Add entries to `CHANGELOG.md` and `docs/EVOLUTION.md`, then update the
+   EVOLUTION.md footer (commit count, last updated version/date).
+4. Commit the version bump + docs.
+
+```bash
+# Check what would change (dry-run)
+npm run version:check
+
+# Apply version sync
+npm run version:sync
+```
+
 ## Quick Commands
 ```bash
 # Create feature

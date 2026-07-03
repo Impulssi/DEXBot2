@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.7] - 2026-07-03 - BROADCAST_DEADLINE Graceful Recovery
+
+### 2026-07-03
+
+- **Fix**: prevent deadlock when broadcast fails with `BROADCAST_DEADLINE` — `_reconcileAfterUncertainBroadcast` now receives `fillLockAlreadyHeld: true` so it does not deadlock on the non-reentrant `_fillProcessingLock`. Previously the recovery path never ran, leaving the grid in an uncertain state and the process hung (`6035fe6f`).
+- **Fix**: add bot-level retry for `BroadcastUncertainError` — if all daemon-side attempts expire against the 25s inner deadline, a fresh bot-level retry buys a new 25s window. Skips retry on `partialOnChainState` (pair-mode grouped creates) to prevent duplicate orders on chain (`6035fe6f`).
+- **Feat**: make daemon broadcast retry count configurable — `CREDENTIAL_DAEMON_BROADCAST_RETRIES` in constants (default 3), up from hardcoded 2 (`6035fe6f`).
+- **Feat**: subscription health watchdog for silent subscription death detection — monitors blockchain subscription health and triggers reconnection when the subscription silently drops without an error event (`5a20dbdd`).
+- **Chore**: version bumped to 1.0.7 across all manifests.
+
 ## [1.0.6] - 2026-07-03 - Version Display & Project-Root Centralization
 
 ### 2026-07-03
