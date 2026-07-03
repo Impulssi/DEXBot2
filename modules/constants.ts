@@ -267,6 +267,13 @@ let TIMING = {
     // path handles whatever takes longer.
     CREDENTIAL_DAEMON_INNER_DEADLINE_MS: 25000,
 
+    // CREDENTIAL_DAEMON_BROADCAST_RETRIES: Number of broadcast attempts inside the
+    // credential daemon's broadcastWithRetry. Each attempt connects, signs, and pushes
+    // the transaction. Total wall time across all attempts is capped by
+    // CREDENTIAL_DAEMON_INNER_DEADLINE_MS above. 2 is a pragmatic balance: try once,
+    // retry once on disconnect, while leaving room for a slow block before the deadline.
+    CREDENTIAL_DAEMON_BROADCAST_RETRIES: 3,
+
     // SAFETY_NET_SYNC_TIMEOUT_MS: Cap on the post-reconnect safety-net sync
     // in dexbot_class.ts. Must stay below the 20s shutdown lock timeout so
     // it never holds _fillProcessingLock longer than the shutdown deadline.

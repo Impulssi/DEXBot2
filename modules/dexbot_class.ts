@@ -2941,6 +2941,37 @@ class DEXBot {
     }
 
     /**
+     * Execute operations with retry on BroadcastUncertainError.
+     * The daemon already retries internally against a 25s deadline.
+     * If all expire, a fresh bot-level attempt buys a new 25s window.
+     *
+     * Skips retry when partialOnChainState is true (pair-mode grouped
+     * execution where earlier groups already committed). Re-broadcasting
+     * the full operations array would duplicate those creates on chain.
+     */
+    async _executeWithRetryOnUncertain(operations, opContexts) {
+        const MAX_RETRIES = 1;
+        for (let attempt = 1; ; attempt++) {
+            try {
+                return await this._executeOperationsWithStrategy(operations, opContexts);
+            } catch (err) {
+                const isRetriable = err instanceof BroadcastUncertainError
+                    && !err.partialOnChainState
+                    && attempt <= MAX_RETRIES;
+                if (isRetriable) {
+                    this.manager.logger.log(
+                        `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}), retrying...`,
+                        'warn'
+                    );
+                    await this._ensureCredentialDaemonWritable('COW batch retry');
+                    continue;
+                }
+                throw err;
+            }
+        }
+    }
+
+    /**
      * Execute blockchain operations with appropriate strategy (single batch or pair mode).
      * @param {Array<import('./types').CreatedOperation>} operations - Array of operation objects
      * @param {Array<Object>} opContexts - Array of operation context metadata (1:1 with operations)
@@ -4077,7 +4108,7 @@ class DEXBot {
             // Execute batch
             this.manager.logger.log(`[COW] Broadcasting batch with ${operations.length} operations...`, 'info');
             this._lastBroadcastHeartbeatAt = Date.now();
-            const execution = await this._executeOperationsWithStrategy(operations, opContexts);
+            const execution = await this._executeWithRetryOnUncertain(operations, opContexts);
             const result = execution.result;
             const executedContexts = execution.opContexts;
 
@@ -4211,7 +4242,7 @@ class DEXBot {
             // throwing would re-enter the catch loop on the next attempt and
             // potentially double-publish.
             if (err instanceof BroadcastUncertainError) {
-                return await this._reconcileAfterUncertainBroadcast(err, opContexts);
+                return await this._reconcileAfterUncertainBroadcast(err, opContexts, { fillLockAlreadyHeld: true });
             }
 
             // Handle hard abort

@@ -882,12 +882,134 @@ function makeBot() {
         },
         requestStructuralGridResync: async () => {},
         _lastUnmatchedChainOrders: [],
-        _pendingBroadcasts: new Map()
+        _pendingBroadcasts: new Map(),
+        lockOrders: () => {},
+        unlockOrders: () => {},
+        startBroadcasting: () => {},
+        stopBroadcasting: () => {},
+        _setRebalanceState: () => {},
+        pauseFundRecalc: () => {},
+        resumeFundRecalc: async () => {},
+        _clearWorkingGridRef: () => {},
+        _throwOnIllegalState: false
     };
     bot.account = 'test-account';
     bot.privateKey = 'test-private-key';
     bot._currentCycleId = 1;
     return bot;
+}
+
+async function testCowCatchBlockPassesFillLockAlreadyHeld() {
+    console.log('\n[UNC-012] _updateOrdersOnChainBatchCOW passes fillLockAlreadyHeld:true to reconcile...');
+    const bot = makeBot();
+    const slotId = 'slot-unc-012';
+    const actionOrderId = '1.7.999999';
+    const origBuildUpdate = chainOrders.buildUpdateOrderOp;
+    const origExecuteStrategy = bot._executeOperationsWithStrategy;
+    const origReconcile = bot._reconcileAfterUncertainBroadcast;
+    const origValidateFunds = bot._validateOperationFunds;
+    let reconcileOptions = null;
+
+    bot.manager.orders.set(slotId, { id: slotId, type: 'sell', price: 0.05, size: 100, orderId: actionOrderId });
+    bot.manager.getChainFundsSnapshot = () => ({});
+
+    chainOrders.buildUpdateOrderOp = async (account, orderId, delta, rawOnChain) => ({
+        op: { fee: { amount: 0, asset_id: '1.3.0' }, op_data: {} },
+        finalInts: { sell: 100, receive: 1 }
+    });
+
+    bot._validateOperationFunds = () => ({ isValid: true, summary: '', violations: [] });
+
+    bot._executeOperationsWithStrategy = async (_ops, _ctxs) => {
+        throw new BroadcastUncertainError('uncertain', { batchId: 'unc-012', timeoutMs: 30000 });
+    };
+
+    bot._reconcileAfterUncertainBroadcast = async (_err, _ctxs, opts) => {
+        reconcileOptions = opts;
+        return { executed: false, uncertain: true };
+    };
+
+    const cowResult = {
+        workingGrid: {},
+        workingIndexes: {},
+        workingBoundary: {},
+        actions: [{
+            type: COW_ACTIONS.UPDATE,
+            id: slotId,
+            orderId: actionOrderId,
+            newSize: 100,
+            order: { type: 'sell', price: 0.05, size: 100 }
+        }]
+    };
+
+    try {
+        await bot._updateOrdersOnChainBatchCOW(cowResult);
+        assert(reconcileOptions, '_reconcileAfterUncertainBroadcast must be called');
+        assert.strictEqual(reconcileOptions.fillLockAlreadyHeld, true,
+            'reconcile must receive fillLockAlreadyHeld:true to avoid reentrant deadlock');
+    } finally {
+        chainOrders.buildUpdateOrderOp = origBuildUpdate;
+        bot._executeOperationsWithStrategy = origExecuteStrategy;
+        bot._reconcileAfterUncertainBroadcast = origReconcile;
+    }
+    console.log('✓ UNC-012 passed');
+}
+
+async function testExecuteWithRetryOnUncertainRetriesOnce() {
+    console.log('\n[UNC-013] _executeWithRetryOnUncertain retries once on BroadcastUncertainError then throws...');
+    const bot = makeBot();
+    const origExecuteStrategy = bot._executeOperationsWithStrategy;
+    let callCount = 0;
+
+    bot._executeOperationsWithStrategy = async (_ops, _ctxs) => {
+        callCount++;
+        throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013', timeoutMs: 30000 });
+    };
+
+    try {
+        await assert.rejects(
+            () => bot._executeWithRetryOnUncertain([], []),
+            (err) => {
+                assert(err instanceof BroadcastUncertainError, 'must throw BroadcastUncertainError');
+                assert.strictEqual(callCount, 2, 'must try exactly 2 times (1 initial + 1 retry)');
+                return true;
+            }
+        );
+    } finally {
+        bot._executeOperationsWithStrategy = origExecuteStrategy;
+    }
+    console.log('✓ UNC-013 passed');
+}
+
+async function testExecuteWithRetrySkipsPartialOnChainState() {
+    console.log('\n[UNC-014] _executeWithRetryOnUncertain skips retry when partialOnChainState is set...');
+    const bot = makeBot();
+    const origExecuteStrategy = bot._executeOperationsWithStrategy;
+    let callCount = 0;
+
+    bot._executeOperationsWithStrategy = async (_ops, _ctxs) => {
+        callCount++;
+        const err = new BroadcastUncertainError('uncertain', { batchId: 'unc-014', timeoutMs: 30000 });
+        err.partialOnChainState = true;
+        err.groupsBroadcast = 1;
+        err.groupsTotal = 2;
+        throw err;
+    };
+
+    try {
+        await assert.rejects(
+            () => bot._executeWithRetryOnUncertain([], []),
+            (err) => {
+                assert(err instanceof BroadcastUncertainError, 'must throw BroadcastUncertainError');
+                assert.strictEqual(callCount, 1, 'must NOT retry when partialOnChainState is true');
+                assert.strictEqual(err.partialOnChainState, true);
+                return true;
+            }
+        );
+    } finally {
+        bot._executeOperationsWithStrategy = origExecuteStrategy;
+    }
+    console.log('✓ UNC-014 passed');
 }
 
 async function main() {
@@ -915,8 +1037,11 @@ async function main() {
     await testAutoCancelUsesSyncEngineChainOrderIdShape();
     await testAutoCancelSkipsWhenPendingBroadcasts();
     await testAutoCancelSkipsFingerprinted();
+    await testCowCatchBlockPassesFillLockAlreadyHeld();
+    await testExecuteWithRetryOnUncertainRetriesOnce();
+    await testExecuteWithRetrySkipsPartialOnChainState();
     testsComplete = true;
-    console.log('\nAll uncertain-broadcast tests passed.');
+    console.log('\nAll uncertain-broadcast tests passed (incl. retry + deadlock regression guards).');
 }
 
 main().catch((err) => {

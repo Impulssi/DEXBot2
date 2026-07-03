@@ -404,8 +404,9 @@ async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn
         }, innerDeadlineMs);
     });
 
+    const maxRetries = TIMING?.CREDENTIAL_DAEMON_BROADCAST_RETRIES ?? 2;
     const work = (async () => {
-        for (let attempt = 1; attempt <= 2; attempt++) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 if (_nativeChainClient.getStatus() !== 'connected') {
                     _nativeChainClient.setNodes(_nativeNodeList.length > 0 ? _nativeNodeList : NODE_MANAGEMENT.DEFAULT_NODES);
@@ -417,7 +418,7 @@ async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn
                 await client.initPromise;
                 return await broadcastFn(client);
             } catch (err: any) {
-                if (attempt === 2) throw err;
+                if (attempt === maxRetries) throw err;
                 debugLog(`Broadcast failed (attempt ${attempt}), reconnecting: ${err.message}`);
                 try { _nativeChainClient.disconnect(); } catch (_) {}
             }
