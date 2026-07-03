@@ -34,6 +34,12 @@ function hasOwn(key: string): boolean {
     return hasProcess() && Object.prototype.hasOwnProperty.call(process.env, key);
 }
 
+// Resolve project root — works from source (modules/) and dist (dist/modules/).
+const _MODULE_DIR$ = path.dirname(__dirname);
+const _PROJECT_ROOT$ = path.basename(__dirname) === 'modules' && path.basename(_MODULE_DIR$) === 'dist'
+    ? path.dirname(_MODULE_DIR$)
+    : _MODULE_DIR$;
+
 const Config: {
     // ── Bot identity ────────────────────────────────────────────────
     BOT_NAME: string | undefined;
@@ -102,7 +108,7 @@ const Config: {
     BOT_NAME: str('BOT_NAME'),
     PREFERRED_ACCOUNT: str('PREFERRED_ACCOUNT'),
     LIVE_BOT_NAME: str('LIVE_BOT_NAME'),
-    VERSION: hasProcess() ? require(path.join(__dirname, '..', '..', 'package.json')).version : '0.0.0',
+    VERSION: hasProcess() ? require(path.join(_PROJECT_ROOT$, 'package.json')).version : '0.0.0',
 
     // ── Feature flags ───────────────────────────────────────────────
     DEXBOT_SKIP_PROFILE_VALIDATION: bool('DEXBOT_SKIP_PROFILE_VALIDATION'),
