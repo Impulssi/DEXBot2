@@ -26,6 +26,9 @@ const { computeAmaSlopeWeights } = require('../market_adapter/core/strategies/am
 const { MARKET_ADAPTER } = require('../modules/constants');
 const { writeChartFile } = require('./chart_utils');
 const { getCandleClose } = require('./math_utils');
+const { resolveCandleFile } = require('./bot_key_utils');
+
+const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 
 // AMA configuration — use AMA3 from constants (same as production)
 const AMA_CONFIG = MARKET_ADAPTER.AMAS.AMA3;
@@ -64,6 +67,7 @@ function parseArgs() {
         dispWeight: any;
         clipPct: any;
         quiet: boolean;
+        useCached: boolean;
         lookbackBars?: number;
         dispScaleMinPct?: number;
     } = {
@@ -74,6 +78,7 @@ function parseArgs() {
         dispWeight: MARKET_ADAPTER.DYNAMIC_WEIGHT_DW,
         clipPct: MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE,
         quiet: false,
+        useCached: false,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -90,6 +95,7 @@ function parseArgs() {
         else if (arg === '--dw') config.dispWeight = parseFloat(args[++i]);
         else if (arg === '--lb') config.lookbackBars = parseInt(args[++i], 10);
         else if (arg === '--clip') config.clipPct = parseFloat(args[++i]);
+        else if (arg === '--use-cached') config.useCached = true;
         else if (arg === '--quiet') config.quiet = true;
     }
 
@@ -100,8 +106,20 @@ async function main() {
     try {
         const config = parseArgs();
         const srcConfig = config.source.config;
-        if (config.source.type === 'market_adapter' && !srcConfig.stateDir) {
-            srcConfig.stateDir = PATHS.MARKET_ADAPTER.STATE_DIR;
+
+        if (config.source.type === 'market_adapter') {
+            if (config.useCached) {
+                const candleFile = resolveCandleFile(srcConfig.botKey, INTERVAL_LABEL);
+                if (candleFile) {
+                    srcConfig.filePath = candleFile;
+                    config.source.type = 'json';
+                    if (!config.quiet) console.log(`[DynamicWeight] Resolved bot '${srcConfig.botKey}' → ${path.basename(candleFile)}`);
+                } else {
+                    throw new Error(`--use-cached: no cached candle file found for bot '${srcConfig.botKey}' (looked for ${path.join(PATHS.MARKET_ADAPTER.DATA_DIR, `market_adapter_${srcConfig.botKey}_${INTERVAL_LABEL}.json`)})`);
+                }
+            } else {
+                if (!srcConfig.stateDir) srcConfig.stateDir = PATHS.MARKET_ADAPTER.STATE_DIR;
+            }
         }
 
         const source = createSource(config.source.type, srcConfig);

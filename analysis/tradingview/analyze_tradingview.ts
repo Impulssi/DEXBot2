@@ -7,11 +7,13 @@ const path = require('path');
 const { createSource } = require('../price_sources');
 const { generateHTML, loadMarketProfiles } = require('./tradingview_uplot_chart_generator');
 const { MARKET_ADAPTER } = require('../../modules/constants');
-const { toIntervalLabel } = require('../../market_adapter/interval_utils');
 const { loadCandleFile } = require('../math_utils');
-const { ensureDir, readJSON } = require('../../modules/utils/fs_utils');
+const { ensureDir } = require('../../modules/utils/fs_utils');
+const { toIntervalLabel } = require('../../market_adapter/interval_utils');
+const { loadBotSettings, sanitizeKey, computeBotKey, resolveBotKey, resolveCandleFile, candleFileForBot } = require('../bot_key_utils');
 
 const { PATHS } = require('../../modules/paths');
+const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 const DEFAULT_CHART_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'tradingview_chart.html');
 const DEFAULT_AMA = MARKET_ADAPTER.AMAS?.AMA3 || MARKET_ADAPTER.AMAS?.[MARKET_ADAPTER.DEFAULT_AMA_KEY] || {
@@ -83,30 +85,13 @@ function loadJsonMeta(filePath) {
     return loadCandleFile(filePath);
 }
 
-function loadBotSettings(filePath = DEFAULT_BOTS_FILE) {
-    if (!filePath || !fs.existsSync(filePath)) return null;
-    try {
-        return readJSON(filePath);
-    } catch (err) {
-        return null;
-    }
-}
-
-function sanitizeKey(source) {
-    if (!source) return 'bot';
-    return String(source).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'bot';
-}
-
 function loadBotMeta(botKey, filePath = DEFAULT_BOTS_FILE) {
     const settings = loadBotSettings(filePath);
     const entries = Array.isArray(settings?.bots) ? settings.bots : [];
     if (!botKey) return null;
     const normalizedKey = String(botKey).toLowerCase();
     const exact = entries.find((bot, index) => {
-      const botKey = bot.id
-        ? `${sanitizeKey(bot.name || `bot-${index}`)}-${sanitizeKey(String(bot.id))}`
-        : `${sanitizeKey(bot?.name || `bot-${index}`)}-${index}`;
-      return botKey === normalizedKey;
+      return computeBotKey(bot, index) === normalizedKey;
     });
     if (exact) return exact;
     const loose = entries.find((bot) => sanitizeKey(bot?.name) === normalizedKey.replace(/-\d+$/, ''));
@@ -123,10 +108,11 @@ function inferTitle(meta, fallback) {
     return `${label} · ${interval} · TradingView`;
 }
 
-function resolveMarketAdapterCandleFile(botKey, intervalSeconds = 3600) {
+function resolveMarketAdapterCandleFile(botKey) {
     if (!botKey) throw new Error('--bot-key is required when using --source market_adapter');
-    const label = toIntervalLabel(intervalSeconds);
-    return path.join(PATHS.MARKET_ADAPTER.DATA_DIR, `market_adapter_${botKey}_${label}.json`);
+    const cached = resolveCandleFile(botKey, INTERVAL_LABEL);
+    if (cached) return cached;
+    throw new Error(`Market adapter candle file not found for bot '${botKey}': ${candleFileForBot(botKey, INTERVAL_LABEL)}`);
 }
 
 async function main() {
@@ -138,10 +124,7 @@ async function main() {
         const srcConfig = config.source.config;
         const isMarketAdapterSource = config.source.type === 'market_adapter';
         if (isMarketAdapterSource) {
-            const candleFile = resolveMarketAdapterCandleFile(srcConfig.botKey, 3600);
-            if (!fs.existsSync(candleFile)) {
-                throw new Error(`Market adapter candle file not found for bot '${srcConfig.botKey}': ${candleFile}`);
-            }
+            const candleFile = resolveMarketAdapterCandleFile(srcConfig.botKey);
             srcConfig.filePath = candleFile;
             const botMeta = loadBotMeta(srcConfig.botKey);
             if (botMeta && !srcConfig.assetA && !srcConfig.assetB) {
