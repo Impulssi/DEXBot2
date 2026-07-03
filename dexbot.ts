@@ -363,15 +363,14 @@ function printStartLauncherHeader({ botName = null, dryRun = false } = {}) {
 }
 
 function printStartLauncherSuccess({ botName = null, dryRun = false } = {}) {
-    const command = dryRun ? 'drystart' : 'test';
-    const target = botName ? ` ${botName}` : '';
+    const dryrunFlag = dryRun ? ' --dryrun' : '';
     console.log();
     console.log('='.repeat(50));
     console.log(startupSuccess('DEXBot2 started successfully!'));
     if (botName) {
-        console.log(`If the bot stops, rerun \`node dexbot ${command}${target}\` to start it again.`);
+        console.log(`If the bot stops, rerun \`node unlock${dryrunFlag} ${botName}\`.`);
     } else {
-        console.log(`If the bots stop, rerun \`node dexbot ${command}\` to start them again.`);
+        console.log(`If the bots stop, rerun \`node unlock${dryrunFlag}\`.`);
     }
     console.log('='.repeat(50));
     console.log();

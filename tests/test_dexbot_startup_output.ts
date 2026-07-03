@@ -239,7 +239,7 @@ require('../dexbot');
         assert.ok(logs.includes('Number active bots: 1'), 'dexbot start should print the active bot count');
         assert.ok(logs.includes('Starting bot runtime...'), 'dexbot start should print the runtime transition');
         assert.ok(logs.includes('DEXBot2 started successfully!'), 'dexbot start should print a success footer');
-        assert.ok(logs.includes('If the bots stop, rerun `node dexbot test` to start them again.'), 'dexbot start should print the restart hint');
+        assert.ok(logs.includes('If the bots stop, rerun `node unlock`.'), 'dexbot start should print the restart hint');
         assert.deepStrictEqual(logs.filter((line) => line.startsWith('┌') || line.startsWith('│') || line.startsWith('├') || line.startsWith('└')), [], 'dexbot start should not emit PM2-style tables');
         assert.ok(!logs.some((line) => line.includes('Connecting to BitShares...')), 'dexbot start should not print a separate connection banner');
         assert.ok(!logs.some((line) => line.includes('Authenticating master password...')), 'dexbot start should not print an auth banner');
