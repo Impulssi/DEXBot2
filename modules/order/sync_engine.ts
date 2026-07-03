@@ -612,8 +612,16 @@ class SyncEngine {
                 const chainOrder = parsedChainOrders.get(gridOrder.orderId);
                 let updatedOrder = { ...gridOrder };
                 chainOrderIdsOnGrid.add(gridOrder.orderId);
-                // Store raw blockchain data in grid slot for later update calculation
-                updatedOrder.rawOnChain = rawChainOrders.get(gridOrder.orderId);
+                // Store raw blockchain data in grid slot for later update calculation.
+                // Tag the snapshot with `fetchedAt` so the drift check in
+                // syncFromFillHistory can distinguish a fresh chain read from a
+                // never-synced entry (the latter has no fetchedAt and is treated
+                // as if grid-equals-chain, since the cache is just a thin mirror
+                // of the grid baseline at this point).
+                const rawSnapshot = rawChainOrders.get(gridOrder.orderId);
+                updatedOrder.rawOnChain = rawSnapshot
+                    ? { ...rawSnapshot, fetchedAt: Date.now() }
+                    : rawSnapshot;
 
                 // Side mismatch: keep slot untouched and queue cancellation for stale chain order.
                 if (gridOrder.type !== chainOrder.type) {
@@ -719,7 +727,10 @@ class SyncEngine {
                 const wasPartial = match.state === ORDER_STATES.PARTIAL;
                 bestMatch.orderId = chainOrderId;
                 bestMatch.state = wasVirtual ? ORDER_STATES.ACTIVE : match.state;
-                bestMatch.rawOnChain = rawChainOrders.get(chainOrderId);
+                const bestMatchRaw = rawChainOrders.get(chainOrderId);
+                bestMatch.rawOnChain = bestMatchRaw
+                    ? { ...bestMatchRaw, fetchedAt: Date.now() }
+                    : bestMatchRaw;
                 matchedGridOrderIds.add(bestMatch.id);
 
                 // Reconstruct btsFeeState from raw chain order's deferred_fee.
@@ -849,7 +860,9 @@ class SyncEngine {
                         state: adoptedState,
                         size: chainOrder.size,
                         price: chainOrder.price,
-                        rawOnChain: adoptedRaw,
+                        rawOnChain: adoptedRaw
+                            ? { ...adoptedRaw, fetchedAt: Date.now() }
+                            : adoptedRaw,
                         ...(adoptedBtsFeeState ? { btsFeeState: adoptedBtsFeeState } : {}),
                     };
                     matchedGridOrderIds.add(adoptedSlot.id);
@@ -995,32 +1008,113 @@ class SyncEngine {
 
                 const currentSizeIntFromGrid = floatToBlockchainInt(currentSize, precision);
                 const rawForSaleInt = toFiniteNumber(matchedGridOrder?.rawOnChain?.for_sale, null);
-                const currentSizeInt = Number.isFinite(rawForSaleInt)
-                    ? Math.max(0, Math.round(rawForSaleInt))
+                let effectiveRawForSale = rawForSaleInt;
+                let chainConfirmsEmpty = false;
+                let chainRefetched = false;
+
+                // -----------------------------------------------------------------
+                // Drift-only refetch: the cache is self-correcting across sequential
+                // websocket fills, but if a fill was ever missed (reconnect, restart,
+                // reorg, external activity), the cache and the grid can disagree.
+                // The only signal we can detect from the in-memory state is a
+                // consistent drift: cached for_sale < grid size. Chain `for_sale`
+                // can only decrease, so a smaller cached value is an obvious
+                // inconsistency that warrants a targeted refetch.
+                //
+                // We do NOT refetch on a time-based TTL. A stale-but-consistent
+                // cache is still correct; a fresh-but-wrong cache is the actual
+                // bug we're guarding against, and the drift signal catches that.
+                // The refetch is best-effort: a network error falls back to the
+                // cache with a warning, and the open-orders sync is the ultimate
+                // recovery channel.
+                // -----------------------------------------------------------------
+                const driftSignal = Number.isFinite(rawForSaleInt)
+                    && Math.round(rawForSaleInt) < currentSizeIntFromGrid;
+
+                if (driftSignal) {
+                    try {
+                        const { readSingleOrder } = require('../chain_orders');
+                        const fresh = await readSingleOrder(orderId, 3000);
+                        if (fresh) {
+                            const freshForSale = toFiniteNumber(fresh.for_sale, null);
+                            if (Number.isFinite(freshForSale)) {
+                                effectiveRawForSale = freshForSale;
+                                chainRefetched = true;
+                                mgr.logger.log(
+                                    `[SYNC] Drift detected for ${orderId} (cached=${rawForSaleInt} < grid=${currentSizeIntFromGrid}); ` +
+                                    `refetched for_sale=${freshForSale}`,
+                                    'warn'
+                                );
+                            }
+                        } else {
+                            // Chain returned null — the order is genuinely absent.
+                            // This is the authoritative "chain confirms empty"
+                            // signal (vs. an RPC failure which would have thrown).
+                            chainConfirmsEmpty = true;
+                            mgr.logger.log(
+                                `[SYNC] Drift refetch for ${orderId} returned null; chain confirms empty`,
+                                'info'
+                            );
+                        }
+                    } catch (refetchErr: any) {
+                        mgr.logger.log(
+                            `[SYNC] Drift refetch for ${orderId} failed; falling back to cache: ` +
+                            `${refetchErr?.message || refetchErr}`,
+                            'warn'
+                        );
+                    }
+                }
+
+                // Chain-confirmed-empty gate: only true when the drift refetch
+                // returned null (i.e., the chain is definitively saying the order
+                // is gone). We deliberately do not trust a cached 0 from a
+                // never-refetched source — that would misclassify a 0.003 XRP
+                // residual as a full fill.
+                if (chainRefetched
+                    && Number.isFinite(effectiveRawForSale)
+                    && Math.round(effectiveRawForSale) <= 0) {
+                    chainConfirmsEmpty = true;
+                }
+
+                const currentSizeInt = Number.isFinite(effectiveRawForSale)
+                    ? Math.max(0, Math.round(effectiveRawForSale))
                     : currentSizeIntFromGrid;
                 const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
                 const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
                 const newSize = blockchainToFloat(newSizeInt, precision, true); // needed for partial fills
 
-                if (Number.isFinite(rawForSaleInt) && currentSizeInt !== currentSizeIntFromGrid) {
+                if (Number.isFinite(effectiveRawForSale) && currentSizeInt !== currentSizeIntFromGrid) {
                     mgr.logger.log(
-                        `[SYNC] Using rawOnChain.for_sale baseline for ${orderId}: raw=${currentSizeInt}, grid=${currentSizeIntFromGrid}`,
+                        `[SYNC] Using rawOnChain.for_sale baseline for ${orderId}: raw=${currentSizeInt}, grid=${currentSizeIntFromGrid}` +
+                        (chainRefetched ? ' (refetched)' : ''),
                         'debug'
                     );
                 }
 
-                // CRITICAL (v0.5.1 Robustness): We must detect if an order is "effectively" full.
-                // An order is full if its size asset reaches 0 OR if the OTHER side reaches 0.
-                // If it's closed on chain but we see a tiny remainder here, it's a Ghost Order.
-                let isEffectivelyFull = (newSizeInt <= 0);
+                // CRITICAL (v0.5.1 Robustness + chain-confirmed-empty gate):
+                // An order is "effectively" full if EITHER:
+                //   1. The chain has confirmed the order is gone (the drift
+                //      refetch above returned null), OR
+                //   2. The grid itself is at 0 (no drift between grid and chain), OR
+                //   3. The OTHER side rounds to 0 (the chain will close the order
+                //      regardless of the residual on the size side — see
+                //      test_ghost_order_fix.ts for the intended behaviour).
+                //
+                // We deliberately do NOT use `newSizeInt <= 0` as a fast-path
+                // full-fill signal: with a stale cached rawOnChain, that arithmetic
+                // can be wrong and misclassify a partial fill as full. The
+                // 30-satoshi residual that triggered the bot-stale incident is the
+                // motivating case.
+                const gridAlsoEmpty = currentSizeIntFromGrid <= 0;
+                let isEffectivelyFull = chainConfirmsEmpty || gridAlsoEmpty;
 
                 if (!isEffectivelyFull) {
-                    // Check the "other" side's precision. If the remaining amount to receive/pay 
+                    // Check the "other" side's precision. If the remaining amount to receive/pay
                     // rounds to 0 on the blockchain, the order will be closed regardless of newSizeInt.
                     const otherPrecision = (orderType === ORDER_TYPES.SELL) ? assetBPrecision : assetAPrecision;
                     const price = matchedGridOrder.price;
                     const otherSize = (orderType === ORDER_TYPES.SELL) ? newSize * price : newSize / price;
-                    
+
                     if (floatToBlockchainInt(otherSize, otherPrecision) <= 0) {
                         mgr.logger.log(`[SYNC] Order ${orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. Treating as full fill to trigger rotation.`, 'info');
                         isEffectivelyFull = true;
@@ -1058,12 +1152,19 @@ class SyncEngine {
                     const { btsFeeState, ...matchedWithoutDeferredFee } = matchedGridOrder;
                     let updatedOrder = { ...matchedWithoutDeferredFee, state: ORDER_STATES.PARTIAL };
 
-                    // Update cached raw order integer instead of deleting it
+                    // Update cached raw order integer instead of deleting it.
+                    // If the drift refetch above pulled a fresh chain value, use
+                    // it as the new baseline (subtracting this fill) and stamp
+                    // fetchedAt so the cache is consistent for the next fill.
                     if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
-                        const currentForSale = toFiniteNumber(updatedOrder.rawOnChain.for_sale);
+                        const baselineForSale = (chainRefetched && Number.isFinite(effectiveRawForSale))
+                            ? effectiveRawForSale
+                            : toFiniteNumber(updatedOrder.rawOnChain.for_sale);
+                        const nextForSaleInt = Math.max(0, Math.round(baselineForSale) - filledAmountInt);
                         updatedOrder.rawOnChain = {
                             ...updatedOrder.rawOnChain,
-                            for_sale: String(Math.max(0, currentForSale - filledAmountInt))
+                            for_sale: String(nextForSaleInt),
+                            fetchedAt: Date.now()
                         };
                     }
 

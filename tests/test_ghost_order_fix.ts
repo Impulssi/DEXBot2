@@ -36,21 +36,26 @@ async function runTests() {
     console.log(' - Testing tiny remainder rounding to full fill (SyncEngine)...');
     {
         const manager = await createManager();
-        
+
         // Setup initial order: Buy XRP with 249.27798 BTS (exactly the case from the log)
         const initialSize = 249.27798;
+        // Provide a fresh rawOnChain snapshot. With drift-only refetch (no TTL),
+        // the sync engine will only consult the chain if the cache and the grid
+        // disagree. Seeding the cache here keeps the test self-contained.
+        const initialSizeInt = Math.round(initialSize * 100000);
         await manager._updateOrder({
-            id: 'slot-164', 
-            state: ORDER_STATES.ACTIVE, 
+            id: 'slot-164',
+            state: ORDER_STATES.ACTIVE,
             type: ORDER_TYPES.BUY,
-            size: initialSize, 
-            price: 1450.94267, 
-            orderId: '1.7.570062650'
+            size: initialSize,
+            price: 1450.94267,
+            orderId: '1.7.570062650',
+            rawOnChain: { for_sale: String(initialSizeInt), fetchedAt: Date.now() }
         });
 
         // Simulate a fill that leaves 0.00003 BTS (below minAbsoluteSize of 0.0005)
         const filledAmount = 249.27795; // Resulting in 0.00003 remainder
-        
+
         const fillEvent = {
             block_num: 123456,
             id: '1.11.999',
@@ -63,11 +68,11 @@ async function runTests() {
         };
 
         const result = await manager.sync.syncFromFillHistory(fillEvent);
-        
+
         // Assertions
         assert.strictEqual(result.partialFill, false, 'Should be treated as full fill despite non-zero remainder');
         assert.strictEqual(result.filledOrders[0].isPartial, undefined, 'filledOrder should NOT be marked as partial to trigger rotation');
-        
+
         const slot = manager.orders.get('slot-164');
         assert.strictEqual(slot.state, ORDER_STATES.VIRTUAL, 'Order should be virtualized after full fill');
         assert.strictEqual(slot.size, 0, 'Virtual order size should be 0');

@@ -469,8 +469,46 @@ async function executeViaDaemonToken(accountName, signingToken, operations) {
 }
 
 /**
+ * Fetch a single limit order by id from the blockchain.
+ *
+ * Used by the sync engine as a targeted refetch when the cached `rawOnChain.for_sale`
+ * is observed to be smaller than the grid's own size (a "drift signal" — the chain
+ * value can only decrease, never grow on its own). The refetch is the only
+ * operation that re-anchors the cache to chain truth for an order whose in-memory
+ * baseline has fallen out of sync (e.g., a missed fill event).
+ *
+ * Return semantics:
+ *   - returns the raw order object on success
+ *   - returns `null` if the order is genuinely absent from the chain (`get_objects`
+ *     returns null for missing ids) — this is the authoritative "order is gone"
+ *     signal
+ *   - THROWS on any other error (connection timeout, RPC failure, etc.). Callers
+ *     use try/catch to distinguish "tried-and-gone" (null) from "tried-and-failed"
+ *     (caught) and fall back to the cache.
+ *
+ * @param {string} orderId - BitShares limit order id (e.g. "1.7.572840453")
+ * @param {number} [timeoutMs] - Connection timeout in milliseconds. Defaults to
+ *   the full CONNECTION_TIMEOUT_MS (30s); sync-engine callers should pass a
+ *   smaller value so a disconnected node does not stall a fill cycle.
+ * @returns {Promise<Object|null>} Raw chain order object, or null if not found
+ * @throws {Error} On connection or RPC failure
+ */
+async function readSingleOrder(orderId, timeoutMs = TIMING.CONNECTION_TIMEOUT_MS) {
+    if (!orderId || typeof orderId !== 'string') return null;
+    await waitForConnected(timeoutMs);
+    if (!BitShares || !BitShares.db || typeof BitShares.db.get_objects !== 'function') {
+        throw new Error('readSingleOrder: BitShares.db.get_objects unavailable');
+    }
+    const results = await BitShares.db.get_objects([orderId]);
+    const order = Array.isArray(results) ? results[0] : null;
+    if (!order) return null;
+    if (order.id !== orderId) return null;
+    return order;
+}
+
+/**
  * Fetch all open limit orders for an account from the blockchain.
- * Uses AsyncLock to safely access preferredAccountId (fixes Issue #2).
+ * Uses AsyncLock to safely access preferred accountId (fixes Issue #2).
  * @param {string|null} accountId - Account ID to query (uses preferred if null)
  * @param {number} timeoutMs - Connection timeout in milliseconds
  * @param {boolean} suppress_log - Whether to suppress the log
@@ -1210,6 +1248,7 @@ export = {
     resolveAccountId,
     resolveAccountName,
     readOpenOrders,
+    readSingleOrder,
     listenForFills,
     updateOrder,
     createOrder,
