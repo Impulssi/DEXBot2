@@ -3859,7 +3859,8 @@ class DEXBot {
                                 timeoutMs: null
                             }
                         ),
-                        []
+                        [],
+                        { fillLockAlreadyHeld: true }
                     );
                 } catch (recoverErr) {
                     this.manager.logger.log(
