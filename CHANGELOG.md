@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.6] - 2026-07-03 - Version Display & Project-Root Centralization
+
+### 2026-07-03
+
+- **Feat**: show DEXBot2 version in `node unlock status` command output — operators can now verify the running version without checking `package.json` (`9b3f4f18`).
+- **Fix**: stop misclassifying partial fills as full when `rawOnChain` cache is stale — fill processor now re-queries on-chain state when cached order data is outdated, preventing incorrect order state transitions (`7405a29b`).
+- **Fix**: rerun hint in `node dexbot test` now points at `node unlock` and preserves `--dryrun` mode — previous hint referenced the wrong entry point and dropped the dry-run flag (`cb7ff3cf`).
+- **Refactor**: centralize project-root dist-detection via `isDistRuntime()` — `modules/config.ts` and `modules/paths.ts` now use the shared `isDistRuntime()` helper from `modules/utils/build_dir.ts` instead of duplicating inline `path.basename(__dirname) === 'modules' && path.basename(...) === 'dist'` checks (`5ab8cce`, follow-up fix).
+- **Fix**: replace hardcoded `require('../../package.json')` in `claw/modules/skill_utils.ts` with `require(path.join(PATHS.PROJECT_ROOT, 'package.json'))` — uses the centralized project root instead of fragile relative path arithmetic (follow-up fix).
+- **Chore**: version bumped to 1.0.6 across all manifests.
+
 ## [1.0.5] - 2026-07-01 - Grid Invariant Enforcement
 
 ### 2026-07-01

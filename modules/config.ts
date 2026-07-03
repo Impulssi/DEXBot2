@@ -12,6 +12,7 @@
 
 const path = require('path');
 const { hasProcess } = require('./env');
+const { isDistRuntime } = require('./utils/build_dir');
 
 function str(key: string): string | undefined {
     return hasProcess() && process.env[key] !== undefined ? process.env[key] : undefined;
@@ -36,9 +37,7 @@ function hasOwn(key: string): boolean {
 
 // Resolve project root — works from source (modules/) and dist (dist/modules/).
 const _MODULE_DIR$ = path.dirname(__dirname);
-const _PROJECT_ROOT$ = path.basename(__dirname) === 'modules' && path.basename(_MODULE_DIR$) === 'dist'
-    ? path.dirname(_MODULE_DIR$)
-    : _MODULE_DIR$;
+const _PROJECT_ROOT$ = isDistRuntime(_MODULE_DIR$) ? path.dirname(_MODULE_DIR$) : _MODULE_DIR$;
 
 const Config: {
     // ── Bot identity ────────────────────────────────────────────────

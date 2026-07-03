@@ -1,12 +1,10 @@
 const { path } = require('./path_api');
 const { Config } = require('./config');
 const { hasProcess } = require('./env');
+const { isDistRuntime } = require('./utils/build_dir');
 
 const MODULE_DIR = hasProcess() ? path.dirname(__dirname) : '';
-// Detect dist build: __dirname = <root>/dist/modules, MODULE_DIR = <root>/dist
-// In source:         __dirname = <root>/modules,       MODULE_DIR = <root>
-// When MODULE_DIR is a build-layer directory (dist/), go up one more level.
-const PROJECT_ROOT = (hasProcess() && path.basename(__dirname) === 'modules' && path.basename(MODULE_DIR) === 'dist')
+const PROJECT_ROOT = (hasProcess() && isDistRuntime(MODULE_DIR))
     ? path.dirname(MODULE_DIR)
     : MODULE_DIR;
 const PROFILES_DIR = path.join(PROJECT_ROOT, 'profiles');

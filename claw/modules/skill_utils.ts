@@ -2,7 +2,7 @@ const { getStorage } = require('../../modules/storage');
 const storage = getStorage();
 const { path } = require('../../modules/path_api');
 const { PATHS } = require('../../modules/paths');
-const { version: DEXBOT_VERSION } = require('../../package.json');
+const { version: DEXBOT_VERSION } = require(path.join(PATHS.PROJECT_ROOT, 'package.json'));
 
 export function normalizeRepoRoot(variableName: string, repoRoot?: string) {
   return path.resolve(repoRoot || PATHS.CLAW.DIR);
