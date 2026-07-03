@@ -22,6 +22,9 @@ function createSubscriptionManager(chainClient: any): any {
     // (Map iteration order is stable so we can reuse a single timer per entry).
     const pendingScans = new Map<any, { timer: any; lastNoticeAt: number }>();
 
+    // Subscription health watchdog timer.
+    let subscriptionHealthTimer: any = null;
+
     function parseObjectIdInstance(id: any): number {
         if (typeof id !== 'string') return Number.NaN;
         const match = id.match(/\.(\d+)$/);
@@ -294,7 +297,20 @@ function createSubscriptionManager(chainClient: any): any {
             // Coalesce: no-fill notices are just trigger signals. Schedule one
             // history scan per subscription for the coalesce window instead of
             // running one RPC per notice.
+            const stampNow = Date.now();
             for (const sub of eligible) {
+                // Stamp eligible subs as alive — the notice arrived and a scan
+                // will follow. We can't route non-fill objects per-account, so
+                // this stamps all eligible subs imprecisely.
+                //
+                // Coverage gap: if only non-fill notices are arriving (e.g. a
+                // statistics-only update for account A), all eligible subs get
+                // stamped, masking a per-account fill-stream death for account B.
+                // Mitigation: the coalesced processObjects scan (triggered next)
+                // fetches fill history per-account via direct RPC, so no fills
+                // are actually lost — they're just discovered on the next scan
+                // instead of via push notification.
+                sub.lastNoticeAt = stampNow;
                 const existing = pendingScans.get(sub);
                 if (existing) {
                     if ((now - existing.lastNoticeAt) < noticeCoalesceMs) {
@@ -356,6 +372,11 @@ function createSubscriptionManager(chainClient: any): any {
                     failed.push(err);
                 }
             }
+
+            // Notice delivered a fill for this account — stamp alive regardless
+            // of callback outcome. Callback failure is a processing issue tracked
+            // separately (cursor not advanced, onError dispatched).
+            sub.lastNoticeAt = Date.now();
 
             if (failed.length > 0) {
                 if (sub.onError) {
@@ -422,6 +443,7 @@ function createSubscriptionManager(chainClient: any): any {
 
             const history = await fetchFillHistoryEntries(accountId, sub.lastDeliveredHistoryId, options);
             if (history.length === 0) {
+                sub.lastNoticeAt = Date.now();
                 subscriptionsLogger.debug(`processObjects: no history entries for ${sub.accountName} (cursor=${sub.lastDeliveredHistoryId})`);
                 return;
             }
@@ -461,6 +483,7 @@ function createSubscriptionManager(chainClient: any): any {
                 }
 
                 if (failed.length > 0) {
+                    sub.lastNoticeAt = Date.now();
                     if (sub.onError) {
                         for (const err of failed) {
                             try { sub.onError(err); } catch (_: any) {}
@@ -481,13 +504,16 @@ function createSubscriptionManager(chainClient: any): any {
 
                 // All callbacks succeeded — advance cursor past this batch.
                 sub.lastDeliveredHistoryId = newCursor;
+                sub.lastNoticeAt = Date.now();
             } else {
                 // No fills in this batch — advance cursor past history to avoid
                 // re-scanning non-fill operations on subsequent calls.
                 sub.lastDeliveredHistoryId = history[history.length - 1]?.id || sub.lastDeliveredHistoryId;
+                sub.lastNoticeAt = Date.now();
                 subscriptionsLogger.debug(`processObjects: history had entries but none were FILL_ORDER operations for ${sub.accountName}`);
             }
         } catch (err: any) {
+            sub.lastNoticeAt = Date.now();
             subscriptionsLogger.warn(`processObjects: error for ${sub.accountName}: ${err?.message}`);
             if (sub.onError && !err?.subscriptionErrorReported) {
                 try { sub.onError(err); } catch (_: any) {}
@@ -546,30 +572,80 @@ function createSubscriptionManager(chainClient: any): any {
 
     async function resubscribeEntry(entry: any, reason: string = 'reconnect') {
         if (!entry?.active) return;
+        if (entry.reconnecting) return;
+        entry.reconnecting = true;
 
         try {
-            const accounts = await chainClient.db.get_full_accounts([entry.accountName], true);
-            if (accounts && accounts[0] && accounts[0][1] && accounts[0][1].account) {
-                entry.accountId = accounts[0][1].account.id;
-                entry.statisticsId = accounts[0][1].account.statistics || null;
+            try {
+                const accounts = await chainClient.db.get_full_accounts([entry.accountName], true);
+                if (accounts && accounts[0] && accounts[0][1] && accounts[0][1].account) {
+                    entry.accountId = accounts[0][1].account.id;
+                    entry.statisticsId = accounts[0][1].account.statistics || null;
+                }
+            } catch (err: any) {
+                subscriptionsLogger.warn(`Failed to refresh account data for ${entry.accountName}: ${err.message}`);
             }
-        } catch (err: any) {
-            subscriptionsLogger.warn(`Failed to refresh account data for ${entry.accountName}: ${err.message}`);
-        }
 
-        const refreshFailures = await refreshSubscriptions();
-        const entryRefreshFailure = refreshFailures.find((failure: any) => failure.entry === entry);
-        if (entryRefreshFailure) throw entryRefreshFailure.err;
-        for (const failure of refreshFailures) {
-            scheduleReconnectRetry(failure.entry, failure.err);
-        }
+            const refreshFailures = await refreshSubscriptions();
+            const entryRefreshFailure = refreshFailures.find((failure: any) => failure.entry === entry);
+            if (entryRefreshFailure) throw entryRefreshFailure.err;
+            for (const failure of refreshFailures) {
+                scheduleReconnectRetry(failure.entry, failure.err);
+            }
 
-        await processObjects(entry, [entry.accountId], {
-            throwOnError: true,
-        });
-        clearReconnectRetry(entry);
-        if (reason === 'retry') {
-            subscriptionsLogger.warn(`Reconnect retry restored subscription ${entry.accountName}`);
+            await processObjects(entry, [entry.accountId], {
+                throwOnError: true,
+            });
+            clearReconnectRetry(entry);
+            subscriptionsLogger.warn(`Subscription restored for ${entry.accountName} (${reason})`);
+        } finally {
+            entry.reconnecting = false;
+        }
+    }
+
+    function startSubscriptionHealthCheck(): void {
+        const intervalMs = Number.isFinite(SUBSCRIPTIONS.SUBSCRIPTION_HEALTH_CHECK_INTERVAL_MS)
+            ? Math.max(10000, SUBSCRIPTIONS.SUBSCRIPTION_HEALTH_CHECK_INTERVAL_MS)
+            : 60000;
+        const silentThresholdMs = Number.isFinite(SUBSCRIPTIONS.SUBSCRIPTION_SILENT_THRESHOLD_MS)
+            ? Math.max(30000, SUBSCRIPTIONS.SUBSCRIPTION_SILENT_THRESHOLD_MS)
+            : 600000;
+
+        if (subscriptionHealthTimer) return;
+
+        subscriptionHealthTimer = setInterval(() => {
+            const now = Date.now();
+            const stale: any[] = [];
+            for (const [, entry] of subscriptions) {
+                if (!entry.active) continue;
+                if (entry.reconnecting) continue;
+                const elapsed = now - entry.lastNoticeAt;
+                if (elapsed >= silentThresholdMs) {
+                    stale.push({ entry, elapsed });
+                }
+            }
+
+            if (stale.length === 0) return;
+
+            for (const { entry, elapsed } of stale) {
+                subscriptionsLogger.warn(
+                    `Subscription health: ${entry.accountName} has not received a notice in ${Math.round(elapsed / 1000)}s (threshold=${Math.round(silentThresholdMs / 1000)}s) — triggering resubscribe`
+                );
+                resubscribeEntry(entry, 'healthcheck').catch((err: any) => {
+                    subscriptionsLogger.warn(`Subscription health: resubscribe failed for ${entry.accountName}: ${err.message}`);
+                });
+            }
+        }, intervalMs);
+
+        if (typeof subscriptionHealthTimer.unref === 'function') {
+            subscriptionHealthTimer.unref();
+        }
+    }
+
+    function stopSubscriptionHealthCheck(): void {
+        if (subscriptionHealthTimer) {
+            clearInterval(subscriptionHealthTimer);
+            subscriptionHealthTimer = null;
         }
     }
 
@@ -589,10 +665,12 @@ function createSubscriptionManager(chainClient: any): any {
                 accountId: null,
                 statisticsId: null,
                 lastDeliveredHistoryId: SUBSCRIPTIONS.HISTORY_API_OBJECT,
+                lastNoticeAt: Date.now(),  // cold-start: watchdog won't fire for one full threshold window
                 active: false,
                 callbacks: new Set(),
                 onError: null,
                 reconnectRetryTimer: null,
+                reconnecting: false,
             };
             subscriptions.set(accountName, entry);
 
@@ -654,6 +732,7 @@ function createSubscriptionManager(chainClient: any): any {
                 }
                 const entryRefreshFailure = refreshFailures.find((failure: any) => failure.entry === entry);
                 if (entryRefreshFailure) throw entryRefreshFailure.err;
+                startSubscriptionHealthCheck();
                 for (const failure of refreshFailures) {
                     scheduleReconnectRetry(failure.entry, failure.err);
                 }
@@ -676,6 +755,7 @@ function createSubscriptionManager(chainClient: any): any {
                         entry.active = false;
                         subscriptions.delete(accountName);
                         if (subscriptions.size === 0) {
+                            stopSubscriptionHealthCheck();
                             removeNoticeSubscription();
                         }
                     }
@@ -708,6 +788,7 @@ function createSubscriptionManager(chainClient: any): any {
             subscriptions.delete(accountName);
 
             if (subscriptions.size === 0) {
+                stopSubscriptionHealthCheck();
                 removeNoticeSubscription();
             }
         }

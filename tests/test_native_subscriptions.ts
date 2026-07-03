@@ -874,6 +874,65 @@ function makeAccountRecord(account) {
         }
     }
 
+    // ── Subscription health watchdog state tests ───────────────────────
+    {
+        console.log('\n - Testing subscription health watchdog state tracking...');
+        let noticeHandler = null;
+        const dbCalls = [];
+        const historyCalls = [];
+
+        const chainClient = {
+            transport: {
+                addMessageHandler(handler) {
+                    noticeHandler = handler;
+                    return () => { noticeHandler = null; };
+                },
+            },
+            db: {
+                get_full_accounts: async ([account]) => {
+                    dbCalls.push(['get_full_accounts', account]);
+                    return [makeAccountRecord(account)];
+                },
+                call: async (method, args) => {
+                    dbCalls.push([method, args]);
+                    return null;
+                },
+            },
+            history: {
+                getAccountHistoryOperations: async () => [],
+                get_account_history: async () => [],
+            },
+        };
+
+        const manager = createSubscriptionManager(chainClient);
+        const unsub = await manager.subscribe('alice', () => {});
+
+        const subs = manager.getSubscriptions();
+        const aliceSub = subs.get('alice');
+        assert.ok(aliceSub, 'alice subscription should exist');
+        assert.strictEqual(aliceSub.reconnecting, false, 'reconnecting should be false initially');
+        assert.ok(aliceSub.lastNoticeAt > 0, 'lastNoticeAt should be initialized');
+
+        // Fill notice should advance lastNoticeAt for the matching account
+        const beforeFill = aliceSub.lastNoticeAt;
+        await noticeHandler([1, [{ id: '1.11.600', block_num: 13, trx_in_block: 1, op: [4, { order_id: '1.7.4', account_id: '1.2.100' }] }]]);
+        assert.ok(aliceSub.lastNoticeAt >= beforeFill, 'lastNoticeAt should advance on matching fill notice');
+
+        // Non-fill notice should advance lastNoticeAt for eligible subs
+        const beforeNonFill = aliceSub.lastNoticeAt;
+        await noticeHandler([1, [{ id: '2.6.100', owner: '1.2.100' }]]);
+        assert.ok(aliceSub.lastNoticeAt >= beforeNonFill, 'lastNoticeAt should advance on non-fill notice');
+
+        // Fill notice for a DIFFERENT account should NOT advance alice's lastNoticeAt
+        const beforeOtherFill = aliceSub.lastNoticeAt;
+        await noticeHandler([1, [{ id: '1.11.601', block_num: 14, trx_in_block: 1, op: [4, { order_id: '1.7.5', account_id: '1.2.200' }] }]]);
+        assert.strictEqual(aliceSub.lastNoticeAt, beforeOtherFill, 'lastNoticeAt should NOT advance on other-account fill');
+
+        // Clean up
+        unsub();
+        console.log('   watchdog state tests passed');
+    }
+
     console.log('\n=== All subscription tests passed ===');
 })().catch((err) => {
     console.error(err);

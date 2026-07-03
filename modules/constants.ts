@@ -1436,6 +1436,21 @@ let NATIVE_CLIENT = {
         // single history scan per subscription instead of triggering one RPC
         // per notice. Set to 0 to disable coalescing.
         NOTICE_COALESCE_MS: 250,
+
+        // Subscription health watchdog — detects silent subscription death
+        // where the websocket stays connected and keep-alive passes but the
+        // node stops delivering notices (server-side timeout, node overload).
+        //
+        // SUBSCRIPTION_HEALTH_CHECK_INTERVAL_MS: How often the watchdog timer
+        // runs to check for stale subscriptions. Default: 60s.
+        SUBSCRIPTION_HEALTH_CHECK_INTERVAL_MS: 60000,
+
+        // SUBSCRIPTION_SILENT_THRESHOLD_MS: If a subscription has not received
+        // any notice (fill or non-fill) within this window, the watchdog
+        // triggers a resubscribe + history scan. Default: 10 minutes.
+        // Choose a value longer than the expected quiet period between
+        // account operations — low-activity bots should use 15–20 min.
+        SUBSCRIPTION_SILENT_THRESHOLD_MS: 600000,
     },
 
     // -------------------------------------------------------------------------
