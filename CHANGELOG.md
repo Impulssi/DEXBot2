@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.8] - 2026-07-05 - System Invariants Expansion & Shared Runtime Fix
+
+### 2026-07-05
+
+- **Fix**: prevent deadlock in secondary pending-broadcasts recovery path — second call site at `_updateOrdersOnChainBatchCOW` (line 3851) passed `fillLockAlreadyHeld: true` flag to `_reconcileAfterUncertainBroadcast`, fixing a missed deadlock path that fired when a CREATE batch was rejected due to prior pending broadcasts (`f5e4340e`).
+- **Fix**: market adapter log duplication in shared runtime — the in-process `market_adapter_runtime.ts` used `stdio: 'inherit'`, piping all child stdout into dexbot.log. Changed to `'ignore'` to match the watchdog fix from v1.0.3.
+- **Fix**: bot key resolution — extract shared bot key utils into `analysis/bot_key_utils.ts`, fix `roundTo` ReferenceError in browser-side chart JS, add `--use-cached` flag (later removed), add 20 tests (`e440cb3a`).
+- **Fix**: remove `--use-cached` flag — always resolve to candle cache from `--source market_adapter`; removed centers-file fallback with no useful history data (`7eee1ac9`).
+- **Docs**: comprehensive system invariants expansion — `docs/COW_INVARIANTS.md` rewritten with full coverage for COW pipeline, sync engine, maintenance runtime, grid structure, reconcile, batch/pipeline, fund registry, and subscriptions. All invariants now carry categorized prefixes (`INV-COW`, `INV-SYNC`, `INV-MAINT`, etc.).
+- **Chore**: version bumped to 1.0.8 across all manifests.
+
 ## [1.0.7] - 2026-07-03 - BROADCAST_DEADLINE Graceful Recovery
 
 ### 2026-07-03

@@ -17,7 +17,6 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 | Prefix | Subsystem |
 |--------|-----------|
 | `INV-COW` | COW pipeline |
-| `INV-REC` | Reconcile |
 | `INV-PROJ` | Projection |
 | `INV-ID` | Order identity |
 | `INV-ACC` | Accounting / fund tracking |
@@ -25,14 +24,11 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 | `INV-SYNC` | Sync engine |
 | `INV-MAINT` | Maintenance runtime |
 | `INV-GRID` | Grid structure |
-| `INV-RECON` | Reconcile layer |
+| `INV-RECON` | Reconcile |
 | `INV-BATCH` | Batch / pipeline |
-| `INV-PIPE` | Pipeline signals |
 | `INV-STATE` | State / lifecycle |
 | `INV-REG` | Fund registry |
 | `INV-SUB` | Subscriptions |
-| `INV-BOOT` | Bootstrap / resync |
-| `INV-UPDATE` | On-chain updates |
 
 ---
 
@@ -46,11 +42,6 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-COW-002` Commit atomicity
   - Commit swaps working state to master atomically.
   - On failed/aborted execution, working state is discarded and master remains unchanged.
-
-- `INV-REC-001` Rotation-only size updates in reconcile
-  - `reconcileGrid` does not emit generic in-place size UPDATEs for active slot diffs.
-  - Size-changing UPDATE actions are rotation updates (`newGridId` path).
-  - Non-rotation size correction is handled by dedicated maintenance flows.
 
 - `INV-PROJ-001` New projected orders remain virtual
   - Orders projected into empty slots must be `VIRTUAL` with no `orderId` until chain confirmation.
@@ -80,9 +71,6 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - Shared-account per-bot commitment must not exceed the bot's proportional share of chain balance.
   - Checked with widened tolerance `max(PERCENT_TOLERANCE * 3, 0.15)`.
   - Registry failure logs a warning, not a silent skip.
-
-- `INV-DUST-001` Dust health gating parity
-  - Dust health thresholding applies consistently to both CREATE and rotation destination holes.
 
 ---
 
@@ -172,17 +160,25 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 ## Reconcile
 
-- `INV-RECON-001` Reconcile cancels duplicate chain orders unconditionally
+- `INV-RECON-001` Rotation-only size updates in reconcile
+  - `reconcileGrid` does not emit generic in-place size UPDATEs for active slot diffs.
+  - Size-changing UPDATE actions are rotation updates (`newGridId` path).
+  - Non-rotation size correction is handled by dedicated maintenance flows.
+
+- `INV-RECON-002` Dust health gating parity
+  - Dust health thresholding applies consistently to both CREATE and rotation destination holes.
+
+- `INV-RECON-003` Reconcile cancels duplicate chain orders unconditionally
   - When an unmatched order is within `looseTolerance` of an active grid order, it must be cancelled on chain via `_cancelChainOrder` with `releaseUntrackedFunds: true`.
   - Cancelled IDs are filtered out of `unmatchedParsed` to prevent reprocessing.
   - No size guard — any duplicate at the same price is a violation.
   - `SUSPECTED_DUPLICATE_TOLERANCE_FLOOR` (absolute price floor) is removed — only `tolerance * SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` is used.
 
-- `INV-RECON-002` Rebalance must not convert on-chain slots to SPREAD via CREATE
+- `INV-RECON-004` Rebalance must not convert on-chain slots to SPREAD via CREATE
   - `performSafeRebalance` must not emit `CREATE` actions that convert existing on-chain slots into SPREAD orders.
   - On-chain mid-slot must keep its BUY/SELL type before commit.
 
-- `INV-RECON-003` Extreme placement ordering
+- `INV-RECON-005` Extreme placement ordering
   - BUY placements must use nearest available free slots first (ascending price).
   - SELL placements must use nearest available free slots first (descending price).
 
@@ -211,18 +207,6 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
     - NOT virtualize the slot.
     - Preserve `orderId` until sync reconciles it.
     - NOT mark the order as stale-cleaned.
-
----
-
-## Pipeline Signals
-
-- `INV-PIPE-001` Stale correction entry removal
-  - `correctOrderPriceOnChain` must remove the entry from `ordersNeedingPriceCorrection` in ALL exit paths: success, skip (updateOrder returns null), and error.
-  - Use `try`/`catch`/`finally` with `.filter()` removal only in `finally`.
-
-- `INV-PIPE-002` Throw-safe grid divergence corrections
-  - `updateGridFromBlockchainSnapshot` called from `applyGridDivergenceCorrections` must be wrapped in try/catch that clears `_gridSidesUpdated` on failure.
-  - A throw must not leave `_gridSidesUpdated` permanently set, which would block the next tick.
 
 ---
 
@@ -277,134 +261,9 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - `_reconcileAfterUncertainBroadcast` must pass `fillLockAlreadyHeld=true` because `_fillProcessingLock` is already held by the fill-processing call chain.
   - AsyncLock is not reentrant; a second `acquire()` would queue forever.
 
----
-
-## Constants & Precision
-
-- `INV-CONST-001` All magic numbers centralized in `constants.ts`
-  - Hardcoded fallbacks in runtime code are prohibited.
-  - Every timing value, limit, and threshold must have a named constant.
-
-- `INV-PREC-001` Precision helpers throw on invalid precision
-  - `formatAmountByPrecision` and `formatSizeByOrderType` must throw when precision is undefined.
-  - Silent fallback to `DEFAULT_ASSET_PRECISION (8)` is prohibited.
-  - `floatToBlockchainInt` throws on undefined precision — callers must guarantee precision is available before calling.
-
----
-
-## Test Mapping
-
-### COW Pipeline
-- `INV-COW-001`, `INV-COW-002`
-  - `tests/test_cow_master_plan.ts` (`COW-001`, `COW-002`)
-  - `tests/test_cow_commit_guards.ts`
-- `INV-REC-001`
-  - `tests/test_cow_master_plan.ts` (`COW-016`)
-- `INV-PROJ-001`
-  - `tests/test_cow_master_plan.ts` (`COW-012`, `COW-013`, `COW-014`)
-- `INV-PROJ-002`
-  - `tests/test_cow_master_plan.ts` (`COW-018`, `COW-018c`)
-- `INV-PROJ-003`
-  - `tests/test_cow_master_plan.ts` (`COW-018b`)
-- `INV-DUST-001`
-  - `tests/test_cow_master_plan.ts` (`COW-017`)
-
-### Accounting / Fund Tracking
-- `INV-ACC-001`, `INV-ACC-002`
-  - `tests/test_funds.ts`
-  - `modules/order/accounting.ts:472-594` (`_verifyFundInvariants`)
-- `INV-ACC-003`
-  - `modules/order/accounting.ts:534-583` (cross-bot INVARIANT 3)
-
-### Sync Engine
-- `INV-SYNC-001`, `INV-SYNC-002`, `INV-SYNC-003`
-  - `tests/test_sync_fill_drift_refetch.ts` (5 sub-cases)
-  - `tests/test_ghost_order_fix.ts`
-- `INV-SYNC-004`
-  - `tests/test_sync_logic.ts` (`testOrphanAtDuplicatePriceLevelIsNotAdopted`)
-- `INV-SYNC-005`
-  - `tests/test_patch17_invariants.ts` (`testFillCallbackAppliesQueueBackPressure`)
-- `INV-SYNC-006`
-  - `tests/test_sync_lock_routing.ts`
-- `INV-SYNC-007`
-  - `tests/test_resync_invariants.ts` (Case 5)
-
-### Maintenance Runtime
-- `INV-MAINT-001`
-  - `tests/test_patch17_invariants.ts` (`testPipelineInFlightDefersMaintenance`)
-- `INV-MAINT-002`, `INV-MAINT-003`
-  - `tests/test_patch17_invariants.ts` (`testIllegalStateAbortResyncAndCooldown`)
-- `INV-MAINT-004`, `INV-MAINT-005`
-  - `tests/test_dust_rebalance_logic.ts`
-
-### Grid Structure
-- `INV-GRID-001`
-  - `modules/order/sync_engine.ts` (one-to-one mapping via `matchedGridOrderIds`)
-  - `tests/test_sync_logic.ts` (surplus order cancellation)
-- `INV-GRID-002`
-  - `modules/order/sync_engine.ts:804` (duplicate price level rejection)
-  - `modules/order/grid_reconcile.ts` (duplicate chain order cancel)
-- `INV-GRID-003`
-  - `tests/test_dust_rebalance_logic.ts` (`testInteriorDustWithDuplicatePriceLevel`, `testInteriorDustAdjacentGridLevelNotEligible`)
-
-### Reconcile
-- `INV-RECON-001`
-  - `modules/order/grid_reconcile.ts` (unconditional duplicate cancel)
-- `INV-RECON-002`
-  - `tests/test_patch17_invariants.ts` (`testRoleAssignmentBlocksOnChainSpreadConversion`)
-- `INV-RECON-003`
-  - `tests/test_patch17_invariants.ts` (`testExtremePlacementOrdering`)
-
-### Batch / Pipeline
-- `INV-BATCH-001`
-  - `tests/test_patch17_invariants.ts` (`testIllegalBatchAbortArmsMaintenanceCooldown`)
-- `INV-BATCH-002`
-  - `tests/test_patch17_invariants.ts` (`testSingleStaleCancelBatchUsesStaleOnlyFastPath`)
-- `INV-BATCH-003`
-  - `tests/test_patch17_invariants.ts` (`testCannotDeductTriggersRecoverySyncInsteadOfVirtualizing`)
-
-### Pipeline Signals
-- `INV-PIPE-001`
-  - `modules/order/utils/order.ts` (correction entry removal via finally)
-- `INV-PIPE-002`
-  - `modules/order/utils/system.ts` (try/catch wrapping grid divergence)
-
-### State / Lifecycle
-- `INV-STATE-001`, `INV-STATE-002`
-  - `tests/test_resync_invariants.ts` (Cases 1-4)
-- `INV-STATE-003`
-  - `tests/test_patch17_invariants.ts` (`testGridResizeRespectsBudgetAfterCap`)
-
-### Fund Registry
-- `INV-REG-001`, `INV-REG-002`
-  - `modules/fund_registry.ts`
-  - `modules/order/accounting.ts:534-583`
-
-### Subscriptions
-- `INV-SUB-001`
-  - `modules/bitshares-native/subscriptions.ts` (health watchdog)
-  - `tests/test_native_subscriptions.ts`
-
-### Broadcast
-- `INV-BROADCAST-001`, `INV-BROADCAST-002`
-  - `modules/dexbot_class.ts` (`_executeWithRetryOnUncertain`, `_reconcileAfterUncertainBroadcast`)
-
----
-
-## Review Checklist (Quick Use)
-
-For any change touching these subsystems, reviewers should verify:
-
-- **COW/Accounting**: preserves `INV-PROJ-002` for on-chain PARTIAL orders; avoids non-rotation size UPDATE leakage (`INV-REC-001`); keeps virtual/on-chain separation (`INV-ACC-001`); preserves atomic commit (`INV-COW-001`, `INV-COW-002`).
-- **Sync Engine**: does not reintroduce `newSizeInt <= 0` fast-path (`INV-SYNC-001`); does not add TTL-based refetch (`INV-SYNC-002`); orphan adoption checks price-level uniqueness (`INV-SYNC-004`).
-- **Maintenance**: pipeline signals are passed to `isPipelineEmpty` (`INV-MAINT-001`); illegal-state abort arms cooldown (`INV-MAINT-002/003`).
-- **Reconcile**: duplicate chain orders at same price are cancelled unconditionally (`INV-RECON-001`); no CREATE-based spread conversion of on-chain slots (`INV-RECON-002`).
-- **Batch**: stale-only cancel uses fast path without recovery sync (`INV-BATCH-002`); "cannot deduct" triggers sync, not virtualization (`INV-BATCH-003`).
-- **Are corresponding regression tests added/updated?**
-
 ## Change Policy
 
 - Any intentional invariant change must:
   - Update this document in the same PR/commit.
   - Include explicit rationale and risk note.
-  - Add or update regression tests linked in Test Mapping.
+  - Add or update regression tests in the relevant test files.

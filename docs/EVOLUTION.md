@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.0.7 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.0.8 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 1,670+ commits over ~7 active months
 - **Code Maturity**: Evolution from basic utilities to a ~58,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 200+ automated test files
-- **Releases**: 42 release entries (v0.1.0 to v1.0.7)
+- **Releases**: 43 release entries (v0.1.0 to v1.0.8)
 
 ---
 
@@ -65,6 +65,10 @@ Consolidated the market adapter with split data sources (Kibana, native API), AM
 **Jun 22**: Browser-safe surface enforcement completed with lazy require wrappers and storage adapter path fix. Credit runtime extended with `disallowedDealIds` filter for 1.22.x BitShares compatibility and `ratio`→`outputWeight` rename with backward-compat shim. Doc sweep across 15 files.
 
 **Jun 25**: DAEMON_ERRORS retry-path fix — `DaemonKeyStore` session-expiry retry never fired due to locally-hardcoded mismatch with canonical constants. Canonical error-code hardening — `DAEMON_CODES` added to `constants.ts` for `BROADCAST_DEADLINE`/`CREDENTIAL_DAEMON_UNAVAILABLE`, `MasterPasswordError.code` static property, replacing 12+ literal sites with single-source-of-truth references.
+
+**Jul 1–3**: v1.0.7 (hotfix) — subscription health watchdog, BROADCAST_DEADLINE graceful recovery (deadlock fix, bot-level retry, configurable daemon attempts) — 2 commits from v1.0.6.
+
+**Jul 5**: v1.0.8 — secondary pending-broadcasts deadlock fix (missed call site), market adapter log dedup in shared runtime, bot key resolution utilities, candle cache always-resolve. Comprehensive system invariants doc expansion with categorized prefixes (`INV-COW`, `INV-SYNC`, `INV-MAINT`, `INV-GRID`, `INV-RECON`, `INV-BATCH`, `INV-REG`, `INV-SUB`). 5 commits from v1.0.7.
 
 ---
 
@@ -179,6 +183,9 @@ Version display in unlock status, partial-fill stale-cache fix, rerun-hint corre
 ### v1.0.6 → v1.0.7 (2 commits)
 Subscription health watchdog for silent subscription death detection. BROADCAST_DEADLINE graceful recovery: deadlock fix (`fillLockAlreadyHeld:true`), bot-level retry with pair-mode double-publish guard, and configurable daemon broadcast retries (`CREDENTIAL_DAEMON_BROADCAST_RETRIES`).
 
+### v1.0.7 → v1.0.8 (5 commits)
+Secondary pending-broadcasts deadlock fix (missed call site). Market adapter log duplication in shared runtime (`stdio: 'ignore'`). Bot key resolution utilities extraction, `roundTo` browser error fix, 20 tests. Remove `--use-cached` flag, always resolve to candle cache. Comprehensive system invariants doc expansion with categorized prefixes across all subsystems.
+
 ---
 
 
@@ -227,7 +234,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 3, 2026 (v1.0.7)
-**Total Commits**: 1673
+**Last Updated**: July 5, 2026 (v1.0.8)
+**Total Commits**: 1677
 **Date Range**: December 2, 2025 - July 3, 2026 (ongoing)
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

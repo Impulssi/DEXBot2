@@ -123,7 +123,7 @@ function createMarketAdapterRuntime({
         const spawnedChild = spawnFn(Config.EXEC_PATH, nodeArgs, {
             cwd: root,
             env: buildEnv(),
-            stdio: 'inherit',
+            stdio: 'ignore',
         });
         child = spawnedChild;
         childExitPromise = waitForChildExit(spawnedChild).catch(() => 0).finally(() => {
