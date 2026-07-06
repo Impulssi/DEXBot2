@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.9] - 2026-07-06 - Trade PnL Analysis Tool & AMA Slope Tuning
+
+### 2026-07-06
+
+- **Feat**: add `analysis/trade_profitability.ts` — Kibana-driven FIFO/Sequential PnL analysis tool for any BitShares account. Fetches fill_order operations from kibana.bitshares.dev, classifies fills as buy/sell per asset pair, computes realized PnL via chronological FIFO matching. Paginated ES queries (search_after), on-chain asset precision resolution, CSV/JSON export (`879d7209`).
+- **Feat**: trade PnL metrics overhaul — sequential (LIFO) matching mode (default), 16 algo-trading metrics (win rate, profit factor, expectancy, Sharpe, Sortino, max drawdown, cycle timing, maker/taker ratio), flat-fee deduction (`BLOCKCHAIN_FEE_PER_FILL = 0.09652` BTS), net PnL with fee breakdown (`ab4a403d`).
+- **Chore**: reduce `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` from 0.085 to 0.08 — slightly more sensitive to trend, AMA channel reaches max influence more easily (`0ba19df5`).
+- **Docs**: expanded analysis/README.md with tool usage and methodology; updated docs/README.md, DEXBOT_COMPARISON.md, EVOLUTION.md for PnL tracking.
+- **Chore**: version bumped to 1.0.9 across all manifests.
+
 ## [1.0.8] - 2026-07-05 - System Invariants Expansion & Shared Runtime Fix
 
 ### 2026-07-05
