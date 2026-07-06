@@ -15,8 +15,7 @@ const { writeJSON } = require('../../modules/utils/fs_utils');
  *        Q2 — top 100 accounts by limit_order_cancel count
  *        Q3 — top 100 accounts by fill_order count
  *   2. Merge & pre-filter:
- *        creates ≥ MIN_CREATES  AND  cancel/create ratio ≥ 0.25
- *        (grid bots cancel ~100% of placed orders on each recalculation)
+ *        creates ≥ MIN_CREATES  (grid analysis determines DEXBot candidacy)
  *   3. Grid analysis (parallel, batches of 5):
  *        Fetch 200 raw orders per candidate → per-session geometric spacing test
  *   4. BitShares: resolve account IDs → names (batch db.get_objects call)
@@ -362,9 +361,9 @@ async function run() {
         accounts[b.key].fills = b.doc_count;
     }
 
-    // Pre-filter: must have creates ≥ minCreates AND meaningful cancel activity
+    // Pre-filter: must have creates ≥ minCreates (grid analysis determines DEXBot candidacy)
     const candidates: CandidateInfo[] = (Object.entries(accounts) as [string, AccountCounts][])
-        .filter(([, s]) => s.creates >= opts.minCreates && s.cancels >= Math.max(3, s.creates * 0.2))
+        .filter(([, s]) => s.creates >= opts.minCreates)
         .map(([id, s]) => ({
             id,
             creates: s.creates,
