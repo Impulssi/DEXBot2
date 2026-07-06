@@ -186,6 +186,9 @@ Subscription health watchdog for silent subscription death detection. BROADCAST_
 ### v1.0.7 → v1.0.8 (5 commits)
 Secondary pending-broadcasts deadlock fix (missed call site). Market adapter log duplication in shared runtime (`stdio: 'ignore'`). Bot key resolution utilities extraction, `roundTo` browser error fix, 20 tests. Remove `--use-cached` flag, always resolve to candle cache. Comprehensive system invariants doc expansion with categorized prefixes across all subsystems.
 
+### v1.0.8 → v1.0.9 (4 commits)
+Trade PnL analysis tool (`analysis/trade_profitability.ts`) — Kibana-driven FIFO/Sequential PnL with 16 algo-trading metrics. Reduced `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` from 0.085 to 0.08 for slightly more sensitive trend detection. Docs expanded for PnL tracking.
+
 ---
 
 
@@ -235,6 +238,6 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: July 6, 2026 (v1.0.9)
-**Total Commits**: 1682
+**Total Commits**: 1684
 **Date Range**: December 2, 2025 - July 6, 2026 (ongoing)
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

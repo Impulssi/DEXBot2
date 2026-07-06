@@ -844,7 +844,7 @@ let MARKET_ADAPTER = {
     // Lower values make the Kalman channel reach maximum influence more easily.
     // Higher values require a stronger move before the Kalman branch reaches full effect.
     // nob: kalS% (Kalman Max Slope %)
-    DYNAMIC_WEIGHT_KALMAN_MAX_SLOPE_PCT: 0.75,
+    DYNAMIC_WEIGHT_KALMAN_MAX_SLOPE_PCT: 0.8,
 
     // DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT: Ignore small AMA moves around flat price action.
     // Higher values create a larger neutral zone and reduce small trend reactions.
