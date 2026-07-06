@@ -752,7 +752,7 @@ Where:
 - Single hardcoded core strategy (boundary-crawl grid)
 - Extending core trading behavior requires modifying runtime modules
 - Market adapter (`market_adapter/`) provides real-time signal-driven parameter tuning: AMA center, dynamic weights, Kalman confirmation, ATR/regime dampening, and asymmetric bounds
-- `analysis/` tools provide AMA fitting, dynamic-weight research, derivative/Kalman signal research, volatility/regime analysis, and bot-parameter sweeps
+- `analysis/` tools provide AMA fitting, dynamic-weight research, derivative/Kalman signal research, volatility/regime analysis, bot-parameter sweeps, bot-activity queries (`bot_usage/`), and FIFO-based trade PnL analysis (`trade_profitability.ts`)
 - `claw/` exposes a separate automation and AI-consumption layer: profile reading, chain queries/actions, short MPA workflows, position health, runtime manifests, and skill/plugin artifacts
 
 ### Extensibility Comparison
@@ -764,7 +764,7 @@ Where:
 | **Strategy Template** | Yes | No |
 | **Community Strategy Sharing** | Yes (PyPI packages) | No |
 | **Runtime Parameter Tuning** | Via config/restart | MarketAdapter live snapshots/triggers |
-| **Analysis Tools** | No | Yes (AMA fitting, trend, volatility, regime, bot sweeps) |
+| **Analysis Tools** | No | Yes (AMA fitting, trend, volatility, regime, bot sweeps, bot activity, trade PnL) |
 | **Automation API Layer** | No dedicated API layer | Yes (Claw modules/scripts/skills) |
 | **Credit/MPA Tooling** | No | Yes |
 

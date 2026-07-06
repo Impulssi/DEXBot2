@@ -245,6 +245,51 @@ Details: [bot_fitting/README.md](bot_fitting/README.md)
 | `discover_bot_accounts.ts` | Discover DEXBot accounts on-chain |
 | `kibana_bot_queries.ts` | Kibana query helpers for bot activity |
 
+### Trade Profitability Analyzer (`trade_profitability.ts`)
+
+Fetches `fill_order` operations for a BitShares account from Kibana within a specified time range, then computes realized PnL via FIFO inventory tracking per asset pair.
+
+**Pipeline:** Kibana fill query → on-chain asset precision resolution → buy/sell classification → chronological FIFO matching → per-pair summary + optional per-match detail.
+
+```bash
+# Account by ID, last 7 days (default)
+tsx analysis/trade_profitability.ts 1.2.123456
+
+# Account by name with on-chain resolution
+tsx analysis/trade_profitability.ts "bbot5" --lookup --hours 720
+
+# Absolute window with asset filter
+tsx analysis/trade_profitability.ts 1.2.123456 \
+  --start 2026-07-01 --end 2026-07-07 --asset 1.3.3291
+
+# Export trade log and full analysis
+tsx analysis/trade_profitability.ts 1.2.123456 \
+  --hours 168 --csv trades.csv --json results.json
+```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start <iso>` | — | Start time (ISO 8601) |
+| `--end <iso>` | — | End time |
+| `--hours <n>` | `168` (7d) | Lookback hours (alternative to start/end) |
+| `--asset <id>` | all | Filter to one base asset ID |
+| `--lookup` | off | Resolve account name to 1.2.x ID via BitShares node |
+| `--node <url>` | `wss://dex.iobanker.com/ws` | BitShares node for account + asset resolution |
+| `--csv <file>` | — | Export chronologically sorted trade list |
+| `--json <file>` | — | Export full analysis with per-pair PnL data |
+| `--no-pnl-summary` | off | Skip per-order PnL detail, pair summary only |
+| `--verbose` | off | Print per-pair trade counts during processing |
+
+**Asset precision handling:**
+
+1. Assets listed in `KNOWN_PRECISIONS` (BTS, TWENTIX, XBTSX.*, HONEST.*, IOB.*, etc.) resolve instantly.
+2. Unknown assets are resolved on-chain via `get_assets` when `--node` is provided, with results cached at runtime.
+3. If no `--node` is given and an asset is unknown, the script errors immediately.
+
+**PnL methodology:** Trades within each pair are sorted chronologically (block number + operation index). Buys add lots to a FIFO inventory queue; sells consume the oldest lots first. Each match's PnL is `(sellPrice − buyPrice) × matchedAmount`, reported in quote-asset units and as a percentage of the buy price. The summary PnL% uses volume-weighted average prices from matched lots only. Unmatched sell volume (sells without a preceding buy in the window) is surfaced in the pair summary. The per-match detail table includes a Maker/Taker flag sourced from the blockchain operation. |
+
 ### `tradingview/`
 
 Generates a standalone TradingView-style HTML chart. See [tradingview/README.md](tradingview/README.md) for full documentation.
@@ -264,6 +309,7 @@ These npm scripts wrap common analysis runners:
 | Script | Command |
 |--------|---------|
 | `npm run analysis:tradingview` | `tsx analysis/tradingview/analyze_tradingview.ts` |
+| `npm run analysis:trade-pnl` | `tsx analysis/trade_profitability.ts` |
 | `npm run ama:chart:lp-local` | `tsx analysis/ama_fitting/generate_unified_comparison_chart.ts` |
 
 All accept `--` forwarded flags.
@@ -271,6 +317,9 @@ All accept `--` forwarded flags.
 ```bash
 # Bot-key shortcuts
 npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>
+
+# Trade PnL
+npm run analysis:trade-pnl -- 1.2.123456 --hours 720
 
 # File-based
 npm run analysis:tradingview -- --file market_adapter/data/market_adapter_<bot-key>_1h.json

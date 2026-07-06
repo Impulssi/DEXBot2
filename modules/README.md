@@ -140,7 +140,7 @@ External consumers — other parts of DEXBot2 interact with modules through thes
 
 - **`market_adapter/`** — the price adapter reads tuning constants from `constants.ts` and writes trigger files that `dexbot_maintenance_runtime.ts` picks up to decide when to regenerate the grid
 - **`claw/`** — the AI bridge layer reads bot profiles and uses the credential client to sign transactions on behalf of the decision loop
-- **`analysis/`** — research scripts reference constants and types to fit AMA parameters and generate charts
+- **`analysis/`** — research scripts and operational tools: AMA parameter fitting, trend/volatility/regime charting, bot parameter sweep backtests, bot activity queries, and FIFO-based trade PnL analysis
 
 ## Design Principles
 

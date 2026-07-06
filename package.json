@@ -25,6 +25,7 @@
     "analysis:tradingview": "tsx analysis/tradingview/analyze_tradingview.ts",
     "ama:chart:lp-local": "tsx analysis/ama_fitting/generate_unified_comparison_chart.ts",
     "analysis:derivatives": "tsx analysis/analyze_derivatives.ts",
+    "analysis:trade-pnl": "tsx analysis/trade_profitability.ts",
     "native:release-gates": "tsx scripts/native_release_gates.ts",
     "native:serial-snapshots": "tsx tests/test_native_serial_ops.ts",
     "native:ecc-invariants": "tsx tests/test_native_ecc.ts",

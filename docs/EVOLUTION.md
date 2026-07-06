@@ -225,7 +225,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 
 - **Web & Terminal UI**: Browser-based and TUI dashboards for monitoring and tuning
 - **Backtesting Engine**: Replay historical candles through `OrderManager`/COW via a `MemoryExchange` drop-in at the `bitshares_client` boundary
-- **Performance Analytics**: PnL tracking, grid efficiency metrics, HTML report generation
+- **Performance Analytics**: ✅ PnL tracking (`analysis/trade_profitability.ts`, July 2026); grid efficiency metrics and HTML report generation remain planned
 - **Monorepo Split**: Package into `@dexbot/core`, `@dexbot/bitshares`, `@dexbot/indicators` for parallelized builds
 - **Injectable Module Interfaces**: Dependency inversion at call boundaries for testability (no event bus)
 - **Database (SQLite) + Zod Validation**: Replace JSON persistence, validate blockchain objects at the client boundary
