@@ -159,7 +159,7 @@ All panels share aligned vertical time grid lines, and the bottom output panel s
 |------|-------|---------|---------|
 | **nz%** | 0–1 | 0.00 | Neutral zone: dead-band below which offset is forced to 0 |
 | **lb** | 1–32 | 9 | Logarithmic. Lookback bars for AMA slope calculation |
-| **amaS%** | 0.005–0.5 | 0.085 | Logarithmic. Gear ratio for average per-bar AMA slope saturation |
+| **amaS%** | 0.005–0.5 | 0.08 | Logarithmic. Gear ratio for average per-bar AMA slope saturation |
 | **kalS%** | 0.15–1.5 | 0.75 | Logarithmic. Gear ratio for Kalman composite saturation |
 | **clip%** | 0–55 | 10 | Percentile clip: filters extreme inputs (0 = off) |
 
