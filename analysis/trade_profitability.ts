@@ -6,7 +6,7 @@
  *
  * Fetches fill_order operations for a BitShares account from Kibana
  * within a specified time range, then analyzes profitability using
- * FIFO inventory tracking per asset pair.
+ * FIFO or sequential (LIFO) inventory tracking per asset pair.
  *
  * Usage:
  *   tsx analysis/trade_profitability.ts 1.2.3 --start 2025-01-01 --end 2025-06-01
@@ -17,6 +17,7 @@
  *   tsx analysis/trade_profitability.ts 1.2.3 --hours 168 --json results.json
  *   tsx analysis/trade_profitability.ts "account-name" --lookup
  *   tsx analysis/trade_profitability.ts 1.2.3 --hours 168 --no-pnl-summary
+ *   tsx analysis/trade_profitability.ts 1.2.3 --hours 168 --match-mode fifo
  */
 
 const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = require('../market_adapter/core/kibana_client');
@@ -25,6 +26,7 @@ const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = require('../market_adapter
 
 const OP_FILL_ORDER = 4;
 const BTS_ID = '1.3.0';
+const BLOCKCHAIN_FEE_PER_FILL = 0.09652; // BTS — flat blockchain operation fee (not market fee)
 
 interface AssetInfo {
     symbol: string;
@@ -140,6 +142,9 @@ interface RealizedPnl {
     amount: number;
     pnl: number;
     pnlPct: number;
+    feeBts: number;
+    pnlNet: number;
+    pnlNetPct: number;
     entryTime: string;
     exitTime: string;
     entryOrderId: string;
@@ -159,7 +164,8 @@ interface PairAnalysis {
     totalSellQuote: number;
     unmatchedSellBase: number;
     totalRealizedPnl: number;
-    totalRealizedPnlPct: number;
+    totalFees: number;
+    totalRealizedPnlNet: number;
     netPosition: number;
 }
 
@@ -170,7 +176,7 @@ function printHelp() {
 Usage: tsx analysis/trade_profitability.ts <accountId> [options]
 
 Analyzes filled orders for a BitShares account, computing realized PnL
-via FIFO inventory tracking.
+via FIFO or sequential (LIFO) inventory tracking.
 
 Arguments:
   accountId              BitShares account ID (1.2.x) or name (with --lookup)
@@ -185,6 +191,8 @@ Options:
   --csv <file>           Export trade list as CSV
   --json <file>          Export full analysis as JSON
   --no-pnl-summary       Skip per-order PnL breakdown, only show pair summary
+  --match-mode <mode>    Matching mode: sequential (default, LIFO) or fifo
+  --metrics              Print standard algo-trading metrics (Sharpe, profit factor, etc.)
   --verbose              Print extra debug info
   --help, -h             Show this help
 
@@ -192,7 +200,8 @@ Examples:
   tsx analysis/trade_profitability.ts 1.2.123456 --hours 720
   tsx analysis/trade_profitability.ts 1.2.123456 --start 2025-01-01 --end 2025-06-01
   tsx analysis/trade_profitability.ts "my-bot-account" --lookup --hours 168
-  tsx analysis/trade_profitability.ts 1.2.123456 --hours 720 --asset 1.3.113 --csv trades.csv`);
+  tsx analysis/trade_profitability.ts 1.2.123456 --hours 720 --asset 1.3.113 --csv trades.csv
+  tsx analysis/trade_profitability.ts 1.2.123456 --hours 720 --match-mode sequential`);
 }
 
 function parseArgs() {
@@ -213,6 +222,8 @@ function parseArgs() {
         csv: null,
         json: null,
         noPnlSummary: false,
+        matchMode: 'sequential',
+        metrics: false,
         verbose: false,
     };
 
@@ -227,7 +238,17 @@ function parseArgs() {
             case '--csv':          opts.csv      = args[++i]; break;
             case '--json':         opts.json     = args[++i]; break;
             case '--no-pnl-summary': opts.noPnlSummary = true; break;
-            case '--verbose':      opts.verbose  = true; break;
+            case '--match-mode': {
+                const m = args[++i];
+                if (m !== 'sequential' && m !== 'fifo') {
+                    console.error(`Invalid --match-mode: ${m} (expected: sequential | fifo)`);
+                    process.exit(1);
+                }
+                opts.matchMode = m;
+                break;
+            }
+            case '--metrics':        opts.metrics   = true; break;
+            case '--verbose':        opts.verbose   = true; break;
             default:
                 console.error(`Unknown option: ${args[i]}`);
                 process.exit(1);
@@ -448,9 +469,9 @@ function classifyFills(fills: FillRecord[], filterAsset: string | null): { trade
     return { trades, pairs };
 }
 
-// ─── PnL Calculation (FIFO) ──────────────────────────────────────────────────
+// ─── PnL Calculation (FIFO / Sequential) ─────────────────────────────────────
 
-function analyzePair(trades: TradeFill[]): PairAnalysis {
+function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'sequential'): PairAnalysis {
     const buys = trades.filter(t => t.direction === 'buy').sort((a, b) => a.sequence - b.sequence);
     const sells = trades.filter(t => t.direction === 'sell').sort((a, b) => a.sequence - b.sequence);
 
@@ -459,12 +480,14 @@ function analyzePair(trades: TradeFill[]): PairAnalysis {
     const totalBuyQuote = buys.reduce((s, t) => s + t.quoteAmount, 0);
     const totalSellQuote = sells.reduce((s, t) => s + t.quoteAmount, 0);
 
-    // Merge all trades chronologically: buys add to FIFO inventory,
-    // sells match against oldest lots
+    // Merge all trades chronologically.
+    // FIFO: buys add to queue, sells consume oldest lots (queue front).
+    // Sequential: buys add to queue, sells consume newest lots (queue back / LIFO).
     const all = [...trades].sort((a, b) => a.sequence - b.sequence);
     const inventory: InventoryLot[] = [];
     const realizedPnls: RealizedPnl[] = [];
     let unmatchedSellBase = 0;
+    let unmatchedFillCount = 0;
     let matchedBuyBase = 0;
     let matchedBuyQuote = 0;
 
@@ -478,13 +501,18 @@ function analyzePair(trades: TradeFill[]): PairAnalysis {
             });
         } else {
             let remaining = trade.baseAmount;
+            const hadInventory = inventory.length > 0;
 
             while (remaining > 0.00000001 && inventory.length > 0) {
-                const lot = inventory[0];
+                const lotIndex = matchMode === 'sequential' ? inventory.length - 1 : 0;
+                const lot = inventory[lotIndex];
                 const matched = Math.min(remaining, lot.amount);
 
                 const pnl = (trade.price - lot.price) * matched;
                 const pnlPct = lot.price > 0 ? ((trade.price - lot.price) / lot.price) * 100 : 0;
+                const feeBts = BLOCKCHAIN_FEE_PER_FILL * 2; // buy order_create + sell order_create
+                const pnlNet = pnl - feeBts;
+                const pnlNetPct = lot.price > 0 ? (pnlNet / (lot.price * matched)) * 100 : 0;
 
                 realizedPnls.push({
                     sellPrice: trade.price,
@@ -492,6 +520,9 @@ function analyzePair(trades: TradeFill[]): PairAnalysis {
                     amount: matched,
                     pnl,
                     pnlPct,
+                    feeBts,
+                    pnlNet,
+                    pnlNetPct,
                     entryTime: lot.time,
                     exitTime: trade.time,
                     entryOrderId: lot.entryOrderId,
@@ -505,26 +536,33 @@ function analyzePair(trades: TradeFill[]): PairAnalysis {
                 remaining -= matched;
 
                 if (lot.amount < 0.00000001) {
-                    inventory.shift();
+                    if (matchMode === 'sequential') {
+                        inventory.pop();
+                    } else {
+                        inventory.shift();
+                    }
                 }
             }
 
             if (remaining > 0.00000001) {
+                if (Math.abs(remaining - trade.baseAmount) < 0.00000001) {
+                    unmatchedFillCount++; // entire sell fill had no buy to match
+                }
                 unmatchedSellBase += remaining;
             }
         }
     }
 
+    // Add flat fee for 100% unmatched sell fills (each paid a real on-chain fee, no matched lot to carry it)
+    const unmatchedFee = unmatchedFillCount * BLOCKCHAIN_FEE_PER_FILL;
+    const totalFees = realizedPnls.reduce((s, r) => s + r.feeBts, 0) + unmatchedFee;
+    const totalRealizedPnl = realizedPnls.reduce((s, r) => s + r.pnl, 0);
+    const totalRealizedPnlNet = totalRealizedPnl - totalFees;
     const netPosition = totalBuyBase - totalSellBase;
     const avgBuyPrice = matchedBuyBase > 0 ? matchedBuyQuote / matchedBuyBase : 0;
     const avgSellPrice = realizedPnls.length > 0
         ? realizedPnls.reduce((s, r) => s + r.sellPrice * r.amount, 0) / realizedPnls.reduce((s, r) => s + r.amount, 0)
         : 0;
-    const totalRealizedPnl = realizedPnls.reduce((s, r) => s + r.pnl, 0);
-    const totalRealizedPnlPct = avgBuyPrice > 0
-        ? ((avgSellPrice - avgBuyPrice) / avgBuyPrice) * 100
-        : 0;
-
     const baseAsset = trades[0]?.baseAsset ?? '';
     const quoteAsset = trades[0]?.quoteAsset ?? '';
 
@@ -540,7 +578,8 @@ function analyzePair(trades: TradeFill[]): PairAnalysis {
         totalSellQuote,
         unmatchedSellBase,
         totalRealizedPnl,
-        totalRealizedPnlPct,
+        totalFees,
+        totalRealizedPnlNet,
         netPosition,
     };
 }
@@ -561,7 +600,7 @@ function fmtAsset(id: string): string {
     return assetSymbol(id);
 }
 
-function printSummary(pairs: PairAnalysis[], accountId: string, start: string, end: string) {
+function printSummary(pairs: PairAnalysis[], accountId: string, start: string, end: string, matchMode: 'fifo' | 'sequential' = 'sequential') {
     console.log('');
     console.log('═══════════════════════════════════════════════════════════════════════════════');
     console.log(' TRADE PROFITABILITY ANALYSIS');
@@ -569,6 +608,7 @@ function printSummary(pairs: PairAnalysis[], accountId: string, start: string, e
     console.log(` Account:  ${accountId}`);
     console.log(` Period:   ${start}  →  ${end}`);
     console.log(` Pairs:    ${pairs.length}`);
+    console.log(` Mode:     ${matchMode === 'sequential' ? 'sequential (LIFO)' : 'fifo'}`);
     console.log('');
 
     let grandTotalPnl = 0;
@@ -592,18 +632,19 @@ function printSummary(pairs: PairAnalysis[], accountId: string, start: string, e
         if (pair.unmatchedSellBase > 0.0001) {
             console.log(`    Unmatched:   ${fmt(pair.unmatchedSellBase, 4)} ${fmtAsset(pair.baseAsset)} sold without prior buy`);
         }
-        if (pair.totalRealizedPnl >= 0) {
-            console.log(`    Realized PnL: ${fmtAsset(pair.quoteAsset)} ${fmt(pair.totalRealizedPnl, 4)} (${fmtPct(pair.totalRealizedPnlPct)})`);
-        } else {
-            console.log(`    Realized PnL: ${fmtAsset(pair.quoteAsset)} ${fmt(pair.totalRealizedPnl, 4)} (${fmtPct(pair.totalRealizedPnlPct)})`);
-        }
+        console.log(`    Realized PnL: ${fmtAsset(pair.quoteAsset)} ${fmt(pair.totalRealizedPnl, 4)}`);
+        const feeLabel = pair.totalFees > 0 ? ` (fees: ${fmt(pair.totalFees, 4)} BTS)` : '';
+        console.log(`    Net PnL:      ${fmtAsset(pair.quoteAsset)} ${fmt(pair.totalRealizedPnlNet, 4)}${feeLabel}`);
         console.log('');
     }
 
     // Grand total
     if (pairs.length > 1) {
+        const grandFees = pairs.reduce((s, p) => s + p.totalFees, 0);
+        const grandNet = pairs.reduce((s, p) => s + p.totalRealizedPnlNet, 0);
         console.log(` ── TOTAL`);
         console.log(`    Realized PnL: ${fmt(grandTotalPnl, 4)} across ${pairs.length} pairs`);
+        console.log(`    Net PnL:      ${fmt(grandNet, 4)} (fees: ${fmt(grandFees, 4)} BTS)`);
         console.log(`    Volume:       ${fmt(grandTotalVolume, 4)}`);
         console.log('');
     }
@@ -615,10 +656,10 @@ function printPnlDetail(pairs: PairAnalysis[]) {
 
         const pairLabel = `${fmtAsset(pair.baseAsset)}/${fmtAsset(pair.quoteAsset)}`;
         console.log('');
-        console.log(` ── ${pairLabel} — Realized PnL Detail (FIFO)`);
+        console.log(` ── ${pairLabel} — Realized PnL Detail`);
         console.log('');
 
-        const hdr = ' #   Buy Price    Sell Price   Amount    PnL         PnL%      Maker  Entry Time              Exit Time';
+        const hdr = ' #   Buy Price    Sell Price   Amount    PnL         PnL%      FeeBTS   Net PnL     Net%     Maker  Entry Time              Exit Time';
         console.log(hdr);
         console.log(' ' + '─'.repeat(hdr.length - 1));
 
@@ -630,11 +671,233 @@ function printPnlDetail(pairs: PairAnalysis[]) {
             const amt = fmt(r.amount, 4).padStart(9);
             const pnlStr = fmt(r.pnl, 6).padStart(9);
             const pctStr = fmtPct(r.pnlPct).padStart(8);
+            const feeStr = fmt(r.feeBts, 4).padStart(8);
+            const netStr = fmt(r.pnlNet, 6).padStart(10);
+            const netPctStr = fmtPct(r.pnlNetPct).padStart(8);
             const mk = r.isMaker ? '  M ' : '  T ';
             const et = (r.entryTime || '').slice(0, 22).padEnd(22);
             const xt = (r.exitTime || '').slice(0, 22).padEnd(22);
-            console.log(` ${idx}  ${bp}  ${sp}  ${amt}  ${pnlStr}  ${pctStr}  ${mk}  ${et}  ${xt}`);
+            console.log(` ${idx}  ${bp}  ${sp}  ${amt}  ${pnlStr}  ${pctStr}  ${feeStr}  ${netStr}  ${netPctStr}  ${mk}  ${et}  ${xt}`);
         }
+        console.log('');
+    }
+}
+
+// ─── Performance Metrics ──────────────────────────────────────────────────────
+
+interface TradingMetrics {
+    totalLots: number;
+    winRate: number;
+    profitFactor: number;
+    avgWin: number;
+    avgLoss: number;
+    avgWinLossRatio: number;
+    expectancyBts: number;
+    expectancyPct: number;
+    expectancyR: number;
+    netExpectancyBts: number;
+    sharpe: number;
+    sortino: number;
+    maxConsecWins: number;
+    maxConsecLosses: number;
+    avgHoursPerCycle: number;
+    makerRatioCloses: number;
+    bestTradePct: number;
+    worstTradePct: number;
+    mddPct: number;
+    medianPnlPct: number;
+    p25PnlPct: number;
+    p75PnlPct: number;
+    stdPnlPct: number;
+}
+
+function percentile(sorted: number[], p: number): number {
+    const i = Math.floor(sorted.length * p / 100);
+    return sorted[Math.min(i, sorted.length - 1)];
+}
+
+function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): TradingMetrics {
+    const pnls = pair.realizedPnls;
+    const total = pnls.length;
+    if (total === 0) {
+        return {
+            totalLots: 0, winRate: 0, profitFactor: 0,
+            avgWin: 0, avgLoss: 0, avgWinLossRatio: 0,
+            expectancyBts: 0, expectancyPct: 0, expectancyR: 0,
+            netExpectancyBts: 0,
+            sharpe: 0, sortino: 0,
+            maxConsecWins: 0, maxConsecLosses: 0,
+            avgHoursPerCycle: 0, makerRatioCloses: 0,
+            bestTradePct: 0, worstTradePct: 0,
+            mddPct: 0,
+            medianPnlPct: 0, p25PnlPct: 0, p75PnlPct: 0, stdPnlPct: 0,
+        };
+    }
+
+    const wins = pnls.filter(r => r.pnl > 0);
+    const losses = pnls.filter(r => r.pnl < 0);
+    const winRate = wins.length / total;
+    const makerCount = pnls.filter(r => r.isMaker).length;
+
+    const grossProfit = wins.reduce((s, r) => s + r.pnl, 0);
+    const grossLoss = Math.abs(losses.reduce((s, r) => s + r.pnl, 0));
+    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
+
+    const avgWin = wins.length > 0 ? grossProfit / wins.length : 0;
+    const avgLoss = losses.length > 0 ? losses.reduce((s, r) => s + r.pnl, 0) / losses.length : 0;
+
+    const avgWinPct = wins.length > 0 ? wins.reduce((s, r) => s + r.pnlPct, 0) / wins.length : 0;
+    const avgLossPct = losses.length > 0 ? losses.reduce((s, r) => s + r.pnlPct, 0) / losses.length : 0;
+
+    const avgWinLossRatio = avgLoss !== 0 ? avgWin / Math.abs(avgLoss) : avgWin > 0 ? Infinity : 0;
+
+    const expectancyBts = (winRate * avgWin) + ((1 - winRate) * avgLoss);
+    const expectancyPct = (winRate * avgWinPct) + ((1 - winRate) * avgLossPct);
+    const rMultiple = Math.abs(avgLoss);
+    const expectancyR = rMultiple > 0
+        ? winRate * (avgWin / rMultiple) - (1 - winRate)
+        : Infinity;
+
+    const netExpectancyBts = pair.totalRealizedPnlNet / total;
+
+    // Returns for Sharpe/Sortino — use gross PnL% (fee is flat and negligible at typical trade sizes)
+    const returns = pnls.map(r => r.pnlPct);
+    const meanRet = returns.reduce((s, v) => s + v, 0) / returns.length;
+    const n = returns.length;
+
+    // Sample standard deviation (n-1)
+    const variance = n > 1 ? returns.reduce((s, v) => s + (v - meanRet) ** 2, 0) / (n - 1) : 0;
+    const stdRet = Math.sqrt(variance);
+
+    // Winsorize at 1st/99th pct for outlier robustness
+    const sorted = [...returns].sort((a, b) => a - b);
+    const p1 = percentile(sorted, 1);
+    const p99 = percentile(sorted, 99);
+    const clipped = returns.map(v => Math.max(p1, Math.min(p99, v)));
+    const clippedMean = clipped.reduce((s, v) => s + v, 0) / clipped.length;
+    const clippedVar = n > 1 ? clipped.reduce((s, v) => s + (v - clippedMean) ** 2, 0) / (n - 1) : 0;
+    const clippedStd = Math.sqrt(clippedVar);
+
+    // Annualized Sharpe: winsorized mean/std * sqrt(8760 / avg cycle hours)
+    let totalHours = 0;
+    let hourCount = 0;
+    for (const r of pnls) {
+        const entry = new Date(r.entryTime).getTime();
+        const exit = new Date(r.exitTime).getTime();
+        if (!isNaN(entry) && !isNaN(exit) && exit > entry) {
+            totalHours += (exit - entry) / 3600000;
+            hourCount++;
+        }
+    }
+    const avgHoursPerCycle = hourCount > 0 ? totalHours / hourCount : 1;
+    const annFactor = Math.sqrt(8760 / avgHoursPerCycle);
+    const sharpe = clippedStd > 0 ? (clippedMean / clippedStd) * annFactor : 0;
+
+    // Sortino: winsorized mean / downside deviation (uses count of negative returns, not full sample)
+    const negatives = clipped.filter(v => v < 0);
+    const dn = negatives.length;
+    const downsideVar = dn > 1 ? negatives.reduce((s, v) => s + v * v, 0) / (dn - 1) : 0;
+    const downsideStd = Math.sqrt(downsideVar);
+    const sortino = downsideStd > 0 ? (clippedMean / downsideStd) * annFactor : 0;
+
+    // Max consecutive wins / losses (by chronological order)
+    let consecW = 0, consecL = 0;
+    let maxW = 0, maxL = 0;
+    for (const r of pnls) {
+        if (r.pnl > 0) { consecW++; consecL = 0; maxW = Math.max(maxW, consecW); }
+        else if (r.pnl < 0) { consecL++; consecW = 0; maxL = Math.max(maxL, consecL); }
+        else { consecW = 0; consecL = 0; }
+    }
+
+    // ─── Max Drawdown (equity curve from chronological net PnL) ─────────
+    const chronological = [...pnls].sort((a, b) =>
+        a.exitTime < b.exitTime ? -1 : a.exitTime > b.exitTime ? 1 : 0
+    );
+    let equity = 0, peak = 0, mddPct = 0;
+    for (const r of chronological) {
+        equity += r.pnlNet;
+        if (equity > peak) peak = equity;
+        const dd = peak > 0 ? (equity - peak) / peak : 0;
+        if (dd < mddPct) mddPct = dd;
+    }
+    mddPct *= 100;
+
+    // Payoff distribution stats
+    const pnlPcts = pnls.map(r => r.pnlPct).sort((a, b) => a - b);
+    const medianPnlPct = percentile(pnlPcts, 50);
+    const p25PnlPct = percentile(pnlPcts, 25);
+    const p75PnlPct = percentile(pnlPcts, 75);
+    const stdPnlPct = stdRet;
+
+    const bestTradePct = Math.max(...pnlPcts);
+    const worstTradePct = Math.min(...pnlPcts);
+
+    return {
+        totalLots: total,
+        winRate,
+        profitFactor,
+        avgWin,
+        avgLoss,
+        avgWinLossRatio,
+        expectancyBts,
+        expectancyPct,
+        expectancyR,
+        netExpectancyBts,
+        sharpe,
+        sortino,
+        maxConsecWins: maxW,
+        maxConsecLosses: maxL,
+        avgHoursPerCycle,
+        makerRatioCloses: makerCount / total,
+        bestTradePct,
+        worstTradePct,
+        mddPct,
+        medianPnlPct,
+        p25PnlPct,
+        p75PnlPct,
+        stdPnlPct,
+    };
+}
+
+function printMetrics(pairs: PairAnalysis[], periodHours: number = 8760) {
+    for (const pair of pairs) {
+        if (pair.realizedPnls.length === 0) continue;
+
+        const m = computeMetrics(pair, periodHours);
+        const pairLabel = `${fmtAsset(pair.baseAsset)}/${fmtAsset(pair.quoteAsset)}`;
+
+        console.log('');
+        console.log(` ── ${pairLabel} — Performance Metrics`);
+        console.log('');
+        console.log(`  Win Rate:              ${(m.winRate * 100).toFixed(1)}%`);
+        console.log(`  Profit Factor:         ${m.profitFactor === Infinity ? '∞' : m.profitFactor.toFixed(2)}`);
+        console.log(`  Avg Win / Avg Loss:    ${m.avgWinLossRatio === Infinity ? '∞' : m.avgWinLossRatio.toFixed(2)}`);
+        console.log(`  Expectancy (gross):    ${fmt(m.expectancyBts, 4)} BTS (${fmtPct(m.expectancyPct)}) per trade`);
+        const rDisplay = m.expectancyR === Infinity ? '∞' : m.expectancyR.toFixed(3) + 'R';
+        console.log(`  Expectancy (R):        ${rDisplay}`);
+        console.log(`  Expectancy (net):      ${fmt(m.netExpectancyBts, 4)} BTS per trade`);
+        console.log(`  Sharpe (ann, win):     ${m.sharpe.toFixed(2)}`);
+        console.log(`  Sortino (ann, win):    ${m.sortino.toFixed(2)}`);
+        console.log(`  Max Drawdown:          ${fmtPct(m.mddPct)}`);
+        console.log(`  Max Consec Wins:       ${m.maxConsecWins}  /  Losses: ${m.maxConsecLosses}`);
+        console.log(`  Avg Cycle Time:        ${m.avgHoursPerCycle.toFixed(1)} hours`);
+        console.log(`  Maker / Taker (cls):   ${(m.makerRatioCloses * 100).toFixed(1)}% / ${((1 - m.makerRatioCloses) * 100).toFixed(1)}%`);
+        console.log(`  Median PnL:            ${fmtPct(m.medianPnlPct)}`);
+        console.log(`  P25 / P75:             ${fmtPct(m.p25PnlPct)} / ${fmtPct(m.p75PnlPct)}`);
+        console.log(`  Std PnL:               ${fmtPct(m.stdPnlPct)}`);
+        console.log(`  Best / Worst Trade:    ${fmtPct(m.bestTradePct)} / ${fmtPct(m.worstTradePct)}`);
+        console.log('');
+    }
+
+    // Grand-total rollup for multi-pair accounts
+    if (pairs.length > 1) {
+        const totalLots = pairs.reduce((s, p) => s + p.realizedPnls.length, 0);
+        const totalNet = pairs.reduce((s, p) => s + p.totalRealizedPnlNet, 0);
+        const totalBuyQuote = pairs.reduce((s, p) => s + p.totalBuyQuote, 0);
+        const totalFees = pairs.reduce((s, p) => s + p.totalFees, 0);
+        console.log(` ── TOTAL (${pairs.length} pairs)`);
+        console.log(`    Lots:      ${totalLots}`);
+        console.log(`    Net PnL:   ${fmt(totalNet, 4)} BTS  (fees: ${fmt(totalFees, 4)} BTS)`);
         console.log('');
     }
 }
@@ -682,9 +945,15 @@ function exportJson(accountId: string, start: string, end: string, pairs: PairAn
                 totalSellQuote: p.totalSellQuote,
                 netPosition: p.netPosition,
                 totalRealizedPnl: p.totalRealizedPnl,
-                totalRealizedPnlPct: p.totalRealizedPnlPct,
+                totalFees: p.totalFees,
+                totalRealizedPnlNet: p.totalRealizedPnlNet,
             },
-            realizedPnls: p.realizedPnls,
+            realizedPnls: p.realizedPnls.map(r => ({
+                ...r,
+                feeBts: r.feeBts,
+                pnlNet: r.pnlNet,
+                pnlNetPct: r.pnlNetPct,
+            })),
             totalBuys: p.buys.length,
             totalSells: p.sells.length,
         })),
@@ -774,7 +1043,7 @@ async function run() {
 
     const analyses: PairAnalysis[] = [];
     for (const [key, pairTrades] of pairMap) {
-        const analysis = analyzePair(pairTrades);
+        const analysis = analyzePair(pairTrades, opts.matchMode);
         analyses.push(analysis);
 
         if (opts.verbose) {
@@ -787,10 +1056,15 @@ async function run() {
     analyses.sort((a, b) => (b.totalBuyQuote + b.totalSellQuote) - (a.totalBuyQuote + a.totalSellQuote));
 
     // Output: summaries → grand total → per-match detail
-    printSummary(analyses, accountId, gte, lte);
+    printSummary(analyses, accountId, gte, lte, opts.matchMode);
 
     if (!opts.noPnlSummary) {
         printPnlDetail(analyses);
+    }
+
+    const periodHours = (new Date(lte).getTime() - new Date(gte).getTime()) / 3600000;
+    if (opts.metrics) {
+        printMetrics(analyses, periodHours);
     }
 
     if (opts.csv) {

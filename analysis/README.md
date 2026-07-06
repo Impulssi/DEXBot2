@@ -247,9 +247,9 @@ Details: [bot_fitting/README.md](bot_fitting/README.md)
 
 ### Trade Profitability Analyzer (`trade_profitability.ts`)
 
-Fetches `fill_order` operations for a BitShares account from Kibana within a specified time range, then computes realized PnL via FIFO inventory tracking per asset pair.
+Fetches `fill_order` operations for a BitShares account from Kibana within a specified time range, then computes realized PnL via sequential (LIFO) or FIFO inventory tracking per asset pair.
 
-**Pipeline:** Kibana fill query → on-chain asset precision resolution → buy/sell classification → chronological FIFO matching → per-pair summary + optional per-match detail.
+**Pipeline:** Kibana fill query → on-chain asset precision resolution → buy/sell classification → chronological matching (sequential LIFO by default) → per-pair summary + optional per-match detail.
 
 ```bash
 # Account by ID, last 7 days (default)
@@ -265,6 +265,10 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 # Export trade log and full analysis
 tsx analysis/trade_profitability.ts 1.2.123456 \
   --hours 168 --csv trades.csv --json results.json
+
+# Conservative accounting (FIFO)
+tsx analysis/trade_profitability.ts 1.2.123456 \
+  --hours 168 --match-mode fifo
 ```
 
 **Options:**
@@ -279,6 +283,7 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 | `--node <url>` | `wss://dex.iobanker.com/ws` | BitShares node for account + asset resolution |
 | `--csv <file>` | — | Export chronologically sorted trade list |
 | `--json <file>` | — | Export full analysis with per-pair PnL data |
+| `--match-mode <mode>` | `sequential` | Matching mode: `sequential` (LIFO, default) or `fifo` |
 | `--no-pnl-summary` | off | Skip per-order PnL detail, pair summary only |
 | `--verbose` | off | Print per-pair trade counts during processing |
 
@@ -288,7 +293,7 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 2. Unknown assets are resolved on-chain via `get_assets` when `--node` is provided, with results cached at runtime.
 3. If no `--node` is given and an asset is unknown, the script errors immediately.
 
-**PnL methodology:** Trades within each pair are sorted chronologically (block number + operation index). Buys add lots to a FIFO inventory queue; sells consume the oldest lots first. Each match's PnL is `(sellPrice − buyPrice) × matchedAmount`, reported in quote-asset units and as a percentage of the buy price. The summary PnL% uses volume-weighted average prices from matched lots only. Unmatched sell volume (sells without a preceding buy in the window) is surfaced in the pair summary. The per-match detail table includes a Maker/Taker flag sourced from the blockchain operation. |
+**PnL methodology:** Trades within each pair are sorted chronologically (block number + operation index). Buys add lots to an inventory queue. In sequential (LIFO) mode (default), sells consume the newest lots first — matching the actual grid cycle where a buy at one level is sold at the next tick up. In FIFO mode (`--match-mode fifo`), sells consume the oldest lots first, reflecting the real cost of carrying inventory through a trend. Each match's PnL is `(sellPrice − buyPrice) × matchedAmount`, reported in quote-asset units and as a percentage of the buy price. The summary PnL% uses volume-weighted average prices from matched lots only. Unmatched sell volume (sells without a preceding buy in the window) is surfaced in the pair summary. The per-match detail table includes a Maker/Taker flag sourced from the blockchain operation. |
 
 ### `tradingview/`
 
