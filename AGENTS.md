@@ -165,34 +165,38 @@ File: <path>
 ### Claw Integration (`claw/`)
 - `claw/index.ts` - Main export combining all modules
 - `claw/skills/` - Agent skill packages (bitshares-guide, launcher-ops, margin-trading, etc.)
-- `claw/modules/claw_bridge.ts` - JSON bridge for runtime integration
-- `claw/modules/claw_catalog.ts` - Command catalog for bridge dispatch
+- `claw/modules/bitshares_client.ts` / `chain_queries.ts` / `chain_broadcast.ts` / `chain_actions.ts` - Core BitShares runtime (reads, writes, broadcast)
+- `claw/modules/claw_bridge.ts` / `claw_catalog.ts` - JSON bridge + command dispatch
 - `claw/modules/claw_manifest.ts` - Runtime manifest
 - `claw/modules/claw_infra.ts` - Shared runtime infrastructure
-- `claw/modules/bitshares_client.ts` - BitShares connection, queries, broadcast
-- `claw/modules/chain_actions.ts` - High-level chain operations (limit orders, MPA, credit)
+- `claw/modules/claw_launcher.ts` - Launcher orchestration (PM2, Docker)
+- `claw/modules/dexbot_bridge.ts` / `dexbot_profiles.ts` / `dexbot_credential_client.ts` - DEXBot2 integration bridge
 - `claw/modules/credit_runtime_adapter.ts` - Credit runtime lifecycle bridge
-- `claw/modules/decision_loop.ts` - Position evaluation orchestration
-- `claw/modules/dexbot_profiles.ts` - DEXBot2 profile reader
-- `claw/modules/dexbot_credential_client.ts` - Credential daemon client
+- `claw/modules/short_mpa_strategy.ts` / `decision_loop.ts` - High-level strategy
+- `claw/modules/position_manager.ts` / `position_health.ts` / `position_discovery.ts` - Position tracking and health
 - `claw/modules/feed_price_source.ts` / `kibana_price_source.ts` - Price sources
-- `claw/modules/honest_ecosystem.ts` - HONEST asset helpers
-- `claw/modules/position_manager.ts` - Position tracking
-- `claw/modules/position_health.ts` - Position health monitoring
-- `claw/modules/short_mpa_strategy.ts` - Short MPA workflow
+- `claw/modules/honest_ecosystem.ts` / `liquidity_pools.ts` - HONEST asset helpers
 
 ### Vendored Libraries
 - `analysis/uplot/` - uPlot v1.6.32 charting library (vendored, no CDN dependency)
 
 ### Analysis Tools (`analysis/`)
 Research scripts for parameter tuning — output interactive HTML charts, not used in production.
-- `analysis/README.md` - top-level index and folder map
-- `analyze_dynamic_weight.ts` / `trend_detection/dynamic_weight_chart_generator.ts` - Dynamic weight research
+See `analysis/README.md` for full doc and usage examples.
+- `analyze_dynamic_weight.ts` / `trend_detection/dynamic_weight_chart_generator.ts` - Dynamic weight research (AMA + Kalman + Hurst/PE)
+- `analyze_volatility.ts` / `trend_detection/volatility_chart_generator.ts` - ATR-based symmetric volatility penalty
+- `analyze_regime.ts` / `trend_detection/regime_chart_generator.ts` - Hurst + Permutation Entropy regime classification
+- `analyze_regime_windows.ts` - Alternate Hurst/PE window configuration testing
+- `analyze_kalman.ts` / `trend_detection/kalman_chart_generator.ts` - Kalman velocity/displacement trend state
 - `analyze_derivatives.ts` / `trend_detection/derivative_analyzer.ts` - SMA/MACD/RSI signal analysis
-- `trend_detection/kalman_trend_analyzer.ts` - Kalman filter trend analysis
-- `ama_fitting/optimizer_high_resolution.ts` - AMA parameter optimization
-- `analysis/price_sources.ts` - Unified candle source abstraction
-- Docs in `analysis/trend_detection/`
+- `analyze_risk_profile.ts` - Inventory risk divergence quantile measurement
+- `analyze_trade_heatmap.ts` - 2D trade volume heatmap
+- `trade_profitability.ts` - Trade PnL from Kibana fill data (LIFO/FIFO)
+- `amafitting/` - AMA parameter fitting (optimizer, LP fetch, convergence calibration)
+- `bot_fitting/` - Grid parameter sweep backtests for AMA winners
+- `tradingview/` - Standalone TradingView-style HTML chart exporter
+- `bot_usage/` - On-chain bot discovery and Kibana query helpers
+- `trend_detection/` - Kalman, Hurst, PE analyzers and tests (see trend_detection READMEs)
 
 ### Testing
 - `tests/` - Comprehensive test suite (unit, integration, scenario tests)
