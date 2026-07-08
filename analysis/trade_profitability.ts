@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 'use strict';
 
+import fs from 'node:fs';
+import KC from '../market_adapter/core/kibana_client';
+import C from '../modules/constants';
+
+const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = KC;
+
 /**
  * TRADE PROFITABILITY ANALYZER
  *
@@ -20,13 +26,11 @@
  *   tsx analysis/trade_profitability.ts 1.2.3 --hours 168 --match-mode fifo
  */
 
-const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = require('../market_adapter/core/kibana_client');
-
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const OP_FILL_ORDER = 4;
 const BTS_ID = '1.3.0';
-const BLOCKCHAIN_FEE_PER_FILL = 0.09652; // BTS — flat blockchain operation fee (not market fee)
+let BLOCKCHAIN_FEE_PER_FILL = 0.09652; // BTS — flat blockchain operation fee (not market fee); override with --fee-per-order
 
 interface AssetInfo {
     symbol: string;
@@ -87,14 +91,14 @@ function assetSymbol(id: string): string {
 function assetPrec(id: string): number | undefined {
     return ASSETS[id]?.precision ?? resolvedPrecisions[id];
 }
-function getPrec(id: string): number {
-    const p = assetPrec(id);
-    if (p === undefined) throw new Error(`Unknown precision for asset ${id}. Use --node to enable on-chain lookup.`);
-    return p;
+function getPrec(id: string): number | undefined {
+    return assetPrec(id);
 }
 
 function toReal(amount: number, assetId: string): number {
-    return amount / Math.pow(10, getPrec(assetId));
+    const p = getPrec(assetId);
+    if (p === undefined) return NaN;
+    return amount / Math.pow(10, p);
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -189,11 +193,12 @@ Options:
   --hours <n>            Lookback hours from now (alternative to --start/--end)
   --asset <assetId>      Filter to one base asset (e.g. 1.3.113 for bitUSD)
   --lookup               Resolve account name to ID via BitShares node
-  --node <url>           BitShares node URL (default: wss://dex.iobanker.com/ws)
+  --node <url>           BitShares node URL (default: first healthy from built-in pool)
   --csv <file>           Export trade list as CSV
   --json <file>          Export full analysis as JSON
   --trades               Show per-order PnL detail (hidden by default)
   --match-mode <mode>    Matching mode: sequential (default, LIFO) or fifo
+  --fee-per-order <bts>  Blockchain fee per limit_order_create op in BTS (default: 0.09652)
   --verbose              Print extra debug info
   --help, -h             Show this help
 
@@ -219,12 +224,13 @@ function parseArgs() {
         end: null,
         asset: null,
         lookup: false,
-        node: 'wss://dex.iobanker.com/ws',
+        node: C.NODE_MANAGEMENT.DEFAULT_NODES[0],
         csv: null,
         json: null,
         matchMode: 'sequential',
         showPnlDetail: false,
         verbose: false,
+        feePerOrder: BLOCKCHAIN_FEE_PER_FILL,
     };
 
     for (let i = 1; i < args.length; i++) {
@@ -238,6 +244,7 @@ function parseArgs() {
             case '--csv':          opts.csv      = args[++i]; break;
             case '--json':         opts.json     = args[++i]; break;
             case '--trades':         opts.showPnlDetail  = true; break;
+            case '--fee-per-order':  opts.feePerOrder = parseFloat(args[++i]); break;
             case '--match-mode': {
                 const m = args[++i];
                 if (m !== 'sequential' && m !== 'fifo') {
@@ -264,16 +271,14 @@ function parseArgs() {
 // ─── Account name resolution ─────────────────────────────────────────────────
 
 async function resolveAccountId(name: string, nodeUrl: string): Promise<string | null> {
-    const { createReadOnlyClient } = require('../modules/bitshares-native');
+    const mod: any = await import('../modules/bitshares-native/index.js');
+    const { createReadOnlyClient } = mod.default;
     const client = createReadOnlyClient({ nodes: [nodeUrl] });
-    // Suppress transport INFO logs during ephemeral connection
+    // Suppress transport INFO logs during ephemeral connection:
     // bitshares-native transport logger (new Logger('Transport')) writes
-    // "[timestamp] [INFO] [Transport] ..." — silence that, but not other [INFO] output.
-    const origLog = console.log;
-    console.log = (msg?: any, ...args: any[]) => {
-        if (typeof msg === 'string' && /\b\[INFO\]\s*\[Transport\]/.test(msg)) return;
-        origLog.call(console, msg, ...args);
-    };
+    // "[timestamp] [INFO] [Transport] ..." — silence by raising log level.
+    const prevLevel = process.env.LOG_LEVEL;
+    process.env.LOG_LEVEL = 'warn';
     try {
         await client.connect();
         const accounts = await client.db('lookup_account_names', [[name]]);
@@ -286,7 +291,7 @@ async function resolveAccountId(name: string, nodeUrl: string): Promise<string |
         return null;
     } finally {
         try { client.disconnect(); } catch (_) {}
-        console.log = origLog;
+        process.env.LOG_LEVEL = prevLevel;
     }
 }
 
@@ -300,22 +305,18 @@ async function resolveAssetPrecisions(fills: FillRecord[], nodeUrl: string | nul
     const unknownIds = new Set<string>();
     for (const f of fills) {
         for (const id of [f.pays.asset_id, f.receives.asset_id]) {
-            if (id !== '1.3.0' && !(id in ASSETS) && !(id in resolvedPrecisions)) {
+            if (id !== BTS_ID && !(id in ASSETS) && !(id in resolvedPrecisions)) {
                 unknownIds.add(id);
             }
         }
     }
-    if (unknownIds.size === 0) return;
-
-    if (!nodeUrl) {
-        console.error(`  [fatal] ${unknownIds.size} unknown asset(s): ${[...unknownIds].join(', ')}. Pass --node <url> to enable on-chain resolution.`);
-        process.exit(1);
-    }
+    if (unknownIds.size === 0 || !nodeUrl) return;
 
     const ids = [...unknownIds];
     console.log(`  Resolving ${ids.length} unknown asset(s) from blockchain...`);
 
-    const { createReadOnlyClient } = require('../modules/bitshares-native');
+    const mod: any = await import('../modules/bitshares-native/index.js');
+    const { createReadOnlyClient } = mod.default;
     const client = createReadOnlyClient({ nodes: [nodeUrl] });
     try {
         await client.connect();
@@ -328,15 +329,12 @@ async function resolveAssetPrecisions(fills: FillRecord[], nodeUrl: string | nul
                 }
             }
         }
-        for (const id of ids) {
-            if (!(id in resolvedPrecisions)) {
-                console.error(`  [fatal] Asset ${id} not found on chain.`);
-                process.exit(1);
-            }
+        const missing = ids.filter(id => !(id in resolvedPrecisions));
+        if (missing.length > 0) {
+            console.warn(`  [warn] ${missing.length} asset(s) not found on chain: ${missing.join(', ')}. Fills referencing them will be skipped.`);
         }
     } catch (e: any) {
-        console.error(`  [fatal] Asset resolution failed: ${e.message}`);
-        process.exit(1);
+        console.warn(`  [warn] Asset resolution failed: ${e.message}. Fills with unknown assets will be skipped.`);
     } finally {
         try { client.disconnect(); } catch (_) {}
     }
@@ -384,7 +382,7 @@ async function fetchAllFills(config: any, accountId: string, gte: string, lte: s
         const query = buildFillQuery(accountId, gte, lte, pageSize);
         if (searchAfter) (query as any).search_after = searchAfter;
 
-        const result = await kibanaSearch(cfg, query);
+        const result: any = await kibanaSearch(cfg, query);
         const hits = result?.hits?.hits ?? [];
         if (!hits.length) break;
 
@@ -419,6 +417,7 @@ async function fetchAllFills(config: any, accountId: string, gte: string, lte: s
 function classifyFills(fills: FillRecord[], filterAsset: string | null): { trades: TradeFill[]; pairs: Set<string> } {
     const trades: TradeFill[] = [];
     const pairs = new Set<string>();
+    let skipped = 0;
 
     for (const f of fills) {
         const pAsset = f.pays.asset_id;
@@ -436,6 +435,7 @@ function classifyFills(fills: FillRecord[], filterAsset: string | null): { trade
             quoteAsset = BTS_ID;
             baseAmount = toReal(f.receives.amount, rAsset);
             quoteAmount = toReal(f.pays.amount, BTS_ID);
+            if (isNaN(baseAmount) || isNaN(quoteAmount)) { skipped++; continue; }
             price = quoteAmount / baseAmount;
         } else if (rAsset === BTS_ID && pAsset !== BTS_ID) {
             direction = 'sell';
@@ -443,15 +443,21 @@ function classifyFills(fills: FillRecord[], filterAsset: string | null): { trade
             quoteAsset = BTS_ID;
             baseAmount = toReal(f.pays.amount, pAsset);
             quoteAmount = toReal(f.receives.amount, BTS_ID);
+            if (isNaN(baseAmount) || isNaN(quoteAmount)) { skipped++; continue; }
             price = quoteAmount / baseAmount;
         } else {
             // Non-BTS cross-pair: use consistent ordering (lower asset ID = base)
+            const baseForCheck = pAsset < rAsset ? pAsset : rAsset;
+            const quoteForCheck = pAsset < rAsset ? rAsset : pAsset;
+            // Skip if either asset precision is unknown
+            if (getPrec(baseForCheck) === undefined || getPrec(quoteForCheck) === undefined) { skipped++; continue; }
             const isSell = pAsset < rAsset;
             direction = isSell ? 'sell' : 'buy';
             baseAsset = isSell ? pAsset : rAsset;
             quoteAsset = isSell ? rAsset : pAsset;
             baseAmount = toReal(isSell ? f.pays.amount : f.receives.amount, baseAsset);
             quoteAmount = toReal(isSell ? f.receives.amount : f.pays.amount, quoteAsset);
+            if (isNaN(baseAmount) || isNaN(quoteAmount)) { skipped++; continue; }
             price = quoteAmount / baseAmount;
         }
 
@@ -472,6 +478,10 @@ function classifyFills(fills: FillRecord[], filterAsset: string | null): { trade
             isMaker: f.isMaker,
             sequence: f.blockNum * 1e6 + f.opNum,
         });
+    }
+
+    if (skipped > 0) {
+        console.warn(`  [warn] ${skipped} fill(s) skipped due to unknown asset precision.`);
     }
 
     return { trades, pairs };
@@ -555,21 +565,23 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
         }
     }
 
-    // Allocate fees per fill: each distinct order pays one limit_order_create fee
+    // Allocate fees proportionally: each distinct order pays one limit_order_create fee.
+    // Each lot's share is (its matched amount) / (total matched amount for that order).
     const buyOrderIds = new Set(buys.map(t => t.orderId));
     const sellOrderIds = new Set(sells.map(t => t.orderId));
-    const entryFillCount = new Map<string, number>();
-    const exitFillCount = new Map<string, number>();
+    const entryTotalAmount = new Map<string, number>();
+    const exitTotalAmount = new Map<string, number>();
     for (const r of realizedPnls) {
-        entryFillCount.set(r.entryOrderId, (entryFillCount.get(r.entryOrderId) || 0) + 1);
-        exitFillCount.set(r.exitOrderId, (exitFillCount.get(r.exitOrderId) || 0) + 1);
+        entryTotalAmount.set(r.entryOrderId, (entryTotalAmount.get(r.entryOrderId) || 0) + r.amount);
+        exitTotalAmount.set(r.exitOrderId, (exitTotalAmount.get(r.exitOrderId) || 0) + r.amount);
     }
     for (const r of realizedPnls) {
-        const eCnt = entryFillCount.get(r.entryOrderId) || 1;
-        const xCnt = exitFillCount.get(r.exitOrderId) || 1;
-        r.feeBts = BLOCKCHAIN_FEE_PER_FILL / eCnt + BLOCKCHAIN_FEE_PER_FILL / xCnt;
+        const eTotal = entryTotalAmount.get(r.entryOrderId) || 1;
+        const xTotal = exitTotalAmount.get(r.exitOrderId) || 1;
+        r.feeBts = BLOCKCHAIN_FEE_PER_FILL * (r.amount / eTotal) + BLOCKCHAIN_FEE_PER_FILL * (r.amount / xTotal);
         r.pnlNet = r.pnl - r.feeBts;
-        r.pnlNetPct = r.pnlPct; // fee impact on pct is negligible for grid bots
+        const costBasis = r.buyPrice * r.amount;
+        r.pnlNetPct = costBasis > 0 ? (r.pnlNet / costBasis) * 100 : 0;
     }
     const totalFees = (buyOrderIds.size + sellOrderIds.size) * BLOCKCHAIN_FEE_PER_FILL;
     const totalRealizedPnl = realizedPnls.reduce((s, r) => s + r.pnl, 0);
@@ -615,8 +627,6 @@ function fmtAsset(id: string): string {
 
 function printSummary(pairs: PairAnalysis[], accountId: string, start: string, end: string, matchMode: 'fifo' | 'sequential' = 'sequential') {
     console.log('');
-    let grandTotalPnl = 0;
-    let grandTotalVolume = 0;
 
     for (const pair of pairs) {
         const pairLabel = `${fmtAsset(pair.baseAsset)}/${fmtAsset(pair.quoteAsset)}`;
@@ -624,9 +634,6 @@ function printSummary(pairs: PairAnalysis[], accountId: string, start: string, e
         const totalSold = pair.totalSellBase;
         const avgBuy = pair.totalBuyBase > 0 ? pair.totalBuyQuote / pair.totalBuyBase : 0;
         const avgSell = pair.totalSellBase > 0 ? pair.totalSellQuote / pair.totalSellBase : 0;
-
-        grandTotalPnl += pair.totalRealizedPnl;
-        grandTotalVolume += pair.totalBuyQuote + pair.totalSellQuote;
 
         console.log(` ── ${pairLabel}`);
         console.log(`    Buys:        ${fmt(totalBought, 4)} @ ${fmt(avgBuy, 6)} = ${fmt(pair.totalBuyQuote, 4)} ${fmtAsset(pair.quoteAsset)}`);
@@ -639,18 +646,32 @@ function printSummary(pairs: PairAnalysis[], accountId: string, start: string, e
         console.log(`    Realized PnL: ${fmtAsset(pair.quoteAsset)} ${fmt(pair.totalRealizedPnl, 4)}`);
         const feeLabel = pair.totalFees > 0 ? ` (fees: ${fmt(pair.totalFees, 4)} BTS)` : '';
         console.log(`    Net PnL:      ${fmtAsset(pair.quoteAsset)} ${fmt(pair.totalRealizedPnlNet, 4)}${feeLabel}`);
+        if (pair.quoteAsset !== BTS_ID) {
+            console.log(`    ⚠ Non-BTS quote — PnL is in ${fmtAsset(pair.quoteAsset)}, not BTS`);
+        }
         console.log('');
     }
 
-    // Grand total
-    if (pairs.length > 1) {
-        const grandFees = pairs.reduce((s, p) => s + p.totalFees, 0);
-        const grandNet = pairs.reduce((s, p) => s + p.totalRealizedPnlNet, 0);
-        console.log(` ── TOTAL`);
-        console.log(`    Realized PnL: ${fmt(grandTotalPnl, 4)} across ${pairs.length} pairs`);
-        console.log(`    Net PnL:      ${fmt(grandNet, 4)} (fees: ${fmt(grandFees, 4)} BTS)`);
-        console.log(`    Volume:       ${fmt(grandTotalVolume, 4)}`);
-        console.log('');
+    // Grand totals grouped by quote asset
+    const quoteGroups = new Map<string, PairAnalysis[]>();
+    for (const p of pairs) {
+        const q = p.quoteAsset;
+        if (!quoteGroups.has(q)) quoteGroups.set(q, []);
+        quoteGroups.get(q)!.push(p);
+    }
+    if (pairs.length > 1 && quoteGroups.size > 0) {
+        for (const [quoteAsset, group] of quoteGroups) {
+            const groupPnl = group.reduce((s, p) => s + p.totalRealizedPnl, 0);
+            const groupFees = group.reduce((s, p) => s + p.totalFees, 0);
+            const groupNet = group.reduce((s, p) => s + p.totalRealizedPnlNet, 0);
+            const groupVol = group.reduce((s, p) => s + p.totalBuyQuote + p.totalSellQuote, 0);
+            const qSymbol = fmtAsset(quoteAsset);
+            console.log(` ── TOTAL (${qSymbol}) — ${group.length} pair(s)`);
+            console.log(`    Realized PnL: ${fmtAsset(quoteAsset)} ${fmt(groupPnl, 4)}`);
+            console.log(`    Net PnL:      ${fmtAsset(quoteAsset)} ${fmt(groupNet, 4)} (fees: ${fmt(groupFees, 4)} BTS)`);
+            console.log(`    Volume:       ${fmt(groupVol, 4)} ${qSymbol}`);
+            console.log('');
+        }
     }
     console.log(`  Note: PnL assumes matched buys back matched sells within the window.`);
     console.log(`        If inventory predates the window or crosses asset pairs,`);
@@ -704,8 +725,8 @@ interface TradingMetrics {
     expectancyPct: number;
     expectancyR: number;
     netExpectancyBts: number;
-    sharpe: number;
-    sortino: number;
+    dailyPnlRatio: number;
+    dailyDownsideRatio: number;
     maxConsecWins: number;
     maxConsecLosses: number;
     avgHoldHours: number;
@@ -746,7 +767,7 @@ function percentile(sorted: number[], p: number): number {
     return sorted[f] * (c - k) + sorted[c] * (k - f);
 }
 
-function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): TradingMetrics {
+function computeMetrics(pair: PairAnalysis): TradingMetrics {
     const pnls = pair.realizedPnls;
     const total = pnls.length;
     if (total === 0) {
@@ -755,7 +776,7 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
             avgWin: 0, avgLoss: 0, avgWinLossRatio: 0,
             expectancyBts: 0, expectancyPct: 0, expectancyR: 0,
             netExpectancyBts: 0,
-            sharpe: 0, sortino: 0,
+            dailyPnlRatio: 0, dailyDownsideRatio: 0,
             maxConsecWins: 0, maxConsecLosses: 0,
             avgHoldHours: 0, limitOrderRatio: 0,
             bestTradePct: 0, worstTradePct: 0,
@@ -799,36 +820,30 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         : Infinity;
 
     const netExpectancyBts = pair.totalRealizedPnlNet / total;
-    // Note: (gross) is per-trade average of raw pnl; (net) absorbs all pair-level fees evenly
-    // across every trade. Since fees are per-order not per-trade, (net) understates per-trade
-    // fee impact on high-fill-count orders.
 
-    // Daily-binned PnL returns for Sharpe/Sortino (dimensionless — not comparable across different account sizes)
+    // Daily-binned net PnL for mean/std ratio (dimensionful — not a Sharpe ratio)
     const dayBuckets: Record<string, number> = {};
     for (const r of pnls) {
         const day = r.exitTime.slice(0, 10);
         dayBuckets[day] = (dayBuckets[day] || 0) + r.pnlNet;
     }
-    const dailyReturns = Object.values(dayBuckets);
-    const nDays = dailyReturns.length;
-    const dailyRets = dailyReturns;
+    const dailyRets = Object.values(dayBuckets);
+    const nDays = dailyRets.length;
 
     const meanDailyRet = nDays > 0 ? dailyRets.reduce((s, v) => s + v, 0) / nDays : 0;
-    // Both Sharpe and Sortino use population variance (divide by N) — the sample-vs-population
-    // distinction is negligible for daily returns of a single bot (68+ days of data).
     const dailyVar = nDays > 0
         ? dailyRets.reduce((s, v) => s + (v - meanDailyRet) ** 2, 0) / nDays
         : 0;
     const dailyStd = Math.sqrt(dailyVar);
     const annFactor = Math.sqrt(365);
-    const sharpe = dailyStd > 0 ? (meanDailyRet / dailyStd) * annFactor : 0;
+    const dailyPnlRatio = dailyStd > 0 ? (meanDailyRet / dailyStd) * annFactor : 0;
 
-    // Sortino: downside deviation uses only negative returns in numerator; same N denominator
+    // Downside deviation uses only negative returns; same N denominator
     const downsideVar = nDays > 0
         ? dailyRets.reduce((s, v) => s + (v < 0 ? v * v : 0), 0) / nDays
         : 0;
     const downsideStd = Math.sqrt(downsideVar);
-    const sortino = downsideStd > 0 ? (meanDailyRet / downsideStd) * annFactor : 0;
+    const dailyDownsideRatio = downsideStd > 0 ? (meanDailyRet / downsideStd) * annFactor : 0;
 
     // Fills-per-order distribution (grouped by sell order)
     const fillCounts: number[] = [];
@@ -841,7 +856,9 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     const fillsPerOrderMean = sellOrdersFilled > 0
         ? fillCounts.reduce((s, v) => s + v, 0) / sellOrdersFilled
         : 0;
-    const fillsPerOrderMax = sellOrdersFilled > 0 ? Math.max(...fillCounts) : 0;
+    const fillsPerOrderMax = sellOrdersFilled > 0
+        ? fillCounts.reduce((a, b) => Math.max(a, b), 0)
+        : 0;
     const sortedCounts = [...fillCounts].sort((a, b) => a - b);
     const fillsPerOrderMedian = sellOrdersFilled > 0 ? percentile(sortedCounts, 50) : 0;
     const oneShotOrderRatio = sellOrdersFilled > 0
@@ -850,7 +867,7 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     const fillsPerDay = nDays > 0 ? total / nDays : 0;
     const avgVolumePerDay = nDays > 0 ? (pair.totalBuyQuote + pair.totalSellQuote) / nDays : 0;
 
-    // Avg cycle time (hold duration) for reference
+    // Avg hold duration
     let totalHours = 0;
     let hourCount = 0;
     for (const r of pnls) {
@@ -863,7 +880,7 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     }
     const avgHoldHours = hourCount > 0 ? totalHours / hourCount : 0;
 
-    // Max consecutive wins / losses (aggregated by exit order — one round-trip per order)
+    // Max consecutive wins / losses (aggregated by exit order)
     const orderPnls = new Map<string, { pnl: number; time: string }>();
     for (const r of pnls) {
         const existing = orderPnls.get(r.exitOrderId);
@@ -874,7 +891,7 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         }
     }
     const orderResults = [...orderPnls.values()].sort((a, b) =>
-        a.time < b.time ? -1 : a.time > b.time ? 1 : 0
+        new Date(a.time).getTime() - new Date(b.time).getTime()
     );
     let consecW = 0, consecL = 0;
     let maxW = 0, maxL = 0;
@@ -884,10 +901,10 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         else { consecW = 0; consecL = 0; }
     }
 
-    // ─── Max Drawdown + Recovery Time (equity curve) ────────────────────
+    // ─── Max Drawdown + Recovery Time ───────────────────────────────────
     const STABILITY_TRADES = 3;
     const chronological = [...pnls].sort((a, b) =>
-        a.exitTime < b.exitTime ? -1 : a.exitTime > b.exitTime ? 1 : 0
+        new Date(a.exitTime).getTime() - new Date(b.exitTime).getTime()
     );
     let equity = 0, peak = 0, mddPct = 0;
     let maxRecoveryDays = 0;
@@ -898,12 +915,12 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     let currentTroughEquity = Infinity;
     let hadStablePeak = false;
     let tradesSincePeakSet = 0;
+    let hasPrePeakEquity = false;
     let prePeakMinEquity = 0;
 
     for (const r of chronological) {
         equity += r.pnlNet;
         if (equity > peak) {
-            // Record recovery from drawdown if we had a stable peak
             if (troughTime > 0 && hadStablePeak) {
                 const recoveryDays = (new Date(r.exitTime).getTime() - troughTime) / 86400000;
                 if (recoveryDays > maxRecoveryDays) maxRecoveryDays = recoveryDays;
@@ -920,8 +937,7 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
             }
         }
 
-        // Only measure drawdowns once the peak is stable (avoids tiny-denominator artifacts)
-        if (hadStablePeak && equity < peak) {
+        if (hadStablePeak && equity < peak && peak > 0) {
             if (drawdownStartTime === 0) drawdownStartTime = new Date(r.exitTime).getTime();
             if (equity < currentTroughEquity) {
                 currentTroughEquity = equity;
@@ -932,16 +948,17 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         }
 
         if (peak > 0 && !hadStablePeak) {
-            if (equity < prePeakMinEquity) prePeakMinEquity = equity;
+            if (!hasPrePeakEquity || equity < prePeakMinEquity) {
+                prePeakMinEquity = equity;
+                hasPrePeakEquity = true;
+            }
         }
     }
 
-    // Compute current drawdown duration from start of the drawdown to last trade
     if (drawdownStartTime > 0 && hadStablePeak) {
         const lastTime = new Date(chronological[chronological.length - 1].exitTime).getTime();
         currentDrawdownDays = (lastTime - drawdownStartTime) / 86400000;
         isOngoingRecovery = true;
-        // Also include in maxRecoveryDays if it exceeds any completed recovery
         if (currentDrawdownDays > maxRecoveryDays) {
             maxRecoveryDays = currentDrawdownDays;
         }
@@ -950,15 +967,14 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     if (hadStablePeak) {
         mddPct *= 100;
     } else {
-        mddPct = prePeakMinEquity;
+        mddPct = hasPrePeakEquity ? prePeakMinEquity : 0;
     }
 
-    // Payoff distribution stats (per-trade PnL% for distribution, not Sharpe)
+    // Payoff distribution stats
     const pnlPcts = [...pnls.map(r => r.pnlPct)].sort((a, b) => a - b);
     const medianPnlPct = percentile(pnlPcts, 50);
     const p25PnlPct = percentile(pnlPcts, 25);
     const p75PnlPct = percentile(pnlPcts, 75);
-    // R-multiple distribution: each trade's PnL normalized by avg loss (|avgLoss|)
     const absAvgLoss = Math.abs(avgLoss);
     let rValues: number[] = [];
     if (absAvgLoss > 0) {
@@ -969,8 +985,8 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     const pctRGreater2 = rValues.length > 0 ? rValues.filter(r => r > 2).length / rValues.length : 0;
     const pctRLessNeg1 = rValues.length > 0 ? rValues.filter(r => r < -1).length / rValues.length : 0;
 
-    const bestTradePct = Math.max(...pnlPcts);
-    const worstTradePct = Math.min(...pnlPcts);
+    const bestTradePct = pnlPcts.length > 0 ? pnlPcts[pnlPcts.length - 1] : 0;
+    const worstTradePct = pnlPcts.length > 0 ? pnlPcts[0] : 0;
 
     return {
         totalLots: total,
@@ -983,8 +999,8 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         expectancyPct,
         expectancyR,
         netExpectancyBts,
-        sharpe,
-        sortino,
+        dailyPnlRatio,
+        dailyDownsideRatio,
         feeDragPct,
         maxConsecWins: maxW,
         maxConsecLosses: maxL,
@@ -1014,11 +1030,11 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     };
 }
 
-function printMetrics(pairs: PairAnalysis[], periodHours: number = 8760) {
+function printMetrics(pairs: PairAnalysis[]) {
     for (const pair of pairs) {
         if (pair.realizedPnls.length === 0) continue;
 
-        const m = computeMetrics(pair, periodHours);
+        const m = computeMetrics(pair);
         const pairLabel = `${fmtAsset(pair.baseAsset)}/${fmtAsset(pair.quoteAsset)}`;
 
         console.log('');
@@ -1027,12 +1043,13 @@ function printMetrics(pairs: PairAnalysis[], periodHours: number = 8760) {
         // Edge
         console.log(`  Win Rate:             ${(m.winRate * 100).toFixed(1)}%`);
         console.log(`  Profit Factor:        ${m.profitFactor === Infinity ? '∞' : m.profitFactor.toFixed(2)}`);
-        console.log(`  Fee Drag:             ${m.feeDragPct.toFixed(2)}% of gross profit`);
+        console.log(`  Fee Drag:             ${m.feeDragPct > 0 ? m.feeDragPct.toFixed(2) + '% of gross profit' : '—'}`);
         console.log(`  Avg Win / Avg Loss:   ${m.avgWinLossRatio === Infinity ? '∞' : m.avgWinLossRatio.toFixed(2)}`);
-        console.log(`  Expectancy (gross):   ${fmt(m.expectancyBts, 4)} BTS (${fmtPct(m.expectancyPct)}) per trade`);
+        const qSymbol = fmtAsset(pair.quoteAsset);
+        console.log(`  Expectancy (gross):   ${fmt(m.expectancyBts, 4)} ${qSymbol} (${fmtPct(m.expectancyPct)}) per trade`);
         const rDisplay = m.expectancyR === Infinity ? '∞' : m.expectancyR.toFixed(3) + 'R';
         console.log(`  Expectancy (R):       ${rDisplay}`);
-        console.log(`  Expectancy (net):     ${fmt(m.netExpectancyBts, 4)} BTS per trade`);
+        console.log(`  Expectancy (net):     ${fmt(m.netExpectancyBts, 4)} ${qSymbol} per trade`);
         console.log('');
         // Edge quality
         console.log(`  Median R:             ${m.medianR.toFixed(2)}`);
@@ -1044,15 +1061,15 @@ function printMetrics(pairs: PairAnalysis[], periodHours: number = 8760) {
         console.log(`  P25 / P75:            ${fmtPct(m.p25PnlPct)} / ${fmtPct(m.p75PnlPct)}`);
         console.log(`  Best / Worst Trade:   ${fmtPct(m.bestTradePct)} / ${fmtPct(m.worstTradePct)}`);
         console.log('');
-        // Risk-adjusted
-        console.log(`  Sharpe (ann):         ${m.sharpe.toFixed(2)}`);
-        console.log(`  Sortino (ann):        ${m.sortino.toFixed(2)}`);
+        // Risk-adjusted (dimensionful — based on absolute daily PnL, not % returns)
+        console.log(`  Daily PnL Ratio (ann):${m.dailyPnlRatio.toFixed(2)}`);
+        console.log(`  Downside Ratio (ann): ${m.dailyDownsideRatio.toFixed(2)}`);
         console.log('');
         // Tail risk
         if (m.mddHadStablePeak) {
             console.log(`  Max Drawdown:         ${fmtPct(m.mddPct)}`);
         } else {
-            console.log(`  Min Equity:            ${fmt(m.mddPct, 4)} BTS`);
+            console.log(`  Min Equity:            ${fmt(m.mddPct, 4)} ${fmtAsset(pair.quoteAsset)}`);
         }
         const recLabel = m.maxRecoveryDays > 0 ? m.maxRecoveryDays.toFixed(1) + ' days' + (m.isOngoingRecovery ? ' (ongoing)' : '') : '—';
         console.log(`  Max Recov. Time:      ${recLabel}`);
@@ -1076,23 +1093,30 @@ function printMetrics(pairs: PairAnalysis[], periodHours: number = 8760) {
 
     }
 
-    // Grand-total rollup for multi-pair accounts
-    if (pairs.length > 1) {
-        const totalLots = pairs.reduce((s, p) => s + p.realizedPnls.length, 0);
-        const totalNet = pairs.reduce((s, p) => s + p.totalRealizedPnlNet, 0);
-        const totalBuyQuote = pairs.reduce((s, p) => s + p.totalBuyQuote, 0);
-        const totalFees = pairs.reduce((s, p) => s + p.totalFees, 0);
-        console.log(` ── TOTAL (${pairs.length} pairs)`);
-        console.log(`    Lots:      ${totalLots}`);
-        console.log(`    Net PnL:   ${fmt(totalNet, 4)} BTS  (fees: ${fmt(totalFees, 4)} BTS)`);
-        console.log('');
+    // Grand totals grouped by quote asset
+    const quoteGroups = new Map<string, PairAnalysis[]>();
+    for (const p of pairs) {
+        const q = p.quoteAsset;
+        if (!quoteGroups.has(q)) quoteGroups.set(q, []);
+        quoteGroups.get(q)!.push(p);
+    }
+    if (pairs.length > 1 && quoteGroups.size > 0) {
+        for (const [quoteAsset, group] of quoteGroups) {
+            const totalLots = group.reduce((s, p) => s + p.realizedPnls.length, 0);
+            const totalNet = group.reduce((s, p) => s + p.totalRealizedPnlNet, 0);
+            const totalFees = group.reduce((s, p) => s + p.totalFees, 0);
+            const qSymbol = fmtAsset(quoteAsset);
+            console.log(` ── TOTAL (${qSymbol}) — ${group.length} pair(s)`);
+            console.log(`    Lots:      ${totalLots}`);
+            console.log(`    Net PnL:   ${fmtAsset(quoteAsset)} ${fmt(totalNet, 4)}  (fees: ${fmt(totalFees, 4)} BTS)`);
+            console.log('');
+        }
     }
 }
 
 // ─── CSV Export ──────────────────────────────────────────────────────────────
 
 function exportCsv(pairs: PairAnalysis[], filePath: string) {
-    const fs = require('fs');
     const esc = (v: any) => { const s = String(v); return /[,"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const lines = ['time,orderId,direction,baseAsset,quoteAsset,baseAmount,quoteAmount,price,isMaker'];
 
@@ -1119,7 +1143,6 @@ function exportCsv(pairs: PairAnalysis[], filePath: string) {
 // ─── JSON Export ─────────────────────────────────────────────────────────────
 
 function exportJson(accountId: string, start: string, end: string, pairs: PairAnalysis[], filePath: string) {
-    const fs = require('fs');
     const data = {
         accountId,
         period: { start, end },
@@ -1209,14 +1232,21 @@ async function run() {
     console.log(`Account:  ${accountId}`);
     console.log(`Period:   ${gte.slice(0, 10)}  →  ${lte.slice(0, 10)}`);
     console.log(`Pairs:    ${pairs.size}, ${trades.length} classified trades`);
+    const hasCrossPair = [...pairs].some(p => p.split(':')[1] !== BTS_ID);
+    if (hasCrossPair) {
+        console.log(`  Note: cross-pair trades (non-BTS quote) are included but PnL is in the pair's quote asset.`);
+    }
     console.log('');
+
+    // Override blockchain fee from CLI if provided
+    if (opts.feePerOrder) BLOCKCHAIN_FEE_PER_FILL = opts.feePerOrder;
 
     // Analyze each pair
     const pairMap = new Map<string, TradeFill[]>();
     for (const t of trades) {
-        const key = `${t.baseAsset}:${t.quoteAsset}`;
-        if (!pairMap.has(key)) pairMap.set(key, []);
-        pairMap.get(key)!.push(t);
+        const pairKey = `${t.baseAsset}:${t.quoteAsset}`;
+        if (!pairMap.has(pairKey)) pairMap.set(pairKey, []);
+        pairMap.get(pairKey)!.push(t);
     }
 
     const analyses: PairAnalysis[] = [];
@@ -1240,8 +1270,7 @@ async function run() {
         printPnlDetail(analyses);
     }
 
-    const periodHours = (new Date(lte).getTime() - new Date(gte).getTime()) / 3600000;
-    printMetrics(analyses, periodHours);
+    printMetrics(analyses);
 
     if (opts.csv) {
         exportCsv(analyses, opts.csv);

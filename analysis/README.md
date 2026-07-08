@@ -280,22 +280,23 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 | `--hours <n>` | `168` (7d) | Lookback hours (alternative to start/end) |
 | `--asset <id>` | all | Filter to one base asset ID |
 | `--lookup` | off | Resolve account name to 1.2.x ID via BitShares node |
-| `--node <url>` | `wss://dex.iobanker.com/ws` | BitShares node for account + asset resolution |
+| `--node <url>` | first healthy from built-in pool (8 nodes) | BitShares node for account + asset resolution |
 | `--csv <file>` | — | Export chronologically sorted trade list |
 | `--json <file>` | — | Export full analysis with per-pair PnL data |
 | `--match-mode <mode>` | `sequential` | Matching mode: `sequential` (LIFO, default) or `fifo` |
 | `--trades` | off | Show per-order PnL detail (hidden by default) |
+| `--fee-per-order <bts>` | `0.09652` | Blockchain fee per limit_order_create op (BTS); approximate |
 | `--verbose` | off | Print per-pair trade counts during processing |
 
 **Asset precision handling:**
 
-1. Assets listed in `ASSETS` (BTS, TWENTIX, XBTSX.*, HONEST.*, IOB.*, etc.) resolve instantly.
+1. Assets listed in the static `ASSETS` table (BTS, TWENTIX, XBTSX.*, HONEST.*, IOB.*, etc.) resolve instantly.
 2. Unknown assets are resolved on-chain via `get_assets` when `--node` is provided, with results cached at runtime.
-3. If no `--node` is given and an asset is unknown, the script errors immediately.
+3. If no `--node` is given and an asset is unknown, the fill is **skipped** with a warning (no abort).
 
-**PnL methodology:** Trades within each pair are sorted chronologically (block number + operation index). Buys add lots to an inventory queue. In sequential (LIFO) mode (default), sells consume the newest lots first — matching the actual grid cycle where a buy at one level is sold at the next tick up. In FIFO mode (`--match-mode fifo`), sells consume the oldest lots first, reflecting the real cost of carrying inventory through a trend. Each match's PnL is `(sellPrice − buyPrice) × matchedAmount`, reported in quote-asset units and as a percentage of the buy price. The summary PnL% uses volume-weighted average prices from matched lots only. Unmatched sell volume (sells without a preceding buy in the window) is surfaced in the pair summary. The per-match detail table includes maker/taker flags for both the entry (buy) and exit (sell) legs, sourced from the blockchain operation. For non-BTS cross pairs, asset pairs are normalised by ordering the lower asset ID as base, so both buy and sell directions are correctly classified.
+**PnL methodology:** Trades within each pair are sorted chronologically (block number + operation index). Buys add lots to an inventory queue. In sequential (LIFO) mode (default), sells consume the newest lots first — matching the actual grid cycle where a buy at one level is sold at the next tick up. In FIFO mode (`--match-mode fifo`), sells consume the oldest lots first, reflecting the real cost of carrying inventory through a trend. Each match's PnL is `(sellPrice − buyPrice) × matchedAmount`, reported in quote-asset units and as a percentage of the buy price. The summary PnL% uses volume-weighted average prices from matched lots only. Unmatched sell volume (sells without a preceding buy in the window) is surfaced in the pair summary. The per-match detail table includes maker/taker flags for both the entry (buy) and exit (sell) legs, sourced from the blockchain operation. For non-BTS cross pairs, asset pairs are normalised by ordering the lower asset ID as base so buy/sell direction is consistent, but PnL is reported in the pair's quote asset — a warning is shown in the output when non-BTS quotes are present.
 
-**Metrics glossary** (each line in the `--metrics` output, plain English):
+**Metrics glossary** (each line in the metrics output, plain English):
 
 | Output line | Meaning |
 |-------------|---------|
@@ -306,16 +307,16 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 | `Expectancy (gross)` | How much one trade is expected to earn before fees. Positive = edge exists. The `R` version normalises this by the average loss size (R-multiple). The `net` version subtracts fees. |
 | `Median R` | The middle R-multiple value (half of trades are above, half below). `>1R` / `>2R` = % of trades that earned more than 1× or 2× the average loss. `<-1R` = % that lost more than 1× the average loss. |
 | `PnL distribution` | Median, P25, P75, Best, Worst — the centre, spread, and extremes of per-trade return %. Not annualised, just per cycle. |
-| `Sharpe (ann)` | How consistent your daily PnL is per unit of volatility. Above 2 is excellent. Dimensionless — use for ranking your own runs, not comparing across accounts. |
-| `Sortino (ann)` | Same as Sharpe but only penalises days where you lost money (downside volatility). Higher than Sharpe is normal; a big gap means most volatility came from winning days. |
+| `Daily PnL Ratio (ann)` | How consistent your daily net PnL is per unit of volatility. Based on absolute daily PnL (not % returns) — use for ranking your own runs, not comparing across account sizes. |
+| `Downside Ratio (ann)` | Same method but only penalises days where you lost money (downside volatility). Higher than the PnL ratio is normal; a big gap means most volatility came from winning days. |
 | `Max Drawdown` | Largest peak-to-trough equity decline as a % of the peak. How bad things got. |
 | `Max Recov. Time` | Longest time (in days) from the deepest point of a drawdown back to a new equity high. |
 | `Max Consec Wins / Losses` | Longest streak of winning or losing round-trips. Grouped by sell order, so one order covering multiple buy lots counts as one result. Grid bots naturally cluster wins during trends — streaks of 100-200 are not alarming. |
-| `Avg Cycle Time` | Average time (hours) between buying an asset and selling it. |
-| `Maker / Taker (legs)` | % of trade legs (buys + sells combined) where the bot provided liquidity (limit order resting on the book) vs took it (market order). Higher maker % = lower fees. |
-| `Active orders` | Number of distinct sell orders that were filled in the period. |
+| `Avg hold time` | Average time (hours) between buying an asset and selling it. |
+| `Limit / Market` | % of trade legs (buys + sells combined) where the bot provided liquidity (limit order resting on the book) vs took it (market order). Higher limit % = lower fees. |
+| `Sell orders filled` | Number of distinct sell orders that were filled in the period. |
 | `Fills/order` | How many buy lots each sell order consumed (mean, median, max). For a grid bot: 2.0 median means half the orders clear 2 grid levels; 18 max means one big sweep. |
-| `Single-fill orders` | % of orders that matched exactly 1 buy lot. Low % = your grid is thick enough that orders routinely cover multiple levels. |
+| `One-shot orders` | % of orders that matched exactly 1 buy lot. Low % = your grid is thick enough that orders routinely cover multiple levels. |
 | `Fills/day` | Average matched lots per calendar day. Raw activity speed. |
 | `Avg vol/day` | Average daily trading volume in the quote asset. |
 
