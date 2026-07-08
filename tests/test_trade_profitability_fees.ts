@@ -42,7 +42,7 @@ function t(overrides = {}) {
 }
 
 // Load the module
-const { analyzePair } = require('../analysis/trade_profitability');
+const { analyzePair, computeMetrics } = require('../analysis/trade_profitability');
 
 // ─── Test: No market fees → PnL unchanged ─────────────────────────────────
 
@@ -367,6 +367,59 @@ function testSellWithoutFee() {
         'entry market fee present');
 }
 
+// ─── Drawdown stability (hadStablePeak) ─────────────────────────────────
+
+function testDrawdownStablePeakMonotonic() {
+    // 12 all-winning trades → monotonically rising equity,
+    // hadStablePeak must be true after 10-trade backstop
+    const trades = [];
+    for (let i = 0; i < 12; i++) {
+        const base = i % 2 === 0 ? 10 : 11;
+        trades.push(t({
+            direction: 'buy', baseAmount: base, quoteAmount: base * 10,
+            price: 10, sequence: i * 2 + 1, orderId: `1.7.${i * 2 + 1}`,
+            marketFeeReal: 0,
+        }));
+        trades.push(t({
+            direction: 'sell', baseAmount: base, quoteAmount: base * 11,
+            price: 11, sequence: i * 2 + 2, orderId: `1.7.${i * 2 + 2}`,
+            marketFeeReal: 0,
+        }));
+    }
+    const pair = analyzePair(trades, 'fifo');
+    const m = computeMetrics(pair);
+    assert.strictEqual(m.mddHadStablePeak, true,
+        `monotonic 12 trades: hadStablePeak should be true, got ${m.mddHadStablePeak}`);
+    assert.ok(m.mddPct >= 0,
+        `monotonic 12 trades: mddPct should be ≥ 0 (no drawdown), got ${m.mddPct}`);
+}
+
+function testDrawdownStablePeakEarly() {
+    // 6 all-winning trades → fewer than MIN_TRADES_FOR_PEAK (10),
+    // hadStablePeak should be false, mddPct should be absolute min equity
+    const trades = [];
+    for (let i = 0; i < 6; i++) {
+        const base = i % 2 === 0 ? 10 : 11;
+        trades.push(t({
+            direction: 'buy', baseAmount: base, quoteAmount: base * 10,
+            price: 10, sequence: i * 2 + 1, orderId: `1.7.${i * 2 + 1}`,
+            marketFeeReal: 0,
+        }));
+        trades.push(t({
+            direction: 'sell', baseAmount: base, quoteAmount: base * 11,
+            price: 11, sequence: i * 2 + 2, orderId: `1.7.${i * 2 + 2}`,
+            marketFeeReal: 0,
+        }));
+    }
+    const pair = analyzePair(trades, 'fifo');
+    const m = computeMetrics(pair);
+    assert.strictEqual(m.mddHadStablePeak, false,
+        `early 6 trades: hadStablePeak should be false, got ${m.mddHadStablePeak}`);
+    // Min equity should be positive (equity after first profitable trade)
+    assert.ok(m.mddPct > 0,
+        `early 6 trades: mddPct (absolute min equity) should be > 0, got ${m.mddPct}`);
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────
 
 function main() {
@@ -379,6 +432,8 @@ function main() {
     testMultipleFillsFifo();
     testMakerTakerFee();
     testSellWithoutFee();
+    testDrawdownStablePeakMonotonic();
+    testDrawdownStablePeakEarly();
     console.log('✓ trade profitability fee tests passed');
 }
 

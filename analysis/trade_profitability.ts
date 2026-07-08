@@ -714,7 +714,7 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
 
 function fmt(n: number, decimals = 4): string {
     if (!Number.isFinite(n)) return 'NaN';
-    return n.toFixed(decimals);
+    return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
 function fmtPct(n: number): string {
@@ -1022,6 +1022,7 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
 
     // ─── Max Drawdown + Recovery Time ───────────────────────────────────
     const STABILITY_TRADES = 3;
+    const MIN_TRADES_FOR_PEAK = 10; // backstop for monotonic equity curves
     const chronological = [...pnls].sort((a, b) =>
         new Date(a.exitTime).getTime() - new Date(b.exitTime).getTime()
     );
@@ -1036,8 +1037,10 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
     let tradesSincePeakSet = 0;
     let hasPrePeakEquity = false;
     let prePeakMinEquity = 0;
+    let totalTradesProcessed = 0;
 
     for (const r of chronological) {
+        totalTradesProcessed++;
         equity += r.pnlNet;
         if (equity > peak) {
             if (troughTime > 0 && hadStablePeak) {
@@ -1054,6 +1057,9 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
             if (tradesSincePeakSet >= STABILITY_TRADES) {
                 hadStablePeak = true;
             }
+        }
+        if (!hadStablePeak && totalTradesProcessed >= MIN_TRADES_FOR_PEAK) {
+            hadStablePeak = true;
         }
 
         if (hadStablePeak && equity < peak && peak > 0) {
@@ -1183,8 +1189,8 @@ function printMetrics(pairs: PairAnalysis[]) {
         console.log(`  Best / Worst Trade:   ${fmtPct(m.bestTradePct)} / ${fmtPct(m.worstTradePct)}`);
         console.log('');
         // Risk-adjusted (dimensionful — based on absolute daily PnL, not % returns)
-        console.log(`  Daily PnL Ratio (ann):${m.dailyPnlRatio.toFixed(2)}`);
-        console.log(`  Downside Ratio (ann): ${m.dailyDownsideRatio.toFixed(2)}`);
+        console.log(`  Sharpe (ann):         ${m.dailyPnlRatio.toFixed(2)}`);
+        console.log(`  Sortino (ann):        ${m.dailyDownsideRatio.toFixed(2)}`);
         console.log('');
         // Tail risk
         if (m.mddHadStablePeak) {
@@ -1193,16 +1199,16 @@ function printMetrics(pairs: PairAnalysis[]) {
             console.log(`  Min Equity:            ${fmt(m.mddPct, 4)} ${fmtAsset(pair.quoteAsset)}`);
         }
         const recLabel = m.maxRecoveryDays > 0 ? m.maxRecoveryDays.toFixed(1) + ' days' + (m.isOngoingRecovery ? ' (ongoing)' : '') : '—';
-        console.log(`  Max Recov. Time:      ${recLabel}`);
+        console.log(`  Max Recovery Time:    ${recLabel}`);
         if (m.currentDrawdownDays > 0) {
             console.log(`  Current Drawdown:     ${m.currentDrawdownDays.toFixed(1)} days (active)`);
         }
         console.log('');
         // Behavioral
-        console.log(`  Max consec W/L:       ${m.maxConsecWins} / ${m.maxConsecLosses}`);
+        console.log(`  Max Consecutive W/L:  ${m.maxConsecWins} / ${m.maxConsecLosses}`);
         const holdDisplay = m.avgHoldHours > 0 ? m.avgHoldHours.toFixed(1) : '—';
         console.log(`  Avg hold time:        ${holdDisplay} hours`);
-        console.log(`  Limit / Market:       ${(m.limitOrderRatio * 100).toFixed(1)}% / ${((1 - m.limitOrderRatio) * 100).toFixed(1)}%`);
+        console.log(`  Maker / Taker:        ${(m.limitOrderRatio * 100).toFixed(1)}% / ${((1 - m.limitOrderRatio) * 100).toFixed(1)}%`);
         console.log('');
         // Activity
         console.log(`  Sell orders filled:   ${m.sellOrdersFilled}`);
@@ -1412,7 +1418,7 @@ async function run() {
     }
 }
 
-export { analyzePair, classifyFills, TradeFill, FillRecord, RealizedPnl, PairAnalysis };
+export { analyzePair, classifyFills, computeMetrics, TradeFill, FillRecord, RealizedPnl, PairAnalysis, TradingMetrics };
 
 if (require.main === module) {
     run().then(() => process.exit(0)).catch(e => {
