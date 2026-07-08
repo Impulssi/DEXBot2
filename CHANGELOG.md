@@ -19,6 +19,15 @@ All notable changes to this project will be documented in this file.
 - **Feat**: comprehensive trade PnL audit and cleanup — fixed fee accounting (per-lot→per-order), Sortino denominator, Sharpe capital divisor, maxRecoveryDays (peak-to-peak→trough-to-peak), cross-pair classification (now produces buys), early drawdown tracking, `percentile` interpolation, CSV quoting, maker ratio (both legs). Removed dead code (`avgBuyPrice`/`avgSellPrice`/`matchedBuyBase`/`matchedBuyQuote`). Default flow simplified: metrics on, detail off. Added activity metrics: fills-per-order distribution (mean/med/max, single-fill ratio), fills/day, avg volume/day. Streak count aggregated by exit order (round-trips). Removed Std PnL, skewness, kurtosis. Clean metric glossary in README. Flag cleanup: `--trades` re-enabled, `--no-pnl-summary` removed from help.
 - **Chore**: version bumped to 1.0.10 across all manifests.
 
+## [1.0.9] - 2026-07-06 - Trade PnL Analysis Tool & AMA Slope Tuning
+
+### 2026-07-06
+
+- **Feat**: add `analysis/trade_profitability.ts` — Kibana-driven FIFO/Sequential PnL analysis tool with 16 metrics (`879d7209`).
+- **Feat**: add trade PnL metrics, sequential matching, and fee tracking (`ab4a403d`).
+- **Chore**: reduce `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` from 0.085 to 0.08 (`0ba19df5`).
+- **Chore**: version bumped to 1.0.9 across all manifests.
+
 ## [1.0.8] - 2026-07-05 - System Invariants Expansion & Shared Runtime Fix
 
 ### 2026-07-05
