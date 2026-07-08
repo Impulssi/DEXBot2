@@ -284,7 +284,7 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 | `--csv <file>` | — | Export chronologically sorted trade list |
 | `--json <file>` | — | Export full analysis with per-pair PnL data |
 | `--match-mode <mode>` | `sequential` | Matching mode: `sequential` (LIFO, default) or `fifo` |
-| `--no-pnl-summary` | off | Skip per-order PnL detail, pair summary only |
+| `--trades` | off | Show per-order PnL detail (hidden by default) |
 | `--verbose` | off | Print per-pair trade counts during processing |
 
 **Asset precision handling:**
