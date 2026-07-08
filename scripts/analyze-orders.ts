@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const { formatPrice6 } = require('../modules/order/format');
+const { resolveConfiguredPriceBound } = require('../modules/order/utils/order');
 const { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } = require('../modules/constants');
 const { PATHS } = require('../modules/paths');
 const { getWhitelistFlags } = require('../modules/market_adapter_whitelist');
@@ -107,12 +108,6 @@ function isAmaGridPrice(config) {
   return /^ama(?:[1-4])?$/.test(gridPrice);
 }
 
-/**
- * readDynamicGridSnapshot: Read profiles/orders/<botKey>.dynamicgrid.json safely.
- *
- * Returns null when the file is missing or unreadable. The caller decides whether
- * the snapshot is fresh enough to surface live weight values.
- */
 function readDynamicGridSnapshot(botKey) {
   if (!botKey) return null;
   try {
@@ -123,6 +118,31 @@ function readDynamicGridSnapshot(botKey) {
   } catch (e) {
     return null;
   }
+}
+
+/**
+ * computeAsymmetricBoundsPrices: Mirror of applyAsymmetricBounds logic.
+ * Computes the resolved min/max prices after grid range scaling adjustment.
+ */
+function computeAsymmetricBoundsPrices(centerPrice, minPrice, maxPrice, trend, appliedAsymmetryFactor) {
+  if (!Number.isFinite(centerPrice) || centerPrice <= 0
+    || !Number.isFinite(minPrice) || minPrice <= 0
+    || !Number.isFinite(maxPrice) || maxPrice <= 0
+    || !Number.isFinite(appliedAsymmetryFactor)
+    || (trend !== 'UP' && trend !== 'DOWN')) {
+    return null;
+  }
+  const baseMinDiv = centerPrice / minPrice;
+  const baseMaxMult = maxPrice / centerPrice;
+  let resolvedMinPrice, resolvedMaxPrice;
+  if (trend === 'DOWN') {
+    resolvedMinPrice = centerPrice / (baseMinDiv * (1 + appliedAsymmetryFactor));
+    resolvedMaxPrice = centerPrice * (baseMaxMult * (1 - appliedAsymmetryFactor));
+  } else {
+    resolvedMinPrice = centerPrice / (baseMinDiv * (1 - appliedAsymmetryFactor));
+    resolvedMaxPrice = centerPrice * (baseMaxMult * (1 + appliedAsymmetryFactor));
+  }
+  return { resolvedMinPrice, resolvedMaxPrice };
 }
 
 /**
@@ -183,6 +203,16 @@ function buildDynamicWeightInfo(botKey, config) {
   const amaCenterPrice = Number.isFinite(Number(snapshot.amaCenterPrice))
     ? Number(snapshot.amaCenterPrice)
     : (Number.isFinite(Number(snapshot.gridCenterPrice)) ? Number(snapshot.gridCenterPrice) : null);
+  const isAsymmetricBoundsWhitelisted = whitelistFlags.asymmetricBounds === true;
+  const rawAsymmetryFactor = dw && Number.isFinite(Number(dw.rawAsymmetryFactor))
+    ? Number(dw.rawAsymmetryFactor)
+    : null;
+  const appliedAsymmetryFactor = dw && Number.isFinite(Number(dw.appliedAsymmetryFactor))
+    ? Number(dw.appliedAsymmetryFactor)
+    : null;
+  const maxAsymmetryFactor = dw && Number.isFinite(Number(dw.maxAsymmetryFactor))
+    ? Number(dw.maxAsymmetryFactor)
+    : null;
   return {
     live,
     base,
@@ -194,6 +224,10 @@ function buildDynamicWeightInfo(botKey, config) {
     centerPrice: Number.isFinite(Number(snapshot.centerPrice)) ? Number(snapshot.centerPrice) : null,
     isRecent,
     updatedAt: Number.isFinite(updatedAtMs) ? new Date(updatedAtMs) : null,
+    asymmetricBoundsEnabled: isAsymmetricBoundsWhitelisted,
+    rawAsymmetryFactor,
+    appliedAsymmetryFactor,
+    maxAsymmetryFactor,
   };
 }
 
@@ -496,6 +530,8 @@ function analyzeOrder(botData, config, botKey) {
    * Return comprehensive analysis object
    * Includes all metrics needed for health check output
    */
+  const _dynamicWeight = buildDynamicWeightInfo(botKey, config);
+  const _ab = computeGridRangeScalingDisplay(config, _dynamicWeight);
   return {
     pair: `${assetA}/${assetB}`,
     lastUpdated: new Date(meta.updatedAt || botData.lastUpdated),
@@ -544,7 +580,55 @@ function analyzeOrder(botData, config, botKey) {
     weightDistribution: config ? config.weightDistribution : null,
     // Latest dynamic weight payload from the market adapter (AMA bots only).
     // Null when the bot is not AMA, or when no fresh snapshot is available.
-    dynamicWeight: buildDynamicWeightInfo(botKey, config)
+    dynamicWeight: _dynamicWeight,
+    // Grid range scaling (asymmetric bounds) display data, null if not applicable.
+    asymmetricBounds: _ab,
+  };
+}
+
+/**
+ * computeGridRangeScalingDisplay: Compute resolved prices from grid range scaling.
+ * Returns null when the bot is not whitelisted or data is incomplete.
+ */
+function computeGridRangeScalingDisplay(config, dynamicWeight) {
+  if (!dynamicWeight || !dynamicWeight.asymmetricBoundsEnabled
+    || dynamicWeight.amaCenterPrice == null) {
+    return null;
+  }
+  const centerPrice = dynamicWeight.amaCenterPrice;
+  let minPrice, maxPrice;
+  try {
+    minPrice = resolveConfiguredPriceBound(config && config.minPrice, undefined, centerPrice, 'min');
+    maxPrice = resolveConfiguredPriceBound(config && config.maxPrice, undefined, centerPrice, 'max');
+  } catch (_) {
+    return null;
+  }
+  if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice)) return null;
+
+  const hasAsym = Number.isFinite(dynamicWeight.appliedAsymmetryFactor)
+    && (dynamicWeight.trend === 'UP' || dynamicWeight.trend === 'DOWN');
+
+  let resolvedMinPrice = minPrice;
+  let resolvedMaxPrice = maxPrice;
+  if (hasAsym) {
+    const prices = computeAsymmetricBoundsPrices(
+      centerPrice, minPrice, maxPrice,
+      dynamicWeight.trend, dynamicWeight.appliedAsymmetryFactor
+    );
+    if (prices) {
+      resolvedMinPrice = prices.resolvedMinPrice;
+      resolvedMaxPrice = prices.resolvedMaxPrice;
+    }
+  }
+
+  return {
+    resolvedMinPrice,
+    resolvedMaxPrice,
+    configuredMinPrice: minPrice,
+    configuredMaxPrice: maxPrice,
+    appliedAsymmetryFactor: hasAsym ? dynamicWeight.appliedAsymmetryFactor : 0,
+    rawAsymmetryFactor: hasAsym ? dynamicWeight.rawAsymmetryFactor : 0,
+    isRecent: dynamicWeight.isRecent,
   };
 }
 
@@ -953,8 +1037,8 @@ function analyzeDistribution(buySlots, sellSlots, bestBuySlot, bestSellSlot) {
     // If match is 0, slots and funds are perfectly balanced
     // If match is high, one side is over/under-weighted in funds
     match: {
-      buyDiff: Math.abs(buySlotPercent - buyFundPercent),
-      sellDiff: Math.abs(sellSlotPercent - sellFundPercent)
+      buyDiff: buyFundPercent - buySlotPercent,
+      sellDiff: sellFundPercent - sellSlotPercent
     }
   };
 }
@@ -1182,6 +1266,13 @@ function formatAnalysis(analysis) {
 
       lines.push(`      AMA: ${amaColor}${amaPrice}${colors.reset}${diffStr}`);
     }
+    if (analysis.asymmetricBounds) {
+      const ab = analysis.asymmetricBounds;
+      const minStr = formatCurrency(ab.resolvedMinPrice);
+      const maxStr = formatCurrency(ab.resolvedMaxPrice);
+      const appliedStr = (ab.appliedAsymmetryFactor * 100).toFixed(2) + '%';
+      lines.push(`   Bounds: ${colors.buy}${minStr}${colors.reset} - ${colors.sell}${maxStr}${colors.reset} ${colors.gray}(${appliedStr})${colors.reset}`);
+    }
     lines.push(``);
   }
 
@@ -1295,7 +1386,9 @@ function formatAnalysis(analysis) {
   );
 
   // Position delta indicator directly under the spread slot character
-  const deltaStr = `Δ ${buyMatch}%`;
+  const buyDiffVal = analysis.distribution.match.buyDiff;
+  const signedMatch = (buyDiffVal > 0 ? '+' : '') + buyDiffVal.toFixed(1);
+  const deltaStr = `Δ ${signedMatch}%`;
   const spreadStart = 11 + slotDistBuyWidth; // Position where spread character starts (11 = prefix length)
   lines.push(
     `${' '.repeat(spreadStart)}${deltaStr}`
