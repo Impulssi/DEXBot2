@@ -223,7 +223,7 @@ function parseArgs() {
         csv: null,
         json: null,
         matchMode: 'sequential',
-        pnlSummary: false,
+        showPnlDetail: false,
         verbose: false,
     };
 
@@ -237,7 +237,7 @@ function parseArgs() {
             case '--node':         opts.node     = args[++i]; break;
             case '--csv':          opts.csv      = args[++i]; break;
             case '--json':         opts.json     = args[++i]; break;
-            case '--trades':         opts.pnlSummary  = true; break;
+            case '--trades':         opts.showPnlDetail  = true; break;
             case '--match-mode': {
                 const m = args[++i];
                 if (m !== 'sequential' && m !== 'fifo') {
@@ -555,12 +555,26 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
         }
     }
 
-    // Fee accounting: each distinct order pays one limit_order_create fee, regardless of partial fills
+    // Allocate fees per fill: each distinct order pays one limit_order_create fee
     const buyOrderIds = new Set(buys.map(t => t.orderId));
     const sellOrderIds = new Set(sells.map(t => t.orderId));
+    const entryFillCount = new Map<string, number>();
+    const exitFillCount = new Map<string, number>();
+    for (const r of realizedPnls) {
+        entryFillCount.set(r.entryOrderId, (entryFillCount.get(r.entryOrderId) || 0) + 1);
+        exitFillCount.set(r.exitOrderId, (exitFillCount.get(r.exitOrderId) || 0) + 1);
+    }
+    for (const r of realizedPnls) {
+        const eCnt = entryFillCount.get(r.entryOrderId) || 1;
+        const xCnt = exitFillCount.get(r.exitOrderId) || 1;
+        r.feeBts = BLOCKCHAIN_FEE_PER_FILL / eCnt + BLOCKCHAIN_FEE_PER_FILL / xCnt;
+        r.pnlNet = r.pnl - r.feeBts;
+        r.pnlNetPct = r.pnlPct; // fee impact on pct is negligible for grid bots
+    }
     const totalFees = (buyOrderIds.size + sellOrderIds.size) * BLOCKCHAIN_FEE_PER_FILL;
     const totalRealizedPnl = realizedPnls.reduce((s, r) => s + r.pnl, 0);
-    const totalRealizedPnlNet = totalRealizedPnl - totalFees;
+    // totalRealizedPnlNet recalculated from per-fill pnlNet so it matches allocated fees
+    const totalRealizedPnlNet = realizedPnls.reduce((s, r) => s + r.pnlNet, 0);
     const netPosition = totalBuyBase - totalSellBase;
     const baseAsset = trades[0]?.baseAsset ?? '';
     const quoteAsset = trades[0]?.quoteAsset ?? '';
@@ -694,23 +708,25 @@ interface TradingMetrics {
     sortino: number;
     maxConsecWins: number;
     maxConsecLosses: number;
-    avgHoursPerCycle: number;
-    makerRatioLegs: number;
+    avgHoldHours: number;
+    limitOrderRatio: number;
     bestTradePct: number;
     worstTradePct: number;
     mddPct: number;
-    mddHadPositivePeak: boolean;
+    mddHadStablePeak: boolean;
+    isOngoingRecovery: boolean;
+    currentDrawdownDays: number;
     medianPnlPct: number;
     p25PnlPct: number;
     p75PnlPct: number;
 
     feeDragPct: number;
     maxRecoveryDays: number;
-    distinctSellOrders: number;
+    sellOrdersFilled: number;
     fillsPerOrderMean: number;
     fillsPerOrderMedian: number;
     fillsPerOrderMax: number;
-    singleFillOrderRatio: number;
+    oneShotOrderRatio: number;
     fillsPerDay: number;
     avgVolumePerDay: number;
     medianR: number;
@@ -741,15 +757,17 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
             netExpectancyBts: 0,
             sharpe: 0, sortino: 0,
             maxConsecWins: 0, maxConsecLosses: 0,
-            avgHoursPerCycle: 0, makerRatioLegs: 0,
+            avgHoldHours: 0, limitOrderRatio: 0,
             bestTradePct: 0, worstTradePct: 0,
             mddPct: 0,
-            mddHadPositivePeak: false,
+            mddHadStablePeak: false,
+            isOngoingRecovery: false,
+            currentDrawdownDays: 0,
             medianPnlPct: 0, p25PnlPct: 0, p75PnlPct: 0,
             feeDragPct: 0, maxRecoveryDays: 0,
             medianR: 0, pctRGreater1: 0, pctRGreater2: 0, pctRLessNeg1: 0,
-            distinctSellOrders: 0, fillsPerOrderMean: 0, fillsPerOrderMedian: 0,
-            fillsPerOrderMax: 0, singleFillOrderRatio: 0, fillsPerDay: 0, avgVolumePerDay: 0,
+            sellOrdersFilled: 0, fillsPerOrderMean: 0, fillsPerOrderMedian: 0,
+            fillsPerOrderMax: 0, oneShotOrderRatio: 0, fillsPerDay: 0, avgVolumePerDay: 0,
         };
     }
 
@@ -758,7 +776,7 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     const winRate = wins.length / total;
     const makerEntryCount = pnls.filter(r => r.entryIsMaker).length;
     const makerExitCount = pnls.filter(r => r.exitIsMaker).length;
-    const makerLegCount = makerEntryCount + makerExitCount;
+    const totalMakerLegs = makerEntryCount + makerExitCount;
 
     const grossProfit = wins.reduce((s, r) => s + r.pnl, 0);
     const grossLoss = Math.abs(losses.reduce((s, r) => s + r.pnl, 0));
@@ -781,6 +799,9 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         : Infinity;
 
     const netExpectancyBts = pair.totalRealizedPnlNet / total;
+    // Note: (gross) is per-trade average of raw pnl; (net) absorbs all pair-level fees evenly
+    // across every trade. Since fees are per-order not per-trade, (net) understates per-trade
+    // fee impact on high-fill-count orders.
 
     // Daily-binned PnL returns for Sharpe/Sortino (dimensionless — not comparable across different account sizes)
     const dayBuckets: Record<string, number> = {};
@@ -793,16 +814,18 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     const dailyRets = dailyReturns;
 
     const meanDailyRet = nDays > 0 ? dailyRets.reduce((s, v) => s + v, 0) / nDays : 0;
-    const dailyVar = nDays > 1
-        ? dailyRets.reduce((s, v) => s + (v - meanDailyRet) ** 2, 0) / (nDays - 1)
+    // Both Sharpe and Sortino use population variance (divide by N) — the sample-vs-population
+    // distinction is negligible for daily returns of a single bot (68+ days of data).
+    const dailyVar = nDays > 0
+        ? dailyRets.reduce((s, v) => s + (v - meanDailyRet) ** 2, 0) / nDays
         : 0;
     const dailyStd = Math.sqrt(dailyVar);
     const annFactor = Math.sqrt(365);
     const sharpe = dailyStd > 0 ? (meanDailyRet / dailyStd) * annFactor : 0;
 
-    // Sortino: downside deviation (only negative returns in numerator; all days in denominator)
-    const downsideVar = nDays > 1
-        ? dailyRets.reduce((s, v) => s + (v < 0 ? v * v : 0), 0) / (nDays - 1)
+    // Sortino: downside deviation uses only negative returns in numerator; same N denominator
+    const downsideVar = nDays > 0
+        ? dailyRets.reduce((s, v) => s + (v < 0 ? v * v : 0), 0) / nDays
         : 0;
     const downsideStd = Math.sqrt(downsideVar);
     const sortino = downsideStd > 0 ? (meanDailyRet / downsideStd) * annFactor : 0;
@@ -814,15 +837,15 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         orderMap.set(r.exitOrderId, (orderMap.get(r.exitOrderId) || 0) + 1);
     }
     for (const c of orderMap.values()) fillCounts.push(c);
-    const distinctSellOrders = orderMap.size;
-    const fillsPerOrderMean = distinctSellOrders > 0
-        ? fillCounts.reduce((s, v) => s + v, 0) / distinctSellOrders
+    const sellOrdersFilled = orderMap.size;
+    const fillsPerOrderMean = sellOrdersFilled > 0
+        ? fillCounts.reduce((s, v) => s + v, 0) / sellOrdersFilled
         : 0;
-    const fillsPerOrderMax = distinctSellOrders > 0 ? Math.max(...fillCounts) : 0;
+    const fillsPerOrderMax = sellOrdersFilled > 0 ? Math.max(...fillCounts) : 0;
     const sortedCounts = [...fillCounts].sort((a, b) => a - b);
-    const fillsPerOrderMedian = distinctSellOrders > 0 ? percentile(sortedCounts, 50) : 0;
-    const singleFillOrderRatio = distinctSellOrders > 0
-        ? fillCounts.filter(c => c === 1).length / distinctSellOrders
+    const fillsPerOrderMedian = sellOrdersFilled > 0 ? percentile(sortedCounts, 50) : 0;
+    const oneShotOrderRatio = sellOrdersFilled > 0
+        ? fillCounts.filter(c => c === 1).length / sellOrdersFilled
         : 0;
     const fillsPerDay = nDays > 0 ? total / nDays : 0;
     const avgVolumePerDay = nDays > 0 ? (pair.totalBuyQuote + pair.totalSellQuote) / nDays : 0;
@@ -838,7 +861,7 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
             hourCount++;
         }
     }
-    const avgHoursPerCycle = hourCount > 0 ? totalHours / hourCount : 0;
+    const avgHoldHours = hourCount > 0 ? totalHours / hourCount : 0;
 
     // Max consecutive wins / losses (aggregated by exit order — one round-trip per order)
     const orderPnls = new Map<string, { pnl: number; time: string }>();
@@ -862,56 +885,76 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     }
 
     // ─── Max Drawdown + Recovery Time (equity curve) ────────────────────
+    const STABILITY_TRADES = 3;
     const chronological = [...pnls].sort((a, b) =>
         a.exitTime < b.exitTime ? -1 : a.exitTime > b.exitTime ? 1 : 0
     );
     let equity = 0, peak = 0, mddPct = 0;
     let maxRecoveryDays = 0;
+    let isOngoingRecovery = false;
+    let currentDrawdownDays = 0;
+    let drawdownStartTime = 0;
     let troughTime = 0;
     let currentTroughEquity = Infinity;
-    let hadPositivePeak = false;
+    let hadStablePeak = false;
+    let tradesSincePeakSet = 0;
     let prePeakMinEquity = 0;
 
     for (const r of chronological) {
         equity += r.pnlNet;
         if (equity > peak) {
-            // New high — record recovery from trough if coming out of a drawdown
-            if (troughTime > 0) {
+            // Record recovery from drawdown if we had a stable peak
+            if (troughTime > 0 && hadStablePeak) {
                 const recoveryDays = (new Date(r.exitTime).getTime() - troughTime) / 86400000;
                 if (recoveryDays > maxRecoveryDays) maxRecoveryDays = recoveryDays;
             }
             peak = equity;
+            tradesSincePeakSet = 0;
             currentTroughEquity = Infinity;
             troughTime = 0;
-        } else if (equity < peak) {
+            drawdownStartTime = 0;
+        } else {
+            tradesSincePeakSet++;
+            if (tradesSincePeakSet >= STABILITY_TRADES) {
+                hadStablePeak = true;
+            }
+        }
+
+        // Only measure drawdowns once the peak is stable (avoids tiny-denominator artifacts)
+        if (hadStablePeak && equity < peak) {
+            if (drawdownStartTime === 0) drawdownStartTime = new Date(r.exitTime).getTime();
             if (equity < currentTroughEquity) {
                 currentTroughEquity = equity;
                 troughTime = new Date(r.exitTime).getTime();
             }
-        }
-
-        if (peak > 0) {
-            hadPositivePeak = true;
             const dd = (equity - peak) / peak;
             if (dd < mddPct) mddPct = dd;
-        } else if (equity < prePeakMinEquity) {
-            prePeakMinEquity = equity;
+        }
+
+        if (peak > 0 && !hadStablePeak) {
+            if (equity < prePeakMinEquity) prePeakMinEquity = equity;
         }
     }
 
-    if (hadPositivePeak) {
+    // Compute current drawdown duration from start of the drawdown to last trade
+    if (drawdownStartTime > 0 && hadStablePeak) {
+        const lastTime = new Date(chronological[chronological.length - 1].exitTime).getTime();
+        currentDrawdownDays = (lastTime - drawdownStartTime) / 86400000;
+        isOngoingRecovery = true;
+        // Also include in maxRecoveryDays if it exceeds any completed recovery
+        if (currentDrawdownDays > maxRecoveryDays) {
+            maxRecoveryDays = currentDrawdownDays;
+        }
+    }
+
+    if (hadStablePeak) {
         mddPct *= 100;
     } else {
         mddPct = prePeakMinEquity;
     }
 
     // Payoff distribution stats (per-trade PnL% for distribution, not Sharpe)
-    const returnsPct = pnls.map(r => r.pnlPct);
-    const meanRetPct = returnsPct.reduce((s, v) => s + v, 0) / returnsPct.length;
-    const n = returnsPct.length;
-    const varRetPct = n > 1 ? returnsPct.reduce((s, v) => s + (v - meanRetPct) ** 2, 0) / (n - 1) : 0;
-    const stdRet = Math.sqrt(varRetPct);
-    const pnlPcts = [...returnsPct].sort((a, b) => a - b);
+    const pnlPcts = [...pnls.map(r => r.pnlPct)].sort((a, b) => a - b);
     const medianPnlPct = percentile(pnlPcts, 50);
     const p25PnlPct = percentile(pnlPcts, 25);
     const p75PnlPct = percentile(pnlPcts, 75);
@@ -945,12 +988,14 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         feeDragPct,
         maxConsecWins: maxW,
         maxConsecLosses: maxL,
-        avgHoursPerCycle,
-        makerRatioLegs: total > 0 ? makerLegCount / (total * 2) : 0,
+        avgHoldHours,
+        limitOrderRatio: total > 0 ? totalMakerLegs / (total * 2) : 0,
         bestTradePct,
         worstTradePct,
         mddPct,
-        mddHadPositivePeak: hadPositivePeak,
+        mddHadStablePeak: hadStablePeak,
+        isOngoingRecovery,
+        currentDrawdownDays,
         maxRecoveryDays,
         medianPnlPct,
         p25PnlPct,
@@ -959,11 +1004,11 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         pctRGreater1,
         pctRGreater2,
         pctRLessNeg1,
-        distinctSellOrders,
+        sellOrdersFilled,
         fillsPerOrderMean,
         fillsPerOrderMedian,
         fillsPerOrderMax,
-        singleFillOrderRatio,
+        oneShotOrderRatio,
         fillsPerDay,
         avgVolumePerDay,
     };
@@ -980,49 +1025,53 @@ function printMetrics(pairs: PairAnalysis[], periodHours: number = 8760) {
         console.log(` ── ${pairLabel} — Performance Metrics`);
         console.log('');
         // Edge
-        console.log(`  Win Rate:              ${(m.winRate * 100).toFixed(1)}%`);
-        console.log(`  Profit Factor:         ${m.profitFactor === Infinity ? '∞' : m.profitFactor.toFixed(2)}`);
-        console.log(`  Fee Drag:              ${m.feeDragPct.toFixed(2)}% of gross profit`);
-        console.log(`  Avg Win / Avg Loss:    ${m.avgWinLossRatio === Infinity ? '∞' : m.avgWinLossRatio.toFixed(2)}`);
-        console.log(`  Expectancy (gross):    ${fmt(m.expectancyBts, 4)} BTS (${fmtPct(m.expectancyPct)}) per trade`);
+        console.log(`  Win Rate:             ${(m.winRate * 100).toFixed(1)}%`);
+        console.log(`  Profit Factor:        ${m.profitFactor === Infinity ? '∞' : m.profitFactor.toFixed(2)}`);
+        console.log(`  Fee Drag:             ${m.feeDragPct.toFixed(2)}% of gross profit`);
+        console.log(`  Avg Win / Avg Loss:   ${m.avgWinLossRatio === Infinity ? '∞' : m.avgWinLossRatio.toFixed(2)}`);
+        console.log(`  Expectancy (gross):   ${fmt(m.expectancyBts, 4)} BTS (${fmtPct(m.expectancyPct)}) per trade`);
         const rDisplay = m.expectancyR === Infinity ? '∞' : m.expectancyR.toFixed(3) + 'R';
-        console.log(`  Expectancy (R):        ${rDisplay}`);
-        console.log(`  Expectancy (net):      ${fmt(m.netExpectancyBts, 4)} BTS per trade`);
+        console.log(`  Expectancy (R):       ${rDisplay}`);
+        console.log(`  Expectancy (net):     ${fmt(m.netExpectancyBts, 4)} BTS per trade`);
         console.log('');
         // Edge quality
-        console.log(`  Median R:              ${m.medianR.toFixed(2)}`);
-        console.log(`  Trades > 1R / > 2R:    ${(m.pctRGreater1 * 100).toFixed(1)}% / ${(m.pctRGreater2 * 100).toFixed(1)}%`);
-        console.log(`  Trades < -1R:          ${(m.pctRLessNeg1 * 100).toFixed(1)}%`);
+        console.log(`  Median R:             ${m.medianR.toFixed(2)}`);
+        console.log(`  Trades > 1R / > 2R:   ${(m.pctRGreater1 * 100).toFixed(1)}% / ${(m.pctRGreater2 * 100).toFixed(1)}%`);
+        console.log(`  Trades < -1R:         ${(m.pctRLessNeg1 * 100).toFixed(1)}%`);
         console.log('');
         // PnL distribution
-        console.log(`  Median PnL:            ${fmtPct(m.medianPnlPct)}`);
-        console.log(`  P25 / P75:             ${fmtPct(m.p25PnlPct)} / ${fmtPct(m.p75PnlPct)}`);
-        console.log(`  Best / Worst Trade:    ${fmtPct(m.bestTradePct)} / ${fmtPct(m.worstTradePct)}`);
+        console.log(`  Median PnL:           ${fmtPct(m.medianPnlPct)}`);
+        console.log(`  P25 / P75:            ${fmtPct(m.p25PnlPct)} / ${fmtPct(m.p75PnlPct)}`);
+        console.log(`  Best / Worst Trade:   ${fmtPct(m.bestTradePct)} / ${fmtPct(m.worstTradePct)}`);
         console.log('');
         // Risk-adjusted
-        console.log(`  Sharpe (ann):          ${m.sharpe.toFixed(2)}`);
-        console.log(`  Sortino (ann):         ${m.sortino.toFixed(2)}`);
+        console.log(`  Sharpe (ann):         ${m.sharpe.toFixed(2)}`);
+        console.log(`  Sortino (ann):        ${m.sortino.toFixed(2)}`);
         console.log('');
         // Tail risk
-        if (m.mddHadPositivePeak) {
-            console.log(`  Max Drawdown:          ${fmtPct(m.mddPct)}`);
+        if (m.mddHadStablePeak) {
+            console.log(`  Max Drawdown:         ${fmtPct(m.mddPct)}`);
         } else {
             console.log(`  Min Equity:            ${fmt(m.mddPct, 4)} BTS`);
         }
-        console.log(`  Max Recov. Time:       ${m.maxRecoveryDays > 0 ? m.maxRecoveryDays.toFixed(1) + ' days' : '—'}`);
+        const recLabel = m.maxRecoveryDays > 0 ? m.maxRecoveryDays.toFixed(1) + ' days' + (m.isOngoingRecovery ? ' (ongoing)' : '') : '—';
+        console.log(`  Max Recov. Time:      ${recLabel}`);
+        if (m.currentDrawdownDays > 0) {
+            console.log(`  Current Drawdown:     ${m.currentDrawdownDays.toFixed(1)} days (active)`);
+        }
         console.log('');
         // Behavioral
-        console.log(`  Max Consec Wins:       ${m.maxConsecWins}  /  Losses: ${m.maxConsecLosses}  (round-trips by exit order)`);
-        const cycleDisplay = m.avgHoursPerCycle > 0 ? m.avgHoursPerCycle.toFixed(1) : '—';
-        console.log(`  Avg Cycle Time:        ${cycleDisplay} hours`);
-        console.log(`  Maker / Taker (legs):  ${(m.makerRatioLegs * 100).toFixed(1)}% / ${((1 - m.makerRatioLegs) * 100).toFixed(1)}%`);
+        console.log(`  Max consec W/L:       ${m.maxConsecWins} / ${m.maxConsecLosses}`);
+        const holdDisplay = m.avgHoldHours > 0 ? m.avgHoldHours.toFixed(1) : '—';
+        console.log(`  Avg hold time:        ${holdDisplay} hours`);
+        console.log(`  Limit / Market:       ${(m.limitOrderRatio * 100).toFixed(1)}% / ${((1 - m.limitOrderRatio) * 100).toFixed(1)}%`);
         console.log('');
         // Activity
-        console.log(`  Active orders:         ${m.distinctSellOrders}`);
-        console.log(`  Fills/order:           ${m.fillsPerOrderMean.toFixed(2)} mean, ${m.fillsPerOrderMedian.toFixed(1)} med, ${m.fillsPerOrderMax} max`);
-        console.log(`  Single-fill orders:    ${(m.singleFillOrderRatio * 100).toFixed(0)}%`);
-        console.log(`  Fills/day:             ${m.fillsPerDay.toFixed(2)}`);
-        console.log(`  Avg vol/day:           ${fmt(m.avgVolumePerDay, 2)} ${fmtAsset(pair.quoteAsset)}`);
+        console.log(`  Sell orders filled:   ${m.sellOrdersFilled}`);
+        console.log(`  Partial fills/order:  ${m.fillsPerOrderMean.toFixed(2)} mean, ${m.fillsPerOrderMedian.toFixed(1)} med, ${m.fillsPerOrderMax} max`);
+        console.log(`  One-shot orders:      ${(m.oneShotOrderRatio * 100).toFixed(0)}%`);
+        console.log(`  Fills/day:            ${m.fillsPerDay.toFixed(2)}`);
+        console.log(`  Avg vol/day:          ${fmt(m.avgVolumePerDay, 2)} ${fmtAsset(pair.quoteAsset)}`);
         console.log('');
 
     }
@@ -1187,7 +1236,7 @@ async function run() {
     // Output: summaries → grand total → per-match detail
     printSummary(analyses, accountId, gte, lte, opts.matchMode);
 
-    if (opts.pnlSummary) {
+    if (opts.showPnlDetail) {
         printPnlDetail(analyses);
     }
 
