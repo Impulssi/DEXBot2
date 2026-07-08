@@ -2,15 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.0.9] - 2026-07-06 - Trade PnL Analysis Tool & AMA Slope Tuning
+## [1.0.10] - 2026-07-08 - PnL Metrics Overhaul, Kalman Tuning & Bot Discovery Fix
 
 ### 2026-07-06
 
-- **Feat**: add `analysis/trade_profitability.ts` — Kibana-driven FIFO/Sequential PnL analysis tool for any BitShares account. Fetches fill_order operations from kibana.bitshares.dev, classifies fills as buy/sell per asset pair, computes realized PnL via chronological FIFO matching. Paginated ES queries (search_after), on-chain asset precision resolution, CSV/JSON export (`879d7209`).
-- **Feat**: trade PnL metrics overhaul — sequential (LIFO) matching mode (default), 16 algo-trading metrics (win rate, profit factor, expectancy, Sharpe, Sortino, max drawdown, cycle timing, maker/taker ratio), flat-fee deduction (`BLOCKCHAIN_FEE_PER_FILL = 0.09652` BTS), net PnL with fee breakdown (`ab4a403d`).
-- **Chore**: reduce `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` from 0.085 to 0.08 — slightly more sensitive to trend, AMA channel reaches max influence more easily (`0ba19df5`).
-- **Docs**: expanded analysis/README.md with tool usage and methodology; updated docs/README.md, DEXBOT_COMPARISON.md, EVOLUTION.md for PnL tracking.
-- **Chore**: version bumped to 1.0.9 across all manifests.
+ - **Fix**: remove cancel-ratio pre-filter from DEXBot account discovery — bots with high fill rates were incorrectly excluded from discovery results because they cancel few orders despite clear grid behavior. Grid analysis now solely determines DEXBot candidacy. Candidates found: 48→59 (`d514489f`).
+- **Chore**: increase `DYNAMIC_WEIGHT_KALMAN_MAX_SLOPE_PCT` from 0.75 to 0.8 — requires slightly stronger Kalman confirmation before the signal reaches full effect, matching the AMA-side tuning from v1.0.9 (`33eb4a5c`).
+
+### 2026-07-07
+
+- **Docs**: sync README updater default (ON→OFF) — `UPDATER.ACTIVE` was changed to `false` in v1.0.2 but README still listed the default as ON (`d3ee3f1b`).
+- **Docs**: sync AGENTS.md with analysis scripts and claw modules — expanded from 7 to 15 analysis entries, consolidated claw module list, added `chain_queries`, `chain_broadcast`, `position_discovery`, `liquidity_pools` (`d5cead90`).
+
+### 2026-07-08
+
+- **Feat**: comprehensive trade PnL audit and cleanup — fixed fee accounting (per-lot→per-order), Sortino denominator, Sharpe capital divisor, maxRecoveryDays (peak-to-peak→trough-to-peak), cross-pair classification (now produces buys), early drawdown tracking, `percentile` interpolation, CSV quoting, maker ratio (both legs). Removed dead code (`avgBuyPrice`/`avgSellPrice`/`matchedBuyBase`/`matchedBuyQuote`). Default flow simplified: metrics on, detail off. Added activity metrics: fills-per-order distribution (mean/med/max, single-fill ratio), fills/day, avg volume/day. Streak count aggregated by exit order (round-trips). Removed Std PnL, skewness, kurtosis. Clean metric glossary in README. Flag cleanup: `--trades` re-enabled, `--no-pnl-summary` removed from help.
+- **Chore**: version bumped to 1.0.10 across all manifests.
 
 ## [1.0.8] - 2026-07-05 - System Invariants Expansion & Shared Runtime Fix
 

@@ -705,7 +705,7 @@ async function testCredentialDaemonPreflightBlocksBroadcast() {
         }]
     ]);
     const { bot, manager } = createCowExecutionFixture(masterOrders);
-    bot.privateKey = chainKeys.createDaemonSigningToken('bbot9', {
+    bot.privateKey = chainKeys.createDaemonSigningToken('1.2.x', {
         socketPath: '/tmp/missing-dexbot-cred.sock'
     });
 

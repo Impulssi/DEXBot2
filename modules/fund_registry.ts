@@ -56,7 +56,7 @@ function _ensureAccount(registry: any, account: string): any {
 /**
  * Register a bot's allocation on an account for a given side.
  * Called during bot startup.
- * @param {string} account - Blockchain account name (e.g., 'bbot9')
+ * @param {string} account - Blockchain account name (e.g., '1.2.x')
  * @param {string} botName - Bot identifier (e.g., 'XRP-BTS' or botKey)
  * @param {'buy'|'sell'} side - Trade side
  * @param {number|string} percentage - Percentage value (e.g., 1.0 or '100%')
@@ -81,7 +81,7 @@ async function registerAllocation(account: string, botName: string, side: 'buy' 
 /**
  * Register a credit bot's collateral allocation on an account for a given collateral asset.
  * Called during bot startup for bots with debtPolicy.lending entries.
- * @param {string} account - Blockchain account name (e.g., 'bbot9')
+ * @param {string} account - Blockchain account name (e.g., '1.2.x')
  * @param {string} botName - Bot identifier (e.g., 'Credit-BTS-USDT-a1b2c3d4')
  * @param {string} collateralAssetId - Canonical collateral asset ID (e.g., '1.3.0')
  * @param {number|string} percentage - Percentage value (e.g., 1.0 or '100%')

@@ -134,6 +134,7 @@ interface InventoryLot {
     price: number;
     time: string;
     entryOrderId: string;
+    entryIsMaker: boolean;
 }
 
 interface RealizedPnl {
@@ -149,7 +150,8 @@ interface RealizedPnl {
     exitTime: string;
     entryOrderId: string;
     exitOrderId: string;
-    isMaker: boolean;
+    entryIsMaker: boolean;
+    exitIsMaker: boolean;
 }
 
 interface PairAnalysis {
@@ -190,9 +192,9 @@ Options:
   --node <url>           BitShares node URL (default: wss://dex.iobanker.com/ws)
   --csv <file>           Export trade list as CSV
   --json <file>          Export full analysis as JSON
-  --no-pnl-summary       Skip per-order PnL breakdown, only show pair summary
+  --trades               Show per-order PnL detail (hidden by default)
   --match-mode <mode>    Matching mode: sequential (default, LIFO) or fifo
-  --metrics              Print standard algo-trading metrics (Sharpe, profit factor, etc.)
+  --metrics              Show standard algo-trading metrics (on by default)
   --verbose              Print extra debug info
   --help, -h             Show this help
 
@@ -221,9 +223,9 @@ function parseArgs() {
         node: 'wss://dex.iobanker.com/ws',
         csv: null,
         json: null,
-        trades: false,
         matchMode: 'sequential',
         metrics: true,
+        pnlSummary: false,
         verbose: false,
     };
 
@@ -237,7 +239,7 @@ function parseArgs() {
             case '--node':         opts.node     = args[++i]; break;
             case '--csv':          opts.csv      = args[++i]; break;
             case '--json':         opts.json     = args[++i]; break;
-            case '--trades':         opts.trades      = true; break;
+            case '--trades':         opts.pnlSummary  = true; break;
             case '--match-mode': {
                 const m = args[++i];
                 if (m !== 'sequential' && m !== 'fifo') {
@@ -248,6 +250,7 @@ function parseArgs() {
                 break;
             }
             case '--metrics':        opts.metrics   = true; break;
+            case '--no-pnl-summary': opts.pnlSummary = false; break;
             case '--verbose':        opts.verbose   = true; break;
             default:
                 console.error(`Unknown option: ${args[i]}`);
@@ -446,13 +449,13 @@ function classifyFills(fills: FillRecord[], filterAsset: string | null): { trade
             quoteAmount = toReal(f.receives.amount, BTS_ID);
             price = quoteAmount / baseAmount;
         } else {
-            // Non-BTS cross-pair (neither side is BTS): treat pays as the
-            // sold asset and receives as the bought asset.
-            direction = 'sell';
-            baseAsset = pAsset;
-            quoteAsset = rAsset;
-            baseAmount = toReal(f.pays.amount, pAsset);
-            quoteAmount = toReal(f.receives.amount, rAsset);
+            // Non-BTS cross-pair: use consistent ordering (lower asset ID = base)
+            const isSell = pAsset < rAsset;
+            direction = isSell ? 'sell' : 'buy';
+            baseAsset = isSell ? pAsset : rAsset;
+            quoteAsset = isSell ? rAsset : pAsset;
+            baseAmount = toReal(isSell ? f.pays.amount : f.receives.amount, baseAsset);
+            quoteAmount = toReal(isSell ? f.receives.amount : f.pays.amount, quoteAsset);
             price = quoteAmount / baseAmount;
         }
 
@@ -496,9 +499,6 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
     const inventory: InventoryLot[] = [];
     const realizedPnls: RealizedPnl[] = [];
     let unmatchedSellBase = 0;
-    let unmatchedFillCount = 0;
-    let matchedBuyBase = 0;
-    let matchedBuyQuote = 0;
 
     for (const trade of all) {
         if (trade.direction === 'buy') {
@@ -507,6 +507,7 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
                 price: trade.price,
                 time: trade.time,
                 entryOrderId: trade.orderId,
+                entryIsMaker: trade.isMaker,
             });
         } else {
             let remaining = trade.baseAmount;
@@ -519,9 +520,9 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
 
                 const pnl = (trade.price - lot.price) * matched;
                 const pnlPct = lot.price > 0 ? ((trade.price - lot.price) / lot.price) * 100 : 0;
-                const feeBts = BLOCKCHAIN_FEE_PER_FILL * 2; // buy order_create + sell order_create
-                const pnlNet = pnl - feeBts;
-                const pnlNetPct = lot.price > 0 ? (pnlNet / (lot.price * matched)) * 100 : 0;
+                const feeBts = 0;
+                const pnlNet = pnl;
+                const pnlNetPct = pnlPct;
 
                 realizedPnls.push({
                     sellPrice: trade.price,
@@ -536,11 +537,10 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
                     exitTime: trade.time,
                     entryOrderId: lot.entryOrderId,
                     exitOrderId: trade.orderId,
-                    isMaker: trade.isMaker,
+                    entryIsMaker: lot.entryIsMaker,
+                    exitIsMaker: trade.isMaker,
                 });
 
-                matchedBuyBase += matched;
-                matchedBuyQuote += lot.price * matched;
                 lot.amount -= matched;
                 remaining -= matched;
 
@@ -554,24 +554,18 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
             }
 
             if (remaining > 0.00000001) {
-                if (Math.abs(remaining - trade.baseAmount) < 0.00000001) {
-                    unmatchedFillCount++; // entire sell fill had no buy to match
-                }
                 unmatchedSellBase += remaining;
             }
         }
     }
 
-    // Add flat fee for 100% unmatched sell fills (each paid a real on-chain fee, no matched lot to carry it)
-    const unmatchedFee = unmatchedFillCount * BLOCKCHAIN_FEE_PER_FILL;
-    const totalFees = realizedPnls.reduce((s, r) => s + r.feeBts, 0) + unmatchedFee;
+    // Fee accounting: each distinct order pays one limit_order_create fee, regardless of partial fills
+    const buyOrderIds = new Set(buys.map(t => t.orderId));
+    const sellOrderIds = new Set(sells.map(t => t.orderId));
+    const totalFees = (buyOrderIds.size + sellOrderIds.size) * BLOCKCHAIN_FEE_PER_FILL;
     const totalRealizedPnl = realizedPnls.reduce((s, r) => s + r.pnl, 0);
     const totalRealizedPnlNet = totalRealizedPnl - totalFees;
     const netPosition = totalBuyBase - totalSellBase;
-    const avgBuyPrice = matchedBuyBase > 0 ? matchedBuyQuote / matchedBuyBase : 0;
-    const avgSellPrice = realizedPnls.length > 0
-        ? realizedPnls.reduce((s, r) => s + r.sellPrice * r.amount, 0) / realizedPnls.reduce((s, r) => s + r.amount, 0)
-        : 0;
     const baseAsset = trades[0]?.baseAsset ?? '';
     const quoteAsset = trades[0]?.quoteAsset ?? '';
 
@@ -627,10 +621,10 @@ function printSummary(pairs: PairAnalysis[], accountId: string, start: string, e
         console.log(` ── ${pairLabel}`);
         console.log(`    Buys:        ${fmt(totalBought, 4)} @ ${fmt(avgBuy, 6)} = ${fmt(pair.totalBuyQuote, 4)} ${fmtAsset(pair.quoteAsset)}`);
         console.log(`    Sells:       ${fmt(totalSold, 4)} @ ${fmt(avgSell, 6)} = ${fmt(pair.totalSellQuote, 4)} ${fmtAsset(pair.quoteAsset)}`);
-        console.log(`    Net pos:     ${fmt(pair.netPosition, 4)} ${fmtAsset(pair.baseAsset)}`);
+        console.log(`    Net traded:  ${fmt(pair.netPosition, 4)} ${fmtAsset(pair.baseAsset)} (window flow)`);
         console.log(`    Trades:      ${pair.realizedPnls.length} matched lots, ${pair.buys.length} buys, ${pair.sells.length} sells`);
         if (pair.unmatchedSellBase > 0.0001) {
-            console.log(`    Unmatched:   ${fmt(pair.unmatchedSellBase, 4)} ${fmtAsset(pair.baseAsset)} sold without prior buy`);
+            console.log(`    Unmatched:   ${fmt(pair.unmatchedSellBase, 4)} ${fmtAsset(pair.baseAsset)} (sold without prior buy in window — expected if inventory predates window)`);
         }
         console.log(`    Realized PnL: ${fmtAsset(pair.quoteAsset)} ${fmt(pair.totalRealizedPnl, 4)}`);
         const feeLabel = pair.totalFees > 0 ? ` (fees: ${fmt(pair.totalFees, 4)} BTS)` : '';
@@ -648,6 +642,10 @@ function printSummary(pairs: PairAnalysis[], accountId: string, start: string, e
         console.log(`    Volume:       ${fmt(grandTotalVolume, 4)}`);
         console.log('');
     }
+    console.log(`  Note: PnL assumes matched buys back matched sells within the window.`);
+    console.log(`        If inventory predates the window or crosses asset pairs,`);
+    console.log(`        the matched lots may not reflect true trade economics.`);
+    console.log('');
 }
 
 function printPnlDetail(pairs: PairAnalysis[]) {
@@ -659,7 +657,7 @@ function printPnlDetail(pairs: PairAnalysis[]) {
         console.log(` ── ${pairLabel} — Realized PnL Detail`);
         console.log('');
 
-        const hdr = ' #   Buy Price    Sell Price   Amount    PnL         PnL%      FeeBTS   Net PnL     Net%     Maker  Entry Time              Exit Time';
+        const hdr = ' #   Buy Price    Sell Price   Amount    PnL         PnL%      FeeBTS   Net PnL     Net%     Legs  Entry Time              Exit Time';
         console.log(hdr);
         console.log(' ' + '─'.repeat(hdr.length - 1));
 
@@ -674,7 +672,7 @@ function printPnlDetail(pairs: PairAnalysis[]) {
             const feeStr = fmt(r.feeBts, 4).padStart(8);
             const netStr = fmt(r.pnlNet, 6).padStart(10);
             const netPctStr = fmtPct(r.pnlNetPct).padStart(8);
-            const mk = r.isMaker ? '  M ' : '  T ';
+            const mk = (r.entryIsMaker ? 'M' : 'T') + '/' + (r.exitIsMaker ? 'M' : 'T') + ' ';
             const et = (r.entryTime || '').slice(0, 22).padEnd(22);
             const xt = (r.exitTime || '').slice(0, 22).padEnd(22);
             console.log(` ${idx}  ${bp}  ${sp}  ${amt}  ${pnlStr}  ${pctStr}  ${feeStr}  ${netStr}  ${netPctStr}  ${mk}  ${et}  ${xt}`);
@@ -701,18 +699,24 @@ interface TradingMetrics {
     maxConsecWins: number;
     maxConsecLosses: number;
     avgHoursPerCycle: number;
-    makerRatioCloses: number;
+    makerRatioLegs: number;
     bestTradePct: number;
     worstTradePct: number;
     mddPct: number;
+    mddHadPositivePeak: boolean;
     medianPnlPct: number;
     p25PnlPct: number;
     p75PnlPct: number;
-    stdPnlPct: number;
-    skewness: number;
-    kurtosis: number;
+
     feeDragPct: number;
     maxRecoveryDays: number;
+    distinctSellOrders: number;
+    fillsPerOrderMean: number;
+    fillsPerOrderMedian: number;
+    fillsPerOrderMax: number;
+    singleFillOrderRatio: number;
+    fillsPerDay: number;
+    avgVolumePerDay: number;
     medianR: number;
     pctRGreater1: number;
     pctRGreater2: number;
@@ -720,8 +724,14 @@ interface TradingMetrics {
 }
 
 function percentile(sorted: number[], p: number): number {
-    const i = Math.floor(sorted.length * p / 100);
-    return sorted[Math.min(i, sorted.length - 1)];
+    const n = sorted.length;
+    if (n === 0) return 0;
+    if (n === 1) return sorted[0];
+    const k = (p / 100) * (n - 1);
+    const f = Math.floor(k);
+    const c = Math.ceil(k);
+    if (f === c) return sorted[f];
+    return sorted[f] * (c - k) + sorted[c] * (k - f);
 }
 
 function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): TradingMetrics {
@@ -735,19 +745,24 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
             netExpectancyBts: 0,
             sharpe: 0, sortino: 0,
             maxConsecWins: 0, maxConsecLosses: 0,
-            avgHoursPerCycle: 0, makerRatioCloses: 0,
+            avgHoursPerCycle: 0, makerRatioLegs: 0,
             bestTradePct: 0, worstTradePct: 0,
             mddPct: 0,
-            medianPnlPct: 0, p25PnlPct: 0, p75PnlPct: 0, stdPnlPct: 0,
-            skewness: 0, kurtosis: 0, feeDragPct: 0, maxRecoveryDays: 0,
+            mddHadPositivePeak: false,
+            medianPnlPct: 0, p25PnlPct: 0, p75PnlPct: 0,
+            feeDragPct: 0, maxRecoveryDays: 0,
             medianR: 0, pctRGreater1: 0, pctRGreater2: 0, pctRLessNeg1: 0,
+            distinctSellOrders: 0, fillsPerOrderMean: 0, fillsPerOrderMedian: 0,
+            fillsPerOrderMax: 0, singleFillOrderRatio: 0, fillsPerDay: 0, avgVolumePerDay: 0,
         };
     }
 
     const wins = pnls.filter(r => r.pnl > 0);
     const losses = pnls.filter(r => r.pnl < 0);
     const winRate = wins.length / total;
-    const makerCount = pnls.filter(r => r.isMaker).length;
+    const makerEntryCount = pnls.filter(r => r.entryIsMaker).length;
+    const makerExitCount = pnls.filter(r => r.exitIsMaker).length;
+    const makerLegCount = makerEntryCount + makerExitCount;
 
     const grossProfit = wins.reduce((s, r) => s + r.pnl, 0);
     const grossLoss = Math.abs(losses.reduce((s, r) => s + r.pnl, 0));
@@ -771,7 +786,7 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
 
     const netExpectancyBts = pair.totalRealizedPnlNet / total;
 
-    // Daily-binned PnL returns for Sharpe/Sortino
+    // Daily-binned PnL returns for Sharpe/Sortino (dimensionless — not comparable across different account sizes)
     const dayBuckets: Record<string, number> = {};
     for (const r of pnls) {
         const day = r.exitTime.slice(0, 10);
@@ -779,12 +794,9 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     }
     const dailyReturns = Object.values(dayBuckets);
     const nDays = dailyReturns.length;
-    const capital = nDays > 0
-        ? Math.max(pair.totalBuyQuote, pair.totalSellQuote) / nDays
-        : 1;
-    const dailyRets = dailyReturns.map(pnl => pnl / capital);
+    const dailyRets = dailyReturns;
 
-    const meanDailyRet = dailyRets.reduce((s, v) => s + v, 0) / nDays;
+    const meanDailyRet = nDays > 0 ? dailyRets.reduce((s, v) => s + v, 0) / nDays : 0;
     const dailyVar = nDays > 1
         ? dailyRets.reduce((s, v) => s + (v - meanDailyRet) ** 2, 0) / (nDays - 1)
         : 0;
@@ -792,14 +804,32 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     const annFactor = Math.sqrt(365);
     const sharpe = dailyStd > 0 ? (meanDailyRet / dailyStd) * annFactor : 0;
 
-    // Sortino: downside deviation from zero (negative-only semi-variance)
-    const negDailyRets = dailyRets.filter(v => v < 0);
-    const dn = negDailyRets.length;
-    const downsideVar = dn > 1
-        ? negDailyRets.reduce((s, v) => s + v * v, 0) / (dn - 1)
+    // Sortino: downside deviation (only negative returns in numerator; all days in denominator)
+    const downsideVar = nDays > 1
+        ? dailyRets.reduce((s, v) => s + (v < 0 ? v * v : 0), 0) / (nDays - 1)
         : 0;
     const downsideStd = Math.sqrt(downsideVar);
     const sortino = downsideStd > 0 ? (meanDailyRet / downsideStd) * annFactor : 0;
+
+    // Fills-per-order distribution (grouped by sell order)
+    const fillCounts: number[] = [];
+    const orderMap = new Map<string, number>();
+    for (const r of pnls) {
+        orderMap.set(r.exitOrderId, (orderMap.get(r.exitOrderId) || 0) + 1);
+    }
+    for (const c of orderMap.values()) fillCounts.push(c);
+    const distinctSellOrders = orderMap.size;
+    const fillsPerOrderMean = distinctSellOrders > 0
+        ? fillCounts.reduce((s, v) => s + v, 0) / distinctSellOrders
+        : 0;
+    const fillsPerOrderMax = distinctSellOrders > 0 ? Math.max(...fillCounts) : 0;
+    const sortedCounts = [...fillCounts].sort((a, b) => a - b);
+    const fillsPerOrderMedian = distinctSellOrders > 0 ? percentile(sortedCounts, 50) : 0;
+    const singleFillOrderRatio = distinctSellOrders > 0
+        ? fillCounts.filter(c => c === 1).length / distinctSellOrders
+        : 0;
+    const fillsPerDay = nDays > 0 ? total / nDays : 0;
+    const avgVolumePerDay = nDays > 0 ? (pair.totalBuyQuote + pair.totalSellQuote) / nDays : 0;
 
     // Avg cycle time (hold duration) for reference
     let totalHours = 0;
@@ -814,12 +844,24 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     }
     const avgHoursPerCycle = hourCount > 0 ? totalHours / hourCount : 0;
 
-    // Max consecutive wins / losses (by chronological order)
+    // Max consecutive wins / losses (aggregated by exit order — one round-trip per order)
+    const orderPnls = new Map<string, { pnl: number; time: string }>();
+    for (const r of pnls) {
+        const existing = orderPnls.get(r.exitOrderId);
+        if (existing) {
+            existing.pnl += r.pnl;
+        } else {
+            orderPnls.set(r.exitOrderId, { pnl: r.pnl, time: r.exitTime });
+        }
+    }
+    const orderResults = [...orderPnls.values()].sort((a, b) =>
+        a.time < b.time ? -1 : a.time > b.time ? 1 : 0
+    );
     let consecW = 0, consecL = 0;
     let maxW = 0, maxL = 0;
-    for (const r of pnls) {
-        if (r.pnl > 0) { consecW++; consecL = 0; maxW = Math.max(maxW, consecW); }
-        else if (r.pnl < 0) { consecL++; consecW = 0; maxL = Math.max(maxL, consecL); }
+    for (const { pnl } of orderResults) {
+        if (pnl > 0) { consecW++; consecL = 0; maxW = Math.max(maxW, consecW); }
+        else if (pnl < 0) { consecL++; consecW = 0; maxL = Math.max(maxL, consecL); }
         else { consecW = 0; consecL = 0; }
     }
 
@@ -828,22 +870,44 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         a.exitTime < b.exitTime ? -1 : a.exitTime > b.exitTime ? 1 : 0
     );
     let equity = 0, peak = 0, mddPct = 0;
-    let lastPeakTime = 0, maxRecoveryDays = 0;
-    // Max gap between consecutive new equity highs (peak-to-peak), not "time to recover from MDD"
+    let maxRecoveryDays = 0;
+    let troughTime = 0;
+    let currentTroughEquity = Infinity;
+    let hadPositivePeak = false;
+    let prePeakMinEquity = 0;
+
     for (const r of chronological) {
         equity += r.pnlNet;
         if (equity > peak) {
-            if (lastPeakTime > 0) {
-                const recoveryDays = (new Date(r.exitTime).getTime() - lastPeakTime) / 86400000;
+            // New high — record recovery from trough if coming out of a drawdown
+            if (troughTime > 0) {
+                const recoveryDays = (new Date(r.exitTime).getTime() - troughTime) / 86400000;
                 if (recoveryDays > maxRecoveryDays) maxRecoveryDays = recoveryDays;
             }
             peak = equity;
-            lastPeakTime = new Date(r.exitTime).getTime();
+            currentTroughEquity = Infinity;
+            troughTime = 0;
+        } else if (equity < peak) {
+            if (equity < currentTroughEquity) {
+                currentTroughEquity = equity;
+                troughTime = new Date(r.exitTime).getTime();
+            }
         }
-        const dd = peak > 0 ? (equity - peak) / peak : 0;
-        if (dd < mddPct) mddPct = dd;
+
+        if (peak > 0) {
+            hadPositivePeak = true;
+            const dd = (equity - peak) / peak;
+            if (dd < mddPct) mddPct = dd;
+        } else if (equity < prePeakMinEquity) {
+            prePeakMinEquity = equity;
+        }
     }
-    mddPct *= 100;
+
+    if (hadPositivePeak) {
+        mddPct *= 100;
+    } else {
+        mddPct = prePeakMinEquity;
+    }
 
     // Payoff distribution stats (per-trade PnL% for distribution, not Sharpe)
     const returnsPct = pnls.map(r => r.pnlPct);
@@ -855,20 +919,6 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
     const medianPnlPct = percentile(pnlPcts, 50);
     const p25PnlPct = percentile(pnlPcts, 25);
     const p75PnlPct = percentile(pnlPcts, 75);
-    const stdPnlPct = stdRet;
-
-    // Skewness of per-trade PnL% (third moment / std^3)
-    const skewness = n > 2 && stdRet > 0
-        ? returnsPct.reduce((s, v) => s + ((v - meanRetPct) / stdRet) ** 3, 0) * n / ((n - 1) * (n - 2))
-        : 0;
-
-    // Excess kurtosis of per-trade PnL% (fourth moment / std^4 - 3)
-    const kurtosis = n > 3 && stdRet > 0
-        ? (n * (n + 1) / ((n - 1) * (n - 2) * (n - 3)))
-            * returnsPct.reduce((s, v) => s + ((v - meanRetPct) / stdRet) ** 4, 0)
-            - 3 * (n - 1) * (n - 1) / ((n - 2) * (n - 3))
-        : 0;
-
     // R-multiple distribution: each trade's PnL normalized by avg loss (|avgLoss|)
     const absAvgLoss = Math.abs(avgLoss);
     let rValues: number[] = [];
@@ -900,21 +950,26 @@ function computeMetrics(pair: PairAnalysis, periodHours: number = 8760): Trading
         maxConsecWins: maxW,
         maxConsecLosses: maxL,
         avgHoursPerCycle,
-        makerRatioCloses: makerCount / total,
+        makerRatioLegs: total > 0 ? makerLegCount / (total * 2) : 0,
         bestTradePct,
         worstTradePct,
         mddPct,
+        mddHadPositivePeak: hadPositivePeak,
         maxRecoveryDays,
         medianPnlPct,
         p25PnlPct,
         p75PnlPct,
-        stdPnlPct,
-        skewness,
-        kurtosis,
         medianR,
         pctRGreater1,
         pctRGreater2,
         pctRLessNeg1,
+        distinctSellOrders,
+        fillsPerOrderMean,
+        fillsPerOrderMedian,
+        fillsPerOrderMax,
+        singleFillOrderRatio,
+        fillsPerDay,
+        avgVolumePerDay,
     };
 }
 
@@ -946,7 +1001,6 @@ function printMetrics(pairs: PairAnalysis[], periodHours: number = 8760) {
         // PnL distribution
         console.log(`  Median PnL:            ${fmtPct(m.medianPnlPct)}`);
         console.log(`  P25 / P75:             ${fmtPct(m.p25PnlPct)} / ${fmtPct(m.p75PnlPct)}`);
-        console.log(`  Std PnL:               ${fmtPct(m.stdPnlPct)}`);
         console.log(`  Best / Worst Trade:    ${fmtPct(m.bestTradePct)} / ${fmtPct(m.worstTradePct)}`);
         console.log('');
         // Risk-adjusted
@@ -954,16 +1008,25 @@ function printMetrics(pairs: PairAnalysis[], periodHours: number = 8760) {
         console.log(`  Sortino (ann):         ${m.sortino.toFixed(2)}`);
         console.log('');
         // Tail risk
-        console.log(`  Skewness:              ${m.skewness.toFixed(2)}`);
-        console.log(`  Kurtosis:              ${m.kurtosis.toFixed(2)}`);
-        console.log(`  Max Drawdown:          ${fmtPct(m.mddPct)}`);
-        console.log(`  Max Recovery:          ${m.maxRecoveryDays > 0 ? m.maxRecoveryDays.toFixed(1) + ' days' : '—'}`);
+        if (m.mddHadPositivePeak) {
+            console.log(`  Max Drawdown:          ${fmtPct(m.mddPct)}`);
+        } else {
+            console.log(`  Min Equity:            ${fmt(m.mddPct, 4)} BTS`);
+        }
+        console.log(`  Max Recov. Time:       ${m.maxRecoveryDays > 0 ? m.maxRecoveryDays.toFixed(1) + ' days' : '—'}`);
         console.log('');
         // Behavioral
-        console.log(`  Max Consec Wins:       ${m.maxConsecWins}  /  Losses: ${m.maxConsecLosses}`);
+        console.log(`  Max Consec Wins:       ${m.maxConsecWins}  /  Losses: ${m.maxConsecLosses}  (round-trips by exit order)`);
         const cycleDisplay = m.avgHoursPerCycle > 0 ? m.avgHoursPerCycle.toFixed(1) : '—';
         console.log(`  Avg Cycle Time:        ${cycleDisplay} hours`);
-        console.log(`  Maker / Taker (cls):   ${(m.makerRatioCloses * 100).toFixed(1)}% / ${((1 - m.makerRatioCloses) * 100).toFixed(1)}%`);
+        console.log(`  Maker / Taker (legs):  ${(m.makerRatioLegs * 100).toFixed(1)}% / ${((1 - m.makerRatioLegs) * 100).toFixed(1)}%`);
+        console.log('');
+        // Activity
+        console.log(`  Active orders:         ${m.distinctSellOrders}`);
+        console.log(`  Fills/order:           ${m.fillsPerOrderMean.toFixed(2)} mean, ${m.fillsPerOrderMedian.toFixed(1)} med, ${m.fillsPerOrderMax} max`);
+        console.log(`  Single-fill orders:    ${(m.singleFillOrderRatio * 100).toFixed(0)}%`);
+        console.log(`  Fills/day:             ${m.fillsPerDay.toFixed(2)}`);
+        console.log(`  Avg vol/day:           ${fmt(m.avgVolumePerDay, 2)} ${fmtAsset(pair.quoteAsset)}`);
         console.log('');
 
     }
@@ -985,16 +1048,17 @@ function printMetrics(pairs: PairAnalysis[], periodHours: number = 8760) {
 
 function exportCsv(pairs: PairAnalysis[], filePath: string) {
     const fs = require('fs');
+    const esc = (v: any) => { const s = String(v); return /[,"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const lines = ['time,orderId,direction,baseAsset,quoteAsset,baseAmount,quoteAmount,price,isMaker'];
 
     for (const pair of pairs) {
         for (const t of [...pair.buys, ...pair.sells].sort((a, b) => a.sequence - b.sequence)) {
             lines.push([
-                t.time,
-                t.orderId,
-                t.direction,
-                t.baseAsset,
-                t.quoteAsset,
+                esc(t.time),
+                esc(t.orderId),
+                esc(t.direction),
+                esc(t.baseAsset),
+                esc(t.quoteAsset),
                 t.baseAmount,
                 t.quoteAmount,
                 t.price,
@@ -1127,7 +1191,7 @@ async function run() {
     // Output: summaries → grand total → per-match detail
     printSummary(analyses, accountId, gte, lte, opts.matchMode);
 
-    if (opts.trades) {
+    if (opts.pnlSummary) {
         printPnlDetail(analyses);
     }
 

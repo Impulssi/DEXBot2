@@ -60,6 +60,7 @@ When creating commits, prefer high-context commit messages for non-trivial fixes
   - Prefer heredocs for reliability when using `git commit` and `gh pr create`.
 - **Atomicity**: keep unrelated edits out of the commit; document only included changes.
 - **Tone**: use professional, concise language — no personal commentary, verbose explanations, or markdown section headers in commit bodies. Stick to the facts: what changed and why.
+- **No personal information in docs**: never include real account names, addresses, or identifiers in CHANGELOG, README, or any documentation. Use placeholders (e.g. `1.2.x`, `account-name`) in examples. This applies to both new additions and existing entries being edited.
 - **Unrelated working-tree files**: if the diff includes pre-existing dirty files the user wants in a separate commit, use `git add <scope>` to stage only the relevant files. NEVER run `git checkout -- <file>` or `git restore <file>` on those files — that destroys the working-tree content. Let them stay dirty for a future commit.
 
 Recommended CLI patterns (newline-safe):

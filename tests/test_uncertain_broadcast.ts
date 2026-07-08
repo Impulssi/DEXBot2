@@ -151,14 +151,14 @@ async function testBroadcastUncertainErrorCarriesMetadata() {
     console.log('\n[UNC-003] BroadcastUncertainError carries operations, accountName, batchId...');
     const err = new BroadcastUncertainError('test', {
         operations: [{ op_name: 'limit_order_create' }],
-        accountName: 'bbot9',
+        accountName: '1.2.x',
         batchId: 'batch-42',
         payload: { type: 'execute-operations' },
         timeoutMs: 30000
     });
     assert.strictEqual(err.name, 'BroadcastUncertainError');
     assert.strictEqual(err.code, 'BROADCAST_UNCERTAIN');
-    assert.strictEqual(err.accountName, 'bbot9');
+    assert.strictEqual(err.accountName, '1.2.x');
     assert.strictEqual(err.batchId, 'batch-42');
     assert.strictEqual(err.timeoutMs, 30000);
     assert(Array.isArray(err.operations), 'operations should be carried on the error');

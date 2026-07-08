@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.0.9 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.0.10 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
@@ -187,7 +187,10 @@ Subscription health watchdog for silent subscription death detection. BROADCAST_
 Secondary pending-broadcasts deadlock fix (missed call site). Market adapter log duplication in shared runtime (`stdio: 'ignore'`). Bot key resolution utilities extraction, `roundTo` browser error fix, 20 tests. Remove `--use-cached` flag, always resolve to candle cache. Comprehensive system invariants doc expansion with categorized prefixes across all subsystems.
 
 ### v1.0.8 → v1.0.9 (4 commits)
-Trade PnL analysis tool (`analysis/trade_profitability.ts`) — Kibana-driven FIFO/Sequential PnL with 16 algo-trading metrics. Reduced `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` from 0.085 to 0.08 for slightly more sensitive trend detection. Docs expanded for PnL tracking.
+Trade PnL analysis tool (`analysis/trade_profitability.ts`) — Kibana-driven FIFO/Sequential PnL with 16 metrics. Reduced `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` from 0.085 to 0.08. Docs expanded for PnL tracking.
+
+### v1.0.9 → v1.0.10 (10 commits)
+PnL metrics audit and cleanup: fixed fee accounting, Sortino, Sharpe, maxRecoveryDays, cross-pair classification, early drawdown, percentile, CSV quoting, maker ratio. Added activity metrics (fills/order, fills/day, avg volume/day). Streak counting aggregated by exit order. Removed Std PnL/skewness/kurtosis. Kalman slope 0.8. DEXBot discovery cancel-ratio pre-filter removed (48→59 candidates). Docs: README updater default sync, AGENTS.md expansion, metric glossary.
 
 ---
 
@@ -237,7 +240,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 6, 2026 (v1.0.9)
-**Total Commits**: 1684
-**Date Range**: December 2, 2025 - July 6, 2026 (ongoing)
+**Last Updated**: July 8, 2026 (v1.0.10)
+**Total Commits**: 1693
+**Date Range**: December 2, 2025 - July 8, 2026 (ongoing)
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
