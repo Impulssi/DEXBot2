@@ -203,7 +203,6 @@ function buildDynamicWeightInfo(botKey, config) {
   const amaCenterPrice = Number.isFinite(Number(snapshot.amaCenterPrice))
     ? Number(snapshot.amaCenterPrice)
     : (Number.isFinite(Number(snapshot.gridCenterPrice)) ? Number(snapshot.gridCenterPrice) : null);
-  const isAsymmetricBoundsWhitelisted = whitelistFlags.asymmetricBounds === true;
   const rawAsymmetryFactor = dw && Number.isFinite(Number(dw.rawAsymmetryFactor))
     ? Number(dw.rawAsymmetryFactor)
     : null;
@@ -224,7 +223,6 @@ function buildDynamicWeightInfo(botKey, config) {
     centerPrice: Number.isFinite(Number(snapshot.centerPrice)) ? Number(snapshot.centerPrice) : null,
     isRecent,
     updatedAt: Number.isFinite(updatedAtMs) ? new Date(updatedAtMs) : null,
-    asymmetricBoundsEnabled: isAsymmetricBoundsWhitelisted,
     rawAsymmetryFactor,
     appliedAsymmetryFactor,
     maxAsymmetryFactor,
@@ -591,8 +589,7 @@ function analyzeOrder(botData, config, botKey) {
  * Returns null when the bot is not whitelisted or data is incomplete.
  */
 function computeGridRangeScalingDisplay(config, dynamicWeight) {
-  if (!dynamicWeight || !dynamicWeight.asymmetricBoundsEnabled
-    || dynamicWeight.amaCenterPrice == null) {
+  if (!dynamicWeight || dynamicWeight.amaCenterPrice == null) {
     return null;
   }
   const centerPrice = dynamicWeight.amaCenterPrice;
@@ -1270,8 +1267,10 @@ function formatAnalysis(analysis) {
       const ab = analysis.asymmetricBounds;
       const minStr = formatCurrency(ab.resolvedMinPrice);
       const maxStr = formatCurrency(ab.resolvedMaxPrice);
-      const appliedStr = (ab.appliedAsymmetryFactor * 100).toFixed(2) + '%';
-      lines.push(`   Bounds: ${colors.buy}${minStr}${colors.reset} - ${colors.sell}${maxStr}${colors.reset} ${colors.gray}(${appliedStr})${colors.reset}`);
+      const pctStr = ab.appliedAsymmetryFactor !== 0
+        ? ` ${colors.gray}(${(ab.appliedAsymmetryFactor * 100).toFixed(2)}%)${colors.reset}`
+        : '';
+      lines.push(`   Bounds: ${colors.buy}${minStr}${colors.reset} - ${colors.sell}${maxStr}${colors.reset}${pctStr}`);
     }
     lines.push(``);
   }
