@@ -194,7 +194,6 @@ Options:
   --json <file>          Export full analysis as JSON
   --trades               Show per-order PnL detail (hidden by default)
   --match-mode <mode>    Matching mode: sequential (default, LIFO) or fifo
-  --metrics              Show standard algo-trading metrics (on by default)
   --verbose              Print extra debug info
   --help, -h             Show this help
 
@@ -224,7 +223,6 @@ function parseArgs() {
         csv: null,
         json: null,
         matchMode: 'sequential',
-        metrics: true,
         pnlSummary: false,
         verbose: false,
     };
@@ -249,8 +247,6 @@ function parseArgs() {
                 opts.matchMode = m;
                 break;
             }
-            case '--metrics':        opts.metrics   = true; break;
-            case '--no-pnl-summary': opts.pnlSummary = false; break;
             case '--verbose':        opts.verbose   = true; break;
             default:
                 console.error(`Unknown option: ${args[i]}`);
@@ -1196,9 +1192,7 @@ async function run() {
     }
 
     const periodHours = (new Date(lte).getTime() - new Date(gte).getTime()) / 3600000;
-    if (opts.metrics) {
-        printMetrics(analyses, periodHours);
-    }
+    printMetrics(analyses, periodHours);
 
     if (opts.csv) {
         exportCsv(analyses, opts.csv);
