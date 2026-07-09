@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.12] - 2026-07-09 - Whitelist Normalization & CI Updates
+
+### 2026-07-09
+
+- **Fix**: normalize bot entries before whitelist key generation — bot names with mixed formatting now produce consistent whitelist keys, preventing false "not whitelisted" rejections during restart/stop operations (`988bc5a7`).
+- **Fix**: remove green color from ecosystem config success log — the log entry now uses neutral formatting to avoid visual confusion with error states in terminal output (`2e72ee92`).
+- **Ci**: bump docker actions to Node 24-compatible versions — CI pipeline actions updated to work with the latest Node.js runtime (`273ec3e6`).
+- **Chore**: version bumped to 1.0.12 across all manifests.
+
 ## [1.0.11] - 2026-07-09 - Live bots.json, Drawdown Stability & Market Fee Model
 
 ### 2026-07-09
