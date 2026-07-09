@@ -738,14 +738,15 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                 const cpuPct = await readProcCpuPercent(targetPid);
                 const uptime = readProcUptime(targetPid);
 
-                let displayedBots;
-                if (Array.isArray(botInfo?.botNames)) {
-                    displayedBots = botInfo.botNames.map((name) => ({ name: String(name) }));
-                } else if (botInfo?.botName) {
-                    displayedBots = [{ name: String(botInfo.botName) }];
-                } else {
-                    const allBots = listConfiguredBots();
-                    displayedBots = allBots.filter(b => b.active);
+                // Prefer live bots.json (current intent) over the startup snapshot.
+                // Shows what the user configured, even if the wrapper hasn't respawned yet.
+                let displayedBots = listConfiguredBots().filter(b => b.active);
+                if (displayedBots.length === 0) {
+                    if (Array.isArray(botInfo?.botNames)) {
+                        displayedBots = botInfo.botNames.map((name) => ({ name: String(name) }));
+                    } else if (botInfo?.botName) {
+                        displayedBots = [{ name: String(botInfo.botName) }];
+                    }
                 }
 
                 let credPid = null;

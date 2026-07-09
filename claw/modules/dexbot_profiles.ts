@@ -1115,7 +1115,7 @@ function createDexbotProfileAdapter(profileRoot: string, options: Partial<Profil
           ? { ...currentBotsConfig, bots: nextRawEntries }
           : nextEntry;
 
-      await writeJsonPayload(bundle.files.bots, dataToWrite);
+      await baseWriteJsonFileAtomic(bundle.files.bots, dataToWrite);
 
       let triggerPayload = null;
       let triggerPath = null;
@@ -1248,7 +1248,7 @@ function createDexbotProfileAdapter(profileRoot: string, options: Partial<Profil
           ? { ...currentBotsConfig, bots: nextRawEntries }
           : nextEntry;
 
-      await writeJsonPayload(bundle.files.bots, dataToWrite);
+      await baseWriteJsonFileAtomic(bundle.files.bots, dataToWrite);
     } finally {
       await release();
     }
