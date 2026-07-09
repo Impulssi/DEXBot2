@@ -492,17 +492,26 @@ class DEXBot {
             return 0;
         }
 
+        let applied;
         if (typeof this.manager.applyGridUpdateBatch === 'function') {
             await this.manager.applyGridUpdateBatch(updates, context);
-            return updates.length;
+            applied = updates.length;
+        } else {
+            applied = 0;
+            for (const update of updates) {
+                if (typeof this.manager._updateOrder !== 'function') break;
+                await this.manager._updateOrder(update, context);
+                applied++;
+            }
         }
 
-        let applied = 0;
-        for (const update of updates) {
-            if (typeof this.manager._updateOrder !== 'function') break;
-            await this.manager._updateOrder(update, context);
-            applied++;
+        // Persist master grid mutations applied outside COW (stale-order
+        // virtualization, size-drift corrections). These run in the COW catch
+        // handler where the success-path persistGrid is never reached.
+        if (applied > 0 && typeof this.manager.persistGrid === 'function') {
+            await this.manager.persistGrid();
         }
+
         return applied;
     }
 
@@ -1001,8 +1010,13 @@ class DEXBot {
                                             this._log(`Post-reconnect sync: ${syncResult.filledOrders.length} grid order(s) found filled.`, 'info');
                                             await this._processFillsWithBatching(syncResult.filledOrders, new Set(), 'post-reconnect sync fill');
                                             if (this._shuttingDown) return;
-                                            await this.manager.persistGrid();
                                         }
+                                        // Persist any master grid mutations from
+                                        // open-orders reconciliation (orphan adoption,
+                                        // size correction) even when no fills were
+                                        // detected, so the on-disk snapshot stays
+                                        // in sync with the in-memory master grid.
+                                        await this.manager.persistGrid();
                                     }),
                                     new Promise((_, reject) => {
                                         safetyNetTimer = setTimeout(
@@ -2322,6 +2336,12 @@ class DEXBot {
                 fillLockAlreadyHeld: true
             });
             this._preserveMissingCreateBlockersAfterRecovery(preRecoveryMissingCreateBlockers, recoveryResult);
+            // Persist any master grid mutations from the recovery sync. The
+            // caller returned from the COW catch handler before reaching the
+            // success-path persistGrid.
+            if (typeof this.manager.persistGrid === 'function') {
+                await this.manager.persistGrid();
+            }
         } catch (err: any) {
             this.manager?.logger?.log?.(`[COW] CRITICAL: Recovery sync failed after ${reason}: ${err.message}`, 'error');
             if (typeof this.manager?.requestStructuralGridResync === 'function') {
@@ -2843,6 +2863,13 @@ class DEXBot {
             );
         }
 
+        // Persist master grid mutations from the reconciliation sync and any
+        // orphan auto-cancellation that ran above. These apply outside the COW
+        // broadcast path and would otherwise be in-memory only.
+        if (typeof this.manager?.persistGrid === 'function') {
+            await this.manager.persistGrid();
+        }
+
         return { executed: false, hadRotation, uncertain: true, adopted, discarded };
     }
 
@@ -3228,6 +3255,29 @@ class DEXBot {
             // would otherwise remain stuck at REBALANCING permanently, blocking
             // all subsequent fill processing and rebalance attempts.
             this.manager?._clearWorkingGridRef?.();
+            // Persist master grid mutations that may have occurred outside COW
+            // broadcast (e.g., partial-fill size updates applied directly by the
+            // sync engine). Without this, a partial fill that does not trigger a
+            // COW rebalance leaves the in-memory master grid ahead of the on-disk
+            // snapshot, so the updated size is lost on restart.
+            if (typeof this.manager?.persistGrid === 'function') {
+                const persistResult = await this.manager.persistGrid();
+                // persistGrid returns:
+                //   - { isValid: true, skipped: true, suspended: true } when persistence is suspended
+                //   - { isValid: false, reason } when validation rejects the state
+                //   - { isValid: true } on success (skipped is absent/undefined)
+                // Warn only when validation actively rejected the state — not
+                // when persistence was suspended (handled by the persistence
+                // gate elsewhere).
+                if (persistResult
+                    && persistResult.skipped !== true
+                    && persistResult.isValid === false) {
+                    this.manager.logger.log(
+                        `[COW] Master grid persistence validation failed after no-action batch (${contextLabel}): ${persistResult.reason || 'unknown'}`,
+                        'warn'
+                    );
+                }
+            }
             return { executed: false, hadRotation: false, skippedNoActions: true };
         }
         return await this.updateOrdersOnChainBatch(rebalanceResult);
@@ -3306,6 +3356,15 @@ class DEXBot {
         } finally {
             if (typeof this.manager?.resumeFundRecalc === 'function') {
                 await this.manager.resumeFundRecalc();
+            }
+            // End-of-tick safety net: any direct master-grid mutations that
+            // did not reach a known persistGrid() site are still persisted
+            // here. This catches partial-only fill batches that update slot
+            // sizes in-memory via _applyOrderUpdate without triggering a
+            // COW rebalance (the bug that left slot-108 with stale size
+            // 0.3293 instead of 0.0001 across restarts).
+            if (typeof this.manager?.flushGridDirty === 'function') {
+                await this.manager.flushGridDirty('end-of-tick fill processing');
             }
         }
 

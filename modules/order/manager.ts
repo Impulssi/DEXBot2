@@ -462,6 +462,9 @@ class OrderManager {
     _gridVersion: number;
     _gridPersistenceSuspendedReason: any;
     _pendingBroadcasts: Map<any, any>;
+    _gridDirty: boolean;
+    _gridDirtyReasons: Map<string, number>;
+    _gridDirtySince: number | null;
     _metrics: any;
     _currentWorkingGrid: any;
     _cowEngine: any;
@@ -531,6 +534,9 @@ class OrderManager {
         this._gridVersion = 0;
         this._gridPersistenceSuspendedReason = null;
         this._pendingBroadcasts = new Map();
+        this._gridDirty = false;
+        this._gridDirtyReasons = new Map();
+        this._gridDirtySince = null;
 
         this._metrics = {
             fundRecalcCount: 0,
@@ -1003,6 +1009,8 @@ class OrderManager {
             await this.recalculateFunds();
         }
 
+        this._markGridDirty(context, id);
+
         return true;
     }
 
@@ -1036,6 +1044,94 @@ class OrderManager {
             }
             return true;
         });
+    }
+
+    /**
+     * Flag the in-memory master grid as dirty so the next flushGridDirty()
+     * call persists it. Internal helper — every successful _applyOrderUpdate
+     * call ends with this. External callers that mutate the grid through
+     * other paths (e.g. raw `this.orders.set(...)` from a refactor) should
+     * invoke this explicitly so the dirty-flag invariant still holds.
+     *
+     * @param {string} [reason='unknown'] - Context label for diagnostics
+     * @param {string} [orderId=null] - Order that triggered the mutation
+     * @returns {void}
+     */
+    _markGridDirty(reason = 'unknown', orderId: string = null) {
+        this._gridDirty = true;
+        if (this._gridDirtySince == null) {
+            this._gridDirtySince = Date.now();
+        }
+        const key = orderId ? `${reason}:${orderId}` : reason;
+        this._gridDirtyReasons.set(key, (this._gridDirtyReasons.get(key) || 0) + 1);
+    }
+
+    /**
+     * Clear the dirty flag after a successful flush. Internal helper.
+     * @returns {void}
+     */
+    _clearGridDirty() {
+        this._gridDirty = false;
+        this._gridDirtySince = null;
+        this._gridDirtyReasons.clear();
+    }
+
+    /**
+     * Public read-only access to the dirty flag. Used by tick-end safety
+     * nets and by tests/CI to verify the persistence invariant.
+     * @returns {boolean}
+     */
+    isGridDirty() {
+        return this._gridDirty === true;
+    }
+
+    /**
+     * If the master grid has been mutated since the last successful
+     * persistGrid() call, persist it now. This is the end-of-tick safety
+     * net that catches direct _updateOrder() calls (e.g. partial-fill size
+     * updates) that never reach a COW rebalance and therefore never reach
+     * a known persistGrid() site.
+     *
+     * Idempotent: a no-op when the grid is not dirty. Honours
+     * suspendGridPersistence(). Returns the underlying persistGrid()
+     * result, or {skipped:true, reason:'not-dirty'} when the grid is clean.
+     *
+     * @param {string} [contextLabel='flush-grid-dirty'] - Label for logs
+     * @returns {Promise<{skipped?: boolean, suspended?: boolean, isValid?: boolean, reason?: string}>}
+     */
+    async flushGridDirty(contextLabel = 'flush-grid-dirty') {
+        if (!this._gridDirty) {
+            return { skipped: true, reason: 'not-dirty' };
+        }
+        if (this._gridPersistenceSuspendedReason) {
+            this.logger?.log?.(
+                `[PERSISTENCE-FLUSH] Skipping dirty-flush while suspended: ${this._gridPersistenceSuspendedReason}`,
+                'warn'
+            );
+            return { skipped: true, suspended: true, reason: this._gridPersistenceSuspendedReason };
+        }
+        const dirtyCount = this._gridDirtyReasons.size;
+        const dirtySince = this._gridDirtySince;
+        const result = await this.persistGrid(undefined);
+        if (result && result.skipped === true) {
+            // Persistence was deferred (suspension, validation, etc.) — keep
+            // the dirty flag so a later tick can retry.
+            return result;
+        }
+        if (result && result.isValid === false) {
+            this.logger?.log?.(
+                `[PERSISTENCE-FLUSH] Dirty flush validation failed (${contextLabel}): ${result.reason || 'unknown'}`,
+                'warn'
+            );
+            return result;
+        }
+        this._clearGridDirty();
+        this.logger?.log?.(
+            `[PERSISTENCE-FLUSH] Flushed ${dirtyCount} dirty mutation context(s) ` +
+            `(since ${new Date(dirtySince).toISOString()}) via ${contextLabel}`,
+            'info'
+        );
+        return result || { isValid: true };
     }
 
     /**
@@ -1653,6 +1749,18 @@ class OrderManager {
         }
 
         await persistGridSnapshot(this, this.accountOrders, snapshotOrders);
+
+        // On a successful live-grid persist (the default — no explicit
+        // snapshotOrders was passed in), clear the dirty flag so that
+        // a subsequent end-of-tick flushGridDirty() call sees the grid
+        // as clean and skips the second snapshot write. When the caller
+        // passes an explicit snapshotOrders (e.g. from the startup
+        // storeGrid callback), the dirty flag is for the LIVE grid, not
+        // the supplied snapshot, so we leave it alone.
+        if (arguments.length === 0 && this._gridDirty) {
+            this._clearGridDirty();
+        }
+
         return validation;
     }
 

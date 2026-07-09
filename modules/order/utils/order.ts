@@ -360,6 +360,13 @@ async function correctAllPriceMismatches(manager, accountName, privateKey, accou
             const { sleep } = require('./system');
             await sleep(TIMING.SYNC_DELAY_MS);
         }
+        // Persist master grid mutations from surplus-type-mismatch cancellations.
+        // Without this, corrections that cancel an order and convert its grid slot
+        // to a spread placeholder are in-memory only until the next fill-driven or
+        // maintenance-driven persist cycle.
+        if (corrected > 0 && typeof manager.persistGrid === 'function') {
+            await manager.persistGrid();
+        }
         return { corrected, failed, results };
     });
 }

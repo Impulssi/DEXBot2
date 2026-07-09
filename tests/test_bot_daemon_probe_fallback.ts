@@ -1,4 +1,9 @@
 process.env.DEXBOT_SKIP_PROFILE_VALIDATION = '1';
+// Set BOT_NAME before any module loads so Config.BOT_NAME is populated when
+// config.ts is first loaded (via module_cache_stub -> constants.ts ->
+// general_settings.ts -> paths.ts -> config.ts). Without this, Config.ARGS is
+// empty and bot.ts falls through to runtime.exit(1) before the test can run.
+process.env.BOT_NAME = 'XRP-BTS';
 const assert = require('assert');
 const fs = require('fs');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
@@ -27,6 +32,20 @@ const originalArgv = process.argv.slice();
 const originalConsoleLog = console.log;
 const originalConsoleWarn = console.warn;
 const originalConsoleError = console.error;
+
+// Pre-emptively handle unhandled rejections from the bot.ts IIFE or any
+// stubbed async path so a silent process.exit(1) does not hide the error.
+process.on('unhandledRejection', (reason) => {
+    // Restore stubs first so the error is visible on stderr.
+    if (typeof originalConsoleError === 'function') {
+        console.error = originalConsoleError;
+    }
+    if (typeof originalConsoleLog === 'function') {
+        console.log = originalConsoleLog;
+    }
+    console.error('Unhandled rejection in test_bot_daemon_probe_fallback:', reason);
+    process.exit(1);
+});
 
 const logs: any[] = [];
 const warns: any[] = [];
@@ -182,8 +201,13 @@ require('../bot');
         originalConsoleLog('bot daemon probe fallback tests passed');
         process.exit(0);
     } catch (err) {
+        // Restore stubs first, then ensure the error is visible regardless
+        // of stub state. The second process.stderr.write is a belt-and-suspenders
+        // in case the original console.error itself was captured by something
+        // before the test saved originalConsoleError.
         restoreStubs();
         console.error(err);
+        process.stderr.write((err && (err.stack || err.message || String(err))) + '\n');
         process.exit(1);
     }
 })();

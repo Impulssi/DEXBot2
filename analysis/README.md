@@ -1,17 +1,44 @@
 # Analysis
 
-**What this is for:** This directory holds tools that examine your DEXBot's trading behavior and the market data it operates on. You can answer questions like:
+Tools that inspect DEXBot trading behavior and the market data it operates on. Output is interactive HTML charts written to `charts/` (regenerated on each run, not committed); none of this runs in production.
 
-- "Is my bot actually making money?" (`trade_profitability.ts`)
-- "Where did trading volume cluster around my price target?" (`analyze_trade_heatmap.ts`)
-- "Are my buy/sell weights tuned correctly for current market conditions?" (`analyze_dynamic_weight.ts`)
-- "What should my grid spacing and spread be?" (`bot_fitting/`)
+## Contents
 
-All output is interactive HTML charts — not used in production. Runners write self-contained HTML to `charts/`. These files are regenerated on each run and are not committed.
+- [Key Terms](#key-terms)
+- [Quick Start](#quick-start)
+- [Data Prerequisites](#data-prerequisites)
+- [Trade & Portfolio Analysis](#trade--portfolio-analysis)
+- [Charts & Visualization](#charts--visualization)
+- [Trend & Price Analysis](#trend--price-analysis)
+- [Subarea Reference](#subarea-reference)
+- [Shared Helpers](#shared-helpers)
+- [npm Script Shortcuts](#npm-script-shortcuts)
+- [Related Docs](#related-docs)
+
+## Which tool should I use?
+
+| Tool | Ask this when… | One-line command |
+|------|----------------|------------------|
+| [`trade_profitability.ts`](#trade-profitability-analyzer-trade_profitabilityts) | "Is my bot making money?" — PnL, R-multiples, drawdown | `npm run analysis:trade-pnl -- <account-id>` |
+| [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `tsx analysis/analyze_risk_profile.ts --data <lp-file> --ama AMA3` |
+| [`analyze_trade_heatmap.ts`](#trade-heatmap) | "Where did trade volume cluster vs the AMA?" | `tsx analysis/analyze_trade_heatmap.ts --data <lp-file> --ama AMA3` |
+| [`analyze_tradingview.ts`](#tradingview-chart) | "Just give me a candle chart" | `npm run analysis:tradingview -- --bot-key <bot-key>` |
+| [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `tsx analysis/analyze_dynamic_weight.ts --bot-key <bot-key>` |
+| [`analyze_volatility.ts`](#volatility-analyze_volatilityts) | "Both weights clipped too hard / not enough?" | `tsx analysis/analyze_volatility.ts --bot-key <bot-key>` |
+| [`analyze_regime.ts`](#supporting-sub-signals) | "Is the trend/chaos gate too aggressive?" | `tsx analysis/analyze_regime.ts --bot-key <bot-key>` |
+| [`analyze_kalman.ts`](#supporting-sub-signals) | "Is Kalman's contribution to the blend right?" | `tsx analysis/analyze_kalman.ts --bot-key <bot-key>` |
+| [`ama_fitting/`](#ama_fitting) | "Which AMA preset fits this market?" | `tsx analysis/ama_fitting/optimizer_high_resolution.ts --data <lp-file>` |
+| [`bot_fitting/`](#bot_fitting) | "What spread / increment / ratio for my grid?" | `tsx analysis/bot_fitting/backtest_ama_sweep.ts --data <lp-file>` |
+
+> `analyze_derivatives.ts` (SMA / MACD / RSI derivative layer) is legacy and not surfaced — kept for reference only.
+
+> `<account-id>` = a BitShares `1.2.x` account ID or name. `<bot-key>` = a key from `profiles/bots.json`. `<lp-file>` = a JSON file under `market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json`.
 
 ## Key Terms
 
-Before diving in, here's what the common abbreviations mean:
+Common abbreviations used throughout: OHLC, AMA, ER, ATR, Kalman, Hurst, PE, R, LIFO, FIFO, PnL, SMA, VWMA. Full definitions below.
+
+<details><summary>Abbreviation glossary (click to expand)</summary>
 
 | Term | Full name | Plain English |
 |------|-----------|---------------|
@@ -22,25 +49,34 @@ Before diving in, here's what the common abbreviations mean:
 | **Kalman** | Kalman Filter | A mathematical filter that estimates the true trend by separating signal from noise |
 | **Hurst** | Hurst Exponent | A number (0–1) that tells you if the market is trending (>0.5), mean-reverting (<0.5), or random (=0.5) |
 | **PE** | Permutation Entropy | How unpredictable the price pattern is — low PE = orderly trend, high PE = chaos |
+| **R** | Risk multiple | A trade's return measured in "average losing trade" units. A +3R trade earned 3× what a typical loser costs you. |
 | **LIFO** | Last In, First Out | Sell the most recently bought asset first (matches grid-bot cycles) |
 | **FIFO** | First In, First Out | Sell the oldest purchased asset first (conservative, reflects holding cost) |
 | **PnL** | Profit and Loss | Net earnings from trading |
 | **SMA** | Simple Moving Average | Average price over N bars — the basic trend line |
 | **VWMA** | Volume-Weighted Moving Average | Like SMA but gives more weight to bars with higher volume |
 
+</details>
+
 ## Quick Start
 
-Most runners default to the market adapter source — just pass a bot key from `profiles/bots.json`:
+Two entry points, depending on what you're asking:
+
+**"What's my bot doing right now?"** — pass a bot key from `profiles/bots.json`:
 
 ```bash
-# Trade PnL analysis (last 7 days)
-npm run analysis:trade-pnl -- <account-id> --hours 168
-
-# TradingView-style chart
 npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>
+tsx analysis/analyze_dynamic_weight.ts --bot-key <bot-key>
 ```
 
-> The market adapter source reads from `market_adapter/state/market_adapter_centers.json` — make sure the bot has been running and produced state data first.
+**"How much money did my bot make?"** — pass a BitShares account ID or name:
+
+```bash
+npm run analysis:trade-pnl -- 1.2.123456 --hours 168
+```
+
+> The market adapter source reads from `market_adapter/state/market_adapter_centers.json` — run the bot first to populate state.
+> Prefer the `npm run analysis:*` shortcuts; they wrap the `tsx ...` runners with the same flags (see [npm Script Shortcuts](#npm-script-shortcuts) for the full mapping).
 
 ## Data Prerequisites
 
@@ -57,8 +93,15 @@ tsx market_adapter/inputs/fetch_lp_data.ts --pool 133 --precA 4 --precB 5 --inte
 # Via the analysis fetcher (uses Kibana source directly)
 tsx analysis/ama_fitting/fetch_lp_candles.ts --pool 1.19.133 \
   --assetA <ASSET_A> --assetAId <asset_a_id> --assetAPrecision <n> \
-  --assetB <ASSET_B>     --assetBId <asset_b_id>    --assetBPrecision <n>
+  --assetB <ASSET_B> --assetBId <asset_b_id> --assetBPrecision <n>
 ```
+
+Placeholder key:
+
+- `<pair>` — the asset-pair folder name under `market_adapter/data/lp/`.
+- `<id>` — LP pool number you fetched with `--pool`.
+- `<interval>` — candle interval, e.g. `1h`.
+- `<ASSET_A>` / `<ASSET_B>` — asset symbols; `<asset_a_id>` / `<asset_b_id>` their `1.3.x` IDs; `<n>` their on-chain precision.
 
 See [ama_fitting/README.md](ama_fitting/README.md) for full fetch options and data format.
 
@@ -79,37 +122,6 @@ Metrics include:
 - **Max Divergence:** Structural risk limit of the AMA preset.
 - **Quantiles (99.9%, 99.99%, 99.999%):** Safe Range bounds for clamping tiers.
 - **σ_ama_delta:** Std dev of per-bar AMA movement — use this to calibrate `AMA_DELTA_THRESHOLD_PERCENT`.
-
-### Trade Heatmap (`analyze_trade_heatmap.ts`)
-
-Generates a 2D heatmap + summed histogram showing where trade volume concentrates relative to AMA deviation. Time-slice rows show how the distribution evolved; the bottom histogram shows the aggregate bell-curve shape with threshold annotations.
-
-```bash
-tsx analysis/analyze_trade_heatmap.ts \
-  --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
-  --ama AMA3 \
-  --output analysis/charts/trade_heatmap.html \
-  --bin-size 5 \
-  --max-neg 50 \
-  --max-pos 60 \
-  --slice-months 6
-```
-
-**Options:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--data` | — | Path to LP candle JSON (required) |
-| `--ama` | `AMA3` | AMA preset (AMA1–AMA4) |
-| `--output` | `analysis/charts/trade_heatmap.html` | Output path |
-| `--bin-size` | `5` | Percentage points per bin |
-| `--max-neg` | `bin-size × 10` | Max negative deviation % |
-| `--max-pos` | `bin-size × 10` | Max positive deviation % |
-| `--buckets` | — | Total bins (symmetric, overrides `--max-neg/--max-pos`) |
-| `--warmup` | AMA erPeriod | Bars to skip for AMA warmup |
-| `--slice-months` | `12` | Months per time-slice row |
-| `--thresholds` | `1,2,3,5,10,20` | Deviation % thresholds for volume concentration table |
-| `--verbose` | off | Print processing info |
 
 ### Trade Profitability Analyzer (`trade_profitability.ts`)
 
@@ -137,7 +149,7 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
   --hours 168 --match-mode fifo
 ```
 
-**Options:**
+<details><summary>Options (click to expand)</summary>
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -153,6 +165,8 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 | `--trades` | off | Show per-order PnL detail (hidden by default) |
 | `--fee-per-order <bts>` | `0.09652` | Blockchain fee per limit_order_create op (BTS); approximate |
 | `--verbose` | off | Print per-pair trade counts during processing |
+
+</details>
 
 **Asset precision handling:**
 
@@ -173,9 +187,9 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 - **Cross pairs:** For non-BTS pairs, assets are normalised by ordering the lower asset ID as base so buy/sell direction is consistent. PnL is reported in the pair's quote asset — a warning is shown when non-BTS quotes are present.
 - **Programmatic use:** The script exports `analyzePair`, `classifyFills`, `computeMetrics`, and their TypeScript types.
 
-**Metrics glossary** (each line in the metrics output, plain English):
+**Metrics glossary** — `R` = the size of the average losing trade. A +3R trade earned 3× what a typical loser costs you.
 
-> **R** = the size of the average losing trade. Think of it as your "unit of pain" — a trade earning 3R made 3× what a typical loser costs you.
+<details><summary>Per-metric definitions (click to expand)</summary>
 
 | Output line | Meaning |
 |-------------|---------|
@@ -199,7 +213,42 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 | `Fills/day` | Average matched lots per calendar day. Raw activity speed. |
 | `Avg vol/day` | Average daily trading volume in the quote asset. |
 
-## Visualization
+</details>
+
+## Charts & Visualization
+
+### Trade Heatmap (`analyze_trade_heatmap.ts`)
+
+Generates a 2D heatmap + summed histogram showing where trade volume concentrates relative to AMA deviation. Time-slice rows show how the distribution evolved; the bottom histogram shows the aggregate bell-curve shape with threshold annotations.
+
+```bash
+tsx analysis/analyze_trade_heatmap.ts \
+  --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
+  --ama AMA3 \
+  --output analysis/charts/trade_heatmap.html \
+  --bin-size 5 \
+  --max-neg 50 \
+  --max-pos 60 \
+  --slice-months 6
+```
+
+<details><summary>Options (click to expand)</summary>
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data` | — | Path to LP candle JSON (required) |
+| `--ama` | `AMA3` | AMA preset (AMA1–AMA4) |
+| `--output` | `analysis/charts/trade_heatmap.html` | Output path |
+| `--bin-size` | `5` | Percentage points per bin |
+| `--max-neg` | `bin-size × 10` | Max negative deviation % |
+| `--max-pos` | `bin-size × 10` | Max positive deviation % |
+| `--buckets` | — | Total bins (symmetric, overrides `--max-neg/--max-pos`) |
+| `--warmup` | AMA erPeriod | Bars to skip for AMA warmup |
+| `--slice-months` | `12` | Months per time-slice row |
+| `--thresholds` | `1,2,3,5,10,20` | Deviation % thresholds for volume concentration table |
+| `--verbose` | off | Print processing info |
+
+</details>
 
 ### TradingView Chart (`analyze_tradingview.ts`)
 
@@ -245,7 +294,25 @@ ATR-based symmetric volatility penalty. Use when both buy and sell weights are b
 tsx analysis/analyze_volatility.ts --bot-key <bot-key>
 ```
 
-Supporting sub-signals (regime, Kalman, regime windows) are available as standalone analyzers — see `trend_detection/` below.
+### Supporting sub-signals
+
+The asymmetric path depends on three more filters; each ships as a standalone analyzer so you can diagnose the combined chart's sub-signals in isolation.
+
+| Analyzer | Focus | Use when |
+|----------|-------|----------|
+| `analyze_regime.ts` | Hurst + PE regime classification | Trend signals need more or less regime damping |
+| `analyze_regime_windows.ts` | Alternate Hurst / PE window configs | Regime gate is too slow or too noisy |
+| `analyze_kalman.ts` | Kalman velocity / displacement | Isolating the Kalman side of the AMA / Kalman blend |
+
+```bash
+tsx analysis/analyze_regime.ts --bot-key <bot-key>
+tsx analysis/analyze_regime_windows.ts --bot-key <bot-key>
+tsx analysis/analyze_kalman.ts --bot-key <bot-key>
+
+# All also accept explicit LP candle files
+tsx analysis/analyze_volatility.ts \
+  --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
+```
 
 ## Subarea Reference
 
@@ -256,6 +323,21 @@ Shared analyzers and chart renderers for the dynamic-weight signal path. Core en
 **Research docs:**
 - [DYNAMIC_WEIGHT_RESEARCH.md](trend_detection/DYNAMIC_WEIGHT_RESEARCH.md) — AMA+Kalman blend with Hurst/PE regime gating, formula reference, knob guide
 - [SIGNAL_DOCUMENTATION.md](trend_detection/SIGNAL_DOCUMENTATION.md) — legacy SMA/MACD/RSI derivative signal layer
+
+<details><summary>Modules (click to expand)</summary>
+
+| Module | Purpose |
+|--------|---------|
+| `dynamic_weight_chart_generator.ts` | 4-panel uPlot chart with interactive knobs for dynamic weight tuning |
+| `kalman_trend_analyzer.ts` | Kalman filter with tactical (velocity) and modal (displacement) states |
+| `kalman_velocity_smoothing.ts` | Adaptive EMA smoothing for Kalman velocity (kf/kfd/kdt/kfs knobs) |
+| `kalman_chart_generator.ts` | Kalman signal chart generator |
+| `hurst_analyzer.ts` | Hurst Exponent via R/S analysis (rolling 256-bar window) |
+| `permutation_entropy_analyzer.ts` | Permutation Entropy via ordinal pattern counting (m=5, window=54) |
+| `volatility_chart_generator.ts` | ATR volatility / symmetric shift chart generator |
+| `regime_chart_generator.ts` | Regime classification chart generator |
+
+</details>
 
 **Tests:**
 
@@ -282,9 +364,9 @@ The AMA implementation itself lives at `market_adapter/core/strategies/ama.ts`.
 
 **Calibration workflow (ER convergence):**
 
-`calibrate_convergence_er.ts` computes the implied Efficiency Ratio that reproduces the empirical average smoothing constant (SC) from real LP candle data.
+`calibrate_convergence_er.ts` computes the Efficiency Ratio that reproduces the real average smoothing constant (SC) from LP candle data.
 
-In plain terms: the smoothing constant formula squares a weighted blend of the Efficiency Ratio, and because squaring bends the relationship (it's convex), the average of the smoothing constants is *not* the same as the smoothing constant of the average ER. The arithmetic mean ER would underestimate the true convergence speed, so the tool computes the correct value instead.
+Averaging ER first and then applying the SC formula gives a smaller number than applying the formula bar-by-bar and averaging — so the simple mean ER undersells true convergence speed. The tool computes the value the right way.
 
 The current fetched 3-year pool 133 1h dataset calibrates `AMA_CONVERGENCE_ER_AVG` to `0.151`.
 
