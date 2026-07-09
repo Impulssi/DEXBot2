@@ -519,7 +519,7 @@ try {
             ({ generateEcosystemConfig } = require(path.join(PATHS.PROJECT_ROOT, 'pm2')));
         }
         generateEcosystemConfig({ clawOnly: false, exitOnError: false });
-        logSuccess('Ecosystem config regenerated successfully.');
+        log('Ecosystem config regenerated successfully.');
     } catch (err) {
         log(`Warning: Ecosystem config regeneration failed (${err.message}). Continuing with existing config.`);
     }
