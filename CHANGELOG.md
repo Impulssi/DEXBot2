@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.13] - 2026-07-10 - Grid Persistence Safety, Dust Pipeline Fix & Net Inventory Lots
+
+### 2026-07-10
+
+- **Fix**: persist master grid mutations made outside COW broadcast path — master grid changes via `_updateOrder`, sync engine size corrections, orphan adoption, and surplus-type-mismatch cancellations were never persisted because persistence was centralized in the COW broadcast success path. Seven gap sites fixed plus an end-of-tick dirty-flag safety net. New tests: `test_grid_dirty_flag_persistence.ts`, `test_grid_persistence_guard.ts`, `test_grid_persistence_warn.ts` (`3298f32a`).
+- **Fix**: run dust check before pipeline gate — partial fills below dust threshold are now detected even when the pipeline is blocked (e.g. by pending price corrections from startup sync). A new `recordDustFirstSeen` helper starts the 30s cancellation timer from first detection so dust is cleared immediately when the pipeline empties. Changed `RUN_LOOP_DEFAULT_MS` from 5s to 5min for a more reasonable open-orders sync loop default (`8b9d3150`).
+- **Fix**: use net inventory lots in trade profitability analyzer — buy lots now store net receives (baseAmount − marketFeeReal), so inventory matching reflects what the account actually held. Added EffBuy column to `--trades` detail output; skip fills with unresolved fee precision instead of silently setting fee to 0 (`70543e94`).
+- **Docs**: improve analysis README readability for non-technical users — added question→tool mapping, Key Terms glossary, plain-English calibration workflow explanation, and reorganized sections (`51d7468e`).
+- **Chore**: version bumped to 1.0.13 across all manifests.
+
 ## [1.0.12] - 2026-07-09 - Whitelist Normalization & CI Updates
 
 ### 2026-07-09
