@@ -91,9 +91,9 @@ async function testWhitelistCache() {
 async function testWhitelistGenerationPreservesExistingEntries() {
     console.log(' - Testing whitelist generation preserves existing entries...');
     const bots = [
-        { name: 'Existing AMA', gridPrice: 'ama' },
-        { name: 'New AMA', gridPrice: 'ama2' },
-        { name: 'Non AMA', gridPrice: 'pool' },
+        { name: 'Existing AMA', gridPrice: 'ama', botKey: 'existing-ama-0' },
+        { name: 'New AMA', gridPrice: 'ama2', botKey: 'new-ama-1' },
+        { name: 'Non AMA', gridPrice: 'pool', botKey: 'non-ama-2' },
     ];
     const existing = {
         'existing-ama-0': { ama: true, dynamicWeight: false, asymmetricBounds: false, derivativeSignals: false },
@@ -204,8 +204,8 @@ async function testWhitelistLoaderPreservesExistingFileEntries() {
 async function testWhitelistPruneRemovesStaleEntries() {
     console.log(' - Testing whitelist --prune removes stale entries...');
     const bots = [
-        { name: 'active-bot', gridPrice: 'ama', id: 'aaa' },
-        { name: 'pool-bot', gridPrice: 'pool', id: 'bbb' },
+        { name: 'active-bot', gridPrice: 'ama', id: 'aaa', botKey: 'active-bot-aaa' },
+        { name: 'pool-bot', gridPrice: 'pool', id: 'bbb', botKey: 'pool-bot-bbb' },
     ];
     const existing = {
         'active-bot-aaa': { ama: true, dynamicWeight: false, asymmetricBounds: true },
@@ -233,8 +233,8 @@ async function testWhitelistPruneRemovesStaleEntries() {
 async function testWhitelistPrunePreservesNonAmaManualEntries() {
     console.log(' - Testing whitelist --prune preserves manual non-AMA entries...');
     const bots = [
-        { name: 'ama-bot', gridPrice: 'ama', id: 'aaa' },
-        { name: 'pool-bot', gridPrice: 'pool', id: 'bbb' },
+        { name: 'ama-bot', gridPrice: 'ama', id: 'aaa', botKey: 'ama-bot-aaa' },
+        { name: 'pool-bot', gridPrice: 'pool', id: 'bbb', botKey: 'pool-bot-bbb' },
     ];
     const existing = {
         'ama-bot-aaa': { ama: true, dynamicWeight: false, asymmetricBounds: true },
@@ -257,7 +257,7 @@ async function testWhitelistPrunePreservesNonAmaManualEntries() {
 async function testWhitelistPrunePreservesUnknownFields() {
     console.log(' - Testing whitelist --prune preserves unknown fields...');
     const bots = [
-        { name: 'ama-bot', gridPrice: 'ama', id: 'aaa' },
+        { name: 'ama-bot', gridPrice: 'ama', id: 'aaa', botKey: 'ama-bot-aaa' },
     ];
     const existing = {
         'ama-bot-aaa': { ama: true, dynamicWeight: true, asymmetricBounds: true, derivativeSignals: 'ema12' },

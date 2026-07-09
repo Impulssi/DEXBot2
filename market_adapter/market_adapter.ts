@@ -59,6 +59,7 @@ const { parseJsonWithComments, sleep, ensureDir } = require('../modules/order/ut
 const { readGeneralSettings } = require('../modules/general_settings');
 const { DEFAULT_CONFIG, MARKET_ADAPTER, NATIVE_CLIENT, API_LIMITS, TIMING } = require('../modules/constants');
 const { createBotKey } = require('../modules/account_orders');
+const { normalizeBotEntry } = require('../modules/bot_settings');
 const { calculateAMA } = require('./core/strategies/ama');
 const {
     normalizeAtrPeriod,
@@ -686,7 +687,7 @@ function loadActiveBots() {
     const raw = parseJsonWithComments(storage.readFile(BOTS_FILE));
     const bots = Array.isArray(raw?.bots) ? raw.bots : (Array.isArray(raw) ? raw : []);
     return bots
-        .map((b, i) => ({ ...b, botIndex: i, botKey: createBotKey(b, i), active: b.active === undefined ? true : !!b.active }))
+        .map((b, i) => normalizeBotEntry(b, i))
         .filter((b) => b.active);
 }
 

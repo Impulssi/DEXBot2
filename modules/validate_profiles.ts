@@ -246,7 +246,7 @@ function validateGeneralSettings(data: any, filePath: string, problems: ProblemL
 
 // --- Cross-file consistency ---
 function validateCrossFileConsistency(problems: ProblemList) {
-    const { createBotKey } = require('./account_orders');
+    const { normalizeBotEntry } = require('./bot_settings');
     const botKeysInWhitelist = new Set<string>();
     const botKeysInWhitelistEnabledAma = new Set<string>();
 
@@ -296,7 +296,7 @@ function validateCrossFileConsistency(problems: ProblemList) {
             if (!usesAma) return;
 
             const name = bot.name || `unnamed-${idx}`;
-            const botKey = createBotKey(bot, idx);
+            const botKey = normalizeBotEntry(bot, idx).botKey;
             amaBotKeys.add(botKey);
 
             // Check whitelist: warn if AMA bot has no whitelist entry

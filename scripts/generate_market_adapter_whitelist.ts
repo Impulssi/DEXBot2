@@ -1,23 +1,24 @@
 'use strict';
 
 const fs = require('fs');
-const path = require('path');
-const { createBotKey } = require('../modules/account_orders');
+const { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries, persistMissingIds } = require('../modules/bot_settings');
 const { PATHS } = require('../modules/paths');
 const { readJSON } = require('../modules/utils/fs_utils');
 
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const WHITELIST_FILE = PATHS.PROFILES.MARKET_ADAPTER_WHITELIST_JSON();
 
+function loadNormalizedBots() {
+    const { config } = loadSettingsFile(BOTS_FILE);
+    const raw = resolveRawBotEntries(config);
+    const normalized = normalizeBotEntries(raw);
+    persistMissingIds(config, normalized, BOTS_FILE);
+    return normalized;
+}
+
 function isAmaGridPrice(value: any) {
     if (typeof value !== 'string') return false;
     return /^ama(?:[1-4])?$/i.test(value.trim());
-}
-
-function loadBotsConfig() {
-    const raw = fs.readFileSync(BOTS_FILE, 'utf8');
-    const json = JSON.parse(raw);
-    return Array.isArray(json?.bots) ? json.bots : [];
 }
 
 function parseOptions(argv: string[]) {
@@ -68,8 +69,8 @@ function buildWhitelist(bots: any, existingWhitelist: any = {}, options = parseO
 
     if (options.prune) {
         const configuredKeys = new Set<string>();
-        for (const [index, bot] of bots.entries()) {
-            const botKey = createBotKey(bot, index);
+        for (const bot of bots) {
+            const botKey = bot.botKey;
             if (botKey) configuredKeys.add(String(botKey));
         }
         for (const key of entries.keys()) {
@@ -80,8 +81,8 @@ function buildWhitelist(bots: any, existingWhitelist: any = {}, options = parseO
         }
     }
 
-    for (const [index, bot] of bots.entries()) {
-        const botKey = createBotKey(bot, index);
+    for (const bot of bots) {
+        const botKey = bot.botKey;
         if (!botKey || !isAmaGridPrice(bot?.gridPrice)) continue;
         const key = String(botKey);
         if (!entries.has(key)) {
@@ -99,7 +100,7 @@ function buildWhitelist(bots: any, existingWhitelist: any = {}, options = parseO
 }
 
 function main() {
-    const bots = loadBotsConfig();
+    const bots = loadNormalizedBots();
     const existingWhitelist = loadExistingWhitelist();
     const whitelist = buildWhitelist(bots, existingWhitelist, parseOptions(process.argv));
     const output = JSON.stringify(whitelist, null, 2) + '\n';
