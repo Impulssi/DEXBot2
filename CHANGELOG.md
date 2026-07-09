@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.11] - 2026-07-09 - Live bots.json, Drawdown Stability & Market Fee Model
+
+### 2026-07-09
+
+- **Fix**: prefer live `bots.json` over stale snapshot in restart/stop/delete summaries and status display — the launcher was reading a cached snapshot captured at startup, causing stale bot metadata when `bots.json` changed at runtime (`02e9d9f1`, `71e00e55`).
+- **Fix**: refresh `launchedBotNames` on restart, pruning stale whitelist entries — restarted bots were blocked by their own stale PID-based whitelist entries from the previous lifecycle (`2c4cc202`).
+- **Fix**: always establish stable peak for drawdown after 10 trades — early drawdown tracking now waits for a stable high-water mark before computing max drawdown, preventing misleading spikes on cold-start data (`413a455b`).
+- **Fix**: show Bounds line for all AMA bots, hide `(0%)` when no asymmetry — the `analyze-orders` Bounds display was incorrectly suppressed for non-AMA bots (`672a7630`).
+- **Feat**: implement BitShares market fee model in trade profitability analysis — `trade_profitability.ts` now accounts for the actual BitShares market fee schedule (maker/taker, fee tiers) instead of using a flat percentage, improving PnL accuracy for high-volume accounts (`454bff6a`).
+- **Feat**: add grid range scaling display and signed delta to `analyze-orders` — shows the grid range as a percentage of the mid-price and the signed difference between current price and grid center, giving operators a quick visual on grid positioning (`af50b4f0`).
+- **Refactor**: fee allocation, ESM imports, multi-quote safety, and metric naming in `trade_profitability.ts` — per-lot fee allocation, proportional fee splitting across legs, ESM-compatible imports, and clearer metric naming (`622f2880`, `8fd6a21d`).
+- **Chore**: version bumped to 1.0.11 across all manifests.
+
 ## [1.0.10] - 2026-07-08 - PnL Metrics Overhaul, Kalman Tuning & Bot Discovery Fix
 
 ### 2026-07-06
