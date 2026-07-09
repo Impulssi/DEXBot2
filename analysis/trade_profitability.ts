@@ -151,6 +151,7 @@ interface RealizedPnl {
     amount: number;
     pnl: number;
     pnlPct: number;
+    effPrice: number;
     marketFeeEntry: number;
     marketFeeExit: number;
     feeBts: number;
@@ -441,8 +442,8 @@ function classifyFills(fills: FillRecord[], filterAsset: string | null): { trade
         let marketFeeAsset: string;
 
         const feePrec = getPrec(f.fee.asset_id);
-        const feeOk = feePrec !== undefined && !isNaN(f.fee.amount);
-        const feeReal = feeOk ? f.fee.amount / Math.pow(10, feePrec) : 0;
+        if (feePrec === undefined || isNaN(f.fee.amount)) { skipped++; continue; }
+        const feeReal = f.fee.amount / Math.pow(10, feePrec);
 
         if (pAsset === BTS_ID && rAsset !== BTS_ID) {
             direction = 'buy';
@@ -527,29 +528,6 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
     const totalBuyQuote = buys.reduce((s, t) => s + t.quoteAmount, 0);
     const totalSellQuote = sells.reduce((s, t) => s + t.quoteAmount, 0);
 
-    /**
-     * Compute the effective price net of market fees.
-     *
-     * Per BitShares core (db_market.cpp fill_limit_order):
-     *   order_receives = receives - pay_market_fees(seller, receives_asset, receives, is_maker)
-     *
-     * The `fee` field in fill_order_operation is the market fee deducted from receives.
-     * For buys  (pays=quote, receives=base): fee is in base  → effective buy price  = quote / (base - fee)
-     * For sells (pays=base,  receives=quote): fee is in quote → effective sell price = (quote - fee) / base
-     */
-    function effectiveTradePrice(t: TradeFill): number {
-        if (t.marketFeeReal <= 0) return t.price;
-        if (t.direction === 'buy') {
-            const netBase = t.baseAmount - t.marketFeeReal;
-            if (netBase <= 0) return t.price;
-            return t.quoteAmount / netBase;
-        } else {
-            const netQuote = t.quoteAmount - t.marketFeeReal;
-            if (netQuote <= 0) return t.price;
-            return netQuote / t.baseAmount;
-        }
-    }
-
     // Merge all trades chronologically.
     // FIFO: buys add to queue, sells consume oldest lots (queue front).
     // Sequential: buys add to queue, sells consume newest lots (queue back / LIFO).
@@ -558,17 +536,18 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
     const realizedPnls: RealizedPnl[] = [];
     let unmatchedSellBase = 0;
 
-    // First pass: match with gross prices to get base PnL, then with effective
-    // prices to get market-fee-adjusted PnL.
     for (const trade of all) {
         const grossPrice = trade.price;
-        const effPrice = effectiveTradePrice(trade);
 
         if (trade.direction === 'buy') {
+            // Enter lot with net amount (gross receives minus market fee on receives)
+            const lotAmount = trade.baseAmount - trade.marketFeeReal;
+            if (lotAmount < 1e-12) continue;
+            const lotEffPrice = trade.quoteAmount / lotAmount;
             inventory.push({
-                amount: trade.baseAmount,
+                amount: lotAmount,
                 grossPrice: grossPrice,
-                effPrice: effPrice,
+                effPrice: lotEffPrice,
                 time: trade.time,
                 entryOrderId: trade.orderId,
                 entryIsMaker: trade.isMaker,
@@ -591,6 +570,7 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
                     amount: matched,
                     pnl: grossPnl,
                     pnlPct: grossPnlPct,
+                    effPrice: lot.effPrice,
                     marketFeeEntry: 0,
                     marketFeeExit: 0,
                     feeBts: 0,
@@ -625,7 +605,7 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
     // ─── Market fee allocation (aggregated per order) ──────────────────────
     // A limit order may be filled across multiple fill_order_operations with
     // the same orderId.  Aggregate all fills' market fees per order, then
-    // allocate pro-rata using the fill's total acquired amount as denominator.
+    // allocate pro-rata using the fill's net acquired amount as denominator.
     // (Market fee is paid on acquisition; the portion tied to unsold inventory
     //  is not yet realised.)
     const entryOrderFees = new Map<string, { feeInQuote: number; totalAcquired: number }>();
@@ -638,7 +618,7 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
             const netBase = t.baseAmount - t.marketFeeReal;
             e.feeInQuote += netBase > 0 ? t.marketFeeReal * (t.quoteAmount / netBase) : 0;
         }
-        e.totalAcquired += t.baseAmount;
+        e.totalAcquired += t.baseAmount - t.marketFeeReal;
         entryOrderFees.set(t.orderId, e);
     }
 
@@ -679,15 +659,15 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
         const xTotal = exitTotalMatched.get(r.exitOrderId) || 1;
         r.feeBts = BLOCKCHAIN_FEE_PER_FILL * (r.amount / eTotal) + BLOCKCHAIN_FEE_PER_FILL * (r.amount / xTotal);
         r.pnlNet -= r.feeBts;
-        // Use effective cost basis (gross cost + entry market fee)
-        const costBasis = r.buyPrice * r.amount + r.marketFeeEntry;
+        const costBasis = r.effPrice * r.amount;
         r.pnlNetPct = costBasis > 0 ? (r.pnlNet / costBasis) * 100 : 0;
     }
 
+    const totalBuyBaseNet = buys.reduce((s, t) => s + t.baseAmount - t.marketFeeReal, 0);
     const totalRealizedPnl = realizedPnls.reduce((s, r) => s + r.pnl, 0);
     const totalMarketFees = realizedPnls.reduce((s, r) => s + r.marketFeeEntry + r.marketFeeExit, 0);
     const totalRealizedPnlNet = realizedPnls.reduce((s, r) => s + r.pnlNet, 0);
-    const netPosition = totalBuyBase - totalSellBase;
+    const netPosition = totalBuyBaseNet - totalSellBase;
     const baseAsset = trades[0]?.baseAsset ?? '';
     const quoteAsset = trades[0]?.quoteAsset ?? '';
 
@@ -789,10 +769,13 @@ function printSummary(pairs: PairAnalysis[], accountId: string, start: string, e
         }
     }
     console.log(`  Note: PnL uses gross prices. Net PnL deducts market fees (charged by`);
-    console.log(`        asset issuer on receives) and blockchain operation fees (BTS`);
-    console.log(`        per limit_order_create). Market fees are converted to quote asset.`);
-    console.log(`        If inventory predates the window or crosses asset pairs,`);
-    console.log(`        the matched lots may not reflect true trade economics.`);
+    console.log(`        asset issuer on receives, both issuer and network portions) and`);
+    console.log(`        blockchain operation fees (BTS per limit_order_create). Market`);
+    console.log(`        fees are converted to quote asset. Buy lots are entered at net`);
+    console.log(`        receives (gross minus buy-side market fee) so inventory matching`);
+    console.log(`        reflects what the account actually held. If inventory predates the`);
+    console.log(`        window or crosses asset pairs, the matched lots may not reflect`);
+    console.log(`        true trade economics.`);
     console.log('');
 }
 
@@ -805,7 +788,7 @@ function printPnlDetail(pairs: PairAnalysis[]) {
         console.log(` ── ${pairLabel} — Realized PnL Detail`);
         console.log('');
 
-        const hdr = ' #   Buy Price    Sell Price   Amount    PnL         PnL%      MktFee    OpFeeBTS  Net PnL     Net%     Legs  Entry Time              Exit Time';
+        const hdr = ' #   Buy Price    EffBuy      Sell Price   Amount    PnL         PnL%      MktFee    OpFeeBTS  Net PnL     Net%     Legs  Entry Time              Exit Time';
         console.log(hdr);
         console.log(' ' + '─'.repeat(hdr.length - 1));
 
@@ -813,6 +796,7 @@ function printPnlDetail(pairs: PairAnalysis[]) {
             const r = pair.realizedPnls[i];
             const idx = String(i + 1).padStart(2);
             const bp = fmt(r.buyPrice, 8).padStart(11);
+            const ep = fmt(r.effPrice, 8).padStart(11);
             const sp = fmt(r.sellPrice, 8).padStart(11);
             const amt = fmt(r.amount, 4).padStart(9);
             const pnlStr = fmt(r.pnl, 6).padStart(9);
@@ -824,7 +808,7 @@ function printPnlDetail(pairs: PairAnalysis[]) {
             const mk = (r.entryIsMaker ? 'M' : 'T') + '/' + (r.exitIsMaker ? 'M' : 'T') + ' ';
             const et = (r.entryTime || '').slice(0, 22).padEnd(22);
             const xt = (r.exitTime || '').slice(0, 22).padEnd(22);
-            console.log(` ${idx}  ${bp}  ${sp}  ${amt}  ${pnlStr}  ${pctStr}  ${mktFeeStr}  ${feeStr}  ${netStr}  ${netPctStr}  ${mk}  ${et}  ${xt}`);
+            console.log(` ${idx}  ${bp}  ${ep}  ${sp}  ${amt}  ${pnlStr}  ${pctStr}  ${mktFeeStr}  ${feeStr}  ${netStr}  ${netPctStr}  ${mk}  ${et}  ${xt}`);
         }
         console.log('');
     }

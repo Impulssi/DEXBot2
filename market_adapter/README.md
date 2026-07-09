@@ -69,6 +69,12 @@ To keep asymmetric bounds disabled:
 node dexbot white --no-asymmetric-bounds
 ```
 
+Remove stale whitelist entries (bots no longer in `bots.json`):
+
+```bash
+node dexbot white --prune
+```
+
 ### 3. Start DEXBot2
 
 Start DEXBot2 normally. The bot runtime launches the adapter when needed.
@@ -271,6 +277,7 @@ Dry-run log lines include `[DRY RUN]` or `[suppressed, dry-run]`.
 | Generate whitelist | `node dexbot white` |
 | Opt new whitelist entries into dynamic weights | `node dexbot white --dynamic-weight` |
 | Generate AMA-only entries without range scaling | `node dexbot white --no-asymmetric-bounds` |
+| Prune stale whitelist entries (bots removed from bots.json) | `node dexbot white --prune` |
 | Probe public CEX availability | `tsx market_adapter/inputs/fetch_cex_synthetic_data.ts --exchange auto --check-only` |
 | Seed synthetic cross candles | `tsx market_adapter/inputs/fetch_cex_synthetic_data.ts --exchange auto --bot-key <bot-key>` |
 | Run one adapter cycle | `tsx market_adapter/market_adapter.ts --once` |

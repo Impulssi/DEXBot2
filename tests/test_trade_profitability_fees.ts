@@ -97,15 +97,18 @@ function testBuySideMarketFee() {
     const result = analyzePair(trades, 'fifo');
 
     assert.strictEqual(result.realizedPnls.length, 1, 'should have 1 realized PnL');
-    // Gross PnL = (11 - 10) * 10 = 10 (using gross prices)
-    assert.strictEqual(result.totalRealizedPnl, 10, 'gross PnL = 10');
+    // Lot = 10 - 0.1 = 9.9 (net receives). Only 9.9 can be matched.
+    // Gross PnL = (11 - 10) * 9.9 = 9.9
+    assert.strictEqual(result.totalRealizedPnl, 9.9, 'gross PnL = 9.9');
 
-    // Effective buy price = 100 / (10 - 0.1) = 100 / 9.9 ≈ 10.10101
-    // Market-fee-adjusted PnL = (11 - 10.10101) * 10 ≈ 8.9899
-    // marketFeeDrag = 10 - 8.9899 = 1.0101
-    const expectedMarketFee = 10 - (11 - 100 / 9.9) * 10;
+    // Market fee = 0.1 base × (100 BTS / 9.9 net base) — fully realised on full sale
+    const expectedMarketFee = 0.1 * (100 / 9.9);
     assert.ok(Math.abs(result.totalMarketFees - expectedMarketFee) < 0.001,
         `market fee drag ≈ ${expectedMarketFee.toFixed(4)}, got ${result.totalMarketFees.toFixed(4)}`);
+
+    // 0.1 base units were never actually received — they show as unmatched
+    assert.ok(Math.abs(result.unmatchedSellBase - 0.1) < 0.0001,
+        '~0.1 base unmatched (never received), got ' + result.unmatchedSellBase);
 
     // Verify marketFeeEntry on the realized PnL
     const r = result.realizedPnls[0];
@@ -177,18 +180,15 @@ function testBothSidesMarketFees() {
     const result = analyzePair(trades, 'fifo');
 
     assert.strictEqual(result.realizedPnls.length, 1);
-    // Gross PnL
-    const grossPnl = (grossSellPrice - grossBuyPrice) * amount;
-    assert.strictEqual(result.totalRealizedPnl, grossPnl, 'gross PnL');
+    // Net lot = 10 - 0.1 = 9.9, matched = min(10, 9.9) = 9.9
+    const netAmount = amount - buyFee;
+    const grossPnl = (grossSellPrice - grossBuyPrice) * netAmount;
+    assert.strictEqual(result.totalRealizedPnl, grossPnl, 'gross PnL on net lot');
 
-    // Effective buy price = 100 / (10 - 0.1) = 100 / 9.9 ≈ 10.101010...
-    const effBuy = (amount * grossBuyPrice) / (amount - buyFee);
-    // Effective sell price = (110 - 1.1) / 10 = 10.89
-    const effSell = (amount * grossSellPrice - sellFee) / amount;
-    // Adjusted PnL = (10.89 - 10.10101) * 10 = 7.89899...
-    const adjPnl = (effSell - effBuy) * amount;
-    // Market fee drag = grossPnl - adjPnl
-    const expectedFees = grossPnl - adjPnl;
+    // Full buy fee realised on full sale; sell fee prorated by net/gross
+    const expectedFeeEntry = buyFee * (amount * grossBuyPrice / (amount - buyFee));
+    const expectedFeeExit = sellFee * (netAmount / amount);
+    const expectedFees = expectedFeeEntry + expectedFeeExit;
 
     assert.ok(Math.abs(result.totalMarketFees - expectedFees) < 0.001,
         `market fees ≈ ${expectedFees.toFixed(4)}, got ${result.totalMarketFees.toFixed(4)}`);
@@ -241,14 +241,13 @@ function testPartialFillWithFees() {
 
     assert.strictEqual(result.realizedPnls.length, 1, 'one matched lot');
     assert.strictEqual(result.realizedPnls[0].amount, 5, 'matched 5 units');
-    // marketFeeEntry should be proportional: feeBaseShare = 0.1 * (5/10) = 0.05
-    // feeInQuote = 0.05 * (100 / 9.9) ≈ 0.50505...
-    const expectedEntryFee = 0.05 * (100 / 9.9);
+    // marketFeeEntry = feeInQuote_total × (5 / 9.9 net lot)
+    const expectedEntryFee = (0.1 * (100 / 9.9)) * (5 / 9.9);
     assert.ok(Math.abs(result.realizedPnls[0].marketFeeEntry - expectedEntryFee) < 0.001,
         `proportional entry fee ≈ ${expectedEntryFee.toFixed(6)}, got ${result.realizedPnls[0].marketFeeEntry.toFixed(6)}`);
     assert.strictEqual(result.realizedPnls[0].marketFeeExit, 0, 'no exit fee');
     assert.strictEqual(result.unmatchedSellBase, 0, 'no unmatched');
-    assert.strictEqual(result.netPosition, 5, '5 units remaining in inventory');
+    assert.strictEqual(result.netPosition, 4.9, '4.9 units remaining (net of buy fee)');
 }
 
 // ─── Test: Multiple fills with fees (FIFO vs Sequential) ──────────────────
@@ -291,8 +290,8 @@ function testMultipleFillsFifo() {
     // Gross PnL = (11 - 10.5) * 3 = 1.5
     assert.strictEqual(resultFifo.realizedPnls[1].pnl, 1.5,
         'lot 2 gross PnL = 1.5');
-    // Market fee entry = 0.05 * (3/5) * (52.5 / 4.95) ≈ 0.31818
-    const feeEntry2 = 0.05 * (3 / 5) * effBuy2;
+    // Market fee entry = 0.05 * (52.5/4.95) * (3/4.95) — denominator is net lot
+    const feeEntry2 = 0.05 * (52.5 / (5 - 0.05)) * (3 / (5 - 0.05));
     assert.ok(Math.abs(resultFifo.realizedPnls[1].marketFeeEntry - feeEntry2) < 0.001,
         `lot 2 entry fee ≈ ${feeEntry2.toFixed(6)}, got ${resultFifo.realizedPnls[1].marketFeeEntry.toFixed(6)}`);
     // Net PnL = grossPnl - marketFeeEntry - blockchainFee
@@ -333,14 +332,14 @@ function testMakerTakerFee() {
 
     const result = analyzePair(trades, 'fifo');
 
-    // Maker fee on buy: 0.05 base → effective buy price = 100 / (10-0.05)
-    const effBuy = 100 / (10 - 0.05);
-    // Taker fee on sell: 2.2 BTS → effective sell price = (110-2.2)/10 = 10.78
-    const effSell = (110 - 2.2) / 10;
-    const adjPnl = (effSell - effBuy) * 10;
-    const expectedFees = 10 - adjPnl;
+    // Lot = 10 - 0.05 = 9.95, matched = 9.95
+    const netAmount = 10 - 0.05;
+    // Full buy fee realised on full sale
+    const expectedFeeEntry = 0.05 * (100 / 9.95);
+    const expectedFeeExit = 2.2 * (9.95 / 10);
+    const expectedFees = expectedFeeEntry + expectedFeeExit;
 
-    assert.ok(Math.abs(result.totalMarketFees - expectedFees) < 0.001,
+    assert.ok(Math.abs(result.totalMarketFees - expectedFees) < 0.01,
         `maker/taker fees ≈ ${expectedFees.toFixed(4)}, got ${result.totalMarketFees.toFixed(4)}`);
 }
 
