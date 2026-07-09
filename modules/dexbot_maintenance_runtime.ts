@@ -1393,6 +1393,17 @@ async function executeMaintenanceLogic(bot, context) {
         return;
     }
 
+    // Dust detection (read-only) runs before the pipeline gate so partials
+    // below the dust threshold are detected even when the pipeline is
+    // blocked (e.g. by pending price corrections from sync). The actual
+    // cancellation (which broadcasts and enters the COW path) stays inside
+    // the empty-pipeline branch to avoid racing with in-flight operations.
+    // The _dustSinceMap is populated here so the 30s timer starts burning
+    // from the first detection, not from when the pipeline clears.
+    const healthResult = await bot.manager.checkGridHealth(bot.updateOrdersOnChainPlan.bind(bot));
+    if (await bot._abortFlowIfIllegalState(`${context} health check`)) return;
+    recordDustFirstSeen(bot, healthResult);
+
     const pipelineStatus = bot.manager.isPipelineEmpty(bot._getPipelineSignals());
     if (pipelineStatus.isEmpty) {
         const repairedFromChain = await maybeRunTargetedDriftReconciliation(bot, context);
@@ -1402,8 +1413,6 @@ async function executeMaintenanceLogic(bot, context) {
         // resize orders (dust detection, divergence correction, spread correction).
         refreshDynamicWeightDistribution(bot, context);
 
-        const healthResult = await bot.manager.checkGridHealth(bot.updateOrdersOnChainPlan.bind(bot));
-        if (await bot._abortFlowIfIllegalState(`${context} health check`)) return;
         const dustCancelResult = await cancelDustOrders(bot, {
             buy: healthResult.buyDustOrders,
             sell: healthResult.sellDustOrders,
@@ -1411,6 +1420,7 @@ async function executeMaintenanceLogic(bot, context) {
         if (dustCancelResult?.batchResult?.abortedForIllegalState || dustCancelResult?.batchResult?.abortedForAccountingFailure) {
             return;
         }
+
         if (bot._dustSinceMap?.size > 0) {
             const delayMs = getPendingDustDelayMs(bot);
             if (delayMs !== null) {
@@ -1483,6 +1493,32 @@ async function executeMaintenanceLogic(bot, context) {
         if (spreadResult && spreadResult.ordersPlaced > 0) {
             bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
             await bot._persistAndRecoverIfNeeded();
+        }
+    }
+}
+
+/**
+ * Populate _dustSinceMap with first-seen timestamps for newly detected dust
+ * orders, and purge entries for orders that are no longer classified as dust.
+ * Mirrors the dedupe logic inside cancelDustOrders so the 30s timer starts
+ * from the moment checkGridHealth first flags an order, regardless of whether
+ * cancelDustOrders (gated by pipeline state) has run yet.
+ */
+function recordDustFirstSeen(bot: any, healthResult: any) {
+    if (!bot._dustSinceMap) return;
+    const allDust = [...(healthResult?.buyDustOrders || []), ...(healthResult?.sellDustOrders || [])];
+    const dustIds = new Set(allDust.map((o: any) => o.orderId).filter(Boolean));
+
+    // Purge entries for orders no longer classified as dust
+    for (const orderId of bot._dustSinceMap.keys()) {
+        if (!dustIds.has(orderId)) bot._dustSinceMap.delete(orderId);
+    }
+
+    // Set firstSeen for newly detected dust orders
+    const now = Date.now();
+    for (const order of allDust) {
+        if (order.orderId && !bot._dustSinceMap.has(order.orderId)) {
+            bot._dustSinceMap.set(order.orderId, now);
         }
     }
 }
@@ -1968,6 +2004,7 @@ export = {
     setupBlockchainFetchInterval,
     stopBlockchainFetchInterval,
     executeMaintenanceLogic,
+    recordDustFirstSeen,
     cancelDustOrders,
     isOrderDoesNotExistError,
     clearDustMaintenanceTimer,

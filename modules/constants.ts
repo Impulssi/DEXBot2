@@ -223,7 +223,7 @@ let TIMING = {
     CREDENTIAL_DAEMON_WATCHDOG_MS: 60000,  // 60 seconds - Credential daemon watchdog polling interval
 
     // Main loop and polling defaults
-    RUN_LOOP_DEFAULT_MS: 5000,  // 5 seconds - default open-orders sync cycle delay (env override: OPEN_ORDERS_SYNC_LOOP_MS)
+    RUN_LOOP_DEFAULT_MS: 300000,  // 5 minutes - default open-orders sync cycle delay (env override: OPEN_ORDERS_SYNC_LOOP_MS)
     OPEN_ORDERS_SYNC_LOOP_ENABLED: false,   // Preferred flag: continuous open-order watchdog sync loop (default false — react to fills only)
     CHECK_INTERVAL_MS: 100,  // 100 milliseconds - polling interval for connection/daemon readiness checks
 

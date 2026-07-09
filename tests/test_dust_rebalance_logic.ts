@@ -41,7 +41,7 @@ const Grid = require('../modules/order/grid');
 const { _setFeeCache } = require('../modules/order/utils/math');
 const chainOrders = require('../modules/chain_orders');
 const DEXBot = require('../modules/dexbot_class');
-const { isOrderDoesNotExistError } = require('../modules/dexbot_maintenance_runtime');
+const { isOrderDoesNotExistError, recordDustFirstSeen } = require('../modules/dexbot_maintenance_runtime');
 const { withDynamicWeightFiles } = require('./helpers/dynamic_weight_files');
 
 async function testDustTrigger() {
@@ -332,7 +332,7 @@ async function testDustCancelSyntheticRotation() {
         assert.strictEqual(cancelCalls, 1, 'Dust cancel should submit one cancel');
         assert.strictEqual(syncCalls, 1, 'Dust cancel should synchronize once');
         assert.strictEqual(processCalls, 1, 'Dust cancel should trigger the synthetic fill pipeline');
-        assert.strictEqual(persistCalls, 1, 'Dust cancel should persist the updated grid');
+        assert.strictEqual(persistCalls, 2, 'Dust cancel should persist grid (COW path + end-of-tick flushGridDirty safety net)');
         console.log('  ✓ Dust cancel triggers synthetic delayed rotation only after timer expiry');
     } finally {
         if (typeof bot?._clearDustMaintenanceTimer === 'function') {
@@ -1258,6 +1258,36 @@ async function testInteriorDustAdjacentGridLevelNotEligible() {
     console.log('  ✓ Interior partial at adjacent grid level (within tolerance) is not eligible');
 }
 
+async function testRecordDustFirstSeen() {
+    const bot: any = { _dustSinceMap: new Map() };
+
+    // First detection: timestamp is set
+    recordDustFirstSeen(bot, { buyDustOrders: [{ orderId: '1.7.1' }], sellDustOrders: [] });
+    assert.strictEqual(bot._dustSinceMap.size, 1);
+    const t0 = bot._dustSinceMap.get('1.7.1');
+    assert.ok(typeof t0 === 'number' && t0 > 0, 'First-seen timestamp should be set');
+    console.log('  ✓ First detection sets timestamp');
+
+    // Re-detection preserves original timestamp (not reset)
+    await new Promise(r => setTimeout(r, 10));
+    recordDustFirstSeen(bot, { buyDustOrders: [{ orderId: '1.7.1' }], sellDustOrders: [] });
+    assert.strictEqual(bot._dustSinceMap.get('1.7.1'), t0, 'Re-detection should preserve original timestamp');
+    console.log('  ✓ Re-detection preserves first-seen timestamp');
+
+    // Order no longer in dust is purged
+    recordDustFirstSeen(bot, { buyDustOrders: [], sellDustOrders: [] });
+    assert.strictEqual(bot._dustSinceMap.size, 0, 'Order no longer in dust should be purged');
+    console.log('  ✓ Order recovered from dust is purged');
+
+    // Buy + sell combined
+    recordDustFirstSeen(bot, {
+        buyDustOrders: [{ orderId: '1.7.2' }, { orderId: '1.7.3' }],
+        sellDustOrders: [{ orderId: '1.7.4' }],
+    });
+    assert.strictEqual(bot._dustSinceMap.size, 3, 'Buy and sell dust combined');
+    console.log('  ✓ Buy and sell dust both populate map');
+}
+
 Promise.resolve()
     .then(() => testDustTrigger())
     .then(() => testDustCancelSyntheticRotation())
@@ -1275,6 +1305,7 @@ Promise.resolve()
     .then(() => testDustReseedHealthFailureDoesNotAbort())
     .then(() => testMaintenanceDefersStructuralWorkWhileDustPending())
     .then(() => testGridMaintenanceWaitsForQuietPeriod())
+    .then(() => testRecordDustFirstSeen())
     .finally(() => {
         Module._load = originalModuleLoad;
     })
