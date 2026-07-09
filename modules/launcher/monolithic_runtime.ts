@@ -351,6 +351,12 @@ function getActiveAmaBotFingerprint(botsFile?) {
 }
 
 function getAllControlBotNames() {
+    // Prefer live bots.json (current intent) over the startup snapshot.
+    // Shows what the user configured, even if the wrapper hasn't respawned yet.
+    const liveBots = listConfiguredBots().filter((b) => b.active).map((b) => b.name);
+    if (liveBots.length > 0) {
+        return liveBots;
+    }
     const botInfo = readMonolithicBotInfo();
     if (Array.isArray(botInfo?.botNames) && botInfo.botNames.length > 0) {
         return botInfo.botNames.map((name) => String(name));
@@ -358,7 +364,7 @@ function getAllControlBotNames() {
     if (botInfo?.botName) {
         return [String(botInfo.botName)];
     }
-    return listConfiguredBots().filter((b) => b.active).map((b) => b.name);
+    return [];
 }
 
 function getControlBotNames(target, wholeRuntime = false) {
