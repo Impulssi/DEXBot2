@@ -428,7 +428,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
 
     const { botName, clawOnly, isolated, dryrun, headless, passwordFile } = parsed;
     const selectedBot = botName ? resolveBotEntryForName(botName) : null;
-    const launchedBotNames = getLaunchedBotNames(botName);
+    let launchedBotNames = getLaunchedBotNames(botName);
     const shouldStartMonolithicBackground = !clawOnly && !isolated && !isDetachedSupervisorChild && !isMonolithicBgChild && !forceForeground;
     let daemonReleased = false;
 
@@ -589,6 +589,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
 
         try {
             do {
+                launchedBotNames = getLaunchedBotNames(botName);
                 const dexbotArgs = buildDexbotStartArgs(botName, dryrun);
 
                 const botProcess = spawn(Config.EXEC_PATH, dexbotArgs, {

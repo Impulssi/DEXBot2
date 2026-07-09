@@ -24,24 +24,12 @@ function parseOptions(argv: string[]) {
     const dynamicWeightEnabled = argv.includes('--dynamic-weight=true') || argv.includes('--dynamic-weight') || argv.includes('--with-dynamic-weight');
     const dynamicWeightDisabled = argv.includes('--dynamic-weight=false') || argv.includes('--no-dynamic-weight');
     const asymmetricBoundsDisabled = argv.includes('--asymmetric-bounds=false') || argv.includes('--no-asymmetric-bounds');
+    const pruneEnabled = argv.includes('--prune');
 
     return {
         dynamicWeight: dynamicWeightEnabled && !dynamicWeightDisabled,
         asymmetricBounds: !asymmetricBoundsDisabled,
-    };
-}
-
-function normalizeWhitelistEntry(entry: any) {
-    if (entry === true) {
-        return { ama: true, dynamicWeight: true, asymmetricBounds: true };
-    }
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-        return null;
-    }
-    return {
-        ama: entry.ama === true,
-        dynamicWeight: entry.dynamicWeight === true,
-        asymmetricBounds: entry.asymmetricBounds === true,
+        prune: pruneEnabled,
     };
 }
 
@@ -76,6 +64,20 @@ function buildWhitelist(bots: any, existingWhitelist: any = {}, options = parseO
 
     for (const [botKey, entry] of Object.entries(existingWhitelist || {})) {
         entries.set(String(botKey), entry);
+    }
+
+    if (options.prune) {
+        const configuredKeys = new Set<string>();
+        for (const [index, bot] of bots.entries()) {
+            const botKey = createBotKey(bot, index);
+            if (botKey) configuredKeys.add(String(botKey));
+        }
+        for (const key of entries.keys()) {
+            if (!configuredKeys.has(key)) {
+                process.stderr.write(`prune: removed stale whitelist entry '${key}'\n`);
+                entries.delete(key);
+            }
+        }
     }
 
     for (const [index, bot] of bots.entries()) {
@@ -114,7 +116,6 @@ if (require.main === module) {
 module.exports = {
     isAmaGridPrice,
     parseOptions,
-    normalizeWhitelistEntry,
     loadExistingWhitelist,
     buildWhitelist,
 };

@@ -222,7 +222,7 @@ function printCLIUsage() {
     console.log('  order             Analyze persisted order grids in profiles/orders/ (spread, increment, funds).');
     console.log('  status, stat      Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Run credential daemon + bot (equivalent to `node unlock`).');
-    console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs.');
+    console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune) are forwarded.');
     console.log('  clear             Remove all log files from profiles/logs/ (runs scripts/clear-logs.sh).');
     console.log('Options:');
     console.log('  --cli-examples    Print curated CLI snippets.');

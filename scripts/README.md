@@ -94,6 +94,9 @@ node dexbot white --dynamic-weight
 # Add missing AMA bots with asymmetricBounds disabled for newly generated entries
 node dexbot white --no-asymmetric-bounds
 
+# Remove whitelist entries for bots no longer in profiles/bots.json
+node dexbot white --prune
+
 ```
 
 ### Grid Divergence Audit

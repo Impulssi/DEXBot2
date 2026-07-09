@@ -131,23 +131,28 @@ async function testWhitelistGenerationOptionDefaults() {
     console.log(' - Testing whitelist generation option defaults...');
     assert.deepStrictEqual(
         parseOptions([]),
-        { dynamicWeight: false, asymmetricBounds: true },
+        { dynamicWeight: false, asymmetricBounds: true, prune: false },
         'dynamicWeight should default off for newly generated whitelist entries'
     );
     assert.deepStrictEqual(
         parseOptions(['--dynamic-weight']),
-        { dynamicWeight: true, asymmetricBounds: true },
+        { dynamicWeight: true, asymmetricBounds: true, prune: false },
         'dynamicWeight should be explicitly opt-in'
     );
     assert.deepStrictEqual(
         parseOptions(['--dynamic-weight=true', '--no-asymmetric-bounds']),
-        { dynamicWeight: true, asymmetricBounds: false },
+        { dynamicWeight: true, asymmetricBounds: false, prune: false },
         'explicit dynamicWeight opt-in should combine with asymmetric-bounds opt-out'
     );
     assert.deepStrictEqual(
         parseOptions(['--dynamic-weight=true', '--no-dynamic-weight']),
-        { dynamicWeight: false, asymmetricBounds: true },
+        { dynamicWeight: false, asymmetricBounds: true, prune: false },
         'explicit disable should win if conflicting dynamicWeight flags are provided'
+    );
+    assert.deepStrictEqual(
+        parseOptions(['--prune']),
+        { dynamicWeight: false, asymmetricBounds: true, prune: true },
+        '--prune should enable prune mode'
     );
 }
 
@@ -194,6 +199,77 @@ async function testWhitelistLoaderPreservesExistingFileEntries() {
             fs.unlinkSync(WHITELIST_FILE);
         }
     }
+}
+
+async function testWhitelistPruneRemovesStaleEntries() {
+    console.log(' - Testing whitelist --prune removes stale entries...');
+    const bots = [
+        { name: 'active-bot', gridPrice: 'ama', id: 'aaa' },
+        { name: 'pool-bot', gridPrice: 'pool', id: 'bbb' },
+    ];
+    const existing = {
+        'active-bot-aaa': { ama: true, dynamicWeight: false, asymmetricBounds: true },
+        'stale-bot-ccc': { ama: true, dynamicWeight: false, asymmetricBounds: false },
+        'pool-bot-bbb': { ama: false, dynamicWeight: false, asymmetricBounds: false },
+    };
+
+    const result = buildWhitelist(bots, existing, { dynamicWeight: false, asymmetricBounds: true, prune: true });
+
+    assert.ok(
+        result.whitelist['active-bot-aaa'] !== undefined,
+        '--prune must keep entries matching current bots'
+    );
+    assert.ok(
+        result.whitelist['pool-bot-bbb'] !== undefined,
+        '--prune must keep manual entries for non-AMA bots in bots.json'
+    );
+    assert.strictEqual(
+        result.whitelist['stale-bot-ccc'],
+        undefined,
+        '--prune must remove entries for bots no longer in bots.json'
+    );
+}
+
+async function testWhitelistPrunePreservesNonAmaManualEntries() {
+    console.log(' - Testing whitelist --prune preserves manual non-AMA entries...');
+    const bots = [
+        { name: 'ama-bot', gridPrice: 'ama', id: 'aaa' },
+        { name: 'pool-bot', gridPrice: 'pool', id: 'bbb' },
+    ];
+    const existing = {
+        'ama-bot-aaa': { ama: true, dynamicWeight: false, asymmetricBounds: true },
+        'pool-bot-bbb': { ama: true, dynamicWeight: false, asymmetricBounds: false, derivativeSignals: 'ema12' },
+    };
+
+    const resultNoPrune = buildWhitelist(bots, existing, { dynamicWeight: false, asymmetricBounds: true, prune: false });
+    assert.ok(
+        resultNoPrune.whitelist['pool-bot-bbb'] !== undefined,
+        'without --prune, manual non-AMA entries must be preserved'
+    );
+
+    const resultPrune = buildWhitelist(bots, existing, { dynamicWeight: false, asymmetricBounds: true, prune: true });
+    assert.ok(
+        resultPrune.whitelist['pool-bot-bbb'] !== undefined,
+        'with --prune, manual non-AMA entries for bots still in bots.json must be preserved'
+    );
+}
+
+async function testWhitelistPrunePreservesUnknownFields() {
+    console.log(' - Testing whitelist --prune preserves unknown fields...');
+    const bots = [
+        { name: 'ama-bot', gridPrice: 'ama', id: 'aaa' },
+    ];
+    const existing = {
+        'ama-bot-aaa': { ama: true, dynamicWeight: true, asymmetricBounds: true, derivativeSignals: 'ema12' },
+    };
+
+    const result = buildWhitelist(bots, existing, { dynamicWeight: false, asymmetricBounds: true, prune: true });
+
+    assert.deepStrictEqual(
+        result.whitelist['ama-bot-aaa'],
+        { ama: true, dynamicWeight: true, asymmetricBounds: true, derivativeSignals: 'ema12' },
+        '--prune must preserve unknown fields on matching entries'
+    );
 }
 
 async function testKalmanRawValues() {
@@ -351,6 +427,9 @@ async function runAll() {
     await testWhitelistGenerationPreservesExistingEntries();
     await testWhitelistGenerationOptionDefaults();
     await testWhitelistLoaderPreservesExistingFileEntries();
+    await testWhitelistPruneRemovesStaleEntries();
+    await testWhitelistPrunePreservesNonAmaManualEntries();
+    await testWhitelistPrunePreservesUnknownFields();
     await testKalmanRawValues();
     await testRobustAssetResolution();
     await testRobustBotContext();
