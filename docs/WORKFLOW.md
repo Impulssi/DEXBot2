@@ -141,13 +141,21 @@ echo "dev:" && git log --oneline main..dev | wc -l
 ```
 
 ### Sync test with dev
+The pipeline is one-directional: `test → dev`, never `dev → test`. If `test`
+appears to be missing commits that `dev` has, do **not** merge `dev` into
+`test` (this is the forbidden direction — see DON'T below). Instead:
+
 ```bash
-# If test is behind dev, pull dev's changes
+# Check what dev has that test does not
+git log --oneline test..dev
+
+# Cherry-pick the specific missing commits forward into test if needed
 git checkout test
 git pull origin test
-git merge dev  # Only if absolutely necessary to sync
+git cherry-pick <commit-hash>
+git push origin test
 
-# Verify sync
+# Verify sync counts (both should show the same number)
 git log --oneline main..test | wc -l
 git log --oneline main..dev | wc -l
 ```
@@ -200,16 +208,27 @@ node unlock --claw-only
 
 ### Overview of CLI Commands
 
-The `node dexbot <subcommand>` family provides runtime management:
+The `node dexbot <subcommand>` family provides runtime management. Run
+`node dexbot --help` for the full canonical list. Aliases are accepted but
+the canonical name is preferred in scripts and docs.
 
-| Command | Purpose |
-|---------|---------|
-| `node dexbot order` | Display live order book with AMA/dynamic-weight status |
-| `node dexbot status` | Unified runtime health — daemon, adapter, bots |
-| `node dexbot clear` | Clear log files and runtime state |
-| `node dexbot stat` | Bot statistics summary |
-| `node dexbot white` | Market adapter whitelist management |
-| `node dexbot default` | Show default configuration values |
+| Command (canonical) | Aliases | Purpose |
+|---------|---------|---------|
+| `node dexbot test <bot>` | `start` | Test-run a single bot (one-shot, live trading) |
+| `node dexbot drystart <bot>` | — | Same as `test` but forces dry-run execution |
+| `node dexbot reset <bot>` | — | Trigger a grid reset (applies live or on next start) |
+| `node dexbot default` | `defaults` | Reset settings to defaults (deletes generated settings files) |
+| `node dexbot disable <bot>` | — | Mark a bot inactive in config (`disable all` for all) |
+| `node dexbot keys` | `key` | Launch the chain key helper (`modules/chain_keys.ts`) |
+| `node dexbot bots` | `bot` | Launch the interactive bot configurator |
+| `node dexbot pm2` | — | Start all active bots via PM2 |
+| `node dexbot update` | — | Update DEXBot2 from the repository and restart active bots |
+| `node dexbot export <bot>` | — | Export bot trades/settings for QTradeX backtesting |
+| `node dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds) |
+| `node dexbot status` | `stat` | Unified runtime health — daemon, adapter, bots |
+| `node dexbot unlock` | — | Run credential daemon + bot (equivalent to `node unlock`) |
+| `node dexbot whitelist` | `white` | Generate market adapter whitelist from AMA bot configs |
+| `node dexbot clear` | — | Remove all log files from `profiles/logs/` |
 
 ## NPM Scripts for Branch Synchronization
 
@@ -228,11 +247,23 @@ npm run pmain
 
 ### Script Details
 
+> ⚠️ **Scripts use `--force`, not `--no-ff` merges.** The manual merge flow
+> (steps 3–5 above) creates real merge commits and preserves history. The
+> sync scripts instead **force-push** `test` to downstream branches, which
+> rewrites `dev`/`main` to exactly match `test`. This deliberately bypasses
+> the "never force push to dev/main" guard rail (see Key Rules below), so
+> **only run them when you explicitly intend a fast-forward release** and
+> `test == dev == main` is the desired end state. Prefer the manual merge
+> flow for normal promotion; reach for the scripts only when you want
+> zero-divergence sync.
+
 | Script | Purpose | What It Does | When to Use |
 |--------|---------|-------------|-----------|
-| `npm run ptest` | Safe test sync | Pushes local test commits to origin/test without switching branches | Daily development; ensures origin/test is up-to-date |
-| `npm run pdev` | Integrate to dev | Merges test → dev with safe remote push | When test is stable and ready for staging |
-| `npm run pmain` | Release to main | Promotes dev → main with validation and tagging | For official releases only |
+| `npm run ptest` | Push test to origin | Checks out `test` (if not on it) and pushes local commits to `origin/test`. Does **not** touch `dev`/`main`. | Daily development; ensures `origin/test` is up-to-date |
+| `npm run pdev` | Mirror test onto dev | Pushes `origin/test`, then `git push origin test:dev --force` and updates the local `dev` pointer. No merge commit. | When test is stable and you want `dev` to exactly equal `test` |
+| `npm run pmain` | Mirror test onto dev and main | Pushes `origin/test`, then force-pushes `test` to both `dev` and `main` and updates local pointers. **No tagging.** | Full release where `test == dev == main` is intended. Tag manually afterward (see step 5) |
+
+Note: `pmain` does **not** create a release tag. Run `git tag -a v0.X.Y -m "..."` manually after `pmain` if you need a tagged release point.
 
 ## Commands Summary
 
@@ -250,14 +281,16 @@ git push -u origin feature/xyz
 # Merge to test - Integrate feature into primary branch
 git checkout test && git pull && git merge --no-ff feature/xyz && git push origin test
 
-# Quick: Sync test to origin/test (no branch switch)
+# Quick: Push local test to origin/test (checks out test if needed)
 npm run ptest
 
-# Sync test to dev - Promote tested code to staging
+# Force-mirror test onto dev (no merge commit; sees Script Details above)
 npm run pdev
 
-# Merge dev to main (releases only) - Promote to production
+# Force-mirror test onto dev + main (no merge commit, no tagging)
 npm run pmain
+# Tag a release manually afterward if needed:
+git tag -a v0.X.Y -m "Release version 0.X.Y" && git push origin v0.X.Y
 ```
 
 ## Troubleshooting

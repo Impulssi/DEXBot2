@@ -11,6 +11,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - **Batch & Pipeline**: stale handling, retry gating, stale-flag cleanup.
 - **Fund Registry**: cross-bot allocation invariants.
 - **Subscriptions**: health watchdog, silent-death detection.
+- **Broadcast**: uncertain-broadcast recovery, retry, deadlock-free reconcile.
 
 ## Invariant Prefixes
 
@@ -20,7 +21,6 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 | `INV-PROJ` | Projection |
 | `INV-ID` | Order identity |
 | `INV-ACC` | Accounting / fund tracking |
-| `INV-DUST` | Dust health |
 | `INV-SYNC` | Sync engine |
 | `INV-MAINT` | Maintenance runtime |
 | `INV-GRID` | Grid structure |
@@ -29,6 +29,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 | `INV-STATE` | State / lifecycle |
 | `INV-REG` | Fund registry |
 | `INV-SUB` | Subscriptions |
+| `INV-BROADCAST` | Broadcast |
 
 ---
 
@@ -49,10 +50,12 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-PROJ-002` Preserve on-chain PARTIAL size in projection
   - If identity is retained (`keepOrderId=true`) and current state is `PARTIAL`, projected size must preserve current on-chain remaining size.
   - It must not be overwritten by ideal geometric `targetSize`.
+  - Exception: a `PARTIAL` with a rotation/size-update action targeting its `orderId` does use `targetSize` (the explicit-UPDATE path at `modules/order/utils/validate.ts:827`).
   - Preserve-path size must be normalized to finite, non-negative value.
 
-- `INV-PROJ-003` ACTIVE on-chain projection follows target size
-  - If identity is retained and state is `ACTIVE`, projection may apply target size normally.
+- `INV-PROJ-003` ACTIVE on-chain projection preserves current size (same as PARTIAL)
+  - If identity is retained and state is `ACTIVE`, projection preserves current on-chain size via the same `shouldPreserveSize` path as `PARTIAL` (`validate.ts:818-832`).
+  - An explicit UPDATE action targeting the `orderId` is required to apply `targetSize`.
 
 - `INV-ID-001` Order identity retention rule
   - `orderId` and on-chain state are retained only when order is on-chain and side/type is unchanged.
@@ -70,7 +73,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-ACC-003` Cross-bot fund registry invariant (INVARIANT 3)
   - Shared-account per-bot commitment must not exceed the bot's proportional share of chain balance.
   - Checked with widened tolerance `max(PERCENT_TOLERANCE * 3, 0.15)`.
-  - Registry failure logs a warning, not a silent skip.
+  - Registry failure logs an error (`accounting.ts:554-563`, with a "CRITICAL FIX: Log as ERROR instead of WARN" comment), not a silent skip.
 
 ---
 
@@ -107,14 +110,15 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 - `INV-SYNC-007` Authoritative sync preserves fetched free balances
   - `synchronizeWithChain` must not double-deduct already-locked funds from fetched `buyFree`/`sellFree`.
-  - After authoritative open-order sync, `checkFundDriftAfterFills` must return `isValid=true`.
+  - After authoritative open-order sync, `checkFundDriftAfterFills` is expected to return `isValid=true` as a design consequence (no enforcement code exists — this sub-clause expresses the intended post-condition, not an assertion).
 
 ---
 
 ## Maintenance Runtime
 
 - `INV-MAINT-001` Pipeline in-flight defers maintenance
-  - When `isPipelineEmpty` returns `isEmpty=false` (batch in-flight, recovery in-flight, or broadcasting active), `checkSpreadCondition` and `checkGridHealth` must be skipped.
+  - When `isPipelineEmpty` returns `isEmpty=false` (batch in-flight, recovery in-flight, or broadcasting active), `checkSpreadCondition` and broadcast actions (`cancelDustOrders`) must be skipped.
+  - A read-only `checkGridHealth` detection pass runs before the gate by design — it only populates `_dustSinceMap` so the dust timer starts burning while the pipeline is blocked; no broadcast/cancel may fire until the pipeline is empty.
   - Pipeline signals (`batchInFlight`, `recoveryInFlight`, `broadcasting`) must be passed to `isPipelineEmpty`.
 
 - `INV-MAINT-002` Illegal state abort
@@ -173,24 +177,25 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - Cancelled IDs are filtered out of `unmatchedParsed` to prevent reprocessing.
   - No size guard — any duplicate at the same price is a violation.
   - `SUSPECTED_DUPLICATE_TOLERANCE_FLOOR` (absolute price floor) is removed — only `tolerance * SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` is used.
+  - `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` is a file-local constant (`modules/order/grid_reconcile.ts`, value `5`), not a centralized `constants.ts` entry.
 
 - `INV-RECON-004` Rebalance must not convert on-chain slots to SPREAD via CREATE
   - `performSafeRebalance` must not emit `CREATE` actions that convert existing on-chain slots into SPREAD orders.
   - On-chain mid-slot must keep its BUY/SELL type before commit.
 
 - `INV-RECON-005` Extreme placement ordering
-  - BUY placements must use nearest available free slots first (ascending price).
-  - SELL placements must use nearest available free slots first (descending price).
+  - BUY placements must use nearest available free slots first (descending price, so the nearest-to-center slots fill first — `validate.ts:465-468`).
+  - SELL placements must use nearest available free slots first (ascending price).
 
 ---
 
 ## Batch / Pipeline
 
 - `INV-BATCH-001` Illegal state batch abort
-  - When `executeBatch` throws `ILLEGAL_ORDER_STATE`, the caller must:
-    - Return `abortedForIllegalState: true`.
-    - Trigger one immediate recovery sync.
-    - Arm one maintenance cooldown cycle.
+  - `executeBatch` throws `ILLEGAL_SPREAD_STATE` on an illegal grid layout (emitted at `modules/order/utils/validate.ts`, propagated via `modules/order/manager.ts` `_throwOnIllegalState`).
+  - The `_handleBatchHardAbort` catch for `ILLEGAL_ORDER_STATE` (`dexbot_class.ts:469`) is a test-only dead branch — production never emits that code; only the test stub at `tests/test_patch17_invariants.ts:387` uses it.
+  - In production, recovery + cooldown are armed on the next maintenance tick via `_abortFlowIfIllegalState` (the `INV-MAINT-002` path), returning `abortedForIllegalState: true` to the caller. The caller does not need to return immediately; the maintenance tick handles recovery.
+  - Hard abort triggers one immediate recovery sync (`_triggerStateRecoverySync`) plus arms one maintenance cooldown cycle (`_maintenanceCooldownCycles = Math.max(current, 1)`).
 
 - `INV-BATCH-002` Stale-only cancel fast path
   - When a cancel-only batch fails with "order does not exist" (stale), the handler must:
@@ -207,6 +212,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
     - NOT virtualize the slot.
     - Preserve `orderId` until sync reconciles it.
     - NOT mark the order as stale-cleaned.
+  - Fast path: if the batch result indicates `ORDER_SIZE_DRIFT_TARGETED` (`dexbot_class.ts:593-599`), a targeted repair applies the correction directly and skips `_triggerStateRecoverySync`.
 
 ---
 
@@ -229,8 +235,8 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 - `INV-REG-001` Cross-bot allocation ≤ proportional share
   - Per-bot committed amounts (sum of on-chain orders) must not exceed `totalChainBalance × allocatedPercent`.
-  - Violation triggers a warning-level log entry (not silent), with tolerance `max(PERCENT_TOLERANCE * 3, 0.15)`.
-  - Registry registration is pre-flight + atomic; all bots register before any starts.
+  - Violation triggers an error-level log entry (not silent), with tolerance `max(PERCENT_TOLERANCE * 3, 0.15)`.
+  - Registry registration is pre-flight + atomic; only shared-account bots register (`dexbot.ts:521` filters `accountGroups[a].length > 1`), and registration completes before any shared-account bot starts.
   - Release happens in `DEXBot.shutdown`.
 
 - `INV-REG-002` Async-locked registry writes

@@ -92,13 +92,26 @@ the bot continues operating on stale or missing dynamic-grid data.
 
 ### Debugging
 
-**Initial snapshot persistence failure:**
-```text
-triggerSuppressedReason: 'ama_center_persist_failed'
-```
+The adapter reports a `triggerSuppressedReason` whenever it decided **not** to
+write a trigger this cycle. Each value names a different gate:
 
-If this appears repeatedly, check disk space, write permissions for
-`profiles/orders/`, and the `writeBotDynamicGrid` service dependency.
+| `triggerSuppressedReason` | Meaning |
+|---------------------------|---------|
+| `ama_center_persist_failed` | Writing `dynamicgrid.json` failed (disk space, permissions, or `writeBotDynamicGrid` dependency) |
+| `ama_warmup_insufficient` | Not enough closed candles yet to produce a valid AMA value |
+| `waiting_for_new_closed_candle` | AMA history was repaired, but no new candle close has arrived since the last processed one |
+| `unresolved_candle_gaps` | Source candle history contains gaps the adapter could not auto-fill |
+| `stale_candle_data` | Latest candle close is older than the configured staleness window |
+| `fixed_start_price` | Bot uses a fixed start price; AMA-driven recentering is intentionally disabled |
+| `ama_slope_persist_failed` | Range-scaling snapshot write failed before the slope trigger could be issued |
+| `dynamic_weight_persist_failed` | Dynamic-weight-only snapshot write failed |
+
+When `ama_center_persist_failed` (or `ama_slope_persist_failed` /
+`dynamic_weight_persist_failed`) appears repeatedly, check disk space, write
+permissions for `profiles/orders/`, and the `writeBotDynamicGrid` service
+dependency. The warmup/candle-gap/stale-data reasons clear on their own once
+fresh candle data is available; `fixed_start_price` is intentional and only
+changes if the bot's start-price mode is reconfigured.
 
 ---
 
@@ -163,8 +176,8 @@ tsx market_adapter/market_adapter.ts --deltaPercent 2
 **AMA Parameters:**
 - `enabled`: Whether to track AMA and trigger grid resets (true/false)
 - `erPeriod`: How many candles to look back for trend detection
-  - Higher values: More stable, slower response (ER=107 very stable)
-  - Lower values: More responsive, catches quick moves (ER=15 very responsive)
+  - Higher values: More stable, slower response (e.g. `erPeriod=107` very stable)
+  - Lower values: More responsive, catches quick moves (e.g. `erPeriod=15` very responsive)
   - Default: `10` (balanced)
 - `fastPeriod`: Smoothing constant for trending markets
   - Lower = faster response
@@ -288,10 +301,25 @@ detects that structural drift. Once it crosses the threshold, DEXBot rebuilds
 from the latest market-adapter snapshot instead of trying to keep patching the
 old shape.
 
-The RMS calculation itself uses the current runtime grid and live dynamic
-weights as before. Crossing the threshold only changes the follow-up action:
-the bot refreshes `gridCenterPrice` from the latest `amaCenterPrice` in
-`dynamicgrid.json`, then runs the full resync path.
+The RMS calculation compares the runtime grid (calculated from the bot's
+config and live dynamic weights) against the persisted/on-chain grid state.
+Crossing the threshold only changes the follow-up action: the bot refreshes
+`gridCenterPrice` from the latest `amaCenterPrice` in `dynamicgrid.json`,
+then runs the full resync path.
+
+#### Two RMS trigger paths
+
+Both paths use the same `resetSource: "rms_structural_grid_resync"` and
+both refresh the AMA center before rebuilding, but they fire from different
+code paths and log differently:
+
+| Path | Fires from | Trigger | Log signature |
+|------|-----------|---------|---------------|
+| **Periodic divergence** | `dexbot_maintenance_runtime.ts` periodic sync loop | `Grid.monitorDivergence()` reports `buy.rms` or `sell.rms` above threshold | `Grid update triggered by structural divergence during periodic: buy=..., sell=...` |
+| **Structural recovery (COW guard)** | `dexbot_class.ts` `_wireStructuralGridResyncRequest()` | Order manager detects unmatched chain orders during copy-on-write placement | `[RECOVERY] Running structural full grid resync for <reason> (N unmatched chain order(s))` |
+
+The structural-recovery path is debounced through `_structuralGridResyncTimer`
+and dedupes while one resync is already pending or running.
 
 ### Configuration
 
@@ -556,6 +584,10 @@ Removed trigger file.
 
 ## Related Issues
 
+> Issue numbers below refer to the project's historical internal tracker and
+> are kept here for archival context. They are not always resolvable against
+> external issue trackers.
+
 - **Issue #5:** RMS Divergence Check Disabling — Ability to set `RMS_PERCENTAGE: 0` to disable checks
 - **Feature:** AMA Integration — AMA-derived center snapshots are already used for market-adapter-triggered grid recentering
 - **Issue #1:** Fund Validation Bug — Fixed validation logic for order batch placement
@@ -566,10 +598,13 @@ Removed trigger file.
 
 - `modules/constants.ts` — Default configuration values
 - `modules/account_bots.ts` — Bot configuration schema and defaults
+- `modules/settings_merge.ts` — Consolidated settings merge (how thresholds actually resolve across general/bot/pair layers)
 - `market_adapter/market_adapter.ts` — AMA calculation and trigger logic
 - `market_adapter/core/market_adapter_service.ts` — Initial AMA snapshot, AMA-delta, and AMA-slope trigger decisions
-- `modules/dexbot_maintenance_runtime.ts` — Trigger-file detection, full-resync center refresh, idle/dust deferral, and reset metadata recording
+- `modules/dexbot_maintenance_runtime.ts` — Trigger-file detection, full-resync center refresh, idle/dust deferral, and reset metadata recording (periodic RMS path)
+- `modules/dexbot_class.ts` — `_performGridResync()`, `requestGridReset()`, and COW-guard structural recovery wiring
 - `modules/order/grid.ts` — RMS divergence check and grid comparison
 - `modules/order/manager.ts` — Available-funds resize threshold logic
+- `modules/market_adapter_whitelist.ts` / `scripts/generate_market_adapter_whitelist.ts` — Whitelist generation backing `node dexbot white`
 - `profiles/general.settings.json` — User-editable configuration
 - `profiles/bots.json` — Per-bot configuration including AMA

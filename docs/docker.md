@@ -85,6 +85,8 @@ OPEN_ORDERS_SYNC_LOOP_MS=5000
 # Optional: match container user to host UID/GID for volume permissions
 DEXBOT_UID=1000
 DEXBOT_GID=1000
+# Optional: pin a specific image tag instead of `latest`
+# DEXBOT_IMAGE=ghcr.io/froooze/dexbot2:sha-<commit>
 ```
 
 2. Ensure the host directories exist with matching ownership:
@@ -118,7 +120,7 @@ docker compose run dexbot node dist/unlock.js --headless --password-file /run/se
 docker compose logs -f dexbot
 ```
 
-4. Stop:
+5. Stop:
 
 ```bash
 docker compose down
@@ -133,4 +135,5 @@ docker compose down
   - Set `DEXBOT_UID` and `DEXBOT_GID` in `.env` to match your host user (`id -u` / `id -g`).
 - Keep `.env` for non-sensitive runtime values (for example `BOT_NAME`, `OPEN_ORDERS_SYNC_LOOP_MS`).
 - Do not store the master password in `.env`. The secure launchers prompt once and keep it only in process memory. If you must use non-interactive startup, use `--headless --password-file` with a Docker secret (see [Headless startup](#headless-non-interactive-startup) above).
-- If you prefer immutable pinning, replace `latest` in `docker-compose.yml` with a `sha-<commit>` tag.
+- If you prefer immutable pinning, set `DEXBOT_IMAGE=ghcr.io/froooze/dexbot2:sha-<commit>` in `.env` (no edit to `docker-compose.yml` needed). The compose file defaults to `${DEXBOT_IMAGE:-ghcr.io/froooze/dexbot2:latest}`.
+- Release images are multi-arch (`linux/amd64`, `linux/arm64`); they run on both x86 and ARM hosts without additional setup.

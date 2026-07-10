@@ -1,42 +1,5 @@
 # DEXBot2 Credential Security
 
-## System Architecture
-
-DEXBot2 implements a layered security model to protect private keys and 
-credentials at rest, in transit, and in RAM during a live session.
-
-### Policy Engine & Strict Enforcement
-The credential daemon employs a strictly enforced HMAC policy engine. All 
-operations require cryptographic validation. The daemon dynamically loads
-parameters, ensuring that bots cannot bypass verification or hit unauthorized
-resource limits.
-
-### Session Management & Auto-Heal
-The daemon supports persistent operations via session IDs. To mitigate 
-interruptions (e.g., daemon restarts or TTL expiration), the system implements 
-a transparent renegotiation loop. When an `executeViaDaemonToken` call fails, 
-the system automatically fetches a new `sessionId`, injects it into the 
-`signingToken`, and cleanly replays the pending operations.
-
-### Daemon Policy & Batch Limits
-The credential daemon enforces granular operation policies via `daemon-policies.json`.
-These policies are strictly enforced at the daemon boundary. To prevent 
-resource exhaustion, the daemon enforces a global `maxOpsPerBatch` limit 
-(defaulting to 200). This ensures that complex grid replacements or 
-batch orders do not overwhelm the daemon's internal state.
-
-### Memory Safety & Zeroing
-To minimize the window of exposure for sensitive key material, the credential
-daemon implements explicit memory scrubbing on a best-effort basis. Upon process
-termination, the `shutdown()` handler iterates all sensitive objects (vault
-secrets, session secrets, and cached account keys), calls `Buffer.fill(0)` on
-any Buffer properties, and nulls all references. Hex-string key properties
-(`vaultKeyHex`, `sessionSaltHex`) are immutable in V8 and cannot be zeroed
-in place — they are dropped via reference nulling and reclaimed by the garbage
-collector.
-
----
-
 ## Overview
 
 DEXBot2 keeps private keys out of the bot process entirely. A dedicated
@@ -54,7 +17,7 @@ Master password
   Vault key ──────────────────────────────┬── HMAC-SHA256 (vault verifier)
       │                                   │
       ▼ HKDF-SHA256 (per-record salt)     ▼
-  Record key → AES-256-GCM → keys.json   timingSafeEqual on unlock
+   Record key → AES-256-GCM → keys.json   timingSafeEqual on unlock
       │
       ▼ daemon startup
   Session secret (HKDF-SHA256, new random salt each run)
@@ -65,6 +28,47 @@ Master password
       ▼ signing token handed to bot
   Daemon signs/broadcasts  →  result returned to bot
 ```
+
+---
+
+## System Architecture
+
+DEXBot2 implements a layered security model to protect private keys and
+credentials at rest, in transit, and in RAM during a live session.
+
+### Policy Engine & Strict Enforcement
+The credential daemon enforces a strictly held **HMAC-SHA256** policy engine
+(see §2 and §7). Every signing request is cryptographically validated against a
+per-account `botHmacSecret` loaded from `daemon-policies.json`; the daemon
+hot-reloads the policy on `SIGHUP` and via an `fs.watch` safety net, so bots
+cannot bypass verification or hit unauthorized resource limits even after a
+live policy edit.
+
+### Session Management & Auto-Heal
+The daemon supports persistent operations via session IDs. To mitigate
+interruptions (e.g., a daemon policy reload, a daemon restart, or session TTL
+expiration), the **bot** implements a transparent renegotiation loop: when an
+`executeViaDaemonToken` call fails with a stale session or stale HMAC, the bot
+fetches a new `sessionId`, injects it into the `signingToken`, optionally
+signals the daemon to reload its policy via `SIGHUP`, and cleanly replays the
+pending operations. (Full sequence in §2 — HMAC Session Recovery.)
+
+### Daemon Policy & Batch Limits
+The credential daemon enforces granular operation policies via `daemon-policies.json`.
+These policies are strictly enforced at the daemon boundary. To prevent
+resource exhaustion, the daemon enforces a global `maxOpsPerBatch` limit
+(defaulting to 200). This ensures that complex grid replacements or
+batch orders do not overwhelm the daemon's internal state.
+
+### Memory Safety & Zeroing
+To minimize the window of exposure for sensitive key material, the credential
+daemon implements explicit memory scrubbing on a best-effort basis. Upon process
+termination, the `shutdown()` handler iterates all sensitive objects (vault
+secrets, session secrets, and cached account keys), calls `Buffer.fill(0)` on
+any Buffer properties, and nulls all references. Hex-string key properties
+(`vaultKeyHex`, `sessionSaltHex`) are immutable in V8 and cannot be zeroed
+in place — they are dropped via reference nulling and reclaimed by the garbage
+collector.
 
 ---
 
@@ -145,9 +149,9 @@ domain socket; the main signing flow never hands raw key bytes to the bot.
 6. Daemon writes a *ready file* and begins accepting signing requests on the main
    socket. The bootstrap socket no longer exists at this point.
 
-A configurable timeout (default: a few seconds) aborts the entire bootstrap if
-the daemon does not connect in time, preventing the bootstrap socket from being
-left open indefinitely.
+A configurable timeout (default: 60 seconds, `DAEMON_STARTUP_TIMEOUT_MS`)
+aborts the entire bootstrap if the daemon does not connect in time, preventing
+the bootstrap socket from being left open indefinitely.
 
 ### What the daemon exposes
 
@@ -163,16 +167,25 @@ callers receive only operation results.
 
 ### HMAC Session Recovery
 
-If the daemon receives `SOURCE_AUTH_DENIED` (stale HMAC session — e.g., after a
-daemon restart or TTL expiry), it recovers transparently:
+When `executeViaDaemonToken` returns `SOURCE_AUTH_DENIED` (stale `botHmacSecret`)
+or `SESSION_EXPIRED` (stale or missing `sessionId`) — e.g. after the daemon
+reloaded its policy, after a daemon restart, or after a session TTL expiry —
+the **bot** recovers transparently from `modules/key_store.ts`:
 
-1. Daemon catches `SIGHUP` and sleeps 500ms for the restart to settle.
-2. A fresh `sessionId` is fetched and injected into the `signingToken`.
-3. The pending operation is replayed cleanly.
+1. Bot detects the denied response and branches on the cause
+   (`SOURCE_AUTH_DENIED` vs `SESSION_EXPIRED`).
+2. For `SOURCE_AUTH_DENIED`, the bot reads the daemon ready file, extracts the
+   daemon PID, and sends `SIGHUP` to the daemon to trigger a policy reload.
+3. Bot fetches a fresh `sessionId` via `probe-account`.
+4. Bot injects the new `sessionId` into the `signingToken`.
+5. For `SOURCE_AUTH_DENIED` only, the bot sleeps 500ms so the daemon's
+   `SIGHUP`/`fs.watch` policy reload settles before replaying; for a plain
+   `SESSION_EXPIRED` no sleep is needed.
+6. Bot replays the pending operation.
 
-This prevents a stale HMAC session from blocking the pipeline. The recovery is
-automatic — no user or operator intervention required. Zero-budget shortfall
-warnings are suppressed during recovery to avoid noise.
+On the daemon side, `SIGHUP` only triggers a strict reload of
+`daemon-policies.json` and a node-list refresh — it never restarts the process
+or sleeps. This keeps the pipeline unblocked without operator intervention.
 
 ### Daemon signing token
 
@@ -182,7 +195,9 @@ The bot receives a **signing token** at startup:
 {
   kind: 'dexbot-daemon-signing-token',
   accountName: '<account>',
-  socketPath: '/run/user/<uid>/dexbot2/dexbot-cred-daemon.sock'
+  socketPath: '/run/user/<uid>/dexbot2/dexbot-cred-daemon.sock',
+  sessionId: '<hex session id, or null>',
+  botHmacSecret: '<per-account HMAC secret, or null>'
 }
 ```
 

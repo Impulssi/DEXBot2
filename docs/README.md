@@ -33,7 +33,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ### 🦀 [Claw](../claw/README.md)
 *Bridge between DEXBot2 and external runtimes.*
-- **Purpose**: Exposes BitShares capabilities and DEXBot2 infrastructure through JSON/CLI bridges, MCP, and runtime-native skill packaging for OpenClaw, Hermes, OpenFang, NanoBot, PicoClaw, NanoClaw, ZeroClaw, and NullClaw.
+- **Purpose**: Exposes BitShares capabilities and DEXBot2 infrastructure through JSON/CLI bridges, MCP, and runtime-native skill packaging for OpenClaw and compatible runtimes (see [claw/README.md](../claw/README.md) for the full list).
 - **API Boundary**: Responsibility split between the AI decision layer and the DEXBot2 execution substrate ([AI_BOT_LIBRARY_API.md](../claw/docs/AI_BOT_LIBRARY_API.md))
 - **Tuning Reference**: Practical grid-tuning baselines ([DEXBOT2_TUNING_CHEAT_SHEET.md](../claw/docs/DEXBOT2_TUNING_CHEAT_SHEET.md))
 - **Position Management**: Health monitoring, margin planner, and dynamic weight policy
@@ -62,7 +62,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Categories**: 6 independently enablable category groups.
 - **Change Detection**: Skips redundant logs (40-50% reduction).
 - **Batch Processing Logs**: Fill batching, recovery retry, and orphan-fill deduplication messages.
-- **Fill History Scans**: The `Subscriptions` logger emits `fetchFillHistoryEntries: maxPages (X) reached` at `info` level when the history scan hits its page cap. On a busy account this is normal (the scan catches up over multiple cycles). If it appears repeatedly without new fills being detected, the node may be running `--partial-operations` which prunes old `operation_history_objects` — the scan can never catch up because the entries have been removed from the `by_op` index. Operators should check their witness node configuration in that case.
+- **Fill History Scans**: The `Subscriptions` logger emits `fetchFillHistoryEntries: maxPages (X) reached` at `info` level when the history scan hits its page cap — normal on busy accounts; see LOGGING.md for the `--partial-operations` diagnostic.
 
 ### 🐳 [Docker](docker.md)
 *Container build, release images, and secure startup.*
@@ -108,9 +108,14 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Branching Strategy**: Explanation of the `test` → `dev` → `main` lifecycle.
 - **CI/CD Patterns**: Standards for merging and ensuring code quality across branches.
 
+### 🧮 [DEXBot vs DEXBot2 Comparison](DEXBOT_COMPARISON.md)
+*Architectural, functional, and operational comparison with the original Python DEXBot.*
+- **Scope**: Full side-by-side of technology stack, architecture, trading strategies, order management, configuration, blockchain integration, fund accounting, and concurrency safety
+- **Audience**: Developers and operators evaluating or migrating between the two projects
+
 ### 🧭 [Evolution Report](EVOLUTION.md)
 *Project timeline and major architecture phases.*
-- **Coverage**: Historical milestones from the initial December 2025 bootstrap through the v1.0.13 stable release, including credit maintenance hardening
+- **Coverage**: Historical milestones from the initial December 2025 bootstrap through the v1.0.13 stable release (grid persistence safety, dust pipeline fix, net inventory lots); credit/debt runtime and maintenance hardening are covered under Phase 5 (Mar–Jun 2026)
 - **Focus**: Architecture evolution, release history, test growth, and documentation changes
 
 ### 🗒️ [Changelog](../CHANGELOG.md)

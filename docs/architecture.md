@@ -34,38 +34,38 @@ DEXBot2 prioritizes **simplicity and operational efficiency** over complex parti
 The diagram below shows DEXBot2 from a **data perspective**: what data enters the system, how it moves through each engine, and what leaves as blockchain operations or persisted state.
 
 ```mermaid
-flowchart TD
-    subgraph IN["INPUTS"]
-        CFG["bots.json<br/>(grid params, funds, pair)"]
-        GS["general.settings.json<br/>(timing, thresholds)"]
-        KEYS["keys.json AES encrypted<br/>+ interactive unlock / one-shot local bootstrap"]
-        PERSIST["orders/botKey.json<br/>grid snapshot,<br/>feesOwed, boundaryIdx"]
-        FILLEV["Fill Events real-time<br/>BitShares block op-4"]
-        OPENORD["Open Orders polling<br/>chain open-order list"]
-        BALANCES["Account Balances<br/>FREE + COMMITTED assets"]
-        PRICE["Market Price<br/>pool or order-book"]
+graph TB
+    subgraph "INPUTS"
+        CFG[bots.json<br/>grid params, funds, pair]
+        GS[general.settings.json<br/>timing, thresholds]
+        KEYS[keys.json AES encrypted<br/>+ interactive unlock / one-shot local bootstrap]
+        PERSIST[orders/botKey.json<br/>grid snapshot,<br/>feesOwed, boundaryIdx]
+        FILLEV[Fill Events real-time<br/>BitShares block op-4]
+        OPENORD[Open Orders polling<br/>chain open-order list]
+        BALANCES[Account Balances<br/>FREE + COMMITTED assets]
+        PRICE[Market Price<br/>pool or order-book]
     end
 
-    subgraph BOOT["BOOTSTRAP — once at startup"]
-        AUTH["Credential Daemon<br/>Decrypt private key"]
-        ASSETMETA["Asset Metadata<br/>precision, fees, IDs"]
-        INITGRID["Initial Grid<br/>geometric price levels<br/>order sizes per side"]
+    subgraph "BOOTSTRAP - once at startup"
+        AUTH[Credential Daemon<br/>Decrypt private key]
+        ASSETMETA[Asset Metadata<br/>precision, fees, IDs]
+        INITGRID[Initial Grid<br/>geometric price levels<br/>order sizes per side]
     end
 
-    subgraph ENGINE["CORE ENGINE — OrderManager"]
-        MASTERGRID["Master Grid — immutable/frozen<br/>slot-id, price, size, state<br/>orderId, blockchain, grid, proceeds"]
-        TWOPASS["SyncEngine<br/>2-pass: grid-to-chain then chain-to-grid<br/>match orderId, detect partials, flag stale"]
-        FUNDS["Accounting — SSOT for funds<br/>available, virtual, committed<br/>btsFeesOwed<br/>Avail = max 0 ChainFree minus Virtual minus Fees"]
-        TARGET["Strategy Engine<br/>calculateTargetGrid<br/>boundary-crawl pivot<br/>partial-fill consolidation, rotation"]
-        WORKGRID["WorkingGrid — COW copy<br/>all mutations here only<br/>commit to Master on confirmation"]
-        FILLQUEUE["Fill Queue<br/>AsyncLock + dedup 5-60 min"]
-        BATCHER["Fixed-Cap Batcher<br/>queue <= cap: unified batch<br/>queue > cap: chunk at cap size<br/>default cap: 4"]
+    subgraph "CORE ENGINE - OrderManager"
+        MASTERGRID[Master Grid - immutable/frozen<br/>slot-id, price, size, state<br/>orderId, blockchain, grid, proceeds]
+        TWOPASS[SyncEngine<br/>2-pass: grid-to-chain then chain-to-grid<br/>match orderId, detect partials, flag stale]
+        FUNDS["Accounting - SSOT for funds<br/>available, virtual, committed<br/>btsFeesOwed<br/>Avail = max 0 ChainFree minus Virtual minus Fees"]
+        TARGET[Strategy Engine<br/>calculateTargetGrid<br/>boundary-crawl pivot<br/>partial-fill consolidation, rotation]
+        WORKGRID[WorkingGrid - COW copy<br/>all mutations here only<br/>commit to Master on confirmation]
+        FILLQUEUE[Fill Queue<br/>AsyncLock + dedup 5-60 min]
+        BATCHER[Fixed-Cap Batcher<br/>queue within cap: unified batch<br/>queue above cap: chunk at cap size<br/>default cap: 4]
     end
 
-    subgraph OUT["OUTPUTS"]
-        OPS["Blockchain Operations<br/>CREATE / UPDATE / CANCEL<br/>limit orders on BitShares"]
-        SNAP["Grid Snapshot<br/>profiles/orders/botKey.json"]
-        LOGS["Logs and Metrics<br/>profiles/logs/botName.log<br/>queue depth, latency, health"]
+    subgraph "OUTPUTS"
+        OPS[Blockchain Operations<br/>CREATE / UPDATE / CANCEL<br/>limit orders on BitShares]
+        SNAP[Grid Snapshot<br/>profiles/orders/botKey.json]
+        LOGS[Logs and Metrics<br/>profiles/logs/botName.log<br/>queue depth, latency, health]
     end
 
     KEYS --> AUTH --> ASSETMETA
@@ -129,6 +129,9 @@ graph TB
         FILL_RUNTIME[FillRuntime<br/>modules/dexbot_fill_runtime.ts]
         MAINT_RUNTIME[MaintenanceRuntime<br/>modules/dexbot_maintenance_runtime.ts]
         CONSTANTS[Constants<br/>modules/constants.ts]
+        FUND_REGISTRY[FundRegistry<br/>modules/fund_registry.ts]
+        SETTINGS_MERGE[SettingsMerge<br/>modules/settings_merge.ts]
+        CRED_RUNTIME[CredentialRuntime<br/>modules/credential_runtime.ts]
     end
 
     subgraph "Order Management System"
@@ -141,6 +144,8 @@ graph TB
             GRID[Grid<br/>grid.ts]
         end
 
+        WORKGRID[WorkingGrid<br/>working_grid.ts]
+        GRID_RECONCILE[GridReconcile<br/>grid_reconcile.ts]
         UTILS[Utils<br/>utils/]
         LOGGER[Logger<br/>logger.ts]
         RUNNER[Runner<br/>runner.ts]
@@ -158,13 +163,10 @@ graph TB
     subgraph "Market Adapter"
         MA[MarketAdapter<br/>market_adapter/market_adapter.ts]
         MA_SVC[AdapterService<br/>core/market_adapter_service.ts]
+        AMA_RUNNER[AMA Signal Runner<br/>ama_signal_runner.ts]
         KIBANA[inputs/kibana_source.ts]
-    end
-
-    subgraph "Claw Integration"
-        CLAW[claw/index.ts]
-        CR_RUNTIME[credit_runtime.ts]
-        CHAIN_ACT[chain_actions.ts]
+        LP_FETCH[inputs/fetch_lp_data.ts]
+        STRATEGIES[core/strategies/]
     end
 
     CLI --> DEXBOT
@@ -177,19 +179,23 @@ graph TB
     DEXBOT --> FILL_RUNTIME
     DEXBOT --> MAINT_RUNTIME
     DEXBOT --> CONSTANTS
-    DEXBOT --> CR_RUNTIME
+    DEXBOT --> FUND_REGISTRY
+    DEXBOT --> SETTINGS_MERGE
+    DEXBOT --> CRED_RUNTIME
 
     MANAGER --> ACCOUNTANT
     MANAGER --> STRATEGY
     MANAGER --> SYNC
     MANAGER --> GRID
+    MANAGER --> WORKGRID
+    MANAGER --> GRID_RECONCILE
     MANAGER --> UTILS
     MANAGER --> LOGGER
     MANAGER --> RUNNER
     MANAGER --> FILL_STORE
 
+    ACCOUNTANT --> FUND_REGISTRY
     STRATEGY --> UTILS
-    ACCOUNTANT --> UTILS
     SYNC --> UTILS
     GRID --> UTILS
 
@@ -202,14 +208,37 @@ graph TB
     BTS_CLIENT --> NODE_MGR
 
     MA --> MA_SVC
+    MA --> AMA_RUNNER
     MA_SVC --> KIBANA
+    MA_SVC --> LP_FETCH
+    MA_SVC --> STRATEGIES
 
-    CLAW --> CHAIN_ACT
-    CLAW --> DEXBOT
-
-    NODE_MGR -.->|BitShares API| BLOCKCHAIN[(BitShares<br/>Blockchain)]
-    CHAIN_ACT -.->|BitShares API| BLOCKCHAIN
+    MA -.->|trigger files| MAINT_RUNTIME
 ```
+
+## Browser-Safe Surface
+
+DEXBot2 ships both a **Node CLI runtime** and the building blocks for an in-browser operator UI. To keep `require('fs')`, `process.kill`, and Unix-socket calls out of the browser bundle, the codebase enforces a strict Node-vs-browser split.
+
+**Convention**: *everything is browser-safe unless listed as Node-only*. The source of truth is the `"browser"` field in `package.json`, which maps every Node-only **compiled** entry (`dist/*.js`) to `false`. The list below is documentation; always check `package.json` before reclassifying a module.
+
+**Node-only modules** (must not be reached from a browser bundle):
+
+| Module | Reason |
+|--------|--------|
+| `modules/launcher/*` | Credential daemon, bot supervisor, market-adapter runtime, monolithic runtime |
+| `modules/dexbot_maintenance_runtime.ts` | Direct `fs` / `child_process` / `os` use |
+| `modules/dexbot_class.ts` | Imports `dexbot_maintenance_runtime` |
+| `unlock.ts`, `bot.ts`, `dexbot.ts`, `pm2.ts`, `credential-daemon.ts` | CLI entry points |
+| `market_adapter/lp_chart_runner.ts` | `require('child_process')` for chart rendering |
+
+**Environment detection** must go through `modules/env.ts` rather than inline `typeof window` / `typeof process` checks:
+
+```javascript
+import { isBrowser, hasProcess } from './env';
+```
+
+The previous 6+ inline ternaries that existed in `bitshares-native/*` and `runtime.ts` were consolidated into those helpers; do not reintroduce them.
 
 ---
 
@@ -282,27 +311,27 @@ The `WorkingGrid` class (`modules/order/working_grid.ts`) provides isolation for
 │  1. Create WorkingGrid from frozen master                   │
 │     workingGrid = new WorkingGrid(masterGrid, {baseVersion})│
 └─────────────────────────┬───────────────────────────────────┘
-                          ↓
+                         ↓
 ┌─────────────────────────────────────────────────────────────┐
 │  2. Calculate target state (PURE - no side effects)         │
 │     strategy.calculateTargetGrid() returns new Map          │
 └─────────────────────────┬───────────────────────────────────┘
-                          ↓
+                         ↓
 ┌─────────────────────────────────────────────────────────────┐
 │  3. Project target onto working grid                        │
 │     Modifies working copy only                              │
 └─────────────────────────┬───────────────────────────────────┘
-                          ↓
+                         ↓
 ┌─────────────────────────────────────────────────────────────┐
 │  4. Validate funds & check staleness                        │
 │     If stale: abort without committing                      │
 └─────────────────────────┬───────────────────────────────────┘
-                          ↓
+                         ↓
 ┌─────────────────────────────────────────────────────────────┐
 │  5. Submit to blockchain & wait for finality                │
 │     synchronizeWithChain() confirms on-chain                │
 └─────────────────────────┬───────────────────────────────────┘
-                          ↓
+                         ↓
 ┌─────────────────────────────────────────────────────────────┐
 │  6. Commit: Replace master with working grid                │
 │     this.orders = Object.freeze(workingGrid.toMap())        │
@@ -315,11 +344,11 @@ Only blockchain-confirmed events trigger master updates:
 
 | Event | Entry Point | Mechanism |
 |-------|-------------|-----------|
-| Order Created | `sync_engine.ts:858+` | `synchronizeWithChain('createOrder')` |
-| Order Cancelled | `sync_engine.ts:858+` | `synchronizeWithChain('cancelOrder')` |
-| Order Filled | `sync_engine.ts:syncFromFillHistory()` | `syncFromFillHistory()` |
-| Full Sync | `sync_engine.ts:syncFromOpenOrders()` | `syncFromOpenOrders()` |
-| Grid Init/Load | `grid.ts:createOrderGrid()` | Bootstrap operations |
+| Order Created | `sync_engine.ts` `synchronizeWithChain()` | Called with `source: 'createOrder'` |
+| Order Cancelled | `sync_engine.ts` `synchronizeWithChain()` | Called with `source: 'cancelOrder'` |
+| Order Filled | `sync_engine.ts` `syncFromFillHistory()` | Processes a real-time fill event |
+| Full Sync | `sync_engine.ts` `syncFromOpenOrders()` | Reconciles grid against current open orders |
+| Grid Init/Load | `grid.ts` `createOrderGrid()` | Bootstrap operations |
 
 ### Defensive Measures
 
@@ -337,51 +366,51 @@ The fill pipeline handles incoming filled orders efficiently through fixed-cap b
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Fill Event (Blockchain)                   │
-│                  (Order filled at price X)                   │
+│                   Fill Event (Blockchain)                   │
+│                  (Order filled at price X)                  │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│              _incomingFillQueue (FIFO Queue)                 │
-│          (Accumulates fills from blockchain)                 │
-│  Queue: [fill1, fill2, fill3, fill4, fill5, ...]           │
+│               _incomingFillQueue (FIFO Queue)               │
+│             (Accumulates fills from blockchain)             │
+│       Queue: [fill1, fill2, fill3, fill4, fill5, ...]       │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│         processFilledOrders() - Entry Point                  │
-│  Use MAX_FILL_BATCH_SIZE cap for deterministic batching      │
-│  Rules: <=cap unified, >cap chunked at cap size             │
+│             processFilledOrders() - Entry Point             │
+│    Use MAX_FILL_BATCH_SIZE cap for deterministic batching   │
+│        Rules: <=cap unified, >cap chunked at cap size       │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│         Pop Batch (up to MAX_FILL_BATCH_SIZE)               │
-│    Takes N fills from queue head (N = 1-4)                  │
-│  Example: pops [fill1, fill2, fill3] for batch processing  │
+│            Pop Batch (up to MAX_FILL_BATCH_SIZE)            │
+│           Takes N fills from queue head (N = 1-4)           │
+│   Example: pops [fill1, fill2, fill3] for batch processing  │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│     processFillAccounting() - Single Call                    │
-│  All fills credited to chainFree in ONE operation           │
-│  chainFree += proceeds[fill1] + proceeds[fill2] + ...      │
-│  Proceeds immediately available (same rebalance cycle)     │
+│            processFillAccounting() - Single Call            │
+│       All fills credited to chainFree in ONE operation      │
+│     chainFree += proceeds[fill1] + proceeds[fill2] + ...    │
+│    Proceeds immediately available (same rebalance cycle)    │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│    calculateTargetGrid() - Single Call                       │
-│  Size replacement orders using combined proceeds           │
-│  Apply rotations and boundary shifts                       │
-│  Use unallocated remainder for next allocation opportunities│
+│             calculateTargetGrid() - Single Call             │
+│       Size replacement orders using combined proceeds       │
+│             Apply rotations and boundary shifts             │
+│ Use unallocated remainder for next allocation opportunities │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│   updateOrdersOnChainBatch() - Single Broadcast            │
-│  All new orders + cancellations in single operation        │
-│  Result: Atomic state update on blockchain                 │
+│        updateOrdersOnChainBatch() - Single Broadcast        │
+│      All new orders + cancellations in single operation     │
+│          Result: Atomic state update on blockchain          │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│              persistGrid()                                   │
-│         Save grid state to disk/storage                     │
+│                        persistGrid()                        │
+│               Save grid state to disk/storage               │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
                   Loop to next batch
@@ -667,12 +696,6 @@ PIPELINE_TIMING: {
 
 **Location**: `modules/order/manager.ts` (`isPipelineEmpty()` and `clearStalePipelineOperations()`)
 
-**How It Works**:
-- `isPipelineEmpty()` tracks when pipeline operations started blocking via `_pipelineBlockedSince` timestamp
-- If blockage exceeds 5 minutes, `clearStalePipelineOperations()` is called
-- Non-destructive recovery: clears operation flags only, does NOT delete orders or modify grid state
-- Recovery called from `_executeMaintenanceLogic()` during periodic maintenance checks
-
 ### Data Flow
 
 ```mermaid
@@ -948,7 +971,7 @@ The grid divergence system monitors and corrects misalignment between ideal grid
 ```mermaid
 graph TB
     START[Grid Update Triggered] --> CALC[Calculate Ideal Grid<br/>Based on current funds]
-    CALC --> RELOAD["Force Reload Persisted Grid<br/>Ensure fresh blockchain state"]
+    CALC --> RELOAD[Force Reload Persisted Grid<br/>Ensure fresh blockchain state]
     RELOAD --> COMPARE[Compare to Persisted Grid]
     COMPARE --> RMS[Calculate RMS Divergence<br/>For PARTIAL orders only]
 
@@ -1233,11 +1256,11 @@ tsx tests/test_dexbot_credit_wiring.ts
 - ✅ Signal pipelines tested (dynamic weight, derivative traps)
 - ✅ Credit/debt runtime tested (CR planner, MPA wiring)
 
-**Recent Improvements (2026-03-01):**
-- Added 50+ new test cases for signal intelligence and credit runtime
-- Created dynamic weight override and market adapter signal gate tests
-- Added derivative momentum gate and signal trap regression tests
-- Enhanced credit/debt tests with CR planner and MPA wiring validation
+**Test Suite Evolution:**
+- 50+ test cases for signal intelligence and credit runtime
+- Dynamic weight override and market adapter signal gate tests
+- Derivative momentum gate and signal trap regression tests
+- Credit/debt tests with CR planner and MPA wiring validation
 
 ### Testing Best Practices
 
@@ -1331,7 +1354,12 @@ DEXBot2 uses a hardened credential daemon (`credential-daemon.ts`) for key manag
 
 ## Credit/Debt Runtime
 
-Native DEXBot2 support for MPA borrowing and credit offer workflows via `modules/credit_runtime.ts`.
+Native DEXBot2 support for MPA borrowing and credit offer workflows. The logic is split between a pure-math planner and a lifecycle runtime:
+
+| Module | Role |
+|--------|------|
+| **`modules/cr_planner.ts`** | **Pure math / credit planning** — debt-first CR adjustments, derived order sizing. No I/O, no side effects; safe to unit-test in isolation. |
+| **`modules/credit_runtime.ts`** | **Lifecycle management** — applies the planner's output to the chain, enforces policy, drives watchdog cadence and grid-reset coupling. |
 
 ### Scope
 - **MPA borrowing**: Call-order updates with debt-first CR planning
@@ -1342,13 +1370,11 @@ Native DEXBot2 support for MPA borrowing and credit offer workflows via `modules
 ### Runtime Rules
 - Evaluates on the dedicated credit watchdog interval
 - No separate enable switch — active when `debtPolicy.lending` is present, non-empty, and every item declares `collateralAsset`
-- Claw can read the same bot policy without redefining rules
+- Claw can read the same bot policy without redefining rules (via `claw/modules/credit_runtime_adapter.ts`)
 
 ---
 
-## Recent Improvements
-
-### Grid Rebalancing Robustness
+## Grid Rebalancing Robustness
 
 The strategy engine has been significantly strengthened with improvements to fund validation, dust handling, and order constraints:
 

@@ -1,5 +1,7 @@
 # Claw Infrastructure API Boundary
 
+> **File-name note:** this file is `AI_BOT_LIBRARY_API.md` for historical discovery; the document title above is the canonical name. Both refer to the same API surface.
+
 This document defines the boundary between:
 
 - `DEXBot2`: runtime infrastructure, BitShares connectivity, credentials, and execution substrate
@@ -12,6 +14,28 @@ The goal is simple:
 - The infrastructure layer stays reusable and decision-free
 
 The current scaffold lives in [../modules/claw_infra.ts](../modules/claw_infra.ts), [../modules/dexbot_profiles.ts](../modules/dexbot_profiles.ts), [../modules/claw_bridge.ts](../modules/claw_bridge.ts), and is exported from [../index.ts](../index.ts).
+
+## Table of Contents
+
+- [Design Rules](#design-rules)
+- [Recommended Shape](#recommended-shape)
+- [Runtime Compatibility](#runtime-compatibility)
+  - [ZeroClaw Compatibility](#zeroclaw-compatibility)
+  - [NullClaw Compatibility](#nullclaw-compatibility)
+  - [NanoClaw Compatibility](#nanoclaw-compatibility)
+  - [OpenFang Compatibility](#openfang-compatibility)
+  - [Hermes Compatibility](#hermes-compatibility)
+  - [OpenClaw Compatibility](#openclaw-compatibility)
+  - [NanoBot Compatibility](#nanobot-compatibility)
+  - [PicoClaw Compatibility](#picoclaw-compatibility)
+  - [memU Compatibility](#memu-compatibility)
+- [Core Types](#core-types)
+- [Public API](#public-api)
+- [Root Export Disambiguation](#root-export-disambiguation)
+- [Suggested Runtime Flow](#suggested-runtime-flow)
+- [Practical Policy](#practical-policy)
+- [Minimal JSON Contract](#minimal-json-contract)
+- [Good Default Split](#good-default-split)
 
 ## Design Rules
 
@@ -48,7 +72,17 @@ The cleanest shape is a small library with a narrow, typed surface:
 
 Think of Claw's infrastructure layer as the shared foundation that the workflow layer builds on.
 
-## ZeroClaw Compatibility
+## Runtime Compatibility
+
+The Claw bridge supports the runtimes below. Each runtime shares the DEXBot2 credential boundary and the same read/plan/execute tool surface; they differ in transport and skill-file format. The full runtime matrix lives in [../modules/claw_runtime_matrix.ts](../modules/claw_runtime_matrix.ts).
+
+> **Skill script note:** the `*:skill` npm scripts (e.g. `zeroclaw:skill`, `hermes:skill`) are defined in `claw/package.json`, not the repo-root `package.json`. Run them from the `claw/` directory, for example:
+>
+> ```bash
+> cd claw && npm run hermes:skill -- --profile-root /path/to/DEXBot2 --output ~/.hermes/skills/bitshares-claw/SKILL.md
+> ```
+
+### ZeroClaw Compatibility
 
 ZeroClaw should use Claw as a compatibility layer, not as a second signing or credential system.
 
@@ -81,10 +115,10 @@ Recommended trust boundary:
 To generate the skill file from Claw, run:
 
 ```bash
-npm run zeroclaw:skill -- --profile-root /path/to/DEXBot2 --output ~/.zeroclaw/workspace/skills/ai-bots/SKILL.toml
+cd claw && npm run zeroclaw:skill -- --profile-root /path/to/DEXBot2 --output ~/.zeroclaw/workspace/skills/ai-bots/SKILL.toml
 ```
 
-## NullClaw Compatibility
+### NullClaw Compatibility
 
 NullClaw uses the same bridge surface, with a native skill path centered on `SKILL.toml` in the workspace.
 
@@ -96,10 +130,10 @@ NullClaw uses the same bridge surface, with a native skill path centered on `SKI
 To generate the skill file from Claw, run:
 
 ```bash
-npm run nullclaw:skill -- --profile-root /path/to/DEXBot2 --output ~/.nullclaw/workspace/skills/bitshares-claw/SKILL.toml
+cd claw && npm run nullclaw:skill -- --profile-root /path/to/DEXBot2 --output ~/.nullclaw/workspace/skills/bitshares-claw/SKILL.toml
 ```
 
-## NanoClaw Compatibility
+### NanoClaw Compatibility
 
 NanoClaw uses the same bridge surface, with a native `SKILL.md` path in the workspace skill tree.
 
@@ -110,10 +144,10 @@ NanoClaw uses the same bridge surface, with a native `SKILL.md` path in the work
 To generate the skill file from Claw, run:
 
 ```bash
-npm run nanoclaw:skill -- --profile-root /path/to/DEXBot2 --output /path/to/nanoclaw/.claude/skills/bitshares-claw/SKILL.md
+cd claw && npm run nanoclaw:skill -- --profile-root /path/to/DEXBot2 --output /path/to/nanoclaw/.claude/skills/bitshares-claw/SKILL.md
 ```
 
-## OpenFang Compatibility
+### OpenFang Compatibility
 
 OpenFang uses the same bridge surface through a CLI-first wrapper and a workspace skill file.
 
@@ -124,10 +158,10 @@ OpenFang uses the same bridge surface through a CLI-first wrapper and a workspac
 To generate the skill file from Claw, run:
 
 ```bash
-npm run openfang:skill -- --profile-root /path/to/DEXBot2 --output ~/.openfang/skills/bitshares-claw/SKILL.md
+cd claw && npm run openfang:skill -- --profile-root /path/to/DEXBot2 --output ~/.openfang/skills/bitshares-claw/SKILL.md
 ```
 
-## Hermes Compatibility
+### Hermes Compatibility
 
 Hermes should consume Claw through the shared MCP server, with an optional local `SKILL.md` for workflow guidance.
 
@@ -139,7 +173,7 @@ Hermes should consume Claw through the shared MCP server, with an optional local
 To generate the Hermes skill file from Claw, run:
 
 ```bash
-npm run hermes:skill -- --profile-root /path/to/DEXBot2 --output ~/.hermes/skills/bitshares-claw/SKILL.md
+cd claw && npm run hermes:skill -- --profile-root /path/to/DEXBot2 --output ~/.hermes/skills/bitshares-claw/SKILL.md
 ```
 
 Add the MCP server to `~/.hermes/config.yaml`:
@@ -147,8 +181,70 @@ Add the MCP server to `~/.hermes/config.yaml`:
 ```yaml
 mcp_servers:
   claw:
-    command: "tsx"
-    args: ["/absolute/path/to/claw/scripts/claw_mcp_server.ts", "--profile-root", "/path/to/DEXBot2"]
+    command: "node"
+    args: ["/absolute/path/to/claw/scripts/claw_mcp_server.js", "--profile-root", "/path/to/DEXBot2"]
+```
+
+> In development you may substitute `tsx` + `claw_mcp_server.ts`; the generated skill file emits the `node` + `.js` form so it works against the compiled build without `tsx` installed.
+
+### OpenClaw Compatibility
+
+OpenClaw is the native plugin runtime and the primary integration target.
+
+- OpenClaw consumes the Claw bridge through native plugin registration; the `SKILL.md` form remains the workflow layer.
+- The manifest lives in [../modules/claw_manifest.ts](../modules/claw_manifest.ts) and is safe to query without starting the BitShares runtime.
+- Claw keeps private-key access inside its existing DEXBot2 credential path.
+- OpenClaw gets the same read/plan/execute tool surface as the other runtimes.
+
+To generate the OpenClaw skill file from Claw, run:
+
+```bash
+cd claw && npm run openclaw:skill -- --profile-root /path/to/DEXBot2 --output /path/to/openclaw/skills/bitshares-claw/SKILL.md
+```
+
+### NanoBot Compatibility
+
+NanoBot uses the MCP stdio transport with newline-delimited JSON-RPC and a `SKILL.md` for workflow guidance.
+
+- NanoBot connects to the shared MCP server in [../scripts/claw_mcp_server.ts](../scripts/claw_mcp_server.ts).
+- The manifest is served by [../modules/claw_manifest.ts](../modules/claw_manifest.ts) and advertises NanoBot as an MCP-first runtime.
+- Claw keeps private-key access inside its existing DEXBot2 credential path.
+- NanoBot gets the same read/plan/execute tool surface as the other runtimes.
+
+To generate the NanoBot skill file from Claw, run:
+
+```bash
+cd claw && npm run nanobot:skill -- --profile-root /path/to/DEXBot2 --output /path/to/nanobot/skills/bitshares-claw/SKILL.md
+```
+
+### PicoClaw Compatibility
+
+PicoClaw mirrors NanoBot on native `SKILL.md` loading and MCP stdio integration.
+
+- PicoClaw connects to the shared MCP server in [../scripts/claw_mcp_server.ts](../scripts/claw_mcp_server.ts).
+- The manifest is served by [../modules/claw_manifest.ts](../modules/claw_manifest.ts) and advertises PicoClaw as an MCP-first runtime.
+- Claw keeps private-key access inside its existing DEXBot2 credential path.
+- PicoClaw gets the same read/plan/execute tool surface as the other runtimes.
+
+To generate the PicoClaw skill file from Claw, run:
+
+```bash
+cd claw && npm run picoclaw:skill -- --profile-root /path/to/DEXBot2 --output /path/to/picoclaw/skills/bitshares-claw/SKILL.md
+```
+
+### memU Compatibility
+
+memU provides 24/7 proactive memory for AI agents via a subprocess bridge and MCP stdio.
+
+- The memU bridge lives in [../modules/memu_bridge.ts](../modules/memu_bridge.ts) and exposes a separate `memu-*` command surface (see "Command bridge" below for the full list).
+- The memU MCP server is [../scripts/memu_mcp_server.ts](../scripts/memu_mcp_server.ts); run it with `npm run memu:mcp` from the `claw/` directory.
+- memU memory operations are independent of the BitShares trading bridge: use `memu-*` tools for memory/preferences/context capture and the other Claw tools for on-chain operations.
+- The hand-written skill file lives at `skills/memu-memory/SKILL.md` in the `claw/` tree.
+
+To generate the memU skill file from Claw, run:
+
+```bash
+cd claw && npm run memu:skill -- --profile-root /path/to/DEXBot2 --output /path/to/memu/skills/bitshares-claw/SKILL.md
 ```
 
 ## Core Types
@@ -180,7 +276,7 @@ type RuntimeContext = {
 
 ### `BotState` (conceptual shape)
 
-The bot-specific state Claw already owns and passes through the infrastructure layer. This is a conceptual shape — the actual runtime representation may differ.
+The bot-specific state Claw already owns and passes through the infrastructure layer. This is a conceptual shape — the authoritative type is `BotSettings` in [../modules/types.ts](../modules/types.ts); the runtime representation may differ slightly.
 
 ```ts
 type BotState = {
@@ -201,7 +297,7 @@ type BotState = {
 
 ### `ConstraintSet` (conceptual shape)
 
-The execution limits Claw wants its own logic to respect. This is a conceptual shape — not a defined TypeScript type in the codebase.
+The execution limits Claw wants its own logic to respect. This is a conceptual shape — not a defined TypeScript type in the codebase; see `ProfileOptions` and `ShortPositionOptions` in [../modules/types.ts](../modules/types.ts) for the closest concrete counterparts.
 
 ```ts
 type ConstraintSet = {
@@ -220,9 +316,11 @@ type ConstraintSet = {
 
 ## Public API
 
+All functions below are implemented and exported from the modules cited under "Core Types" or their headers. Signatures reflect the runtime types; see [../modules/types.ts](../modules/types.ts) for the authoritative TypeScript interfaces.
+
 ### 1. `createRuntimeContext(options)`
 
-Creates a shared runtime object for Claw.
+Creates a shared runtime object for Claw ([../modules/claw_infra.ts](../modules/claw_infra.ts)).
 
 ```ts
 type RuntimeContextOptions = {
@@ -238,30 +336,30 @@ type RuntimeContextOptions = {
 };
 ```
 
-This should be the central bootstrap helper for a consistent runtime shape.
+This is the central bootstrap helper for a consistent runtime shape.
 
 ### 2. `createBitsharesClient(options)`
 
-Returns a read/write BitShares client wrapper.
+Returns a read/write BitShares client wrapper ([../modules/claw_infra.ts](../modules/claw_infra.ts)).
 
-This helper should:
+The helper:
 
-- connect to BitShares
-- reuse the shared client pattern already in Claw
-- ask the DEXBot2 credential daemon for keys when needed
-- keep key handling out of callers
+- connects to BitShares
+- reuses the shared client pattern already in Claw
+- asks the DEXBot2 credential daemon for keys when needed
+- keeps key handling out of callers
 
 ### 3. `createCredentialClient(options)`
 
-Returns a thin client for DEXBot2's Unix-socket credential daemon.
+Returns a thin client for DEXBot2's Unix-socket credential daemon ([../modules/claw_infra.ts](../modules/claw_infra.ts)).
 
 This is the bridge between Claw and the DEXBot2 credential infrastructure.
 
 ### 4. `createStateStore(options)`
 
-Returns a simple filesystem-backed state store.
+Returns a simple filesystem-backed state store ([../modules/claw_infra.ts](../modules/claw_infra.ts)).
 
-Use this for:
+Typical use:
 
 - bot metadata
 - position snapshots
@@ -270,7 +368,7 @@ Use this for:
 
 ### 5. `createMarketAdapter(options)`
 
-Returns a data access layer for market snapshots and chain-derived state.
+Returns a data access layer for market snapshots and chain-derived state ([../modules/claw_infra.ts](../modules/claw_infra.ts)).
 
 This is infrastructure only:
 
@@ -281,7 +379,7 @@ This is infrastructure only:
 
 ### 6. `createOrderTools(options)`
 
-Returns the DEXBot2 order subsystem exports directly:
+Returns the DEXBot2 order subsystem exports directly ([../modules/claw_infra.ts](../modules/claw_infra.ts)):
 
 - grid math
 - order sizing
@@ -293,16 +391,14 @@ This is the right place for reusable mechanics that Claw needs before it decides
 
 ### 7. `createDexbotProfileAdapter(profileRoot, options)`
 
-Reads the DEXBot2 `profiles/` directory and normalizes:
+Reads the DEXBot2 `profiles/` directory and normalizes ([../modules/dexbot_profiles.ts](../modules/dexbot_profiles.ts)):
 
 - `profiles/bots.json`
 - `profiles/general.settings.json`
 - `profiles/market_profiles.json`
 - per-bot files in `profiles/orders/`
 
-This is the profile-folder bridge for Claw.
-
-`profiles/general.settings.json` is read-only context here, not a Claw write surface.
+This is the profile-folder bridge for Claw. `profiles/general.settings.json` is read-only context here, not a Claw write surface.
 
 ### 8. `getBotSettings(identifier, forceReload)`
 
@@ -320,7 +416,7 @@ The result includes:
 
 Validates a bot-settings patch without writing it.
 
-Use this before any settings write to check:
+Call this before any settings write to check:
 
 - merged next-state values
 - validation errors
@@ -330,13 +426,13 @@ Use this before any settings write to check:
 
 Applies a bot-settings patch through the DEXBot2 profile lock.
 
-This helper should:
+The helper:
 
-- acquire the `bots.json` lock before reading and writing
-- merge the patch against the current bot record
-- validate the merged result before persisting
-- optionally write the recalc trigger atomically while still inside the lock
-- reload the bundle before returning the updated bot view
+- acquires the `bots.json` lock before reading and writing
+- merges the patch against the current bot record
+- validates the merged result before persisting
+- optionally writes the recalc trigger atomically while still inside the lock
+- reloads the bundle before returning the updated bot view
 
 This is the preferred write path for bot tuning and for any bridge command that needs to change DEXBot2 bot settings safely.
 
@@ -354,14 +450,14 @@ This is the preferred one-call entrypoint for Claw.
 
 ### 12. `createHonestEcosystemAdapter(options)`
 
-Returns a HONEST-focused infrastructure helper that:
+Returns a HONEST-focused infrastructure helper ([../modules/honest_ecosystem.ts](../modules/honest_ecosystem.ts)) that:
 
 - loads `HONEST.*` assets
 - exposes the hardcoded `HONEST.MONEY/BTS` bridge
 - resolves HONEST pair contexts with DEXBot2 pool utilities
 - resolves pair prices without introducing strategy decisions
 
-Useful companion method:
+Companion method:
 
 - `resolveHonestPairPrice(assetA, assetB, options)` for the special-case bridge plus DEXBot2 fallback pool pricing
 
@@ -411,6 +507,24 @@ The bridge exposed by [../modules/claw_bridge.ts](../modules/claw_bridge.ts) sup
 - `launcher-pm2-delete`
 - `launcher-pm2-restart`
 
+#### memU command surface
+
+The bridge also handles a separate memU memory surface (see [../modules/memu_bridge.ts](../modules/memu_bridge.ts)):
+
+- `memu-manifest`
+- `memu-memorize`
+- `memu-retrieve`
+- `memu-list-categories`
+- `memu-list-items`
+- `memu-create-item`
+- `memu-update-item`
+- `memu-delete-item`
+- `memu-clear`
+- `memu-status`
+- `memu-memorize-conversation`
+- `memu-memorize-trading-context`
+- `memu-retrieve-trading-context`
+
 ## Root Export Disambiguation
 
 The barrel export in `claw/index.ts` spreads every module into one flat namespace. Several modules define functions with the same name but different semantics. The barrel resolves these collisions with explicit trailing overrides:
@@ -422,6 +536,8 @@ The barrel export in `claw/index.ts` spreads every module into one flat namespac
 | `describeMemuBridge` | `memuBridge` | Returns the memU bridge descriptor |
 
 All runtime manifests are served by the single `describeClawBridge({ runtimeName })` call in [../modules/claw_manifest.ts](../modules/claw_manifest.ts).
+
+> **Alias note:** `resolveSigningAccountName` in the table above is an alias assigned in [../index.ts](../index.ts) — the underlying function in [../modules/chain_broadcast.ts](../modules/chain_broadcast.ts) is also named `resolveAccountName`. The barrel export renames it to `resolveSigningAccountName` to disambiguate it from the async `chain_queries` lookup, so callers see two distinct names on the flat namespace.
 
 ## Suggested Runtime Flow
 

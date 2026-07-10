@@ -27,8 +27,8 @@ Follow this path through the codebase:
 
 ```
 1. modules/constants.ts                    (5 min)   - Configuration and tuning parameters
-2. modules/order/manager.ts                (10 min)  - Central coordinator, read constructor + _updateOrder() + _applySafeRebalanceCOW()
-3. modules/order/working_grid.ts           (5 min)   - COW working copy; read syncFromMaster() + buildDelta() + _commitWorkingGrid()
+2. modules/order/manager.ts                (10 min)  - Central coordinator, read constructor + _updateOrder() + _applySafeRebalanceCOW() + _commitWorkingGrid()
+3. modules/order/working_grid.ts           (5 min)   - COW working copy; read syncFromMaster() + buildDelta()
 4. modules/order/accounting.ts             (5 min)   - Fund tracking, read recalculateFunds() and resetRecoveryState()
 5. modules/order/strategy.ts               (5 min)   - Target grid calculation, read calculateTargetGrid()
 6. modules/order/grid.ts                   (5 min)   - Grid creation, read createOrderGrid()
@@ -609,39 +609,7 @@ if (isOrderHealthy(order, minHealthySize)) {
 }
 ```
 
-### Pattern Matching Helpers
-
-#### `getPartialsByType(orders)`
-```javascript
-// Segregate partial orders by type efficiently
-// Returns: { buy: [partial1, partial2], sell: [partial3] }
-const { buy: buyPartials, sell: sellPartials } = getPartialsByType(orders);
-
-// Use case: Consolidate dust partials per side
-for (const partial of buyPartials) {
-    if (isDust(partial)) {
-        scheduleConsolidation(partial);
-    }
-}
-```
-
-**Eliminates duplications in**:
-- `grid.ts::compareGrids()`
-- `grid_reconcile.ts::selectPartialSlots()`
-
-#### `validateAssetPrecisions(assets)`
-```javascript
-// Validate both asset precisions simultaneously
-// Checks: precision >= 0 AND precision <= MAX_PRECISION
-const { buy, sell } = validateAssetPrecisions({
-    buy: assetB.precision,
-    sell: assetA.precision
-});
-
-if (!buy.valid || !sell.valid) {
-    throw new Error(`Invalid precisions: ${buy} / ${sell}`);
-}
-```
+### Precision Helpers
 
 #### `getPrecisionSlack(precision, factor)`
 ```javascript
@@ -687,15 +655,6 @@ const reusableSlots = grid.filter(isSlotAvailable);
 for (const slot of reusableSlots) {
     slot = createNewOrder(slot.index, newPrice);
 }
-```
-
-**Pattern 4: Side-Segregated Rebalancing**
-```javascript
-// Rebalance each side separately based on fill type
-const { buy: buyPartials, sell: sellPartials } = getPartialsByType(orders);
-
-rebalanceBuySide(buyPartials);
-rebalanceSellSide(sellPartials);
 ```
 
 ---
@@ -1169,12 +1128,30 @@ const limitOrders = manager.getOrdersByTypeAndState(ORDER_TYPES.LIMIT, null);
 
 **5. Add Tests**
 ```javascript
-// tests/test_manager.ts
-describe('LIMIT order type', () => {
-    it('should track LIMIT orders in indices', () => {
-        // Test implementation
-    });
-});
+// tests/test_manager_logic.ts
+const assert = require('assert');
+
+async function runTests() {
+    console.log(' - Testing LIMIT order type tracking...');
+
+    // Test: should track LIMIT orders in indices
+    {
+        const manager = createManager();
+        await manager._updateOrder({
+            id: 'limit-1',
+            state: ORDER_STATES.VIRTUAL,
+            type: ORDER_TYPES.LIMIT,
+            size: 100,
+            price: 50
+        });
+        const limitOrders = manager.getOrdersByTypeAndState(ORDER_TYPES.LIMIT, null);
+        assert.strictEqual(limitOrders.length, 1, 'LIMIT order should be tracked in indices');
+    }
+
+    console.log('LIMIT order type tests passed.');
+}
+
+runTests();
 ```
 
 **6. Update Documentation**
@@ -1513,20 +1490,52 @@ console.log('Locked?', manager.isOrderLocked(order.id));
 - `modules/order/manager.ts` - Order management hub
 
 ### Key Modules
-- `modules/order/accounting.ts` - Fund tracking
-- `modules/order/strategy.ts` - Rebalancing logic
-- `modules/order/grid.ts` - Grid creation
-- `modules/order/sync_engine.ts` - Blockchain sync
-- `modules/order/working_grid.ts` - COW working copy (clone/delta/commit)
-- `modules/order/processed_fill_store.ts` - Fill dedupe persistence
-- `modules/order/utils/order.ts` - Order state predicates and helpers
-- `modules/order/utils/math.ts` - Precision, quantization, fund math
-- `modules/order/utils/validate.ts` - Validation and COW action building
-- `modules/order/utils/system.ts` - Price derivation, deduplication
-- `modules/credit_runtime.ts` - Debt workflow executor
+
+**Order Management** (`modules/order/`):
+- `manager.ts` - Order lifecycle and state management
+- `accounting.ts` - Fund tracking
+- `strategy.ts` - Rebalancing logic
+- `grid.ts` - Grid creation
+- `grid_reconcile.ts` - Startup grid reconciliation
+- `sync_engine.ts` - Blockchain sync
+- `runner.ts` - Order execution runner
+- `logger.ts` - Order logging
+- `working_grid.ts` - COW working copy (clone/delta/commit)
+- `processed_fill_store.ts` - Fill dedupe persistence
+- `utils/order.ts` - Order state predicates and helpers
+- `utils/math.ts` - Precision, quantization, fund math
+- `utils/validate.ts` - Validation and COW action building
+- `utils/system.ts` - Price derivation, deduplication
+
+**Core Bot & Blockchain**:
+- `modules/dexbot_class.ts` - Core bot class, lifecycle orchestration, shared runtime wiring
+- `modules/dexbot_fill_runtime.ts` - Fill processing runtime and replay-safe accounting
+- `modules/dexbot_maintenance_runtime.ts` - Sync loops, grid maintenance, trigger handling
+- `modules/constants.ts` - Centralized configuration and tuning parameters
+- `modules/bitshares_client.ts` - BitShares connection and node management
+- `modules/node_manager.ts` - Multi-node health checking and failover
+- `modules/fund_registry.ts` - Shared-account fund registry with cross-bot invariants
+- `modules/settings_merge.ts` - Consolidated settings merge (single source of truth)
+- `modules/chain_orders.ts` - Blockchain order operations
+- `modules/account_orders.ts` - Account order queries
+
+**Credit & Market Adapter**:
+- `modules/credit_runtime.ts` - Debt workflow executor (MPA and credit offer)
 - `modules/cr_planner.ts` - Collateral ratio math layer
-- `market_adapter/core/market_adapter_service.ts` - Signal pipeline
-- `claw/modules/chain_actions.ts` - Claw chain operations
+- `market_adapter/core/market_adapter_service.ts` - Signal pipeline (AMA, dynamic weights)
+- `market_adapter/market_adapter.ts` - AMA delta threshold, grid price offset, recalc triggers
+
+**Claw Integration** (`claw/`):
+- `claw/index.ts` - Main export combining all claw modules
+- `claw/modules/chain_actions.ts` - Chain operations (reads/writes/broadcast)
+- `claw/modules/chain_queries.ts` - Blockchain queries
+- `claw/modules/chain_broadcast.ts` - Broadcast layer
+- `claw/modules/claw_bridge.ts` - JSON bridge + command dispatch
+- `claw/modules/claw_launcher.ts` - Launcher orchestration (PM2, Docker)
+- `claw/modules/dexbot_bridge.ts` - DEXBot2 integration bridge
+- `claw/modules/credit_runtime_adapter.ts` - Credit runtime lifecycle bridge
+- `claw/modules/position_manager.ts` - Position tracking and health
+- `claw/modules/short_mpa_strategy.ts` - High-level MPA strategy
 
 ---
 
@@ -1584,47 +1593,46 @@ tsx tests/test_fills.ts
 
 ### Understanding Test Structure
 
-Tests use a consistent pattern for fund validation:
+Tests use a consistent pattern for fund validation. They use native `assert` with `console.log` blocks (no Jest dependency):
 
 ```javascript
-describe('Fund Tracking - Fund Updates', () => {
-    let manager;
+const assert = require('assert');
+const async function runTests() {
+    console.log(' - Testing virtual funds from VIRTUAL orders...');
 
-    beforeEach(() => {
-        // Setup manager with known initial state
-        manager = new OrderManager(config);
-        manager.setAccountTotals({
-            buy: 10000,
-            sell: 100
-        });
-        manager.resetFunds();
-    });
+    // Setup manager with known initial state
+    const manager = new OrderManager(config);
+    await manager.setAccountTotals({ buy: 10000, sell: 100 });
+    manager.resetFunds();
 
-    it('should calculate virtual funds from VIRTUAL orders', () => {
+    {
         // Add VIRTUAL order
-        manager._updateOrder({
+        await manager._updateOrder({
             id: 'virtual-1',
             state: ORDER_STATES.VIRTUAL,
             type: ORDER_TYPES.BUY,
-            size: 500
-        }, 'test-virtual', false, 0);
+            size: 500,
+            price: 100
+        });
 
         // Assert fund pool updated
-        expect(manager.funds.virtual.buy).toBe(500);
-        expect(manager.funds.total.grid.buy).toBeGreaterThanOrEqual(500);
-    });
-});
+        assert.strictEqual(manager.funds.virtual.buy, 500);
+        assert(manager.funds.total.grid.buy >= 500);
+    }
+
+    console.log('Virtual funds tests passed.');
+}
 ```
 
 ### Key Test Files
 
-| File | Purpose | Test Count |
-|------|---------|-----------|
-| `tests/test_strategy_logic.ts` | Rebalancing, placement, rotation | 16 |
-| `tests/test_accounting_logic.ts` | Fund tracking, fees, precision | 10 |
-| `tests/test_grid_logic.ts` | Grid creation, sizing, divergence | 8 |
-| `tests/test_manager_logic.ts` | State machine, indexing | 8 |
-| `tests/test_sync_logic.ts` | Blockchain reconciliation | 6 |
+| File | Purpose |
+|------|---------|
+| `tests/test_strategy_logic.ts` | Rebalancing, placement, rotation |
+| `tests/test_accounting_logic.ts` | Fund tracking, fees, precision |
+| `tests/test_grid_logic.ts` | Grid creation, sizing, divergence |
+| `tests/test_manager_logic.ts` | State machine, indexing |
+| `tests/test_sync_logic.ts` | Blockchain reconciliation |
 
 ### Adding Tests for Fund-Related Features
 
@@ -1642,27 +1650,28 @@ When adding features that affect funds, follow this checklist:
 
 **2. Create Test Case**
 ```javascript
-it('should [action] and update [fund pool]', () => {
+console.log(' - Testing [action] updates [fund pool]...');
+{
     // Setup
     const initialFunds = manager.funds[poolName][side];
 
     // Action
-    performAction();
+    await performAction();
 
     // Assert
     const finalFunds = manager.funds[poolName][side];
-    expect(finalFunds).toBe(expectedValue);
-    expect(manager.validateIndices()).toBe(true);  // Indices OK?
-});
+    assert.strictEqual(finalFunds, expectedValue);
+    assert.strictEqual(manager.validateIndices(), true);  // Indices OK?
+}
 ```
 
 **3. Verify Invariants**
 ```javascript
 // After your action, verify invariants
-expect(
+assert(
     manager.funds.total.chain.buy ===
-    manager.funds.total.chain.buy + manager.funds.committed.chain.buy
-).toBe(true);
+    manager.funds.chainFree.buy + manager.funds.committed.chain.buy
+);
 ```
 
 **4. Test Edge Cases**
@@ -1679,36 +1688,38 @@ expect(
 **Pattern 1: Batch Fund Updates**
 ```javascript
 manager.pauseFundRecalc();  // Batch mode
-manager._updateOrder(order1, 'test-batch', { skipAccounting: false, fee: 0 });
-manager._updateOrder(order2, 'test-batch', { skipAccounting: false, fee: 0 });
-manager._updateOrder(order3, 'test-batch', { skipAccounting: false, fee: 0 });
+await manager._updateOrder(order1, 'test-batch', { skipAccounting: false, fee: 0 });
+await manager._updateOrder(order2, 'test-batch', { skipAccounting: false, fee: 0 });
+await manager._updateOrder(order3, 'test-batch', { skipAccounting: false, fee: 0 });
 manager.resumeFundRecalc();  // Recalc once
 
 // Verify final state
-expect(manager.funds.total.grid.buy).toBe(order1.size + order2.size + order3.size);
+assert.strictEqual(manager.funds.total.grid.buy, order1.size + order2.size + order3.size);
 ```
 
 **Pattern 2: Fund Transitions**
 ```javascript
 // VIRTUAL → ACTIVE
-manager._updateOrder({
+await manager._updateOrder({
     id: 'order-1',
     state: ORDER_STATES.VIRTUAL,
-    size: 500
-}, 'test-setup', false, 0);
+    size: 500,
+    price: 100
+}, 'test-setup');
 
 const virtualBefore = manager.funds.virtual.buy;
 
-manager._updateOrder({
+await manager._updateOrder({
     id: 'order-1',
     state: ORDER_STATES.ACTIVE,
     orderId: 'chain-001',
-    size: 500
-}, 'test-transition', false, 0);
+    size: 500,
+    price: 100
+}, 'test-transition');
 
 // Verify movement
-expect(manager.funds.virtual.buy).toBeLessThan(virtualBefore);
-expect(manager.funds.committed.chain.buy).toBeGreaterThan(0);
+assert(manager.funds.virtual.buy < virtualBefore);
+assert(manager.funds.committed.chain.buy > 0);
 ```
 
 **Pattern 3: Atomicity Check**
@@ -1719,7 +1730,7 @@ try {
     // Perform operation
     await fundDependentOperation();
     // Check state consistency
-    expect(manager.validateIndices()).toBe(true);
+    assert.strictEqual(manager.validateIndices(), true);
 } finally {
     manager.unlockOrders(['order-1']);
 }

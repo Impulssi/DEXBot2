@@ -6,6 +6,8 @@ The accounting system is designed around a **Single Source of Truth** principle 
 
 ### 1.1 Fund Components
 
+> **Naming convention:** Capitalized prose names below (e.g. `ChainFree`, `Virtual`, `Committed`) refer to the abstract fund component. The corresponding code identifier is shown in the **Code Reference** column — most are scoped per side, e.g. `ChainFree` resolves to `accountTotals.buyFree` on the buy side and `accountTotals.sellFree` on the sell side.
+
 | Component | Code Reference | Definition & Ownership |
 |-----------|----------------|------------------------|
 | **ChainFree** | `accountTotals.buyFree` | **Liquid Capital**. The unallocated balance on the blockchain. <br> *Balanced:* Deducted pre-emptively on fills to offset state release. |
@@ -24,74 +26,67 @@ $$Available = \max(0, \text{ChainFree} - \text{Virtual} - \text{FeesOwed} - \tex
 **Critical Invariants:**
 1.  **Virtual represents Plan.** Orders remain in `Virtual` only while they are truly uncommitted. As soon as they move to `ACTIVE`, they move to `Committed` (Chain), even if the blockchain transaction is still in flight. This maintains the `Total = Free + Committed` invariant.
 2.  **Available Funds = True Spending Power.** This formula is the single source of truth for how much capital can be deployed immediately.
+3.  **Non-BTS pair reservation.** When neither asset is BTS, the formula adds an extra proportional deduction: any BTS fee-budget deficit (formula budget minus `funds.btsBalance.free`) is split across `buyFree` + `sellFree` proportional to each side's free balance, and the side's share is subtracted from `Available`. See `calculateAvailableFundsValue()` in `modules/order/utils/math.ts` (lines 407–425).
 
 ---
 
-## 1.3 Mixed Order Fund Validation
+### 1.3 Mixed Order Fund Validation
 
-**Problem Fixed**: When `_buildCreateOps()` received both BUY and SELL orders in a batch, it used a single fund check on the first order's type. This caused false "insufficient funds" warnings when placing mixed BUY/SELL batches, even though the bot had sufficient capital on both sides — the BUY check was applied to SELL orders (or vice versa).
+**Problem Fixed**: Early batch builders ran a single fund check keyed off the first order's side, so a mixed BUY/SELL batch could trip a false "insufficient funds" warning even when each side had ample capital — the BUY check was applied to SELL orders (or vice versa).
 
-**Solution**: Separate validation per order type.
+**Solution**: Per-asset validation using a signed-delta water-mark. The current validator tracks the **peak** running requirement per asset (not a side lump sum), so BUY and SELL ops in the same batch are validated independently against their own free balance.
 
-### Fund Availability Checks by Order Type
+#### Fund Availability Checks by Asset
 
-**BUY Orders** validate against `buyFree` (assetB capital):
-```
-buyFree represents unallocated assetB available for limit orders
-```
+- **BUY orders** sell quote asset (assetB), so they are validated against `accountTotals.buyFree` — the unallocated assetB available for limit orders.
+- **SELL orders** sell base asset (assetA), so they are validated against `accountTotals.sellFree` — the unallocated assetA available for limit orders.
 
-**SELL Orders** validate against `sellFree` (assetA inventory):
-```
-sellFree represents unallocated assetA available for limit orders
-```
+#### Implementation Location
 
-### Implementation Location
-
-File: `modules/dexbot_class.ts` — `_buildCreateOps()` (removed, logic consolidated into `_rebalanceGridOrders()`)
+File: `modules/dexbot_class.ts` — `_validateOperationFunds()` (line 3093), called from the COW batch broadcast path at line 4163.
 
 ```javascript
-// Separate BUY and SELL orders
-const buyOrders = orders.filter(o => o.type === ORDER_TYPES.BUY);
-const sellOrders = orders.filter(o => o.type === ORDER_TYPES.SELL);
-
-// BUY orders: check assetB capital (buyFree)
-if (buyOrders.length > 0) {
-    const buyTotal = buyOrders.reduce((sum, o) => sum + o.size, 0);
-    if (buyTotal > this.accountTotals.buyFree) {
-        // Log fund warning specific to BUY side
-    }
+// Per-asset peak requirement vs. quantized chain-free snapshot.
+// Updates consume a signed delta (size delta); creates consume the full amount.
+for (const op of operations) {
+    // ... resolve sellAssetId / sellAmountInt from op_data ...
+    netRequiredFunds[sellAssetId] += signedDelta;          // net after releases
+    runningRequiredFunds[sellAssetId] += signedDelta;      // running watermark
+    peakRequiredFunds[sellAssetId] = max(peak, running);   // high-water mark
 }
 
-// SELL orders: check assetA inventory (sellFree)
-if (sellOrders.length > 0) {
-    const sellTotal = sellOrders.reduce((sum, o) => sum + o.size, 0);
-    if (sellTotal > this.accountTotals.sellFree) {
-        // Log fund warning specific to SELL side
-    }
+const availableFunds = {
+    [assetA.id]: quantizeFloat(snap.chainFreeSell, assetA.precision),
+    [assetB.id]: quantizeFloat(snap.chainFreeBuy,  assetB.precision)
+};
+
+// Precision-aware comparison: int-cast both sides before comparing.
+if (floatToBlockchainInt(peak, prec) > floatToBlockchainInt(available, prec)) {
+    fundViolations.push({ asset, required: peak, netRequired, available, deficit });
 }
 ```
 
-### Key Points
+#### Key Points
 
-1. **Each order validated independently** against its own type's available funds
-2. **No double-counting** when both BUY and SELL orders are placed simultaneously
-3. **Accurate warnings** showing which side lacks funds (BUY vs SELL)
-4. **Prevents false positives** where mixed placements incorrectly appear to exceed available capital
+1. **Each asset validated independently** against its own free balance (`buyFree` for assetB, `sellFree` for assetA).
+2. **Peak-tracking** catches interleaved create+update ops whose net is affordable but whose intermediate watermark is not.
+3. **No double-counting** when BUY and SELL orders are placed in the same batch — they draw from disjoint asset pools.
+4. **Quantized comparison** (`floatToBlockchainInt`) eliminates float-accumulation false positives.
 
-### Helper Reference
+#### Helper Reference
 
-For checking order types and states, use centralized helpers from `modules/order/utils/`:
-- `isOrderOnChain()` - Check if ACTIVE or PARTIAL
-- `isOrderPlaced()` - Check if safely placed (on-chain with ID)
-- `isOrderVirtual()` - Check if VIRTUAL state
+For checking order types and states, use centralized helpers from `modules/order/utils/order.ts`:
+- `isOrderOnChain(order)` - Check if ACTIVE or PARTIAL
+- `isOrderPlaced(order)` - Check if safely placed (on-chain with ID)
+- `isOrderVirtual(order)` - Check if VIRTUAL state
 
 See [developer_guide.md#order-state-helper-functions](developer_guide.md#order-state-helper-functions) for complete helper function reference.
 
 ---
 
-## 1.4 Fill Batch Processing & Timeline
+### 1.4 Fill Batch Processing & Timeline
 
-### Problem Solved
+#### Problem Solved
 
 Previously, fills were processed one-at-a-time (~3s per broadcast). A burst of 29 fills in the Feb 7 market crash took ~90 seconds, during which:
 - Market prices moved significantly
@@ -101,17 +96,11 @@ Previously, fills were processed one-at-a-time (~3s per broadcast). A burst of 2
 
 **Impact**: The extended 90s window meant the bot couldn't react to market moves, creating a cascading failure.
 
-### Solution: Fixed-Cap Batch Fill Processing
+#### Solution: Fixed-Cap Batch Fill Processing
 
-**Mechanism** (`modules/order/manager.ts::processFilledOrders`): Groups fills into capped batches before executing the full rebalance pipeline.
+**Mechanism**: Fill events arrive via `modules/dexbot_fill_runtime.ts` (the fill-runtime module), which pushes them into `bot._incomingFillQueue` (declared in `modules/dexbot_class.ts`). The drain loop in `dexbot_class.ts` then chunks the queue into capped batches and calls `modules/order/manager.ts::processFilledOrders` (line 1149) once per chunk to run the full rebalance pipeline.
 
-**Batch Sizing Algorithm**:
-```javascript
-// Single cap-based batch size
-const batchSize = MAX_FILL_BATCH_SIZE;
-// queueDepth<=4 -> single unified batch of queueDepth
-// queueDepth>4  -> chunk into repeated batches of 4 (last chunk may be smaller)
-```
+**Batch Sizing Algorithm**: A single cap-based batch size (`FILL_PROCESSING.MAX_FILL_BATCH_SIZE`): a queue depth of 4 or fewer is processed as one unified batch; deeper queues are chunked into repeated batches of 4 (the last chunk may be smaller).
 
 **Configuration** (`modules/constants.ts`):
 ```javascript
@@ -120,7 +109,7 @@ FILL_PROCESSING: {
 }
 ```
 
-### Fill Batch Processing Timeline
+#### Fill Batch Processing Timeline
 
 **Per-Batch Execution**:
 
@@ -138,7 +127,7 @@ FILL_PROCESSING: {
 
 **Result**: 29 fills now processed in ~8 broadcasts (~24s) instead of 29 broadcasts (~90s).
 
-### Grid Regeneration Trigger (Available Funds Ratio)
+#### Grid Regeneration Trigger (Available Funds Ratio)
 
 The grid regenerates when accumulated proceeds create a significant funding imbalance. This is detected using the **Available Funds Ratio**:
 
@@ -156,7 +145,7 @@ IF ratio >= GRID_REGENERATION_PERCENTAGE (default: 3%):
 4. If ratio exceeds 3%, the grid has accumulated enough proceeds to warrant redeployment
 5. Grid regeneration recalculates all order sizes and applies new placements
 
-### Recovery Retry System
+#### Recovery Retry System
 
 **Problem**: One-shot `_recoveryAttempted` boolean flag meant permanent lockup if recovery failed once.
 
@@ -195,36 +184,15 @@ PIPELINE_TIMING: {
 - ✅ Self-heals within minutes after market settles
 - ✅ No permanent lockup from single failure
 
-### Stale-Cleaned Order ID Tracking
+#### Stale-Cleaned Order ID Tracking (see §3.6)
 
-**Problem**: During batch execution failure, cleanup freed slots. Then delayed orphan fill events credited proceeds AGAIN = double-count.
-
-**Solution**: Track stale-cleaned order IDs using timestamp-based TTL.
-
-**Data Structure** (`modules/dexbot_class.ts`):
-```javascript
-_staleCleanedOrderIds = new Map();  // orderId → cleanupTimestamp
-```
-
-**Lifecycle**:
-1. Batch fails: "Limit order X does not exist" error
-2. Cleanup: Release slot, record `orderId + timestamp` in `_staleCleanedOrderIds`
-3. Delayed Orphan: Fill event arrives for cleaned order
-4. Guard Check: `_staleCleanedOrderIds.has(orderId)` → true
-5. Skip Credit: Orphan handler skips crediting proceeds
-
-**TTL Pruning**: Old entries pruned every 5 minutes to prevent unbounded map growth.
-
-**Impact**:
-- ✅ Eliminates double-counting root cause
-- ✅ Handles delayed orphan events
-- ✅ Prevents 47,842 BTS drift cascades
+When a batch fails because an on-chain order no longer exists, the cleanup releases the local slot — but a delayed orphan-fill event can still arrive and re-credit the proceeds, double-counting capital. The bot tracks stale-cleaned order IDs in `_staleCleanedOrderIds` and skips crediting any fill whose order is still in that map. The full mechanism, data structure, and TTL rules are documented in [§3.6 Orphan-Fill Deduplication & Double-Credit Prevention](#36-orphan-fill-deduplication--double-credit-prevention).
 
 ---
 
-## 1.5 Remainder Accuracy During Capped Resize
+### 1.5 Remainder Accuracy During Capped Resize
 
-### Problem Fixed
+#### Problem Fixed
 
 When grid resize was capped by available funds, the accounting system needed to track what portion of the ideal grid went unallocated. This required careful per-slot tracking to distinguish between:
 - **Fully allocated slots**: received their ideal size (no remainder)
@@ -232,7 +200,7 @@ When grid resize was capped by available funds, the accounting system needed to 
 
 Without per-slot tracking, the remainder was computed from totals, which overstated it when some slots were fully allocated and others were capped.
 
-### Solution: Per-Slot Tracking
+#### Solution: Per-Slot Tracking
 
 **Old Behavior** (Incorrect):
 ```javascript
@@ -416,11 +384,11 @@ targetSlot.orderId = newOrderId;
 
 ---
 
-## 3.6 Orphan-Fill Deduplication & Double-Credit Prevention
+### 3.6 Orphan-Fill Deduplication & Double-Credit Prevention
 
-**Location**: `modules/dexbot_class.ts` (constructor, `_handleBatchHardAbort()`, batch failure handler)
+**Location**: `modules/dexbot_class.ts` — constructor, `_recoverExplicitStaleOrders()` (line 530), orphan-fill guard in the fill drain loop (line ~1633), and pruning pass after each cycle (line ~1919).
 
-### Problem Solved
+#### Problem Solved
 
 During Feb 7 market crash, stale-order batch failures cascaded into double-crediting:
 
@@ -436,55 +404,68 @@ During Feb 7 market crash, stale-order batch failures cascaded into double-credi
 
 **In Crash Numbers**: 7 orphan fills × ~700 BTS = ~4,600 BTS inflated → cascaded to 47,842 BTS total drift.
 
-### Solution: Stale-Cleaned Order ID Tracking with TTL
+#### Solution: Stale-Cleaned Order ID Tracking with TTL + Recycled-Slot Guard
 
-**Mechanism**: Track which orders were cleaned up during batch failure recovery using timestamp retention.
+**Mechanism**: Track which orders were cleaned up during batch failure recovery using timestamp + grid-slot retention.
 
 **Data Structure** (`modules/dexbot_class.ts`):
 ```javascript
-// Map of orderId → cleanupTimestamp
+// Map of orderId → { markedAt: number, gridId: string | null }
 _staleCleanedOrderIds = new Map();
+
+// Retention window (set in the constructor):
+_staleCleanupRetentionMs = Math.max(_fillDedupeWindowMs, 5 * 60 * 1000);  // ≥5 minutes
 ```
 
-**Cleanup Process** (When batch fails):
+**Cleanup Process** (in `_recoverExplicitStaleOrders()`):
 ```javascript
-// In _handleBatchHardAbort() or batch error handler:
 1. Parse error message for stale order IDs (e.g., "Limit order 12345 does not exist")
-2. For each stale ID:
-   - Find & clean grid slot (convert to SPREAD placeholder)
-   - Record: _staleCleanedOrderIds.set(orderId, Date.now())
-   - Log: "Cleaned stale order X from slot"
-3. Periodically prune entries > 5 minutes old
+2. For each stale ID matching a grid slot:
+   - Virtualize the grid slot (state → VIRTUAL, size 0)
+   - Record: _staleCleanedOrderIds.set(orderId, { markedAt: Date.now(), gridId })
+3. For stale IDs with no matching grid slot:
+   - Record: _staleCleanedOrderIds.set(orderId, { markedAt: Date.now(), gridId: null })
 ```
 
-**Orphan-Fill Handler Check**:
+**Orphan-Fill Handler Check** (in the drain loop):
 ```javascript
-// In orphan-fill event processing:
-if (_staleCleanedOrderIds.has(orderId)) {
-    logger.info(`[ORPHAN-FILL] Skipping double-credit for stale-cleaned order ${orderId}`);
-    return;  // Don't credit proceeds
+const entry = _staleCleanedOrderIds.get(orderId);
+if (entry) {
+    const ageMs = Date.now() - entry.markedAt;
+    if (ageMs <= _staleCleanupRetentionMs) {
+        // Within retention: skip credit entirely (funds already freed)
+        continue;
+    }
+    if (entry.gridId) {
+        const currentOrder = manager.orders.get(entry.gridId);
+        if (currentOrder?.orderId && currentOrder.orderId !== orderId) {
+            // Slot recycled: funds already redeployed — skip credit
+            continue;
+        }
+    }
+    // Expired and slot not recycled: drop the tombstone and credit as normal orphan
+    _staleCleanedOrderIds.delete(orderId);
 }
-
-// Only credit if NOT in stale-cleaned map
-logger.info(`[ORPHAN-FILL] Processing orphan ${orderId}, crediting ${proceeds}`);
+// Credit proceeds only if NOT protected above
 adjustTotalBalance(orderType, proceeds, `orphan-fill-${orderId}`);
 ```
 
-### Why This Works
+#### Why This Works
 
-1. **Delayed Orphans**: Fill events can arrive minutes after batch failure (network latency)
-2. **TTL Pruning**: Map doesn't grow unbounded; entries removed after 5 minutes
-3. **ID-Based**: Works with any error format (different BitShares versions have different error messages)
-4. **Explicit Logging**: "Skipping double-credit" messages create audit trail
+1. **Delayed Orphans**: Fill events can arrive minutes after batch failure (network latency); the retention window covers the dedupe interval.
+2. **Recycled-Slot Tombstones**: Entries *with* a `gridId` are kept indefinitely as tombstones — a fill arriving after TTL is still skipped if the slot has been redeployed, preventing a late orphan from double-counting freed-and-redeployed capital.
+3. **Bounded Entry Pruning**: Entries *without* a `gridId` (no slot to check) are pruned once `ageMs > _staleCleanupRetentionMs`, so the map stays bounded. Pruning runs after each fill-processing cycle, not on a fixed timer.
+4. **ID-Based**: Works with any error format (different BitShares versions have different error messages).
+5. **Explicit Logging**: `[ORPHAN-FILL] Skipping double-credit` / `slot recycled` / `Pruned N expired` messages create an audit trail.
 
-### Fund State Verification
+#### Fund State Verification
 
 The available funds are verified at allocation time:
 - Proceeds are only added to `chainFree` when confirmed on blockchain
 - Stale-cleaned orders don't consume allocation funds
 - Next cycle sees accurate available funds for sizing decisions
 
-### Impact
+#### Impact
 
 - ✅ **Eliminates double-counting root cause** that fed 47,842 BTS drift
 - ✅ **Handles network-latent orphan events** (not just immediate fills)
@@ -570,30 +551,30 @@ These are deducted from the *proceeds* of a fill.
 
 ---
 
-## 5.3 BTS Fee Object Structure
+### 5.3 BTS Fee Object Structure
 
 For BTS fees, the system returns a structured object (not a simple number) with multiple fields for accounting precision.
 
-**Location**: `modules/order/utils/system.ts::getAssetFees()`
+**Location**: `modules/order/utils/math.ts::getAssetFees()` (line 303). The fee cache itself is populated by `modules/order/utils/system.ts::initializeFeeCache()` (line 568).
 
-### BTS Fee Object (Always Object)
+#### BTS Fee Object (Always Object)
 
 ```javascript
-getAssetFees('BTS', amount)
-// Returns:
+getAssetFees('BTS', amount, isMaker=true)
+// Returns (maker example, amount=45000, orderCreationFee=500, MAKER_REFUND_PERCENT=0.9):
 {
-    netProceeds: 45500,      // proceeds after fee deduction (amount + refund)
-    total: 45500,            // aliased to netProceeds for downstream use
-    refund: 450,             // maker refund amount (0 for taker)
+    netProceeds: 45450,      // amount + refund = 45000 + 450
+    total: 45450,            // aliased to netProceeds for downstream use
+    refund: 450,              // orderCreationFee * MAKER_REFUND_PERCENT = 500 * 0.9
     isMaker: true            // Flag: is this a maker fee?
 }
 ```
 
-### netProceeds Calculation
+#### netProceeds Calculation
 
-**For Makers** (isMaker = true, gets 90% rebate):
+**For Makers** (isMaker = true, gets `MAKER_REFUND_PERCENT` of `orderCreationFee` back):
 ```
-netProceeds = assetAmount + (creationFee * 0.9)
+netProceeds = assetAmount + (orderCreationFee * MAKER_REFUND_PERCENT)
 // Example: 45,000 asset + (500 fee * 0.9 refund) = 45,450
 ```
 
@@ -603,52 +584,52 @@ netProceeds = assetAmount
 // Example: 45,000 asset (no refund) = 45,000
 ```
 
-### Non-BTS Fees (Unchanged)
+#### Non-BTS Fees (Structured Object When Amount Given)
 
-Non-BTS assets continue to return simple numbers:
+Without an amount, non-BTS assets return a small percent descriptor. With an amount, they return the same `{ netProceeds, total, ... }` shape as BTS (but with `feeAmount` instead of `refund`):
 
 ```javascript
 getAssetFees('IOB.XRP', 1000)
-// Returns: 990  (number, not object)
+// Returns (assumes 0.1% maker market fee, maxMarketFee not binding):
+// { netProceeds: 999, total: 999, feeAmount: 1, feePercent: 0.1, isMaker: true }
 
-getAssetFees('USD')
-// Returns: 995  (number, not object)
+getAssetFees('USD')          // no amount → percent descriptor only
+// Returns: { marketFee: <cached>, takerFee: <cached>, percent: <resolved> }
 ```
 
-### Backwards Compatibility
+#### Backwards Compatibility
 
-Code can safely detect the fee type:
+Code can safely detect the shape:
 
 ```javascript
-// Check if BTS (object) or asset (number)
-if (typeof feeInfo === 'object') {
-    // BTS: Use netProceeds field
-    const proceeds = feeInfo.netProceeds;
+// With an amount, both BTS and non-BTS return an object carrying netProceeds.
+if (typeof feeInfo === 'object' && feeInfo !== null) {
+    const proceeds = feeInfo.netProceeds;   // works for BTS and non-BTS
 } else {
-    // Asset: Use direct number
-    const proceeds = assetAmount - feeInfo;
+    // Percent-descriptor path (no amount supplied): use feeInfo.percent
+    const feePercent = feeInfo.percent ?? 0;
 }
 
-// OR use older fields (still present)
-const legacyFee = feeInfo.createFee;  // Works for both old and new code
+// Legacy fields on the BTS no-amount descriptor (still present):
+const createFee = feeInfo.createFee;   // BTS only
 ```
 
 ---
 
-## 5.4 BUY Side Sizing & Fee Accounting
+### 5.4 BUY Side Sizing & Fee Accounting
 
 **Problem Fixed**: BUY side fee calculations incorrectly applied fees to base asset instead of quote asset.
 
 **Solution**: Corrected fee accounting with proper asset assignment.
 
-### Fee Application by Side
+#### Fee Application by Side
 
 | Side | Asset | Calculation | Notes |
 |------|-------|-------------|-------|
 | **BUY** | Quote (assetB) | Fee deducted from `buyFree` | Buyers pay in quote currency |
 | **SELL** | Base (assetA) | Fee deducted from `sellFree` | Sellers pay in base currency |
 
-### Example Scenario
+#### Example Scenario
 
 ```
 Trading pair: XRP (base) / USD (quote)
@@ -666,7 +647,7 @@ SELL Order Fills:
 - Net proceeds: 999 XRP (base asset reduced by fee)
 ```
 
-### Maker Refund Impact on BUY Orders
+#### Maker Refund Impact on BUY Orders
 
 For BUY orders that are makers:
 
@@ -686,17 +667,17 @@ For BUY orders that are makers:
 
 ---
 
-## 5.5 Precision & Quantization
+### 5.5 Precision & Quantization
 
 **Problem**: Floating-point arithmetic accumulates rounding errors over many calculations. After dozens of order size calculations, price derivations, and fund allocations, float values drift from their true blockchain integer representations, causing mismatches between internal state and on-chain reality.
 
 **Solution**: Centralized quantization utilities that eliminate float accumulation by round-tripping through blockchain integer representation.
 
-### 5.5.1 Core Quantization Functions
+#### 5.5.1 Core Quantization Functions
 
-**Location**: `modules/order/utils/math.ts` (line 237)
+**Location**: `modules/order/utils/math.ts` (line 260)
 
-#### `quantizeFloat(value, precision)` - Eliminate Accumulation Errors
+##### `quantizeFloat(value, precision)` - Eliminate Accumulation Errors
 
 Converts float → blockchain int → float to "snap" values to precision boundaries.
 
@@ -726,7 +707,7 @@ function quantizeFloat(value, precision) {
 - Before storing prices for comparison operations
 - After grid divergence calculations
 
-#### `normalizeInt(value, precision)` - Ensure Integer Alignment
+##### `normalizeInt(value, precision)` - Ensure Integer Alignment
 
 Converts int → float → int to ensure the integer aligns with precision boundaries.
 
@@ -757,7 +738,7 @@ const normalized = normalizeInt(currentSizeInt, 8);
 - Normalizing fund totals before invariant checks
 - Preparing sizes for blockchain transaction encoding
 
-### 5.5.2 Consolidation Impact
+#### 5.5.2 Consolidation Impact
 
 Previously, five separate quantization implementations existed:
 - `dexbot_class.ts` - Manual rounding logic
@@ -773,7 +754,7 @@ Previously, five separate quantization implementations existed:
 ✅ Eliminated subtle float accumulation bugs
 ✅ All 34+ test suites pass with zero regressions
 
-### 5.5.3 Precision Best Practices
+#### 5.5.3 Precision Best Practices
 
 | Scenario | Function | Example |
 |----------|----------|---------|
@@ -783,7 +764,7 @@ Previously, five separate quantization implementations existed:
 | **Price derivation** | `quantizeFloat()` | Pool/market price calculations prone to float errors |
 | **Validate blockchain match** | `normalizeInt()` | Check: `normalizeInt(internal) === normalizeInt(chain)` |
 
-### 5.5.4 Relationship to Fund Validation
+#### 5.5.4 Relationship to Fund Validation
 
 The corrected fund validation in `_validateOperationFunds()` uses quantized values:
 
@@ -804,7 +785,7 @@ This prevents the bug where `available = chainFree + required` created a tautolo
 
 ## 6. Safety & Invariants
 
-The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference. Invariants are checked by `_verifyFundInvariants()` after every blockchain sync cycle. When a violation is detected, the system logs a `CRITICAL` error and attempts automatic recovery via `_recalculateFromBlockchain()` — resetting internal state to match on-chain reality. If the grid lock is held (mid-rebalance), recovery is deferred until the lock is released. The bot continues operating throughout; it does **not** halt on invariant violations.
+The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference. Invariants are checked by `_verifyFundInvariants()` (`modules/order/accounting.ts` line 486) after every blockchain sync cycle. When a violation is detected, the system logs a `CRITICAL` error and attempts automatic recovery via `manager.accountant.recalculateFunds()` (`modules/order/accounting.ts` line 352, delegated from `modules/order/manager.ts` line 802) — resetting internal state to match on-chain reality. If the grid lock is held (mid-rebalance), recovery is deferred until the lock is released. The bot continues operating throughout; it does **not** halt on invariant violations.
 
 ### 6.1 The Equality Invariant
 Total funds on chain must equal free plus committed.

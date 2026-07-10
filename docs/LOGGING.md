@@ -55,7 +55,7 @@ Module → Logger.log() ──┬→ console (stdout/stderr)
 | **error** | 3 | No | Red | Broadcast failures, sustained fill errors (10+ fails or 5min+) |
 | **critical** | 4 | No | Bright red | Fill-consumer cascade (20+ fails or 15min+) — permanent fault signal |
 
-Set `LOG_LEVEL` to `"info"` for production, `"warn"` for minimal output.
+The default `LOG_LEVEL` is `"info"`. For production or minimal output, set to `"warn"` (see the Production config below).
 
 ---
 
@@ -220,18 +220,46 @@ manager.logger.displayStatus(manager, true)
 
 ## Log Tags Reference
 
-Prefix tags used in log messages to help operators identify event types:
+Prefix tags used in log messages to help operators identify event types. To find every call site of a tag, run: `rg -F "[TAG]" modules/`. This list covers the most operator-visible tags; the full set grows with the codebase.
 
 | Tag | Module | Example |
 |-----|--------|---------|
-| `[FILL-BATCH]` | `dexbot_class.ts` | Batch sizing, processing, and broadcast |
-| `[RECOVERY]` | `accounting.ts` | Recovery attempts and resets |
-| `[ORPHAN-FILL]` | `dexbot_class.ts` | Double-credit prevention for stale orders |
+| `[COW]` | `dexbot_class.ts`, `order/manager.ts` | Copy-on-write grid rebalance planning and broadcast |
+| `[SYNC]` | `order/sync_engine.ts` | Blockchain order synchronization |
+| `[RECOVERY]` | `order/accounting.ts`, `dexbot_class.ts` | Fund invariant recovery attempts and resets |
+| `[ORPHAN-FILL]` | `dexbot_class.ts` | Double-credit prevention for stale-cleaned orders |
 | `[HARD-ABORT]` | `dexbot_class.ts` | Illegal state during batch processing |
-| `[COOLDOWN]` | `dexbot_class.ts` | Maintenance cooldown after abort |
-| `[STALE-CANCEL]` | `dexbot_class.ts` | Fast-path recovery for single operations |
-| `[REMAINDER]` | `grid.ts` | Unallocated remainder accuracy |
-| `[FILL-QUEUE]` | `dexbot_class.ts` | Fill consumer health and backoff |
+| `[FILL-QUEUE]` | `dexbot_class.ts` | Fill consumer health, backoff, and escalation |
+| `[CREDENTIAL]` | `dexbot_class.ts` | Credential daemon errors, key unlock failures |
+| `[BOOTSTRAP]` | `dexbot_class.ts` | Startup fill/order reconciliation |
+| `[VALIDATION]` | `dexbot_class.ts` | Order/config validation errors |
+| `[POST-RESET]` | `dexbot_class.ts` | Post-AMA-reset fill queue processing |
+| `[STALE-CLEANUP]` | `dexbot_class.ts` | Pruning expired stale-cleaned order IDs |
+| `[SELF-CANCEL]` | `dexbot_class.ts` | Skipping non-economic fill artifacts |
+| `[FILL-DEDUP]` | `dexbot_class.ts` | Fill deduplication events |
+| `[MAINT-COOLDOWN]` | `dexbot_maintenance_runtime.ts` | Maintenance cooldown after hard-abort recovery |
+| `[DUST-CANCEL]` | `dexbot_maintenance_runtime.ts` | Dust partial order cancellation deferral |
+| `[BTS-ACQ]` | `dexbot_maintenance_runtime.ts` | BTS acquisition for non-BTS pairs |
+| `[TARGETED-SYNC]` | `dexbot_maintenance_runtime.ts` | Targeted drift synchronization deferral |
+| `[MULTI-BOT]` | `chain_orders.ts` | Multi-bot shared-account coordination |
+| `[BTS-FEE]` | `order/accounting.ts` | BTS fee deferred accounting |
+| `[SPREAD-CORRECTION]` | `order/grid.ts` | Partial order spread correction |
+| `[STRATEGY]` | `order/strategy.ts` | Fee event cache and strategy decisions |
+| `[RECONCILE]` | `order/utils/validate.ts` | Grid reconciliation (dust, invariant) |
+| `[TRANSPORT]` | `bitshares-native/transport.ts` | WebSocket keep-alive and reconnect |
+
+---
+
+## Fill History Scan Profiling
+
+The `Subscriptions` logger emits `fetchFillHistoryEntries: maxPages (X) reached` at `info` level when the fill-history scan reaches its configured page cap. On a busy account this is **normal** — the scan simply catches up over multiple polling cycles rather than in a single pass.
+
+If the message recurs across many cycles **without any new fills being detected** (i.e. `maxPages` is hit but `highestReceived` never advances), the connected witness node is likely running with `--partial-operations` pruning enabled. This removes old `operation_history_objects` from the `by_op` index, so the scan can never re-fill the gap because the entries no longer exist on-chain.
+
+**Operator checklist:**
+1. Confirm the node config does not enable `--partial-operations` (or that the retention window covers the gap).
+2. Restart the node after adjusting the config so the full `by_op` index is rebuilt.
+3. If a full node is unavailable, point the bot at an archive endpoint for the initial history scan; subsequent incremental scans only need recent history.
 
 ---
 
@@ -249,7 +277,7 @@ No. All existing `logger.log()` calls work unchanged.
 Defaults in `modules/constants.ts` → deep merged with `profiles/general.settings.json` → frozen (immutable).
 
 **Q: Can I customize logging per bot?**
-Not yet. Global only via `general.settings.json`.
+Via profiles, no — `general.settings.json` is global. The `Logger` constructor does accept a `configOverride` option for programmatic per-instance config, but this is not exposed through bot profiles.
 
 **Q: What about PM2?**
 The logger auto-detects PM2 and suppresses file writes (PM2 captures stdout/stderr). File rotation is also suppressed under PM2.

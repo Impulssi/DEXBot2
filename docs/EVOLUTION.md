@@ -6,10 +6,10 @@ DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares 
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 1,710+ commits over ~7 active months
+- **Growth Phase**: 1,713+ commits over ~7 active months
 - **Code Maturity**: Evolution from basic utilities to a ~58,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 200+ automated test files
-- **Releases**: 47 release entries (v0.1.0 to v1.0.13)
+- **Releases**: 46 release entries (v0.1.0 to v1.0.13)
 
 ---
 
@@ -54,17 +54,27 @@ Consolidated the market adapter with split data sources (Kibana, native API), AM
 
 **Jun 10–11**: Pipeline hardening, BUILD_DIR centralization, HMAC recovery, codebase audit — v0.7.16–v0.7.17. All @ts-nocheck removed (67 files annotated), race-condition batch 1, timeout hardening, DRY refactoring — v0.7.18.
 
-**Jun 12–16**: First stable release v1.0.0 — profile validation, logging overhaul, AMA delta threshold, on-chain authority resolution, credential hardening, centralization of project-root/fs/math/magic-number utilities, error-path hardening. Post-release: docker context, root bypass, keep-alive recovery, phantom LP cleanup, chain client reconnect, headless unlock mode, Credit/MPA Claw bridge, credit runtime fixes, test auto-discovery. New: shared-account fund registry with cross-bot invariants, credit/MPA collateral proportional allocation, settings merge consolidation, uPlot vendored as local library, node config editor, audit log cleanup.
+**Jun 12–16 — First stable release v1.0.0**:
+- Profile validation, logging overhaul (write queue/rotation/JSON), AMA delta threshold, on-chain authority resolution.
+- Credential hardening (8 finding groups), centralization of project-root/fs/math/magic-number utilities, error-path hardening (silent-catch elimination).
+- Post-release: docker context, root bypass, keep-alive recovery, phantom LP cleanup, chain client reconnect, headless unlock mode, Credit/MPA Claw bridge, test auto-discovery.
+- New subsystems: shared-account fund registry with cross-bot invariants, credit/MPA collateral proportional allocation, settings merge consolidation, vendored uPlot, node config editor.
 
-**Jun 17**: Fund registry fixes (canonical bot keys in whitelist, `this` context restoration in collapsed runtime), DEXBot comparison doc refresh.
+**Jun 17**: Fund registry fixes (canonical bot keys in whitelist, `this` context restoration in collapsed runtime); DEXBot comparison doc refresh.
 
-**Jun 18–19**: Browser compatibility — six portable abstractions (`StorageAdapter`, `CryptoProvider`, `Config`, `PATHS`, `ProcessDiscovery`, `KeyStore`), `env.ts` environment detection, `Runtime` singleton, `path_api.ts`, pure-JS crypto fallbacks (`pure_scrypt`, `pure_ripemd160`, `pure_secp256k1`), `ecc.browser.ts` (pure-JS ECC), `ecc_selector.ts`, browser `StorageAdapter` (in-memory Map), lazy `require('ws')`/`require('pm2')`, browser bundle verification script, comprehensive 1288-line browser abstraction test suite. All 140+ existing files refactored to route through portable abstractions — browser-safe surface complete. Remaining browser-compat gaps closed.
+**Jun 18–19 — Browser compatibility core**:
+- Six portable abstractions: `StorageAdapter`, `CryptoProvider`, `Config`, `PATHS`, `ProcessDiscovery`, `KeyStore`; `env.ts` environment detection, `Runtime` singleton, `path_api.ts`.
+- Pure-JS crypto fallbacks (`pure_scrypt`, `pure_ripemd160`, `pure_secp256k1`), `ecc.browser.ts`, `ecc_selector.ts`, in-memory `StorageAdapter`, lazy `ws`/`pm2` loading.
+- 140+ files refactored to route through portable abstractions; 1288-line test suite; browser-safe surface complete.
 
-**Jun 20–21**: Credit runtime hardening (multi-asset collateral `assetId` wrapping, stale pending reborrow `renewOnly` bypass fix). Full I/O pipeline centralization through `StorageAdapter` with 15 newly browser-safe modules and 28-check bundle verification. Runtime path consolidation and shared `sleep()`/`writeJsonFileAtomic` utilities across 21 files. Final browser-compat gaps closed — `base58check.ts` Buffer-free, `ecc.ts` crypto routing, `paths.ts` env detection, serial/signing pipeline marked node-only.
+**Jun 20–21 — Credit runtime & I/O centralization**:
+- Credit runtime hardening (multi-asset collateral `assetId` wrapping, stale reborrow `renewOnly` bypass fix).
+- Full I/O pipeline centralization through `StorageAdapter` (15 newly browser-safe modules, 28-check bundle verification).
+- Shared `sleep()`/`writeJsonFileAtomic` utilities across 21 files; final browser-compat gaps closed (`base58check.ts` Buffer-free, `ecc.ts`/`paths.ts` env routing, serial/signing marked node-only).
 
-**Jun 22**: Browser-safe surface enforcement completed with lazy require wrappers and storage adapter path fix. Credit runtime extended with `disallowedDealIds` filter for 1.22.x BitShares compatibility and `ratio`→`outputWeight` rename with backward-compat shim. Doc sweep across 15 files.
+**Jun 22**: Browser-safe surface enforcement (lazy require wrappers, storage adapter path fix); credit runtime `disallowedDealIds` filter (1.22.x compat), `ratio`→`outputWeight` rename with shim; 15-file doc sweep.
 
-**Jun 25**: DAEMON_ERRORS retry-path fix — `DaemonKeyStore` session-expiry retry never fired due to locally-hardcoded mismatch with canonical constants. Canonical error-code hardening — `DAEMON_CODES` added to `constants.ts` for `BROADCAST_DEADLINE`/`CREDENTIAL_DAEMON_UNAVAILABLE`, `MasterPasswordError.code` static property, replacing 12+ literal sites with single-source-of-truth references.
+**Jun 25**: DAEMON_ERRORS retry-path fix (session-expiry retry never fired — hardcoded mismatch with canonical constants). Canonical error-code hardening via `DAEMON_CODES` and `MasterPasswordError.code`, replacing 12+ literal sites.
 
 **Jul 1–3**: v1.0.7 (hotfix) — subscription health watchdog, BROADCAST_DEADLINE graceful recovery (deadlock fix, bot-level retry, configurable daemon attempts) — 2 commits from v1.0.6.
 
@@ -81,129 +91,36 @@ DEXBot2's architecture transitioned from monolithic utilities to a decoupled, ev
 - **Post-5: Zero-Dependency & TypeScript Migration**: Full codebase migration from JavaScript to TypeScript with strict mode, `tsc` build pipeline, zero-dependency runtime via `tsx`, and explicit architectural policy removing all external runtime dependencies.
 - **Post-5.1: Fill Detection Overhaul**: Native BitShares fill detection rewrite — direct-notice dispatch, instance-based cursor, subscription reconnect, btsFeeState hardening
 - **Post-5.2: Runtime Self-Healing**: Chain-truth reconciliation for shortfalls and drift, structural resync signaling, order-batch fill guarding.
-- **Phase 6: Stable Release (v1.0.0)**: Logging system overhaul with write queue, rotation, and JSON output. Startup profile validation. Final TS strict-mode completion. On-chain authority resolution. Credential security hardening across 8 finding groups. Centralization of project-root resolution, fs/math utilities, and magic numbers with regression fixing. Error-path hardening eliminating all silent catches. Comprehensive doc sweep. Browser compatibility: portable abstractions, pure-JS crypto, complete browser-safe surface with bundle verification. Credit runtime hardening. I/O pipeline centralization. The project reaches production stability with full browser-safe core.
+- **Phase 6: Stable Release (v1.0.0)**: Production stability with a full browser-safe core. Consolidated logging (write queue, rotation, JSON), startup profile validation, final TS strict-mode, on-chain authority resolution, credential security hardening (8 finding groups), centralized project-root/fs/math utilities, and silent-catch elimination. Browser compatibility shipped via portable abstractions and pure-JS crypto with bundle verification; credit runtime and I/O pipeline centralization completed. (See Phase 5 timeline above for topic detail.)
 
 ---
 
 ## Version History
 
-### v0.1.0 → v0.2.0 (29 commits)
-Core order/fund management, documentation, scripts & tooling.
+Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 
-### v0.2.0 → v0.3.0 (155 commits)
-Fund management & BTS fees, grid divergence detection, persistence & race conditions, order rotation & sizing, refactoring.
-
-### v0.3.0 → v0.4.0 (18 commits)
-Fund management consolidation, grid sizing & quantization, market fees & RMS threshold, partial order handling.
-
-### v0.4.0 → v0.5.0 (92 commits)
-Critical bug fixes, race condition prevention (AsyncLock), fund management centralization, spread correction, fill processing & deduplication, grid health & dust recovery.
-
-### v0.5.0 → v0.6.0 (598 commits)
-Fund accounting overhaul, COW architecture, strategy engine refactoring, sync engine improvements, fill processing hardening, credential daemon, dashboard scaffolding, AMA prototype, comprehensive documentation and testing.
-
-### v0.6.0 → v0.7.0 (325 commits)
-AMA-based market adapter with signal pipeline, credential daemon hardening, connection resilience, credit/MPA debt runtime, safer grid lifecycle, expanded analysis suite.
-
-### v0.7.0 → v0.7.1 (2 commits)
-Share AMA strategy with market adapter, version history docs.
-
-### v0.7.1 → v0.7.2 (2 commits)
-Dynamic-weight Kalman stability patch, chart slope floor adjustment.
-
-### v0.7.2 → v0.7.3 (3 commits)
-Docker launcher docs alignment, centralized AMA slope conversion helpers.
-
-### v0.7.3 → v0.7.4 (5 commits)
-Code cleanup (unused deps, inline helper), documentation refresh.
-
-### v0.7.4 → v0.7.5 (93 commits)
-Zero-dependency and TypeScript migration, native BitShares integration replacing `btsdex`, fill detection overhaul, centralized logging, credential daemon security hardening.
-
-### v0.7.5 → v0.7.6 (5 commits)
-Unlock-start launcher hardening (signal handler cleanup, polling guards), deprecated legacy migration code removal, broken reference fixes, 14-file documentation sweep.
-
-### v0.7.6 → v0.7.7 (6 commits)
-Default background daemon + crash restart for unlock, auto-update for monolithic path, per-bot log files with daemon output redirect, MPA `debtOnly` flag with discriminated-union types, CLI simplification.
-
-### v0.7.7 → v0.7.8 (7 commits)
-Rename `unlock-start` → `unlock`, unify launcher startup/control summaries, harden monolithic restart after auto-update, clean stale build artifacts, add Performance & Speed section to DEXBot comparison doc.
-
-### v0.7.8 → v0.7.9 (9 commits)
-Enhance unlock status with market adapter and credential daemon health indicators, fix unlock update lifecycle to restart all runtime services, remove PM2 reload wrapper, de-emphasize PM2 and clarify unlock modes in the README.
-
-### v0.7.9 → v0.7.10 (8 commits)
-Runtime self-healing (structural resync, targeted reconciliation, post-reset spread guard), shared sync/fill helper, launcher wrappers without `dist/`, `node dexbot order` subcommand.
-
-### v0.7.10 → v0.7.11 (16 commits)
-COW grid-integrity windows closed, uncertainty-recovery hardening, foreign-daemon defense, native transport and watchdog improvements, CLI polish (`clear`, aliases, `status`, dynamic-weight alerts), doc sweep.
-
-### v0.7.11 → v0.7.12 (7 commits)
-CLI polish (`default`, `white`/`stat` aliases, `start`→`test`, `restart all`/`stop all`), terminal color brightening, doubled-log lazy-init fix, 20-file doc sweep.
-
-### v0.7.12 → v0.7.13 (9 commits)
-TradingView chart pair orientation toggle, CEX synthetic candle seeding, AMA reset and asymmetry default tuning, key manager startup quieting, duplicate build avoidance during update install, masked terminal input editing preservation, active sell color darkening in order display, stale doc reference cleanup.
-
-### v0.7.13 → v0.7.14 (10 commits)
-Analyze-orders display overhaul, market-adapter whitelist and dynamic-weight hardening, idempotent unlock startup, simplified runtime controls.
-
-### v0.7.14 → v0.7.15 (5 commits)
-Quiet orderbook candle carry-forward for book-sourced market data, plus TTY-safe launcher/updater terminal polish.
-
-### v0.7.15 → v0.7.16 (5 commits)
-Pipeline blocking hardening: stale `_gridSidesUpdated` self-blocking fix, dead `anyRotations` removal, redundant fund recalc deduplication, `correctOrderPriceOnChain` finally-block cleanup for all exit paths, dead `_batchRetryInFlight` removal, and throw-safe grid resize guarding. Docs cleanup and whitelist generation simplification.
-
-### v0.7.16 → v0.7.17 (6 commits)
-BUILD_DIR centralization, source-mode runtime, HMAC recovery, error hardening, zero-budget shortfall suppression, plus a full codebase audit fixing stale types, dead tests, hardcoded paths, empty dirs, and doc references.
-
-### v0.7.17 → v0.7.18 (8 commits)
-Removed all 89 @ts-nocheck directives, added type annotations across 67 files. Race-condition batch 1 (atomic JSON writes, in-flight flags, snapshot persist). Across-the-board timeout hardening and leak fixes. DRY refactoring extracting shared utilities (~460 lines removed).
-
-### v0.7.18 → v1.0.0 (103 commits)
-First stable release. Profile validation, logging overhaul, AMA delta threshold, on-chain authority resolution, credential hardening (8 finding groups), centralization of project-root/fs/math/magic-number utilities, error-path hardening, doc sweep. Post-release: headless unlock mode, Credit/MPA Claw bridge, credit runtime fixes, credential daemon hardening, test auto-discovery, settings merge consolidation, shared-account fund registry, credit/MPA collateral proportional allocation, vendored uPlot library, node config editor, analyze-git Chart.js→uPlot migration, fund registry whitelist fixes. Browser compatibility: six portable abstractions (`StorageAdapter`, `CryptoProvider`, `Config`, `PATHS`, `ProcessDiscovery`, `KeyStore`), `env.ts`, `Runtime` singleton, `path_api.ts`, pure-JS crypto fallbacks, `ecc.browser.ts`, `ecc_selector.ts`, lazy `ws`/`pm2` loading, browser bundle verification, 1288-line test suite, 15 newly browser-safe modules, 28-check dist-level verification. Credit runtime multi-asset collateral fixes and stale reborrow guard. I/O pipeline centralization through StorageAdapter. Final browser-compat gaps closed. Browser-safe enforcement, storage adapter path fix, `disallowedDealIds` filter, `outputWeight` rename, doc sweep.
-
-### v1.0.0 → v1.0.1 (4 commits)
-Bootstrap fill pipeline refactored to same-side replacement, AccountOrders simplified to one bot per file, deferred maintenance timer guard.
-
-### v1.0.1 → v1.0.2 (4 commits)
-Auto-update disabled by default, update script hardened, DAEMON_ERRORS retry-path fix, and canonical error-code hardening via `DAEMON_CODES`/`MasterPasswordError.code` static.
-
-### v1.0.2 → v1.0.3 (5 commits)
-Two-step candle gap repair in market adapter (auto-fill ≤24h, then Kibana), market adapter log deduplication, doc version/commit reference refresh.
-
-### v1.0.3 → v1.0.4 (2 commits)
-Update script hardening: daemon-downtime-after-update fix (pre-update state snapshot, TTY-gated auto-restart fallback), stash leak elimination (conditional push, apply+drop, auto-resolve with `--theirs`, conflicted `package-lock.json` regeneration). SIGUSR2 monolithic restart fix when `UPDATER.ACTIVE` is false — added local `pendingRestart` flag in `unlock.ts` independent of the updater.
-
-### v1.0.4 → v1.0.5 (1 commit)
-Grid invariant enforcement: prevent stale dust duplicates at the same price level. Sync engine rejects orphan adoption when an active order already occupies that price (uses `Math.max(size)` for tight tolerance). Reconcile unconditionally cancels duplicate chain orders on chain. Dust detection expanded to interior partials sharing a price level with an active sibling. Three coordinated layers enforce "one order per grid price level" invariant.
-
-### v1.0.5 → v1.0.6 (6 commits)
-Version display in unlock status, partial-fill stale-cache fix, rerun-hint correction, project-root dist-detection centralization via `isDistRuntime()`, and claw `package.json` require path fix.
-
-### v1.0.6 → v1.0.7 (2 commits)
-Subscription health watchdog for silent subscription death detection. BROADCAST_DEADLINE graceful recovery: deadlock fix (`fillLockAlreadyHeld:true`), bot-level retry with pair-mode double-publish guard, and configurable daemon broadcast retries (`CREDENTIAL_DAEMON_BROADCAST_RETRIES`).
-
-### v1.0.7 → v1.0.8 (5 commits)
-Secondary pending-broadcasts deadlock fix (missed call site). Market adapter log duplication in shared runtime (`stdio: 'ignore'`). Bot key resolution utilities extraction, `roundTo` browser error fix, 20 tests. Remove `--use-cached` flag, always resolve to candle cache. Comprehensive system invariants doc expansion with categorized prefixes across all subsystems.
-
-### v1.0.8 → v1.0.9 (4 commits)
-Trade PnL analysis tool (`analysis/trade_profitability.ts`) — Kibana-driven FIFO/Sequential PnL with 16 metrics. Reduced `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` from 0.085 to 0.08. Docs expanded for PnL tracking.
-
-### v1.0.9 → v1.0.10 (10 commits)
-PnL metrics audit and cleanup: fixed fee accounting, Sortino, Sharpe, maxRecoveryDays, cross-pair classification, early drawdown, percentile, CSV quoting, maker ratio. Added activity metrics (fills/order, fills/day, avg volume/day). Streak counting aggregated by exit order. Removed Std PnL/skewness/kurtosis. Kalman slope 0.8. DEXBot discovery cancel-ratio pre-filter removed (48→59 candidates). Docs: README updater default sync, AGENTS.md expansion, metric glossary.
-
-### v1.0.10 → v1.0.11 (10 commits)
-Live bots.json fix for launcher restart/stop/status summaries (no stale snapshot). Whitelist pruning on restart. Stable drawdown peak after 10 trades. Bounds line shown for all AMA bots. BitShares market fee model in trade profitability analysis (maker/taker tiers). Grid range scaling display and signed delta in analyze-orders. Refactored fee allocation and ESM imports in trade_profitability.
-
-### v1.0.11 → v1.0.12 (3 commits)
-Normalize bot entries before whitelist key generation to prevent false restart/stop rejections. Neutral formatting for ecosystem config success log (no green). CI docker actions bumped to Node 24-compatible versions.
-
-### v1.0.12 → v1.0.13 (4 commits)
-Grid persistence safety net (7 gap sites + dirty-flag) preventing in-memory state rollback on restart. Dust check moved before pipeline gate with 30s cancellation timer; sync loop default changed from 5s to 5min. Net inventory lots in trade profitability analyzer. Analysis README reorganized for non-technical users (question→tool mapping, Key Terms glossary).
+| Release | Commits | Theme |
+|---------|--------:|-------|
+| v0.1.0 → v0.2.0 | 29 | Core order/fund management, docs, tooling |
+| v0.2.0 → v0.3.0 | 155 | Fund mgmt & BTS fees, grid divergence, persistence, race conditions |
+| v0.3.0 → v0.4.0 | 18 | Fund consolidation, grid sizing/quantization, partial orders |
+| v0.4.0 → v0.5.0 | 92 | AsyncLock race prevention, fill dedup, dust recovery, spread correction |
+| v0.5.0 → v0.6.0 | 598 | COW architecture, strategy/sync engine, credential daemon, AMA prototype |
+| v0.6.0 → v0.7.0 | 325 | AMA market adapter, credit/MPA debt runtime, analysis suite |
+| v0.7.0 → v0.7.4 | 12 | AMA/Kalman stability, Docker launcher, docs refresh |
+| v0.7.4 → v0.7.5 | 93 | Zero-dependency & TS migration, native BitShares, fill detection overhaul |
+| v0.7.5 → v0.7.8 | 18 | Unlock/launcher hardening, background daemon, MPA `debtOnly` |
+| v0.7.8 → v0.7.11 | 33 | Runtime self-healing, COW integrity, foreign-daemon defense, CLI polish |
+| v0.7.11 → v0.7.15 | 31 | CLI/terminal polish, TradingView, CEX seeding, pipeline hardening |
+| v0.7.15 → v0.7.18 | 19 | Build/dir centralization, `@ts-nocheck` removal, timeout hardening, DRY |
+| v0.7.18 → v1.0.0 | 103 | First stable: profile validation, logging, credential security, browser compat |
+| v1.0.0 → v1.0.4 | 15 | Auto-update hardening, candle gap repair, update-script fixes |
+| v1.0.4 → v1.0.7 | 13 | Grid "one order per price" invariant, subscription watchdog, broadcast deadlock fix |
+| v1.0.7 → v1.0.9 | 9 | Pending-broadcast deadlock, log dedup, trade PnL analysis tool |
+| v1.0.9 → v1.0.11 | 20 | PnL metrics overhaul, live `bots.json`, BitShares market fee model |
+| v1.0.11 → v1.0.13 | 17 | Whitelist normalization, grid persistence safety net, dust pipeline fix, net inventory lots |
 
 ---
-
-
 
 ## Development Statistics
 
@@ -236,20 +153,24 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 
 ---
 
+## Post-1.0.0: Completed
+
+- **Dependency Reduction**: Zero-dependency runtime via `tsx`, all external runtime dependencies removed (v0.7.5)
+- **Performance Analytics — PnL Tracking**: `analysis/trade_profitability.ts` — Kibana-driven FIFO/Sequential PnL with 16 metrics (July 2026, v1.0.9+)
+
 ## Post-1.0.0: Planned
 
 - **Web & Terminal UI**: Browser-based and TUI dashboards for monitoring and tuning
 - **Backtesting Engine**: Replay historical candles through `OrderManager`/COW via a `MemoryExchange` drop-in at the `bitshares_client` boundary
-- **Performance Analytics**: ✅ PnL tracking (`analysis/trade_profitability.ts`, July 2026); grid efficiency metrics and HTML report generation remain planned
+- **Performance Analytics — Remaining**: Grid efficiency metrics and HTML report generation
 - **Monorepo Split**: Package into `@dexbot/core`, `@dexbot/bitshares`, `@dexbot/indicators` for parallelized builds
 - **Injectable Module Interfaces**: Dependency inversion at call boundaries for testability (no event bus)
 - **Database (SQLite) + Zod Validation**: Replace JSON persistence, validate blockchain objects at the client boundary
-- ~~**Dependency Reduction**~~ ✅ Completed in v0.7.5
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 10, 2026 (v1.0.13)
-**Total Commits**: 1710
-**Date Range**: December 2, 2025 - July 10, 2026 (ongoing)
+**Last Updated**: July 11, 2026 (v1.0.13)
+**Total Commits**: 1,713
+**Date Range**: December 2, 2025 - July 11, 2026 (ongoing)
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
