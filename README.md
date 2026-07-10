@@ -8,16 +8,16 @@ DEXBot2 is the first open source trading bot with zero runtime dependencies and 
 
 ## Contents
 
-- [Quick Start](#quick-start)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Zero-Dependency Process Management](#zero-dependency-process-management)
-- [Bot Management](#bot-management)
-- [PM2 Process Management](#pm2-process-management)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [License](#license)
-- [Links](#links)
+- [Quick Start](#-quick-start)
+- [Installation](#-installation)
+- [Configuration](#-configuration)
+- [Zero-Dependency Process Management](#-zero-dependency-process-management)
+- [Bot Management](#-bot-management)
+- [PM2 Process Management](#-pm2-process-management)
+- [Documentation](#-documentation)
+- [Contributing](#-contributing)
+- [License](#-license)
+- [Links](#-links)
 
 ## 🚀 Features
 
