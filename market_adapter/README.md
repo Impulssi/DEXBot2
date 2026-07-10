@@ -1,12 +1,34 @@
 # Market Adapter
 
-The market adapter is the live signal layer for AMA-priced bots. It reads
-candles, computes the AMA center price, optionally writes dynamic weights, and
-creates recalc triggers when a bot accepts its first center, when the center
-moves far enough, or when whitelisted range-scaling slope drift requires a
-grid-bound reset.
+The live signal layer for AMA-priced bots. It reads candles, computes the AMA center price, optionally writes dynamic weights, and creates recalc triggers when a bot accepts its first center, when the center moves far enough, or when whitelisted range-scaling slope drift requires a grid-bound reset. DEXBot2 starts and stops the adapter automatically when active AMA bots exist.
 
-DEXBot2 starts and stops the adapter automatically when active AMA bots exist.
+## Contents
+
+- [Big Picture](#big-picture)
+- [Quick Start](#quick-start)
+- [Grid Price](#grid-price)
+- [Grid Range Scaling](#grid-range-scaling)
+- [Asymmetric Weight Shift](#asymmetric-weight-shift)
+- [Symmetric Weight Shift](#symmetric-weight-shift)
+- [Trigger Threshold](#trigger-threshold)
+- [Settings and Overrides](#settings-and-overrides)
+- [Live Writes and Dry-Run](#live-writes-and-dry-run)
+- [Useful Commands](#useful-commands)
+- [Troubleshooting](#troubleshooting)
+- [Technical Reference](#technical-reference)
+
+## Which section do I need?
+
+| If you want to… | Read this | Key command |
+|-----------------|-----------|-------------|
+| Enable AMA pricing for a bot | [Quick Start](#quick-start) | `node dexbot white` |
+| Change how often the grid rebuilds | [Trigger Threshold](#trigger-threshold) | edit `AMA_DELTA_THRESHOLD_PERCENT` |
+| Tune buy/sell weight bias | [Asymmetric Weight Shift](#asymmetric-weight-shift) | whitelist `dynamicWeight: true` |
+| Widen/tighten grid bounds by trend | [Grid Range Scaling](#grid-range-scaling) | whitelist `asymmetricBounds: true` |
+| Override settings for one pair or bot | [Settings and Overrides](#settings-and-overrides) | edit `profiles/market_adapter_settings.json` |
+| Run the adapter standalone or test dry-run | [Live Writes and Dry-Run](#live-writes-and-dry-run) | `tsx market_adapter/market_adapter.ts --dryRun` |
+| Debug a bot not being processed | [Troubleshooting](#troubleshooting) | `node dexbot white` |
+| Understand the signal pipeline or module layout | [Technical Reference](#technical-reference) | — |
 
 ## Big Picture
 
@@ -432,6 +454,8 @@ Per cycle, per processed bot, the adapter can produce:
 
 ### Files
 
+<details><summary>Config and state files (click to expand)</summary>
+
 | File | Purpose |
 |------|---------|
 | `profiles/bots.json` | Active bots, symbols, pool IDs, and `gridPrice` settings |
@@ -442,6 +466,8 @@ Per cycle, per processed bot, the adapter can produce:
 | `market_adapter/state/market_adapter_state.json` | Full runtime state and diagnostics |
 | `market_adapter/state/market_adapter_centers.json` | Lightweight center-price snapshot |
 | `profiles/logs/market_adapter.log` | Standalone adapter runtime log |
+
+</details>
 
 ### What the Adapter Writes
 
@@ -513,6 +539,8 @@ Typical fields:
 
 ### Module Map
 
+<details><summary>Directory layout (click to expand)</summary>
+
 ```text
 market_adapter/
 |-- market_adapter.ts              main adapter daemon
@@ -553,6 +581,8 @@ market_adapter/
 |-- data/                          runtime candle caches and exports
 `-- state/                         runtime state, centers, and lock file
 ```
+
+</details>
 
 ### Whitelist Semantics
 
@@ -692,6 +722,8 @@ snapshot.
 
 Main override knobs live in `profiles/market_adapter_settings.json`:
 
+<details><summary>Full settings table (click to expand)</summary>
+
 | Setting | Meaning |
 |---------|---------|
 | `alpha` | AMA vs Kalman blend |
@@ -718,6 +750,8 @@ Main override knobs live in `profiles/market_adapter_settings.json`:
 | `kalmanSlope.maxSlopePct` | Kalman slope saturation |
 | `kalmanSmoothSpanPct` | Adaptive EMA span ratio |
 | `signalConfirmBars` | Signal latch confirmation bars |
+
+</details>
 
 When migrating older settings, either divide AMA slope percent overrides by
 `amaSlope.lookbackBars`, or add `"amaSlopePercentMode": "window"` and let the
@@ -877,6 +911,8 @@ removed manually.
 
 Important fields in `market_adapter/state/market_adapter_state.json`:
 
+<details><summary>Field reference (click to expand)</summary>
+
 | Field | Meaning |
 |-------|---------|
 | `lastRunAt` | Last completed adapter cycle |
@@ -896,3 +932,5 @@ Important fields in `market_adapter/state/market_adapter_state.json`:
 | `collateralRecommendation` | Advisory collateral-ratio hint |
 | `kibanaGapRepairCount` | Gaps patched this cycle (auto-fill or Kibana-verified) |
 | `unresolvedGapCount` | Gaps still missing after all repair attempts; writes suppressed while > 0 |
+
+</details>

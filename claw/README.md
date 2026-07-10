@@ -3,13 +3,37 @@
 > **⚠️ EXPERIMENTAL — Use at your own risk.**  
 > The Claw subsystem handles live blockchain operations (create/cancel orders, borrow/repay MPAs, adjust collateral). It has not undergone the same level of production hardening, race-condition testing, and edge-case validation as the core DEXBot2 runtime. Review all actions before execution, especially in the `short_mpa_strategy`, `decision_loop`, and `position_health` modules.
 
-Integration layer for interacting with the BitShares blockchain from DEXBot2 and the supported Claw runtimes: OpenClaw, Hermes, OpenFang, NanoBot, PicoClaw, NanoClaw, ZeroClaw, NullClaw, and memU.
+Integration layer for BitShares blockchain operations from DEXBot2 and supported Claw runtimes (OpenClaw, Hermes, OpenFang, NanoBot, PicoClaw, NanoClaw, ZeroClaw, NullClaw, memU). Follows the same split as DEXBot2: shared client for reads, separate signing client for writes, and small query/broadcast layers.
 
-This scaffold follows the same high-level split used in DEXBot2:
+## Contents
 
-- shared client for reads and subscriptions
-- separate signing client for account writes
-- small query and broadcast layers
+- [Install](#install)
+- [Responsibility Boundary](#responsibility-boundary)
+- [Run The Example](#run-the-example)
+- [Standard Short Workflow](#standard-short-workflow)
+- [Position Manager](#position-manager)
+- [HONEST Asset Report](#honest-asset-report)
+- [Signing And Broadcast](#signing-and-broadcast)
+- [PM2](#pm2)
+- [Skill Packs](#skill-packs)
+- [Multi-Runtime Support](#multi-runtime-support)
+- [HONEST Ecosystem Helper](#honest-ecosystem-helper)
+- [Position Health](#position-health)
+- [Dynamic Weights](#dynamic-weights)
+- [High-Level Actions](#high-level-actions)
+
+## Which section do I need?
+
+| If you want to… | Read this | Key command |
+|-----------------|-----------|-------------|
+| Try a connection test | [Run The Example](#run-the-example) | `npm run example:connection` |
+| Open / take-profit / close a short MPA position | [Standard Short Workflow](#standard-short-workflow) | `npm run example:short-mpa-bts` |
+| Track persistent short positions | [Position Manager](#position-manager) | `npm run example:position-manager` |
+| Choose a runtime (OpenClaw, Hermes, NanoBot, etc.) | [Multi-Runtime Support](#multi-runtime-support) | — |
+| Generate skill files for a runtime | [Multi-Runtime Support](#multi-runtime-support) | `npm run <runtime>:skill` |
+| Preview or apply bot setting changes | [Dynamic Weights](#dynamic-weights) | `tsx scripts/claw_bridge.ts bot-settings-preview` |
+| Inspect an on-chain MPA position | [Position Health](#position-health) | `tsx scripts/claw_bridge.ts mpa-position` |
+| List HONEST asset pricing | [HONEST Asset Report](#honest-asset-report) | `npm run report:honest-assets` |
 
 ## Install
 
@@ -18,6 +42,8 @@ npm install
 ```
 
 ## Files
+
+<details><summary>Module and file map (click to expand)</summary>
 
 - Core BitShares runtime: `modules/bitshares_client.ts`, `modules/chain_queries.ts`, `modules/chain_broadcast.ts`, `modules/chain_actions.ts`
 - Strategy and state helpers: `modules/short_mpa_strategy.ts`, `modules/position_manager.ts`, `modules/position_manager_watch.ts`
@@ -32,6 +58,8 @@ npm install
 - MPA utilities: `modules/mpa_utils.ts`
 - Reference docs: `docs/AI_BOT_LIBRARY_API.md`, `docs/DEXBOT2_TUNING_CHEAT_SHEET.md`, `docs/POSITION_HEALTH.md`, `docs/RUNTIME_COMPARISON.md`
 - Example entrypoints: `examples/connection_test.ts`, `examples/short_mpa_bts_strategy.ts`, `examples/position_manager_cli.ts`, `examples/memu_integration_example.ts`, `examples/claw_profiles_example.ts`, `examples/claw_consumer_example.ts`, `examples/claw_infra_example.ts`, `examples/honest_ecosystem_example.ts`
+
+</details>
 
 ## Responsibility Boundary
 
@@ -146,35 +174,21 @@ Shared boundary notes live in `skills/shared/references/skill-boundaries.md`.
 
 ## Multi-Runtime Support
 
-`claw/` supports nine native runtime families, listed once here for quick reference:
+`claw/` supports nine native runtime families. Choose based on your integration style:
 
 | Runtime | Native integration | Best fit | Main tradeoff |
 | --- | --- | --- | --- |
-| OpenClaw | Native plugin plus optional `SKILL.md` | Broadest and heaviest option | Richest runtime surface, but also the highest operational complexity |
-| Hermes | MCP server plus optional `SKILL.md` | General-purpose assistant that can also trade | Broader agent platform, but unnecessary overhead if you only need DEXBot actions |
-| OpenFang | CLI bridge plus workspace `SKILL.md` | CLI-first local integration | Best when the runtime should consume a thin generated bridge rather than a vendored adapter stack |
-| NanoBot | MCP plus `SKILL.md` | Smaller Python codebase with MCP integration | Easier to inspect, but slower and heavier than Go or Rust |
-| PicoClaw | MCP plus `SKILL.md` | Small Go-based option with launcher support | Great for low-cost hardware, but still evolving quickly |
+| OpenClaw | Native plugin plus optional `SKILL.md` | Broadest assistant surface and plugin depth | Richest runtime surface, but also the highest operational complexity |
+| Hermes | MCP server plus optional `SKILL.md` | General-purpose assistant with memory, messaging, and cron | Broader agent platform, but unnecessary overhead if you only need DEXBot actions |
+| OpenFang | CLI bridge plus workspace `SKILL.md` | CLI-first local workspace integration | Best when the runtime should consume a thin generated bridge rather than a vendored adapter stack |
+| NanoBot | MCP plus `SKILL.md` | Simple MCP integration with Python ergonomics | Easier to inspect, but slower and heavier than Go or Rust |
+| PicoClaw | MCP plus `SKILL.md` | Small Go binary and low-cost hardware | Great for tiny boards, but still evolving quickly |
 | NanoClaw | `SKILL.md` skill file plus local JSON bridge | Claude Code skill-driven local runtime | Keep the DEXBot2 bridge skill named `bitshares-claw` so it does not collide with NanoClaw's built-in `claw` skill |
-| ZeroClaw | `SKILL.toml` skill manifest | Smallest and most constrained option | Best cold starts, but the most specialized Rust-oriented workflow |
-| NullClaw | `SKILL.toml` skill manifest plus MCP server config | Zig-native runtime with workspace loading | Strong fit for local workspace loading, but more dependent on NullClaw-specific config conventions |
-| memU | Subprocess bridge plus MCP server | 24/7 proactive memory for AI agents | Python-based memory framework with LLM-powered extraction and vector search |
+| ZeroClaw | `SKILL.toml` skill manifest | Lowest footprint and fastest startup | Best cold starts, but the most specialized Rust-oriented workflow |
+| NullClaw | `SKILL.toml` skill manifest plus MCP server config | Zig-native workspace assistant with manifest loading | Strong fit for local workspace loading, but more dependent on NullClaw-specific config conventions |
+| memU | Subprocess bridge plus MCP server | Proactive memory and intent capture for AI agents | Python-based memory framework with LLM-powered extraction and vector search |
 
-Practical selection guide:
-
-| If you optimize for | Best choice | Why |
-| --- | --- | --- |
-| Broadest assistant surface and plugin depth | OpenClaw | Richest runtime, strongest plugin model, widest ecosystem coverage |
-| General-purpose assistant with memory, messaging, and cron | Hermes | MCP-first integration keeps Claw reusable while Hermes handles the broader assistant runtime |
-| CLI-first local workspace integration | OpenFang | Thin bridge, generated skill file, and minimal maintenance surface |
-| Simple MCP integration with Python ergonomics | NanoBot | Easier to inspect and adapt, good for lightweight tool-driven workflows |
-| Small Go binary and low-cost hardware | PicoClaw | Good launcher support, strong fit for tiny boards and constrained Linux targets |
-| Claude Code skill-driven local runtime | NanoClaw | Skill-file workflow with a dedicated local bridge and a name that avoids NanoClaw's built-in `claw` skill |
-| Lowest footprint and fastest startup | ZeroClaw | Smallest surface, manifest-driven, best for static local automation |
-| Zig-native workspace assistant with manifest loading | NullClaw | Native workspace loading, direct skill-file workflows, and optional MCP server support |
-| Proactive memory and intent capture | memU | 24/7 memory that learns user preferences, reduces LLM costs, and enables context-aware trading |
-
-Rule of thumb:
+<details><summary>Quick selection rule of thumb (click to expand)</summary>
 
 - Choose **OpenClaw** for the broadest assistant platform.
 - Choose **Hermes** if you want a general-purpose assistant with memory, messaging, cron, and browser tooling that can also trade through Claw.
@@ -186,9 +200,9 @@ Rule of thumb:
 - Choose **NullClaw** for a Zig-native runtime with workspace-centric skill loading.
 - Choose **memU** for 24/7 proactive memory that captures user intent and reduces LLM token costs.
 
-For a deeper comparison of the supported runtimes, see [docs/RUNTIME_COMPARISON.md](docs/RUNTIME_COMPARISON.md).
+</details>
 
-Run the commands below from the `claw/` directory.
+For a deeper comparison, see [docs/RUNTIME_COMPARISON.md](docs/RUNTIME_COMPARISON.md). Run the commands below from the `claw/` directory.
 
 ### Shared Bridge
 
@@ -256,7 +270,7 @@ npm run openfang:skill -- --repo-root "$CLAW_ROOT" --profile-root "$DEXBOT_ROOT"
 
 OpenFang uses the same shared bridge surface through a local CLI wrapper.
 
-OpenFang compatibility command surface:
+<details><summary>Compatibility command surface (click to expand)</summary>
 
 ```bash
 tsx scripts/claw_bridge.ts --runtime openfang manifest
@@ -264,6 +278,8 @@ tsx scripts/claw_bridge.ts --runtime openfang profile-context --payload '{"botRe
 tsx scripts/claw_bridge.ts --runtime openfang market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
 tsx scripts/claw_bridge.ts --runtime openfang create-limit-order --payload '{"accountName":"your-account","sellAsset":"BTS","receiveAsset":"USD","amountToSell":10,"minToReceive":2}'
 ```
+
+</details>
 
 ### Hermes
 
@@ -321,7 +337,7 @@ npm run nanoclaw:skill -- --repo-root "$CLAW_ROOT" --profile-root "$DEXBOT_ROOT"
 
 NanoClaw already ships its own `claw` skill, so keep this bridge skill named `bitshares-claw`.
 
-NanoClaw compatibility command surface:
+<details><summary>Compatibility command surface (click to expand)</summary>
 
 ```bash
 tsx scripts/claw_bridge.ts --runtime nanoclaw manifest
@@ -329,6 +345,8 @@ tsx scripts/claw_bridge.ts --runtime nanoclaw profile-context --payload '{"botRe
 tsx scripts/claw_bridge.ts --runtime nanoclaw market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
 tsx scripts/claw_bridge.ts --runtime nanoclaw create-limit-order --payload '{"accountName":"your-account","sellAsset":"BTS","receiveAsset":"USD","amountToSell":10,"minToReceive":2}'
 ```
+
+</details>
 
 ### ZeroClaw
 
@@ -340,7 +358,7 @@ DEXBOT_ROOT="$(cd .. && pwd)"
 npm run zeroclaw:skill -- --repo-root "$CLAW_ROOT" --profile-root "$DEXBOT_ROOT" --output ~/.zeroclaw/workspace/skills/ai-bots/SKILL.toml
 ```
 
-ZeroClaw compatibility command surface:
+<details><summary>Compatibility command surface (click to expand)</summary>
 
 ```bash
 tsx scripts/claw_bridge.ts --runtime zeroclaw manifest
@@ -352,6 +370,8 @@ tsx scripts/claw_bridge.ts --runtime zeroclaw execute-batch --payload '{"account
 tsx scripts/claw_bridge.ts --runtime zeroclaw borrow-mpa --payload '{"accountName":"your-account","mpaAsset":"HONEST.USD","debtDelta":10,"collateralDelta":25000}'
 ```
 
+</details>
+
 ### NullClaw
 
 Generate the NullClaw skill file:
@@ -362,7 +382,7 @@ DEXBOT_ROOT="$(cd .. && pwd)"
 npm run nullclaw:skill -- --repo-root "$CLAW_ROOT" --profile-root "$DEXBOT_ROOT" --output ~/.nullclaw/workspace/skills/bitshares-claw/SKILL.toml
 ```
 
-NullClaw compatibility command surface:
+<details><summary>Compatibility command surface (click to expand)</summary>
 
 ```bash
 tsx scripts/claw_bridge.ts --runtime nullclaw manifest
@@ -373,6 +393,8 @@ tsx scripts/claw_bridge.ts --runtime nullclaw update-limit-order --payload '{"ac
 tsx scripts/claw_bridge.ts --runtime nullclaw execute-batch --payload '{"accountName":"your-account","operations":[]}'
 tsx scripts/claw_bridge.ts --runtime nullclaw borrow-mpa --payload '{"accountName":"your-account","mpaAsset":"HONEST.USD","debtDelta":10,"collateralDelta":25000}'
 ```
+
+</details>
 
 ### memU
 
@@ -408,7 +430,7 @@ mcp_servers:
     args: ["/absolute/path/to/claw/scripts/memu_mcp_server.ts", "--memu-dir", "/absolute/path/to/claw/data/memu"]
 ```
 
-memU compatibility command surface:
+<details><summary>Compatibility command surface (click to expand)</summary>
 
 ```bash
 # Via claw bridge
@@ -421,6 +443,8 @@ tsx scripts/claw_bridge.ts memu-status
 npm run memu:status
 npm run memu:mcp
 ```
+
+</details>
 
 Available memU capabilities:
 

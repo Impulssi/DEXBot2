@@ -1,8 +1,31 @@
 # MPA and Credit Usage
 
-DEXBot2 supports native BitShares debt workflows through the bot-level `debtPolicy` config block. Each lending item declares its own collateral asset, and the runtime groups items by collateral to compute independent distributions.
+DEXBot2 supports native BitShares debt workflows through the bot-level `debtPolicy` config block. Each lending item declares its own collateral asset, and the runtime groups items by collateral to compute independent distributions. For the related AMA/grid side, see [Market Adapter](../market_adapter/README.md).
 
-For the related AMA/grid side of the bot runtime, see [Market Adapter](../market_adapter/README.md).
+## Contents
+
+- [Configuration Format](#configuration-format)
+- [Collateral Distribution](#collateral-distribution)
+- [Runtime Timing](#runtime-timing)
+- [MPA Maintenance](#mpa-maintenance)
+- [Credit Offer Maintenance](#credit-offer-maintenance)
+- [LP-Backed Credit Collateral](#lp-backed-credit-collateral)
+- [State Files](#state-files)
+- [Operational Notes](#operational-notes)
+- [Related Files](#related-files)
+
+## Which section do I need?
+
+| If you want to… | Read this | Key file / field |
+|-----------------|-----------|-------------------|
+| Configure a bot to borrow MPAs or credit offers | [Configuration Format](#configuration-format) | `debtPolicy.lending` in `bots.json` |
+| Understand how collateral is split across lending items | [Collateral Distribution](#collateral-distribution) | `outputWeight` |
+| Change how often the credit watchdog runs | [Runtime Timing](#runtime-timing) | `TIMING` in `constants.ts` |
+| Know what happens when MPA CR drops below minimum | [MPA Maintenance](#mpa-maintenance) | `minCollateralRatio` |
+| Know how credit deals are renewed and repaid | [Credit Offer Maintenance](#credit-offer-maintenance) | `autoReborrow` / `autoRepay` |
+| Use LP shares as credit-offer collateral | [LP-Backed Credit Collateral](#lp-backed-credit-collateral) | automatic valuation |
+| Diagnose pending reborrow or renewal issues | [State Files](#state-files) | `profiles/credit_runtime/<botKey>.json` |
+| Safe operating practices | [Operational Notes](#operational-notes) | — |
 
 ## Configuration Format
 
@@ -45,15 +68,17 @@ Add `debtPolicy` to a bot entry in `profiles/bots.json`:
 }
 ```
 
-### Required Fields
+### Field Reference
+
+<details><summary>All config fields (click to expand)</summary>
+
+**Required Fields:**
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `lending` | `array` | Non-empty array of lending items. Each item maps a debt asset to a debt type and collateral asset. |
 
-### Lending Item Fields
-
-Every item in `lending` must have:
+**Lending Item Fields** (every item must have):
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -61,9 +86,7 @@ Every item in `lending` must have:
 | `collateralAsset` | `string` | Yes | Collateral asset (e.g. `"BTS"`). Multiple items may share the same collateral asset. |
 | `type` | `string` | Yes | `"mpa"` (BitShares MPA call order) or `"creditOffer"` (credit offer deal). |
 
-#### Shared Optional Fields
-
-Fields available for both `"mpa"` and `"creditOffer"` types:
+**Shared Optional Fields** (both `"mpa"` and `"creditOffer"`):
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -73,7 +96,7 @@ Fields available for both `"mpa"` and `"creditOffer"` types:
 | `minCollateralIncreaseThreshold` | `number \| percentage string` | No | Minimum unused collateral allocation before increasing debt. Use a number for an absolute collateral amount, e.g. `25`, or a percentage string of assigned collateral budget, e.g. `"5%"`. `0` means no minimum. |
 | `maxCollateralRatio` | `number` | No\* | Behavior differs by type: MPA — hard CR ceiling above which debt is increased first; creditOffer — maximum effective ratio when accepting offers. **Required** for `creditOffer`. |
 
-#### MPA-Specific Fields
+**MPA-Specific Fields:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -81,7 +104,7 @@ Fields available for both `"mpa"` and `"creditOffer"` types:
 | `minCollateralRatio` | `number` | No | Hard minimum CR floor. Below this, debt is reduced first. |
 | `debtOnly` | `boolean` | No | If `true`, the bot only adjusts debt to manage the collateral ratio — collateral is never added or withdrawn. Combined with `minCollateralRatio`/`maxCollateralRatio`, this keeps the position size constant while maintaining CR bounds. |
 
-#### Credit-Offer-Specific Fields
+**Credit-Offer-Specific Fields:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -93,11 +116,13 @@ Fields available for both `"mpa"` and `"creditOffer"` types:
 | `renewOnly` | `boolean` | No | If `true`, the bot only reborrows existing deals — standalone credit borrows are refused. Default `false`. |
 | `minDurationSeconds` | `number` | No | Minimum acceptable offer duration in seconds. Offers with `duration_seconds` below this value are skipped. |
 
-### Global Fields
+**Global Fields:**
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `maxCollateralAmount` | `number \| percentage string` | **Global** collateral cap across all lending items. Use a number for an absolute collateral amount, e.g. `10000`, or a percentage string of total available collateral, e.g. `"80%"`. |
+
+</details>
 
 There is no separate enable switch. If `debtPolicy.lending` is present, non-empty, and every item has a valid `collateralAsset`, the credit runtime loads for that bot.
 
@@ -204,6 +229,8 @@ If inline reborrow cannot be built safely, the runtime stores a deferred reborro
 
 On each maintenance cycle, the runtime compares each deal's on-chain `auto_repay` against the policy's `autoRepay` value. If they differ, a `credit_deal_update` operation is broadcast. After a successful update, the local deal state is updated to prevent redundant broadcasts on the next cycle.
 
+<details><summary>BitShares auto-repay modes (click to expand)</summary>
+
 BitShares core 7.0.2 defines three auto-repay modes:
 
 | Value | Mode | Behavior at `latest_repay_time` |
@@ -211,6 +238,8 @@ BitShares core 7.0.2 defines three auto-repay modes:
 | `0` | `no_auto_repayment` | No auto-repay. Deal expires; collateral is liquidated to the offer owner. |
 | `1` | `only_full_repayment` | Full repay if borrower balance >= debt + fee; otherwise deal expires. |
 | `2` | `allow_partial_repayment` | Repay as much as possible with available balance; any remaining debt triggers expiry with proportional collateral liquidation. |
+
+</details>
 
 ### Important Distinction
 
@@ -259,6 +288,8 @@ Treat this file as runtime state, not primary configuration. The source of truth
 
 ## Related Files
 
+<details><summary>Source files and tests (click to expand)</summary>
+
 - `modules/credit_runtime.ts`: debt workflow executor
 - `modules/dexbot_class.ts`: runtime startup and watchdog lifecycle
 - `modules/bot_settings.ts`: `debtPolicy` validation
@@ -266,3 +297,5 @@ Treat this file as runtime state, not primary configuration. The source of truth
 - `modules/credential_policy.ts`: signing constraints for credit and call-order operations
 - `tests/test_credit_runtime.ts`: credit runtime behavior coverage
 - `tests/test_multi_asset_distribution.ts`: collateral distribution and multi-asset state coverage
+
+</details>

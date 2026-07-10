@@ -6,6 +6,19 @@ DEXBot2 is the first open source trading bot with zero runtime dependencies and 
   <img src="docs/media/DEXBot2.webp" alt="DEXBot2 hero banner" width="1200">
 </p>
 
+## Contents
+
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Zero-Dependency Process Management](#zero-dependency-process-management)
+- [Bot Management](#bot-management)
+- [PM2 Process Management](#pm2-process-management)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
+- [Links](#links)
+
 ## 🚀 Features
 
 - **Grid Trading** — geometric order grids that rebalance as price moves
@@ -137,6 +150,8 @@ market volatility instead of using an unnecessarily wide range.
 
 Configuration options from `node dexbot bot`, stored in `profiles/bots.json`:
 
+<details><summary>Full parameter reference (click to expand)</summary>
+
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
 | **`assetA`** | string | Base asset |
@@ -155,15 +170,21 @@ Configuration options from `node dexbot bot`, stored in `profiles/bots.json`:
 | **`botFunds`** | object | Capital: `{ "sell": "100%", "buy": 1000 }`. Numbers or percentage strings |
 | **`activeOrders`** | object | Target active orders per side: `{ "sell": 20, "buy": 20 }` |
 
+</details>
+
 ### General Options (Global)
 
 Global settings via `node dexbot bot`, stored in `profiles/general.settings.json`:
+
+<details><summary>Global settings reference (click to expand)</summary>
 
 - **Grid Health**: Grid Ratio Regeneration % (default `3%`), RMS Divergence Threshold % (default `14.3%`), AMA Delta Threshold % (default `1%`)
 - **Order Recovery**: Partial Dust Threshold % (default `5%`), Dust Cancel Delay (default `30s`, `-1` = off, `0` = instant)
 - **Node Configuration**: Node List (8 default public BitShares nodes), Health Check Interval (default `240 min`), Preferred Node (default `none`)
 - **Log Level**: `debug`, `info`, `warn`, `error`. Fine-grained category control via `LOGGING_CONFIG` (see [Logging](docs/LOGGING.md))
 - **Updater**: Active (default `OFF`), Branch (`auto`/`main`/`dev`/`test`), Interval (default `1 day`), Time (default `00:00`)
+
+</details>
 
 ### Constants and Overrides
 
