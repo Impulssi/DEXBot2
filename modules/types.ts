@@ -893,6 +893,65 @@ export interface AssetsPair {
 // DOMAIN: CONFIGURATION
 // ============================================================
 
+export interface BotLoggingOverrides {
+  level?: string;
+  config?: Partial<LoggingConfig>;
+}
+
+export interface BotGridLimitsOverrides {
+  minSpreadFactor?: number;
+  minOrderSizeFactor?: number;
+  gridRegenerationPercentage?: number;
+  partialDustThresholdPercentage?: number;
+  dustCancelDelaySec?: number;
+  fundInvariantPercentTolerance?: number;
+  minSpreadOrders?: number;
+  gridComparison?: { rmsPercentage?: number };
+  priceDriftToleranceMultiplier?: number;
+  relativeOrderUpdateThresholdPercent?: number;
+  stateChangeHistoryMax?: number;
+}
+
+export interface BotFeeParamsOverrides {
+  btsReservationMultiplier?: number;
+  btsFallbackFee?: number;
+  makerFeePercent?: number;
+  makerRefundPercent?: number;
+  takerFeePercent?: number;
+  defaultMaxFeeRatePerDay?: number;
+  grapheneFeeRateDenom?: number;
+  grapheneCollateralRatioDenom?: number;
+  btsAcquireThreshold?: number;
+  btsAcquireTargetMultiplier?: number;
+  poolSlippageTolerance?: number;
+}
+
+export interface BotTimingOverrides {
+  openOrdersSyncLoopEnabled?: boolean;
+  btsAcquireCooldownMin?: number;
+  blockchainFetchIntervalMin?: number;
+  creditDealCheckIntervalMin?: number;
+  checkIntervalMs?: number;
+  runLoopDefaultMs?: number;
+  lockTimeoutMs?: number;
+  syncLockTimeoutMs?: number;
+  connectionTimeoutMs?: number;
+  daemonStartupTimeoutMs?: number;
+  targetedDriftSyncCooldownMs?: number;
+  safetyNetSyncTimeoutMs?: number;
+  logThrottleIntervalMs?: number;
+  lockRefreshMinMs?: number;
+  fillDedupeWindowMs?: number;
+  fillRecordRetentionMs?: number;
+}
+
+export interface BotIncrementBoundsOverrides {
+  minPercent?: number;
+  maxPercent?: number;
+  minFactor?: number;
+  maxFactor?: number;
+}
+
 export interface BotConfigEntry {
   name: string;
   active: boolean;
@@ -911,31 +970,20 @@ export interface BotConfigEntry {
   gridPrice: GridPriceSource;
   gridPriceOffsetPct?: number;
   debtPolicy?: DebtPolicy;
+  logging?: BotLoggingOverrides;
+  gridLimits?: BotGridLimitsOverrides;
+  feeParams?: BotFeeParamsOverrides;
+  timing?: BotTimingOverrides;
+  incrementBounds?: BotIncrementBoundsOverrides;
 }
 
-export interface DEXBotConfig {
+export interface DEXBotConfig extends BotConfigEntry {
   botKey: string;
   botIndex?: number;
-  name: string;
-  active: boolean;
-  dryRun: boolean;
-  preferredAccount: string;
-  assetA: string;
-  assetB: string;
-  startPrice: StartPriceSource;
-  minPrice: number | string;
-  maxPrice: number | string;
-  incrementPercent: number;
-  targetSpreadPercent: number;
-  weightDistribution: { sell: number; buy: number };
-  botFunds: { sell: string | number; buy: string | number };
-  activeOrders: { sell: number; buy: number };
-  gridPrice: GridPriceSource;
-  gridPriceOffsetPct?: number;
   ama?: BotAmaConfig;
-  debtPolicy?: DebtPolicy;
   marketAdapterSettings?: Record<string, any>;
   TIMING?: Record<string, any>;
+  min_BTS_value?: number;
 }
 
 export interface BotAmaConfig {

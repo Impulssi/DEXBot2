@@ -97,7 +97,6 @@ const {
     COW_ACTIONS,
     TIMING,
     MAINTENANCE,
-    GRID_LIMITS,
     FILL_PROCESSING,
     DAEMON_CODES,
 } = require('./constants');
@@ -108,6 +107,7 @@ const { parseJsonWithComments } = require('./order/utils/system');
 const { cloneWeightDistribution } = require('./order/utils/math');
 const { normalizeBotEntry } = require('./bot_settings');
 const Format = require('./order/format');
+const { resolveBotRuntimeSettings } = require('./runtime_settings');
 
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
@@ -180,7 +180,6 @@ class DEXBot {
      * @param {string} options.logPrefix - Prefix for console logs (e.g., "[bot.js]")
      */
     constructor(config, options: { logPrefix?: string } = {}) {
-        // Validate critical config values before initialization
         this._validateStartupConfig(config);
 
         this.config = config;
@@ -188,14 +187,20 @@ class DEXBot {
         this.account = null;
         this.privateKey = null;
         this.manager = null;
-        this.accountOrders = null;  // Will be initialized in start()
+        this.accountOrders = null;
         this.triggerFile = getRecalculateTriggerFile(config.botKey);
         this._recentlyQueuedFills = new Map();
-        this._fillCleanupCounter = 0;  // Deterministic cleanup tracking
+        this._fillCleanupCounter = 0;
 
-        // Time-based configuration for fill processing (from constants.TIMING)
-        this._fillDedupeWindowMs = TIMING.FILL_DEDUPE_WINDOW_MS;      // Window for deduplicating same fill events
-        this._fillRecordRetentionMs = TIMING.FILL_RECORD_RETENTION_MS;  // Retain processed fill keys long enough to block replay
+        const rs = resolveBotRuntimeSettings(this.config);
+        this.config.gridLimits = rs.gridLimits;
+        this.config.feeParams = rs.feeParams;
+        this.config.incrementBounds = rs.incrementBounds;
+        this.config.timing = rs.timing;
+        this.config.logging = rs.logging;
+
+        this._fillDedupeWindowMs = this.config.timing.FILL_DEDUPE_WINDOW_MS;
+        this._fillRecordRetentionMs = this.config.timing.FILL_RECORD_RETENTION_MS;
         this._processedFillPersistBatchMs = TIMING.PROCESSED_FILL_PERSIST_BATCH_MS;
         this._processedFillPersistBatchSize = TIMING.PROCESSED_FILL_PERSIST_BATCH_SIZE;
         this._processedFillStore = new ProcessedFillStore({
@@ -256,7 +261,7 @@ class DEXBot {
         this._batchInFlight = false;
         this._recoverySyncInFlight = false;
         this._lastTargetedDriftSyncAt = 0;
-        this._targetedDriftSyncCooldownMs = TIMING.TARGETED_DRIFT_SYNC_COOLDOWN_MS;
+        this._targetedDriftSyncCooldownMs = this.config.timing.TARGETED_DRIFT_SYNC_COOLDOWN_MS;
         this._maintenanceCooldownCycles = 0;
         this._lastGridActivityAt = 0;
         this._currentCycleId = 0;
@@ -993,7 +998,7 @@ class DEXBot {
                             // synchronizeWithChain + batch + persist can be
                             // ~45s worst case without a cap, which would
                             // stall shutdown until the 20s timeout fires.
-                            const safetyNetTimeoutMs = TIMING.SAFETY_NET_SYNC_TIMEOUT_MS;
+                            const safetyNetTimeoutMs = this.config.timing?.SAFETY_NET_SYNC_TIMEOUT_MS;
                             let safetyNetTimer;
                             try {
                                 await Promise.race([
@@ -3234,9 +3239,9 @@ class DEXBot {
             size,
             type,
             this.manager.assets,
-            GRID_LIMITS.MIN_ORDER_SIZE_FACTOR,
+            this.config.gridLimits?.MIN_ORDER_SIZE_FACTOR,
             this._resolveIdealSizeForValidation(orderLike, fallbackSize),
-            GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE
+            this.config.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE
         );
     }
 
@@ -5142,7 +5147,7 @@ class DEXBot {
             if (!this.manager?._fillProcessingLock) {
                 this._warn('Shutdown lock skipped: manager or fillProcessingLock unavailable');
             } else {
-                const shutdownLockTimeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS;
+                const shutdownLockTimeoutMs = this.config?.timing?.SYNC_LOCK_TIMEOUT_MS;
                 let shutdownLockTimer;
                 // AsyncLock starts the callback as soon as the lock is available,
                 // which can be a few ms after the timeout fires. Without this

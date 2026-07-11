@@ -88,7 +88,7 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION, GRID_LIMITS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } = require('../constants');
 const Format = require('./format');
 const { toFiniteNumber } = Format;
 const {
@@ -203,7 +203,9 @@ function describeNearestAdoptionCandidates(mgr, chainOrder, precision, calcToler
     }).join('; ');
 }
 
-const PRICE_DRIFT_TOLERANCE_MULTIPLIER = GRID_LIMITS.PRICE_DRIFT_TOLERANCE_MULTIPLIER;
+function _getDriftToleranceMultiplier(mgr): number {
+    return mgr?.config?.gridLimits?.PRICE_DRIFT_TOLERANCE_MULTIPLIER;
+}
 
 /**
  * Find the closest same-side (or spread) candidate slot for a chain order and
@@ -248,7 +250,7 @@ function computeOutOfToleranceDriftTag(mgr, chainOrder, calcToleranceFn) {
         const effectiveSize = slot.size > 0 ? toFiniteNumber(slot.size) : chainSize;
         const tolerance = (calcToleranceFn ? (calcToleranceFn(slotPrice, effectiveSize, orderType) || 0) : 0);
         if (priceDiff <= tolerance) continue;
-        const driftBudget = tolerance * PRICE_DRIFT_TOLERANCE_MULTIPLIER;
+        const driftBudget = tolerance * _getDriftToleranceMultiplier(mgr);
         if (driftBudget > 0 && priceDiff > driftBudget) continue;
         if (!bestDrift || priceDiff < bestDrift.priceDiff) {
             bestDrift = {

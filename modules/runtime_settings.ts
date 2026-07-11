@@ -1,0 +1,113 @@
+const {
+    GRID_LIMITS, FEE_PARAMETERS, INCREMENT_BOUNDS, TIMING,
+    LOG_LEVEL, LOGGING_CONFIG,
+} = require('./constants');
+
+function _toScreamingCase(key: string): string {
+    return key.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
+}
+
+function _deepMerge(target: any, source: any): any {
+    for (const key of Object.keys(source)) {
+        const sv = source[key];
+        if (sv === undefined) continue;
+        const targetKey = _toScreamingCase(key);
+        const existing = target[targetKey];
+        if (sv !== null && typeof sv === 'object' && !Array.isArray(sv)
+            && existing !== undefined && existing !== null && typeof existing === 'object' && !Array.isArray(existing)) {
+            target[targetKey] = _deepMerge(existing, sv);
+        } else {
+            target[targetKey] = sv;
+        }
+    }
+    return target;
+}
+
+export interface BotRuntimeSettings {
+    gridLimits: Record<string, any>;
+    feeParams: Record<string, any>;
+    incrementBounds: Record<string, any>;
+    timing: Record<string, any>;
+    logging: {
+        level: string;
+        config: Record<string, any>;
+    };
+}
+
+export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRuntimeSettings {
+    const result: BotRuntimeSettings = {
+        gridLimits: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },
+        feeParams: { ...FEE_PARAMETERS },
+        incrementBounds: { ...INCREMENT_BOUNDS },
+        timing: { ...TIMING },
+        logging: {
+            level: LOG_LEVEL,
+            config: JSON.parse(JSON.stringify(LOGGING_CONFIG)),
+        },
+    };
+
+    const marketOverrides = _resolveMarketOverrides(botConfig);
+    if (marketOverrides) {
+        if (marketOverrides.gridLimits) _deepMerge(result.gridLimits, marketOverrides.gridLimits);
+        if (marketOverrides.feeParams) _deepMerge(result.feeParams, marketOverrides.feeParams);
+        if (marketOverrides.incrementBounds) _deepMerge(result.incrementBounds, marketOverrides.incrementBounds);
+        if (marketOverrides.timing) _deepMerge(result.timing, marketOverrides.timing);
+        if (marketOverrides.poolSlippageTolerance !== undefined) result.feeParams.POOL_SLIPPAGE_TOLERANCE = marketOverrides.poolSlippageTolerance;
+    }
+
+    if (botConfig.gridLimits) _deepMerge(result.gridLimits, botConfig.gridLimits);
+    if (botConfig.feeParams) _deepMerge(result.feeParams, botConfig.feeParams);
+    if (botConfig.incrementBounds) _deepMerge(result.incrementBounds, botConfig.incrementBounds);
+    if (botConfig.timing) _deepMerge(result.timing, botConfig.timing);
+    if (botConfig.logging) {
+        if (botConfig.logging.level) result.logging.level = botConfig.logging.level;
+        if (botConfig.logging.config) _deepMerge(result.logging.config, botConfig.logging.config);
+    }
+
+    return result;
+}
+
+function _resolveMarketOverrides(botConfig: Record<string, any>): Record<string, any> | null {
+    try {
+        const marketAdapter = require('../market_adapter/market_adapter');
+        const settings = (typeof marketAdapter.loadMarketAdapterSettings === 'function')
+            ? marketAdapter.loadMarketAdapterSettings()
+            : null;
+        if (!settings) return null;
+
+        const overrides: Record<string, any> = {};
+
+        if (settings.globals) {
+            if (settings.globals.runtimeGridLimits) overrides.gridLimits = { ...settings.globals.runtimeGridLimits };
+            if (settings.globals.runtimeFeeParams) overrides.feeParams = { ...settings.globals.runtimeFeeParams };
+            if (settings.globals.runtimeTiming) overrides.timing = { ...settings.globals.runtimeTiming };
+            if (settings.globals.runtimeIncrementBounds) overrides.incrementBounds = { ...settings.globals.runtimeIncrementBounds };
+            if (settings.globals.runtimePoolSlippageTolerance !== undefined) overrides.poolSlippageTolerance = settings.globals.runtimePoolSlippageTolerance;
+        }
+
+        if (Array.isArray(settings.pairs) && typeof marketAdapter.findPairForBot === 'function') {
+            const pair = marketAdapter.findPairForBot(botConfig, settings.pairs);
+            if (pair) {
+                if (pair.marketGridLimits) overrides.gridLimits = _deepMerge(overrides.gridLimits || {}, pair.marketGridLimits);
+                if (pair.marketFeeParams) overrides.feeParams = _deepMerge(overrides.feeParams || {}, pair.marketFeeParams);
+                if (pair.marketTiming) overrides.timing = _deepMerge(overrides.timing || {}, pair.marketTiming);
+                if (pair.marketIncrementBounds) overrides.incrementBounds = _deepMerge(overrides.incrementBounds || {}, pair.marketIncrementBounds);
+                if (pair.marketPoolSlippageTolerance !== undefined) overrides.poolSlippageTolerance = pair.marketPoolSlippageTolerance;
+
+                if (pair.botOverrides && pair.botOverrides[botConfig.name]) {
+                    const bo = pair.botOverrides[botConfig.name];
+                    if (bo.botGridLimits) overrides.gridLimits = _deepMerge(overrides.gridLimits || {}, bo.botGridLimits);
+                    if (bo.botFeeParams) overrides.feeParams = _deepMerge(overrides.feeParams || {}, bo.botFeeParams);
+                    if (bo.botTiming) overrides.timing = _deepMerge(overrides.timing || {}, bo.botTiming);
+                    if (bo.botIncrementBounds) overrides.incrementBounds = _deepMerge(overrides.incrementBounds || {}, bo.botIncrementBounds);
+                    if (bo.botPoolSlippageTolerance !== undefined) overrides.poolSlippageTolerance = bo.botPoolSlippageTolerance;
+                }
+            }
+        }
+
+        if (Object.keys(overrides).length === 0) return null;
+        return overrides;
+    } catch (_: any) {
+        return null;
+    }
+}

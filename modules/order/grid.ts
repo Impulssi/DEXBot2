@@ -87,7 +87,7 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, INCREMENT_BOUNDS, FEE_PARAMETERS, MARKET_ADAPTER } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, MARKET_ADAPTER } = require('../constants');
 const { GRID_COMPARISON } = GRID_LIMITS;
 const Format = require('./format');
 const {
@@ -147,8 +147,8 @@ class Grid {
      * @param {number} targetSpreadPercent
      * @returns {number}
      */
-    static calculateGapSlots(incrementPercent, targetSpreadPercent) {
-        return calculateGapSlots(incrementPercent, targetSpreadPercent, GRID_LIMITS);
+    static calculateGapSlots(incrementPercent, targetSpreadPercent, gridLimitsOverride?: Record<string, any>) {
+        return calculateGapSlots(incrementPercent, targetSpreadPercent, gridLimitsOverride ?? GRID_LIMITS);
     }
 
     /**
@@ -192,6 +192,7 @@ class Grid {
         // BTS fees are paid for ALL order operations regardless of side, so the
         // BTS-holding side reserves fees for both buy and sell target counts.
         const isBtsSide = (isBuy && manager.config.assetB === 'BTS') || (!isBuy && manager.config.assetA === 'BTS');
+        const btsReservationMultiplier = manager.config?.feeParams?.BTS_RESERVATION_MULTIPLIER;
         if (isBtsSide && budget > 0) {
             const targetBuy = Math.max(0, manager.config.activeOrders?.buy ?? 1);
             const targetSell = Math.max(0, manager.config.activeOrders?.sell ?? 1);
@@ -201,7 +202,7 @@ class Grid {
                 manager.config.assetA,
                 manager.config.assetB,
                 totalTarget,
-                FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER
+                btsReservationMultiplier
             );
             budget = Math.max(0, budget - btsFees);
         }
@@ -215,7 +216,7 @@ class Grid {
                 manager.config.assetA,
                 manager.config.assetB,
                 totalTarget,
-                FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER
+                btsReservationMultiplier
             );
             const configMin = manager.config.min_BTS_value;
             const effectiveMin = (configMin > 0) ? configMin : formulaBudget;
@@ -315,10 +316,12 @@ class Grid {
         if (!Number.isFinite(incrementPercent)) {
             throw new Error(`Invalid incrementPercent: ${incrementPercent}. Must be a finite number.`);
         }
-        if (incrementPercent < INCREMENT_BOUNDS.MIN_PERCENT || incrementPercent > INCREMENT_BOUNDS.MAX_PERCENT) {
+        const minPercent = config.incrementBounds?.MIN_PERCENT;
+        const maxPercent = config.incrementBounds?.MAX_PERCENT;
+        if (incrementPercent < minPercent || incrementPercent > maxPercent) {
             throw new Error(
                 `Invalid incrementPercent: ${incrementPercent}. Must be between ` +
-                `${INCREMENT_BOUNDS.MIN_PERCENT} and ${INCREMENT_BOUNDS.MAX_PERCENT} (inclusive).`
+                `${minPercent} and ${maxPercent} (inclusive).`
             );
         }
 
@@ -369,7 +372,7 @@ class Grid {
         // Determine how many slots should be in the spread zone.
         // See formula documentation in JSDoc above.
 
-        const gapSlots = Grid.calculateGapSlots(incrementPercent, config.targetSpreadPercent);
+        const gapSlots = Grid.calculateGapSlots(incrementPercent, config.targetSpreadPercent, config.gridLimits);
 
         // ================================================================================
         // STEP 3: FIND SPLIT INDEX & ROLE ASSIGNMENT
@@ -829,7 +832,7 @@ class Grid {
      * @returns {import('./types').SideUpdateFlags}
      */
     static checkAndUpdateGridIfNeeded(manager) {
-        const threshold = GRID_LIMITS.GRID_REGENERATION_PERCENTAGE;
+        const threshold = manager.config?.gridLimits?.GRID_REGENERATION_PERCENTAGE;
         const chainSnap = manager.getChainFundsSnapshot();
         const gridBuy = Number(manager.funds?.total?.grid?.buy || 0);
         const gridSell = Number(manager.funds?.total?.grid?.sell || 0);
@@ -850,7 +853,8 @@ class Grid {
                 manager.config.assetA,
                 manager.config.assetB,
                 manager.config.activeOrders,
-                manager.config.min_BTS_value
+                manager.config.min_BTS_value,
+                manager.config.feeParams ?? null
             );
 
             // Denominator: side's allocated capital (or chain total fallback).
@@ -1096,7 +1100,7 @@ class Grid {
         // atomic operation — manager.boundaryIdx must not be touched before the commit.
         const newBoundary = (overrideBoundaryIdx !== null) ? overrideBoundaryIdx : manager.boundaryIdx;
         if (overrideBoundaryIdx !== null && overrideBoundaryIdx !== manager.boundaryIdx) {
-            const gapSlots = Grid.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent);
+            const gapSlots = Grid.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
             const allSlots = (Array.from(workingGrid.values()) as Order[])
                 .filter(s => s.price != null)
                 .sort((a, b) => a.price - b.price);
@@ -1248,8 +1252,8 @@ class Grid {
         // Check if metrics exceed threshold and flag sides for regeneration
         // Set RMS_PERCENTAGE to 0 to disable RMS divergence checks
         let buyUpdated = false, sellUpdated = false;
-        if (manager && GRID_COMPARISON.RMS_PERCENTAGE > 0) {
-            const limit = GRID_COMPARISON.RMS_PERCENTAGE / GRID_CONSTANTS.RMS_PERCENTAGE_SCALE;  // Convert percentage threshold to decimal
+        if (manager && (manager.config?.gridLimits?.GRID_COMPARISON?.RMS_PERCENTAGE ?? GRID_COMPARISON.RMS_PERCENTAGE) > 0) {
+            const limit = (manager.config?.gridLimits?.GRID_COMPARISON?.RMS_PERCENTAGE ?? GRID_COMPARISON.RMS_PERCENTAGE) / GRID_CONSTANTS.RMS_PERCENTAGE_SCALE;
 
             if (buyMetric > limit) {
                 // RC-3: Use Set for automatic duplicate prevention
@@ -1593,7 +1597,7 @@ class Grid {
             if (idx === -1) return false;
             const threshold = getSingleDustThreshold(
                 idealSizes[idx],
-                GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE
+                manager.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE
             );
             return p.size < threshold;
         });

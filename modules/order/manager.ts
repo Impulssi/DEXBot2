@@ -26,7 +26,6 @@ const {
     COW_ACTIONS,
     DEFAULT_CONFIG,
     TIMING,
-    GRID_LIMITS,
     LOG_LEVEL,
     PIPELINE_TIMING,
     COW_PERFORMANCE
@@ -153,13 +152,14 @@ class COWRebalanceEngine {
 
         const { targetGrid, boundaryIdx: targetBoundary } = this.strategy.calculateTargetGrid(strategyParams);
 
+        let dustThresholdPercent = this.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE;
         const reconcileResult = reconcileGrid(
             masterGrid,
             targetGrid,
             targetBoundary,
             {
                 logger: (msg, level) => this.logger?.log(msg, level),
-                dustThresholdPercent: GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE
+                dustThresholdPercent
             }
         );
 
@@ -478,7 +478,12 @@ class OrderManager {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.marketName = this.config.market || (this.config.assetA && this.config.assetB ? `${this.config.assetA}/${this.config.assetB}` : null);
         const logFile = config.logFile || undefined;
-        this.logger = new Logger('DEXBot', { level: LOG_LEVEL, logFile });
+        const loggingConfig = this.config.logging;
+        this.logger = new Logger('DEXBot', {
+            level: loggingConfig?.level ?? LOG_LEVEL,
+            logFile,
+            configOverride: loggingConfig?.config ?? undefined
+        });
         this.logger.marketName = this.marketName;
         this.orders = Object.freeze(new Map());
         this.boundaryIdx = null;
@@ -1175,8 +1180,9 @@ class OrderManager {
         const buyCount = Math.max(0, toFiniteNumber(this.config.activeOrders?.buy, 1));
 
         // Get minimum sizes for validation
-        const minSellSize = getMinAbsoluteOrderSize(ORDER_TYPES.SELL, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
-        const minBuySize = getMinAbsoluteOrderSize(ORDER_TYPES.BUY, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
+        const minOrderSizeFactor = this.config?.gridLimits?.MIN_ORDER_SIZE_FACTOR;
+        const minSellSize = getMinAbsoluteOrderSize(ORDER_TYPES.SELL, this.assets, minOrderSizeFactor);
+        const minBuySize = getMinAbsoluteOrderSize(ORDER_TYPES.BUY, this.assets, minOrderSizeFactor);
 
         // Use integer arithmetic for size comparisons to match blockchain behavior
         const sellPrecision = this.assets?.assetA?.precision;
@@ -1377,7 +1383,7 @@ class OrderManager {
         if (!this.assets || !hasValidAccountTotals(this.accountTotals)) {
             return { isValid: true, reason: 'Skipped: missing assets or totals' };
         }
-        return checkFundDrift(this.orders, this.accountTotals, this.assets);
+        return checkFundDrift(this.orders, this.accountTotals, this.assets, this.config?.gridLimits ?? null);
     }
 
     /**
@@ -1475,7 +1481,7 @@ class OrderManager {
     reconcileGrid(targetGrid, targetBoundary) {
         return reconcileGrid(this.orders, targetGrid, targetBoundary, {
             logger: (msg, level) => this.logger.log(msg, level),
-            dustThresholdPercent: GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE
+            dustThresholdPercent: this.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE
         });
     }
 

@@ -285,7 +285,7 @@ function validateWorkingGridFunds(workingGrid: any, projectedFunds: any, precisi
  * @param {Object} assets - Asset metadata
  * @returns {Object} Drift check result
  */
-function checkFundDrift(orders: Map<string, any>, accountTotals: any, assets: any = null) {
+function checkFundDrift(orders: Map<string, any>, accountTotals: any, assets: any = null, gridLimits: any = null) {
     let gridBuy = 0, gridSell = 0;
     for (const order of Array.from(orders.values())) {
         const size = toFiniteNumber(order.size);
@@ -315,7 +315,8 @@ function checkFundDrift(orders: Map<string, any>, accountTotals: any, assets: an
 
     const precisionSlackBuy = getPrecisionSlack(buyPrecision);
     const precisionSlackSell = getPrecisionSlack(sellPrecision);
-    const percentTolerance = GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE / 100;
+    const fundInvariantTolerance = gridLimits?.FUND_INVARIANT_PERCENT_TOLERANCE ?? GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE;
+    const percentTolerance = fundInvariantTolerance / 100;
 
     const allowedDriftBuy = Math.max(precisionSlackBuy, actualBuy * percentTolerance);
     const allowedDriftSell = Math.max(precisionSlackSell, actualSell * percentTolerance);

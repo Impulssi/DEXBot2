@@ -872,7 +872,12 @@ function validateIndexes(grid, indexes) {
 // SECTION 9: ORDER COMPARISON & DELTA
 // ================================================================================
 
-const ORDER_RELATIVE_TOLERANCE = Number(GRID_LIMITS.RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT) / 100;
+function _getRelativeTolerance(configOverride?: Record<string, any>): number {
+    const raw = configOverride?.gridLimits?.RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT
+        ?? GRID_LIMITS.RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT;
+    return Number(raw) / 100;
+}
+const ORDER_RELATIVE_TOLERANCE = _getRelativeTolerance();
 
 function getDecimalPlaces(value) {
     const numeric = Number(value);
@@ -1096,11 +1101,13 @@ function getSideBudget(side, funds, config, totalTarget) {
     const isBuy = side === 'buy';
     const allocated = isBuy ? (funds.allocatedBuy || 0) : (funds.allocatedSell || 0);
 
+    const btsReservationMultiplier = config?.feeParams?.BTS_RESERVATION_MULTIPLIER ?? FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
+
     const isBtsSide = (isBuy && config.assetB === 'BTS') || (!isBuy && config.assetA === 'BTS');
     if (isBtsSide && allocated > 0) {
         const btsFees = MathUtils.calculateOrderCreationFees(
             config.assetA, config.assetB, totalTarget,
-            FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER
+            btsReservationMultiplier
         );
         return Math.max(0, allocated - btsFees);
     }
@@ -1109,7 +1116,7 @@ function getSideBudget(side, funds, config, totalTarget) {
     if (!isBtsSide && allocated > 0 && funds.btsBalance) {
         const formulaBudget = MathUtils.calculateOrderCreationFees(
             config.assetA, config.assetB, totalTarget,
-            FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER
+            btsReservationMultiplier
         );
         const configMin = config.min_BTS_value;
         const effectiveMin = (configMin > 0) ? configMin : formulaBudget;

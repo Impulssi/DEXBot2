@@ -384,7 +384,7 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
  * @param {Object} [activeOrders=null] - Active order counts {buy, sell} for BTS reservation calculation
  * @returns {number} Available funds for the side (0 if side invalid or insufficient funds)
  */
-function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders = null, configMinBtsValue = null) {
+function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders = null, configMinBtsValue = null, feeParams = null) {
     if (side !== 'buy' && side !== 'sell') return 0;
 
     const chainFree = toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree);
@@ -392,12 +392,14 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     const btsFeesOwed = toFiniteNumber(funds.btsFeesOwed);
     const btsSide = (assetA === 'BTS') ? 'sell' : (assetB === 'BTS') ? 'buy' : null;
 
+    const btsReservationMultiplier = feeParams?.BTS_RESERVATION_MULTIPLIER ?? FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
+
     let btsFeesReservation = 0;
     if (btsSide === side && activeOrders) {
         const targetBuy = Math.max(0, toFiniteNumber(activeOrders?.buy, 1));
         const targetSell = Math.max(0, toFiniteNumber(activeOrders?.sell, 1));
         const totalTargetOrders = targetBuy + targetSell;
-        btsFeesReservation = calculateOrderCreationFees(assetA, assetB, totalTargetOrders, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER);
+        btsFeesReservation = calculateOrderCreationFees(assetA, assetB, totalTargetOrders, btsReservationMultiplier);
     }
 
     const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
@@ -407,7 +409,7 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
         const targetBuy = Math.max(0, toFiniteNumber(activeOrders?.buy, 1));
         const targetSell = Math.max(0, toFiniteNumber(activeOrders?.sell, 1));
         const totalTargetOrders = targetBuy + targetSell;
-        const formulaBudget = calculateOrderCreationFees(assetA, assetB, totalTargetOrders, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER);
+        const formulaBudget = calculateOrderCreationFees(assetA, assetB, totalTargetOrders, btsReservationMultiplier);
         const effectiveMin = (configMinBtsValue > 0) ? configMinBtsValue : formulaBudget;
         const btsFree = toFiniteNumber(funds?.btsBalance?.free, 0);
         const btsDeficit = Math.max(0, effectiveMin - btsFree);

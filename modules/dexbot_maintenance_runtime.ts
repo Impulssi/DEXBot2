@@ -7,7 +7,7 @@ const { BitShares } = require('./bitshares_client');
 const chainOrders = require('./chain_orders');
 const { Config, hasOpenOrdersSyncLoopMsSet, getOpenOrdersSyncLoopMs } = require('./config');
 const Grid = require('./order/grid');
-const { ORDER_STATES, ORDER_TYPES, TIMING, GRID_LIMITS, FEE_PARAMETERS, BTS_PRECISION, NATIVE_CLIENT } = require('./constants');
+const { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } = require('./constants');
 const { PATHS } = require('./paths');
 const { buildRuntimeScriptPath, isDistCodeRoot } = require('./launcher/runtime_entry');
 const { applyGridDivergenceCorrections, loadAmaCenterSnapshot, sleep } = require('./order/utils/system');
@@ -968,6 +968,9 @@ async function performPeriodicGridChecks(bot) {
  * @returns {boolean} True if the sync loop is enabled in TIMING config
  */
 function isOpenOrdersSyncLoopEnabled(bot) {
+    if (bot.config?.timing?.openOrdersSyncLoopEnabled !== undefined) {
+        return !!bot.config.timing.openOrdersSyncLoopEnabled;
+    }
     return !!TIMING.OPEN_ORDERS_SYNC_LOOP_ENABLED;
 }
 
@@ -1048,7 +1051,7 @@ async function stopOpenOrdersSyncLoop(bot) {
  * @param {import('./dexbot_class').DEXBot} bot
  */
 function setupBlockchainFetchInterval(bot) {
-    let intervalMin = TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN;
+    let intervalMin = bot.config?.timing?.BLOCKCHAIN_FETCH_INTERVAL_MIN;
 
     // Use the per-instance override if set (e.g., from fund registry shared-account detection)
     if (typeof bot._blockchainFetchIntervalMin === 'number' && Number.isFinite(bot._blockchainFetchIntervalMin) && bot._blockchainFetchIntervalMin > 0) {
@@ -1212,7 +1215,7 @@ async function releaseMarketAdapterRuntime(bot, botId, context = 'shutdown') {
  * @returns {number|null} Remaining delay in ms, or null if no dust orders pending
  */
 function getPendingDustDelayMs(ctx) {
-    const delaySec = GRID_LIMITS.DUST_CANCEL_DELAY_SEC;
+    const delaySec = ctx?.config?.gridLimits?.DUST_CANCEL_DELAY_SEC;
     if (
         !ctx?._dustSinceMap ||
         ctx._dustSinceMap.size === 0 ||
@@ -1533,7 +1536,7 @@ function recordDustFirstSeen(bot: any, healthResult: any) {
  * @returns {Promise<import('./types').DustCancelResult>}
  */
 async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } = {}) {
-    const delaySec = GRID_LIMITS.DUST_CANCEL_DELAY_SEC;
+    const delaySec = bot.config?.gridLimits?.DUST_CANCEL_DELAY_SEC;
     if (!Number.isFinite(delaySec) || delaySec < 0) {
         clearDustMaintenanceTimer(bot);
         return { cancelledCount: 0, batchResult: null };
@@ -1652,7 +1655,7 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
     scheduleDustMaintenanceCheck(bot);
 
     if (cancelledCount > 0 && bot._dustSinceMap.size === 0 && !bot._shuttingDown && !bot._dustMaintenanceTimer) {
-        const delayMs = GRID_LIMITS.DUST_CANCEL_DELAY_SEC * 1_000;
+        const delayMs = bot.config?.gridLimits?.DUST_CANCEL_DELAY_SEC * 1_000;
         bot._dustMaintenanceTimer = setTimeout(() => {
             bot._dustMaintenanceTimer = null;
             if (bot._shuttingDown || !bot.manager?._fillProcessingLock) return;
@@ -1688,7 +1691,7 @@ function clearDustMaintenanceTimer(bot) {
 function scheduleDustMaintenanceCheck(bot) {
     clearDustMaintenanceTimer(bot);
 
-    const delaySec = GRID_LIMITS.DUST_CANCEL_DELAY_SEC;
+    const delaySec = bot.config?.gridLimits?.DUST_CANCEL_DELAY_SEC;
     if (
         bot._shuttingDown ||
         !bot.manager ||
@@ -1853,7 +1856,8 @@ async function checkBtsBalanceAndAcquire(bot) {
     if (bot.config.dryRun) return;
     if (bot.config.assetA === 'BTS' || bot.config.assetB === 'BTS') return;
 
-    const cooldownMs = TIMING.BTS_ACQUIRE_COOLDOWN_MIN * 60 * 1000;
+    const cooldownMin = bot.config?.timing?.BTS_ACQUIRE_COOLDOWN_MIN;
+    const cooldownMs = cooldownMin * 60 * 1000;
     const now = Date.now();
 
     // Prune every expired entry in the map, not just the current bot's.
@@ -1877,18 +1881,21 @@ async function checkBtsBalanceAndAcquire(bot) {
     const targetSell = Math.max(0, bot.config.activeOrders?.sell ?? 1);
     const totalTarget = targetBuy + targetSell;
 
+    const btsReservationMultiplier = bot.config?.feeParams?.BTS_RESERVATION_MULTIPLIER;
     const minBtsVal = calculateOrderCreationFees(
         bot.config.assetA, bot.config.assetB, totalTarget,
-        FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER
+        btsReservationMultiplier
     );
     if (minBtsVal <= 0) return;
 
     const effectiveMin = (bot.config.min_BTS_value > 0) ? bot.config.min_BTS_value : minBtsVal;
     const btsFree = bot.manager.btsBalance.free || 0;
-    const triggerAt = effectiveMin * FEE_PARAMETERS.BTS_ACQUIRE_THRESHOLD;
+    const btsAcquireThreshold = bot.config?.feeParams?.BTS_ACQUIRE_THRESHOLD;
+    const triggerAt = effectiveMin * btsAcquireThreshold;
     if (btsFree >= triggerAt) return;
 
-    const target = effectiveMin * FEE_PARAMETERS.BTS_ACQUIRE_TARGET_MULTIPLIER;
+    const btsAcquireTargetMultiplier = bot.config?.feeParams?.BTS_ACQUIRE_TARGET_MULTIPLIER;
+    const target = effectiveMin * btsAcquireTargetMultiplier;
     const deficit = Math.max(0, target - btsFree);
     bot._log(
         `[BTS-ACQ] BTS balance ${Format.formatAmount8(btsFree)} below threshold ${Format.formatAmount8(triggerAt)}. ` +
@@ -1959,7 +1966,8 @@ async function acquireBts(bot, deficit) {
     candidates.sort((a, b) => a.priceImpact - b.priceImpact);
     const best = candidates[0];
 
-    const minReceive = best.expectedReceive * (1 - FEE_PARAMETERS.POOL_SLIPPAGE_TOLERANCE);
+    const poolSlippageTolerance = bot.config?.feeParams?.POOL_SLIPPAGE_TOLERANCE;
+    const minReceive = best.expectedReceive * (1 - poolSlippageTolerance);
     const sellInt = floatToBlockchainInt(best.sellAmount, best.asset.precision);
     const minReceiveInt = floatToBlockchainInt(minReceive, BTS_PRECISION);
     const op = chainOrders.buildLiquidityPoolExchangeOp(bot.accountId, best.poolId, sellInt, best.asset.id, minReceiveInt, coreAssetId);

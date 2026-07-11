@@ -1496,4 +1496,6 @@ export = {
     normalizeNativeMarketHistoryCandles,
     fetchNativeMarketHistorySince,
     _setBitsharesClientForTests: setBitsharesClientForTests,
+    loadMarketAdapterSettings,
+    findPairForBot,
 };

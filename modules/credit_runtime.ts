@@ -992,14 +992,14 @@ class CreditRuntime {
         const feeRate = toFiniteNumber(offer?.fee_rate, 0) || 0;
         const maxDurationSeconds = toFiniteNumber(offer?.max_duration_seconds, 0) || 0;
         if (feeRate <= 0 || maxDurationSeconds <= 0) return 0;
-        const feeRateDenom = this.bot?.config?.FEE_PARAMETERS?.GRAPHENE_FEE_RATE_DENOM ?? FEE_PARAMETERS.GRAPHENE_FEE_RATE_DENOM;
+        const feeRateDenom = this.bot?.config?.feeParams?.GRAPHENE_FEE_RATE_DENOM ?? FEE_PARAMETERS.GRAPHENE_FEE_RATE_DENOM;
         const flatFeePercent = feeRate / feeRateDenom;
         const durationDays = maxDurationSeconds / 86400;
         return flatFeePercent / durationDays;
     }
 
     _getDefaultMaxFeeRatePerDay() {
-        return this.bot?.config?.FEE_PARAMETERS?.DEFAULT_MAX_FEE_RATE_PER_DAY ?? FEE_PARAMETERS.DEFAULT_MAX_FEE_RATE_PER_DAY;
+        return this.bot?.config?.feeParams?.DEFAULT_MAX_FEE_RATE_PER_DAY ?? FEE_PARAMETERS.DEFAULT_MAX_FEE_RATE_PER_DAY;
     }
 
     _validateCreditPolicy(policy, offer, deal = null) {

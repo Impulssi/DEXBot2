@@ -67,7 +67,7 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, PIPELINE_TIMING, TIMING, FEE_PARAMETERS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS } = require('../constants');
 const {
     calculateAvailableFundsValue,
     getAssetFees,
@@ -186,7 +186,7 @@ class Accountant {
                 createFee: Math.max(0, toFiniteNumber(fees?.createFee, 0)),
                 updateFee: Math.max(0, toFiniteNumber(fees?.updateFee, 0)),
                 cancelFee: Math.max(0, toFiniteNumber(fees?.cancelFee, 0)),
-                makerFeeDiscountPercent: Math.max(0, toFiniteNumber(fees?.makerFeeDiscountPercent, FEE_PARAMETERS.MAKER_REFUND_PERCENT))
+                makerFeeDiscountPercent: Math.max(0, toFiniteNumber(fees?.makerFeeDiscountPercent, this.manager?.config?.feeParams?.MAKER_REFUND_PERCENT ?? FEE_PARAMETERS.MAKER_REFUND_PERCENT))
             };
         } catch (err: any) {
             this.manager?.logger?.log?.(`[FEE] Failed to load BTS fee schedule: ${err?.message || err}; using fallback defaults`, 'warn');
@@ -194,7 +194,7 @@ class Accountant {
                 createFee: 0,
                 updateFee: 0,
                 cancelFee: 0,
-                makerFeeDiscountPercent: FEE_PARAMETERS.MAKER_REFUND_PERCENT
+                makerFeeDiscountPercent: this.manager?.config?.feeParams?.MAKER_REFUND_PERCENT ?? FEE_PARAMETERS.MAKER_REFUND_PERCENT
             };
         }
     }
@@ -418,8 +418,8 @@ class Accountant {
 
          // STEP 6: Calculate available funds (what we can spend right now)
           // Uses utils::calculateAvailableFundsValue which deducts committe amounts
-          mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders, mgr.config.min_BTS_value);
-          mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders, mgr.config.min_BTS_value);
+          mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders, mgr.config.min_BTS_value, mgr.config?.feeParams ?? null);
+          mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders, mgr.config.min_BTS_value, mgr.config?.feeParams ?? null);
 
          // Ensure percentage-based allocations are applied to the newly calculated totals
          if (typeof mgr.applyBotFundsAllocation === 'function') {
@@ -491,7 +491,7 @@ class Accountant {
           }
          const precisionSlackBuy = getPrecisionSlack(buyPrecision);
          const precisionSlackSell = getPrecisionSlack(sellPrecision);
-         const PERCENT_TOLERANCE = GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE / 100;
+          const PERCENT_TOLERANCE = (mgr.config?.gridLimits?.FUND_INVARIANT_PERCENT_TOLERANCE) / 100;
 
          let hasViolation = false;
 
