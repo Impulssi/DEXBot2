@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.14] - 2026-07-11 - Per-Bot Runtime Settings Override Pipeline & Doc Alignment
+
+### 2026-07-11
+
+- **Feat**: centralized per-bot runtime settings with override pipeline — bot configs previously read grid limits, fee params, timing, and increment bounds directly from `constants.ts`. A new `runtime_settings.ts` merge pipeline resolves settings from constants → market adapter globals → pair overrides → per-bot overrides. CamelCase-to-SCREAMING_CASE key conversion and nested object support. New `test_runtime_settings.ts` covers defaults, overrides, nested objects, and minimal config (`4e8ccc91`).
+- **Docs**: comprehensive doc sweep aligning 13 documentation files with current codebase state — architecture diagrams, logging references, workflow procedures, security details, evolutionary history, COW invariants, credential security, DEXBot comparison, fund accounting, grid recalculation, and all four READMEs updated for accuracy and readability (`54e03c21`).
+- **Fix**: correct TOC anchor links for emoji-prefixed headings in README — GitHub strips emoji from headings, adding a leading hyphen to anchors. All 10 Contents links now point to the correct `#-heading` slug (`4c4eeae1`).
+- **Docs**: improve README scannability across four READMEs — added tables of contents, "Which section do I need?" quick-reference tables, and wrapped large parameter/file reference blocks in `<details>` collapsible sections for `README.md`, `claw/README.md`, `docs/MPA_CREDIT_USAGE.md`, and `market_adapter/README.md` (`1638a887`).
+- **Chore**: version bumped to 1.0.14 across all manifests.
+
 ## [1.0.13] - 2026-07-10 - Grid Persistence Safety, Dust Pipeline Fix & Net Inventory Lots
 
 ### 2026-07-10

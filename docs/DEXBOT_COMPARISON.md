@@ -1,7 +1,7 @@
 # DEXBot vs DEXBot2 — Detailed Comparison Report
 
 > **Date:** 2026-07-11 *(metrics refreshed against local source trees)*
-> **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.0.13).
+> **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.0.14).
 > **Audience:** Developers, contributors, and operators evaluating or migrating between the two projects.
 
 ---
@@ -36,7 +36,7 @@
 
 | Attribute | DEXBot (original) | DEXBot2 |
 |---|---|---|
-| **Release Track** | 1.0.0 | v1.0.13 |
+| **Release Track** | 1.0.0 | v1.0.14 |
 | **Language** | Python 3.6+ | TypeScript 5.x |
 | **Status** | Released 1.0.0, unmaintained | Active development |
 | **Last Repo Activity** | May 23, 2020 | 2026-07-10 |
@@ -87,17 +87,17 @@ DEXBot brings a full Python desktop GUI and a strategy plugin model. DEXBot2 is 
 
 ```
 ┌─────────────────────────────────────────────┐
-│              WorkerInfrastructure            │
-│          (threading.Thread)                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-│  │ Worker 1 │  │ Worker 2 │  │ Worker N │  │
-│  │(Strategy)│  │(Strategy)│  │(Strategy)│  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  │
-│       │              │              │         │
-│  ┌────▼──────────────▼──────────────▼──────┐ │
-│  │         BitShares WebSocket Events       │ │
-│  │  (ontick / onMarketUpdate / onAccount)   │ │
-│  └──────────────────────────────────────────┘ │
+│            WorkerInfrastructure             │
+│             (threading.Thread)              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │ Worker 1 │  │ Worker 2 │  │ Worker N │   │
+│  │(Strategy)│  │(Strategy)│  │(Strategy)│   │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘   │
+│       │             │             │         │
+│  ┌────▼─────────────▼─────────────▼──────┐  │
+│  │     BitShares WebSocket Events        │  │
+│  │ (ontick / onMarketUpdate / onAccount) │  │
+│  └───────────────────────────────────────┘  │
 └─────────────────────────────────────────────┘
          │ Config (YAML)    │ State (SQLite)
 ```
@@ -116,25 +116,25 @@ DEXBot brings a full Python desktop GUI and a strategy plugin model. DEXBot2 is 
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                    DEXBot (dexbot_class.ts)               │
-│              Trading Loop + Lifecycle Manager             │
+│                 DEXBot (dexbot_class.ts)                 │
+│             Trading Loop + Lifecycle Manager             │
 │  ┌────────────────────────────────────────────────────┐  │
-│  │                   OrderManager                      │  │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────┐ ┌──────────┐  │  │
-│  │  │Accountant│ │Strategy  │ │Grid  │ │SyncEngine│  │  │
-│  │  │(Funds)   │ │(Boundary │ │(Geo  │ │(Chain    │  │  │
-│  │  │          │ │ Crawl)   │ │ Grid)│ │ Reconcile│  │  │
-│  │  └──────────┘ └──────────┘ └──────┘ └──────────┘  │  │
-│  │                                                      │  │
-│  │         Master Grid (Immutable Orders Map)           │  │
-│  │              ↓ (COW clone on rebalance)              │  │
-│  │         Working Grid (Isolated Planning Copy)        │  │
-│  │              ↓ (atomic commit on success)            │  │
+│  │                    OrderManager                    │  │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────┐  ┌──────────┐  │  │
+│  │  │Accountant│ │  Strategy│ │  Grid│  │SyncEngine│  │  │
+│  │  │(Funds)   │ │(Boundary │ │(Geo  │  │(Chain    │  │  │
+│  │  │          │ │ Crawl)   │ │Grid) │  │ Reconcile│  │  │
+│  │  └──────────┘ └──────────┘ └──────┘  └──────────┘  │  │
+│  │                                                    │  │
+│  │         Master Grid (Immutable Orders Map)         │  │
+│  │             ↓ (COW clone on rebalance)             │  │
+│  │       Working Grid (Isolated Planning Copy)        │  │
+│  │            ↓ (atomic commit on success)            │  │
 │  └────────────────────────────────────────────────────┘  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
-│  │ BitShares    │  │ NodeManager  │  │ MarketAdapter │   │
-│  │ Client       │  │ (Failover)   │  │ (Real-time)   │   │
-│  └──────────────┘  └──────────────┘  └──────────────┘   │
+│   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│   │BitShares     │  │NodeManager   │  │MarketAdapter │   │
+│   │Client        │  │(Failover)    │  │(Real-time)   │   │
+│   └──────────────┘  └──────────────┘  └──────────────┘   │
 └──────────────────────────────────────────────────────────┘
          │ Config (JSON)    │ State (JSON flat files)
 ```
@@ -782,7 +782,7 @@ Where:
 
 | Metric | DEXBot | DEXBot2 |
 |---|---|---|
-| **Release Track** | 1.0.0 | v1.0.13 |
+| **Release Track** | 1.0.0 | v1.0.14 |
 | **Active Since** | ~2018 | December 2025 |
 | **Last Commit** | May 23, 2020 | 2026-07-10 |
 | **Total Commits** | 2281 | 1713 at current HEAD |
