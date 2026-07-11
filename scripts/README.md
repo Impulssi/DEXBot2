@@ -133,6 +133,31 @@ npm run version:check
 npm run version:sync
 ```
 
+### Kibana Candle Diagnostics
+**File:** `diagnose-kibana-candles.ts`
+**Purpose:** Fetch raw Kibana LP candles for a specific pool to verify trading activity.
+```bash
+tsx scripts/diagnose-kibana-candles.ts
+```
+
+### Pool History Diagnostics
+**File:** `diagnose-pool-history.ts`
+**Purpose:** Inspect raw BitShares pool history API responses.
+```bash
+# Inspect pool history (default pool 1.19.133)
+tsx scripts/diagnose-pool-history.ts
+
+# Custom pool, limit, and time range
+tsx scripts/diagnose-pool-history.ts --pool 1.19.x --limit 100 --hours 48 --maxPages 5
+```
+
+### Print Grid Sample
+**File:** `print_grid.ts`
+**Purpose:** Demonstrate the grid structure — shows consecutive price levels with percentage differences between adjacent slots.
+```bash
+tsx scripts/print_grid.ts
+```
+
 ---
 
 ## 🔍 GIT & DEVELOPMENT WORKFLOW
@@ -169,6 +194,27 @@ bash scripts/git-viewer.sh
 
 ### Test Suite Setup
 Tests run with native Node `assert` — no test framework needed. See [tests/README.md](../tests/README.md) for details.
+
+### Repository Statistics Analyzer
+**File:** `analyze-git.ts`
+**Purpose:** Analyze git history and generate a chart of lines added vs deleted by file.
+```bash
+tsx scripts/analyze-git.ts
+```
+
+### Credit Renewal Test
+**File:** `test-credit-renewal.ts`
+**Purpose:** Test credit offer renewal for a specific bot against the live chain.
+```bash
+npm run test:credit-renewal
+```
+
+### Browser Bundle Verification
+**File:** `verify-browser-bundle.ts`
+**Purpose:** Verify that the browser-safe surface actually bundles for the web (source-level and dist-level checks).
+```bash
+npm run verify:browser-bundle
+```
 
 ---
 
@@ -226,7 +272,7 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 |:---|:---|:---|
 | `npm test` | `scripts/run-tests.ts` | Run full test suite (excludes live-chain tests) |
 | `npm run test:live` | `scripts/run-tests.ts` | Run full test suite including live-chain tests |
-| `npm run typecheck` | — | TypeScript type checking (`tsc --noEmit`) |
+| `npm run typecheck` | — | TypeScript type checking (`tsc --noEmit || true`) |
 | `npm run build` | — | Clean + compile TypeScript |
 | `npm run clean` | `scripts/clean-dist.js` | Remove compiled `dist/` output |
 | `npm run ptest` | `scripts/ptest.sh` | Sync local test → origin/test |
@@ -245,6 +291,8 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 | `npm run native:serial-snapshots` | `tests/test_native_serial_ops.ts` | Pin wire-format bytes for signed operation types |
 | `npm run native:ecc-invariants` | `tests/test_native_ecc.ts` | Validate ECDH key derivation, ECDSA signing, WIF, brain key, and hash functions |
 | `npm run native:corpus` | `scripts/generate_mainnet_corpus_report.ts` | Generate `profiles/native_validation/mainnet_corpus_report.json` by reserializing recent mainnet transactions through the native serializer and diffing against the chain's own `get_transaction_hex` output (and `block.transaction_ids` when the node exposes them) |
+| `npm run test:credit-renewal` | `scripts/test-credit-renewal.ts` | Test credit offer renewal for a specific bot |
+| `npm run verify:browser-bundle` | `scripts/verify-browser-bundle.ts` | Verify browser-safe surface bundles correctly |
 
 ---
 

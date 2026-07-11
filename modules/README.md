@@ -36,6 +36,7 @@ modules/
 ├── config.ts                      load-time process.env snapshot
 ├── env.ts                         isBrowser/hasProcess detection
 ├── runtime.ts                     process abstraction singleton
+├── runtime_settings.ts            per-bot runtime settings resolver
 ├── paths.ts                       guarded path resolution
 ├── path_api.ts                    portable path abstraction for ESM/browser
 ├── settings_merge.ts              consolidated settings merge
@@ -83,6 +84,7 @@ modules/
 │   ├── runner.ts                  order execution runner
 │   ├── index.ts                   barrel export
 │   ├── logger.ts                  order-scoped logging
+│   ├── logger_state.ts            logger state management
 │   ├── processed_fill_store.ts    fill deduplication persistence
 │   ├── async_lock.ts              async mutex
 │   ├── format.ts                  numeric formatting helpers
@@ -91,17 +93,23 @@ modules/
 │
 ├── launcher/                      process lifecycle (PM2, unlock, isolated)
 │   ├── bot_supervisor.ts          per-bot process supervision
+│   ├── child_env.ts               child process environment
 │   ├── credential_bootstrap.ts    daemon startup
 │   ├── credential_daemon.ts       signing daemon
 │   ├── credential_secret.ts       secret management
 │   ├── foreign_cred_daemon.ts     external daemon client
+│   ├── headless_password.ts       headless password storage
 │   ├── launch_modes.ts            monolithic vs isolated routing
 │   ├── market_adapter_runtime.ts  adapter process lifecycle
+│   ├── market_adapter_watchdog.ts adapter process watchdog
+│   ├── monolithic_runtime.ts      monolithic bot runtime
 │   ├── runtime_entry.ts           bot process entry
+│   ├── status_reporting.ts        process status reporter
 │   └── supervisor_control.ts      supervisor orchestration
 │
 ├── bitshares-native/              native blockchain client
 │   ├── chain_client.ts            blockchain read API
+│   ├── index.ts                   barrel export
 │   ├── signing_client.ts          transaction signing
 │   ├── transport.ts               WebSocket transport
 │   ├── subscriptions.ts           event subscriptions
