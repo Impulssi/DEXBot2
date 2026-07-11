@@ -277,7 +277,25 @@ No. All existing `logger.log()` calls work unchanged.
 Defaults in `modules/constants.ts` → deep merged with `profiles/general.settings.json` → frozen (immutable).
 
 **Q: Can I customize logging per bot?**
-Via profiles, no — `general.settings.json` is global. The `Logger` constructor does accept a `configOverride` option for programmatic per-instance config, but this is not exposed through bot profiles.
+Yes — each bot entry in `profiles/bots.json` accepts an optional `logging` field:
+
+```json
+{
+  "name": "XRP-BTS",
+  "logging": {
+    "level": "debug",
+    "config": {
+      "json": { "enabled": true },
+      "categories": {
+        "fundChanges": { "enabled": false }
+      }
+    }
+  },
+  ...
+}
+```
+
+The per-bot `logging` is deep-merged on top of the global config from `general.settings.json`. See `modules/types.ts` (`BotLoggingOverrides`), `modules/runtime_settings.ts`, and `modules/order/manager.ts` for the wiring.
 
 **Q: What about PM2?**
 The logger auto-detects PM2 and suppresses file writes (PM2 captures stdout/stderr). File rotation is also suppressed under PM2.
