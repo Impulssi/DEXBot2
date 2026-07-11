@@ -15,14 +15,6 @@ node dexbot update
 ```
 *Note: Protects your `profiles/` directory and logs all changes to `profiles/logs/update.log`.*
 
-### Create PM2 Bot Symlinks
-**File:** `create-bot-symlinks.sh`
-**Purpose:** Create PM2 ecosystem config symlinks for each bot in `profiles/bots.json`.
-```bash
-# Creates profiles/<bot-name>.config.js -> profiles/ecosystem.config.js for each bot
-bash scripts/create-bot-symlinks.sh
-```
-
 ---
 
 ## 🧹 CLEANING & RESET (DANGER ZONE)
@@ -215,7 +207,6 @@ npm run test:credit-renewal
 ```bash
 npm run verify:browser-bundle
 ```
-
 ---
 
 ## 🌳 BRANCH SYNCHRONIZATION
@@ -333,8 +324,6 @@ For understanding the systems these scripts interact with:
 - **Fund Accounting**: See [docs/FUND_MOVEMENT_AND_ACCOUNTING.md](../docs/FUND_MOVEMENT_AND_ACCOUNTING.md)
 - **Grid Divergence**: See [docs](../docs/README.md) for RMS threshold explanations
 - **Logging System**: See [docs/LOGGING.md](../docs/LOGGING.md) for log configuration and levels
-
----
 
 ## ⌨️ TERMINAL PRODUCTIVITY
 
