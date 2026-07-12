@@ -272,6 +272,13 @@ assert.deepStrictEqual(
     assert.strictEqual(ama.fastPeriod, 2.73, 'fractional fastPeriod from bot config should be preserved');
 }
 
+{
+    const ama = resolveAmaForBot({ gridPrice: 'ama2' });
+    assert.strictEqual(ama.slowPeriod, MARKET_ADAPTER.AMAS.AMA2.slowPeriod, 'ama2 keyword should resolve to built-in AMA2 slowPeriod (102.4)');
+    assert.strictEqual(ama.fastPeriod, MARKET_ADAPTER.AMAS.AMA2.fastPeriod, 'ama2 keyword should resolve to built-in AMA2 fastPeriod');
+    assert.strictEqual(ama.erPeriod, MARKET_ADAPTER.AMAS.AMA2.erPeriod, 'ama2 keyword should resolve to built-in AMA2 erPeriod');
+}
+
 assert.strictEqual(usesAmaGridPrice({ gridPrice: 'ama' }), true, 'ama should enable market adapter processing');
 assert.strictEqual(usesAmaGridPrice({ gridPrice: 'ama3' }), true, 'ama3 should enable market adapter processing');
 assert.strictEqual(usesAmaGridPrice({ gridPrice: '  AMA4  ' }), true, 'ama4 matching should be case-insensitive');
