@@ -8,8 +8,6 @@
  * This is intended as a seed generator for brand-new market_adapter files.
  * It does not rely on TradingView or Kibana.
  */
-
-const { createHash } = require('../../modules/crypto/sync');
 const { path } = require('../../modules/path_api');
 const { getStorage } = require('../../modules/storage');
 const storage = getStorage();
@@ -91,16 +89,6 @@ function sanitizeBotKeyPart(value) {
         .replace(/^-+|-+$/g, '') || 'bot';
 }
 
-function _stableBotId(entry) {
-    const stable = {
-        name: entry.name || '',
-        preferredAccount: entry.preferredAccount || '',
-        assetA: entry.assetA || entry.assetAId || '',
-        assetB: entry.assetB || entry.assetBId || '',
-    };
-    return createHash('sha256').update(JSON.stringify(stable)).digest('hex').slice(0, 8);
-}
-
 function loadBotNameIndex(botsFile) {
     try {
         if (!botsFile || !storage.exists(botsFile)) return [];
@@ -109,12 +97,7 @@ function loadBotNameIndex(botsFile) {
         const parsed = parseJsonWithComments(raw);
         const bots = Array.isArray(parsed?.bots) ? parsed.bots : [];
         return bots
-            .map((bot, index) => {
-                if (!bot.id) {
-                    bot = { ...bot, id: _stableBotId(bot) };
-                }
-                return { bot, index };
-            })
+            .map((bot, index) => ({ bot, index }))
             .filter(({ bot }) => bot && typeof bot === 'object' && bot.name);
     } catch (_err) {
         return [];

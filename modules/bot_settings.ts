@@ -2,7 +2,6 @@ const { getStorage } = require('./storage');
 const storage = getStorage();
 const { readBotsFileSync } = require('./bots_file_lock');
 const { parseJsonWithComments } = require('./order/utils/system');
-const { createHash } = require('./crypto/sync');
 const { createBotKey } = require('./account_orders');
 const { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } = require('./order/utils/math');
 const { resolveMinCollateralIncreaseThreshold } = require('./cr_planner');
@@ -46,21 +45,8 @@ function resolveRawBotEntries(settings: any): any[] {
     return [];
 }
 
-function _stableBotId(entry: any): string {
-    const stable = {
-        name: entry.name || '',
-        preferredAccount: entry.preferredAccount || '',
-        assetA: entry.assetA || entry.assetAId || '',
-        assetB: entry.assetB || entry.assetBId || '',
-    };
-    return createHash('sha256').update(JSON.stringify(stable)).digest('hex').slice(0, 8);
-}
-
 function normalizeBotEntry(entry: any, index: number = 0): any {
     const normalized = { active: entry.active === undefined ? true : !!entry.active, ...entry };
-    if (!normalized.id) {
-        normalized.id = _stableBotId(normalized);
-    }
     return { ...normalized, botIndex: index, botKey: createBotKey(normalized, index) };
 }
 
@@ -78,29 +64,7 @@ function selectActiveBotEntries(settings: any): any[] {
     return resolveRawBotEntries(settings).filter((entry: any) => entry && entry.active !== false);
 }
 
-/**
- * Persist auto-generated `id` fields back to the config object and save it.
- * Must be called with the live config object (not a file path) to avoid
- * TOCTOU races. Returns true if any ids were added (config was saved).
- *
- * @param {Object} config - The full bots.json config object ({bots: [...]})
- * @param {any[]} normalized - Normalized bot entries with generated ids
- * @param {string} configPath - Path to write the config to
- */
-function persistMissingIds(config: any, normalized: any[], configPath: string): boolean {
-    const botsArray = resolveRawBotEntries(config);
-    let changed = false;
-    for (let i = 0; i < normalized.length; i++) {
-        if (i < botsArray.length && normalized[i].id && !botsArray[i].id) {
-            botsArray[i].id = normalized[i].id;
-            changed = true;
-        }
-    }
-    if (changed) {
-        saveSettingsFile(config, configPath);
-    }
-    return changed;
-}
+
 
 function validateBotEntry(b: any, i: number, src: string): string | null {
     const problems = [];
@@ -283,6 +247,22 @@ function collectValidationIssues(entries: any[], sourceName: string): { errors: 
         }
     });
 
+    // Cross-bot validation: check for duplicate botKeys (sanitized names)
+    const seenKeys = new Map<string, number>();
+    entries.forEach((entry: any, index: number) => {
+        if (!entry.name) return;
+        const key = createBotKey(entry, index);
+        const existing = seenKeys.get(key);
+        if (existing !== undefined) {
+            errors.push(
+                `Bot[${existing}] '${entries[existing].name}' and Bot[${index}] '${entry.name}' ` +
+                `both produce botKey '${key}' — bot names must be unique.`
+            );
+        } else {
+            seenKeys.set(key, index);
+        }
+    });
+
     // Cross-bot validation: check if botFunds percentages sum > 100% per account
     const accountFunds: Record<string, { buy: number; sell: number; botNames: string[] }> = {};
     for (const entry of entries) {
@@ -317,12 +297,33 @@ function collectValidationIssues(entries: any[], sourceName: string): { errors: 
     return { errors, warnings };
 }
 
+function assertNoDuplicateBotKeys(entries: any[], sourceName: string): void {
+    const seenKeys = new Map<string, number>();
+    const duplicates: string[] = [];
+    for (const [index, entry] of entries.entries()) {
+        if (!entry.name) continue;
+        const key = createBotKey(entry, index);
+        const existing = seenKeys.get(key);
+        if (existing !== undefined) {
+            duplicates.push(
+                `Bot[${existing}] '${entries[existing].name}' and Bot[${index}] '${entry.name}' ` +
+                `both produce botKey '${key}' — bot names must be unique.`
+            );
+        } else {
+            seenKeys.set(key, index);
+        }
+    }
+    if (duplicates.length > 0) {
+        throw new Error(`Duplicate bot name(s) in ${sourceName}:\n${duplicates.map((e) => `  - ${e}`).join('\n')}`);
+    }
+}
+
 export = {
+    assertNoDuplicateBotKeys,
     collectValidationIssues,
     loadSettingsFile,
     normalizeBotEntry,
     normalizeBotEntries,
-    persistMissingIds,
     resolveRawBotEntries,
     saveSettingsFile,
     selectActiveBotEntries,

@@ -51,19 +51,19 @@ try {
         assert.strictEqual(sanitizeKey('!!'), 'bot');
     });
 
-    check('computeBotKey: with id uses id-based suffix', () => {
+    check('computeBotKey: named bot uses sanitized name only', () => {
         const key = computeBotKey({ name: 'XRP-BTS', id: '1.2.123' }, 0);
-        assert.strictEqual(key, 'xrp-bts-1-2-123');
+        assert.strictEqual(key, 'xrp-bts');
     });
 
-    check('computeBotKey: without id falls back to index', () => {
+    check('computeBotKey: named bot ignores index', () => {
         const key = computeBotKey({ name: 'XRP-BTS' }, 7);
-        assert.strictEqual(key, 'xrp-bts-7');
+        assert.strictEqual(key, 'xrp-bts');
     });
 
-    check('computeBotKey: missing name uses bot-N fallback', () => {
+    check('computeBotKey: missing name uses bot-N-index fallback, ignores id', () => {
         const withId = computeBotKey({ id: '1.2.5' }, 3);
-        assert.strictEqual(withId, 'bot-3-1-2-5');
+        assert.strictEqual(withId, 'bot-3-3');
         const withoutId = computeBotKey({}, 3);
         assert.strictEqual(withoutId, 'bot-3-3');
     });
@@ -104,12 +104,12 @@ try {
 
     check('resolveBotKey: name hit returns canonical key', () => {
         const key = resolveBotKey('XRP-BTS', botsFile);
-        assert.strictEqual(key, 'xrp-bts-1-2-100');
+        assert.strictEqual(key, 'xrp-bts');
     });
 
-    check('resolveBotKey: name hit (no id) uses index suffix', () => {
+    check('resolveBotKey: name hit (no id) uses sanitized name', () => {
         const key = resolveBotKey('HONEST-BTC', botsFile);
-        assert.strictEqual(key, 'honest-btc-1');
+        assert.strictEqual(key, 'honest-btc');
     });
 
     check('resolveBotKey: unknown name returns null', () => {
@@ -121,15 +121,15 @@ try {
         assert.strictEqual(resolveBotKey('', botsFile), null);
     });
 
-    const directFile = path.join(tmpDataDir, 'market_adapter_xrp-bts-1-2-100_1h.json');
+    const directFile = path.join(tmpDataDir, 'market_adapter_xrp-bts_1h.json');
     fs.writeFileSync(directFile, '{}');
 
     check('resolveCandleFile: direct key hit returns direct path', () => {
-        const p = resolveCandleFile('xrp-bts-1-2-100', '1h', tmpDataDir, botsFile);
+        const p = resolveCandleFile('xrp-bts', '1h', tmpDataDir, botsFile);
         assert.strictEqual(p, directFile);
     });
 
-    const fuzzyFile = path.join(tmpDataDir, 'market_adapter_honest-btc-1_1h.json');
+    const fuzzyFile = path.join(tmpDataDir, 'market_adapter_honest-btc_1h.json');
     fs.writeFileSync(fuzzyFile, '{}');
 
     check('resolveCandleFile: name-only falls back to canonical key lookup', () => {
@@ -144,9 +144,9 @@ try {
     check('resolveCandleFile: direct hit preferred over name resolution', () => {
         const dataDir2 = path.join(tmpRoot, 'data2');
         fs.mkdirSync(dataDir2, { recursive: true });
-        const directOnly = path.join(dataDir2, 'market_adapter_xrp-bts-1-2-100_1h.json');
+        const directOnly = path.join(dataDir2, 'market_adapter_xrp-bts_1h.json');
         fs.writeFileSync(directOnly, '{}');
-        const p = resolveCandleFile('xrp-bts-1-2-100', '1h', dataDir2, botsFile);
+        const p = resolveCandleFile('xrp-bts', '1h', dataDir2, botsFile);
         assert.strictEqual(p, directOnly);
     });
 

@@ -128,7 +128,6 @@ const {
     collectValidationIssues,
     loadSettingsFile,
     normalizeBotEntries,
-    persistMissingIds,
     resolveRawBotEntries,
     saveSettingsFile,
 } = require('./modules/bot_settings');
@@ -444,14 +443,6 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
             errors.forEach((e: any) => console.error(startupError(`  - ${e}`)));
             console.error(startupError('Fix the configuration problems in profiles/bots.json and restart. Aborting.'));
             process.exit(1);
-        }
-
-        // Phase 4: Persist newly-generated bot ids
-        try {
-            const { config: sourceConfig } = loadSettingsFile(PROFILES_BOTS_FILE, { silent: true });
-            persistMissingIds(sourceConfig, prepared, PROFILES_BOTS_FILE);
-        } catch (_err) {
-            // Best-effort; id persistence is non-critical
         }
 
         const needMaster = prepared.some((b: any) => b.active && b.preferredAccount);

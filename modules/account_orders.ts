@@ -91,33 +91,23 @@ function sanitizeKey(source) {
 
 /**
  * Generate a unique key for identifying a bot in storage.
- * Uses bot name or asset pair, sanitized.
- * When an `id` field is present (stable identifier), the key does NOT include
- * the array index, making it resilient to reordering in bots.json.
- * Falls back to indexed key for backward compatibility with legacy bots.
- *
- * Key formats (in priority order):
- *   - bot.id exists:  `${sanitizeKey(name)}-${sanitizeKey(id)}`
- *   - bot.name exists: `${sanitizeKey(name)}`
- *   - fallback:        `${sanitizeKey(identifier)}-${index}`
+ * Bot names are enforced unique, so for named bots the key is simply
+ * the sanitized name. Unnamed bots fall back to sanitized asset pair + index.
  *
  * @param {Object} bot - Bot configuration
- * @param {number} index - Index in bots array (used for legacy fallback)
+ * @param {number} index - Index in bots array (used for unnamed fallback)
  * @returns {string} Sanitized key
  */
 function createBotKey(bot, index) {
-  const identifier = bot && bot.name
-    ? bot.name
-    : bot && bot.assetA && bot.assetB
-      ? `${bot.assetA}/${bot.assetB}`
-      : bot && bot.assetAId && bot.assetBId
-        ? `${bot.assetAId}/${bot.assetBId}`
-        : `bot-${index}`;
-  const baseKey = sanitizeKey(identifier);
-  if (bot && bot.id) {
-    return `${baseKey}-${sanitizeKey(String(bot.id))}`;
+  if (bot && bot.name) {
+    return sanitizeKey(bot.name);
   }
-  return `${baseKey}-${index}`;
+  const identifier = bot && bot.assetA && bot.assetB
+    ? `${bot.assetA}/${bot.assetB}`
+    : bot && bot.assetAId && bot.assetBId
+      ? `${bot.assetAId}/${bot.assetBId}`
+      : `bot-${index}`;
+  return `${sanitizeKey(identifier)}-${index}`;
 }
 
 /**

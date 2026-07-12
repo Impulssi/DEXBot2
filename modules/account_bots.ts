@@ -83,6 +83,7 @@ const { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } = require('./
 
 const { parseJsonWithComments } = require('./order/utils/system');
 const { writeJSON } = require('./utils/fs_utils');
+const { assertNoDuplicateBotKeys } = require('./bot_settings');
 
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
@@ -116,6 +117,8 @@ function loadBotsConfig() {
 function saveBotsConfig(config: any, filePath: string): void {
     try {
         ensureProfilesDirectory(PROFILES_DIR);
+        const entries = Array.isArray(config?.bots) ? config.bots : Array.isArray(config) ? config : [];
+        if (entries.length >= 2) assertNoDuplicateBotKeys(entries, 'account_bots');
         writeJSON(filePath, config);
     } catch (err: any) {
         console.error('Failed to save bots configuration:', err.message);

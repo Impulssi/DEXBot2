@@ -73,18 +73,15 @@ function sanitizeKey(source) {
 }
 
 function createBotKey(bot, index) {
-  const identifier = bot && bot.name
-    ? bot.name
-    : bot && bot.assetA && bot.assetB
-      ? `${bot.assetA}/${bot.assetB}`
-      : bot && bot.assetAId && bot.assetBId
-        ? `${bot.assetAId}/${bot.assetBId}`
-        : `bot-${index}`;
-  const baseKey = sanitizeKey(identifier);
-  if (bot && bot.id) {
-    return `${baseKey}-${sanitizeKey(String(bot.id))}`;
+  if (bot && bot.name) {
+    return sanitizeKey(bot.name);
   }
-  return `${baseKey}-${index}`;
+  const identifier = bot && bot.assetA && bot.assetB
+    ? `${bot.assetA}/${bot.assetB}`
+    : bot && bot.assetAId && bot.assetBId
+      ? `${bot.assetAId}/${bot.assetBId}`
+      : `bot-${index}`;
+  return `${sanitizeKey(identifier)}-${index}`;
 }
 
 function hasOrderGrid(data) {
@@ -155,17 +152,9 @@ function computeAsymmetricBoundsPrices(centerPrice, minPrice, maxPrice, trend, a
  */
 function buildDynamicWeightInfo(botKey, config) {
   if (!isAmaGridPrice(config)) return null;
-  // Derive the correct key from config.id when available.
-  // The market adapter (modules/account_orders.ts createBotKey) produces
-  // ID-based keys (e.g. "h-bts-5b0be9af") while the order file still stores
-  // legacy index-based keys ("h-bts-1") internally — and the whitelist file
-  // also uses the canonical ID-based key.
-  const lookupKey = (config && config.id)
-    ? `${sanitizeKey(config.name)}-${sanitizeKey(String(config.id))}`
-    : botKey;
-  const whitelistFlags = getWhitelistFlags(lookupKey);
+  const whitelistFlags = getWhitelistFlags(botKey);
   if (whitelistFlags.ama !== true) return null;
-  const snapshot = readDynamicGridSnapshot(lookupKey);
+  const snapshot = readDynamicGridSnapshot(botKey);
   if (!snapshot) return null;
   const dw = snapshot.dynamicWeights && typeof snapshot.dynamicWeights === 'object'
     ? snapshot.dynamicWeights

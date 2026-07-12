@@ -1,4 +1,3 @@
-const { getCrypto } = require('../../modules/crypto');
 const { path } = require('../../modules/path_api');
 const { getStorage } = require('../../modules/storage');
 const storage = getStorage();
@@ -8,6 +7,7 @@ const { Config } = require('../../modules/config');
 const { PATHS, getRecalculateTriggerFile } = require('../../modules/paths');
 const { writeJsonFileAtomic: baseWriteJsonFileAtomic } = require('../../modules/bots_file_lock');
 const { acquireFileLock } = require('../../market_adapter/utils/file_lock');
+const { assertNoDuplicateBotKeys } = require('../../modules/bot_settings');
 
 import type { BotSettings, ProfileOptions, Logger, ClawProfileBundle } from './types';
 
@@ -592,18 +592,15 @@ function sanitizeKey(source: any) {
 }
 
 function createBotKey(bot: any, index: any) {
-  const identifier = bot && bot.name
-    ? bot.name
-    : bot && bot.assetA && bot.assetB
-      ? `${bot.assetA}/${bot.assetB}`
-      : bot && bot.assetAId && bot.assetBId
-        ? `${bot.assetAId}/${bot.assetBId}`
-        : `bot-${index}`;
-  const baseKey = sanitizeKey(identifier);
-  if (bot && bot.id) {
-    return `${baseKey}-${sanitizeKey(String(bot.id))}`;
+  if (bot && bot.name) {
+    return sanitizeKey(bot.name);
   }
-  return `${baseKey}-${index}`;
+  const identifier = bot && bot.assetA && bot.assetB
+    ? `${bot.assetA}/${bot.assetB}`
+    : bot && bot.assetAId && bot.assetBId
+      ? `${bot.assetAId}/${bot.assetBId}`
+      : `bot-${index}`;
+  return `${sanitizeKey(identifier)}-${index}`;
 }
 
 function resolveRawBotEntries(settings: any) {
@@ -647,18 +644,6 @@ function validateBotEntry(entry: any, index: any, logger: any) {
   return warnings;
 }
 
-async function _stableBotId(entry: any): Promise<string> {
-  const stable = {
-    name: entry.name || '',
-    preferredAccount: entry.preferredAccount || '',
-    assetA: entry.assetA || entry.assetAId || '',
-    assetB: entry.assetB || entry.assetBId || '',
-  };
-  const encoder = new TextEncoder();
-  const hash = await getCrypto().sha256(encoder.encode(JSON.stringify(stable)));
-  return Array.from(hash).map((b: number) => b.toString(16).padStart(2, '0')).join('').slice(0, 8);
-}
-
 async function normalizeBotEntries(rawEntries: Record<string, any>[], options: Partial<ProfileOptions> = {}) {
   const logger = options.logger || null;
   const results: any[] = [];
@@ -667,9 +652,6 @@ async function normalizeBotEntries(rawEntries: Record<string, any>[], options: P
       validateBotEntry(entry, index, logger);
     }
     const normalized = { active: entry.active === undefined ? true : !!entry.active, ...entry };
-    if (!normalized.id) {
-      normalized.id = await _stableBotId(normalized);
-    }
     results.push({ ...normalized, botIndex: index, botKey: createBotKey(normalized, index) });
   }
   return results;
@@ -1115,6 +1097,8 @@ function createDexbotProfileAdapter(profileRoot: string, options: Partial<Profil
           ? { ...currentBotsConfig, bots: nextRawEntries }
           : nextEntry;
 
+      assertNoDuplicateBotKeys(nextRawEntries, 'applyBotSettingsPatch');
+
       await baseWriteJsonFileAtomic(bundle.files.bots, dataToWrite);
 
       let triggerPayload = null;
@@ -1247,6 +1231,8 @@ function createDexbotProfileAdapter(profileRoot: string, options: Partial<Profil
         : Array.isArray(currentBotsConfig?.bots)
           ? { ...currentBotsConfig, bots: nextRawEntries }
           : nextEntry;
+
+      assertNoDuplicateBotKeys(nextRawEntries, 'updateBotSettings');
 
       await baseWriteJsonFileAtomic(bundle.files.bots, dataToWrite);
     } finally {

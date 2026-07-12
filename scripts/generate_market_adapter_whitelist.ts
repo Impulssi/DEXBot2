@@ -1,7 +1,7 @@
 'use strict';
 
 const fs = require('fs');
-const { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries, persistMissingIds } = require('../modules/bot_settings');
+const { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries } = require('../modules/bot_settings');
 const { PATHS } = require('../modules/paths');
 const { readJSON } = require('../modules/utils/fs_utils');
 
@@ -12,7 +12,6 @@ function loadNormalizedBots() {
     const { config } = loadSettingsFile(BOTS_FILE);
     const raw = resolveRawBotEntries(config);
     const normalized = normalizeBotEntries(raw);
-    persistMissingIds(config, normalized, BOTS_FILE);
     return normalized;
 }
 

@@ -36,8 +36,7 @@ async function testNormalizeAcceptsAssetIdAliases() {
   ], { logger });
 
   assert.strictEqual(messages.length, 0, 'asset ID-only bots should not produce missing-key warnings');
-  assert.ok(bots[0].botKey.startsWith('id-only-'), `botKey should start with id-only-, got: ${bots[0].botKey}`);
-  assert.ok(!bots[0].botKey.endsWith('-0'), `botKey should not use legacy index format, got: ${bots[0].botKey}`);
+  assert.strictEqual(bots[0].botKey, 'id-only', `botKey should be the sanitized name, got: ${bots[0].botKey}`);
 }
 
 async function testAtomicWriteFailsFastWhenLockCannotBeAcquired() {
@@ -351,8 +350,7 @@ async function testApplyBotSettingsPatchWithoutIdentifierReturnsResolvedBotMetad
     trigger: false
   });
 
-  assert.ok(result.updatedBot.botKey.startsWith('solo-'), `botKey should start with solo-, got: ${result.updatedBot.botKey}`);
-  assert.ok(!result.updatedBot.botKey.endsWith('-0'), `botKey should not use legacy index format, got: ${result.updatedBot.botKey}`);
+  assert.strictEqual(result.updatedBot.botKey, 'solo', `botKey should be the sanitized name, got: ${result.updatedBot.botKey}`);
   assert.strictEqual(result.updatedBot.botIndex, 0);
   const canonicalKey = result.updatedBot.botKey;
   assert.strictEqual(result.next.files.orderSnapshot, path.join(profilesDir, 'orders', `${canonicalKey}.json`));
@@ -515,8 +513,7 @@ async function testUpdateBotSettingsWithoutIdentifierReturnsResolvedBot() {
   });
 
   assert.ok(updated, 'updateBotSettings(null, patch) should return the resolved bot');
-  assert.ok(updated.botKey.startsWith('solo-'), `botKey should start with solo-, got: ${updated.botKey}`);
-  assert.ok(!updated.botKey.endsWith('-0'), `botKey should not use legacy index format, got: ${updated.botKey}`);
+  assert.strictEqual(updated.botKey, 'solo', `botKey should be the sanitized name, got: ${updated.botKey}`);
   assert.strictEqual(updated.botIndex, 0);
   assert.strictEqual(updated.incrementPercent, 0.4);
 }

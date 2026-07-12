@@ -20,9 +20,10 @@ function sanitizeKey(source) {
 }
 
 function computeBotKey(bot, index) {
-    return bot.id
-        ? `${sanitizeKey(bot.name || `bot-${index}`)}-${sanitizeKey(String(bot.id))}`
-        : `${sanitizeKey(bot?.name || `bot-${index}`)}-${index}`;
+    if (bot && bot.name) {
+        return sanitizeKey(bot.name);
+    }
+    return `${sanitizeKey(bot?.name || `bot-${index}`)}-${index}`;
 }
 
 function resolveBotKey(botName, filePath = PATHS.PROFILES.BOTS_JSON) {

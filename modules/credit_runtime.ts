@@ -291,9 +291,7 @@ class CreditRuntime {
         this.warn = typeof this.bot._warn === 'function' ? this.bot._warn.bind(this.bot) : console.warn.bind(console);
 
         this.botKey = this.config.botKey
-            || (this.config.id && this.config.name
-                ? `${String(this.config.name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}-${String(this.config.id).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`
-                : createBotKey(this.config, this.config.botIndex ?? 0));
+            || createBotKey(this.config, this.config.botIndex ?? 0);
         this.stateDir = this.options.stateDir || DEFAULT_STATE_DIR;
         this.statePath = path.join(this.stateDir, `${this.botKey}.json`);
         this._assetCache = new Map();

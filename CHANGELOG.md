@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-07-12 - Unique Bot Names, Dust Timer Fix & Credit Collateral Switching
+
+### 2026-07-12
+
+- **Feat**: remove stable ID suffix from botKey generation — `createBotKey()` for named bots now returns `sanitizeKey(name)` only, no `-id` or `-index` suffix. Bot identity is solely the sanitized bot name; duplicate names are enforced at all write paths (`modules/account_orders.ts:101`, `claw/modules/dexbot_profiles.ts:593`).
+- **Feat**: enforce unique bot names across all write paths — `assertNoDuplicateBotKeys()` runs before every `bots.json` write: `applyBotSettingsPatch`, `updateBotSettings` (claw bridge), and `saveBotsConfig` (CLI editor). Duplicate sanitized names are rejected with a clear error (`modules/bot_settings.ts:300`, `claw/modules/dexbot_profiles.ts:1097,1235`, `modules/account_bots.ts:119`).
+- **Feat**: add `scripts/migrate_bot_keys.ts` — one-time migration that renames order files, dynamic grids, triggers, candle files, logs, credit state, whitelist keys, and market adapter state/centers from the old `name-id`/`name-index` pattern to the new `sanitized-name` only format. Handles both `a1b2c3d4` stable ID and numeric index suffixes (`scripts/migrate_bot_keys.ts`).
+- **Feat**: show bot name in order analyzer header, dim timestamp — adds `botName` field to analysis result, renders bot name after pair on the header line, timestamps displayed in gray (`5179b87d`).
+- **Feat**: collateral switching on credit renewal — allow changing `collateralAsset` in bots.json to migrate existing credit deals to different collateral on next renewal. Deals with mismatched `collateralAssetId` are flagged with `collateralMismatch: true`, excluded from normal reborrow, and placed under the new posKey (`b6eeb4ec`).
+- **Fix**: remove `_dustSinceMap.clear()` cascade that broke dust timers — wholesale clear in `executeMaintenanceLogic` and `performGridResync` destroyed firstSeen timestamps for all tracked orders when a single entry's cancel failed persistently. Timers now survive individual API errors, preserving the 30-second cancellation deadline (`2c478731`).
+- **Refactor**: remove `_stableBotId()`, `persistMissingIds()`, and `id` field from normalization in `modules/bot_settings.ts`, `claw/modules/dexbot_profiles.ts`, and `market_adapter/inputs/fetch_cex_synthetic_data.ts` — stable IDs were a workaround for non-unique names and are no longer generated or persisted.
+- **Fix**: `modules/credit_runtime.ts:293` — removed old ID-suffixed fallback in `botKey` construction; now uses `createBotKey()` directly with no ID fallback path.
+- **Test**: update `test_bot_key_utils.ts` assertions — all 20 checks updated for the new "named bots use sanitized name only" rule.
+- **Docs**: update `scripts/README.md` — fix typecheck description, add missing npm scripts and undocumented script entries (`69712e41`).
+- **Docs**: update `modules/README.md` — add new module entries: `runtime_settings.ts`, `logger_state.ts`, `child_env.ts`, `headless_password.ts`, `market_adapter_watchdog.ts`, `monolithic_runtime.ts`, `status_reporting.ts`, `bitshares-native/index.ts` (`69712e41`).
+- **Docs**: fix logging per-bot Q&A in `LOGGING.md` — per-bot logging customization `logging` field in bots.json is now documented with usage example and source references (`d7e34a98`).
+- **Docs**: reorganize PM2 symlink entry out of CORE MAINTENANCE in scripts README — "Create PM2 Bot Symlinks" runs automatically on PM2 start, no longer a user-facing script entry (`9c21a560`).
+- **Chore**: version bumped to 1.1.0 across all manifests.
+
 ## [1.0.14] - 2026-07-11 - Per-Bot Runtime Settings Override Pipeline & Doc Alignment
 
 ### 2026-07-11
