@@ -532,6 +532,7 @@ function analyzeOrder(botData, config, botKey) {
   const _ab = computeGridRangeScalingDisplay(config, _dynamicWeight);
   return {
     pair: `${assetA}/${assetB}`,
+    botName: config?.name || botKey,
     lastUpdated: new Date(meta.updatedAt || botData.lastUpdated),
     gridMinPrice: gridMinPrice,
     marketPrice: marketPrice,
@@ -1191,8 +1192,8 @@ function formatAnalysis(analysis) {
   const lines = [];
 
   // Header: Trading pair name
-  lines.push(`\n${colors.cyan}📊 ${analysis.pair}${colors.reset}`);
-  lines.push(`   Update: ${analysis.lastUpdated.toLocaleString()}`);
+  lines.push(`\n${colors.cyan}📊 ${analysis.pair}${colors.reset} (${analysis.botName})`);
+  lines.push(`   ${colors.gray}Update: ${analysis.lastUpdated.toLocaleString()}${colors.reset}`);
   lines.push(``);
 
   // Warning: No config available for comparison
