@@ -86,6 +86,14 @@ const {
 } = require('./modules/launcher/monolithic_runtime');
 const { Config } = require('./modules/config');
 
+// Auto-migrate bot state files from old stable-ID key format to sanitized-name format
+try {
+    const { runMigration } = require('./scripts/migrate_bot_keys');
+    runMigration();
+} catch (err: any) {
+    console.error(`Migration error: ${err?.message || err}`);
+}
+
 const CODE_ROOT = __dirname;
 const ROOT = PATHS.PROJECT_ROOT;
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;

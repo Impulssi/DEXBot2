@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.1.0 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.1.1 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 1,715+ commits over ~7 active months
+- **Growth Phase**: 1,724+ commits over ~7 active months
 - **Code Maturity**: Evolution from basic utilities to a ~58,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 200+ automated test files
-- **Releases**: 48 release entries (v0.1.0 to v1.1.0)
+- **Releases**: 49 release entries (v0.1.0 to v1.1.1)
 
 ---
 
@@ -80,6 +80,8 @@ Consolidated the market adapter with split data sources (Kibana, native API), AM
 
 **Jul 5**: v1.0.8 — secondary pending-broadcasts deadlock fix (missed call site), market adapter log dedup in shared runtime, bot key resolution utilities, candle cache always-resolve. Comprehensive system invariants doc expansion with categorized prefixes (`INV-COW`, `INV-SYNC`, `INV-MAINT`, `INV-GRID`, `INV-RECON`, `INV-BATCH`, `INV-REG`, `INV-SUB`). 5 commits from v1.0.7.
 
+**Jul 12**: v1.1.1 — auto-startup bot-key migration, error handling fixes, JSON-key tracking, cleanup. 1 commit from v1.1.0.
+
 ---
 
 ## Architecture Evolution
@@ -121,12 +123,13 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.0.11 → v1.0.13 | 17 | Whitelist normalization, grid persistence safety net, dust pipeline fix, net inventory lots |
 | v1.0.13 → v1.0.14 | 4 | Per-bot runtime settings override pipeline, doc alignment & chart fix |
 | v1.0.14 → v1.1.0 | 7 | Unique bot names, stable ID removal, migration script, duplicate name enforcement |
+| v1.1.0 → v1.1.1 | 1 | Auto-startup migration, error handling, JSON-key tracking, cleanup |
 
 ---
 
 ## Development Statistics
 
-200+ automated test files (all TypeScript), 46 release entries. See **Version History** for commit breakdown by release.
+200+ automated test files (all TypeScript), 47 release entries. See **Version History** for commit breakdown by release.
 
 ---
 
@@ -172,7 +175,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 12, 2026 (v1.1.0)
-**Total Commits**: 1,722
+**Last Updated**: July 12, 2026 (v1.1.1)
+**Total Commits**: 1,724
 **Date Range**: December 2, 2025 - July 12, 2026 (ongoing)
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

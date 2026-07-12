@@ -1,11 +1,12 @@
 'use strict';
 
 /**
- * One-time migration: renames bot state files from the old botKey format
+ * Migration: renames bot state files from the old botKey format
  * (which included a stable id suffix like "xrp-bts-a1b2c3d4") to the new
  * format (just the sanitized name, e.g. "xrp-bts").
  *
- * Run once after upgrading:  tsx scripts/migrate_bot_keys.ts
+ * Auto-runs on every bot startup (dexbot.ts, bot.ts, unlock.ts).
+ * Manual:  tsx scripts/migrate_bot_keys.ts
  */
 
 const fs = require('fs');
@@ -70,15 +71,17 @@ function migrateFile(oldPath, newPath, label) {
     return true;
 }
 
-function migrateJsonKeys(filePath, keyMap, description) {
-    if (!fs.existsSync(filePath)) return;
+function migrateJsonKeys(filePath, keyMap, description, silent = false) {
+    if (!fs.existsSync(filePath)) return false;
     const raw = readJSON(filePath);
-    if (!raw) return;
+    if (!raw) return false;
     const updated = rewriteKeys(raw, keyMap);
     if (updated !== raw) {
         writeJSON(filePath, updated);
-        console.log(`  OK   ${description}: keys updated in ${path.basename(filePath)}`);
+        if (!silent) console.log(`  OK   ${description}: keys updated in ${path.basename(filePath)}`);
+        return true;
     }
+    return false;
 }
 
 function rewriteKeys(obj, keyMap) {
@@ -213,49 +216,95 @@ function migrateBot(botEntry, index) {
     }
 }
 
-function main() {
+function runMigration(): string[] | null {
     const botsFile = PATHS.PROFILES.BOTS_JSON;
-    if (!fs.existsSync(botsFile)) {
-        console.log('No bots.json found — nothing to migrate.');
-        return;
-    }
+    if (!fs.existsSync(botsFile)) return null;
 
     const raw = readJSON(botsFile);
     const entries = Array.isArray(raw?.bots) ? raw.bots : [];
-    if (entries.length === 0) {
-        console.log('No bot entries found — nothing to migrate.');
-        return;
-    }
+    if (entries.length === 0) return null;
 
-    console.log(`Found ${entries.length} bot entries in ${botsFile}\n`);
+    const migrated: string[] = [];
+    const keyMap = buildKeyMap(entries);
+    if (Object.keys(keyMap).length === 0) return null;
 
-    let migratedAny = false;
     for (const [index, entry] of entries.entries()) {
         if (!entry.name) continue;
-        migrateBot(entry, index);
-        migratedAny = true;
+        const newKey = newBotKey(entry);
+        if (!newKey) continue;
+        const oldCandidates = computeOldKeys(entry, index);
+        let renamed = false;
+        for (const oldKey of oldCandidates) {
+            if (oldKey === newKey) continue;
+            const locations = [
+                { dir: PATHS.ORDERS_DIR, pattern: (k: string) => `${k}.json`, label: 'order file' },
+                { dir: PATHS.ORDERS_DIR, pattern: (k: string) => `${k}.dynamicgrid.json`, label: 'dynamic grid' },
+                { dir: PATHS.PROFILES_DIR, pattern: (k: string) => `recalculate.${k}.trigger`, label: 'trigger' },
+            ];
+            for (const loc of locations) {
+                const oldPath = path.join(loc.dir, loc.pattern(oldKey));
+                const newPath = path.join(loc.dir, loc.pattern(newKey));
+                if (fs.existsSync(oldPath) && !fs.existsSync(newPath)) {
+                    fs.renameSync(oldPath, newPath);
+                    renamed = true;
+                }
+            }
+            const dataDir = PATHS.MARKET_ADAPTER.DATA_DIR;
+            if (fs.existsSync(dataDir)) {
+                const prefix = `market_adapter_${oldKey}_`;
+                const files = fs.readdirSync(dataDir).filter((f: string) => f.startsWith(prefix) && f.endsWith('.json'));
+                for (const file of files) {
+                    const newFile = file.replace(prefix, `market_adapter_${newKey}_`);
+                    const oldPath = path.join(dataDir, file);
+                    const newPath = path.join(dataDir, newFile);
+                    if (!fs.existsSync(newPath)) {
+                        fs.renameSync(oldPath, newPath);
+                        renamed = true;
+                    }
+                }
+            }
+            const logsDir = PATHS.LOGS_DIR;
+            if (fs.existsSync(logsDir)) {
+                for (const suffix of ['.log', '-error.log', '.log.gz', '-error.log.gz']) {
+                    const oldPath = path.join(logsDir, `${oldKey}${suffix}`);
+                    const newPath = path.join(logsDir, `${newKey}${suffix}`);
+                    if (fs.existsSync(oldPath) && !fs.existsSync(newPath)) {
+                        fs.renameSync(oldPath, newPath);
+                        renamed = true;
+                    }
+                }
+            }
+            const creditDir = PATHS.CREDIT_RUNTIME_DIR;
+            if (fs.existsSync(creditDir)) {
+                const oldPath = path.join(creditDir, `${oldKey}.json`);
+                const newPath = path.join(creditDir, `${newKey}.json`);
+                if (fs.existsSync(oldPath) && !fs.existsSync(newPath)) {
+                    fs.renameSync(oldPath, newPath);
+                    renamed = true;
+                }
+            }
+        }
+        if (renamed) migrated.push(entry.name);
     }
 
     // Migrate JSON-internal keys (whitelist, market adapter state)
-    const keyMap = buildKeyMap(entries);
-    if (Object.keys(keyMap).length > 0) {
-        console.log('\nMigrating JSON keyed files...');
-        migrateJsonKeys(
-            PATHS.PROFILES.MARKET_ADAPTER_WHITELIST_JSON(),
-            keyMap,
-            'whitelist'
-        );
-        migrateJsonKeys(PATHS.MARKET_ADAPTER.STATE_FILE, keyMap, 'market adapter state (bots keys)');
-        migrateJsonKeys(PATHS.MARKET_ADAPTER.CENTERS_FILE, keyMap, 'market adapter centers (bots keys)');
-        migratedAny = true;
-    }
+    let jsonMigrated = false;
+    if (migrateJsonKeys(PATHS.PROFILES.MARKET_ADAPTER_WHITELIST_JSON(), keyMap, 'whitelist', true)) jsonMigrated = true;
+    if (migrateJsonKeys(PATHS.MARKET_ADAPTER.STATE_FILE, keyMap, 'market adapter state (bots keys)', true)) jsonMigrated = true;
+    if (migrateJsonKeys(PATHS.MARKET_ADAPTER.CENTERS_FILE, keyMap, 'market adapter centers (bots keys)', true)) jsonMigrated = true;
 
-    console.log('\n---');
-    if (migratedAny) {
+    if (jsonMigrated && migrated.length === 0) migrated.push('(json-keys)');
+    return migrated.length > 0 ? migrated : null;
+}
+
+if (require.main === module) {
+    const result = runMigration();
+    if (result) {
+        console.log(`Migrated files for bots: ${result.join(', ')}`);
         console.log('Migration complete. If files were renamed, verify then restart your bots.');
     } else {
         console.log('No migrations needed.');
     }
 }
 
-main();
+export = { runMigration };

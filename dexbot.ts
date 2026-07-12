@@ -137,6 +137,14 @@ const { buildMarketAdapterWhitelistNpmArgs } = require('./modules/cli_whitelist_
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 
+// Auto-migrate bot state files from old stable-ID key format to sanitized-name format
+try {
+    const { runMigration } = require('./scripts/migrate_bot_keys');
+    runMigration();
+} catch (err: any) {
+    console.error(`\x1b[1;31mMigration error:\x1b[0m ${err?.message || err}`);
+}
+
 // Setup graceful shutdown handlers
 setupGracefulShutdown();
 

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-07-12 - Auto-startup Migration, Error Handling & Cleanup
+
+### 2026-07-12
+
+- **Feat**: auto-run `scripts/migrate_bot_keys.ts` on every bot startup — migration now runs from `dexbot.ts`, `bot.ts`, and `unlock.ts` so users who update the bot code automatically get their state files renamed without a manual step. Logs errors to stderr on failure (`scripts/migrate_bot_keys.ts`, `dexbot.ts:140`, `bot.ts:70`, `unlock.ts:89`).
+- **Fix**: `runMigration()` now tracks JSON-key rewrites (whitelist, market adapter state/centers) in its return value — the CLI path no longer prints "No migrations needed" when only JSON keys were updated (`scripts/migrate_bot_keys.ts:291-297`).
+- **Fix**: migration call in entry points wraps `require()` inside try/catch — import-time failures no longer crash silently; all errors are logged (`dexbot.ts:141`, `bot.ts:71`, `unlock.ts:90`).
+- **Chore**: remove unused `scripts/query_credit_borrowers.ts` — no internal references.
+- **Chore**: version bumped to 1.1.1 across all manifests.
+
 ## [1.1.0] - 2026-07-12 - Unique Bot Names, Dust Timer Fix & Credit Collateral Switching
 
 ### 2026-07-12
