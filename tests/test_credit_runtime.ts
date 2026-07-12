@@ -3387,6 +3387,279 @@ async function testProactiveRepayReborrowMultiAssetOffer() {
   }
 }
 
+async function testMismatchDealAppearsInNewPosKey() {
+  const calls = [];
+  const dbCalls = [];
+  const dealId = '1.19.88';
+  const activeDeal = {
+    id: dealId,
+    borrower: '1.2.3',
+    offer_id: '1.18.42',
+    offer_owner: '1.2.9',
+    debt_asset: '1.3.10',
+    debt_amount: 500,
+    collateral_asset: '1.3.1',
+    collateral_amount: 1000,
+    fee_rate: 30000,
+    latest_repay_time: '2030-01-01T00:00:00',
+    auto_repay: 0,
+  };
+  const restore = installStubs(calls, dbCalls, {
+    dealResponses: [[activeDeal]],
+    assetsById: {
+      '1.3.10': { id: '1.3.10', symbol: 'HONEST.USD', precision: 0, bitasset_data_id: '2.4.1' },
+      '1.3.0': { id: '1.3.0', symbol: 'BTS', precision: 0, bitasset_data_id: null },
+      '1.3.1': { id: '1.3.1', symbol: 'BRIDGE.BTC', precision: 0, bitasset_data_id: null },
+    },
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-credit-mismatch-poskey-'));
+
+  try {
+    delete require.cache[creditRuntimePath];
+    const CreditRuntime = require('../modules/credit_runtime');
+    const policy = {
+      asset: 'HONEST.USD',
+      collateralAsset: 'BTS',
+      type: 'creditOffer',
+      outputWeight: 1,
+      maxBorrowAmount: 1000,
+      maxCollateralRatio: 2.5,
+      maxFeeRatePerDay: 0.05,
+      autoReborrow: true,
+    };
+    const runtime = new CreditRuntime({
+      config: createBaseBotConfig({
+        botKey: 'credit-bot-mismatch-poskey',
+        debtPolicy: { lending: [policy] },
+      }),
+      account: { id: '1.2.3', name: 'alice' },
+      accountId: '1.2.3',
+      privateKey: 'WIF-KEY',
+      _log() {},
+      _warn() {},
+    }, { stateDir: path.join(baseDir, 'credit_runtime') });
+
+    await runtime.refreshState();
+
+    const posKey = '1.3.10:1.3.0';
+    const deals = runtime.state.positions?.[posKey]?.creditDeals || [];
+    const mismatchDeal = deals.find((d) => d.id === dealId);
+    assert.ok(mismatchDeal, `mismatched deal ${dealId} should appear in posKey ${posKey}`);
+    assert.strictEqual(mismatchDeal.collateralMismatch, true, 'mismatched deal should have collateralMismatch flag');
+    assert.strictEqual(mismatchDeal.debtAssetId, '1.3.10', 'debt asset should match policy');
+    assert.strictEqual(mismatchDeal.collateralAssetId, '1.3.1', 'deal should retain original collateral asset');
+  } finally {
+    restore();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
+  }
+}
+
+async function testRepayWithUnacceptableCollateralThrowsSpecificError() {
+  const calls = [];
+  const dbCalls = [];
+  const activeDeal = {
+    id: '1.19.77',
+    borrower: '1.2.3',
+    offer_id: '1.18.42',
+    offer_owner: '1.2.9',
+    debt_asset: '1.3.10',
+    debt_amount: 500,
+    collateral_asset: '1.3.0',
+    collateral_amount: 1000,
+    fee_rate: 30000,
+    latest_repay_time: '2030-01-01T00:00:00',
+    auto_repay: 0,
+  };
+  const restore = installStubs(calls, dbCalls, {
+    dealResponses: [[activeDeal], []],
+    offersById: {
+      '1.18.42': {
+        id: '1.18.42',
+        asset_type: '1.3.10',
+        current_balance: 10000,
+        fee_rate: 30000,
+        min_deal_amount: 100,
+        enabled: true,
+        max_duration_seconds: 86400,
+        acceptable_collateral: {
+          '1.3.0': {
+            base: { amount: 2, asset_id: '1.3.0' },
+            quote: { amount: 1, asset_id: '1.3.10' },
+          },
+        },
+      },
+    },
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-credit-repay-bad-coll-'));
+
+  try {
+    delete require.cache[creditRuntimePath];
+    const CreditRuntime = require('../modules/credit_runtime');
+    const runtime = new CreditRuntime({
+      config: createBaseBotConfig({
+        botKey: 'credit-bot-repay-bad-coll',
+        debtPolicy: {
+          lending: [
+            {
+              asset: 'HONEST.USD',
+              collateralAsset: 'BTS',
+              type: 'creditOffer',
+              outputWeight: 1,
+              maxBorrowAmount: 1000,
+              maxCollateralRatio: 2.5,
+              maxFeeRatePerDay: 0.05,
+              autoReborrow: true,
+              autoRepay: 2,
+              renewOnly: true,
+            },
+          ],
+        },
+      }),
+      account: { id: '1.2.3', name: 'alice' },
+      accountId: '1.2.3',
+      privateKey: 'WIF-KEY',
+      _log() {},
+      _warn() {},
+    }, { stateDir: path.join(baseDir, 'credit_runtime') });
+
+    await runtime.refreshState();
+
+    const offer = { id: '1.18.42', asset_type: '1.3.10', enabled: true,
+      acceptable_collateral: { '1.3.0': { base: { amount: 2, asset_id: '1.3.0' }, quote: { amount: 1, asset_id: '1.3.10' } } },
+      fee_rate: 30000, min_deal_amount: 100, max_duration_seconds: 86400 };
+    await assert.rejects(
+      () => runtime.buildCreditOfferAcceptOperation({
+        offer,
+        borrowAmount: 200,
+        collateralAmount: { amount: 400, assetId: '1.3.1' },
+        pendingRepayAmount: 200,
+      }),
+      /is not in offer 1.18.42 acceptable_collateral/,
+      'should throw specific error when collateral is not in offer acceptable_collateral',
+    );
+  } finally {
+    restore();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
+  }
+}
+
+async function testCollateralSwitchSkippedWithoutBalance() {
+  const calls = [];
+  const dbCalls = [];
+  const dealId = '1.19.77';
+  const debtAmount = 500;
+  const collateralAmount = 1000;
+  const repayTime = new Date(Date.now() - 3600000).toISOString();
+  const activeDeal = {
+    id: dealId,
+    borrower: '1.2.3',
+    offer_id: '1.18.42',
+    offer_owner: '1.2.9',
+    debt_asset: '1.3.10',
+    debt_amount: debtAmount,
+    collateral_asset: '1.3.1',
+    collateral_amount: collateralAmount,
+    fee_rate: 30000,
+    latest_repay_time: repayTime,
+    auto_repay: 0,
+  };
+  const restore = installStubs(calls, dbCalls, {
+    dealResponses: [[activeDeal], []],
+    offersById: {
+      '1.18.42': {
+        id: '1.18.42',
+        asset_type: '1.3.10',
+        current_balance: 10000,
+        fee_rate: 30000,
+        min_deal_amount: 100,
+        enabled: true,
+        max_duration_seconds: 86400,
+        acceptable_collateral: {
+          '1.3.0': {
+            base: { amount: 200, asset_id: '1.3.0' },
+            quote: { amount: 100, asset_id: '1.3.10' },
+          },
+          '1.3.1': {
+            base: { amount: 300, asset_id: '1.3.1' },
+            quote: { amount: 100, asset_id: '1.3.10' },
+          },
+        },
+      },
+    },
+    assetsById: {
+      '1.3.10': { id: '1.3.10', symbol: 'HONEST.USD', precision: 0, bitasset_data_id: '2.4.1' },
+      '1.3.0': { id: '1.3.0', symbol: 'BTS', precision: 0, bitasset_data_id: null },
+      '1.3.1': { id: '1.3.1', symbol: 'BRIDGE.BTC', precision: 0, bitasset_data_id: null },
+    },
+    assetBalances: {},
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-credit-switch-no-bal-'));
+
+  try {
+    delete require.cache[creditRuntimePath];
+    const CreditRuntime = require('../modules/credit_runtime');
+    const policy = {
+      asset: 'HONEST.USD',
+      collateralAsset: 'BTS',
+      type: 'creditOffer',
+      outputWeight: 1,
+      maxBorrowAmount: 1000,
+      maxCollateralRatio: 2.5,
+      maxFeeRatePerDay: 0.05,
+      autoReborrow: true,
+      autoRepay: 2,
+      renewOnly: true,
+    };
+    const runtime = new CreditRuntime({
+      config: createBaseBotConfig({
+        botKey: 'credit-bot-switch-no-bal',
+        debtPolicy: { lending: [policy] },
+        TIMING: { CREDIT_DEAL_EXPIRY_THRESHOLD_HOURS: 168 },
+      }),
+      account: { id: '1.2.3', name: 'alice' },
+      accountId: '1.2.3',
+      privateKey: 'WIF-KEY',
+      manager: {
+        _fillProcessingLock: {
+          acquire: async (fn) => fn(),
+        },
+        fetchAccountTotals: async () => {},
+      },
+      _runGridMaintenance: async () => ({ checked: true }),
+      _log() {},
+      _warn() {},
+    }, { stateDir: path.join(baseDir, 'credit_runtime') });
+
+    await runtime.refreshState();
+
+    runtime.state.positions['1.3.10:1.3.0'] = {
+      assignedCollateralBudget: 1000,
+      creditConversionRate: 0.5,
+      creditDeals: [{
+        id: dealId,
+        debtAssetId: '1.3.10',
+        debtAmount: debtAmount,
+        collateralAssetId: '1.3.1',
+        collateralAmount: collateralAmount,
+        latestRepayTime: repayTime,
+        feeRate: 30000,
+        offerId: '1.18.42',
+        autoRepay: 2,
+        collateralMismatch: true,
+      }],
+    };
+
+    const execCallCount = calls.length;
+    await runtime._runCreditMaintenance(policy, '1.3.10');
+
+    const newCalls = calls.slice(execCallCount);
+    assert.strictEqual(newCalls.length, 0, 'collateral switch should be skipped when new collateral balance is zero');
+  } finally {
+    restore();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
+  }
+}
+
 async function testPendingReborrowStoresPendingRepayAmount() {
   const calls = [];
   const dbCalls = [];
@@ -3701,6 +3974,9 @@ async function testProactiveRepayPrunesStalePendingReborrow() {
   await testGetCollateralOffsets();
   await testProactiveRepayBundlesReborrowInSingleBatch();
   await testProactiveRepayReborrowMultiAssetOffer();
+  await testMismatchDealAppearsInNewPosKey();
+  await testRepayWithUnacceptableCollateralThrowsSpecificError();
+  await testCollateralSwitchSkippedWithoutBalance();
   await testPendingReborrowStoresPendingRepayAmount();
   await testPendingReborrowDropsStaleEntryWhenReplacementExists();
   await testProactiveRepayPrunesStalePendingReborrow();

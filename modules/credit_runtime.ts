@@ -1343,6 +1343,13 @@ class CreditRuntime {
                 continue;
             }
             if (expectedCollateralId && deal.collateralAssetId && String(deal.collateralAssetId) !== expectedCollateralId) {
+                activeDeals.push({
+                    ...deal,
+                    offerEnabled: false,
+                    offerFeeRate: deal.feeRate,
+                    canReborrow: false,
+                    collateralMismatch: true,
+                });
                 continue;
             }
             const offer = deal.offerId ? trackedOffers.get(String(deal.offerId)) : null;
@@ -1563,10 +1570,13 @@ class CreditRuntime {
             throw new Error('collateral asset is required for multi-asset credit offers');
         }
         let collateralPrice = collateralAssetId ? collateralMap.get(String(collateralAssetId)) : null;
-        if (!collateralPrice && collateralMap.size === 1) {
+        if (!collateralPrice && collateralMap.size === 1 && !collateralAssetId) {
             collateralPrice = collateralMap.values().next().value;
         }
         if (!collateralPrice) {
+            if (collateralAssetId && collateralMap.size > 0) {
+                throw new Error(`collateral asset ${collateralAssetId} is not in offer ${offerId} acceptable_collateral`);
+            }
             throw new Error('Unable to determine acceptable collateral for credit offer');
         }
 
@@ -1903,6 +1913,21 @@ class CreditRuntime {
                     reborrowCollateralAmount = { amount: amountVal, assetId: dealSummary.collateralAssetId };
                 }
             }
+            let effectiveCollateralAssetId = dealSummary.collateralAssetId;
+            if (options.collateralAsset && dealSummary.collateralAssetId) {
+                const overrideId = typeof options.collateralAsset === 'object'
+                    ? (options.collateralAsset.id ?? options.collateralAsset.asset_id ?? null)
+                    : options.collateralAsset;
+                if (overrideId && String(overrideId) !== String(dealSummary.collateralAssetId)) {
+                    const amountVal = reborrowCollateralAmount === null
+                        ? null
+                        : (typeof reborrowCollateralAmount === 'number'
+                            ? reborrowCollateralAmount
+                            : (reborrowCollateralAmount.amount ?? null));
+                    reborrowCollateralAmount = { amount: amountVal, assetId: overrideId };
+                    effectiveCollateralAssetId = overrideId;
+                }
+            }
             const policyHasAutoRepay = Object.prototype.hasOwnProperty.call(reborrowPolicy, 'autoRepay');
             const autoRepaySetting = options.autoRepay !== undefined
                 ? options.autoRepay
@@ -1924,7 +1949,7 @@ class CreditRuntime {
                 } catch (err: any) {
                     const fallback = await this._selectFallbackCreditOffer({
                         debtAssetId: dealSummary.debtAssetId,
-                        collateralAssetId: dealSummary.collateralAssetId,
+                        collateralAssetId: effectiveCollateralAssetId,
                         policy: reborrowPolicy,
                         borrowAmount: reborrowAmount,
                         collateralAmount: reborrowCollateralAmount,
@@ -1955,7 +1980,7 @@ class CreditRuntime {
             } else {
                 const fallback = await this._selectFallbackCreditOffer({
                     debtAssetId: dealSummary.debtAssetId,
-                    collateralAssetId: dealSummary.collateralAssetId,
+                    collateralAssetId: effectiveCollateralAssetId,
                     policy: reborrowPolicy,
                     borrowAmount: reborrowAmount,
                     collateralAmount: reborrowCollateralAmount,
@@ -2631,14 +2656,28 @@ class CreditRuntime {
                 try {
                     this.warn(`credit runtime: deal ${deal.id} expires in ${Math.round(timeLeft / 60000)}m; proactively repaying and reborrowing`);
                     const debtAsset = await this._resolveAsset(deal.debtAssetId);
-                    const collateralAsset = await this._resolveAsset(deal.collateralAssetId);
                     const repayAmount = blockchainAmountToFloat(deal.debtAmount, debtAsset);
-                    const existingCollateralAmount = blockchainAmountToFloat(deal.collateralAmount, collateralAsset);
                     if (!Number.isFinite(repayAmount) || repayAmount <= 0) {
                         throw new Error(`unable to convert deal ${deal.id} debt amount for repay`);
                     }
-                    if (!Number.isFinite(existingCollateralAmount) || existingCollateralAmount <= 0) {
-                        throw new Error(`unable to convert deal ${deal.id} collateral amount for release`);
+                    const isCollateralMismatch = deal.collateralMismatch === true;
+                    let existingCollateralAmount = null;
+                    if (isCollateralMismatch) {
+                        const accountRef = getAccountRef(this.bot);
+                        const balances = await chainOrders.getOnChainAssetBalances(accountRef, [configuredCollateralAssetId]);
+                        const balance = balances?.[String(configuredCollateralAssetId)] || balances?.[String(configuredCollateralAsset?.symbol)] || null;
+                        const available = toFiniteNumber(balance?.total, null);
+                        if (!Number.isFinite(available) || available <= 0) {
+                            this.warn(`credit runtime: skipping collateral switch for deal ${deal.id} — no balance of new collateral ${configuredCollateralAssetId}`);
+                            continue;
+                        }
+                    }
+                    if (!isCollateralMismatch) {
+                        const collateralAsset = await this._resolveAsset(deal.collateralAssetId);
+                        existingCollateralAmount = blockchainAmountToFloat(deal.collateralAmount, collateralAsset);
+                        if (!Number.isFinite(existingCollateralAmount) || existingCollateralAmount <= 0) {
+                            throw new Error(`unable to convert deal ${deal.id} collateral amount for release`);
+                        }
                     }
                     // Snapshot pre-existing pending reborrows for this deal so we
                     // can prune stale ones after repayCreditDeal without removing
@@ -2654,11 +2693,12 @@ class CreditRuntime {
 
                     await this.repayCreditDeal(deal, repayAmount, {
                         autoReborrow: true,
-                        collateralAmount: {
+                        collateralAmount: isCollateralMismatch ? null : {
                             amount: existingCollateralAmount,
                             assetId: deal.collateralAssetId,
                         },
-                        pendingReleaseCollateralAmount: existingCollateralAmount,
+                        collateralAsset: configuredCollateralAssetId,
+                        pendingReleaseCollateralAmount: isCollateralMismatch ? null : existingCollateralAmount,
                         specificPolicy: lendingItem,
                         fillLockAlreadyHeld: runtimeContext?.options?.fillLockAlreadyHeld === true,
                     });

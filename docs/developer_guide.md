@@ -1078,6 +1078,7 @@ Bots can declare a `debtPolicy` block for native MPA and credit-offer workflows.
 - Credit and MPA checks run from the dedicated credit watchdog interval
 - Every successful CR adjustment triggers a grid rebuild via `requestGridReset()`
 - Runtime policy enforces `maxFeeRatePerDay`, `maxCollateralRatio`, `allowedOfferIds`, `disallowedDealIds` (reborrow only), and allowed assets before broadcasting
+- **Collateral switching**: Changing `lendingItem.collateralAsset` on a `creditOffer` item causes the proactive expiry reborrow to switch the deal's collateral to the new asset (requires the offer to accept it). MPA collateral is fixed.
 - Full usage details live in [MPA and Credit Usage](MPA_CREDIT_USAGE.md)
 
 ---

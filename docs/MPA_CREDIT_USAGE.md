@@ -225,6 +225,16 @@ When a deal's `latest_repay_time` is within `CREDIT_DEAL_EXPIRY_THRESHOLD_HOURS`
 
 If inline reborrow cannot be built safely, the runtime stores a deferred reborrow request in `profiles/credit_runtime/<botKey>.json` and retries later.
 
+### Collateral Switching on Renewal
+
+You can switch a credit deal's collateral to a different asset on its next renewal by changing `lendingItem.collateralAsset` to the new asset in `bots.json`. The runtime detects existing deals whose collateral no longer matches the policy and migrates them during proactive expiry repay+reborrow. Requirements:
+
+- The new asset must be listed in the credit offer's `acceptable_collateral`. The runtime rejects mismatched collateral with a specific error message.
+- The bot must hold enough of the new collateral asset before the deal is repaid. The offer's minimum required collateral is computed from the borrow amount and the new collateral price — the old deal's collateral amount is not carried forward.
+- Only applies to `type: "creditOffer"` items — MPA collateral is fixed by the call order asset.
+- Deferred reborrow requests from before the switch may fail; drop stale pending reborrows by clearing `profiles/credit_runtime/<botKey>.json` or letting them expire naturally.
+- If the switch produces no active reborrow (e.g., insufficient balance for the new collateral), the deal is repaid and the reborrow is deferred to the pending queue for later retry.
+
 ### auto_repay Enforcement
 
 On each maintenance cycle, the runtime compares each deal's on-chain `auto_repay` against the policy's `autoRepay` value. If they differ, a `credit_deal_update` operation is broadcast. After a successful update, the local deal state is updated to prevent redundant broadcasts on the next cycle.
