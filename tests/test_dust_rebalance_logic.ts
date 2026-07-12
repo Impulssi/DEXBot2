@@ -645,9 +645,6 @@ async function testDustTimerStartsAtDustFill() {
 async function testDustThresholdUsesConfiguredPercentage() {
     console.log('Testing Dust Threshold Uses Configured Percentage...');
 
-    const originalThreshold = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE;
-    GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE = 10;
-
     try {
         const manager = new OrderManager({
             assetA: 'TESTA',
@@ -656,7 +653,8 @@ async function testDustThresholdUsesConfiguredPercentage() {
             botFunds: { buy: 1000, sell: 1000 },
             activeOrders: { buy: 5, sell: 5 },
             incrementPercent: 1,
-            weightDistribution: { buy: 1, sell: 1 }
+            weightDistribution: { buy: 1, sell: 1 },
+            gridLimits: { PARTIAL_DUST_THRESHOLD_PERCENTAGE: 10 }
         });
 
         manager.assets = {
@@ -706,8 +704,8 @@ async function testDustThresholdUsesConfiguredPercentage() {
         const dustOrders = await Grid.getDustOrders(manager, [manager.orders.get('threshold-sell-2')], 'sell');
         assert.strictEqual(dustOrders.length, 1, 'Configured dust threshold should classify the order as dust');
         console.log('  ✓ Dust detection respects configured threshold percentage');
-    } finally {
-        GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE = originalThreshold;
+    } catch (err) {
+        throw err;
     }
 }
 
@@ -837,7 +835,6 @@ async function testStartupDustSchedulesTimer() {
         }) as any;
         global.clearTimeout = () => {};
 
-        GRID_LIMITS.DUST_CANCEL_DELAY_SEC = 60;
 
         const bot = new DEXBot({
             botKey: 'test_startup_dust_schedule',
@@ -847,6 +844,7 @@ async function testStartupDustSchedulesTimer() {
             assetB: 'TESTB',
             incrementPercent: 1
         });
+        bot.config.gridLimits.DUST_CANCEL_DELAY_SEC = 60;
 
         let maintenanceCalls = 0;
         bot.manager = {
@@ -882,7 +880,7 @@ async function testStartupDustSchedulesTimer() {
         bot._dustSinceMap.set('1.7.920', Date.now());
         bot._scheduleDustMaintenanceCheck();
 
-        const configuredDelayMs = GRID_LIMITS.DUST_CANCEL_DELAY_SEC * 1_000;
+        const configuredDelayMs = bot.config.gridLimits.DUST_CANCEL_DELAY_SEC * 1_000;
         assert.ok(
             scheduledDelay >= configuredDelayMs - 1000 && scheduledDelay <= configuredDelayMs,
             'Dust timer should schedule near configured delay'
@@ -895,7 +893,7 @@ async function testStartupDustSchedulesTimer() {
         assert.strictEqual(maintenanceCalls, 1, 'Dust timer should trigger maintenance once');
         console.log('  ✓ Existing dust at startup schedules a maintenance check');
     } finally {
-        GRID_LIMITS.DUST_CANCEL_DELAY_SEC = originalDelay;
+
         global.setTimeout = originalSetTimeout;
         global.clearTimeout = originalClearTimeout;
     }
@@ -909,10 +907,7 @@ async function testConsecutiveDustCancelSeeding() {
     const originalClearTimeout = global.clearTimeout;
     const originalDelay = GRID_LIMITS.DUST_CANCEL_DELAY_SEC;
     let bot;
-
     try {
-        GRID_LIMITS.DUST_CANCEL_DELAY_SEC = 60;
-
         // Intercept the timer so we can verify it is scheduled after the cancel.
         let timerScheduled = false;
         global.setTimeout = ((fn: any, delay: any) => {
@@ -929,6 +924,7 @@ async function testConsecutiveDustCancelSeeding() {
             assetB: 'BTS',
             incrementPercent: 0.5
         });
+        bot.config.gridLimits.DUST_CANCEL_DELAY_SEC = 60;
         bot.account = 'test-account';
         bot.privateKey = 'test-key';
 
@@ -978,7 +974,7 @@ async function testConsecutiveDustCancelSeeding() {
         chainOrders.cancelOrder = originalCancelOrder;
         global.setTimeout = originalSetTimeout;
         global.clearTimeout = originalClearTimeout;
-        GRID_LIMITS.DUST_CANCEL_DELAY_SEC = originalDelay;
+
     }
 }
 
@@ -992,7 +988,6 @@ async function testDustReseedHealthFailureDoesNotAbort() {
     let bot;
 
     try {
-        GRID_LIMITS.DUST_CANCEL_DELAY_SEC = 60;
 
         let fallbackTimerScheduled = false;
         global.setTimeout = ((fn: any, delay: any) => {
@@ -1011,6 +1006,7 @@ async function testDustReseedHealthFailureDoesNotAbort() {
         });
         bot.account = 'test-account';
         bot.privateKey = 'test-key';
+        bot.config.gridLimits.DUST_CANCEL_DELAY_SEC = 60;
 
         bot.manager = {
             synchronizeWithChain: async () => ({ newOrders: [], ordersNeedingCorrection: [] }),
@@ -1049,7 +1045,7 @@ async function testDustReseedHealthFailureDoesNotAbort() {
         chainOrders.cancelOrder = originalCancelOrder;
         global.setTimeout = originalSetTimeout;
         global.clearTimeout = originalClearTimeout;
-        GRID_LIMITS.DUST_CANCEL_DELAY_SEC = originalDelay;
+
     }
 }
 
@@ -1061,7 +1057,6 @@ async function testMaintenanceDefersStructuralWorkWhileDustPending() {
     const originalDelay = GRID_LIMITS.DUST_CANCEL_DELAY_SEC;
 
     try {
-        GRID_LIMITS.DUST_CANCEL_DELAY_SEC = 60;
         const scheduledDelays = [];
         global.setTimeout = ((fn: any, delay: any) => {
             scheduledDelays.push(delay);
@@ -1077,6 +1072,7 @@ async function testMaintenanceDefersStructuralWorkWhileDustPending() {
             assetB: 'BTS',
             incrementPercent: 0.5
         });
+        bot.config.gridLimits.DUST_CANCEL_DELAY_SEC = 60;
 
         const dustOrder = {
             id: 'dust-sell-1',
@@ -1118,14 +1114,14 @@ async function testMaintenanceDefersStructuralWorkWhileDustPending() {
         assert.strictEqual(divergenceChecked, false, 'Divergence should wait for the dust timer');
         assert.strictEqual(spreadChecked, false, 'Spread correction should wait for the dust timer');
         assert.strictEqual(bot._dustSinceMap.has('1.7.940'), true, 'Pending dust timer should remain tracked');
-        const expectedDeferredDelay = (GRID_LIMITS.DUST_CANCEL_DELAY_SEC * 1_000) + 6_000;
+        const expectedDeferredDelay = (bot.config.gridLimits.DUST_CANCEL_DELAY_SEC * 1_000) + 6_000;
         assert.ok(
             scheduledDelays.some(delay => delay >= expectedDeferredDelay - 100 && delay <= expectedDeferredDelay),
             'Deferred grid resync should allow a 6s blockchain settle window after the dust timer'
         );
         console.log('  ✓ Structural maintenance waits while dust cancellation is pending');
     } finally {
-        GRID_LIMITS.DUST_CANCEL_DELAY_SEC = originalDelay;
+
         global.setTimeout = originalSetTimeout;
         global.clearTimeout = originalClearTimeout;
     }

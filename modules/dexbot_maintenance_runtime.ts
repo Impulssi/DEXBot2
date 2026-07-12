@@ -783,8 +783,7 @@ function performGridResync(bot, options: {
     const centerRefreshLabel = options.centerRefreshLabel || (refreshCenterPrice ? 'grid reset' : 'grid resync');
     const resetSource = options.resetSource || (refreshCenterPrice ? 'manual_grid_resync' : 'dexbot_grid_resync');
     if (self._dustSinceMap?.size > 0 && getPendingDustDelayMs(self) === null) {
-        self._dustSinceMap.clear();
-        self._log('[MAINT-IDLE] Cleared stale dust timer entries (all timers expired).', 'info');
+        self._log('[MAINT-IDLE] Stale dust timer entries present (all timers expired); proceeding with resync.', 'debug');
     }
     const dustDelayMs = getPendingDustDelayMs(self);
     const idleDelayMs = getMaintenanceIdleDelayMs(self);
@@ -1438,10 +1437,12 @@ async function executeMaintenanceLogic(bot, context) {
             // All dust timers have expired — stale entries remain in the map but
             // there is nothing left to wait for. Proceed with structural maintenance.
             bot._log(
-                `[DUST-CANCEL] Dust timer expired; stale map entries cleared before ${context} structural maintenance`,
+                `[DUST-CANCEL] Dust timer expired; proceeding with ${context} structural maintenance`,
                 'info'
             );
-            bot._dustSinceMap.clear();
+            // DO NOT clear the map here. If orders failed to cancel (or race condition),
+            // keeping them in the map ensures they will be retried on the next tick
+            // rather than having their 30-second timers reset.
         }
 
         try {
@@ -1616,6 +1617,9 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
                     'info'
                 );
             } else {
+                // Keep the entry in _dustSinceMap so it retains its original
+                // firstSeen timestamp and is retried on the next maintenance
+                // tick rather than getting a fresh 30-second timer.
                 bot._warn(`[DUST-CANCEL] Failed to cancel dust order ${order.id}: ${errMsg}`);
             }
         }
