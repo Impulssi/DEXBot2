@@ -125,7 +125,7 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.0.14 → v1.1.0 | 7 | Unique bot names, stable ID removal, migration script, duplicate name enforcement |
 | v1.1.0 → v1.1.1 | 1 | Auto-startup migration, error handling, JSON-key tracking, cleanup |
 | v1.1.1 → v1.1.2 | 1 | AMA refit (λ=0.0022/step=0.0002), optimizer chart output, constant tuning, doc sync |
-| v1.1.2 → v1.1.3 | 2 | AMA refit (λ=0.0025/step=0.0003), per-AMA distance weights, tsx-CJS export fix, doc sync |
+| v1.1.2 → v1.1.3 | 4 | AMA refit (λ=0.0025/step=0.0003), per-AMA distance weights, tsx-CJS export fix, amaS% retune 0.085→0.08, doc sync |
 
 ---
 

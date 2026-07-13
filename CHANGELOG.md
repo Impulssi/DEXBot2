@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.1.3] - 2026-07-13 - AMA Refit λ=0.0025, tsx Compatibility, Doc Fixes
+## [1.1.3] - 2026-07-13 - AMA Refit λ=0.0025, amaS% Retune, tsx Compatibility, Doc Fixes
 
 ### 2026-07-13
 
@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 - **Docs**: updated `analysis/tradingview/README.md` — added `--scale` alias and date range fetching note, consolidated market adapter source section, updated default AMA slow period to 88.7 (`analysis/tradingview/README.md`).
 - **Docs**: changed `--bot-key` from required to optional with default `XRP-BTS` in DYNAMIC_WEIGHT_RESEARCH.md; fixed markdown link formatting in trend_detection/README.md (`analysis/trend_detection/DYNAMIC_WEIGHT_RESEARCH.md`, `analysis/trend_detection/README.md`).
 - **Docs**: updated EVOLUTION.md summary and commit count (`docs/EVOLUTION.md`).
+- **Chore**: reduce `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` from 0.085 to 0.08 — makes the AMA channel reach maximum influence more easily for improved responsiveness in trending markets (`665ab207`).
 
 ## [1.1.2] - 2026-07-13 - AMA Optimizer Improvements, Constants Tuning & Doc Sync
 
