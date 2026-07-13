@@ -1017,7 +1017,7 @@ let MARKET_ADAPTER = {
             name: 'AMA4 (cap 40%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 107.4,
+            slowPeriod: 102.4,
         },
     },
 

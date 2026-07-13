@@ -850,7 +850,7 @@ function generateHTML(data, title = 'TradingView Style Research') {
                     }
                     len++;
                     if (len < windowSize) {
-                        out.push(price);
+                        out.push(null);
                         continue;
                     }
                     prev = initOffset !== 0 ? (smaSum / windowSize) * (1 + initOffset / 100) : smaSum / windowSize;

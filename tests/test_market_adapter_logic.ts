@@ -274,7 +274,7 @@ assert.deepStrictEqual(
 
 {
     const ama = resolveAmaForBot({ gridPrice: 'ama2' });
-    assert.strictEqual(ama.slowPeriod, MARKET_ADAPTER.AMAS.AMA2.slowPeriod, 'ama2 keyword should resolve to built-in AMA2 slowPeriod (102.4)');
+    assert.strictEqual(ama.slowPeriod, MARKET_ADAPTER.AMAS.AMA2.slowPeriod, 'ama2 keyword should resolve to built-in AMA2 slowPeriod (80.6)');
     assert.strictEqual(ama.fastPeriod, MARKET_ADAPTER.AMAS.AMA2.fastPeriod, 'ama2 keyword should resolve to built-in AMA2 fastPeriod');
     assert.strictEqual(ama.erPeriod, MARKET_ADAPTER.AMAS.AMA2.erPeriod, 'ama2 keyword should resolve to built-in AMA2 erPeriod');
 }
