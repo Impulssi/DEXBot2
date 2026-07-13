@@ -291,6 +291,12 @@ ${formatPct.toString()}
 
 ${padRange.toString()}
 
+${roundTo.toString()}
+
+${fixedTo.toString()}
+
+${roundToDecimals.toString()}
+
 function formatCompactNumber(v) {
     const num = Number(v);
     if (!Number.isFinite(num)) return 'n/a';
