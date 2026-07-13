@@ -27,7 +27,7 @@ Tools that inspect DEXBot trading behavior and the market data it operates on. O
 | [`analyze_volatility.ts`](#volatility-analyze_volatilityts) | "Both weights clipped too hard / not enough?" | `tsx analysis/analyze_volatility.ts --bot-key <bot-key>` |
 | [`analyze_regime.ts`](#supporting-sub-signals) | "Is the trend/chaos gate too aggressive?" | `tsx analysis/analyze_regime.ts --bot-key <bot-key>` |
 | [`analyze_kalman.ts`](#supporting-sub-signals) | "Is Kalman's contribution to the blend right?" | `tsx analysis/analyze_kalman.ts --bot-key <bot-key>` |
-| [`ama_fitting/`](#ama_fitting) | "Which AMA preset fits this market?" | `node dist/analysis/ama_fitting/optimizer_high_resolution.js --data <lp-file>` |
+| [`ama_fitting/`](#ama_fitting) | "Which AMA preset fits this market?" | `npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js --data <lp-file>` |
 | [`bot_fitting/`](#bot_fitting) | "What spread / increment / ratio for my grid?" | `tsx analysis/bot_fitting/backtest_ama_sweep.ts --data <lp-file>` |
 
 > `analyze_derivatives.ts` (SMA / MACD / RSI derivative layer) is legacy and not surfaced — kept for reference only.

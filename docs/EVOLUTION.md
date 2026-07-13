@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.1.2 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.1.3 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 1,724+ commits over ~7 active months
 - **Code Maturity**: Evolution from basic utilities to a ~58,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 200+ automated test files
-- **Releases**: 50 release entries (v0.1.0 to v1.1.2)
+- **Releases**: 51 release entries (v0.1.0 to v1.1.3)
 
 ---
 
@@ -125,12 +125,13 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.0.14 → v1.1.0 | 7 | Unique bot names, stable ID removal, migration script, duplicate name enforcement |
 | v1.1.0 → v1.1.1 | 1 | Auto-startup migration, error handling, JSON-key tracking, cleanup |
 | v1.1.1 → v1.1.2 | 1 | AMA refit (λ=0.0022/step=0.0002), optimizer chart output, constant tuning, doc sync |
+| v1.1.2 → v1.1.3 | 2 | AMA refit (λ=0.0025/step=0.0003), tsx-CJS export fix, doc sync |
 
 ---
 
 ## Development Statistics
 
-200+ automated test files (all TypeScript), 47 release entries. See **Version History** for commit breakdown by release.
+200+ automated test files (all TypeScript), 51 release entries. See **Version History** for commit breakdown by release.
 
 ---
 
@@ -176,7 +177,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 13, 2026 (v1.1.2)
-**Total Commits**: 1,727
+**Last Updated**: July 13, 2026 (v1.1.3)
+**Total Commits**: 1,729
 **Date Range**: December 2, 2025 - July 13, 2026 (ongoing)
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

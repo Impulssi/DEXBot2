@@ -29,10 +29,10 @@ const AMA_PROFILES_FILE = PATHS.PROFILES.MARKET_PROFILES_JSON;
  * AMA-to-price distance, so candidates must stay close enough while also
  * being smooth.
  *
- * Usage:
- *   tsx optimizer_high_resolution.ts --data <path-to-lp-candles.json>
- *   tsx optimizer_high_resolution.ts --data <path-to-lp-candles.json> --write-profiles
- *   tsx optimizer_high_resolution.ts --data <path-to-lp-candles.json> --erMax 400 --fastMax 20 --slowMax 200
+ * Usage (build first, then run compiled JS):
+ *   npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js --data <path-to-lp-candles.json>
+ *   node dist/analysis/ama_fitting/optimizer_high_resolution.js --data <path-to-lp-candles.json> --write-profiles
+ *   node dist/analysis/ama_fitting/optimizer_high_resolution.js --data <path-to-lp-candles.json> --erMax 400 --fastMax 20 --slowMax 200
  *
  */
 
@@ -43,8 +43,8 @@ const DEFAULT_SEARCH = {
 };
 
 // ── Geometric analysis constants ──────────────────────────────────────────────
-const BASE_DISTANCE_WEIGHT = 0.0022;
-const DISTANCE_WEIGHT_STEP  = 0.0002;
+const BASE_DISTANCE_WEIGHT = 0.0025;
+const DISTANCE_WEIGHT_STEP  = 0.0003;
 
 const AMA_OBJECTIVES = [
     { key: 'AMA1', name: 'AMA1 (min move, cap 25%)', distanceCapQuantile: 0.25 },

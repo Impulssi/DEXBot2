@@ -152,7 +152,7 @@ function calculateAMA(closes: any, params: any) {
     return closes.map(price => indicator.update(price));
 }
 
-export = {
+module.exports = {
     AMA,
     calculateAMA,
     getAmaWarmupBars,

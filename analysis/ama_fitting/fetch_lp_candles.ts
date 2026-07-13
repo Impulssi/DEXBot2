@@ -165,7 +165,7 @@ async function main() {
     console.log(`  Saved:    ${path.relative(process.cwd(), outPath)}`);
     console.log('');
     console.log('Run optimizer:');
-    console.log(`  tsx analysis/ama_fitting/optimizer_high_resolution.ts --data ${path.relative(process.cwd(), outPath)}`);
+    console.log(`  npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js --data ${path.relative(process.cwd(), outPath)}`);
 }
 main().catch((err) => {
     console.error('Error:', err.message);

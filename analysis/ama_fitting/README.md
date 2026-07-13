@@ -77,11 +77,6 @@ npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 ```
 
-Or from the `analysis/ama_fitting/` directory using the local script shortcut:
-```bash
-npm run optimize -- --data ../../market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
-```
-
 **Export winners to the market adapter profile file:**
 ```bash
 npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js \
@@ -89,9 +84,9 @@ npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js \
   --write-profiles
 ```
 
-> `npx tsx` does not work on this project due to `export =` syntax in dependency
-> modules (unsupported in tsx v4 strip-only mode). Always use the compiled output
-> via `node dist/...` or the `npm run optimize` shortcut.
+> `npx tsx` does not work on this project due to `export =` syntax in several
+> dependency modules (unsupported in tsx v4 strip-only mode). Always use the
+> compiled output via `node dist/...`.
 
 **Default search ranges:**
 
@@ -148,7 +143,7 @@ Source: pool 133 `IOB.XRP/BTS`, 1h candles, 2023-05-05 22:00 UTC through
 2026-05-04 22:00 UTC.
 
 **Outputs:**
-- `analysis/ama_fitting/optimization_results_<datafile>_l<λ>_s<step>.json` — full results (e.g. `_l0020_s000` for λ=0.0020, step=0)
+- `analysis/ama_fitting/optimization_results_<datafile>_l<λ>_s<step>.json` — full results (e.g. `_l0_0025_s0_0003` for λ=0.0025, step=0.0003)
 - `analysis/charts/optimization_chart_<datafile>_l<λ>_s<step>.html` — interactive AMA overlay chart (auto-generated)
 - `profiles/market_profiles.json` — updated with new AMA parameters per pair only when `--write-profiles` is used
 

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.3] - 2026-07-13 - AMA Refit λ=0.0025, tsx Compatibility, Doc Fixes
+
+### 2026-07-13
+
+- **Tune**: AMA1–AMA3 slow periods refitted on pool 133 1h data with optimizer λ=0.0025/step=0.0003. AMA1: 80.6→73.3, AMA2: 84.6→80.6, AMA3: 93.1→88.7, AMA4 unchanged at 107.4 (`modules/constants.ts`).
+- **Tune**: `BASE_DISTANCE_WEIGHT` set to 0.0025, `DISTANCE_WEIGHT_STEP` set to 0.0003 (`analysis/ama_fitting/optimizer_high_resolution.ts`).
+- **Fix**: `export =` replaced with `module.exports =` in `ama.ts` to resolve tsx v4 strip-only mode compatibility for CJS require() imports (`market_adapter/core/strategies/ama.ts`).
+- **Fix**: updated optimizer header usage comments from `tsx` to `npm run build && node dist/...` workflow (`analysis/ama_fitting/optimizer_high_resolution.ts`, `analysis/ama_fitting/fetch_lp_candles.ts`).
+- **Docs**: removed stale `npm run optimize` shortcut, updated output filename examples to match λ=0.0025/step=0.0003, clarified tsx limitation note (`analysis/ama_fitting/README.md`, `analysis/README.md`).
+- **Chore**: version bumped to 1.1.3 across all manifests.
+
 ## [1.1.2] - 2026-07-13 - AMA Optimizer Improvements, Constants Tuning & Doc Sync
 
 ### 2026-07-13
