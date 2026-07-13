@@ -14,6 +14,7 @@ For each of the 4 AMA strategies, it searches for best:
 
 - `backtest_bot_fitting.ts` — lightweight sweep across spread / increment / ratio with basic risk scoring
 - `backtest_ama_sweep.ts` — persistent grid simulation with fixed-chain-price mechanics, reposition thresholds, and worker-thread parallelization
+- `shared_utils.ts` — shared helpers (argument parsing, data loading, formatting) used by both scripts
 
 ### Input dependencies
 
@@ -35,7 +36,11 @@ tsx analysis/bot_fitting/backtest_ama_sweep.ts \
   --results <path-to-optimization-results.json>
 ```
 
-Optional tuning:
+> `backtest_bot_fitting.ts` auto-derives `--results` from the `--data` filename
+> (`analysis/ama_fitting/optimization_results_<base>.json`) when omitted.
+> `backtest_ama_sweep.ts` requires `--results` explicitly.
+
+Optional tuning (values shown are examples, not defaults):
 
 ```bash
 tsx analysis/bot_fitting/backtest_bot_fitting.ts \
@@ -52,9 +57,11 @@ tsx analysis/bot_fitting/backtest_bot_fitting.ts \
   --risk-cancel 0.15
 ```
 
+> Default `--ratio` is `1.5,1.75,2,2.5,3,4,5,8,10` (includes `1.75`).
+
 ### Output
 
-Results are written to `analysis/bot_fitting/` and to `analysis/ama_fitting/` using filenames derived from the input data file.
+Results are written to `analysis/bot_fitting/` (filenames derived from the input data file: `bot_fitting_results_<base>.json` for the lightweight sweep, `ama_sweep_results_<base>.json` for the persistent grid simulation).
 
 The console also prints best parameter set per AMA with matched pairs, fill efficiency, net capture and score.
 
@@ -91,6 +98,21 @@ Search grid defaults — centered around bot defaults (spread=2%, increment=0.5%
 | Max orders per side | 20 |
 | Round-trip fee | 0.20% |
 | Spread ≥ factor × increment | 2.1 |
+
+All parameters above are tunable via CLI flags. Additional tuning flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--capital <n>` | 10000 | Notional capital per side |
+| `--reposition <pct>` | 2.5 | AMA drift % to trigger re-center |
+| `--bts-create-fee <n>` | 0.48260 | BTS create order fee |
+| `--bts-cancel-fee <n>` | 0.00482 | BTS cancel order fee |
+| `--maker-create-factor <n>` | 0.10 | Maker share of create fee |
+| `--tx-fee-price <n>` | 1.0 | Convert BTS fees into backtest units |
+| `--top <n>` | 15 | Top N results displayed per AMA |
+| `--help` | — | Print full usage |
+
+The sweep parallelizes across combos using worker threads (one per CPU core). Use `--help` for the complete option list.
 
 ```bash
 tsx analysis/bot_fitting/backtest_ama_sweep.ts \

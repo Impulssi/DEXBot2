@@ -9,7 +9,7 @@ parameters into `profiles/market_profiles.json` for the market adapter.
 ## Workflow Overview
 
 ```
-1. fetch_lp_candles.ts   →   market_adapter/data/<pool>_1h.json
+1. fetch_lp_candles.ts   →   market_adapter/data/lp/<pairFolder>/lp_pool_<poolShort>_<interval>.json
 2. optimizer_high_resolution.ts   →   optimization_results_*.json
                                    →   profiles/market_profiles.json  (only with --write-profiles)
 3. scripts/generate_lp_chart.ts   →   market chart + comparison chart  (visual review)
@@ -27,11 +27,10 @@ bootstrap (gaps filled via `candle_utils.fillCandleGaps`), but without pruning.
 
 **Known asset details:**
 
-| Asset        | Symbol       | Object ID  | Precision |
-|--------------|--------------|------------|-----------|
-| `<ASSET_A>`        | `<ASSET_A>`        | `<asset_a_id>`   | `<n>`         |
-| `<ASSET_B>`          | `<ASSET_B>`          | `<asset_b_id>`      | `<n>`         |
-| `<ASSET_C>` | `<ASSET_C>` | —          | —         |
+| Asset   | Symbol     | Object ID      | Precision |
+|---------|------------|----------------|-----------|
+| `<ASSET_A>` | `<ASSET_A>` | `<asset_a_id>` | `<n>`     |
+| `<ASSET_B>` | `<ASSET_B>` | `<asset_b_id>` | `<n>`     |
 
 **`<ASSET_A>`/`<ASSET_B>` pool (3 years):**
 ```bash
@@ -55,6 +54,7 @@ Output: `market_adapter/data/lp/<pair_folder>/lp_pool_<poolShort>_<interval>.jso
 | `--assetB` | required | Asset B symbol |
 | `--assetBId` | required | Asset B object ID |
 | `--assetBPrecision` | required | Asset B precision |
+| `--interval` | `1h` | Candle interval label (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) |
 | `--hours` | `26280` | Lookback hours (26280 = 3 years) |
 | `--out` | auto | Output filename (placed in `market_adapter/data/` if not absolute) |
 
@@ -73,32 +73,20 @@ to `profiles/market_profiles.json`.
 
 **Run on the fetched LP data:**
 ```bash
-npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js \
+tsx analysis/ama_fitting/optimizer_high_resolution.ts \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 ```
 
 **Export winners to the market adapter profile file:**
 ```bash
-npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js \
+tsx analysis/ama_fitting/optimizer_high_resolution.ts \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --write-profiles
 ```
 
-> `npx tsx` does not work on this project due to `export =` syntax in several
-> dependency modules (unsupported in tsx v4 strip-only mode). Always use the
-> compiled output via `node dist/...`.
-
-**Default search ranges:**
-
-| Param | Min  | Max  | Sampling | Quantum |
-|-------|------|------|----------|---------|
-| ER    | 500  | 1000 | 15 geometric points | 1 |
-| Fast  | 2    | 8    | 30 geometric points | 0.01 |
-| Slow  | 50   | 200  | 30 geometric points | 0.1 |
-
 Override ranges via CLI:
 ```bash
-npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js \
+tsx analysis/ama_fitting/optimizer_high_resolution.ts \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --erMin 100 --erMax 600 \
   --slowMin 800 --slowMax 6000
@@ -118,6 +106,29 @@ These are the active defaults used by the optimizer:
 | AMA2 | 0.30 | Balanced |
 | **AMA3** | 0.35 | Default |
 | AMA4 | 0.40 | Widest fit, most conservative |
+
+**AMA distance weights:**
+
+The distance penalty λ balances movement smoothness against price closeness
+(higher λ = AMA must stay tighter to price). Each AMA has a default weight;
+override any individually:
+
+```bash
+# Defaults (built-in)
+--ama1Weight 0.0025  --ama2Weight 0.0022  --ama3Weight 0.0019  --ama4Weight 0.00165
+
+# Override only AMA1 and AMA4, keeping AMA2/AMA3 defaults
+tsx analysis/ama_fitting/optimizer_high_resolution.ts \
+  --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
+  --ama1Weight 0.003 --ama4Weight 0.002
+```
+
+| Key  | Default λ | Character |
+|------|----------:|-----------|
+| AMA1 | 0.0025 | Heaviest distance penalty — most reactive, stays closest to price |
+| AMA2 | 0.0022 | Moderate penalty |
+| **AMA3** | 0.0019 | Default — balanced move-vs-distance tradeoff |
+| AMA4 | 0.00165 | Lightest distance penalty — allows more room, most conservative |
 
 **Inventory price range guidance:**
 
@@ -143,8 +154,8 @@ Source: pool 133 `IOB.XRP/BTS`, 1h candles, 2023-05-05 22:00 UTC through
 2026-05-04 22:00 UTC.
 
 **Outputs:**
-- `analysis/ama_fitting/optimization_results_<datafile>_l<λ>_s<step>.json` — full results (e.g. `_l0_0025_s0_0003` for λ=0.0025, step=0.0003)
-- `analysis/charts/optimization_chart_<datafile>_l<λ>_s<step>.html` — interactive AMA overlay chart (auto-generated)
+- `analysis/ama_fitting/optimization_results_<datafile>_w<λ1>_<λ2>_<λ3>_<λ4>.json` — full results (e.g. `_w0_0025_0_0022_0_0019_0_00165`)
+- `analysis/charts/optimization_chart_<datafile>_w<λ1>_<λ2>_<λ3>_<λ4>.html` — interactive AMA overlay chart (auto-generated)
 - `profiles/market_profiles.json` — updated with new AMA parameters per pair only when `--write-profiles` is used
 
 **Boundary check:** If a winner lands on the edge of the search range, the
@@ -155,8 +166,9 @@ optimizer warns you. Widen the affected range and re-run.
 ## Step 3 — Visual Review
 
 A chart is auto-generated during Step 2 at
-`analysis/charts/optimization_chart_<datafile>.html`. Open it in a browser
-to compare all four optimized AMA overlays against the candlestick price.
+`analysis/charts/optimization_chart_<datafile>_w<λ1>_<λ2>_<λ3>_<λ4>.html`.
+Open it in a browser to compare all four optimized AMA overlays against the
+candlestick price.
 
 For a standalone chart without re-running the optimizer (uses current defaults
 from `modules/constants.ts` rather than optimized results):
@@ -168,7 +180,10 @@ npm run lp:chart -- \
 
 This generates both:
 - `analysis/charts/lp_AMA_chart_pool_133.html` — market-adapter style LP chart
-- `analysis/charts/lp_chart_1h_UNIFIED_COMPARISON.html` — unified comparison chart, with the interval derived from LP metadata
+- `analysis/charts/lp_chart_pool_133.comparison.html` — AMA comparison chart (derived from LP metadata)
+
+The unified comparison chart (`*_UNIFIED_COMPARISON.html`) is produced by
+`npm run ama:chart:lp-local` (see workflow overview above).
 
 ---
 
@@ -176,9 +191,34 @@ This generates both:
 
 When the optimizer is run with `--write-profiles`, `profiles/market_profiles.json`
 is updated with the new AMA1–AMA4 parameters for the pair. The market adapter
-reads this file at startup and uses the pair-matched profile instead of the
-built-in constants defaults. No restart required — takes effect on the next
-market adapter cycle.
+reads this file at startup and on each cycle via `_resetCycleCache()` /
+`findAmaProfileForBot()` in `market_adapter/market_adapter.ts:167`. No restart
+required — takes effect on the next market adapter cycle.
+
+---
+
+## Auxiliary Tools
+
+### `calibrate_convergence_er.ts`
+
+Computes the implied `AMA_CONVERGENCE_ER_AVG` for `modules/constants.ts` from
+real LP candle data. Accounts for Jensen's inequality: the average smoothing
+constant is not the smoothing constant of the average ER.
+
+```bash
+tsx analysis/ama_fitting/calibrate_convergence_er.ts --data <lp-file.json> --amas AMA3
+```
+
+### `analyze_ama_price_changes.ts`
+
+Simulates `AMA_DELTA_THRESHOLD_PERCENT` grid-reposition frequency for all four
+AMA series on LP candle data. Reports reposition counts and inter-reposition
+step distributions.
+
+```bash
+tsx analysis/ama_fitting/analyze_ama_price_changes.ts \
+  --data <lp-file.json> --results <optimization-results.json>
+```
 
 ---
 

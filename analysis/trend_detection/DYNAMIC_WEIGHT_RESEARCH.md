@@ -85,7 +85,7 @@ Output: `analysis/charts/dynamic_weight_chart.html` (open in browser)
 |------|---------|-------------|
 | `--source` | `market_adapter` | Data source type (`json`, `market_adapter`) |
 | `--file` | — | Path to JSON candle file (implies `--source json`) |
-| `--bot-key <key>` | Required. Bot key from `profiles/bots.json` |
+| `--bot-key <key>` | `XRP-BTS` | Bot key from `profiles/bots.json` |
 | `--chart` | `analysis/charts/dynamic_weight_chart.html` | Output HTML path |
 | `--alpha` | `0.5` | Initial α blend (0 = pure Kalman, 1 = pure AMA) |
 | `--dw` | `0.50` | Initial displacement weight (0 = pure velocity, 1 = full displacement) |

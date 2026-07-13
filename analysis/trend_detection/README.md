@@ -5,7 +5,7 @@ This folder contains the AMA, Kalman, Hurst, Permutation Entropy, and regime ana
 ## Docs
 
 - [DYNAMIC_WEIGHT_RESEARCH.md](DYNAMIC_WEIGHT_RESEARCH.md) - dynamic weight research notes for the Kalman/Hurst/PE blend
-- `SIGNAL_DOCUMENTATION.md` - derivative signal layer documentation
+- [SIGNAL_DOCUMENTATION.md](SIGNAL_DOCUMENTATION.md) - derivative signal layer documentation
 
 ## Live Counterpart
 

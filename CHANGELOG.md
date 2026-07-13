@@ -6,12 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### 2026-07-13
 
-- **Tune**: AMA1–AMA3 slow periods refitted on pool 133 1h data with optimizer λ=0.0025/step=0.0003. AMA1: 80.6→73.3, AMA2: 84.6→80.6, AMA3: 93.1→88.7, AMA4 unchanged at 107.4 (`modules/constants.ts`).
-- **Tune**: `BASE_DISTANCE_WEIGHT` set to 0.0025, `DISTANCE_WEIGHT_STEP` set to 0.0003 (`analysis/ama_fitting/optimizer_high_resolution.ts`).
-- **Fix**: `export =` replaced with `module.exports =` in `ama.ts` to resolve tsx v4 strip-only mode compatibility for CJS require() imports (`market_adapter/core/strategies/ama.ts`).
-- **Fix**: updated optimizer header usage comments from `tsx` to `npm run build && node dist/...` workflow (`analysis/ama_fitting/optimizer_high_resolution.ts`, `analysis/ama_fitting/fetch_lp_candles.ts`).
-- **Docs**: removed stale `npm run optimize` shortcut, updated output filename examples to match λ=0.0025/step=0.0003, clarified tsx limitation note (`analysis/ama_fitting/README.md`, `analysis/README.md`).
-- **Chore**: version bumped to 1.1.3 across all manifests.
+- **Refactor**: `BASE_DISTANCE_WEIGHT` / `DISTANCE_WEIGHT_STEP` linear step model replaced with individual per-AMA default `distanceWeight` values (0.0025, 0.0022, 0.0019, 0.00165). Added `--ama1Weight` through `--ama4Weight` CLI flags for per-AMA overrides (any subset, no all-or-none requirement). Simplified `lambdaSuffix` to always use `_w<λ1>_<λ2>_<λ3>_<λ4>` format. Removed obsolete `baseDistanceWeight` / `distanceWeightStep` / `customWeights` metadata fields (`analysis/ama_fitting/optimizer_high_resolution.ts`).
+- **Docs**: expanded `analysis/ama_fitting/README.md` — added Auxiliary Tools section (calibrate_convergence_er.ts, analyze_ama_price_changes.ts), documented per-AMA default weight table and individual `--ama1Weight`–`--ama4Weight` override flags, updated output filename suffix to `_w<λ1>_<λ2>_<λ3>_<λ4>` format, added market_adapter hot-reload reference, cleaned up asset table and fetch path (`analysis/ama_fitting/README.md`).
+- **Docs**: expanded `analysis/README.md` — added derivatives analysis entry and `npm run analysis:derivatives` script, fixed placeholder in trade_profitability CLI example, added missing `--file` examples for analyze_regime and analyze_kalman, linked trend_detection/README.md (`analysis/README.md`).
+- **Docs**: expanded `analysis/bot_fitting/README.md` — documented shared_utils.ts, auto-derive behavior for `--results`, default ratio values, output filenames, CLI tuning flags table, and worker-thread parallelization (`analysis/bot_fitting/README.md`).
+- **Docs**: updated `analysis/tradingview/README.md` — added `--scale` alias and date range fetching note, consolidated market adapter source section, updated default AMA slow period to 88.7 (`analysis/tradingview/README.md`).
+- **Docs**: changed `--bot-key` from required to optional with default `XRP-BTS` in DYNAMIC_WEIGHT_RESEARCH.md; fixed markdown link formatting in trend_detection/README.md (`analysis/trend_detection/DYNAMIC_WEIGHT_RESEARCH.md`, `analysis/trend_detection/README.md`).
+- **Docs**: updated EVOLUTION.md summary and commit count (`docs/EVOLUTION.md`).
 
 ## [1.1.2] - 2026-07-13 - AMA Optimizer Improvements, Constants Tuning & Doc Sync
 

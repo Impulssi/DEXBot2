@@ -42,15 +42,15 @@ const DEFAULT_SEARCH = {
     slow: { min: 50, max: 200, count: 30, step: null, quantum: 0.1 },
 };
 
-// ── Geometric analysis constants ──────────────────────────────────────────────
-const BASE_DISTANCE_WEIGHT = 0.0025;
-const DISTANCE_WEIGHT_STEP  = 0.0003;
+// ── Default per-AMA distance weights ────────────────────────────────────────
+// Each AMA has its own λ that controls the movement-vs-distance tradeoff.
+// Override individually via --ama1Weight, --ama2Weight, etc. CLI flags.
 
 const AMA_OBJECTIVES = [
-    { key: 'AMA1', name: 'AMA1 (min move, cap 25%)', distanceCapQuantile: 0.25 },
-    { key: 'AMA2', name: 'AMA2 (min move, cap 30%)', distanceCapQuantile: 0.30 },
-    { key: 'AMA3', name: 'AMA3 (min move, cap 35%)', distanceCapQuantile: 0.35 },
-    { key: 'AMA4', name: 'AMA4 (min move, cap 40%)', distanceCapQuantile: 0.40 },
+    { key: 'AMA1', name: 'AMA1 (min move, cap 25%)', distanceCapQuantile: 0.25, distanceWeight: 0.0025 },
+    { key: 'AMA2', name: 'AMA2 (min move, cap 30%)', distanceCapQuantile: 0.30, distanceWeight: 0.0022 },
+    { key: 'AMA3', name: 'AMA3 (min move, cap 35%)', distanceCapQuantile: 0.35, distanceWeight: 0.0019 },
+    { key: 'AMA4', name: 'AMA4 (min move, cap 40%)', distanceCapQuantile: 0.40, distanceWeight: 0.00165 },
 ];
 
 function cloneObjectives() {
@@ -148,6 +148,10 @@ function parseArgs(argv = process.argv.slice(2)) {
             case '--ama2Cap': (out as any).ama2Cap = Number(v); i++; break;
             case '--ama3Cap': (out as any).ama3Cap = Number(v); i++; break;
             case '--ama4Cap': (out as any).ama4Cap = Number(v); i++; break;
+            case '--ama1Weight': (out as any).ama1Weight = Number(v); i++; break;
+            case '--ama2Weight': (out as any).ama2Weight = Number(v); i++; break;
+            case '--ama3Weight': (out as any).ama3Weight = Number(v); i++; break;
+            case '--ama4Weight': (out as any).ama4Weight = Number(v); i++; break;
             case '--workers': out.workers = Number(v); i++; break;
             case '--write-profiles': out.writeProfiles = true; break;
         }
@@ -176,6 +180,11 @@ function getAmaObjectivesFromArgs(args) {
         if (Number.isFinite(cap)) o.distanceCapQuantile = cap;
         if (!Number.isFinite(o.distanceCapQuantile) || o.distanceCapQuantile <= 0 || o.distanceCapQuantile > 1) {
             throw new Error(`Invalid cap for ${o.key}: ${o.distanceCapQuantile}. Use 0 < cap <= 1`);
+        }
+        const w = args[`${id}Weight`];
+        if (Number.isFinite(w)) {
+            if (w <= 0) throw new Error(`${o.key} distanceWeight must be positive, got ${w}`);
+            o.distanceWeight = w;
         }
     }
     return objectives;
@@ -454,9 +463,8 @@ async function run() {
     console.log(`  4 AMAs — pure geometric, no grid or bot settings`);
     console.log('  Objective: minimise movement + λ·distance under per-AMA max distance caps');
     for (const o of objectives) {
-        console.log(`  ${o.key}: distance cap quantile q=${o.distanceCapQuantile.toFixed(2)}`);
+        console.log(`  ${o.key}: distance cap q=${o.distanceCapQuantile.toFixed(2)}  λ=${o.distanceWeight.toFixed(6)}`);
     }
-    console.log(`  Distance penalty: λ=${BASE_DISTANCE_WEIGHT} → ${BASE_DISTANCE_WEIGHT - DISTANCE_WEIGHT_STEP * (objectives.length - 1)}`);
     console.log(`  Ranges:     ER ${ER_VALUES[0]}–${ER_VALUES[ER_VALUES.length-1]}  Fast ${FAST_VALUES[0]}–${FAST_VALUES[FAST_VALUES.length-1]}  Slow ${SLOW_VALUES_AREA[0]}–${SLOW_VALUES_AREA[SLOW_VALUES_AREA.length-1]}`);
     console.log(`  Sampling:   ER ${erDim.meta.mode}(${erDim.meta.count}${erDim.meta.ratio ? `,x${erDim.meta.ratio.toFixed(3)}` : ''})  Fast ${fastDim.meta.mode}(${fastDim.meta.count}${fastDim.meta.ratio ? `,x${fastDim.meta.ratio.toFixed(3)}` : ''})  Slow ${slowDim.meta.mode}(${slowDim.meta.count}${slowDim.meta.ratio ? `,x${slowDim.meta.ratio.toFixed(3)}` : ''})`);
     console.log(`  Combos:     ${totalCombos}\n`);
@@ -505,7 +513,7 @@ async function run() {
     const maxDistVals = entries.map((e) => e.area.maxDist);
 
     const objectiveResults = objectives.map((objective, idx) => {
-        const distanceWeight = BASE_DISTANCE_WEIGHT - (DISTANCE_WEIGHT_STEP * idx);
+        const distanceWeight = objective.distanceWeight;
         const computedCap = percentile(maxDistVals, objective.distanceCapQuantile);
         const cappedEntries = entries.filter((e) => e.area.maxDist <= computedCap);
 
@@ -620,7 +628,7 @@ async function run() {
 
     // ── Chart ─────────────────────────────────────────────────────────────────
     const ws = (v) => String(v).replace('.', '_');
-    const lambdaSuffix = `_l${ws(BASE_DISTANCE_WEIGHT)}_s${ws(DISTANCE_WEIGHT_STEP)}`;
+    const lambdaSuffix = `_w${objectives.map((o) => ws(String(o.distanceWeight))).join('_')}`;
     const COLOR_CYCLE = ['#26a69a', '#fb8c00', '#5c9ee6', '#ef5350'];
     const DASH_CYCLE = ['dot', 'solid', 'dash', 'dashdot'];
     const candleArrays = candles.map(c => [c.timestamp, c.open, c.high, c.low, c.close, c.volume]);
@@ -670,11 +678,9 @@ async function run() {
             },
             boundaryFlags: boundarySummary,
             objective: {
-                type: 'distance_cap_then_movement_plus_linear_distance_minimization',
+                type: 'per_ama_distance_weights',
                 distanceMetric: 'sum(abs(close-ama)/ama)',
                 movementMetric: 'sum(abs(ama_t-ama_t-1)/ama_t-1)',
-                baseDistanceWeight: BASE_DISTANCE_WEIGHT,
-                distanceWeightStep: DISTANCE_WEIGHT_STEP,
                 distanceWeightByAma: Object.fromEntries(objectiveResults.map((r) => [r.objective.key, r.distanceWeight])),
                 weights: objectives,
                 maxDistanceCap: {
