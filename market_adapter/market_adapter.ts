@@ -350,7 +350,7 @@ function resolveBotCfg(bot, globalCfg) {
 
 const DEFAULT_AMA_KEY = String(MARKET_ADAPTER.DEFAULT_AMA_KEY).toUpperCase();
 const BUILTIN_AMAS = MARKET_ADAPTER.AMAS;
-const DEFAULT_AMA = BUILTIN_AMAS[DEFAULT_AMA_KEY] || BUILTIN_AMAS.AMA3 || { erPeriod: 781, fastPeriod: 5.2, slowPeriod: 112.7 };
+const DEFAULT_AMA = MARKET_ADAPTER.AMAS.AMA3;
 const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
 const AMA_PRESET_KEYS = ['AMA1', 'AMA2', 'AMA3', 'AMA4'];
 

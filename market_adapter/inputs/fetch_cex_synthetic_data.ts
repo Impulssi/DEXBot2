@@ -177,7 +177,7 @@ function normalizeTimestamp(raw) {
 }
 
 function computeRequiredCandles(amaConfig = null, cfg = null) {
-    const ama = amaConfig || MARKET_ADAPTER.AMAS?.[MARKET_ADAPTER.DEFAULT_AMA_KEY] || MARKET_ADAPTER.AMAS?.AMA3;
+    const ama = amaConfig || MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY] || MARKET_ADAPTER.AMAS.AMA3;
     if (!ama) return DEFAULT_BOOTSTRAP_LOOKBACK_HOURS;
 
     const warmupBars = getAmaWarmupBars(

@@ -58,9 +58,7 @@ function findMarketProfile(profiles: any, meta: any = {}) {
 }
 
 function resolveAmaDefaults({ meta, data, marketProfiles }: any = {}) {
-    const amaDefaultsSource = MARKET_ADAPTER.AMAS?.AMA3
-        || MARKET_ADAPTER.AMAS?.[MARKET_ADAPTER.DEFAULT_AMA_KEY]
-        || { erPeriod: 781, fastPeriod: 5.2, slowPeriod: 112.7 };
+    const amaDefaultsSource = MARKET_ADAPTER.AMAS.AMA3;
     const profile = findMarketProfile(marketProfiles, meta);
     const profileAmaKey = profile?.defaultAma && profile.amas && profile.amas[profile.defaultAma]
         ? profile.defaultAma
@@ -68,13 +66,13 @@ function resolveAmaDefaults({ meta, data, marketProfiles }: any = {}) {
     const profileAma = profileAmaKey ? profile.amas[profileAmaKey] : null;
     const source = data?.amaDefaults || profileAma || amaDefaultsSource;
     return {
-        erPeriod: Math.max(1, Math.round(Number(data?.amaErPeriod ?? source.erPeriod ?? 781))),
+        erPeriod: Math.max(1, Math.round(Number(data?.amaErPeriod ?? source.erPeriod))),
         fastPeriod: Number.isFinite(Number(data?.amaFastPeriod))
             ? Number(data.amaFastPeriod)
-            : Number(source.fastPeriod ?? 5.2),
+            : Number(source.fastPeriod),
         slowPeriod: Number.isFinite(Number(data?.amaSlowPeriod))
             ? Number(data.amaSlowPeriod)
-            : Number(source.slowPeriod ?? 112.7),
+            : Number(source.slowPeriod),
     };
 }
 
@@ -454,13 +452,13 @@ function generateHTML(data, title = 'TradingView Style Research') {
         let currentAmaEnabled = state.amaEnabled ?? !!payload.amaEnabled;
         let currentAmaErPeriod = Number.isFinite(state.amaErPeriod)
             ? Number(state.amaErPeriod)
-            : Number(payload.amaDefaults?.erPeriod || 781);
+            : Number(payload.amaDefaults?.erPeriod || ${MARKET_ADAPTER.AMAS.AMA3.erPeriod});
         let currentAmaFastPeriod = Number.isFinite(state.amaFastPeriod)
             ? Number(state.amaFastPeriod)
-            : Number(payload.amaDefaults?.fastPeriod || 5.2);
+            : Number(payload.amaDefaults?.fastPeriod || ${MARKET_ADAPTER.AMAS.AMA3.fastPeriod});
         let currentAmaSlowPeriod = Number.isFinite(state.amaSlowPeriod)
             ? Number(state.amaSlowPeriod)
-            : Number(payload.amaDefaults?.slowPeriod || 112.7);
+            : Number(payload.amaDefaults?.slowPeriod || ${MARKET_ADAPTER.AMAS.AMA3.slowPeriod});
         let currentVwapEnabled = state.vwapEnabled ?? !!payload.vwapEnabled;
         let currentVwapBars = Number.isFinite(state.vwapBars) ? state.vwapBars : Number(payload.vwapBars || 500);
         let currentAmaInitOffset = Number.isFinite(state.amaInitOffset) ? state.amaInitOffset : 0;
@@ -972,9 +970,9 @@ function generateHTML(data, title = 'TradingView Style Research') {
             btn.setAttribute('aria-label', next === 'linear' ? 'Toggle to log scale' : 'Toggle to linear scale');
         }
         function resetAmaDefaults() {
-            currentAmaErPeriod = Number(payload.amaDefaults?.erPeriod || 781);
-            currentAmaFastPeriod = Number(payload.amaDefaults?.fastPeriod || 5.2);
-            currentAmaSlowPeriod = Number(payload.amaDefaults?.slowPeriod || 112.7);
+            currentAmaErPeriod = Number(payload.amaDefaults?.erPeriod || ${MARKET_ADAPTER.AMAS.AMA3.erPeriod});
+            currentAmaFastPeriod = Number(payload.amaDefaults?.fastPeriod || ${MARKET_ADAPTER.AMAS.AMA3.fastPeriod});
+            currentAmaSlowPeriod = Number(payload.amaDefaults?.slowPeriod || ${MARKET_ADAPTER.AMAS.AMA3.slowPeriod});
             setControls();
             rerender(false);
         }
@@ -1523,9 +1521,9 @@ function generateHTML(data, title = 'TradingView Style Research') {
             currentSmaEnabled = document.getElementById('sma-toggle').checked;
             currentSmaPeriod = clamp(Math.round(Number(document.getElementById('sma-period').value) || 20), 1, 9999);
             currentAmaEnabled = document.getElementById('ama-toggle').checked;
-            currentAmaErPeriod = clamp(Math.round(Number(document.getElementById('ama-er').value) || 781), 1, 999999);
-            currentAmaFastPeriod = clamp(Number(document.getElementById('ama-fast').value) || Number(payload.amaDefaults?.fastPeriod || 5.2), 0.1, 999999);
-            currentAmaSlowPeriod = clamp(Number(document.getElementById('ama-slow').value) || Number(payload.amaDefaults?.slowPeriod || 112.7), 0.1, 999999);
+            currentAmaErPeriod = clamp(Math.round(Number(document.getElementById('ama-er').value) || ${MARKET_ADAPTER.AMAS.AMA3.erPeriod}), 1, 999999);
+            currentAmaFastPeriod = clamp(Number(document.getElementById('ama-fast').value) || Number(payload.amaDefaults?.fastPeriod || ${MARKET_ADAPTER.AMAS.AMA3.fastPeriod}), 0.1, 999999);
+            currentAmaSlowPeriod = clamp(Number(document.getElementById('ama-slow').value) || Number(payload.amaDefaults?.slowPeriod || ${MARKET_ADAPTER.AMAS.AMA3.slowPeriod}), 0.1, 999999);
             currentAmaInitOffset = snapInitOffset(document.getElementById('ama-init-offset').value);
             document.getElementById('ama-init-offset').value = String(currentAmaInitOffset);
             document.getElementById('ama-init-offset-val').textContent = currentAmaInitOffset + '%';

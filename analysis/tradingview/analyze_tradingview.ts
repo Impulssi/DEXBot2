@@ -16,11 +16,7 @@ const { PATHS } = require('../../modules/paths');
 const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 const DEFAULT_CHART_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'tradingview_chart.html');
-const DEFAULT_AMA = MARKET_ADAPTER.AMAS?.AMA3 || MARKET_ADAPTER.AMAS?.[MARKET_ADAPTER.DEFAULT_AMA_KEY] || {
-    erPeriod: 781,
-    fastPeriod: 5.2,
-    slowPeriod: 112.7,
-};
+const DEFAULT_AMA = MARKET_ADAPTER.AMAS.AMA3;
 const DEFAULT_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 
 function parseArgs() {
