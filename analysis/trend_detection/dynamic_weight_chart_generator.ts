@@ -45,8 +45,8 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
     const gainInitSlider = Math.round((Math.log(clampedGain) - GAIN_LOG_MIN_N) / (GAIN_LOG_MAX_N - GAIN_LOG_MIN_N) * 1000);
 
     // Log mapping for slope saturation sliders
-    const AMA_MS_MIN = 0.01;
-    const AMA_MS_MAX = 0.5;
+    const AMA_MS_MIN = 0.04;
+    const AMA_MS_MAX = 0.12;
     const AMA_MS_LOG_MIN_N = Math.log(AMA_MS_MIN);
     const AMA_MS_LOG_MAX_N = Math.log(AMA_MS_MAX);
     const KAL_MS_MIN = 0.15;
@@ -306,7 +306,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
                 <div class="group-sep"></div>
                 <div class="ctrl nz"><label for="nz-slider">nz%</label><input type="range" id="nz-slider" min="0" max="100" value="${Math.round(defaultNeutralZone * 100)}" title="Neutral Zone %"><span class="val" id="nz-value">${defaultNeutralZone.toFixed(2)}</span></div>
                 <div class="ctrl lb"><label for="lb-slider">lb</label><input type="range" id="lb-slider" min="0" max="1000" value="${lbInitSlider}" title="Lookback Bars (1-32)"><span class="val" id="lb-value">${lookbackBars}</span></div>
-                <div class="ctrl ms-ama"><label for="ama-ms-slider">amaS%</label><input type="range" id="ama-ms-slider" min="0" max="1000" value="${amaMsInitSlider}" title="AMA Max Slope % per bar (0.01-0.5)"><span class="val" id="ama-ms-value">${defaultAmaMaxSlopePct.toFixed(4)}</span></div>
+                <div class="ctrl ms-ama"><label for="ama-ms-slider">amaS%</label><input type="range" id="ama-ms-slider" min="0" max="1000" value="${amaMsInitSlider}" title="AMA Max Slope % per bar (0.04-0.12)"><span class="val" id="ama-ms-value">${defaultAmaMaxSlopePct.toFixed(4)}</span></div>
                 <div class="ctrl clip"><label for="clip-slider">clip%</label><input type="range" id="clip-slider" min="0" max="55" value="${Math.min(defaultClipPct, 55)}" title="Outlier Clip %"><span class="val" id="clip-value">${Math.min(defaultClipPct, 55)}%</span></div>
 
                 <div class="group-sep"></div>

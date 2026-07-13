@@ -6,6 +6,7 @@ const os = require('os');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 const { calculateAMA } = require('../../market_adapter/core/strategies/ama');
 const { toIntervalLabel } = require('../../market_adapter/interval_utils');
+const { generateHTML } = require('../../market_adapter/lp_chart_core');
 const {
     loadLpDataFile,
 } = require('../../market_adapter/lp_chart_runner');
@@ -42,9 +43,7 @@ const DEFAULT_SEARCH = {
 };
 
 // ── Geometric analysis constants ──────────────────────────────────────────────
-const REPOS_THRESHOLD      = 0.004;                          // 0.4% candle-to-candle AMA move
-const BAND_CAP_RATIO       = 0.8;                            // kept for backward-compat metadata
-const BASE_DISTANCE_WEIGHT = 0.0024;
+const BASE_DISTANCE_WEIGHT = 0.0022;
 const DISTANCE_WEIGHT_STEP  = 0.0002;
 
 const AMA_OBJECTIVES = [
@@ -302,15 +301,13 @@ function updateAmaProfilesFile({ dataFile, meta, winners, sourceResultsFile }) {
     writeJSON(AMA_PROFILES_FILE, payload);
 }
 
-// ── AMA Reposition Rate ───────────────────────────────────────────────────────
-
-function calcReposRate(amaValues) {
+function calcTotalAmaMovement(amaValues) {
     const skip = Math.max(20, Math.floor(amaValues.length * 0.1));
-    let repos = 0;
+    let total = 0;
     for (let i = skip + 1; i < amaValues.length; i++) {
-        if (Math.abs(amaValues[i] - amaValues[i - 1]) / amaValues[i - 1] > REPOS_THRESHOLD) repos++;
+        total += Math.abs(amaValues[i] - amaValues[i - 1]) / amaValues[i - 1];
     }
-    return repos / (amaValues.length - 1 - skip);
+    return total;
 }
 
 // ── Informational: area above/below AMA ──────────────────────────────────────
@@ -347,15 +344,6 @@ function calcTotalRelativeDistance(amaValues, candles) {
     return total;
 }
 
-function calcTotalAmaMovement(amaValues) {
-    const skip = Math.max(20, Math.floor(amaValues.length * 0.1));
-    let total = 0;
-    for (let i = skip + 1; i < amaValues.length; i++) {
-        total += Math.abs(amaValues[i] - amaValues[i - 1]) / amaValues[i - 1];
-    }
-    return total;
-}
-
 function runSearchShard(payload, onProgress = null) {
     const {
         workerId,
@@ -388,19 +376,15 @@ function runSearchShard(payload, onProgress = null) {
 
                 const ama = calculateAMA(closes, { erPeriod: er, fastPeriod: fast, slowPeriod: slow });
                 const area = calcArea(ama, candles);
-                const reposRate = calcReposRate(ama);
-                const repos = reposRate * 100;
-                const distanceTotal = calcTotalRelativeDistance(ama, candles);
                 const amaMovementTotal = calcTotalAmaMovement(ama);
+                const distanceTotal = calcTotalRelativeDistance(ama, candles);
                 const bandFactorPct = area.maxDist * 200;
                 const entry = {
                     er, fast, slow,
                     area,
-                    repos,
-                    reposRate,
+                    amaMovementTotal,
                     bandFactorPct,
                     distanceTotal,
-                    amaMovementTotal,
                 };
                 entries.push(entry);
 
@@ -578,7 +562,7 @@ async function run() {
         console.log(`  ├─ Params:         ER=${r.er}  Fast=${r.fast}  Slow=${r.slow}`);
         console.log(`  ├─ Area total:     ${r.area.total.toFixed(2)}  (above ${r.area.above.toFixed(2)}  below ${r.area.below.toFixed(2)})`);
         console.log(`  ├─ Asymmetry:      ${asymmetry.toFixed(2)}  (${bias})`);
-        console.log(`  └─ Repos rate:     ${r.repos.toFixed(1)}%  (${Math.round(r.repos / 100 * candles.length)} events)\n`);
+        console.log(`  └─ Movement:       ${r.amaMovementTotal.toFixed(4)}\n`);
     }
 
     console.log('================================================================================');
@@ -601,8 +585,8 @@ async function run() {
     console.log('================================================================================');
     console.log(' SUMMARY');
     console.log('================================================================================\n');
-    console.log('                |  ER  | Fast | Slow | Dist    | Move    | Area    | MaxDist | Repos%');
-    console.log('────────────────┼──────┼──────┼──────┼─────────┼─────────┼─────────┼─────────┼───────');
+    console.log('                |  ER  | Fast | Slow | Dist    | Move    | Area    | MaxDist');
+    console.log('────────────────┼──────┼──────┼──────┼─────────┼─────────┼─────────┼─────────');
     for (const r of selected) {
         const name = r.key;
         if (!r) continue;
@@ -614,8 +598,7 @@ async function run() {
             `${r.distanceTotal.toFixed(2).padStart(7)} | ` +
             `${r.amaMovementTotal.toFixed(2).padStart(7)} | ` +
             `${r.area.total.toFixed(2).padStart(7)} | ` +
-            `${(r.area.maxDist * 100).toFixed(1).padStart(7)}% | ` +
-            `${r.repos.toFixed(1).padStart(6)}`
+            `${(r.area.maxDist * 100).toFixed(1).padStart(7)}%`
         );
     }
     console.log();
@@ -635,10 +618,45 @@ async function run() {
     }
     console.log();
 
+    // ── Chart ─────────────────────────────────────────────────────────────────
+    const ws = (v) => String(v).replace('.', '_');
+    const lambdaSuffix = `_l${ws(BASE_DISTANCE_WEIGHT)}_s${ws(DISTANCE_WEIGHT_STEP)}`;
+    const COLOR_CYCLE = ['#26a69a', '#fb8c00', '#5c9ee6', '#ef5350'];
+    const DASH_CYCLE = ['dot', 'solid', 'dash', 'dashdot'];
+    const candleArrays = candles.map(c => [c.timestamp, c.open, c.high, c.low, c.close, c.volume]);
+    const chartMeta = {
+        ...(dataMeta || {}),
+        assetA: dataMeta?.assetA || { symbol: '?' },
+        assetB: dataMeta?.assetB || { symbol: '?' },
+        intervalSeconds: dataMeta?.intervalSeconds || 3600,
+        fetchedAt: dataMeta?.fetchedAt || new Date().toISOString(),
+    };
+    const amaResults = selected.map((w, i) => {
+        const ama = calculateAMA(closes, { erPeriod: w.er, fastPeriod: w.fast, slowPeriod: w.slow });
+        return {
+            name: w.label,
+            erPeriod: w.er,
+            fastPeriod: w.fast,
+            slowPeriod: w.slow,
+            color: COLOR_CYCLE[i % COLOR_CYCLE.length],
+            dash: DASH_CYCLE[i % DASH_CYCLE.length],
+            lineWidth: i === 0 ? 2 : 1.5,
+            values: ama,
+        };
+    });
+    const chartName = dataFile
+        ? `optimization_chart_${path.basename(dataFile, '.json')}${lambdaSuffix}.html`
+        : `optimization_chart_high_resolution${lambdaSuffix}.html`;
+    const chartPath = path.join(PATHS.ANALYSIS.CHARTS_DIR, chartName);
+    ensureDir(path.dirname(chartPath));
+    const html = generateHTML(chartMeta, candleArrays, amaResults);
+    fs.writeFileSync(chartPath, html, 'utf8');
+    console.log(`  Chart:       ${path.relative(process.cwd(), chartPath)}\n`);
+
     // ── Save ──────────────────────────────────────────────────────────────────
     const outName = dataFile
-        ? `optimization_results_${path.basename(dataFile, '.json')}.json`
-        : 'optimization_results_high_resolution.json';
+        ? `optimization_results_${path.basename(dataFile, '.json')}${lambdaSuffix}.json`
+        : `optimization_results_high_resolution${lambdaSuffix}.json`;
     const outPath = path.join(__dirname, outName);
     writeJSON(outPath, {
         meta: {
@@ -665,7 +683,6 @@ async function run() {
                     appliedValueByAma: Object.fromEntries(objectiveResults.map((r) => [r.objective.key, r.maxDistanceCap])),
                 },
             },
-            bandCapRatio: BAND_CAP_RATIO,
             amas: {
                 AMA1: ama1,
                 AMA2: ama2,
@@ -709,6 +726,6 @@ if (!isMainThread) {
     });
 }
 
-export = {
+module.exports = {
     parseArgs,
 };

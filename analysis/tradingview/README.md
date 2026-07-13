@@ -61,7 +61,7 @@ tsx analysis/tradingview/analyze_tradingview.ts \
 1. Reads `profiles/bots.json` to find the bot's `assetA`, `assetB`, and `ama` settings.
 2. Resolves the candle file at `market_adapter/data/market_adapter_<bot-key>_1h.json`.
 3. Looks up the matching market profile in `profiles/market_profiles.json` for AMA defaults.
-4. AMA settings priority: bot-specific `ama` object > market profile > constants (112.7).
+4. AMA settings priority: bot-specific `ama` object > market profile > constants (93.1).
 
 > The candle file must exist — run the market adapter LP exporter first if needed (see [Getting Blockchain Data](#getting-blockchain-data)).
 
@@ -127,7 +127,7 @@ For manual pool discovery, use `--pool`, `--precA`, and `--precB` instead of `--
 | `--sma-period <n>` | SMA period | `500` |
 | `--ama-er-period <n>` | AMA ER period | `781` |
 | `--ama-fast-period <n>` | AMA fast period | `5.2` |
-| `--ama-slow-period <n>` | AMA slow period | `112.7` |
+| `--ama-slow-period <n>` | AMA slow period | `93.1` |
 | `--price-scale <log\|linear>` | Price axis scale | `log` |
 | `--vwap-bars <n>` | Rolling VWMA window | `500` |
 | `--no-sma` | Disable SMA | — |
@@ -143,7 +143,7 @@ For manual pool discovery, use `--pool`, `--precA`, and `--precB` instead of `--
 - SMA is disabled by default.
 - VWMA is disabled by default.
 - AMA is auto-enabled when the bot has `gridPrice: "ama"` (or ama1-4), otherwise disabled by default.
-- AMA settings priority: bot-specific `ama` object > market profile > constants (112.7).
+- AMA settings priority: bot-specific `ama` object > market profile > constants (93.1).
 - The AMA controls start with the bot-specific AMA, then pair-specific entry from `profiles/market_profiles.json` when available, falling back to AMA3 values from `modules/constants.ts`.
 - The AMA `Reset` button restores the HTML defaults, not the browser-stored overrides.
 - The pair switcher inverts the candles client-side, so you can inspect both `A/B` and `B/A` views from one export.

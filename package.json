@@ -1,6 +1,6 @@
 {
   "name": "dexbot2",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "The first open source trading bot with zero runtime dependencies and a fully adaptive market making strategy.",
   "main": "dist/modules/chain_orders.js",
   "bin": {
@@ -74,6 +74,9 @@
   "homepage": "https://github.com/froooze/DEXBot2#readme",
   "optionalDependencies": {
     "ws": "^8.0.0"
+  },
+  "tsx": {
+    "tsconfig": true
   },
   "devDependencies": {
     "@types/node": "^25.9.1",

@@ -836,7 +836,7 @@ let MARKET_ADAPTER = {
     // Lower values make the AMA channel reach maximum influence more easily.
     // Higher values require a stronger price move before AMA reaches full effect.
     // nob: amaS% (AMA Max Slope %)
-    DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT: 0.08,
+    DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT: 0.085,
 
     // DYNAMIC_WEIGHT_KALMAN_MAX_SLOPE_PCT: Trend size that counts as "full strength" for
     // the Kalman composite branch. Kept separate from the AMA slope knob so the two
@@ -991,6 +991,7 @@ let MARKET_ADAPTER = {
     DEFAULT_AMA_KEY: 'AMA3',
 
     // AMAS: Built-in AMA presets derived from the local LP 1.19.133 fitting results.
+    // Fitted with optimizer λ=0.0022 step=0.0002 on 1h candles (2023-05 → 2026-05).
     // These serve as stable defaults for the market adapter and can be overridden by
     // pair-specific profiles in profiles/market_profiles.json.
     AMAS: {
@@ -998,25 +999,25 @@ let MARKET_ADAPTER = {
             name: 'AMA1 (cap 25%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 93.1,
+            slowPeriod: 80.6,
         },
         AMA2: {
             name: 'AMA2 (cap 30%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 102.4,
+            slowPeriod: 84.6,
         },
         AMA3: {
             name: 'AMA3 (cap 35%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 112.7,
+            slowPeriod: 93.1,
         },
         AMA4: {
             name: 'AMA4 (cap 40%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 136.4,
+            slowPeriod: 107.4,
         },
     },
 

@@ -6,14 +6,8 @@
  * Simulates AMA_DELTA_THRESHOLD_PERCENT grid-reposition logic for all four AMA
  * series on LP candle data.
  *
- * For each threshold (1%, 2%, 3%, 4%):
- *   - Set a baseline at the first post-warmup AMA value
- *   - Count candle steps until the AMA drifts ≥ threshold from that baseline
- *   - Record the reposition event, reset baseline to current AMA value
- *   - Repeat for the full live window
- *
- * Reports: reposition count, avg/min/max steps between repositions, frequency
- * per 1000 live steps — for each AMA × threshold combination.
+ * Uses the production threshold from MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT
+ * (modules/constants.ts).
  *
  * Usage:
  *   tsx analysis/ama_fitting/analyze_ama_price_changes.ts --data <path-to-lp-candles.json> --results <path-to-optimization-results.json>
@@ -22,7 +16,39 @@ const fs   = require('fs');
 const path = require('path');
 const { calculateAMA } = require('../../market_adapter/core/strategies/ama');
 const { readJSON } = require('../../modules/utils/fs_utils');
-const THRESHOLDS = [1, 2, 3, 4]; // percent
+const { MARKET_ADAPTER } = require('../../modules/constants');
+const REPOS_THRESHOLD_PCT = MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT;
+
+/**
+ * Simulate AMA_DELTA_THRESHOLD_PERCENT reposition logic.
+ *
+ * Starting from the first post-warmup AMA value, track cumulative drift from
+ * the last reposition baseline.  When drift ≥ threshold, a reposition fires:
+ * record step-count since previous reposition, reset baseline to current AMA.
+ */
+function trackRepositions(amaValues, thresholdPct, warmup) {
+    let events = 0;
+    const steps = [];
+    let baseline = amaValues[warmup];
+    let stepCounter = 0;
+    for (let i = warmup + 1; i < amaValues.length; i++) {
+        const curr = amaValues[i];
+        if (baseline === 0) continue;
+        stepCounter++;
+        const driftPct = Math.abs((curr - baseline) / baseline) * 100;
+        if (driftPct >= thresholdPct) {
+            events++;
+            steps.push(stepCounter);
+            baseline = curr;
+            stepCounter = 0;
+        }
+    }
+    const min = steps.length > 0 ? Math.min(...steps) : 0;
+    const max = steps.length > 0 ? Math.max(...steps) : 0;
+    const avg = steps.length > 0 ? steps.reduce((a, b) => a + b, 0) / steps.length : 0;
+    return { events, steps, min, max, avg };
+}
+
 // ── Load data ─────────────────────────────────────────────────────────────────
 function loadData(filePath) {
     const json    = readJSON(filePath);
@@ -44,57 +70,7 @@ function loadAmaParams(resultsPath) {
     ];
 }
 // ── Analysis ──────────────────────────────────────────────────────────────────
-/**
- * Simulate AMA_DELTA_THRESHOLD_PERCENT reposition logic.
- *
- * Starting from the first post-warmup AMA value, track cumulative drift from
- * the last reposition baseline.  When drift reaches a threshold, a reposition
- * fires: record the step-count since the previous reposition, then reset the
- * baseline to the current AMA value.
- *
- * Returns { threshold -> { events, steps: number[], min, max, avg } }
- *   events  — total reposition count
- *   steps   — candle steps between consecutive repositions
- *   min/max/avg — statistics on those step-counts
- */
-function trackRepositions(amaValues, thresholds, erPeriod) {
-    const result = {};
-    for (const t of thresholds) {
-        result[t] = { events: 0, steps: [], min: Infinity, max: 0, avg: 0 };
-    }
-    // Each threshold has its own independent baseline + step counter
-    const baselines    = {};
-    const stepCounters = {};
-    for (const t of thresholds) {
-        baselines[t]    = amaValues[erPeriod];   // first post-warmup value
-        stepCounters[t] = 0;
-    }
-    for (let i = erPeriod + 1; i < amaValues.length; i++) {
-        const curr = amaValues[i];
-        for (const t of thresholds) {
-            const base = baselines[t];
-            if (base === 0) continue;
-            stepCounters[t]++;
-            const driftPct = Math.abs((curr - base) / base) * 100;
-            if (driftPct >= t) {
-                const r = result[t];
-                r.events++;
-                r.steps.push(stepCounters[t]);
-                baselines[t]    = curr;
-                stepCounters[t] = 0;
-            }
-        }
-    }
-    // Compute stats
-    for (const t of thresholds) {
-        const r = result[t];
-        if (r.steps.length === 0) { r.min = 0; r.avg = 0; continue; }
-        r.min = Math.min(...r.steps);
-        r.max = Math.max(...r.steps);
-        r.avg = r.steps.reduce((a, b) => a + b, 0) / r.steps.length;
-    }
-    return result;
-}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 function run() {
     const dataArgIdx    = process.argv.indexOf('--data');
@@ -123,67 +99,43 @@ function run() {
     console.log('════════════════════════════════════════════════════════════════════════════════');
     console.log(` Dataset:    ${label}  (${interval} candles)`);
     console.log(` Candles:    ${candles.length}  →  ${totalSteps} steps total`);
-    console.log(` Thresholds: ${THRESHOLDS.map(t => `${t}%`).join('  ')}`);
+    console.log(` Threshold:   ${REPOS_THRESHOLD_PCT}%  (from MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT)`);
     console.log('');
     console.log(' Logic: set baseline at warmup end, count steps until AMA drifts ≥ threshold,');
     console.log('        record reposition + reset baseline.  Repeat for full live window.');
     console.log('');
-    const cW = 10;
-    const allResults = [];
+    const results = [];
     for (const params of amaParams) {
         const values = calculateAMA(closes, {
             erPeriod:   params.er,
             fastPeriod: params.fast,
             slowPeriod: params.slow,
         });
-        const repoData  = trackRepositions(values, THRESHOLDS, params.er);
+        const r = trackRepositions(values, REPOS_THRESHOLD_PCT, params.er);
         const liveSteps = totalSteps - params.er;
-        const suffix   = String(params.label).replace(/^AMA\d\s*/i, '').replace(/^[-:\s]+/, '').trim();
+        const freq = liveSteps > 0 ? (r.events / liveSteps * 1000).toFixed(1) : '–';
+        const avg  = r.events > 0 ? r.avg.toFixed(1) : '–';
+        const suffix = String(params.label).replace(/^AMA\d\s*/i, '').replace(/^[-:\s]+/, '').trim();
         const rowLabel = `${params.key} ${suffix}`;
         console.log(` ── ${rowLabel}  (warmup: ${params.er}  live: ${liveSteps} steps) ──`);
-        console.log(
-            '    ' +
-            'threshold'.padEnd(12) +
-            'repositions'.padStart(cW) +
-            'avg steps'.padStart(cW) +
-            'min steps'.padStart(cW) +
-            'max steps'.padStart(cW) +
-            ' /1000 steps'
-        );
-        console.log('    ' + '─'.repeat(12 + cW * 4 + 12));
-        for (const t of THRESHOLDS) {
-            const r    = repoData[t];
-            const freq = liveSteps > 0 ? (r.events / liveSteps * 1000).toFixed(1) : '–';
-            const avg  = r.events > 0 ? r.avg.toFixed(1) : '–';
-            const min  = r.events > 0 ? String(r.min) : '–';
-            const max  = r.events > 0 ? String(r.max) : '–';
-            console.log(
-                '    ' +
-                `≥${t}%`.padEnd(12) +
-                String(r.events).padStart(cW) +
-                avg.padStart(cW) +
-                min.padStart(cW) +
-                max.padStart(cW) +
-                `  ${freq}`
-            );
-            allResults.push({
-                label: `${params.key} ≥${t}%`,
-                events: r.events,
-                avg: r.avg,
-                freq: liveSteps > 0 ? r.events / liveSteps * 1000 : 0,
-            });
-        }
+        console.log(`    ≥${REPOS_THRESHOLD_PCT}%  repositions: ${r.events}  avg steps: ${avg}  min: ${r.events > 0 ? r.min : '–'}  max: ${r.events > 0 ? r.max : '–'}  freq: ${freq}/1k steps`);
         console.log('');
+        results.push({
+            label: rowLabel,
+            events: r.events,
+            avg: r.avg,
+            freq: liveSteps > 0 ? r.events / liveSteps * 1000 : 0,
+        });
     }
     console.log(' Note: warmup candles excluded (AMA initializes from SMA of the ER window).');
     console.log('');
     // ── Ranking: fewest repositions ────────────────────────────────────────────
-    allResults.sort((a, b) => a.events - b.events);
+    results.sort((a, b) => a.events - b.events);
     console.log(' Ranking — fewest repositions (least grid changes):');
     console.log('');
-    console.log('    ' + '#'.padEnd(4) + 'AMA + threshold'.padEnd(20) + 'repositions'.padStart(12) + 'avg steps'.padStart(10) + ' /1000 steps');
+    console.log('    ' + '#'.padEnd(4) + 'AMA'.padEnd(20) + 'repositions'.padStart(12) + 'avg steps'.padStart(10) + ' /1000 steps');
     console.log('    ' + '─'.repeat(4 + 20 + 12 + 10 + 12));
-    allResults.forEach((r, i) => {
+    results.forEach((r, i) => {
         console.log(
             '    ' +
             String(i + 1).padEnd(4) +

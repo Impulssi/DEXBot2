@@ -120,7 +120,7 @@ cause abrupt grid-center changes.
 The adapter uses tiered clamping thresholds to manage inventory risk during extreme price divergence from the AMA trend center. These thresholds are derived from historical pool volatility and replace static 'fit cap' multipliers. The specific clamping limits and exit parameters are calculated per pair and preset using the AMA fitting toolchain:
 
 ```bash
-tsx analysis/ama_fitting/optimizer_high_resolution.ts --data <lp-file.json>
+node dist/analysis/ama_fitting/optimizer_high_resolution.js --data <lp-file.json>
 ```
 
 Source: example LP pool, 1h candles, representative historical window.
@@ -884,7 +884,7 @@ not 1 hour, scale the total by the candle duration.
 **Why `slowPeriod` dominates:** `slowSC ≈ 2 / slowPeriod`, so `SC_avg` scales
 as `~ (2 / slowPeriod)² = 4 / slowPeriod²`. Since `convergenceBars` is
 proportional to `1 / SC_avg`, the required candle count scales as
-**O(slowPeriod²)**, not O(slowPeriod). For the AMA3 default (`slowPeriod = 112.7`)
+**O(slowPeriod²)**, not O(slowPeriod). For the AMA3 default (`slowPeriod = 93.1`)
 this is roughly 1130 convergence bars; doubling `slowPeriod` would quadruple
 that requirement.
 

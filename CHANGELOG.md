@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.2] - 2026-07-13 - AMA Optimizer Improvements, Constants Tuning & Doc Sync
+
+### 2026-07-13
+
+- **Feat**: optimizer now auto-generates an interactive HTML chart alongside results JSON — uses `generateHTML` from `lp_chart_core` to render the four winning AMAs against LP price data (`analysis/ama_fitting/optimizer_high_resolution.ts`).
+- **Feat**: output filenames include λ and step suffix (e.g. `_l0_0022_s0_0002`) for easy comparison across runs (`analysis/ama_fitting/optimizer_high_resolution.ts`).
+- **Feat**: `export =` replaced with `module.exports =` in optimizer to fix `tsx v4` strip-only mode compatibility (`analysis/ama_fitting/optimizer_high_resolution.ts`).
+- **Fix**: hardcoded `REPOS_THRESHOLD = 0.004` (0.4%) removed — `calcReposRate` replaced by `trackRepositions` wired to `MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT`. Analyzer now uses the production threshold (`analysis/ama_fitting/optimizer_high_resolution.ts`, `analysis/ama_fitting/analyze_ama_price_changes.ts`).
+- **Fix**: `trackRepositions` extracted to shared utility then inlined back as a simplified single-threshold function — removed untracked shared file, kept logic in `analyze_ama_price_changes.ts`.
+- **Fix**: all four AMA cap quantiles produced identical winners with constant λ — re-enabled `DISTANCE_WEIGHT_STEP = 0.0002` so λ varies per AMA for a clean tight-to-loose spectrum (`analysis/ama_fitting/optimizer_high_resolution.ts`).
+- **Tune**: AMA1–AMA4 slow periods refitted on pool 133 1h data (2023-05 → 2026-05) with optimizer λ=0.0022/step=0.0002. Results: AMA1=80.6, AMA2=84.6, AMA3=93.1, AMA4=107.4 (`modules/constants.ts`).
+- **Tune**: `BASE_DISTANCE_WEIGHT` set to 0.0022, `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` set to 0.085, amaS% knob range narrowed to 0.04–0.12 (`analysis/trend_detection/dynamic_weight_chart_generator.ts`, `modules/constants.ts`).
+- **Docs**: sweep AMA slow values (112.7→93.1), tsx→node dist command updates, unified comparison chart notes, and amaS% research range in 5 documentation files.
+- **Chore**: add `"tsx": { "tsconfig": true }` to root `package.json` (mitigation for `export =` in tsx v4).
+- **Chore**: version bumped to 1.1.2 across all manifests.
+
 ## [1.1.1] - 2026-07-12 - Auto-startup Migration, Error Handling & Cleanup
 
 ### 2026-07-12

@@ -64,7 +64,8 @@ Output: `market_adapter/data/lp/<pair_folder>/lp_pool_<poolShort>_<interval>.jso
 
 `optimizer_high_resolution.ts` runs a parallel geometric grid search over
 ER × Fast × Slow combinations. Produces four AMA winners (AMA1–AMA4) using
-different distance-cap quantiles and writes results to a JSON file.
+different distance-cap quantiles and writes results to a JSON file + auto-generates
+an interactive HTML chart.
 
 By default this does **not** update runtime market-adapter profiles. Add
 `--write-profiles` when you intentionally want the fitted parameters exported
@@ -72,28 +73,37 @@ to `profiles/market_profiles.json`.
 
 **Run on the fetched LP data:**
 ```bash
-tsx analysis/ama_fitting/optimizer_high_resolution.ts \
+npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
+```
+
+Or from the `analysis/ama_fitting/` directory using the local script shortcut:
+```bash
+npm run optimize -- --data ../../market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 ```
 
 **Export winners to the market adapter profile file:**
 ```bash
-tsx analysis/ama_fitting/optimizer_high_resolution.ts \
+npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --write-profiles
 ```
+
+> `npx tsx` does not work on this project due to `export =` syntax in dependency
+> modules (unsupported in tsx v4 strip-only mode). Always use the compiled output
+> via `node dist/...` or the `npm run optimize` shortcut.
 
 **Default search ranges:**
 
 | Param | Min  | Max  | Sampling | Quantum |
 |-------|------|------|----------|---------|
-| ER    | 50   | 500  | 40 geometric points | 1 |
-| Fast  | 1    | 10   | 40 geometric points | 0.01 |
-| Slow  | 500  | 5000 | 40 geometric points | 1 |
+| ER    | 500  | 1000 | 15 geometric points | 1 |
+| Fast  | 2    | 8    | 30 geometric points | 0.01 |
+| Slow  | 50   | 200  | 30 geometric points | 0.1 |
 
 Override ranges via CLI:
 ```bash
-tsx analysis/ama_fitting/optimizer_high_resolution.ts \
+npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --erMin 100 --erMax 600 \
   --slowMin 800 --slowMax 6000
@@ -138,7 +148,8 @@ Source: pool 133 `IOB.XRP/BTS`, 1h candles, 2023-05-05 22:00 UTC through
 2026-05-04 22:00 UTC.
 
 **Outputs:**
-- `analysis/ama_fitting/optimization_results_<datafile>.json` — full results
+- `analysis/ama_fitting/optimization_results_<datafile>_l<λ>_s<step>.json` — full results (e.g. `_l0020_s000` for λ=0.0020, step=0)
+- `analysis/charts/optimization_chart_<datafile>_l<λ>_s<step>.html` — interactive AMA overlay chart (auto-generated)
 - `profiles/market_profiles.json` — updated with new AMA parameters per pair only when `--write-profiles` is used
 
 **Boundary check:** If a winner lands on the edge of the search range, the
@@ -146,9 +157,14 @@ optimizer warns you. Widen the affected range and re-run.
 
 ---
 
-## Step 3 — Visual Review (optional)
+## Step 3 — Visual Review
 
-Recommended entrypoint:
+A chart is auto-generated during Step 2 at
+`analysis/charts/optimization_chart_<datafile>.html`. Open it in a browser
+to compare all four optimized AMA overlays against the candlestick price.
+
+For a standalone chart without re-running the optimizer (uses current defaults
+from `modules/constants.ts` rather than optimized results):
 
 ```bash
 npm run lp:chart -- \
@@ -158,19 +174,6 @@ npm run lp:chart -- \
 This generates both:
 - `analysis/charts/lp_AMA_chart_pool_133.html` — market-adapter style LP chart
 - `analysis/charts/lp_chart_1h_UNIFIED_COMPARISON.html` — unified comparison chart, with the interval derived from LP metadata
-
-Under the hood, LP-data chart generation now delegates into the shared runner in
-`market_adapter/lp_chart_runner.ts`. The analysis script keeps only:
-- the local LP comparison mode used for analysis-only review
-
-Local LP comparison entrypoint:
-
-```bash
-npm run ama:chart:lp-local -- \
-  --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
-```
-
-Open the generated HTML in a browser to compare all four AMA overlays against the candlestick price.
 
 ---
 
