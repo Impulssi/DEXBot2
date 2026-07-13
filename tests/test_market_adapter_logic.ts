@@ -279,6 +279,13 @@ assert.deepStrictEqual(
     assert.strictEqual(ama.erPeriod, MARKET_ADAPTER.AMAS.AMA2.erPeriod, 'ama2 keyword should resolve to built-in AMA2 erPeriod');
 }
 
+{
+    const ama = resolveAmaForBot({ gridPrice: 'ama2', ama: { fastPeriod: 2.5 } });
+    assert.strictEqual(ama.fastPeriod, 2.5, 'partial override: fastPeriod from bot.ama should take priority');
+    assert.strictEqual(ama.erPeriod, MARKET_ADAPTER.AMAS.AMA2.erPeriod, 'partial override: erPeriod should fall back to preset');
+    assert.strictEqual(ama.slowPeriod, MARKET_ADAPTER.AMAS.AMA2.slowPeriod, 'partial override: slowPeriod should fall back to preset');
+}
+
 assert.strictEqual(usesAmaGridPrice({ gridPrice: 'ama' }), true, 'ama should enable market adapter processing');
 assert.strictEqual(usesAmaGridPrice({ gridPrice: 'ama3' }), true, 'ama3 should enable market adapter processing');
 assert.strictEqual(usesAmaGridPrice({ gridPrice: '  AMA4  ' }), true, 'ama4 matching should be case-insensitive');

@@ -756,7 +756,7 @@ function resolveAmaForBot(bot, ctx = null, cfg = null) {
         }
     }
 
-    if (!Number.isInteger(amaCfg.erPeriod) || amaCfg.erPeriod < 1) amaCfg.erPeriod = DEFAULT_AMA.erPeriod;
+    if (!Number.isFinite(amaCfg.erPeriod) || amaCfg.erPeriod < 1) amaCfg.erPeriod = DEFAULT_AMA.erPeriod;
     if (!Number.isFinite(amaCfg.fastPeriod) || amaCfg.fastPeriod < 1) amaCfg.fastPeriod = DEFAULT_AMA.fastPeriod;
     if (!Number.isFinite(amaCfg.slowPeriod) || amaCfg.slowPeriod < 1) amaCfg.slowPeriod = DEFAULT_AMA.slowPeriod;
     if (amaCfg.fastPeriod > amaCfg.slowPeriod) {
