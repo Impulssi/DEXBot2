@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.4] - 2026-07-14 - AMA4 Slow Correction, Optimizer Range Tighten, Post-tag Doc Sync
+
+### 2026-07-14
+
+- **Fix**: correct AMA4 slowPeriod from 107.4 to 102.4 — aligns AMA4 with the same λ=0.0025 refit applied to AMA1-3 in v1.1.3. Fixes stale slowPeriod references in market_adapter/README.md, test fixtures, and TradingView chart generator (`modules/constants.ts`, `market_adapter/README.md`, `tests/test_market_adapter_log_format.ts`, `tests/test_market_adapter_logic.ts`, `analysis/tradingview/tradingview_uplot_chart_generator.ts`).
+- **Feat**: narrow optimizer slow search range from 50-200 to 40-160 — focuses the geometric grid on the range where fitted winners consistently land, reducing wasted evaluations at uncompetitive extremes (`analysis/ama_fitting/optimizer_high_resolution.ts`).
+- **Docs**: sync v1.1.3 release notes with amaS% retune (0.085→0.08), update DYNAMIC_WEIGHT_RESEARCH.md knob table, correct EVOLUTION.md commit count for v1.1.3 (2→4) and summary to include the amaS% retune (`CHANGELOG.md`, `analysis/trend_detection/DYNAMIC_WEIGHT_RESEARCH.md`, `docs/EVOLUTION.md`).
+
 ## [1.1.3] - 2026-07-13 - AMA Refit λ=0.0025, amaS% Retune, tsx Compatibility, Doc Fixes
 
 ### 2026-07-13
