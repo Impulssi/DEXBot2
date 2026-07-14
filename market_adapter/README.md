@@ -884,7 +884,7 @@ not 1 hour, scale the total by the candle duration.
 **Why `slowPeriod` dominates:** `slowSC ≈ 2 / slowPeriod`, so `SC_avg` scales
 as `~ (2 / slowPeriod)² = 4 / slowPeriod²`. Since `convergenceBars` is
 proportional to `1 / SC_avg`, the required candle count scales as
-**O(slowPeriod²)**, not O(slowPeriod). For the AMA3 default (`slowPeriod = 88.7`)
+**O(slowPeriod²)**, not O(slowPeriod). For the AMA3 default (`slowPeriod = 82.7`)
 this is roughly 1130 convergence bars; doubling `slowPeriod` would quadruple
 that requirement.
 

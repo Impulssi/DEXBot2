@@ -235,6 +235,7 @@ let TIMING = {
     // Credit deal proactive renewal timing
     CREDIT_DEAL_CHECK_INTERVAL_MIN: 60,      // How often to check credit deal expiry (minutes)
     CREDIT_DEAL_EXPIRY_THRESHOLD_HOURS: 12,  // Proactively renew deals expiring within this window
+    CREDIT_DEAL_SPLIT_MAX_PIECES: 48,        // Max pieces per _splitOversizedCreditDeals cycle (~4.8min at 6s/piece)
 
     // LOCK_REFRESH_MIN_MS: Minimum interval for refreshing order lock leases during long operations.
     // Prevents lock expiration during extended reconciliations or batch operations.
@@ -991,7 +992,8 @@ let MARKET_ADAPTER = {
     DEFAULT_AMA_KEY: 'AMA3',
 
     // AMAS: Built-in AMA presets derived from the local LP 1.19.133 fitting results.
-    // Fitted with optimizer λ=0.0022 step=0.0002 on 1h candles (2023-05 → 2026-05).
+    // Fitted with per-AMA λ weights (0.0031 / 0.0025 / 0.00185 / 0.0013) on 1h candles
+    // (2023-07 → 2026-07, SMA-warmup-aligned optimizer, ER=781 fixed, Fast=5.2 fixed).
     // These serve as stable defaults for the market adapter and can be overridden by
     // pair-specific profiles in profiles/market_profiles.json.
     AMAS: {
@@ -999,25 +1001,25 @@ let MARKET_ADAPTER = {
             name: 'AMA1 (cap 25%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 73.3,
+            slowPeriod: 62.1,
         },
         AMA2: {
             name: 'AMA2 (cap 30%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 80.6,
+            slowPeriod: 71.7,
         },
         AMA3: {
             name: 'AMA3 (cap 35%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 88.7,
+            slowPeriod: 82.7,
         },
         AMA4: {
             name: 'AMA4 (cap 40%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 102.4,
+            slowPeriod: 95.5,
         },
     },
 

@@ -39,7 +39,7 @@ const AMA_PROFILES_FILE = PATHS.PROFILES.MARKET_PROFILES_JSON;
 const DEFAULT_SEARCH = {
     er: { min: 500, max: 1000, count: 15, step: null, quantum: 1 },
     fast: { min: 2, max: 8, count: 30, step: null, quantum: 0.01 },
-    slow: { min: 40, max: 160, count: 30, step: null, quantum: 0.1 },
+    slow: { min: 35, max: 140, count: 30, step: null, quantum: 0.1 },
 };
 
 // ── Default per-AMA distance weights ────────────────────────────────────────
@@ -47,10 +47,10 @@ const DEFAULT_SEARCH = {
 // Override individually via --ama1Weight, --ama2Weight, etc. CLI flags.
 
 const AMA_OBJECTIVES = [
-    { key: 'AMA1', name: 'AMA1 (min move, cap 25%)', distanceCapQuantile: 0.25, distanceWeight: 0.0025 },
-    { key: 'AMA2', name: 'AMA2 (min move, cap 30%)', distanceCapQuantile: 0.30, distanceWeight: 0.0022 },
-    { key: 'AMA3', name: 'AMA3 (min move, cap 35%)', distanceCapQuantile: 0.35, distanceWeight: 0.0019 },
-    { key: 'AMA4', name: 'AMA4 (min move, cap 40%)', distanceCapQuantile: 0.40, distanceWeight: 0.00165 },
+    { key: 'AMA1', name: 'AMA1 (min move, cap 25%)', distanceCapQuantile: 0.25, distanceWeight: 0.0031 },
+    { key: 'AMA2', name: 'AMA2 (min move, cap 30%)', distanceCapQuantile: 0.30, distanceWeight: 0.0025 },
+    { key: 'AMA3', name: 'AMA3 (min move, cap 35%)', distanceCapQuantile: 0.35, distanceWeight: 0.00185 },
+    { key: 'AMA4', name: 'AMA4 (min move, cap 40%)', distanceCapQuantile: 0.40, distanceWeight: 0.0013 },
 ];
 
 function cloneObjectives() {
@@ -125,6 +125,16 @@ function parseArgs(argv = process.argv.slice(2)) {
         slow: { ...DEFAULT_SEARCH.slow },
         workers: null,
         writeProfiles: false,
+        fixedEr: null,
+        fixedFast: null,
+        ama1Cap: null,
+        ama2Cap: null,
+        ama3Cap: null,
+        ama4Cap: null,
+        ama1Weight: null,
+        ama2Weight: null,
+        ama3Weight: null,
+        ama4Weight: null,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -132,6 +142,16 @@ function parseArgs(argv = process.argv.slice(2)) {
         const v = args[i + 1];
         switch (a) {
             case '--data': out.dataFile = v || null; i++; break;
+            case '--fixEr': {
+                const n = Number(v);
+                if (!Number.isFinite(n)) throw new Error(`--fixEr requires a finite number, got "${v}"`);
+                out.fixedEr = n; i++; break;
+            }
+            case '--fixFast': {
+                const n = Number(v);
+                if (!Number.isFinite(n)) throw new Error(`--fixFast requires a finite number, got "${v}"`);
+                out.fixedFast = n; i++; break;
+            }
             case '--erMin': out.er.min = Number(v); i++; break;
             case '--erMax': out.er.max = Number(v); i++; break;
             case '--erStep': out.er.step = Number(v); i++; break;
@@ -144,14 +164,14 @@ function parseArgs(argv = process.argv.slice(2)) {
             case '--slowMax': out.slow.max = Number(v); i++; break;
             case '--slowStep': out.slow.step = Number(v); i++; break;
             case '--slowCount': out.slow.count = Number(v); i++; break;
-            case '--ama1Cap': (out as any).ama1Cap = Number(v); i++; break;
-            case '--ama2Cap': (out as any).ama2Cap = Number(v); i++; break;
-            case '--ama3Cap': (out as any).ama3Cap = Number(v); i++; break;
-            case '--ama4Cap': (out as any).ama4Cap = Number(v); i++; break;
-            case '--ama1Weight': (out as any).ama1Weight = Number(v); i++; break;
-            case '--ama2Weight': (out as any).ama2Weight = Number(v); i++; break;
-            case '--ama3Weight': (out as any).ama3Weight = Number(v); i++; break;
-            case '--ama4Weight': (out as any).ama4Weight = Number(v); i++; break;
+            case '--ama1Cap': out.ama1Cap = Number(v); i++; break;
+            case '--ama2Cap': out.ama2Cap = Number(v); i++; break;
+            case '--ama3Cap': out.ama3Cap = Number(v); i++; break;
+            case '--ama4Cap': out.ama4Cap = Number(v); i++; break;
+            case '--ama1Weight': out.ama1Weight = Number(v); i++; break;
+            case '--ama2Weight': out.ama2Weight = Number(v); i++; break;
+            case '--ama3Weight': out.ama3Weight = Number(v); i++; break;
+            case '--ama4Weight': out.ama4Weight = Number(v); i++; break;
             case '--workers': out.workers = Number(v); i++; break;
             case '--write-profiles': out.writeProfiles = true; break;
         }
@@ -201,14 +221,14 @@ function ensureValidRange(label, cfg) {
     }
 }
 
-function boundaryFlags(winner, erValues, fastValues, slowValues) {
+function boundaryFlags(winner, erValues, fastValues, slowValues, fixedEr = null, fixedFast = null) {
     if (!winner) return { er: null, fast: null, slow: null, any: false };
     const eps = 1e-9;
     const minEr = erValues[0], maxEr = erValues[erValues.length - 1];
     const minFast = fastValues[0], maxFast = fastValues[fastValues.length - 1];
     const minSlow = slowValues[0], maxSlow = slowValues[slowValues.length - 1];
-    const er = Math.abs(winner.er - minEr) < eps ? 'min' : (Math.abs(winner.er - maxEr) < eps ? 'max' : null);
-    const fast = Math.abs(winner.fast - minFast) < eps ? 'min' : (Math.abs(winner.fast - maxFast) < eps ? 'max' : null);
+    const er = Number.isFinite(fixedEr) ? null : (Math.abs(winner.er - minEr) < eps ? 'min' : (Math.abs(winner.er - maxEr) < eps ? 'max' : null));
+    const fast = Number.isFinite(fixedFast) ? null : (Math.abs(winner.fast - minFast) < eps ? 'min' : (Math.abs(winner.fast - maxFast) < eps ? 'max' : null));
     const slow = Math.abs(winner.slow - minSlow) < eps ? 'min' : (Math.abs(winner.slow - maxSlow) < eps ? 'max' : null);
     return { er, fast, slow, any: !!(er || fast || slow) };
 }
@@ -310,8 +330,8 @@ function updateAmaProfilesFile({ dataFile, meta, winners, sourceResultsFile }) {
     writeJSON(AMA_PROFILES_FILE, payload);
 }
 
-function calcTotalAmaMovement(amaValues) {
-    const skip = Math.max(20, Math.floor(amaValues.length * 0.1));
+function calcTotalAmaMovement(amaValues, erPeriod) {
+    const skip = erPeriod + 1;
     let total = 0;
     for (let i = skip + 1; i < amaValues.length; i++) {
         total += Math.abs(amaValues[i] - amaValues[i - 1]) / amaValues[i - 1];
@@ -321,8 +341,8 @@ function calcTotalAmaMovement(amaValues) {
 
 // ── Informational: area above/below AMA ──────────────────────────────────────
 
-function calcArea(amaValues, candles) {
-    const skip = Math.max(20, Math.floor(candles.length * 0.1));
+function calcArea(amaValues, candles, erPeriod) {
+    const skip = erPeriod + 1;
     let above = 0, below = 0, maxUp = 0, maxDown = 0;
     for (let i = skip; i < candles.length; i++) {
         const ama = amaValues[i];
@@ -342,8 +362,8 @@ function calcArea(amaValues, candles) {
     return { above, below, total, maxUp, maxDown, maxDist };
 }
 
-function calcTotalRelativeDistance(amaValues, candles) {
-    const skip = Math.max(20, Math.floor(candles.length * 0.1));
+function calcTotalRelativeDistance(amaValues, candles, erPeriod) {
+    const skip = erPeriod + 1;
     let total = 0;
     for (let i = skip; i < candles.length; i++) {
         const ama = amaValues[i];
@@ -384,9 +404,9 @@ function runSearchShard(payload, onProgress = null) {
                 valid++;
 
                 const ama = calculateAMA(closes, { erPeriod: er, fastPeriod: fast, slowPeriod: slow });
-                const area = calcArea(ama, candles);
-                const amaMovementTotal = calcTotalAmaMovement(ama);
-                const distanceTotal = calcTotalRelativeDistance(ama, candles);
+                const area = calcArea(ama, candles, er);
+                const amaMovementTotal = calcTotalAmaMovement(ama, er);
+                const distanceTotal = calcTotalRelativeDistance(ama, candles, er);
                 const bandFactorPct = area.maxDist * 200;
                 const entry = {
                     er, fast, slow,
@@ -450,12 +470,15 @@ async function run() {
     const fastDim = buildDimension('Fast', args.fast);
     const slowDim = buildDimension('Slow', args.slow);
 
-    const ER_VALUES = erDim.values;
-    const FAST_VALUES = fastDim.values;
+    const ER_VALUES = Number.isFinite(args.fixedEr) ? [args.fixedEr] : erDim.values;
+    const FAST_VALUES = Number.isFinite(args.fixedFast) ? [args.fixedFast] : fastDim.values;
     const SLOW_VALUES_AREA = slowDim.values;
 
     const totalCombos = ER_VALUES.length * FAST_VALUES.length * SLOW_VALUES_AREA.length;
     const startMs = Date.now();
+
+    const erLabel = Number.isFinite(args.fixedEr) ? `fixed(${args.fixedEr})` : `${ER_VALUES[0]}–${ER_VALUES[ER_VALUES.length-1]}`;
+    const fastLabel = Number.isFinite(args.fixedFast) ? `fixed(${args.fixedFast})` : `${FAST_VALUES[0]}–${FAST_VALUES[FAST_VALUES.length-1]}`;
 
     console.log('================================================================================');
     console.log(' AMA GEOMETRIC OPTIMIZER');
@@ -465,8 +488,10 @@ async function run() {
     for (const o of objectives) {
         console.log(`  ${o.key}: distance cap q=${o.distanceCapQuantile.toFixed(2)}  λ=${o.distanceWeight.toFixed(6)}`);
     }
-    console.log(`  Ranges:     ER ${ER_VALUES[0]}–${ER_VALUES[ER_VALUES.length-1]}  Fast ${FAST_VALUES[0]}–${FAST_VALUES[FAST_VALUES.length-1]}  Slow ${SLOW_VALUES_AREA[0]}–${SLOW_VALUES_AREA[SLOW_VALUES_AREA.length-1]}`);
-    console.log(`  Sampling:   ER ${erDim.meta.mode}(${erDim.meta.count}${erDim.meta.ratio ? `,x${erDim.meta.ratio.toFixed(3)}` : ''})  Fast ${fastDim.meta.mode}(${fastDim.meta.count}${fastDim.meta.ratio ? `,x${fastDim.meta.ratio.toFixed(3)}` : ''})  Slow ${slowDim.meta.mode}(${slowDim.meta.count}${slowDim.meta.ratio ? `,x${slowDim.meta.ratio.toFixed(3)}` : ''})`);
+    console.log(`  Ranges:     ER ${erLabel}  Fast ${fastLabel}  Slow ${SLOW_VALUES_AREA[0]}–${SLOW_VALUES_AREA[SLOW_VALUES_AREA.length-1]}`);
+    if (!Number.isFinite(args.fixedEr) && !Number.isFinite(args.fixedFast)) {
+        console.log(`  Sampling:   ER ${erDim.meta.mode}(${erDim.meta.count}${erDim.meta.ratio ? `,x${erDim.meta.ratio.toFixed(3)}` : ''})  Fast ${fastDim.meta.mode}(${fastDim.meta.count}${fastDim.meta.ratio ? `,x${fastDim.meta.ratio.toFixed(3)}` : ''})  Slow ${slowDim.meta.mode}(${slowDim.meta.count}${slowDim.meta.ratio ? `,x${slowDim.meta.ratio.toFixed(3)}` : ''})`);
+    }
     console.log(`  Combos:     ${totalCombos}\n`);
 
     // Load data
@@ -511,11 +536,15 @@ async function run() {
     const entries = shardResults.flatMap((r) => (r as any).entries);
     const validCombos = shardResults.reduce((acc, r) => acc + (r as any).validCombos, 0);
     const maxDistVals = entries.map((e) => e.area.maxDist);
+    // When both ER and Fast are fixed, the search is 1D over Slow only. Slow
+    // variation rarely produces maxDist outliers, so the distance cap filter adds
+    // no value here — λ alone cleanly separates the candidates.
+    const skipCap = Number.isFinite(args.fixedEr) && Number.isFinite(args.fixedFast);
 
-    const objectiveResults = objectives.map((objective, idx) => {
+    const objectiveResults = objectives.map((objective) => {
         const distanceWeight = objective.distanceWeight;
-        const computedCap = percentile(maxDistVals, objective.distanceCapQuantile);
-        const cappedEntries = entries.filter((e) => e.area.maxDist <= computedCap);
+        const computedCap = skipCap ? null : percentile(maxDistVals, objective.distanceCapQuantile);
+        const cappedEntries = skipCap ? entries : entries.filter((e) => e.area.maxDist <= computedCap);
 
         let best = null;
         for (const e of cappedEntries) {
@@ -612,10 +641,10 @@ async function run() {
     console.log();
 
     const boundarySummary = {
-        AMA1: boundaryFlags(ama1, ER_VALUES, FAST_VALUES, SLOW_VALUES_AREA),
-        AMA2: boundaryFlags(ama2, ER_VALUES, FAST_VALUES, SLOW_VALUES_AREA),
-        AMA3: boundaryFlags(ama3, ER_VALUES, FAST_VALUES, SLOW_VALUES_AREA),
-        AMA4: boundaryFlags(ama4, ER_VALUES, FAST_VALUES, SLOW_VALUES_AREA),
+        AMA1: boundaryFlags(ama1, ER_VALUES, FAST_VALUES, SLOW_VALUES_AREA, args.fixedEr, args.fixedFast),
+        AMA2: boundaryFlags(ama2, ER_VALUES, FAST_VALUES, SLOW_VALUES_AREA, args.fixedEr, args.fixedFast),
+        AMA3: boundaryFlags(ama3, ER_VALUES, FAST_VALUES, SLOW_VALUES_AREA, args.fixedEr, args.fixedFast),
+        AMA4: boundaryFlags(ama4, ER_VALUES, FAST_VALUES, SLOW_VALUES_AREA, args.fixedEr, args.fixedFast),
     };
 
     console.log(' Boundary Check');
@@ -675,6 +704,8 @@ async function run() {
                 er: { ...erDim.meta },
                 fast: { ...fastDim.meta },
                 slow: { ...slowDim.meta },
+                fixedEr: Number.isFinite(args.fixedEr) ? args.fixedEr : null,
+                fixedFast: Number.isFinite(args.fixedFast) ? args.fixedFast : null,
             },
             boundaryFlags: boundarySummary,
             objective: {
