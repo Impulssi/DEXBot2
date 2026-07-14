@@ -22,8 +22,9 @@ function createSubscriptionManager(chainClient: any): any {
     // (Map iteration order is stable so we can reuse a single timer per entry).
     const pendingScans = new Map<any, { timer: any; lastNoticeAt: number }>();
 
-    // Subscription health watchdog timer.
+    // Subscription health watchdog timer and re-entrancy guard.
     let subscriptionHealthTimer: any = null;
+    let healthCheckInProgress = false;
 
     function parseObjectIdInstance(id: any): number {
         if (typeof id !== 'string') return Number.NaN;
@@ -613,27 +614,63 @@ function createSubscriptionManager(chainClient: any): any {
 
         if (subscriptionHealthTimer) return;
 
-        subscriptionHealthTimer = setInterval(() => {
-            const now = Date.now();
-            const stale: any[] = [];
-            for (const [, entry] of subscriptions) {
-                if (!entry.active) continue;
-                if (entry.reconnecting) continue;
-                const elapsed = now - entry.lastNoticeAt;
-                if (elapsed >= silentThresholdMs) {
-                    stale.push({ entry, elapsed });
+        subscriptionHealthTimer = setInterval(async () => {
+            // Re-entrancy guard: if a previous tick is still processing (e.g.
+            // resubscribeEntry + catch-up scans take longer than intervalMs),
+            // skip this tick rather than running redundant set_subscribe_callback.
+            if (healthCheckInProgress) return;
+            healthCheckInProgress = true;
+            try {
+                const now = Date.now();
+                const stale: any[] = [];
+                for (const [, entry] of subscriptions) {
+                    if (!entry.active) continue;
+                    if (entry.reconnecting) continue;
+                    const elapsed = now - entry.lastNoticeAt;
+                    if (elapsed >= silentThresholdMs) {
+                        stale.push({ entry, elapsed });
+                    }
                 }
-            }
 
-            if (stale.length === 0) return;
+                if (stale.length === 0) return;
 
-            for (const { entry, elapsed } of stale) {
+                // Sort so the longest-stale account drives the resubscribe.
+                stale.sort((a, b) => b.elapsed - a.elapsed);
+
+                // All accounts share one WebSocket subscription feed. If one is
+                // stale the entire feed is dead — resubscribe once and catch up
+                // all stale entries rather than triggering N redundant resubscribes.
                 subscriptionsLogger.warn(
-                    `Subscription health: ${entry.accountName} has not received a notice in ${Math.round(elapsed / 1000)}s (threshold=${Math.round(silentThresholdMs / 1000)}s) — triggering resubscribe`
+                    `Subscription health: ${stale.length} account(s) stale; resubscribing via ${stale[0].entry.accountName} ` +
+                    `(oldest=${Math.round(stale[0].elapsed / 1000)}s, threshold=${Math.round(silentThresholdMs / 1000)}s)`
                 );
-                resubscribeEntry(entry, 'healthcheck').catch((err: any) => {
-                    subscriptionsLogger.warn(`Subscription health: resubscribe failed for ${entry.accountName}: ${err.message}`);
-                });
+                const firstEntry = stale[0].entry;
+                try {
+                    await resubscribeEntry(firstEntry, 'healthcheck');
+                } catch (err: any) {
+                    subscriptionsLogger.warn(`Subscription health: resubscribe failed for ${firstEntry.accountName}: ${err.message}`);
+                }
+
+                // Catch up remaining stale entries with processObjects (the
+                // subscription is already re-established for all accounts by
+                // refreshSubscriptions inside resubscribeEntry).
+                for (let i = 1; i < stale.length; i++) {
+                    const { entry } = stale[i];
+                    if (entry.reconnecting) continue;
+                    entry.reconnecting = true;
+                    try {
+                        await processObjects(entry, [entry.accountId], { throwOnError: true });
+                        clearReconnectRetry(entry);
+                        subscriptionsLogger.warn(`Subscription restored for ${entry.accountName} (healthcheck)`);
+                    } catch (err: any) {
+                        subscriptionsLogger.warn(`Subscription health: catch-up scan failed for ${entry.accountName}: ${err.message}`);
+                        scheduleReconnectRetry(entry, err);
+                    } finally {
+                        entry.reconnecting = false;
+                    }
+                }
+            } finally {
+                healthCheckInProgress = false;
             }
         }, intervalMs);
 

@@ -1457,10 +1457,10 @@ let NATIVE_CLIENT = {
 
         // SUBSCRIPTION_SILENT_THRESHOLD_MS: If a subscription has not received
         // any notice (fill or non-fill) within this window, the watchdog
-        // triggers a resubscribe + history scan. Default: 10 minutes.
+        // triggers a resubscribe + history scan. Default: 5 minutes.
         // Choose a value longer than the expected quiet period between
-        // account operations — low-activity bots should use 15–20 min.
-        SUBSCRIPTION_SILENT_THRESHOLD_MS: 600000,
+        // account operations — low-activity bots should use 10–15 min.
+        SUBSCRIPTION_SILENT_THRESHOLD_MS: 300000,
     },
 
     // -------------------------------------------------------------------------

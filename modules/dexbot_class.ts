@@ -1071,7 +1071,9 @@ class DEXBot {
                         // Process fills - this will place new orders on the filled slots
                         // Use normal fill processing since bootstrap is complete
                         const fills = this._incomingFillQueue.splice(0);
+                        const processedFillKeys = new Set();
                         let requiresOpenOrdersSync = false;
+
                         for (const fill of fills) {
                             if (!fill || fill.op?.[0] !== 4) continue;
 
@@ -1082,6 +1084,26 @@ class DEXBot {
                             if (!gridOrder) {
                                 // CRITICAL FIX: Even if order not in grid, we must still credit the fill proceeds
                                 // This can happen when fills arrive after an order was marked VIRTUAL during sequential processing
+
+                                // Dedup for orphan fills (same Layer 1/2 protection as main path).
+                                let orphanFillKey = buildFillKey(fill);
+                                if (!orphanFillKey) {
+                                    orphanFillKey = this._buildOrphanFillFallbackKey(fill);
+                                }
+                                if (orphanFillKey) {
+                                    const now = Date.now();
+                                    if (this._recentlyQueuedFills.has(orphanFillKey)) {
+                                        const lastProcessed = this._recentlyQueuedFills.get(orphanFillKey);
+                                        if (now - lastProcessed < this._fillDedupeWindowMs) {
+                                            this._log(`[POST-RESET] Skipping duplicate orphan fill for ${fillOp.order_id} (processed ${now - lastProcessed}ms ago)`, 'debug');
+                                            continue;
+                                        }
+                                    }
+                                    if (processedFillKeys.has(orphanFillKey)) continue;
+                                    processedFillKeys.add(orphanFillKey);
+                                    this._recentlyQueuedFills.set(orphanFillKey, now);
+                                }
+
                                  this._log(`[POST-RESET] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
                                  const accountingResult = await this._applyReplaySafeOrphanFillAccounting(fill, fillOp, {
                                      context: 'POST-RESET',
@@ -1096,6 +1118,22 @@ class DEXBot {
 
                             this._log(`[POST-RESET] Processing fill for ${gridOrder.type} order ${gridOrder.id} at price ${gridOrder.price}`);
 
+                            // Dedup for tracked fills (same Layer 1/2 protection as main path).
+                            const trackedFillKey = buildFillKey(fill);
+                            if (trackedFillKey) {
+                                const now = Date.now();
+                                if (this._recentlyQueuedFills.has(trackedFillKey)) {
+                                    const lastProcessed = this._recentlyQueuedFills.get(trackedFillKey);
+                                    if (now - lastProcessed < this._fillDedupeWindowMs) {
+                                        this._log(`[POST-RESET] Skipping duplicate tracked fill for ${fillOp.order_id} (processed ${now - lastProcessed}ms ago)`, 'debug');
+                                        continue;
+                                    }
+                                }
+                                if (processedFillKeys.has(trackedFillKey)) continue;
+                                processedFillKeys.add(trackedFillKey);
+                                this._recentlyQueuedFills.set(trackedFillKey, now);
+                            }
+
                              const accountingResult = await this._applyReplaySafeTrackedFillAccounting(fill, fillOp, {
                                  context: 'POST-RESET',
                                  logger: { log: this._log.bind(this) },
@@ -1108,7 +1146,6 @@ class DEXBot {
                              if (accountingResult.status !== 'applied') {
                                  continue;
                              }
-
                             // Process this fill through the full rebalance pipeline
                             // This will shift the boundary and place a new order on the filled slot
                             const result = await this._processFillsWithBatching([gridOrder], new Set(), `[POST-RESET] fill ${gridOrder.id}`);
@@ -1676,6 +1713,29 @@ class DEXBot {
 
                                 // Legitimate orphan fill: order was virtualized during sequential processing
                                 // but a fill arrived afterward. Credit proceeds to maintain fund tracking.
+
+                                // Dedup: apply Layer 1 (in-cycle processedFillKeys) and Layer 2
+                                // (short-window _recentlyQueuedFills) before delegating to Layer 3
+                                // (persisted accounting). Orphan fills skip the tracked-fill dedup
+                                // checks below (continue at end of block), so replicate them here.
+                                let orphanFillKey = buildFillKey(fill);
+                                if (!orphanFillKey) {
+                                    orphanFillKey = this._buildOrphanFillFallbackKey(fill);
+                                }
+                                if (orphanFillKey) {
+                                    const now = Date.now();
+                                    if (this._recentlyQueuedFills.has(orphanFillKey)) {
+                                        const lastProcessed = this._recentlyQueuedFills.get(orphanFillKey);
+                                        if (now - lastProcessed < this._fillDedupeWindowMs) {
+                                            this.manager.logger.log(`[ORPHAN-FILL] Skipping duplicate for ${fillOp.order_id} (processed ${now - lastProcessed}ms ago)`, 'debug');
+                                            continue;
+                                        }
+                                    }
+                                    if (processedFillKeys.has(orphanFillKey)) continue;
+                                    processedFillKeys.add(orphanFillKey);
+                                    this._recentlyQueuedFills.set(orphanFillKey, now);
+                                }
+
                                  this.manager.logger.log(`[ORPHAN-FILL] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
                                  const accountingResult = await this._applyReplaySafeOrphanFillAccounting(fill, fillOp, {
                                      context: 'ORPHAN-FILL',
@@ -1921,9 +1981,11 @@ class DEXBot {
                             if (!entry || !Number.isFinite(entry.markedAt)) {
                                 this._staleCleanedOrderIds.delete(orderId);
                                 prunedCount++;
-                            } else if (entry.gridId === null && now - entry.markedAt > this._staleCleanupRetentionMs) {
+                            } else if (entry.gridId === null && now - entry.markedAt > this._fillRecordRetentionMs) {
                                 // Entries without a gridId cannot use the recycled-slot
-                                // check (orphan fill → credit).  Prune them after TTL.
+                                // check (orphan fill → credit).  Prune them after the
+                                // full dedup retention window to close the gap where a
+                                // delayed fill could slip past the shorter cleanup TTL.
                                 this._staleCleanedOrderIds.delete(orderId);
                                 prunedCount++;
                             }
@@ -1933,10 +1995,32 @@ class DEXBot {
                             // delayed orphan fill after TTL would miss the slot-recycling
                             // check and double-credit freed funds.
                         }
+
+                        // Hard cap to prevent unbounded growth over the 7-day window.
+                        // Evicts oldest gridId:null entries first when the cap is exceeded.
+                        const STALE_CLEANED_CAP = 500;
+                        if (this._staleCleanedOrderIds.size > STALE_CLEANED_CAP) {
+                            const entries = [...this._staleCleanedOrderIds.entries()]
+                                .filter(([, e]) => e.gridId === null)
+                                .sort(([, a], [, b]) => (a.markedAt || 0) - (b.markedAt || 0));
+                            const toEvict = this._staleCleanedOrderIds.size - STALE_CLEANED_CAP;
+                            for (let i = 0; i < Math.min(toEvict, entries.length); i++) {
+                                this._staleCleanedOrderIds.delete(entries[i][0]);
+                                prunedCount++;
+                            }
+                            if (toEvict > entries.length) {
+                                this.manager.logger.log(
+                                    `[STALE-CLEANUP] Stale-cleaned map at cap (${STALE_CLEANED_CAP}); ` +
+                                    `${toEvict - entries.length} gridId entries retained indefinitely`,
+                                    'debug'
+                                );
+                            }
+                        }
+
                         if (prunedCount > 0) {
                             this.manager.logger.log(
                                 `[STALE-CLEANUP] Pruned ${prunedCount} expired stale-cleaned order IDs ` +
-                                `(retention=${this._staleCleanupRetentionMs}ms, remaining=${this._staleCleanedOrderIds.size})`,
+                                `(retention=${this._fillRecordRetentionMs}ms, remaining=${this._staleCleanedOrderIds.size})`,
                                 'debug'
                             );
                         }
@@ -2038,6 +2122,26 @@ class DEXBot {
             if (!gridOrder) {
                 // CRITICAL FIX: Even if order not in grid, we must still credit the fill proceeds
                 // This can happen when fills arrive after an order was marked VIRTUAL during sequential processing
+
+                // Dedup for orphan fills (same Layer 1/2 protection as main path).
+                let orphanFillKey = buildFillKey(fill);
+                if (!orphanFillKey) {
+                    orphanFillKey = this._buildOrphanFillFallbackKey(fill);
+                }
+                if (orphanFillKey) {
+                    const now = Date.now();
+                    if (this._recentlyQueuedFills.has(orphanFillKey)) {
+                        const lastProcessed = this._recentlyQueuedFills.get(orphanFillKey);
+                        if (now - lastProcessed < this._fillDedupeWindowMs) {
+                            this.manager.logger.log(`[BOOTSTRAP] Skipping duplicate orphan fill for ${fillOp.order_id} (processed ${now - lastProcessed}ms ago)`, 'debug');
+                            continue;
+                        }
+                    }
+                    if (processedFillKeys.has(orphanFillKey)) continue;
+                    processedFillKeys.add(orphanFillKey);
+                    this._recentlyQueuedFills.set(orphanFillKey, now);
+                }
+
                  this.manager.logger.log(`[BOOTSTRAP] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
                  const accountingResult = await this._applyReplaySafeOrphanFillAccounting(fill, fillOp, {
                      context: 'BOOTSTRAP'
@@ -2046,6 +2150,22 @@ class DEXBot {
                      requiresOpenOrdersSync = true;
                  }
                 continue;
+            }
+
+            // Dedup for tracked fills (Layer 1/2 check BEFORE accounting, matching main path).
+            const trackedFillKey = buildFillKey(fill);
+            if (trackedFillKey) {
+                const now = Date.now();
+                if (this._recentlyQueuedFills.has(trackedFillKey)) {
+                    const lastProcessed = this._recentlyQueuedFills.get(trackedFillKey);
+                    if (now - lastProcessed < this._fillDedupeWindowMs) {
+                        this.manager.logger.log(`[BOOTSTRAP] Skipping duplicate tracked fill for ${fillOp.order_id} (processed ${now - lastProcessed}ms ago)`, 'debug');
+                        continue;
+                    }
+                }
+                if (processedFillKeys.has(trackedFillKey)) continue;
+                processedFillKeys.add(trackedFillKey);
+                this._recentlyQueuedFills.set(trackedFillKey, now);
             }
 
             const accountingResult = await this._applyReplaySafeTrackedFillAccounting(fill, fillOp, {
@@ -2060,8 +2180,6 @@ class DEXBot {
                 continue;
             }
 
-            if (processedFillKeys.has(accountingResult.fillKey)) continue;
-            processedFillKeys.add(accountingResult.fillKey);
             validFills.push({ ...fill, gridOrder });
 
             const fillType = gridOrder.type === ORDER_TYPES.BUY ? 'BUY' : 'SELL';
