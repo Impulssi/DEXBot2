@@ -17,7 +17,7 @@ const {
     resolveMinCollateralIncreaseThreshold,
     resolveTargetCollateralRatio,
 } = require('./cr_planner');
-const { FEE_PARAMETERS, DEFAULT_TARGET_CR } = require('./constants');
+const { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING } = require('./constants');
 const { roundToDecimals } = require('./utils/math_utils');
 const { PATHS } = require('./paths');
 const { readJSON } = require('./utils/fs_utils');
@@ -138,7 +138,7 @@ function isDeterministicMpaDebtBalanceError(err, plan) {
 
 function isMaxBorrowAmountError(err) {
     const message = String(err?.message || err || '');
-    return /would exceed maxBorrowAmount/.test(message);
+    return /would exceed maxBorrowAmount/.test(message) || /exceeds maxBorrowAmountPerOperation/.test(message);
 }
 
 function normalizeCollateralMap(acceptableCollateral) {
@@ -282,6 +282,7 @@ class CreditRuntime {
     _maintenanceInFlight: boolean;
     _watchdogInFlight: boolean;
     _reborrowsInFlight: boolean;
+    _splitInFlight: boolean;
 
     constructor(bot, options = {}) {
         this.bot = bot || {};
@@ -303,6 +304,7 @@ class CreditRuntime {
         this._maintenanceInFlight = false;
         this._watchdogInFlight = false;
         this._reborrowsInFlight = false;
+        this._splitInFlight = false;
     }
 
     _createDefaultState() {
@@ -1435,6 +1437,7 @@ class CreditRuntime {
             maxCollateralRatio: lendingItem.maxCollateralRatio,
             targetCollateralRatio: lendingItem.targetCollateralRatio,
             maxBorrowAmount: lendingItem.maxBorrowAmount,
+            maxBorrowAmountPerOperation: lendingItem.maxBorrowAmountPerOperation,
             maxCollateralAmount: posState.assignedCollateralBudget ?? lendingItem.maxCollateralAmount,
             collateralLimitReferenceAmount: posState.currentCollateralFundsTotal,
             minCollateralIncreaseThreshold: lendingItem.minCollateralIncreaseThreshold,
@@ -1621,6 +1624,15 @@ class CreditRuntime {
             borrowInt = this._calculateBorrowAmountFromCollateral(requiredCollateralInt, collateralPrice, debtAsset, collateralAsset);
             if (Number.isFinite(borrowInt) && borrowInt > 0) {
                 this._enforceMaxBorrowAmount(policy, borrowInt, debtAsset, { pendingRepayAmount });
+            }
+        }
+
+        // Enforce per-operation borrow limit
+        const maxPerOp = positiveOrNull(policy?.maxBorrowAmountPerOperation);
+        if (maxPerOp !== null && Number.isFinite(borrowInt) && borrowInt > 0) {
+            const borrowFloat = blockchainToFloat(borrowInt, debtAsset.precision);
+            if (Number.isFinite(borrowFloat) && borrowFloat > maxPerOp) {
+                throw new Error(`borrowAmount ${borrowFloat} exceeds maxBorrowAmountPerOperation ${maxPerOp}`);
             }
         }
 
@@ -2207,6 +2219,12 @@ class CreditRuntime {
             ? Number(remainingBorrowCapacity)
             : null;
 
+        // Apply per-operation borrow limit on top of remaining capacity
+        const maxPerOp = positiveOrNull(policy?.maxBorrowAmountPerOperation);
+        const effectiveBorrowCapacity = finiteRemainingBorrowCapacity !== null && maxPerOp !== null
+            ? Math.min(finiteRemainingBorrowCapacity, maxPerOp)
+            : finiteRemainingBorrowCapacity ?? maxPerOp;
+
         for (const offerId of allowedOfferIds) {
             const offer = await this._getOfferById(offerId);
             if (offer?.id && !seen.has(String(offer.id))) {
@@ -2241,7 +2259,7 @@ class CreditRuntime {
                     autoRepay,
                     specificPolicy: policy,
                 };
-                if (accountId && debtAsset && collateralAsset && finiteRemainingBorrowCapacity !== null) {
+                if (accountId && debtAsset && collateralAsset && effectiveBorrowCapacity !== null) {
                     const collateralSpec = normalizeAmountSpec(collateralAmount);
                     const collateralReferenceAmount = isPercentageAmountSpec(collateralSpec)
                         ? await this._getCollateralPercentageBase(accountId, collateralAsset.id)
@@ -2258,10 +2276,10 @@ class CreditRuntime {
                         collateralAsset
                     );
                     const desiredBorrowAmount = blockchainToFloat(desiredBorrowInt, debtAsset.precision);
-                    if (Number.isFinite(desiredBorrowAmount) && desiredBorrowAmount > finiteRemainingBorrowCapacity) {
+                    if (Number.isFinite(desiredBorrowAmount) && desiredBorrowAmount > effectiveBorrowCapacity) {
                         acceptArgs = {
                             offer,
-                            borrowAmount: finiteRemainingBorrowCapacity,
+                            borrowAmount: effectiveBorrowCapacity,
                             collateralAmount: { assetId: collateralAsset.id },
                             autoRepay,
                             specificPolicy: policy,
@@ -2276,12 +2294,12 @@ class CreditRuntime {
                     if (!isMaxBorrowAmountError(err)) {
                         throw err;
                     }
-                    if (finiteRemainingBorrowCapacity === null) {
+                    if (effectiveBorrowCapacity === null) {
                         throw err;
                     }
                     op = await this.buildCreditOfferAcceptOperation({
                         offer,
-                        borrowAmount: finiteRemainingBorrowCapacity,
+                        borrowAmount: effectiveBorrowCapacity,
                         collateralAmount: { assetId: collateralAssetId },
                         autoRepay,
                         specificPolicy: policy,
@@ -2370,6 +2388,137 @@ class CreditRuntime {
             remainingBorrowCapacity: remainingBorrowCapacity !== null ? roundToDecimals(remainingBorrowCapacity, 8) : null,
             assignedCollateralBudget: roundToDecimals(assignedCollateralBudget, 8),
         };
+    }
+
+    async _splitOversizedCreditDeals(lendingItem, assetId, posState, runtimeContext: Record<string, any> = {}) {
+        const maxPerOp = positiveOrNull(lendingItem.maxBorrowAmountPerOperation);
+        if (maxPerOp === null) return null;
+
+        // T2: Concurrency guard — prevent concurrent splits from runMaintenance / watchdog
+        if (this._splitInFlight) return { skipped: true, reason: 'split in flight' };
+        this._splitInFlight = true;
+        try {
+            return await this._doSplitOversizedCreditDeals(lendingItem, assetId, posState, runtimeContext);
+        } finally {
+            this._splitInFlight = false;
+        }
+    }
+
+    async _doSplitOversizedCreditDeals(lendingItem, assetId, posState, runtimeContext: Record<string, any> = {}) {
+        const maxPerOp = positiveOrNull(lendingItem.maxBorrowAmountPerOperation);
+        if (maxPerOp === null) return null;
+
+        const debtAsset = await this._resolveAsset(assetId);
+        const collateralAsset = await this._resolveAsset(lendingItem.collateralAsset);
+        if (!debtAsset || !collateralAsset) return null;
+
+        const deals = Array.isArray(posState?.creditDeals) ? posState.creditDeals : [];
+        const oversized = deals.filter((d) => {
+            const debt = blockchainAmountToFloat(d?.debtAmount, debtAsset);
+            return Number.isFinite(debt) && debt > maxPerOp;
+        });
+        if (oversized.length === 0) return null;
+
+        // T3: Use canonical settle-delay resolution matching dexbot_maintenance_runtime.ts
+        const settleDelay = Number.isFinite(TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
+            ? Math.max(0, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
+            : 6_000;
+
+        // T4: Hard cap on pieces per cycle so the watchdog interval is never exceeded
+        const MAX_PIECES_PER_CYCLE = Number.isFinite(TIMING.CREDIT_DEAL_SPLIT_MAX_PIECES)
+            ? Math.max(0, TIMING.CREDIT_DEAL_SPLIT_MAX_PIECES)
+            : 48;
+
+        const configuredCollateralAssetId = collateralAsset.id;
+        const posKey = configuredCollateralAssetId
+            ? this._positionKey(assetId, configuredCollateralAssetId)
+            : assetId;
+        let prevPieceAt = 0;
+        let totalPiecesThisCycle = 0;
+
+        for (const deal of oversized) {
+            const dealId = String(deal.id);
+            let currentDeal = deal;
+
+            const dealDebt = blockchainAmountToFloat(currentDeal.debtAmount, debtAsset);
+            if (!Number.isFinite(dealDebt) || dealDebt <= maxPerOp) continue;
+
+            // Check min_deal_amount on the offer to avoid reborrows that would fail.
+            // Note: _getOfferById caches the offer for the runtime lifetime — if the
+            // offer's min_deal_amount changes on-chain mid-split, the guard uses the
+            // stale cached value. Risk is low in practice (offers rarely change this).
+            const dealOffer = await this._getOfferById(parseDealSummary(currentDeal)?.offerId);
+            const minDealAmount = toFiniteNumber(dealOffer?.min_deal_amount, null);
+            const numPieces = Math.ceil(dealDebt / maxPerOp);
+            const pieceAmount = roundToDecimals(dealDebt / numPieces, debtAsset.precision);
+            if (minDealAmount !== null && pieceAmount < blockchainToFloat(minDealAmount, debtAsset.precision)) {
+                this.warn(`credit runtime: cannot split deal ${dealId} — piece amount ${pieceAmount} below min_deal_amount ${blockchainToFloat(minDealAmount, debtAsset.precision)} for offer ${dealOffer?.id}`);
+                continue;
+            }
+
+            const dealPieces = Math.min(numPieces - 1, MAX_PIECES_PER_CYCLE - totalPiecesThisCycle);
+            if (dealPieces <= 0) {
+                const remainingDeals = oversized.length - oversized.indexOf(deal) - 1;
+                this.warn(`credit runtime: hit cap (${MAX_PIECES_PER_CYCLE}); deferring deal ${dealId} and ${remainingDeals} other deal(s)`);
+                break;
+            }
+            if (dealPieces < numPieces - 1) {
+                this.warn(`credit runtime: splitting only ${dealPieces} of ${numPieces - 1} pieces for deal ${dealId} this cycle (cap: ${MAX_PIECES_PER_CYCLE})`);
+            }
+
+            for (let i = 0; i < dealPieces; i++) {
+                // T1: Abort on shutdown during settle delay
+                if (prevPieceAt > 0) {
+                    await new Promise((resolve, reject) => {
+                        const t = setTimeout(resolve, settleDelay);
+                        if (this.bot?._shuttingDown) {
+                            clearTimeout(t);
+                            reject(new Error('shutting down'));
+                        }
+                    });
+                }
+
+                // Re-fetch deal from current state (may have been refreshed by repayCreditDeal)
+                const pos = this.state.positions?.[posKey];
+                const refreshed = Array.isArray(pos?.creditDeals)
+                    ? pos.creditDeals.find((d) => String(d.id) === dealId)
+                    : null;
+                if (!refreshed) {
+                    this.warn(`credit runtime: deal ${dealId} (asset ${assetId}) vanished during restructure`);
+                    break;
+                }
+                currentDeal = refreshed;
+
+                const remaining = blockchainAmountToFloat(currentDeal.debtAmount, debtAsset);
+                if (!Number.isFinite(remaining) || remaining <= maxPerOp) break;
+
+                const currentPiece = Math.min(pieceAmount, remaining - maxPerOp);
+                if (currentPiece <= 0) break;
+
+                this.log(`credit runtime: splitting deal ${dealId}: repaying ${currentPiece} of ${remaining} debt (piece ${i + 1}/${dealPieces})`);
+
+                await this.repayCreditDeal(currentDeal, currentPiece, {
+                    autoReborrow: true,
+                    specificPolicy: lendingItem,
+                    fillLockAlreadyHeld: runtimeContext?.options?.fillLockAlreadyHeld === true,
+                });
+
+                prevPieceAt = Date.now();
+                totalPiecesThisCycle++;
+            }
+        }
+
+        if (prevPieceAt > 0) {
+            // N3: skip heavy refresh on cap-exit — repayCreditDeal already called refreshState
+            if (totalPiecesThisCycle < MAX_PIECES_PER_CYCLE) {
+                await this.refreshCreditState({}, lendingItem);
+            }
+            const gridResult = await this._checkGridMaintenanceAfterCreditUpdate('credit restructure', {
+                fillLockAlreadyHeld: runtimeContext?.options?.fillLockAlreadyHeld === true,
+            });
+            return { action: 'restructured', gridMaintenanceResult: gridResult };
+        }
+        return null;
     }
 
     async _getDealById(dealId) {
@@ -2643,6 +2792,16 @@ class CreditRuntime {
 
         const posState = this.state.positions[posKey];
         if (!posState) return null;
+
+        // Phase 0: Split oversized credit deals that exceed maxBorrowAmountPerOperation
+        try {
+            const splitResult = await this._splitOversizedCreditDeals(lendingItem, assetId, posState, runtimeContext);
+            if (splitResult) {
+                this.log(`credit runtime: restructured oversized deals for ${assetId}`);
+            }
+        } catch (err: any) {
+            this.warn(`credit runtime: deal restructuring failed: ${err.message}`);
+        }
 
         let activeDealIds = new Set((posState.creditDeals || []).map((d) => String(d?.id)).filter(Boolean));
 

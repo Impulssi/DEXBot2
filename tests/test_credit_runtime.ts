@@ -3936,6 +3936,494 @@ async function testProactiveRepayPrunesStalePendingReborrow() {
   }
 }
 
+async function testMaxBorrowAmountPerOperationRejectsOversizedBorrows() {
+  const calls = [];
+  const dbCalls = [];
+  const restore = installStubs(calls, dbCalls, {
+    dealResponses: [[]],
+    assetsById: {
+      '1.3.0': { id: '1.3.0', symbol: 'BTS', precision: 2, bitasset_data_id: null },
+      '1.3.10': { id: '1.3.10', symbol: 'HONEST.USD', precision: 2, bitasset_data_id: '2.4.1' },
+    },
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-perop-reject-'));
+
+  try {
+    delete require.cache[creditRuntimePath];
+    const CreditRuntime = require('../modules/credit_runtime');
+    const runtime = new CreditRuntime({
+      config: createBaseBotConfig({
+        botKey: 'credit-bot-perop-reject',
+        debtPolicy: {
+          lending: [
+            {
+              asset: 'HONEST.USD',
+              collateralAsset: 'BTS',
+              type: 'creditOffer',
+              outputWeight: 1,
+              maxBorrowAmount: 1000,
+              maxBorrowAmountPerOperation: 200,
+              maxCollateralRatio: 2.5,
+              maxFeeRatePerDay: 0.05,
+            },
+          ],
+        },
+      }),
+      account: { id: '1.2.3', name: 'alice' },
+      accountId: '1.2.3',
+      privateKey: 'WIF-KEY',
+      _log() {},
+      _warn() {},
+    }, { stateDir: path.join(baseDir, 'credit_runtime') });
+
+    await runtime.refreshState();
+
+    const fullOffer = {
+      id: '1.18.42',
+      asset_type: '1.3.10',
+      current_balance: 10000,
+      fee_rate: 30000,
+      min_deal_amount: 1,
+      enabled: true,
+      max_duration_seconds: 86400,
+      acceptable_collateral: {
+        '1.3.0': {
+          base: { amount: 2, asset_id: '1.3.0' },
+          quote: { amount: 1, asset_id: '1.3.10' },
+        },
+      },
+    };
+
+    // Should succeed — 150 is within per-op limit of 200
+    const op = await runtime.buildCreditOfferAcceptOperation({
+      offer: fullOffer,
+      borrowAmount: 150,
+      collateralAmount: { amount: 400, asset_id: '1.3.0' },
+    });
+    assert.ok(op, 'borrow within per-op limit should succeed');
+    assert.strictEqual(op.op_data.borrow_amount.amount, 15000, 'borrow amount should be 15000 (150 * 10^2)');
+
+    // Should reject — 300 exceeds per-op limit of 200
+    await assert.rejects(
+      () => runtime.buildCreditOfferAcceptOperation({
+        offer: fullOffer,
+        borrowAmount: 300,
+        collateralAmount: { amount: 800, asset_id: '1.3.0' },
+      }),
+      /exceeds maxBorrowAmountPerOperation/,
+      'borrow exceeding per-op limit should be rejected',
+    );
+  } finally {
+    restore();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
+  }
+}
+
+async function testMaxBorrowAmountPerOperationWithSelection() {
+  const calls = [];
+  const dbCalls = [];
+  const restore = installStubs(calls, dbCalls, {
+    dealResponses: [[]],
+    assetsById: {
+      '1.3.0': { id: '1.3.0', symbol: 'BTS', precision: 2, bitasset_data_id: null },
+      '1.3.10': { id: '1.3.10', symbol: 'HONEST.USD', precision: 2, bitasset_data_id: '2.4.1' },
+    },
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-perop-sel-'));
+
+  try {
+    delete require.cache[creditRuntimePath];
+    const CreditRuntime = require('../modules/credit_runtime');
+    const runtime = new CreditRuntime({
+      config: createBaseBotConfig({
+        botKey: 'credit-bot-perop-sel',
+        debtPolicy: {
+          lending: [
+            {
+              asset: 'HONEST.USD',
+              collateralAsset: 'BTS',
+              type: 'creditOffer',
+              outputWeight: 1,
+              maxBorrowAmount: 1000,
+              maxBorrowAmountPerOperation: 200,
+              maxCollateralRatio: 2.5,
+              maxFeeRatePerDay: 0.05,
+              autoRepay: 2,
+            },
+          ],
+        },
+      }),
+      account: { id: '1.2.3', name: 'alice' },
+      accountId: '1.2.3',
+      privateKey: 'WIF-KEY',
+      _log() {},
+      _warn() {},
+    }, { stateDir: path.join(baseDir, 'credit_runtime') });
+
+    await runtime.refreshState();
+
+    // Simulate an existing deal so remainingBorrowCapacity = 800 (1000 - 200)
+    runtime.state.creditDeals = [{
+      id: '1.19.77',
+      borrower: '1.2.3',
+      offer_id: '1.18.42',
+      debt_asset: '1.3.10',
+      debt_amount: 20000,
+      collateral_asset: '1.3.0',
+      collateral_amount: 40000,
+    }];
+    runtime.state.positions = runtime.state.positions || {};
+    runtime.state.positions['1.3.10:1.3.0'] = runtime.state.positions['1.3.10:1.3.0'] || {};
+    runtime.state.positions['1.3.10:1.3.0'].creditDeals = runtime.state.creditDeals;
+    runtime.state.positions['1.3.10:1.3.0'].currentDebtAmount = 200;
+    runtime.state.positions['1.3.10:1.3.0'].currentCollateralAmount = 400;
+
+    // _selectCreditOfferForIncrease should cap at maxBorrowAmountPerOperation (200),
+    // not remainingBorrowCapacity (800)
+    const result = await runtime._selectCreditOfferForIncrease({
+      debtAssetId: '1.3.10',
+      collateralAssetId: '1.3.0',
+      policy: runtime.debtPolicy.lending[0],
+      collateralAmount: { amount: 2000, asset_id: '1.3.0' },  // would derive ~1000 borrow
+      remainingBorrowCapacity: 800,
+      autoRepay: 2,
+    });
+
+    assert.ok(result, 'offer selection should return a result');
+    assert.ok(result.capped, 'the selected offer should be marked as capped');
+    assert.strictEqual(result.borrowAmount, 200, 'borrow amount should be capped to maxBorrowAmountPerOperation');
+  } finally {
+    restore();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
+  }
+}
+
+async function testSplitOversizedCreditDealsSplitsCorrectly() {
+  const calls = [];
+  const dbCalls = [];
+  const baseAssets = {
+    '1.3.0': { id: '1.3.0', symbol: 'BTS', precision: 2, bitasset_data_id: null },
+    '1.3.10': { id: '1.3.10', symbol: 'HONEST.USD', precision: 2, bitasset_data_id: '2.4.1' },
+  };
+  const restore = installStubs(calls, dbCalls, {
+    dealResponses: [[]],
+    assetsById: baseAssets,
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-split-'));
+
+  try {
+    delete require.cache[creditRuntimePath];
+    const CreditRuntime = require('../modules/credit_runtime');
+    const runtime = new CreditRuntime({
+      config: createBaseBotConfig({
+        botKey: 'credit-bot-split',
+        debtPolicy: {
+          lending: [
+            {
+              asset: 'HONEST.USD',
+              collateralAsset: 'BTS',
+              type: 'creditOffer',
+              outputWeight: 1,
+              maxBorrowAmount: 1000,
+              maxBorrowAmountPerOperation: 200,
+              maxCollateralRatio: 2.5,
+              maxFeeRatePerDay: 0.05,
+              autoReborrow: true,
+            },
+          ],
+        },
+      }),
+      account: { id: '1.2.3', name: 'alice' },
+      accountId: '1.2.3',
+      privateKey: 'WIF-KEY',
+      _log() {},
+      _warn() {},
+    }, { stateDir: path.join(baseDir, 'credit_runtime') });
+
+    await runtime.refreshState();
+
+    // Manually set up an oversized deal in state
+    // deal debt = 50000 (blockchain int, precision 2 → 500.00)
+    // maxPerOp = 200 → ceil(500/200)=3 pieces, piece≈166.67
+    const oversizedDeal = {
+      id: '1.19.77',
+      borrower: '1.2.3',
+      offerId: '1.18.42',
+      debtAssetId: '1.3.10',
+      debtAmount: { amount: 50000, asset_id: '1.3.10' },
+      collateralAssetId: '1.3.0',
+      collateralAmount: { amount: 100000, asset_id: '1.3.0' },
+      feeRate: 30000,
+    };
+    const posKey = '1.3.10:1.3.0';
+    runtime.state.positions = runtime.state.positions || {};
+    runtime.state.positions[posKey] = runtime.state.positions[posKey] || {};
+    runtime.state.positions[posKey].creditDeals = [oversizedDeal];
+    runtime.state.positions[posKey].currentDebtAmount = 500;
+    runtime.state.positions[posKey].currentCollateralAmount = 1000;
+
+    // Override repayCreditDeal — the real one calls buildCreditOfferAcceptOperation
+    // which depends on blockchain stubs; we just capture calls and short-circuit
+    // so we can assert the split logic itself.
+    const repayCalls = [];
+    runtime.repayCreditDeal = async (deal, amount, opts) => {
+      const dealId = typeof deal === 'object' ? String(deal.id) : String(deal);
+      repayCalls.push({ dealId, amount, opts: { ...opts } });
+      return { tx_id: `mock-tx-${repayCalls.length}` };
+    };
+
+    const result = await runtime._splitOversizedCreditDeals(
+      runtime.debtPolicy.lending.find((l) => l.type === 'creditOffer'),
+      '1.3.10',
+      runtime.state.positions[posKey],
+    );
+
+    assert.ok(result, 'split function should return a result');
+    assert.strictEqual(result.action, 'restructured', 'result should indicate restructuring happened');
+
+    // 500/200 = 2.5 → ceil = 3 pieces, split 2 times (3-1)
+    assert.strictEqual(repayCalls.length, 2, 'should have called repayCreditDeal 2 times for 3 pieces');
+
+    // Each piece ≈ 500/3 ≈ 166.67
+    assert.ok(repayCalls.every((c) => c.amount > 0), 'each repay amount should be positive');
+    assert.ok(repayCalls.every((c) => c.opts.autoReborrow === true), 'each repay should have autoReborrow: true');
+    assert.strictEqual(repayCalls[0].dealId, '1.19.77', 'first repay should target the oversized deal');
+    assert.strictEqual(repayCalls[1].dealId, '1.19.77', 'second repay should still target the same deal');
+
+    // Verify the total repaid ≈ 2 * 166.67 ≈ 333.34, leaving ~166.66 (≤ 200)
+    const totalRepaid = repayCalls.reduce((s, c) => s + c.amount, 0);
+    const remaining  = 500 - totalRepaid;
+    assert.ok(remaining <= 200 + 0.01, `remaining debt ${remaining} should be ≤ maxPerOp 200`);
+  } finally {
+    restore();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
+  }
+}
+
+async function testSplitOversizedCreditDealsSkipsWithinLimit() {
+  const calls = [];
+  const dbCalls = [];
+  const restore = installStubs(calls, dbCalls, {
+    dealResponses: [[]],
+    assetsById: {
+      '1.3.0': { id: '1.3.0', symbol: 'BTS', precision: 2, bitasset_data_id: null },
+      '1.3.10': { id: '1.3.10', symbol: 'HONEST.USD', precision: 2, bitasset_data_id: '2.4.1' },
+    },
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-skip-split-'));
+
+  try {
+    delete require.cache[creditRuntimePath];
+    const CreditRuntime = require('../modules/credit_runtime');
+    const runtime = new CreditRuntime({
+      config: createBaseBotConfig({
+        botKey: 'credit-bot-skip-split',
+        debtPolicy: {
+          lending: [
+            {
+              asset: 'HONEST.USD',
+              collateralAsset: 'BTS',
+              type: 'creditOffer',
+              outputWeight: 1,
+              maxBorrowAmount: 1000,
+              maxBorrowAmountPerOperation: 200,
+              maxCollateralRatio: 2.5,
+              maxFeeRatePerDay: 0.05,
+            },
+          ],
+        },
+      }),
+      account: { id: '1.2.3', name: 'alice' },
+      accountId: '1.2.3',
+      privateKey: 'WIF-KEY',
+      _log() {},
+      _warn() {},
+    }, { stateDir: path.join(baseDir, 'credit_runtime') });
+
+    await runtime.refreshState();
+
+    // Deal debt = 15000 (blockchain int, precision 2 → 150.00) — within limit of 200
+    const smallDeal = {
+      id: '1.19.77',
+      borrower: '1.2.3',
+      offerId: '1.18.42',
+      debtAssetId: '1.3.10',
+      debtAmount: { amount: 15000, asset_id: '1.3.10' },
+      collateralAssetId: '1.3.0',
+      collateralAmount: { amount: 30000, asset_id: '1.3.0' },
+    };
+    const posKey = '1.3.10:1.3.0';
+    runtime.state.positions = runtime.state.positions || {};
+    runtime.state.positions[posKey] = runtime.state.positions[posKey] || {};
+    runtime.state.positions[posKey].creditDeals = [smallDeal];
+    runtime.state.positions[posKey].currentDebtAmount = 150;
+    runtime.state.positions[posKey].currentCollateralAmount = 300;
+
+    let repayCalled = false;
+    runtime.repayCreditDeal = async () => {
+      repayCalled = true;
+      return { tx_id: 'mock' };
+    };
+
+    const result = await runtime._splitOversizedCreditDeals(
+      runtime.debtPolicy.lending.find((l) => l.type === 'creditOffer'),
+      '1.3.10',
+      runtime.state.positions[posKey],
+    );
+
+    assert.strictEqual(result, null, 'should return null when no deals exceed the limit');
+    assert.strictEqual(repayCalled, false, 'should not call repayCreditDeal for within-limit deals');
+  } finally {
+    restore();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
+  }
+}
+
+async function testSplitOversizedCreditDealsSkipsWhenNoPerOpLimit() {
+  const calls = [];
+  const dbCalls = [];
+  const restore = installStubs(calls, dbCalls, {
+    dealResponses: [[]],
+    assetsById: {
+      '1.3.0': { id: '1.3.0', symbol: 'BTS', precision: 2, bitasset_data_id: null },
+      '1.3.10': { id: '1.3.10', symbol: 'HONEST.USD', precision: 2, bitasset_data_id: '2.4.1' },
+    },
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-no-perop-split-'));
+
+  try {
+    delete require.cache[creditRuntimePath];
+    const CreditRuntime = require('../modules/credit_runtime');
+    const runtime = new CreditRuntime({
+      config: createBaseBotConfig({
+        botKey: 'credit-bot-no-perop',
+        debtPolicy: {
+          lending: [
+            {
+              asset: 'HONEST.USD',
+              collateralAsset: 'BTS',
+              type: 'creditOffer',
+              outputWeight: 1,
+              maxBorrowAmount: 1000,
+              maxCollateralRatio: 2.5,
+              maxFeeRatePerDay: 0.05,
+            },
+          ],
+        },
+      }),
+      account: { id: '1.2.3', name: 'alice' },
+      accountId: '1.2.3',
+      privateKey: 'WIF-KEY',
+      _log() {},
+      _warn() {},
+    }, { stateDir: path.join(baseDir, 'credit_runtime') });
+
+    await runtime.refreshState();
+
+    let repayCalled = false;
+    runtime.repayCreditDeal = async () => {
+      repayCalled = true;
+      return { tx_id: 'mock' };
+    };
+
+    const result = await runtime._splitOversizedCreditDeals(
+      runtime.debtPolicy.lending.find((l) => l.type === 'creditOffer'),
+      '1.3.10',
+      {},
+    );
+
+    assert.strictEqual(result, null, 'should return null when maxBorrowAmountPerOperation is not set');
+    assert.strictEqual(repayCalled, false, 'should not call repayCreditDeal');
+  } finally {
+    restore();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
+  }
+}
+
+async function testMaxBorrowAmountPerOperationIsMaxBorrowAmountError() {
+  // Verify isMaxBorrowAmountError (module-level) matches the new error string
+  const calls = [];
+  const dbCalls = [];
+  const restore = installStubs(calls, dbCalls, {
+    dealResponses: [[]],
+    assetsById: {
+      '1.3.0': { id: '1.3.0', symbol: 'BTS', precision: 2, bitasset_data_id: null },
+      '1.3.10': { id: '1.3.10', symbol: 'HONEST.USD', precision: 2, bitasset_data_id: '2.4.1' },
+    },
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-iserror-'));
+
+  try {
+    delete require.cache[creditRuntimePath];
+    const CreditRuntime = require('../modules/credit_runtime');
+
+    // Force a borrow that exceeds maxBorrowAmountPerOperation to see the error is caught
+    const runtime = new CreditRuntime({
+      config: createBaseBotConfig({
+        botKey: 'credit-bot-iserror',
+        debtPolicy: {
+          lending: [
+            {
+              asset: 'HONEST.USD',
+              collateralAsset: 'BTS',
+              type: 'creditOffer',
+              outputWeight: 1,
+              maxBorrowAmount: 1000,
+              maxBorrowAmountPerOperation: 200,
+              maxCollateralRatio: 2.5,
+              maxFeeRatePerDay: 0.05,
+            },
+          ],
+        },
+      }),
+      account: { id: '1.2.3', name: 'alice' },
+      accountId: '1.2.3',
+      privateKey: 'WIF-KEY',
+      _log() {},
+      _warn() {},
+    }, { stateDir: path.join(baseDir, 'credit_runtime') });
+
+    await runtime.refreshState();
+
+    const fullOffer = {
+      id: '1.18.42',
+      asset_type: '1.3.10',
+      current_balance: 10000,
+      fee_rate: 30000,
+      min_deal_amount: 1,
+      enabled: true,
+      max_duration_seconds: 86400,
+      acceptable_collateral: {
+        '1.3.0': {
+          base: { amount: 2, asset_id: '1.3.0' },
+          quote: { amount: 1, asset_id: '1.3.10' },
+        },
+      },
+    };
+
+    // Try building a reborrow that would violate per-op limit.
+    // The _selectCreditOfferForIncrease → buildCreditOfferAcceptOperation chain
+    // should trigger the per-op limit error, which should be caught by
+    // isMaxBorrowAmountError (widened to match both regexen).
+    await assert.rejects(
+      () => runtime.buildCreditOfferAcceptOperation({
+        offer: fullOffer,
+        borrowAmount: 500,
+        collateralAmount: { amount: 1000, asset_id: '1.3.0' },
+      }),
+      (err) => {
+        // Simulate what _selectCreditOfferForIncrease does:
+        // isMaxBorrowAmountError(err) should return true
+        return /exceeds maxBorrowAmountPerOperation/.test(err.message);
+      },
+      'should throw error matching the per-operation limit pattern',
+    );
+  } finally {
+    restore();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
+  }
+}
+
 (async () => {
   await testRefreshAndMpaPlan();
   await testCreditOfferCollateralPercentUsesDebtSnapshot();
@@ -3980,6 +4468,12 @@ async function testProactiveRepayPrunesStalePendingReborrow() {
   await testPendingReborrowStoresPendingRepayAmount();
   await testPendingReborrowDropsStaleEntryWhenReplacementExists();
   await testProactiveRepayPrunesStalePendingReborrow();
+  await testMaxBorrowAmountPerOperationRejectsOversizedBorrows();
+  await testMaxBorrowAmountPerOperationWithSelection();
+  await testSplitOversizedCreditDealsSplitsCorrectly();
+  await testSplitOversizedCreditDealsSkipsWithinLimit();
+  await testSplitOversizedCreditDealsSkipsWhenNoPerOpLimit();
+  await testMaxBorrowAmountPerOperationIsMaxBorrowAmountError();
   console.log('credit runtime tests passed');
   process.exit(0);
 })().catch((err) => {

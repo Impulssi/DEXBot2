@@ -139,6 +139,13 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
                         }
                     }
 
+                    // maxBorrowAmountPerOperation: optional, must be a fixed positive number
+                    if ('maxBorrowAmountPerOperation' in item) {
+                        if (!isPositiveNumber(item.maxBorrowAmountPerOperation)) {
+                            problems.push(`debtPolicy.lending[${idx}].maxBorrowAmountPerOperation must be a positive number`);
+                        }
+                    }
+
                     // maxCollateralAmount: optional, positive number or percentage
                     if ('maxCollateralAmount' in item && !isPositiveNumberOrPercent(item.maxCollateralAmount)) {
                         problems.push(`debtPolicy.lending[${idx}].maxCollateralAmount must be a positive number or percentage`);

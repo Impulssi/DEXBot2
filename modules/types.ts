@@ -1005,6 +1005,12 @@ export interface LendingEntryBase {
   ratio?: number;
   outputWeight?: number;
   maxBorrowAmount?: number;
+  /** Max debt per single borrow operation (per-op cap, independent of
+   * maxBorrowAmount's total ceiling). When a deal exceeds this, maintenance
+   * splits it into equal pieces ≤ this value via repay+reborrow cycles with
+   * 6s spacing. Only applies to `creditOffer` type; `mpa` uses the same
+   * field to cap one-shot debt increases in CR-adjustment plans. */
+  maxBorrowAmountPerOperation?: number;
   maxCollateralAmount?: number | string;
   minCollateralIncreaseThreshold?: number | string;
   maxCollateralRatio?: number;

@@ -19,6 +19,7 @@ interface DebtFirstCrPlanOptions {
     maxCollateralRatio?: number;
     targetCollateralRatio?: number;
     maxBorrowAmount?: number;
+    maxBorrowAmountPerOperation?: number;
     maxCollateralAmount?: number | string;
     collateralLimitReferenceAmount?: number;
     minCollateralIncreaseThreshold?: number | string;
@@ -162,6 +163,7 @@ function buildDebtFirstCrPlan({
     maxCollateralRatio,
     targetCollateralRatio,
     maxBorrowAmount,
+    maxBorrowAmountPerOperation,
     maxCollateralAmount,
     collateralLimitReferenceAmount,
     minCollateralIncreaseThreshold,
@@ -224,7 +226,14 @@ function buildDebtFirstCrPlan({
 
     const targetDebt = (currentCollateralAmount as number) / ((feedPrice as number) * (desiredCr as number));
     const rawDebtDelta = targetDebt - (currentDebtAmount as number);
-    const debtDelta = clampIncreaseToTotalMax(rawDebtDelta, currentDebtAmount, maxBorrowAmount);
+    let debtDelta = clampIncreaseToTotalMax(rawDebtDelta, currentDebtAmount, maxBorrowAmount);
+    // Also clamp by per-operation limit
+    if (debtDelta > 0) {
+        const limit = positiveOrNull(maxBorrowAmountPerOperation);
+        if (limit !== null) {
+            debtDelta = Math.min(debtDelta, limit);
+        }
+    }
     const projectedDebt = Math.max(0, (currentDebtAmount as number) + debtDelta);
     const targetCollateral = (desiredCr as number) * (feedPrice as number) * projectedDebt;
     let collateralDelta = targetCollateral - (currentCollateralAmount as number);
