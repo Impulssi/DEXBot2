@@ -39,7 +39,7 @@ const AMA_PROFILES_FILE = PATHS.PROFILES.MARKET_PROFILES_JSON;
 const DEFAULT_SEARCH = {
     er: { min: 500, max: 1000, count: 15, step: null, quantum: 1 },
     fast: { min: 2, max: 8, count: 30, step: null, quantum: 0.01 },
-    slow: { min: 50, max: 200, count: 30, step: null, quantum: 0.1 },
+    slow: { min: 40, max: 160, count: 30, step: null, quantum: 0.1 },
 };
 
 // ── Default per-AMA distance weights ────────────────────────────────────────
