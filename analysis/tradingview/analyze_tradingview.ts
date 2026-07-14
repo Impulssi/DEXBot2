@@ -17,6 +17,9 @@ const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 const DEFAULT_CHART_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'tradingview_chart.html');
 const DEFAULT_AMA = MARKET_ADAPTER.AMAS.AMA3;
+const DEFAULT_AMA_KEY = String(MARKET_ADAPTER.DEFAULT_AMA_KEY).toUpperCase();
+const BUILTIN_AMAS = MARKET_ADAPTER.AMAS;
+const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
 const DEFAULT_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 
 function parseArgs() {
@@ -150,10 +153,21 @@ async function main() {
         const selectedProfile = botMeta && marketProfiles?.profiles
             ? marketProfiles.profiles.find((entry) => String(entry.assetA) === String(botMeta.assetA) && String(entry.assetB) === String(botMeta.assetB) && Number(entry.intervalSeconds) === 3600)
             : null;
-        const profileAma = selectedProfile?.amas?.[selectedProfile.defaultAma] || null;
-        const botAma = (botMeta?.ama && typeof botMeta.ama === 'object') ? botMeta.ama : null;
-        const selectedAma = botAma || profileAma;
-        const hasAmaGridPrice = botMeta?.gridPrice && String(botMeta.gridPrice).toLowerCase().startsWith('ama');
+        const botAmaInline = (botMeta?.ama && typeof botMeta.ama === 'object') ? botMeta.ama : null;
+        let selectedAma = botAmaInline;
+        if (!selectedAma && selectedProfile?.amas) {
+            const rawGridPrice = String(botMeta?.gridPrice || '').trim().toLowerCase();
+            const isAmaKeyword = AMA_KEYWORDS.has(rawGridPrice);
+            const fallbackKey = selectedProfile.defaultAma || DEFAULT_AMA_KEY;
+            const requestedKey = isAmaKeyword
+                ? (rawGridPrice === 'ama' ? fallbackKey : rawGridPrice.toUpperCase())
+                : fallbackKey;
+            const fromProfile = selectedProfile.amas[requestedKey]
+                || selectedProfile.amas[fallbackKey];
+            const fromBuiltin = BUILTIN_AMAS[requestedKey] || BUILTIN_AMAS[fallbackKey];
+            selectedAma = fromProfile || fromBuiltin || null;
+        }
+        const hasAmaGridPrice = AMA_KEYWORDS.has(String(botMeta?.gridPrice || '').trim().toLowerCase());
         const amaEnabled = hasAmaGridPrice ? config.amaEnabled : false;
 
         const html = generateHTML({
@@ -164,9 +178,9 @@ async function main() {
             },
             smaPeriod: config.smaPeriod,
             amaDefaults: selectedAma ? {
-                erPeriod: botAma?.erPeriod || selectedAma.erPeriod,
-                fastPeriod: botAma?.fastPeriod || selectedAma.fastPeriod,
-                slowPeriod: botAma?.slowPeriod || selectedAma.slowPeriod,
+                erPeriod: botAmaInline?.erPeriod || selectedAma.erPeriod,
+                fastPeriod: botAmaInline?.fastPeriod || selectedAma.fastPeriod,
+                slowPeriod: botAmaInline?.slowPeriod || selectedAma.slowPeriod,
             } : {
                 erPeriod: config.amaErPeriod,
                 fastPeriod: config.amaFastPeriod,
