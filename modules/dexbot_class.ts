@@ -1902,9 +1902,11 @@ class DEXBot {
                         const fullFillCount = allFilledOrders.filter(o =>
                             o && o.isPartial !== true
                         ).length;
+                        const hasAnyFills = allFilledOrders.some(o => o);
                         const shouldRunPostFillChecks = !abortedFillCycle && fullFillCount > 0;
+                        const shouldRunDustDetection = !abortedFillCycle && hasAnyFills;
 
-                        if (shouldRunPostFillChecks) {
+                        if (shouldRunDustDetection) {
                             // SAFE: Called inside _fillProcessingLock.acquire(), no concurrent fund modifications.
                             // Fund state is already fresh from _processFillsWithBatching's internal resumeFundRecalc.
 

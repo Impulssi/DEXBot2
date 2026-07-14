@@ -1016,6 +1016,12 @@ function startOpenOrdersSyncLoop(bot) {
                                     await bot.manager.persistGrid();
                                 }
                             }
+                            // Run grid health / dust detection after every sync tick so
+                            // partial-only fills that reduced an order below the dust
+                            // threshold (but did not trigger the full-fill gate in the
+                            // main processFills path) are caught promptly instead of
+                            // waiting up to BLOCKCHAIN_FETCH_INTERVAL_MIN.
+                            await performPeriodicGridChecks(bot);
                         });
                     }
                 }
@@ -1402,14 +1408,24 @@ async function executeMaintenanceLogic(bot, context) {
     // the empty-pipeline branch to avoid racing with in-flight operations.
     // The _dustSinceMap is populated here so the 30s timer starts burning
     // from the first detection, not from when the pipeline clears.
-    const healthResult = await bot.manager.checkGridHealth(bot.updateOrdersOnChainPlan.bind(bot));
+    let healthResult = await bot.manager.checkGridHealth(bot.updateOrdersOnChainPlan.bind(bot));
     if (await bot._abortFlowIfIllegalState(`${context} health check`)) return;
     recordDustFirstSeen(bot, healthResult);
 
     const pipelineStatus = bot.manager.isPipelineEmpty(bot._getPipelineSignals());
     if (pipelineStatus.isEmpty) {
         const repairedFromChain = await maybeRunTargetedDriftReconciliation(bot, context);
-        if (repairedFromChain) return;
+        if (repairedFromChain) {
+            // Targeted reconciliation may have processed fills via
+            // _syncOpenOrdersAndProcessFills → _processFillsWithBatching.
+            // Those fills could have reduced an existing partial below the dust
+            // threshold, but the healthResult above was captured before they ran.
+            // Re-check grid health so cancelDustOrders below uses fresh state.
+            const freshHealth = await bot.manager.checkGridHealth(bot.updateOrdersOnChainPlan.bind(bot));
+            if (await bot._abortFlowIfIllegalState(`${context} post-reconcile health check`)) return;
+            recordDustFirstSeen(bot, freshHealth);
+            healthResult = freshHealth;
+        }
 
         // Refresh live dynamic weights before any structural checks that may create or
         // resize orders (dust detection, divergence correction, spread correction).
