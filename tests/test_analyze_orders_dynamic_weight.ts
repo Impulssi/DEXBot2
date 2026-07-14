@@ -517,7 +517,123 @@ function testAnalyzeOrderOmitsDynamicWeightForNonAma() {
   assert.strictEqual(analysis.dynamicWeight, null, 'non-AMA bot should have null dynamicWeight');
 }
 
+function testResolveAmaKey() {
+  const { resolveAmaKey } = loadAnalyzer();
+  assert.strictEqual(resolveAmaKey({ gridPrice: 'ama' }), 'AMA3', 'ama resolves to AMA3 (default)');
+  assert.strictEqual(resolveAmaKey({ gridPrice: 'AMA' }), 'AMA3', 'uppercase ama resolves to AMA3');
+  assert.strictEqual(resolveAmaKey({ gridPrice: 'ama2' }), 'AMA2', 'ama2 resolves to AMA2');
+  assert.strictEqual(resolveAmaKey({ gridPrice: 'ama4' }), 'AMA4', 'ama4 resolves to AMA4');
+  assert.strictEqual(resolveAmaKey({ gridPrice: '  ama3  ' }), 'AMA3', 'whitespace tolerated');
+  assert.strictEqual(resolveAmaKey({ gridPrice: 'pool' }), null, 'pool is not AMA');
+  assert.strictEqual(resolveAmaKey({ gridPrice: 'book' }), null, 'book is not AMA');
+  assert.strictEqual(resolveAmaKey({ gridPrice: '' }), null, 'empty is not AMA');
+  assert.strictEqual(resolveAmaKey({ gridPrice: null }), null, 'null is not AMA');
+  assert.strictEqual(resolveAmaKey({}), null, 'missing gridPrice is not AMA');
+  assert.strictEqual(resolveAmaKey(null), null, 'null config returns null');
+}
+
+function makeMockAnalysis(overrides) {
+  return {
+    pair: 'TEST/TEST',
+    botName: 'test-bot',
+    lastUpdated: new Date(),
+    hasConfig: true,
+    spread: { real: 2, target: 2, diff: 0, pass: true },
+    increment: { avg: 0.5, target: 0.5, min: 0.49, max: 0.51, pass: true },
+    slots: { buy: 10, sell: 10, spread: 0, activeBuy: 5, virtualBuy: 5, activeSell: 5, virtualSell: 5, partialBuy: 0, partialSell: 0 },
+    gridMinPrice: 90,
+    gridMaxPrice: 110,
+    marketPrice: null,
+    activeOrdersTarget: { buy: 10, sell: 10 },
+    weightDistribution: { buy: 0.5, sell: 0.5 },
+    gridPriceLabel: null,
+    gridPriceValue: null,
+    gridPriceStale: false,
+    dynamicWeight: null,
+    asymmetricBounds: null,
+    distribution: {
+      slots: { buyPercent: 50, sellPercent: 50 },
+      funds: { buyPercent: 50, sellPercent: 50 },
+      match: { buyDiff: 0, sellDiff: 0 },
+    },
+    funds: { buy: { bts: 100, xrp: 0.5 }, sell: { xrp: 100, bts: 20000 } },
+    slotData: { buy: [], sell: [] },
+    ...overrides,
+  };
+}
+
+function testFormatAnalysisGridPriceLine() {
+  const { formatAnalysis } = loadAnalyzer();
+
+  // Grid mode: numeric gridPrice -> emits Grid: line
+  const mockGrid = makeMockAnalysis({
+    gridPriceLabel: 'Grid',
+    gridPriceValue: 100,
+    marketPrice: 105,
+  });
+  const gridLine = formatAnalysis(mockGrid);
+  const strippedGrid = stripColorCodes(gridLine);
+  assert.ok(strippedGrid.includes('Grid: 100.00'), 'numeric gridPrice should emit Grid: line');
+  assert.ok(strippedGrid.includes('(+5.0%)'), 'grid price diff should be shown');
+
+  // AMA mode with recent snapshot -> emits AMA3: line
+  const mockAma = makeMockAnalysis({
+    gridPriceLabel: 'AMA3',
+    gridPriceValue: 100,
+    marketPrice: 90,
+  });
+  const amaLine = formatAnalysis(mockAma);
+  const strippedAma = stripColorCodes(amaLine);
+  assert.ok(strippedAma.includes('AMA3: 100.00'), 'AMA mode should emit AMA3: line');
+  assert.ok(strippedAma.includes('(-10.0%)'), 'AMA price diff should be shown');
+
+  // Pool/book/startPrice mode -> no grid price line
+  const mockNull = makeMockAnalysis({
+    gridPriceLabel: null,
+    gridPriceValue: null,
+    marketPrice: 100,
+  });
+  const nullLine = formatAnalysis(mockNull);
+  const strippedNull = stripColorCodes(nullLine);
+  assert.ok(!/\bAMA[1-4]?:/.test(strippedNull), 'no AMA<N>: line without AMA label');
+  assert.ok(!/\bGrid:/.test(strippedNull), 'no Grid: line without Grid label');
+}
+
+function testFormatAnalysisGridPriceStale() {
+  const analyzer = loadAnalyzer();
+  const { formatAnalysis, colors } = analyzer;
+
+  // Stale snapshot -> price rendered in grey
+  const mockStale = makeMockAnalysis({
+    gridPriceLabel: 'AMA2',
+    gridPriceValue: 200,
+    gridPriceStale: true,
+    marketPrice: 210,
+  });
+  const staleLine = formatAnalysis(mockStale);
+  const mStale = staleLine.match(/\n {5}AMA2:/);
+  const afterStaleAma = mStale ? staleLine.slice(mStale.index! + 1, mStale.index! + 1 + 30) : '';
+  assert.ok(afterStaleAma.includes(colors.gray), 'stale AMA price should be grey');
+  assert.ok(stripColorCodes(staleLine).includes('AMA2: 200.00'), 'stale line still shows label and price');
+
+  // Recent snapshot -> price NOT grey (only the AMA3: line segment)
+  const mockRecent = makeMockAnalysis({
+    gridPriceLabel: 'AMA3',
+    gridPriceValue: 100,
+    gridPriceStale: false,
+    marketPrice: 105,
+  });
+  const recentLine = formatAnalysis(mockRecent);
+  const mRecent = recentLine.match(/\n {5}AMA3:/);
+  const afterRecentAma = mRecent ? recentLine.slice(mRecent.index! + 1, mRecent.index! + 1 + 30) : '';
+  assert.ok(!afterRecentAma.includes(colors.gray), 'recent AMA price should NOT be grey');
+  assert.ok(stripColorCodes(recentLine).includes('AMA3: 100.00'), 'recent line shows label and price');
+}
+
 async function main() {
+  testResolveAmaKey();
+  testFormatAnalysisGridPriceLine();
+  testFormatAnalysisGridPriceStale();
   testIsAmaGridPrice();
   testSnapshotStalenessMatchesTwoMarketAdapterCycles();
   testBuildDynamicWeightInfoRecentSnapshot();

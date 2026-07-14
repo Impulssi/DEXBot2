@@ -100,9 +100,16 @@ function hasOrderGrid(data) {
  * bots never have a meaningful dynamic grid file.
  */
 function isAmaGridPrice(config) {
-  if (!config || typeof config !== 'object') return false;
+  return resolveAmaKey(config) !== null;
+}
+
+// Mirrors MARKET_ADAPTER.DEFAULT_AMA_KEY in modules/constants.ts — keep in sync.
+function resolveAmaKey(config) {
+  if (!config || typeof config !== 'object') return null;
   const gridPrice = typeof config.gridPrice === 'string' ? config.gridPrice.trim().toLowerCase() : '';
-  return /^ama(?:[1-4])?$/.test(gridPrice);
+  if (!/^ama(?:[1-4])?$/.test(gridPrice)) return null;
+  if (gridPrice === 'ama') return MARKET_ADAPTER.DEFAULT_AMA_KEY;
+  return gridPrice.toUpperCase();
 }
 
 function readDynamicGridSnapshot(botKey) {
@@ -519,6 +526,18 @@ function analyzeOrder(botData, config, botKey) {
    */
   const _dynamicWeight = buildDynamicWeightInfo(botKey, config);
   const _ab = computeGridRangeScalingDisplay(config, _dynamicWeight);
+  let gridPriceValue = null;
+  let gridPriceLabel = null;
+  let gridPriceStale = false;
+  const _amaKey = resolveAmaKey(config);
+  if (_amaKey && _dynamicWeight?.amaCenterPrice != null) {
+    gridPriceLabel = _amaKey;
+    gridPriceValue = _dynamicWeight.amaCenterPrice;
+    gridPriceStale = _dynamicWeight.isRecent === false;
+  } else if (typeof config?.gridPrice === 'number' && Number.isFinite(config.gridPrice) && config.gridPrice > 0) {
+    gridPriceLabel = 'Grid';
+    gridPriceValue = config.gridPrice;
+  }
   return {
     pair: `${assetA}/${assetB}`,
     botName: config?.name || botKey,
@@ -566,6 +585,11 @@ function analyzeOrder(botData, config, botKey) {
     botFunds: config ? config.botFunds : null,
     // Weight distribution from config
     weightDistribution: config ? config.weightDistribution : null,
+    // Resolved grid price label, value, and staleness flag
+    // (null label/value when gridPrice is pool/book/null)
+    gridPriceLabel,
+    gridPriceValue,
+    gridPriceStale,
     // Latest dynamic weight payload from the market adapter (AMA bots only).
     // Null when the bot is not AMA, or when no fresh snapshot is available.
     dynamicWeight: _dynamicWeight,
@@ -608,6 +632,7 @@ function computeGridRangeScalingDisplay(config, dynamicWeight) {
     }
   }
 
+  const trend = hasAsym ? dynamicWeight.trend : null;
   return {
     resolvedMinPrice,
     resolvedMaxPrice,
@@ -615,6 +640,7 @@ function computeGridRangeScalingDisplay(config, dynamicWeight) {
     configuredMaxPrice: maxPrice,
     appliedAsymmetryFactor: hasAsym ? dynamicWeight.appliedAsymmetryFactor : 0,
     rawAsymmetryFactor: hasAsym ? dynamicWeight.rawAsymmetryFactor : 0,
+    trend,
     isRecent: dynamicWeight.isRecent,
   };
 }
@@ -1235,30 +1261,33 @@ function formatAnalysis(analysis) {
     if (analysis.botFunds) {
       lines.push(`    Funds: ${analysis.botFunds.buy.padEnd(maxBuyWidth)} ${colors.buy}buy${colors.reset} | ${analysis.botFunds.sell.padEnd(maxSellWidth)} ${colors.sell}sell${colors.reset}`);
     }
-    if (analysis.dynamicWeight && analysis.dynamicWeight.amaCenterPrice != null) {
-      const dw = analysis.dynamicWeight;
-      const amaColor = dw.isRecent ? '' : colors.gray;
-      const rawPrice = Number(dw.amaCenterPrice);
-      const amaPrice = rawPrice === 0 ? '0'
+    if (analysis.gridPriceLabel && analysis.gridPriceValue != null) {
+      lines.push(``);
+      const rawPrice = Number(analysis.gridPriceValue);
+      const priceStr = rawPrice === 0 ? '0'
         : (Math.abs(rawPrice) >= 1e5 ? String(Math.round(rawPrice))
         : rawPrice.toPrecision(5));
+
+      const priceColor = analysis.gridPriceStale ? colors.gray : '';
+      const priceReset = priceColor ? colors.reset : '';
 
       let diffStr = '';
       if (analysis.marketPrice != null && rawPrice !== 0) {
         const diff = (analysis.marketPrice - rawPrice) / rawPrice;
         const diffColor = diff > 0 ? colors.buy : diff < 0 ? colors.sell : '';
         const sign = diff > 0 ? '+' : '';
-        diffStr = ` ${diffColor}(${sign}${Math.round(diff * 100)}%)${colors.reset}`;
+        diffStr = ` ${diffColor}(${sign}${(diff * 100).toFixed(1)}%)${colors.reset}`;
       }
 
-      lines.push(`      AMA: ${amaColor}${amaPrice}${colors.reset}${diffStr}`);
+      lines.push(`     ${analysis.gridPriceLabel}: ${priceColor}${priceStr}${priceReset}${diffStr}`);
     }
     if (analysis.asymmetricBounds) {
       const ab = analysis.asymmetricBounds;
       const minStr = formatCurrency(ab.resolvedMinPrice);
       const maxStr = formatCurrency(ab.resolvedMaxPrice);
+      const asymSign = ab.trend === 'DOWN' ? '-' : '+';
       const pctStr = ab.appliedAsymmetryFactor !== 0
-        ? ` ${colors.gray}(${(ab.appliedAsymmetryFactor * 100).toFixed(2)}%)${colors.reset}`
+        ? ` (${asymSign}${(ab.appliedAsymmetryFactor * 100).toFixed(1)}%)`
         : '';
       lines.push(`   Bounds: ${colors.buy}${minStr}${colors.reset} - ${colors.sell}${maxStr}${colors.reset}${pctStr}`);
     }
@@ -1542,6 +1571,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  resolveAmaKey,
   isAmaGridPrice,
   readDynamicGridSnapshot,
   buildDynamicWeightInfo,
@@ -1549,6 +1579,7 @@ module.exports = {
   getRawWeightValues,
   analyzeOrder,
   formatAnalysis,
+  colors,
   DYNAMIC_GRID_SNAPSHOT_MAX_AGE_MS,
   DYNAMIC_WEIGHT_EPSILON,
 };
