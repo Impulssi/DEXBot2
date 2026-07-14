@@ -2,7 +2,7 @@
  * KIBANA MARKET CANDLES
  *
  * Fetches OHLCV candles from order book fill operations (op_type 4)
- * for any asset pair on BitShares. Unlike kibana_source.js which handles
+ * for any asset pair on BitShares. Unlike kibana_source.ts which handles
  * LP pool swaps (op_type 63), this module handles regular limit order fills.
  *
  * Use case: historical price candles for MPA/BTS markets where the margin
@@ -23,7 +23,7 @@
  *   op_object.order_id            – the limit order that filled
  *
  * Output: [[timestamp_ms, open, high, low, close, volume_base], ...]
- * Same OHLCV format as kibana_source.js for compatibility with candle_utils.
+ * Same OHLCV format as kibana_source.ts for compatibility with candle_utils.
  */
 
 'use strict';

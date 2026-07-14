@@ -48,7 +48,7 @@
  *
  * ===============================================================================
  *
- * Fund model overview (see manager.js for full details):
+ * Fund model overview (see manager.ts for full details):
  * - available = max(0, chainFree - virtual - applicableBtsFeesOwed - btsFeesReservation)
  * - virtual = sum of VIRTUAL orders and ACTIVE orders without orderId (reserved, not yet on-chain)
  * - committed.grid = total sum of all grid order sizes (active + partial + virtual)

@@ -12,7 +12,7 @@
  * - Detects and flags out-of-spread conditions
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Grid Class (24 static methods)
+ * TABLE OF CONTENTS - Grid Class (25 static methods)
  * ===============================================================================
  *
  * CONFIGURATION & CALCULATION (2 methods)
@@ -27,42 +27,50 @@
  *   4. createOrderGrid(config) - Create geometric price grid
  *      Returns price levels from minPrice to maxPrice with increment spacing
  *
- * ORDER CACHE MANAGEMENT (2 methods - async, internal)
- *   5. _clearOrderCachesAtomic(manager) - Clear order caches (_ordersByType, _ordersByState)
- *   6. _updateOrderAtomic(manager, order, context, skipAccounting, fee) - Update order atomically with caches
+ * ORDER CACHE MANAGEMENT (1 method - internal)
+ *   5. _clearOrderCachesLogic(manager) - Clear order caches (_ordersByType, _ordersByState)
  *
  * GRID LOADING & INITIALIZATION (2 methods - async)
- *   7. loadGrid(manager, grid, boundaryIdx) - Load grid into manager orders
- *   8. initializeGrid(manager) - Full grid initialization from config
+ *   6. loadGrid(manager, grid, boundaryIdx) - Load grid into manager orders
+ *   7. initializeGrid(manager) - Full grid initialization from config
  *
  * GRID RECALCULATION (1 method - async)
- *   9. recalculateGrid(manager, opts) - Recalculate grid based on current state
+ *   8. recalculateGrid(manager, opts) - Recalculate grid based on current state
  *
  * GRID STATE CHECKING (1 method)
- *   10. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
+ *   9. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
  *
  * BLOCKCHAIN SYNCHRONIZATION (2 methods - async)
- *   11. _recalculateGridOrderSizesFromBlockchain(manager, orderType) - Recalculate sizes from blockchain
- *   12. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer) - Update grid from blockchain
+ *   10. _recalculateGridOrderSizesFromBlockchain(manager, orderType) - Recalculate sizes from blockchain
+ *   11. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer) - Update grid from blockchain
  *
- * GRID COMPARISON (1 method - async)
- *   13. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
+ * GRID COMPARISON (2 methods - async)
+ *   12. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
  *       Validates grid structure and reports divergence metrics
+ *   13. monitorDivergence(manager, calculatedGrid, persistedGrid) - Unified divergence check
+ *       Runs ratio-based + RMS-based checks and returns combined result
+ *
+ * ON-CHAIN ORDER FETCHING (1 method - async)
+ *   14. _getOnChainOrders(manager) - Collect on-chain buy/sell orders from manager
  *
  * SPREAD MANAGEMENT (2 methods - async)
- *   14. calculateCurrentSpread(manager) - Calculate current bid-ask spread
- *   15. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
+ *   15. calculateCurrentSpread(manager) - Calculate current bid-ask spread
+ *   16. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
  *
- * GRID HEALTH MONITORING (5 methods)
- *   16. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
- *   17. checkWindowDust(manager) - Dust check scoped to the active buy/sell window (async)
- *   18. _hasAnyDust(manager, partials, type) - Check for dust orders (internal)
- *   19. hasAnyDust(manager, partials, side) - Check for dust orders (public)
- *   20. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
+ * GRID HEALTH MONITORING (6 methods)
+ *   17. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
+ *   18. checkWindowDust(manager) - Dust check scoped to the active buy/sell window (async)
+ *   19. _hasAnyDust(manager, partials, type) - Check for dust orders (internal)
+ *   20. hasAnyDust(manager, partials, side) - Check for dust orders (public)
+ *   21. getDustOrders(manager, partials, side) - Get all dust order IDs (public)
+ *   22. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
  *
  * SPREAD CORRECTION (2 methods)
- *   21. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
- *   22. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
+ *   23. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
+ *   24. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
+ *
+ * DUST DETECTION (1 method - internal)
+ *   25. _getDustOrders(manager, partials, type) - Internal dust detection helper
  *
  * ===============================================================================
  *

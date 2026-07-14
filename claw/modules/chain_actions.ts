@@ -11,6 +11,7 @@ const {
 } = require('./chain_queries');
 const { requireBtsBackedMpa, CORE_SYMBOL } = require('./mpa_utils');
 
+// Graphene protocol constant: operation type 4 = limit_order_create (fill events carry op[0] = 4 for matched orders)
 const FILL_ORDER_OPERATION_TYPE = 4;
 const accountSubscriptions = new Map();
 

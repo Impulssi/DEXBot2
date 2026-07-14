@@ -36,8 +36,15 @@
  *   13. deductBtsFees(requestedSide) - Deduct BTS fees using adjustTotalBalance with deferral strategy (async)
  *   14. _deductFeesFromProceeds(assetSymbol, rawAmount, isMaker) - Deduct fees from fill proceeds (internal)
  *
+ * FILL BALANCE TRACKING (1 method)
+ *   15. recordFillBalances(paysAsset, paysAmount, receivesAsset, receivesAmount, context) - Record fill proceeds (async)
+ *
  * FILL PROCESSING (1 method)
- *   15. processFillAccounting(fillOp, fillKey, persistenceMode) - Process fund impact of order fill (atomically updates accountTotals)
+ *   16. processFillAccounting(fillOp, fillKey, persistenceMode) - Process fund impact of order fill (atomically updates accountTotals)
+ *
+ * RECOVERY & VALIDATION (2 methods)
+ *   17. resetRecoveryState() - Reset recovery backoff and state
+ *   18. validateTargetGrid(targetGrid, mgr) - Validate target grid fund requirements
  *
  * ===============================================================================
  * FUND STRUCTURE (managed by Accountant)

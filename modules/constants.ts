@@ -101,6 +101,15 @@
  *   17. COW_PERFORMANCE - Copy-on-write grid performance settings
  *   18. REBALANCE_STATES - Rebalance lifecycle state enum
  *   19. COW_ACTIONS - Copy-on-write action type enum
+ *   20. CR_ZONES - Credit ratio zone constants
+ *   21. DEFAULT_TARGET_CR - Default target collateral ratio
+ *   22. NATIVE_CLIENT - Native blockchain client configuration
+ *   23. LAUNCHER - Launcher configuration (PM2, Docker)
+ *   24. BUILD_DIR - Build directory path
+ *   25. BTS_PRECISION - BTS asset precision
+ *   26. DAEMON_ERRORS - Credential daemon error codes
+ *   27. DAEMON_CODES - Credential daemon codes
+ *   28. CREDENTIAL_PROMPTS - Credential prompt configuration
  *
  * ===============================================================================
  *

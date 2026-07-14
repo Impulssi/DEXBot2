@@ -200,6 +200,10 @@ function cloneBotSettings(value: any) {
   return JSON.parse(JSON.stringify(value));
 }
 
+/**
+ * Normalize a partial bot settings object with defaults.
+ * Fills missing fields from DEFAULT_CONFIG and clamps values within bounds.
+ */
 function normalizeBotSettings(bot: Partial<BotSettings> = {}) {
   const normalized = cloneBotSettings(bot) || {};
 
@@ -254,6 +258,10 @@ function mergeBotSettingsPatch(currentBot: Record<string, any> = {}, patch: Reco
   return next;
 }
 
+/**
+ * Describe which bot settings are read-only vs writable, and which trigger a recalc.
+ * Useful for tool-catalog generation and consumer-side validation.
+ */
 function describeBotSettingMutability() {
   const readOnly = [...BOT_SETTINGS_READ_ONLY_KEYS].sort();
   const writable = [...KNOWN_BOT_KEYS].filter((key) => !BOT_SETTINGS_READ_ONLY_KEYS.has(key)).sort();
@@ -435,6 +443,10 @@ function validateBotSettingsValue(field: any, value: any, errors: any[]) {
   }
 }
 
+/**
+ * Validate a bot settings object against known keys, nested-key schemas, and bounds.
+ * Returns collected errors and warnings without mutating the input.
+ */
 function validateBotSettingsState(bot: Record<string, any> = {}) {
   const errors: string[] = [];
   const warnings = [];
@@ -500,6 +512,10 @@ function validateBotSettingsState(bot: Record<string, any> = {}) {
   };
 }
 
+/**
+ * Validate a partial patch against a current bot's settings.
+ * Returns validation result with merged settings, errors, warnings, and trigger-required flag.
+ */
 function validateBotSettingsPatch(patch: Record<string, any> = {}, currentBot: Record<string, any> = {}, options: Partial<ProfileOptions> = {}) {
   const errors: string[] = [];
   const warnings = [];
@@ -582,6 +598,9 @@ function buildBotSettingsView(bot: Record<string, any> | null, bundle: ClawProfi
   };
 }
 
+/**
+ * Sanitize an arbitrary value into a lowercase, hyphenated bot-key string.
+ */
 function sanitizeKey(source: any) {
   if (!source) return 'bot';
   return String(source)
@@ -603,6 +622,10 @@ function createBotKey(bot: any, index: any) {
   return `${sanitizeKey(identifier)}-${index}`;
 }
 
+/**
+ * Extract raw bot entries from a bots.json settings object.
+ * Handles both array format ({ bots: [...] }) and single-bot object format.
+ */
 function resolveRawBotEntries(settings: any) {
   if (!settings || typeof settings !== 'object') return [];
   if (Array.isArray(settings.bots)) return settings.bots;
@@ -610,6 +633,10 @@ function resolveRawBotEntries(settings: any) {
   return [];
 }
 
+/**
+ * Validate a single bot entry for required keys and aliases.
+ * Emits warnings via logger for missing required fields.
+ */
 function validateBotEntry(entry: any, index: any, logger: any) {
   const warnings = [];
 
@@ -644,6 +671,9 @@ function validateBotEntry(entry: any, index: any, logger: any) {
   return warnings;
 }
 
+/**
+ * Normalize an array of raw bot entries — clones, assigns keys and indices, applies defaults.
+ */
 async function normalizeBotEntries(rawEntries: Record<string, any>[], options: Partial<ProfileOptions> = {}) {
   const logger = options.logger || null;
   const results: any[] = [];
@@ -675,6 +705,10 @@ function isDirectoryLike(targetPath: any) {
   }
 }
 
+/**
+ * Resolve the profiles directory from a profile root path.
+ * Checks root itself, root/profiles, and returns the first match.
+ */
 function resolveProfilesDir(profileRoot: any) {
   const candidates = [];
   const root = profileRoot ? path.resolve(profileRoot) : null;
@@ -741,6 +775,10 @@ function writeTextPayload(filePath: any, content: any) {
   storage.writeFile(filePath, `${content}\n`, 'utf8');
 }
 
+/**
+ * Write JSON data atomically via file lock.
+ * Acquires a lock on the target path, delegates to the shared atomic-write helper, then releases.
+ */
 async function writeJsonFileAtomic(filePath: any, data: any) {
   const release = await acquireFileLock(filePath);
   try {
@@ -750,6 +788,10 @@ async function writeJsonFileAtomic(filePath: any, data: any) {
   }
 }
 
+/**
+ * Read a recalculate-trigger file and return its parsed payload.
+ * Returns { exists, payload } — payload is null if empty or unparseable.
+ */
 function readTriggerFile(triggerPath: any) {
   try {
     const raw = storage.readFile(triggerPath, 'utf8');
@@ -780,6 +822,9 @@ function listFiles(dirPath: any) {
   }
 }
 
+/**
+ * Match a bot entry against an identifier (string key, numeric index, or object ref).
+ */
 function matchBotIdentifier(bot: any, identifier: any) {
   if (!bot || identifier === null || identifier === undefined) {
     return false;
@@ -858,6 +903,10 @@ function findAmaProfile(bundle: any, bot: any) {
   return match ? clone(match) : null;
 }
 
+/**
+ * Build a profile context object for a specific bot from a loaded bundle.
+ * Returns the current settings view, active state, and market context.
+ */
 function buildClawProfileContext(bundle: Record<string, any>, options: Partial<ProfileOptions> = {}) {
   if (!bundle || typeof bundle !== 'object') {
     return null;
@@ -920,6 +969,10 @@ function buildClawProfileContext(bundle: Record<string, any>, options: Partial<P
   };
 }
 
+/**
+ * Load the full DEXBot2 profile bundle from disk: bots.json, general.settings.json,
+ * market_profiles.json, and order snapshots. Returns normalized parsings of each.
+ */
 async function loadDexbotProfileBundle(profileRoot: string, options: Partial<ProfileOptions> = {}) {
   const profilesDir = resolveProfilesDir(profileRoot || options.profileRoot);
   const ordersDir = path.join(profilesDir, DEFAULT_ORDERS_DIR);
@@ -965,6 +1018,15 @@ async function loadDexbotProfileBundle(profileRoot: string, options: Partial<Pro
   };
 }
 
+/**
+ * Create a locked profile adapter for reading, previewing, and applying bot settings.
+ *
+ * The adapter wraps bundle loading, settings validation, and atomic writes behind
+ * per-file locks so concurrent updates do not clobber each other.
+ *
+ * @returns {Object} Adapter with loadBundle, listBots, findBot, getBotBundle,
+ *   getBotSettings, previewBotSettingsUpdate, applyBotSettingsPatch, getProfilesDir
+ */
 function createDexbotProfileAdapter(profileRoot: string, options: Partial<ProfileOptions> = {}) {
   let cachedBundle: any = null;
 
@@ -1031,6 +1093,10 @@ function createDexbotProfileAdapter(profileRoot: string, options: Partial<Profil
     });
   }
 
+  /**
+   * Preview a bot settings patch without applying it.
+   * Returns the current view, next view, validation errors/warnings, and whether a recalc trigger is required.
+   */
   async function previewBotSettingsUpdate(identifier: any, patch: any, options: Record<string, any> = {}) {
     const bundle = await loadBundle(Boolean(options.forceReload));
     const bot = identifier
@@ -1057,6 +1123,11 @@ function createDexbotProfileAdapter(profileRoot: string, options: Partial<Profil
     };
   }
 
+  /**
+   * Apply a bot settings patch atomically.
+   * Acquires a file lock, validates the patch against current state, writes updated bots.json,
+   * and writes the recalc trigger if the changed keys require one.
+   */
   async function applyBotSettingsPatch(identifier: any, patch: any, options: Record<string, any> = {}) {
     if (!isPlainObject(patch)) {
       throw new Error('patch must be a non-null object');

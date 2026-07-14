@@ -16,9 +16,9 @@
  * - render and write HTML via `lp_chart_core`
  *
  * Non-responsibilities:
- * - rendering HTML internals (`lp_chart_core.js`)
+ * - rendering HTML internals (`lp_chart_core.ts`)
  * - synthetic comparison mode (kept in analysis/ama_fitting)
- * - fetch/export of LP data (`market_adapter/inputs/fetch_lp_data.js`)
+ * - fetch/export of LP data (`market_adapter/inputs/fetch_lp_data.ts`)
  */
 
 const { path } = require('../modules/path_api');

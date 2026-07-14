@@ -1,16 +1,15 @@
 /**
- * modules/order/export.ts - QTradeX Export Module
+ * modules/order/export.ts - Trade Export Module
  *
  * Trading history extraction and CSV export engine.
  * Parses PM2 log files to extract trading fills and exports to standardized format.
- * Generates output compatible with QTradeX backtesting system.
  *
  * Usage:
  *   const exporter = require('./order/export');
  *   const result = await exporter.exportBotTrades(botKey, botConfig, outputDir);
  *
  * Output Format:
- * - CSV: Trades in QTradeX format (unix, price, amount, side, fee_asset, fee_amount, order_id)
+ * - CSV: Trades in standardized format (unix, price, amount, side, fee_asset, fee_amount, order_id)
  * - JSON: Sanitized bot settings (excludes private keys)
  *
  * ===============================================================================
@@ -27,7 +26,7 @@
  *      Returns: Array of trade objects with { timestamp, side, amount, price, proceeds, fee_asset, fee_amount }
  *
  *   3. writeTradesCSV(trades, outputPath) - Write trades to CSV file (async)
- *      Generates QTradeX-compatible CSV with proper escaping and formatting
+ *      Generates standardized CSV with proper escaping and formatting
  *      Returns: { success, count } or { success: false, error }
  *
  *   4. writeSettingsJSON(botConfig, botName, outputPath) - Write sanitized bot settings (async)

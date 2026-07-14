@@ -81,10 +81,6 @@
  * - Create new grid order for unexpected chain order
  * - Mark as ACTIVE with blockchain orderId
  *
- * PASS 3: Cleanup
- * - Mark orphaned grid orders as VIRTUAL
- * - Update accounting for all changes
- *
  * ===============================================================================
  */
 

@@ -115,7 +115,7 @@ override any individually:
 
 ```bash
 # Defaults (built-in)
---ama1Weight 0.0025  --ama2Weight 0.0022  --ama3Weight 0.0019  --ama4Weight 0.00165
+--ama1Weight 0.0031  --ama2Weight 0.0025  --ama3Weight 0.00185  --ama4Weight 0.0013
 
 # Override only AMA1 and AMA4, keeping AMA2/AMA3 defaults
 tsx analysis/ama_fitting/optimizer_high_resolution.ts \
@@ -125,10 +125,10 @@ tsx analysis/ama_fitting/optimizer_high_resolution.ts \
 
 | Key  | Default λ | Character |
 |------|----------:|-----------|
-| AMA1 | 0.0025 | Heaviest distance penalty — most reactive, stays closest to price |
-| AMA2 | 0.0022 | Moderate penalty |
-| **AMA3** | 0.0019 | Default — balanced move-vs-distance tradeoff |
-| AMA4 | 0.00165 | Lightest distance penalty — allows more room, most conservative |
+| AMA1 | 0.0031 | Heaviest distance penalty — most reactive, stays closest to price |
+| AMA2 | 0.0025 | Moderate penalty |
+| **AMA3** | 0.00185 | Default — balanced move-vs-distance tradeoff |
+| AMA4 | 0.0013 | Lightest distance penalty — allows more room, most conservative |
 
 **Inventory price range guidance:**
 

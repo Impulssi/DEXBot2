@@ -79,7 +79,7 @@ The decision loop in `modules/decision_loop.ts` combines all signals into a unif
 
 1. Discover all on-chain positions for the account.
 2. Fetch trend input per market (feed price + market price).
-3. Update a per-market trend analyzer (KAMA-based, state persists across calls).
+3. Update a per-market trend analyzer (Kalman filter-based, state persists across calls).
 4. Assess each position's health with the trend signal.
 5. Sort assessments by action priority (immediate first).
 6. Return assessments with a summary of zone distribution and action counts.

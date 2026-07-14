@@ -32,7 +32,7 @@ function getTrendAnalyzer() {
 
 /**
  * Per-market trend analyzer instances, keyed by MPA symbol.
- * Persists across loop iterations so KAMA state accumulates.
+ * Persists across loop iterations so Kalman filter state accumulates.
  */
 const analyzers = new Map();
 const analyzerConfigs = new Map();

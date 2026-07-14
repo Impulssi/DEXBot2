@@ -15,30 +15,49 @@
  * - Tracks a separate market center price per bot in market_adapter/state
  * - Creates recalculate.<botKey>.trigger when AMA center delta threshold is reached
  *
- * GRID RECALCULATION TRIGGERS (Three Independent Mechanisms):
+ * GRID RECALCULATION TRIGGERS (Five Independent Mechanisms):
  * ──────────────────────────────────────────────────────────
  *
- * 1. AMA DELTA THRESHOLD (this file / market adapter)
- *    Triggers when market price moves significantly from last recorded AMA center
+ * MARKET ADAPTER (market_adapter_service.ts):
+ *
+ * 1. BOOTSTRAP / FIRST-TIME INIT
+ *    Triggers when no previous center price exists (first run or state cleared).
+ *    ├─ Always active (no threshold)
+ *    └─ Use case: Establish initial grid center for a new bot
+ *
+ * 2. AMA DELTA THRESHOLD
+ *    Triggers when AMA-computed market price moves past threshold from last center
  *    ├─ Controlled by: MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT
  *    ├─ Location: profiles/general.settings.json
- *    ├─ Default: 2.5% (grid resets when AMA moves ±2.5%)
+ *    ├─ Default: 1.00% (grid resets when AMA moves ±1.00%)
  *    ├─ CLI override: --deltaPercent <percent>
- *    └─ Use case: Catch big market moves that require grid repositioning
+ *    └─ Use case: Catch big market moves requiring grid repositioning
  *
- * 2. RMS DIVERGENCE CHECK (order/grid.ts / grid engine)
- *    Triggers when calculated grid diverges from blockchain state
+ * 3. AMA SLOPE DELTA THRESHOLD
+ *    Triggers when trend slope (AMA derivatives) changes significantly from
+ *    the last accepted baseline. Gated by gridRangeScaling whitelist.
+ *    ├─ Controlled by: AMA_SLOPE_DELTA_THRESHOLD_PERCENT / amaSlope.deltaThresholdPct
+ *    └─ Use case: Recalibrate grid offset when trend intensity shifts
+ *
+ * GRID ENGINE (order/grid.ts):
+ *
+ * 4. RMS DIVERGENCE CHECK
+ *    Triggers when calculated grid geometry diverges from on-chain state
  *    ├─ Controlled by: GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE
  *    ├─ Location: profiles/general.settings.json
  *    ├─ Default: 14.3% (balanced tolerance)
  *    ├─ Set to 0 to disable (Issue #5: RMS Divergence Check Disabling)
  *    └─ Use case: Detect order fill/rotation accumulation drift
  *
- * 3. GRID REGENERATION (internal threshold)
- *    Triggers when available funds exceed allocation threshold
+ * 5. GRID REGENERATION (ratio-based)
+ *    Triggers when available free balance exceeds allocation threshold
  *    ├─ Controlled by: GRID_LIMITS.GRID_REGENERATION_PERCENTAGE
  *    ├─ Default: 3% (regen when free balance ≥ 3% of allocated capital)
  *    └─ Use case: Rebalance and utilize accumulated fill proceeds
+ *
+ * Note: Dynamic weights (AMA slope + Kalman + regime gate) are applied to
+ * order sizing on every cycle independently of these triggers — they do not
+ * cause a grid reset but adjust the buy/sell weight distribution continuously.
  *
  * AMA PROFILE SELECTION (per bot via gridPrice keyword):
  * ───────────────────────────────────────────────────────

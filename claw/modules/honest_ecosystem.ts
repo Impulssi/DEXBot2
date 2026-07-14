@@ -4,6 +4,8 @@ const { derivePoolPrice } = require('./liquidity_pools');
 const REFERENCE_SYMBOL = 'HONEST.MONEY';
 const CORE_SYMBOL = 'BTS';
 const DEFAULT_PREFIX = 'HONEST.';
+// Fallback HONEST.MONEY/BTS pool values used when the live LP pool query fails.
+// Last verified: pool 1.19.305 — refresh by running `npm run report:honest-assets` on a live node.
 const HARDCODED_POOL_ID = '1.19.305';
 const HARDCODED_HONEST_MONEY_BTS_POOL = {
   assetA: {

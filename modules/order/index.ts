@@ -30,8 +30,6 @@
  * - VIRTUAL: Not placed on blockchain, reserved on grid
  * - ACTIVE: Placed on blockchain, active in market
  * - PARTIAL: Partially filled on blockchain
- * - FILLED: Completed, removed from active grid
- * - CANCELLED: Removed from blockchain, cleared from grid
  *
  * ===============================================================================
  *
@@ -43,7 +41,8 @@
  * 5. accounting.ts - Accountant class (fund calculations and reconciliation)
  * 6. logger.ts - Logger class (structured, color-coded output)
  * 7. async_lock.ts - AsyncLock class (race condition prevention)
- * 9. export.ts - QTradeX export module (trade history extraction)
+ * 8. working_grid.ts - WorkingGrid class (copy-on-write grid state)
+ * 9. export.ts - Trade history extraction and CSV export
  * 10. runner.ts - Heavy calculation and I/O operations
  * 11. grid_reconcile.ts - Grid reconciliation against chain (startup + maintenance)
  * 12. strategy.ts - Strategy configuration and parsing

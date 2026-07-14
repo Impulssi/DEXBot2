@@ -27,7 +27,6 @@ const DEFAULT_PYTHON = Config.MEMU_PYTHON;
 function resolveMemuScript() {
   const candidates = [
     PATHS.CLAW.MEMU_RUNNER_SCRIPT,
-    PATHS.CLAW.MEMU_RUNNER_SCRIPT,
   ];
 
   for (const candidate of candidates) {

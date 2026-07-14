@@ -320,7 +320,7 @@ class RepoAnalyzer {
     }
 
     /**
-     * generateHtmlChart: Create interactive HTML visualization with Chart.js
+     * generateHtmlChart: Create interactive HTML visualization with uPlot
      *
      * Generates an HTML file with 5 interactive charts:
      * 1. File comparison: Stacked bar chart (added vs deleted by file)
@@ -336,7 +336,7 @@ class RepoAnalyzer {
      * - Calculates cumulative sums for growth visualization
      *
      * Output: Writes file to analysis/charts/repo-stats.html
-     * Browser compatible: Uses Chart.js from CDN
+     * Uses vendored uPlot from analysis/uplot/
      *
      * @param {Array<[string, Object]>} sortedFiles - Sorted files with their stats
      */

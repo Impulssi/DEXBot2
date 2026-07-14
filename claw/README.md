@@ -19,7 +19,7 @@ Integration layer for BitShares blockchain operations from DEXBot2 and supported
 - [Multi-Runtime Support](#multi-runtime-support)
 - [HONEST Ecosystem Helper](#honest-ecosystem-helper)
 - [Position Health](#position-health)
-- [Dynamic Weights](#dynamic-weights)
+- [Bot Settings](#bot-settings)
 - [High-Level Actions](#high-level-actions)
 
 ## Which section do I need?
@@ -31,7 +31,7 @@ Integration layer for BitShares blockchain operations from DEXBot2 and supported
 | Track persistent short positions | [Position Manager](#position-manager) | `npm run example:position-manager` |
 | Choose a runtime (OpenClaw, Hermes, NanoBot, etc.) | [Multi-Runtime Support](#multi-runtime-support) | — |
 | Generate skill files for a runtime | [Multi-Runtime Support](#multi-runtime-support) | `npm run <runtime>:skill` |
-| Preview or apply bot setting changes | [Dynamic Weights](#dynamic-weights) | `tsx scripts/claw_bridge.ts bot-settings-preview` |
+| Preview or apply bot setting changes | [Bot Settings](#bot-settings) | `tsx scripts/claw_bridge.ts bot-settings-preview` |
 | Inspect an on-chain MPA position | [Position Health](#position-health) | `tsx scripts/claw_bridge.ts mpa-position` |
 | List HONEST asset pricing | [HONEST Asset Report](#honest-asset-report) | `npm run report:honest-assets` |
 
@@ -49,12 +49,12 @@ npm install
 - Strategy and state helpers: `modules/short_mpa_strategy.ts`, `modules/position_manager.ts`, `modules/position_manager_watch.ts`
 - Position health: `modules/position_health.ts`, `modules/position_discovery.ts`, `modules/decision_loop.ts`
 - Price sources: `modules/feed_price_source.ts`, `modules/kibana_price_source.ts`
-- DEXBot2 and Claw integration: `modules/dexbot_bridge.ts`, `modules/dexbot_profiles.ts`, `modules/dexbot_credential_client.ts`, `modules/claw_bridge.ts`, `modules/claw_catalog.ts`, `modules/claw_manifest.ts`, `modules/claw_skill_md.ts`, `modules/claw_runtime_matrix.ts`, `scripts/claw_bridge.ts`, `scripts/claw_mcp_server.ts`
+- DEXBot2 and Claw integration: `modules/dexbot_bridge.ts`, `modules/dexbot_profiles.ts`, `modules/dexbot_credential_client.ts`, `modules/claw_bridge.ts`, `modules/claw_catalog.ts`, `modules/claw_manifest.ts`, `modules/claw_skill_md.ts`, `modules/claw_runtime_matrix.ts`, `modules/credit_runtime_adapter.ts`, `scripts/claw_bridge.ts`, `scripts/claw_mcp_server.ts`
 - memU support: `modules/memu_bridge.ts`, `scripts/memu_runner.py`, `scripts/memu_mcp_server.ts`
 - Skill packs: `skills/bitshares-guide/SKILL.md`, `skills/margin-trading/SKILL.md`, `skills/trend-detection/SKILL.md`, `skills/launcher-ops/SKILL.md`, `skills/memu-memory/SKILL.md`, shared boundary references under `skills/shared/references/`
 - HONEST support: `modules/honest_ecosystem.ts`, `modules/liquidity_pools.ts`
 - Launcher and paths: `modules/claw_launcher.ts`, `modules/launcher_mode_detector.ts`, `modules/launcher_paths.ts`
-- Shared runtime infrastructure: `modules/claw_infra.ts`, `modules/types.ts`, `modules/utils.ts`
+- Shared runtime infrastructure: `modules/claw_infra.ts`, `modules/types.ts`, `modules/utils.ts`, `modules/skill_utils.ts`, `modules/mcp_utils.ts`
 - MPA utilities: `modules/mpa_utils.ts`
 - Reference docs: `docs/AI_BOT_LIBRARY_API.md`, `docs/DEXBOT2_TUNING_CHEAT_SHEET.md`, `docs/POSITION_HEALTH.md`, `docs/RUNTIME_COMPARISON.md`
 - Example entrypoints: `examples/connection_test.ts`, `examples/short_mpa_bts_strategy.ts`, `examples/position_manager_cli.ts`, `examples/memu_integration_example.ts`, `examples/claw_profiles_example.ts`, `examples/claw_consumer_example.ts`, `examples/claw_infra_example.ts`, `examples/honest_ecosystem_example.ts`
@@ -77,7 +77,7 @@ What it does:
 What it does not do:
 
 - replace the main DEXBot2 bot engine or orchestration loop
-- own credentials or hand private keys to ZeroClaw, NanoClaw, or NullClaw callers
+- own credentials or hand raw private keys to non-DEXBot2 callers (private keys are only forwarded to the credit runtime subsystem for signing, not exposed to ZeroClaw, NanoClaw, or NullClaw callers directly)
 - become the canonical source of truth for core DEXBot2 math or runtime behavior
 - make strategy decisions for the main bot runtime beyond the explicit helper flows included here
 - guarantee that exposed write actions are safe just because they are wrapped by the bridge
@@ -476,9 +476,9 @@ tsx scripts/claw_bridge.ts mpa-position --payload '{"accountName":"your-account"
 
 The decision loop (`modules/decision_loop.ts`) is exposed as a module API. Its `evaluate()` call ties discovery, trend analysis, and health assessment into a single result with prioritized actions.
 
-## Dynamic Weights
+## Bot Settings
 
-Dynamic weight updates adjust `weightDistribution` based on trend signals. The service evaluates bot eligibility, fetches trend data, computes weight changes, enforces cooldowns, and optionally writes a recalculation trigger.
+Read, preview, and apply DEXBot2 bot settings through the locked profile adapter. Settings writes are serialized through the profile lock, ensuring concurrent updates do not clobber each other. The recalc trigger is written atomically after each apply.
 
 Inspect the default policy:
 

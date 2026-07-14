@@ -43,6 +43,10 @@ function stripPrivateKey(options: ClawBridgeOptions = {}): ClawBridgeOptions {
   return sanitized;
 }
 
+/**
+ * Split a "BASE/QUOTE" pair string into { baseSymbol, quoteSymbol }.
+ * Throws if the pair does not contain a '/'.
+ */
 function splitPair(pairValue: string) {
   if (typeof pairValue !== 'string' || !pairValue.includes('/')) {
     throw new Error('pair must be provided as BASE/QUOTE');
@@ -59,10 +63,18 @@ function splitPair(pairValue: string) {
   };
 }
 
+/**
+ * Extract a profile context reference string from command options.
+ * Returns the first matching field: botRef, identifier, botId, or pair.
+ */
 function getProfileContextRef(options: ClawBridgeOptions = {}): string | null {
   return options.botRef || options.identifier || options.botId || options.pair || null;
 }
 
+/**
+ * Extract and validate the patch object from command options.
+ * Throws if patch is missing or not a plain object.
+ */
 function getBotSettingsPatch(options: ClawBridgeOptions = {}): Record<string, any> {
   if (!options.patch || typeof options.patch !== 'object' || Array.isArray(options.patch)) {
     throw new Error('bot-settings-preview and bot-settings-apply require a patch object');
@@ -71,6 +83,10 @@ function getBotSettingsPatch(options: ClawBridgeOptions = {}): Record<string, an
   return options.patch;
 }
 
+/**
+ * Create a Claw bridge instance — infrastructure object with bitshares, credential,
+ * profiles, market, order, honest, and credit-runtime subsystems wired together.
+ */
 function createClawBridge(options: ClawBridgeOptions = {}): any {
   const sanitizedOptions = stripPrivateKey(options);
   const runtimeName = sanitizedOptions.runtimeName
@@ -86,10 +102,18 @@ function createClawBridge(options: ClawBridgeOptions = {}): any {
   });
 }
 
+/**
+ * Describe the runtime manifest — mirrors describeClawBridge.
+ * @returns {Object} Compatibility manifest with commands, surfaces, and trust model.
+ */
 function describeRuntimeManifest(options: ClawBridgeOptions = {}): any {
   return describeClawBridge(options);
 }
 
+/**
+ * Describe the command manifest for the requested runtime.
+ * Delegates to memu_bridge for memU runtime, otherwise uses claw_bridge manifest.
+ */
 function describeCommandManifest(options: ClawBridgeOptions = {}): any {
   const runtimeName = options.runtimeName || options.runtime?.name || null;
   if (runtimeName && String(runtimeName).trim().toLowerCase() === 'memu') {
@@ -98,6 +122,14 @@ function describeCommandManifest(options: ClawBridgeOptions = {}): any {
   return describeClawBridge(options);
 }
 
+/**
+ * Dispatch a claw bridge command to the appropriate handler.
+ * Strips privateKey from options for logging safety before routing.
+ *
+ * @param {string} command – Command name (e.g. 'manifest', 'profile-context', 'bot-settings')
+ * @param {Object} [options] – Command options including credentials, payload, and runtime context
+ * @returns {Promise<any>} Command result
+ */
 async function runClawCommand(command: string, options: ClawBridgeOptions = {}): Promise<any> {
   const safeOptions = stripPrivateKey(options);
   if (command === 'manifest') {

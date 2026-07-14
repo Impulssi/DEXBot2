@@ -34,6 +34,10 @@ const DEFAULT_STATE_DIR = PATHS.CLAW.STATE_DIR;
 
 const { clone } = require('./utils');
 
+/**
+ * Create a runtime context object with paths, logger, and configuration.
+ * Used by createClawInfrastructure to wire up all subsystems.
+ */
 function createRuntimeContext(options: RuntimeContextOptions = {}) {
   const dataDir = options.dataDir || DEFAULT_DATA_DIR;
   const stateDir = options.stateDir || path.join(dataDir, 'state');
@@ -53,6 +57,10 @@ function createRuntimeContext(options: RuntimeContextOptions = {}) {
   };
 }
 
+/**
+ * Create a filesystem-backed state store with atomic reads/writes and serialized write queue.
+ * Provides read, write, patch, update, and clear operations.
+ */
 function createStateStore(options: StateStoreOptions = {}) {
   const dataDir = options.dataDir || DEFAULT_DATA_DIR;
   const stateDir = options.stateDir || path.join(dataDir, 'state');
@@ -154,6 +162,9 @@ function createStateStore(options: StateStoreOptions = {}) {
   };
 }
 
+/**
+ * Create a credential-daemon client wrapper with isReady() and waitForReady() helpers.
+ */
 function createCredentialClient(options: CredentialClientOptions = {}) {
   const socketPath = options.socketPath || credentialClient.DEFAULT_SOCKET_PATH;
   const readyFilePath = options.readyFilePath || credentialClient.DEFAULT_READY_FILE;
@@ -170,6 +181,10 @@ function createCredentialClient(options: CredentialClientOptions = {}) {
   };
 }
 
+/**
+ * Create a BitShares client adapter wrapping chain queries, broadcast, and signing.
+ * Shares the DEXBot2 chain client infrastructure underneath.
+ */
 function createBitsharesClient(options: BitsharesClientOptions = {}) {
   const accountName = options.accountName || null;
   const socketPath = options.socketPath || credentialClient.DEFAULT_SOCKET_PATH;
@@ -202,6 +217,10 @@ function createBitsharesClient(options: BitsharesClientOptions = {}) {
   };
 }
 
+/**
+ * Create a market adapter with readAccountSnapshot and readMarketSnapshot helpers,
+ * delegating to chain_queries for individual data points.
+ */
 function createMarketAdapter(options: Record<string, any> = {}) {
   const readAccountSnapshot = async (accountRef: string) => {
     const [account, balances, openOrders] = await Promise.all([
@@ -249,10 +268,18 @@ function createMarketAdapter(options: Record<string, any> = {}) {
   };
 }
 
+/**
+ * Load the DEXBot2 order subsystem as a tools object.
+ */
 function createOrderTools() {
   return loadDexbotOrderSubsystem();
 }
 
+/**
+ * Create the full Claw infrastructure object: wires runtime context, state store,
+ * credential client, BitShares client, market adapter, order tools, HONEST adapter,
+ * profile adapter, and credit runtime adapter into a single object.
+ */
 function createClawInfrastructure(options: ClawInfrastructureOptions = {}) {
   const runtime = createRuntimeContext({
     ...options,

@@ -1,4 +1,4 @@
-// Claw subsystem maintains its own connection state for subsystem isolation.
+// Claw shares the DEXBot2 chain client infrastructure but tracks connection state separately for subsystem isolation.
 const { TIMING, NODE_MANAGEMENT } = require('../../modules/constants');
 const { sleep } = require('../../modules/order/utils/system');
 

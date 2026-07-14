@@ -3,16 +3,14 @@
  *
  * Two layers of checks:
  *   1. Source-level: bundles modules/*.ts entry points with --platform=browser.
- *      Local imports are resolved by file path, so the package.json "browser"
- *      field does not apply. Catches cases where a local module import cannot
- *      be resolved (missing file) or pulls in unexpected dependencies.
+ *      esbuild applies the package.json "browser" field unconditionally during
+ *      module resolution. Source-level tests catch resolve failures (missing
+ *      files) and unexpected pull-through of heavy dependencies.
  *   2. Dist-level: builds dist/ via tsc, then bundles dist/modules/*.js entry
- *      points. Local imports now go through the bundler's package.json
- *      resolution, so the "browser" field DOES apply. The bundle is scanned
- *      for "(disabled):" markers — esbuild inserts these when a module is
- *      replaced via the "browser" field. Any marker means an entry on the
- *      "browser" field shadows a module that is supposed to be reachable
- *      from the browser-safe surface.
+ *      points. The bundle is scanned for "(disabled):" markers — esbuild
+ *      inserts these when a module is replaced via the "browser" field. Any
+ *      marker means an entry on the "browser" field shadows a module that is
+ *      supposed to be reachable from the browser-safe surface.
  *
  * Node-only entries are tested WITHOUT externalizing Node built-ins, so they
  * correctly fail with "Could not resolve 'fs'" / 'net' / 'https' etc.

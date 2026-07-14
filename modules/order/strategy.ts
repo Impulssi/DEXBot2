@@ -29,8 +29,12 @@
  *      Handles order fill events, fee accounting, and grid updates
  *      Consolidates partial fills, updates fund state. Does NOT trigger rebalancing.
 
+ * FEE EVENT MANAGEMENT (2 methods - internal)
+ *   4. _pruneSettledFeeEvents() - Evict expired fee event cache entries
+ *   5. _buildFeeEventId(feeOp) - Build deduplication key for fee events
+
  * HEALTH CHECK (1 method)
- *   4. hasAnyDust(partials, side) - Check for dust (unhealthy) partial orders
+ *   6. hasAnyDust(partials, side) - Check for dust (unhealthy) partial orders
  *      Detects partial orders below minimum size threshold
  *      Returns true if dust detected on side
  *

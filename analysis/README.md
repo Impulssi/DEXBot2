@@ -22,14 +22,14 @@ Tools that inspect DEXBot trading behavior and the market data it operates on. O
 |------|----------------|------------------|
 | [`trade_profitability.ts`](#trade-profitability-analyzer-trade_profitabilityts) | "Is my bot making money?" — PnL, R-multiples, drawdown | `npm run analysis:trade-pnl -- <account-id>` |
 | [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `tsx analysis/analyze_risk_profile.ts --data <lp-file> --ama AMA3` |
-| [`analyze_trade_heatmap.ts`](#trade-heatmap) | "Where did trade volume cluster vs the AMA?" | `tsx analysis/analyze_trade_heatmap.ts --data <lp-file> --ama AMA3` |
-| [`analyze_tradingview.ts`](#tradingview-chart) | "Just give me a candle chart" | `npm run analysis:tradingview -- --bot-key <bot-key>` |
+| [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `tsx analysis/analyze_trade_heatmap.ts --data <lp-file> --ama AMA3` |
+| [`analyze_tradingview.ts`](#tradingview-chart-analyze_tradingviewts) | "Just give me a candle chart" | `npm run analysis:tradingview -- --bot-key <bot-key>` |
 | [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `tsx analysis/analyze_dynamic_weight.ts --bot-key <bot-key>` |
 | [`analyze_volatility.ts`](#volatility-analyze_volatilityts) | "Both weights clipped too hard / not enough?" | `tsx analysis/analyze_volatility.ts --bot-key <bot-key>` |
 | [`analyze_regime.ts`](#supporting-sub-signals) | "Is the trend/chaos gate too aggressive?" | `tsx analysis/analyze_regime.ts --bot-key <bot-key>` |
 | [`analyze_kalman.ts`](#supporting-sub-signals) | "Is Kalman's contribution to the blend right?" | `tsx analysis/analyze_kalman.ts --bot-key <bot-key>` |
-| [`ama_fitting/`](#ama_fitting) | "Which AMA preset fits this market?" | `tsx analysis/ama_fitting/optimizer_high_resolution.ts --data <lp-file>` |
-| [`bot_fitting/`](#bot_fitting) | "What spread / increment / ratio for my grid?" | `tsx analysis/bot_fitting/backtest_ama_sweep.ts --data <lp-file>` |
+| [`ama_fitting/`](#ama-fitting) | "Which AMA preset fits this market?" | `tsx analysis/ama_fitting/optimizer_high_resolution.ts --data <lp-file>` |
+| [`bot_fitting/`](#bot-fitting) | "What spread / increment / ratio for my grid?" | `tsx analysis/bot_fitting/backtest_ama_sweep.ts --data <lp-file>` |
 
 > `analyze_derivatives.ts` (SMA / MACD / RSI derivative layer, uses `derivative_chart_generator.ts`) is a legacy tool surfaced via `npm run analysis:derivatives` — kept for reference.
 

@@ -28,7 +28,7 @@ function describeClawBridge(options: Record<string, any> = {}) {
       recommendedTransport: focusedRuntime ? focusedRuntime.preferredTransport : 'runtime-specific',
       runtimes: listSupportedClawRuntimes(),
       trustModel: focusedRuntime?.trustModel || 'Claw runtimes send intents and read context; AI-Bot handles signing through DEXBot2',
-      version: 2
+      version: 2, // Incremented for credential-boundary redesign; v1 returned static surfaces only
     },
     commandExamples: buildClawCommandExamples(options.scriptPath),
     commands: listClawCommandNames(),

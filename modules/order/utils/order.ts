@@ -819,7 +819,6 @@ function buildIndexes(grid) {
         [ORDER_STATES.VIRTUAL]: new Set(),
         [ORDER_STATES.ACTIVE]: new Set(),
         [ORDER_STATES.PARTIAL]: new Set(),
-        [ORDER_STATES.FILLED]: new Set(),
         [ORDER_TYPES.BUY]: new Set(),
         [ORDER_TYPES.SELL]: new Set(),
         [ORDER_TYPES.SPREAD]: new Set()

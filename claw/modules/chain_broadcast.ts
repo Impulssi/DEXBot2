@@ -48,6 +48,10 @@ function _sendSighupToDaemon() {
 /**
  * Resolve sessionId and botHmacSecret for an account.
  * Probes the daemon for a session and loads the HMAC secret from DEXBot2 profiles.
+ *
+ * @param {string} accountName – BitShares account name
+ * @param {Object} [options]   – Optional sessionId or botHmacSecret overrides
+ * @returns {Promise<{sessionId: string|null, botHmacSecret: string|null}>}
  */
 async function resolveSessionCredentials(accountName: any, options: Record<string, any> = {}) {
   let sessionId = options.sessionId || null;

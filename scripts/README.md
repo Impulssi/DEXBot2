@@ -13,7 +13,7 @@ This guide provides a terminal-focused reference for the maintenance and diagnos
 # Pull latest code, install deps, and restart PM2
 node dexbot update
 ```
-*Note: Protects your `profiles/` directory and logs all changes to `profiles/logs/update.log`.*
+*Note: Protects your `profiles/` directory during the update process.*
 
 ---
 

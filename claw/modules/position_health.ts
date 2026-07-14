@@ -52,7 +52,7 @@ function checkTrendAlignment(positionSide: string, trend: string) {
  * Assess the health of a position.
  *
  * @param {Object} position      – Position object from PositionManager
- * @param {Object} [trendSignal] – Optional { trend, confidence, premium } from TrendAnalyzer
+ * @param {Object} [trendSignal] – Optional { trend, confidence, premium } from a trend analyzer
  * @returns {Object} Health assessment
  */
 function assessPosition(position: any, trendSignal: Record<string, any> | null = null) {
@@ -133,6 +133,10 @@ function assessAllPositions(positions: any[], trendSignal: Record<string, any> |
   return (positions || []).map((p) => assessPosition(p, trendSignal));
 }
 
+/**
+ * Parse a ratio value from a string (e.g. "3x") or numeric price ratio.
+ * Returns null if the value cannot be parsed.
+ */
 function parseRatioValue(value: any, referencePrice: any, mode: string) {
   if (typeof value === 'string') {
     const match = value.trim().match(/^([0-9]+(?:\.[0-9]+)?)x$/i);
@@ -150,11 +154,18 @@ function parseRatioValue(value: any, referencePrice: any, mode: string) {
   return mode === 'min' ? reference / numeric : numeric / reference;
 }
 
+/**
+ * Format a numeric ratio as a human-readable multiplier string (e.g. 3.00x).
+ */
 function formatRatioAsMultiplier(ratio: any) {
   const rounded = roundToDecimals(ratio, 2);
   return `${rounded}x`;
 }
 
+/**
+ * Classify a price range ratio into a descriptive category.
+ * Categories: very_competitive (< 2), competitive (2–3), conservative (3–3.25), very_conservative (> 3.25).
+ */
 function classifyPriceRangeRatio(ratio: any) {
   const numeric = Number(ratio);
   if (!Number.isFinite(numeric) || numeric <= 0) {
@@ -172,6 +183,10 @@ function classifyPriceRangeRatio(ratio: any) {
   return 'very_conservative';
 }
 
+/**
+ * Resolve the current price range ratio from bot config, with optional override via options.currentPriceRangeRatio.
+ * Returns the symmetric/asymmetric ratio along with min and max components.
+ */
 function resolveCurrentPriceRangeRatio(botConfig: Record<string, any> = {}, referencePrice: any, options: Record<string, any> = {}) {
   const forced = Number(options.currentPriceRangeRatio);
   if (Number.isFinite(forced) && forced > 0) {
@@ -196,6 +211,11 @@ function resolveCurrentPriceRangeRatio(botConfig: Record<string, any> = {}, refe
   };
 }
 
+/**
+ * Compute a recommended price range ratio plan based on observed historical price action.
+ * Compares the current ratio against observed min/max prices and returns a recommended
+ * ratio with headroom and touch-expansion factors.
+ */
 function computePriceRangeRatioPlan(botConfig: Record<string, any> = {}, options: Record<string, any> = {}) {
   const referencePrice = Number(options.referencePrice);
   const current = resolveCurrentPriceRangeRatio(botConfig, referencePrice, options);
