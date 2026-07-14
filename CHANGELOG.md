@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.6] - 2026-07-14 - Dust Detection Fix, Dedup Hardening, Chart AMA Alignment, amaS% Revert
+
+### 2026-07-14
+
+- **Fix**: dust detection now runs on partial-only fill batches — post-fill dust check was gated on `fullFillCount > 0`, so a partial fill that reduced an order below the dust threshold would be undetected until the 4-hour periodic blockchain fetch. Added `hasAnyFills`/`shouldRunDustDetection` independent of full fills, `performPeriodicGridChecks` after sync ticks, and targeted drift reconciliation after fill processing (`17f7cbc3`).
+- **Fix**: orphan fill double-credit race — orphan fills `continue`d before reaching Layer 1/2 dedup checks, allowing a second delivery to slip through the async gap. Replicated Layer 1/2 dedup in all three orphan paths. Extended stale-cleaned tombstone retention from 5 min to 7 days (`_fillRecordRetentionMs`) with 500-entry hard cap. Subscription health watchdog now resubscribes once per feed stall instead of redundantly per account; re-entrancy guard added (`18ed90da`).
+- **Fix**: TradingView chart AMA resolution drift — chart generator used `DEFAULT_AMA_KEY` (AMA3) instead of `selectedProfile.defaultAma` for `gridPrice: "ama"` and non-AMA grid prices. Added `.trim().toLowerCase()`, `AMA_KEYWORDS` Set, and built-in constants fallback to match the runtime's tolerant chain (`2aeffda7`).
+- **Revert**: restore `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` from 0.08 back to 0.085 — reverses the v1.1.3 retune; requires a slightly stronger trend before the AMA weight offset reaches full effect (`modules/constants.ts`, `analysis/trend_detection/DYNAMIC_WEIGHT_RESEARCH.md`).
+
 ## [1.1.5] - 2026-07-14 - AMA Refit, Oversized Credit Deal Splitter & Per-op Borrow Cap
 
 ### 2026-07-14
