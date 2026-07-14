@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.5] - 2026-07-14 - AMA Refit, Oversized Credit Deal Splitter & Per-op Borrow Cap
+
+### 2026-07-14
+
+- **Feat**: AMA refit on 3yr pool 133 1h data (2023-07 → 2026-07) with per-AMA λ weights (0.0031/0.0025/0.00185/0.0013) and SMA-warmup-aligned optimizer. Slow periods updated AMA1 73.3→62.1, AMA2 80.6→71.7, AMA3 88.7→82.7, AMA4 102.4→95.5. Default slow range narrowed 40-160→35-140. New `--fixEr` / `--fixFast` CLI flags fix ER=781 / Fast=5.2 and search Slow only. CLI validation adds `--ama1Cap`–`--ama4Weight` properties, removing 8 `(out as any)` casts. Stale references updated in market_adapter/README.md, TradingView README, and two test fixtures (`analysis/ama_fitting/optimizer_high_resolution.ts`, `modules/constants.ts`, `market_adapter/README.md`, `analysis/tradingview/README.md`, `tests/test_market_adapter_log_format.ts`, `tests/test_market_adapter_logic.ts`).
+- **Feat**: add `maxBorrowAmountPerOperation` config field and `_splitOversizedCreditDeals` — when a credit deal exceeds `maxBorrowAmountPerOperation`, maintenance splits it into equal pieces via repay+reborrow cycles with 6s spacing. Planner clamps debtDelta by per-op cap on top of the total `maxBorrowAmount` ceiling. `min_deal_amount` guard skips deals where any piece would be below the offer's minimum deal size. `MAX_PIECES_PER_CYCLE=48` (new `TIMING.CREDIT_DEAL_SPLIT_MAX_PIECES`) prevents unbounded cycles. `_splitInFlight` concurrency guard prevents `runMaintenance` / `runCreditWatchdog` collisions. 6 new tests cover per-op rejection, offer-selection capping, correct split arithmetic, within-limit skip, no-limit skip, and error-pattern match (`modules/types.ts`, `modules/bot_settings.ts`, `modules/credit_runtime.ts`, `modules/cr_planner.ts`, `tests/test_credit_runtime.ts`).
+- **Fix**: settle-delay resolution for credit splits now reads from the `TIMING` constant instead of `bot.config.TIMING.BLOCKCHAIN_SETTLE_DELAY_MS` — consistent with `dexbot_maintenance_runtime.ts`. Any per-bot `TIMING.BLOCKCHAIN_SETTLE_DELAY_MS` override in `bots.json` is no longer honoured for split pacing (`modules/credit_runtime.ts`).
+
 ## [1.1.4] - 2026-07-14 - AMA4 Slow Correction, Optimizer Range Tighten, Post-tag Doc Sync
 
 ### 2026-07-14
@@ -9,8 +17,6 @@ All notable changes to this project will be documented in this file.
 - **Fix**: correct AMA4 slowPeriod from 107.4 to 102.4 — aligns AMA4 with the same λ=0.0025 refit applied to AMA1-3 in v1.1.3. Fixes stale slowPeriod references in market_adapter/README.md, test fixtures, and TradingView chart generator (`modules/constants.ts`, `market_adapter/README.md`, `tests/test_market_adapter_log_format.ts`, `tests/test_market_adapter_logic.ts`, `analysis/tradingview/tradingview_uplot_chart_generator.ts`).
 - **Feat**: narrow optimizer slow search range from 50-200 to 40-160 — focuses the geometric grid on the range where fitted winners consistently land, reducing wasted evaluations at uncompetitive extremes (`analysis/ama_fitting/optimizer_high_resolution.ts`).
 - **Docs**: sync v1.1.3 release notes with amaS% retune (0.085→0.08), update DYNAMIC_WEIGHT_RESEARCH.md knob table, correct EVOLUTION.md commit count for v1.1.3 (2→4) and summary to include the amaS% retune (`CHANGELOG.md`, `analysis/trend_detection/DYNAMIC_WEIGHT_RESEARCH.md`, `docs/EVOLUTION.md`).
-- **Feat**: add `maxBorrowAmountPerOperation` config field and `_splitOversizedCreditDeals` — when a credit deal exceeds `maxBorrowAmountPerOperation`, maintenance splits it into equal pieces via repay+reborrow cycles with 6s spacing (`modules/types.ts`, `modules/bot_settings.ts`, `modules/credit_runtime.ts`, `modules/cr_planner.ts`).
-- **Fix**: settle-delay resolution for credit splits now reads from the `TIMING` constant instead of `bot.config.TIMING.BLOCKCHAIN_SETTLE_DELAY_MS` — consistent with `dexbot_maintenance_runtime.ts`. Any per-bot `TIMING.BLOCKCHAIN_SETTLE_DELAY_MS` override in `bots.json` is no longer honoured for split pacing (`modules/credit_runtime.ts`).
 
 ## [1.1.3] - 2026-07-13 - AMA Refit λ=0.0025, amaS% Retune, tsx Compatibility, Doc Fixes
 

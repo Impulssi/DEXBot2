@@ -23,6 +23,7 @@ DEXBot2 supports native BitShares debt workflows through the bot-level `debtPoli
 | Change how often the credit watchdog runs | [Runtime Timing](#runtime-timing) | `TIMING` in `constants.ts` |
 | Know what happens when MPA CR drops below minimum | [MPA Maintenance](#mpa-maintenance) | `minCollateralRatio` |
 | Know how credit deals are renewed and repaid | [Credit Offer Maintenance](#credit-offer-maintenance) | `autoReborrow` / `autoRepay` |
+| Cap the size of a single borrow, or split oversized deals | [Credit Offer Maintenance](#credit-offer-maintenance) | `maxBorrowAmountPerOperation` |
 | Use LP shares as credit-offer collateral | [LP-Backed Credit Collateral](#lp-backed-credit-collateral) | automatic valuation |
 | Diagnose pending reborrow or renewal issues | [State Files](#state-files) | `profiles/credit_runtime/<botKey>.json` |
 | Safe operating practices | [Operational Notes](#operational-notes) | — |
@@ -92,6 +93,7 @@ Add `debtPolicy` to a bot entry in `profiles/bots.json`:
 |-------|------|----------|-------------|
 | `outputWeight` | `number` | No | Output weight for this asset. Controls the proportion of debt value across lending items (not collateral). Defaults to `1`. See **Collateral Distribution** below. |
 | `maxBorrowAmount` | `number` | No | **Fixed** total debt ceiling. Must be a positive number (not a percentage). |
+| `maxBorrowAmountPerOperation` | `number` | No | **Per-operation borrow cap**. Any single credit-offer accept operation whose borrow amount exceeds this is rejected. For MPA, the planner clamps each `debtDelta` by this cap on top of `maxBorrowAmount`. When set, oversized credit deals are split into equal pieces via repay+reborrow cycles during maintenance (see [Credit Offer Maintenance](#credit-offer-maintenance)). Must be a positive number. |
 | `maxCollateralAmount` | `number \| percentage string` | No | Total collateral ceiling. Use a number for an absolute collateral amount, e.g. `5000`, or a percentage string of total available collateral, e.g. `"80%"`. |
 | `minCollateralIncreaseThreshold` | `number \| percentage string` | No | Minimum unused collateral allocation before increasing debt. Use a number for an absolute collateral amount, e.g. `25`, or a percentage string of assigned collateral budget, e.g. `"5%"`. `0` means no minimum. |
 | `maxCollateralRatio` | `number` | No\* | Behavior differs by type: MPA — hard CR ceiling above which debt is increased first; creditOffer — maximum effective ratio when accepting offers. **Required** for `creditOffer`. |
@@ -171,13 +173,17 @@ Timing defaults live in `modules/constants.ts`:
 {
   "TIMING": {
     "CREDIT_DEAL_CHECK_INTERVAL_MIN": 60,
-    "CREDIT_DEAL_EXPIRY_THRESHOLD_HOURS": 12
+    "CREDIT_DEAL_EXPIRY_THRESHOLD_HOURS": 12,
+    "CREDIT_DEAL_SPLIT_MAX_PIECES": 48,
+    "BLOCKCHAIN_SETTLE_DELAY_MS": 6000
   }
 }
 ```
 
 - `CREDIT_DEAL_CHECK_INTERVAL_MIN`: how often the credit watchdog runs. Set to `0` or negative to disable.
 - `CREDIT_DEAL_EXPIRY_THRESHOLD_HOURS`: how far before `latest_repay_time` the bot proactively repays and reborrows.
+- `CREDIT_DEAL_SPLIT_MAX_PIECES`: hard cap on pieces per `_splitOversizedCreditDeals` cycle (default 48; ~4.8min at 6s/piece). Prevents one maintenance run from exceeding the watchdog interval.
+- `BLOCKCHAIN_SETTLE_DELAY_MS`: pause between split pieces (default 6000ms). Resolved from the `TIMING` constant — per-bot `bots.json` overrides for this field are **not** honoured for split pacing.
 
 ## MPA Maintenance
 
@@ -196,19 +202,35 @@ For each `type: "mpa"` lending item:
 
 For each `type: "creditOffer"` lending item, the runtime:
 
+- **Phase 0 — Split oversized deals**: if `maxBorrowAmountPerOperation` is set, scans existing credit deals and splits any whose debt exceeds the per-op cap into equal pieces via repay+reborrow cycles (see [Oversized Credit Deal Splitter](#oversized-credit-deal-splitter)). This keeps each individual deal below the per-op cap and makes future renewals easier with less liquidity per operation.
 - Discovers active credit deals on-chain.
 - Validates deals against the per-item policy (`maxCollateralRatio`, `maxFeeRatePerDay`, `allowedOfferIds`, `disallowedDealIds`, etc.).
-- Gates increases on unused assigned collateral. If the collateral shortfall is at least `minCollateralIncreaseThreshold`, it accepts an additional credit deal from the cheapest acceptable offer; the selected offer's price derives the borrow amount, capped by `maxBorrowAmount`. A borrow-cap-capped increase is skipped if the actual collateral used would fall below `minCollateralIncreaseThreshold`.
+- Gates increases on unused assigned collateral. If the collateral shortfall is at least `minCollateralIncreaseThreshold`, it accepts an additional credit deal from the cheapest acceptable offer; the selected offer's price derives the borrow amount, capped by `maxBorrowAmount` and, when set, `maxBorrowAmountPerOperation`. A borrow-cap-capped increase is skipped if the actual collateral used would fall below `minCollateralIncreaseThreshold`.
 - Proactively repays deals nearing expiration (within `CREDIT_DEAL_EXPIRY_THRESHOLD_HOURS`) and reborrows when `autoReborrow` is enabled.
 - Ensures `auto_repay` on-chain matches the policy's `autoRepay` setting, updating local state after each successful broadcast.
+
+### Oversized Credit Deal Splitter
+
+When `maxBorrowAmountPerOperation` is set, each credit-maintenance cycle runs `_splitOversizedCreditDeals` as Phase 0. The splitter:
+
+- Discovers deals whose `debtAmount` exceeds `maxBorrowAmountPerOperation`.
+- Splits each oversized deal into `ceil(debt / maxPerOp)` equal pieces via atomic repay+reborrow transactions. Total debt across the new deals is preserved; only deal granularity changes.
+- Skips a deal if any piece would fall below the offer's `min_deal_amount` (the offer is cached for the runtime lifetime, so on-chain `min_deal_amount` changes mid-split are not re-read).
+- Pauses `BLOCKCHAIN_SETTLE_DELAY_MS` between pieces; aborts on shutdown.
+- Stops once `CREDIT_DEAL_SPLIT_MAX_PIECES` pieces have been emitted in the current cycle. Remaining oversized deals are deferred to the next maintenance cycle.
+- Uses an in-process `_splitInFlight` guard so `runMaintenance` and `runCreditWatchdog` cannot start overlapping splits.
+
+The split pieces are normal credit deals — they appear in `profiles/credit_runtime/<botKey>.json` alongside other deals and are subject to the usual renewal, `auto_repay`, and collateral-switching flows.
 
 ### Amount Cap Semantics
 
 | Policy | Field | Scope |
 |--------|-------|-------|
 | MPA | `maxBorrowAmount` | **Total debt ceiling** — call order debt cannot exceed this. |
+| MPA | `maxBorrowAmountPerOperation` | **Per-op borrow cap** — clamps each `debtDelta` increment during CR-band adjustments. Ignored on debt-reduction moves. |
 | MPA | `maxCollateralAmount` | **Total collateral ceiling** — call order collateral cannot exceed this. Withdrawals still allowed. |
 | Credit | `maxBorrowAmount` | **Total debt ceiling** — total credit debt for the asset cannot exceed this. |
+| Credit | `maxBorrowAmountPerOperation` | **Per-op borrow cap** — rejects any single `credit_offer_accept` whose borrow amount exceeds this. Oversized existing deals are split during maintenance (see [Oversized Credit Deal Splitter](#oversized-credit-deal-splitter)). |
 | Credit | `maxCollateralAmount` | **Total collateral ceiling** — total credit collateral for the asset cannot exceed this. |
 
 `maxBorrowAmount` is always a **fixed number** (no percentages). `maxCollateralAmount` may be a fixed number or a percentage.
@@ -281,7 +303,7 @@ The file tracks discovered chain state and pending work, including:
 - `positions` — per-position state map keyed as `debtAssetId:collateralAssetId`
 - Active MPA call-order state and credit deal IDs per position
 - `assignedCollateralBudget` per position
-- Pending reborrow requests
+- Pending reborrow requests (including deferred split pieces when an oversized-deal cycle hits `CREDIT_DEAL_SPLIT_MAX_PIECES`)
 - Last repay timestamp and grid reset request
 - Debt snapshot across all assets
 
@@ -300,12 +322,14 @@ Treat this file as runtime state, not primary configuration. The source of truth
 
 <details><summary>Source files and tests (click to expand)</summary>
 
-- `modules/credit_runtime.ts`: debt workflow executor
+- `modules/credit_runtime.ts`: debt workflow executor (Phase 0 oversized-deal splitter lives here)
+- `modules/cr_planner.ts`: MPA debt-first planner; clamps `debtDelta` by `maxBorrowAmountPerOperation`
+- `modules/types.ts`: `LendingEntryBase` — shared `mpa` / `creditOffer` type including `maxBorrowAmountPerOperation`
 - `modules/dexbot_class.ts`: runtime startup and watchdog lifecycle
 - `modules/bot_settings.ts`: `debtPolicy` validation
 - `market_adapter/README.md`: AMA pricing, grid triggers, and dynamic-weight runtime
 - `modules/credential_policy.ts`: signing constraints for credit and call-order operations
-- `tests/test_credit_runtime.ts`: credit runtime behavior coverage
+- `tests/test_credit_runtime.ts`: credit runtime behavior coverage (including 6 oversized-deal splitter tests)
 - `tests/test_multi_asset_distribution.ts`: collateral distribution and multi-asset state coverage
 
 </details>
