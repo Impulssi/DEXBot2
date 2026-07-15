@@ -41,7 +41,12 @@ const Grid = require('../modules/order/grid');
 const { _setFeeCache } = require('../modules/order/utils/math');
 const chainOrders = require('../modules/chain_orders');
 const DEXBot = require('../modules/dexbot_class');
-const { isOrderDoesNotExistError, recordDustFirstSeen } = require('../modules/dexbot_maintenance_runtime');
+const {
+    isOrderDoesNotExistError,
+    recordDustFirstSeen,
+    cancelDustOrders,
+    getPendingDustDelayMs,
+} = require('../modules/dexbot_maintenance_runtime');
 const { withDynamicWeightFiles } = require('./helpers/dynamic_weight_files');
 
 async function testDustTrigger() {
@@ -1284,6 +1289,197 @@ async function testRecordDustFirstSeen() {
     console.log('  ✓ Buy and sell dust both populate map');
 }
 
+async function testGetPendingDustDelayMsSentinel() {
+    console.log('Testing getPendingDustDelayMs returns NO_PENDING_DUST on expiry...');
+
+    // Expired timer: firstSeen such that now - firstSeen >= delayMs
+    const expired = { _dustSinceMap: new Map([['1.7.1', Date.now() - 120_000]]), config: { gridLimits: { DUST_CANCEL_DELAY_SEC: 30 } } };
+    const result = getPendingDustDelayMs(expired);
+    assert.strictEqual(result, null, 'Expired timer should return null (NO_PENDING_DUST), not 0');
+    console.log('  ✓ Expired timer returns null, not 0');
+
+    // No dust at all
+    const empty = { _dustSinceMap: new Map(), config: { gridLimits: { DUST_CANCEL_DELAY_SEC: 30 } } };
+    assert.strictEqual(getPendingDustDelayMs(empty), null, 'No dust should return null');
+    console.log('  ✓ No dust returns null');
+
+    // Disabled
+    const disabled = { _dustSinceMap: new Map([['1.7.1', Date.now() - 10_000]]), config: { gridLimits: { DUST_CANCEL_DELAY_SEC: -1 } } };
+    assert.strictEqual(getPendingDustDelayMs(disabled), null, 'Disabled should return null');
+    console.log('  ✓ Disabled returns null');
+}
+
+async function testDustCancelAbandonAfterRetries() {
+    console.log('Testing dust cancel abandon after MAX_DUST_CANCEL_RETRIES failures...');
+    const originalCancelOrder = chainOrders.cancelOrder;
+
+    const bot: any = {
+        config: {
+            gridLimits: { DUST_CANCEL_DELAY_SEC: 0 },
+            botKey: 'test_retry_abandon',
+            dryRun: false,
+        },
+        account: 'test-account',
+        privateKey: 'test-key',
+        _dustSinceMap: new Map(),
+        _dustRetryCount: new Map(),
+        manager: {
+            synchronizeWithChain: async () => {},
+            _fillProcessingLock: { acquire: async (fn: any) => fn() },
+            logger: { log: () => {} },
+            recalculateFunds: async () => {},
+            checkGridHealth: async () => ({ buyDustOrders: [], sellDustOrders: [] }),
+            persistGrid: async () => {},
+        },
+        _processFillsWithBatching: async () => ({ aborted: false }),
+    };
+    bot._log = () => {};
+    bot._warn = () => {};
+
+    let callCount = 0;
+    chainOrders.cancelOrder = async () => { callCount++; throw new Error('mock network failure'); };
+
+    try {
+        // Pre-seed the retry counter at MAX so the NEXT attempt triggers abandon
+        bot._dustSinceMap.set('1.7.999', Date.now());
+        bot._dustRetryCount.set('1.7.999', 10);
+
+        // Next attempt: retries=10 >= MAX → abandon (skips the cancelOrder call)
+        await cancelDustOrders(bot, {
+            buy: [],
+            sell: [{ orderId: '1.7.999', id: 'test-sell', size: 0.001, price: 1.0, type: ORDER_TYPES.SELL }],
+        });
+        assert.strictEqual(callCount, 0, 'cancelOrder should NOT have been called (abandon skips before attempt)');
+        assert.strictEqual(bot._dustSinceMap.has('1.7.999'), false,
+            'Order should be removed from _dustSinceMap after MAX_DUST_CANCEL_RETRIES');
+        assert.strictEqual(bot._dustRetryCount.has('1.7.999'), false,
+            'Retry counter should be cleaned up after abandonment');
+        console.log('  ✓ Order abandoned after MAX_DUST_CANCEL_RETRIES (budget check skips cancelOrder)');
+
+        // Per-cycle contract: next call re-seeds the order (it's still a dust partial on chain)
+        // and retry count starts at 0 again.
+        await cancelDustOrders(bot, {
+            buy: [],
+            sell: [{ orderId: '1.7.999', id: 'test-sell', size: 0.001, price: 1.0, type: ORDER_TYPES.SELL }],
+        });
+        assert.strictEqual(bot._dustSinceMap.has('1.7.999'), true,
+            'Order is re-seeded on next cycle after abandon');
+        assert.strictEqual(callCount, 1, 'cancelOrder should have been called once (re-seed + new attempt)');
+        assert.strictEqual(bot._dustRetryCount.get('1.7.999'), 1,
+            'Retry count resets to 0 on re-seed, then +1 from the new failure');
+        console.log('  ✓ Abandon is per-cycle: next cycle re-seeds with fresh retry counter');
+    } finally {
+        chainOrders.cancelOrder = originalCancelOrder;
+    }
+}
+
+async function testDustCancelSuccessResetsRetryCounter() {
+    console.log('Testing dust cancel success resets retry counter...');
+    const originalCancelOrder = chainOrders.cancelOrder;
+
+    let failCount = 0;
+    chainOrders.cancelOrder = async () => {
+        if (failCount < 3) {
+            failCount++;
+            throw new Error('mock transient failure');
+        }
+        return {};
+    };
+
+    const bot: any = {
+        config: {
+            gridLimits: { DUST_CANCEL_DELAY_SEC: 0 },
+            botKey: 'test_retry_reset',
+            dryRun: false,
+        },
+        account: 'test-account',
+        privateKey: 'test-key',
+        _dustSinceMap: new Map(),
+        _dustRetryCount: new Map(),
+        manager: {
+            synchronizeWithChain: async () => {},
+            _fillProcessingLock: { acquire: async (fn: any) => fn() },
+            logger: { log: () => {} },
+            recalculateFunds: async () => {},
+            checkGridHealth: async () => ({ buyDustOrders: [], sellDustOrders: [] }),
+            persistGrid: async () => {},
+        },
+        _processFillsWithBatching: async () => ({ aborted: false }),
+    };
+    bot._log = () => {};
+    bot._warn = () => {};
+
+    try {
+        bot._dustSinceMap.set('1.7.998', Date.now());
+
+        // 3 failures → counter at 3
+        for (let i = 0; i < 3; i++) {
+            bot._dustSinceMap.set('1.7.998', Date.now());
+            await cancelDustOrders(bot, {
+                buy: [],
+                sell: [{ orderId: '1.7.998', id: 'test-sell', size: 0.001, price: 1.0, type: ORDER_TYPES.SELL }],
+            });
+        }
+        assert.strictEqual(bot._dustRetryCount.get('1.7.998'), 3, 'Should have 3 retries after 3 failures');
+        // The order should still be in _dustSinceMap (not abandoned yet)
+        assert.strictEqual(bot._dustSinceMap.has('1.7.998'), true, 'Order should still be tracked after 3 failures');
+
+        // 4th call succeeds → counter reset
+        bot._dustSinceMap.set('1.7.998', Date.now());
+        await cancelDustOrders(bot, {
+            buy: [],
+            sell: [{ orderId: '1.7.998', id: 'test-sell', size: 0.001, price: 1.0, type: ORDER_TYPES.SELL }],
+        });
+        // After success, counter is deleted
+        assert.strictEqual(bot._dustRetryCount.has('1.7.998'), false, 'Retry counter should be removed after success');
+        // Order removed from dust map
+        assert.strictEqual(bot._dustSinceMap.has('1.7.998'), false, 'Order should be removed from _dustSinceMap after success');
+
+        // New failure after success: counter starts at 0, not 4
+        bot._dustSinceMap.set('1.7.997', Date.now());
+        chainOrders.cancelOrder = async () => { throw new Error('mock failure after reset'); };
+        await cancelDustOrders(bot, {
+            buy: [],
+            sell: [{ orderId: '1.7.997', id: 'test-sell2', size: 0.001, price: 1.0, type: ORDER_TYPES.SELL }],
+        });
+        assert.strictEqual(bot._dustRetryCount.get('1.7.997'), 1, 'Counter should restart at 1 after success-reset');
+        console.log('  ✓ Success resets retry counter to 0');
+    } finally {
+        chainOrders.cancelOrder = originalCancelOrder;
+    }
+}
+
+async function testDustCancelDisableClearsMap() {
+    console.log('Testing dust cancel disable clears _dustSinceMap...');
+
+    const bot: any = {
+        config: { gridLimits: { DUST_CANCEL_DELAY_SEC: -1 } },
+        _dustSinceMap: new Map([['1.7.996', Date.now() - 3600_000]]),
+        _dustMaintenanceTimer: null,
+        _dustRetryCount: new Map(),
+        manager: {
+            _fillProcessingLock: { acquire: async (fn: any) => fn() },
+            synchronizeWithChain: async () => {},
+            logger: { log: () => {} },
+        },
+        account: 'test',
+        privateKey: 'test',
+    };
+    bot._log = () => {};
+    bot._warn = () => {};
+
+    await cancelDustOrders(bot, { buy: [], sell: [] });
+    assert.strictEqual(bot._dustSinceMap.size, 0, '_dustSinceMap cleared when disabled');
+    assert.strictEqual(bot._dustRetryCount.size, 0, '_dustRetryCount cleared when disabled');
+    console.log('  ✓ Both maps cleared when DUST_CANCEL_DELAY_SEC < 0');
+
+    // Re-enable with fresh map: no immediate cancel of old entries
+    bot.config.gridLimits.DUST_CANCEL_DELAY_SEC = 30;
+    bot._dustSinceMap = new Map([['1.7.996', Date.now() - 3600_000]]);
+    assert.strictEqual(bot._dustSinceMap.size, 1, 'After re-enable, freshly seeded entry is present');
+    console.log('  ✓ Re-enable works correctly (no stale entries from disabled period)');
+}
+
 Promise.resolve()
     .then(() => testDustTrigger())
     .then(() => testDustCancelSyntheticRotation())
@@ -1302,6 +1498,10 @@ Promise.resolve()
     .then(() => testMaintenanceDefersStructuralWorkWhileDustPending())
     .then(() => testGridMaintenanceWaitsForQuietPeriod())
     .then(() => testRecordDustFirstSeen())
+    .then(() => testGetPendingDustDelayMsSentinel())
+    .then(() => testDustCancelAbandonAfterRetries())
+    .then(() => testDustCancelSuccessResetsRetryCounter())
+    .then(() => testDustCancelDisableClearsMap())
     .finally(() => {
         Module._load = originalModuleLoad;
     })

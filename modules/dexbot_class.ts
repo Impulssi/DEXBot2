@@ -164,6 +164,7 @@ class DEXBot {
     _currentCycleId: number;
     _autoCancelOrphanCycleMarker: number | null;
     _dustSinceMap: Map<any, any>;
+    _dustRetryCount: Map<any, any>;
     _consecutiveConsumeFailures: number;
     _consumeFailureFirstAt: number;
     _reconnectUnregister: any;
@@ -271,6 +272,11 @@ class DEXBot {
         // Used by _cancelDustOrders to enforce DUST_CANCEL_DELAY_SEC.
         // Entries are pruned when an order recovers from dust or is cancelled.
         this._dustSinceMap = new Map();
+
+        // Tracks consecutive cancel failures per orderId for exponential backoff (Fix C).
+        // Entry is removed on success; at MAX_DUST_CANCEL_RETRIES the order is abandoned
+        // to prevent busy-looping on a persistently failing API call.
+        this._dustRetryCount = new Map();
 
         // Fill consumer watchdog: consecutive failure tracking.
         // Reset on successful consumption; above _maxConsumeFailures, the
@@ -957,6 +963,16 @@ class DEXBot {
      */
     _refreshDynamicWeightDistribution(context = 'runtime') {
         return DexbotMaintenanceRuntime.refreshDynamicWeightDistribution(this, context);
+    }
+
+    /**
+     * Record first-seen timestamps for newly detected dust orders.
+     * Starts the dust cancellation timer from the moment checkGridHealth first
+     * flags an order, regardless of pipeline state.
+     * @param {Object} healthResult - Result from checkGridHealth
+     */
+    _recordDustFirstSeen(healthResult) {
+        DexbotMaintenanceRuntime.recordDustFirstSeen(this, healthResult);
     }
 
     /**
@@ -1910,22 +1926,29 @@ class DEXBot {
                             // SAFE: Called inside _fillProcessingLock.acquire(), no concurrent fund modifications.
                             // Fund state is already fresh from _processFillsWithBatching's internal resumeFundRecalc.
 
-                            // Check grid health only if pipeline is empty (no pending fills, no pending operations)
+                            // Read-only health check runs regardless of pipeline state so that
+                            // recordDustFirstSeen seeds the 30s timer from first detection (Issue A/G).
+                            const healthResult = await this.manager.checkGridHealth(
+                                this.updateOrdersOnChainPlan.bind(this)
+                            );
+                            this._recordDustFirstSeen(healthResult);
+
                             const pipelineStatus = this.manager.isPipelineEmpty(this._getPipelineSignals());
                             if (pipelineStatus.isEmpty) {
-                                const healthResult = await this.manager.checkGridHealth(
-                                    this.updateOrdersOnChainPlan.bind(this)
-                                );
+                                // Refresh weights so cancelDustOrders uses live distribution
+                                this._refreshDynamicWeightDistribution('post-fill-dust');
                                 const dustCancelResult = await this._cancelDustOrders({
                                     buy: healthResult.buyDustOrders,
                                     sell: healthResult.sellDustOrders,
                                 });
-                                if (dustCancelResult?.batchResult?.abortedForIllegalState || dustCancelResult?.batchResult?.abortedForAccountingFailure) {
+                                if (dustCancelResult?.batchResult?.aborted) {
                                     abortedFillCycle = true;
                                 }
                             } else {
-                                // Pipeline not empty - defer grid health check to prevent premature modifications
-                                // This is NORMAL and EXPECTED during high-activity periods
+                                // Pipeline not empty — dust timer is already seeded above via
+                                // recordDustFirstSeen. Schedule the dust timer so the 30s wait
+                                // burns during the blockage instead of starting when it clears.
+                                this._scheduleDustMaintenanceCheck();
                                 const health = this.manager.getPipelineHealth();
                                 this.manager.logger.log(
                                     `Deferring grid health check: ${pipelineStatus.reasons.join(', ')}. ` +

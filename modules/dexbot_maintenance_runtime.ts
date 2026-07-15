@@ -782,12 +782,12 @@ function performGridResync(bot, options: {
     const centerRefreshContext = options.centerRefreshContext || (refreshCenterPrice ? 'grid reset recenter' : 'grid resync');
     const centerRefreshLabel = options.centerRefreshLabel || (refreshCenterPrice ? 'grid reset' : 'grid resync');
     const resetSource = options.resetSource || (refreshCenterPrice ? 'manual_grid_resync' : 'dexbot_grid_resync');
-    if (self._dustSinceMap?.size > 0 && getPendingDustDelayMs(self) === null) {
+    if (self._dustSinceMap?.size > 0 && getPendingDustDelayMs(self) === NO_PENDING_DUST) {
         self._log('[MAINT-IDLE] Stale dust timer entries present (all timers expired); proceeding with resync.', 'debug');
     }
     const dustDelayMs = getPendingDustDelayMs(self);
     const idleDelayMs = getMaintenanceIdleDelayMs(self);
-    if (dustDelayMs !== null || idleDelayMs > 0) {
+    if (dustDelayMs !== NO_PENDING_DUST || idleDelayMs > 0) {
         self._log(
             `[MAINT-IDLE] Deferring grid resync until bot is idle` +
             (dustDelayMs !== null ? ` and pending dust timer completes` : '') +
@@ -832,6 +832,17 @@ function performGridResync(bot, options: {
                 } else {
                     self._warn(`${centerRefreshLabel} requested but AMA center snapshot could not be refreshed.`);
                 }
+            } else {
+                // Config was reloaded above but center price didn't change — still need
+                // fresh weights so cancelDustOrders uses live distribution (Issue M).
+                refreshDynamicWeightDistribution(self, 'grid resync');
+            }
+
+            // Full grid resync replaces every orderId, so clear the dust timer map
+            // to prevent ghost entries from triggering a stale maintenance timer (Issue H).
+            if (self._dustSinceMap?.size > 0) {
+                self._dustSinceMap.clear();
+                self._log('[DUST-CANCEL] Cleared _dustSinceMap after full grid resync.', 'debug');
             }
 
             const readFn = () => chainOrders.readOpenOrders(self.accountId);
@@ -1215,9 +1226,18 @@ async function releaseMarketAdapterRuntime(bot, botId, context = 'shutdown') {
 }
 
 /**
+ * Sentinel value from getPendingDustDelayMs meaning no dust orders are pending
+ * (either no dust detected, DUST_CANCEL_DELAY_SEC < 0, or all timers expired).
+ * Call sites must compare against this sentinel (=== NO_PENDING_DUST / === null),
+ * not truthiness — 0 is a valid delay ("eligible right now") that should be treated
+ * as pending by callers such as executeMaintenanceLogic and performGridResync.
+ */
+const NO_PENDING_DUST = null;
+
+/**
  * Calculate the remaining delay (ms) before dust orders are eligible for cancellation.
  * @param {Object} ctx - Bot context with _dustSinceMap
- * @returns {number|null} Remaining delay in ms, or null if no dust orders pending
+ * @returns {number|null} Remaining delay in ms, or NO_PENDING_DUST if no dust orders pending
  */
 function getPendingDustDelayMs(ctx) {
     const delaySec = ctx?.config?.gridLimits?.DUST_CANCEL_DELAY_SEC;
@@ -1227,7 +1247,7 @@ function getPendingDustDelayMs(ctx) {
         !Number.isFinite(delaySec) ||
         delaySec < 0
     ) {
-        return null;
+        return NO_PENDING_DUST;
     }
 
     const delayMs = delaySec * 1_000;
@@ -1240,7 +1260,7 @@ function getPendingDustDelayMs(ctx) {
 
     if (!Number.isFinite(nextRunAt)) return delayMs;
     const remaining = Math.max(0, nextRunAt - now);
-    return remaining === 0 ? null : remaining;
+    return remaining === 0 ? NO_PENDING_DUST : remaining;
 }
 
 /**
@@ -1335,7 +1355,7 @@ function scheduleDeferredGridResync(ctx, options = {}) {
         ? Math.max(0, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
         : 6_000;
     const delayMs = Math.max(
-        dustDelayMs !== null ? dustDelayMs + settleDelayMs : 0,
+        dustDelayMs !== NO_PENDING_DUST ? dustDelayMs + settleDelayMs : 0,
         idleDelayMs
     );
     if (!(delayMs > 0)) return;
@@ -1350,7 +1370,7 @@ function scheduleDeferredGridResync(ctx, options = {}) {
             if (!ok && !ctx._shuttingDown) {
                 const curDustMs = getPendingDustDelayMs(ctx);
                 const curIdleMs = getMaintenanceIdleDelayMs(ctx);
-                const reason = curDustMs !== null
+                const reason = curDustMs !== NO_PENDING_DUST
                     ? `dust timer pending (${Math.ceil(curDustMs / TIMING.MILLISECONDS_PER_SECOND)}s)`
                     : curIdleMs > 0
                         ? `idle cooldown (${Math.ceil(curIdleMs / TIMING.MILLISECONDS_PER_SECOND)}s)`
@@ -1408,9 +1428,12 @@ async function executeMaintenanceLogic(bot, context) {
     // the empty-pipeline branch to avoid racing with in-flight operations.
     // The _dustSinceMap is populated here so the 30s timer starts burning
     // from the first detection, not from when the pipeline clears.
+    // scheduleDustMaintenanceCheck is always called after seeding so the
+    // timer runs regardless of pipeline state (Issue G).
     let healthResult = await bot.manager.checkGridHealth(bot.updateOrdersOnChainPlan.bind(bot));
     if (await bot._abortFlowIfIllegalState(`${context} health check`)) return;
     recordDustFirstSeen(bot, healthResult);
+    scheduleDustMaintenanceCheck(bot);
 
     const pipelineStatus = bot.manager.isPipelineEmpty(bot._getPipelineSignals());
     if (pipelineStatus.isEmpty) {
@@ -1435,13 +1458,13 @@ async function executeMaintenanceLogic(bot, context) {
             buy: healthResult.buyDustOrders,
             sell: healthResult.sellDustOrders,
         });
-        if (dustCancelResult?.batchResult?.abortedForIllegalState || dustCancelResult?.batchResult?.abortedForAccountingFailure) {
+        if (dustCancelResult?.batchResult?.aborted) {
             return;
         }
 
         if (bot._dustSinceMap?.size > 0) {
             const delayMs = getPendingDustDelayMs(bot);
-            if (delayMs !== null) {
+            if (delayMs !== NO_PENDING_DUST) {
                 bot._log(
                     `[DUST-CANCEL] Deferring ${context} structural maintenance until dust timer completes` +
                     ` (next check in ${Math.ceil(delayMs / TIMING.MILLISECONDS_PER_SECOND)}s)`,
@@ -1518,30 +1541,45 @@ async function executeMaintenanceLogic(bot, context) {
 }
 
 /**
- * Populate _dustSinceMap with first-seen timestamps for newly detected dust
- * orders, and purge entries for orders that are no longer classified as dust.
- * Mirrors the dedupe logic inside cancelDustOrders so the 30s timer starts
- * from the moment checkGridHealth first flags an order, regardless of whether
- * cancelDustOrders (gated by pipeline state) has run yet.
+ * Synchronise _dustSinceMap and _dustRetryCount with the current dust set.
+ * Purges entries for orders no longer classified as dust, and seeds
+ * firstSeen for newly detected orders. Called from both recordDustFirstSeen
+ * and cancelDustOrders to keep the two maps in sync (Bug A/C).
+ * @param {Object} bot
+ * @param {Set<string>} dustIds - orderIds in the current dust set
+ * @param {Array<{orderId?: string}>} allDust - full dust order objects
+ * @param {number} [now=Date.now()] - timestamp for newly seeded entries
  */
-function recordDustFirstSeen(bot: any, healthResult: any) {
+function syncDustMaps(bot, dustIds, allDust, now = Date.now()) {
     if (!bot._dustSinceMap) return;
-    const allDust = [...(healthResult?.buyDustOrders || []), ...(healthResult?.sellDustOrders || [])];
-    const dustIds = new Set(allDust.map((o: any) => o.orderId).filter(Boolean));
-
-    // Purge entries for orders no longer classified as dust
     for (const orderId of bot._dustSinceMap.keys()) {
-        if (!dustIds.has(orderId)) bot._dustSinceMap.delete(orderId);
+        if (!dustIds.has(orderId)) {
+            bot._dustSinceMap.delete(orderId);
+            bot._dustRetryCount?.delete(orderId);
+        }
     }
-
-    // Set firstSeen for newly detected dust orders
-    const now = Date.now();
     for (const order of allDust) {
         if (order.orderId && !bot._dustSinceMap.has(order.orderId)) {
             bot._dustSinceMap.set(order.orderId, now);
         }
     }
 }
+
+/**
+ * Populate _dustSinceMap with first-seen timestamps for newly detected dust
+ * orders, and purge entries for orders that are no longer classified as dust.
+ * Delegates to syncDustMaps so the dedupe logic is shared with cancelDustOrders.
+ */
+function recordDustFirstSeen(bot: any, healthResult: any) {
+    if (!bot._dustSinceMap) return;
+    const allDust = [...(healthResult?.buyDustOrders || []), ...(healthResult?.sellDustOrders || [])];
+    const dustIds = new Set(allDust.map((o: any) => o.orderId).filter(Boolean));
+    syncDustMaps(bot, dustIds, allDust, Date.now());
+}
+
+// Maximum consecutive cancel failures before abandoning an order to
+// prevent busy-looping on a persistently failing API call (Fix C).
+const MAX_DUST_CANCEL_RETRIES = 10;
 
 /**
  * Cancel dust orders that have exceeded their cancellation delay.
@@ -1555,6 +1593,11 @@ function recordDustFirstSeen(bot: any, healthResult: any) {
 async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } = {}) {
     const delaySec = bot.config?.gridLimits?.DUST_CANCEL_DELAY_SEC;
     if (!Number.isFinite(delaySec) || delaySec < 0) {
+        // When disabling mid-run, clear both maps so re-enabling doesn't
+        // immediately cancel entries with hours-old firstSeen timestamps (Fix E)
+        // or burn stale retry counters (Bug B).
+        if (bot._dustSinceMap?.size > 0) bot._dustSinceMap.clear();
+        if (bot._dustRetryCount?.size > 0) bot._dustRetryCount.clear();
         clearDustMaintenanceTimer(bot);
         return { cancelledCount: 0, batchResult: null };
     }
@@ -1563,16 +1606,7 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
     const delayMs = delaySec * 1_000;
     const allDust = [...buyDust, ...sellDust];
     const dustIds = new Set(allDust.map(o => o.orderId).filter(Boolean));
-
-    for (const orderId of bot._dustSinceMap.keys()) {
-        if (!dustIds.has(orderId)) bot._dustSinceMap.delete(orderId);
-    }
-
-    for (const order of allDust) {
-        if (order.orderId && !bot._dustSinceMap.has(order.orderId)) {
-            bot._dustSinceMap.set(order.orderId, now);
-        }
-    }
+    syncDustMaps(bot, dustIds, allDust, now);
 
     const toCancel = allDust.filter(o => {
         if (!o.orderId) return false;
@@ -1582,6 +1616,8 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
         // set), not at this maintenance tick, so an order can only be cancelled
         // after the delay has elapsed since its initial detection.
         const firstSeen = bot._dustSinceMap.get(o.orderId);
+        // Guard against NaN/inf firstSeen for consistency with getPendingDustDelayMs (Fix N).
+        if (!Number.isFinite(firstSeen)) return false;
         return (now - firstSeen) >= delayMs;
     });
 
@@ -1593,14 +1629,46 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
     let cancelledCount = 0;
     const syntheticFills = [];
     for (const order of toCancel) {
+        // Check retry budget before attempting cancel (Fix C).
+        // Budget is per-cycle: next executeMaintenanceLogic will re-detect
+        // the dust order, re-seed _dustSinceMap, and reset _dustRetryCount.
+        // This means a transient outage gets 10 attempts/cycle but doesn't
+        // permanently lock the order out of cancellation (Observation 4).
+        if (order.orderId && bot._dustRetryCount) {
+            const retries = (bot._dustRetryCount.get(order.orderId) || 0);
+            if (retries >= MAX_DUST_CANCEL_RETRIES) {
+                bot.manager.logger.log(
+                    `[DUST-CANCEL] Abandoning dust order ${order.id} (${order.orderId}) after ` +
+                    `${retries} consecutive failures. Removing from timer map; will retry next cycle.`,
+                    'error'
+                );
+                bot._dustSinceMap.delete(order.orderId);
+                bot._dustRetryCount.delete(order.orderId);
+                continue;
+            }
+        }
+
         try {
             const cancelResult = await chainOrders.cancelOrder(bot.account, bot.privateKey, order.orderId);
-            if (cancelResult?.verifiedAfterFailure) {
-                const accountRef = bot.accountId || bot.account;
-                const chainOpenOrders = await chainOrders.readOpenOrders(accountRef);
-                await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', { fillLockAlreadyHeld: true });
-            } else {
-                await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
+            // Cancel broadcast succeeded — treat as success even if the
+            // state-refetch below fails, so a flaky readOpenOrders doesn't
+            // waste the retry budget (Observation 2). The inner try/catch
+            // prevents refetch errors from reaching the outer catch, so
+            // the retry counter only increments on broadcast failure.
+
+            try {
+                if (cancelResult?.verifiedAfterFailure) {
+                    const accountRef = bot.accountId || bot.account;
+                    const chainOpenOrders = await chainOrders.readOpenOrders(accountRef);
+                    await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', { fillLockAlreadyHeld: true });
+                } else {
+                    await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
+                }
+            } catch (refetchErr: any) {
+                bot._warn(
+                    `[DUST-CANCEL] Cancel succeeded but refetch failed for ` +
+                    `${order.id} (${order.orderId}): ${refetchErr.message}`
+                );
             }
 
             syntheticFills.push({
@@ -1610,6 +1678,7 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
                 dustCancelTriggeredAt: now
             });
             bot._dustSinceMap.delete(order.orderId);
+            bot._dustRetryCount?.delete(order.orderId);
             cancelledCount++;
             bot._log(
                 `[DUST-CANCEL] Cancelled dust order ${order.id} (${order.orderId}) ` +
@@ -1620,6 +1689,7 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
             const errMsg = err?.message || '';
             if (isOrderDoesNotExistError(errMsg, order.orderId)) {
                 bot._dustSinceMap.delete(order.orderId);
+                bot._dustRetryCount?.delete(order.orderId);
                 syntheticFills.push({
                     ...order,
                     isPartial: true,
@@ -1633,10 +1703,21 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
                     'info'
                 );
             } else {
+                // Increment retry count for backoff (Fix C).
+                // Only reachable when cancelOrder() itself threw — the inner
+                // refetch try/catch prevents refetch errors from burning
+                // the retry budget.
                 // Keep the entry in _dustSinceMap so it retains its original
                 // firstSeen timestamp and is retried on the next maintenance
                 // tick rather than getting a fresh 30-second timer.
-                bot._warn(`[DUST-CANCEL] Failed to cancel dust order ${order.id}: ${errMsg}`);
+                if (order.orderId && bot._dustRetryCount) {
+                    const prev = bot._dustRetryCount.get(order.orderId) || 0;
+                    bot._dustRetryCount.set(order.orderId, prev + 1);
+                }
+                bot._warn(
+                    `[DUST-CANCEL] Failed to cancel dust order ${order.id} ` +
+                    `(${order.orderId}): ${errMsg}`
+                );
             }
         }
     }
@@ -1646,10 +1727,9 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
         const result = await bot._processFillsWithBatching(
             syntheticFills, new Set(), `dust cancel [${syntheticFills.map(o => o.id).join(', ')}]`
         );
-        batchResult = {
-            abortedForIllegalState: result.aborted,
-            abortedForAccountingFailure: result.aborted,
-        };
+        // Both flags always carry the same value in the dust-cancel path.
+        // Collapsed to a single `aborted` for simplicity (Simplification D).
+        batchResult = { aborted: result.aborted };
         if (!result.aborted) {
             await bot.manager.persistGrid();
         }
@@ -1660,6 +1740,9 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
 
     if (cancelledCount > 0) {
         try {
+            // Cancel + synthetic fill processing can shift inventory meaningfully,
+            // so refresh weights before re-checking grid health (Issue K).
+            refreshDynamicWeightDistribution(bot, 'dust-cancel-reseed');
             const freshHealth = await bot.manager.checkGridHealth(null);
             const seenAt = Date.now();
             for (const order of [...freshHealth.buyDustOrders, ...freshHealth.sellDustOrders]) {
@@ -1674,6 +1757,14 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
 
     scheduleDustMaintenanceCheck(bot);
 
+    // Post-cancel fallback timer: when the last dust order is cancelled and
+    // the map is empty, schedule one more maintenance tick after the full
+    // DUST_CANCEL_DELAY_SEC window. This covers the edge case where a new
+    // partial fill arrives between cancelDustOrders' reseed and the next
+    // periodic check — without this timer, a fill that lands right after
+    // the reseed would go undetected until the next sync tick (up to 5 min).
+    // The `scheduleDustMaintenanceCheck` at L1760 already returned early
+    // because size === 0, so the timer slot is free (Simplification E).
     if (cancelledCount > 0 && bot._dustSinceMap.size === 0 && !bot._shuttingDown && !bot._dustMaintenanceTimer) {
         const delayMs = bot.config?.gridLimits?.DUST_CANCEL_DELAY_SEC * 1_000;
         bot._dustMaintenanceTimer = setTimeout(() => {
@@ -2032,6 +2123,7 @@ export = {
     setupBlockchainFetchInterval,
     stopBlockchainFetchInterval,
     executeMaintenanceLogic,
+    getPendingDustDelayMs,
     recordDustFirstSeen,
     cancelDustOrders,
     isOrderDoesNotExistError,
