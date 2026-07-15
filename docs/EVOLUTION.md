@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.1.6 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.1.7 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 1,739+ commits over ~7 active months
+- **Growth Phase**: 1,743+ commits over ~7 active months
 - **Code Maturity**: Evolution from basic utilities to a ~58,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 200+ automated test files
-- **Releases**: 54 release entries (v0.1.0 to v1.1.6)
+- **Releases**: 55 release entries (v0.1.0 to v1.1.7)
 
 ---
 
@@ -30,70 +30,40 @@ Production bot by Codaone Oy (worker proposal funded). PyQt5 GUI, three strategi
 ## Timeline Overview
 
 ### Phase 1: Foundation & Core Architecture (December 2025)
-Started Dec 2 with a JavaScript rewrite from the Python DEXBot. Built core trading infrastructure (BitShares client, grid calculation system, fund accounting, order management) and released v0.1.0–v0.3.0 within the first month, establishing the modular architecture, PARTIAL order state, and PM2 process management that underpin the entire project.
+Started Dec 2 with a JavaScript rewrite from the Python DEXBot. Built core trading infrastructure (BitShares client, grid calculation system, fund accounting, order management) and released v0.1.0–v0.3.0 within the first month, establishing the modular architecture, order lifecycle model, and process management that underpin the entire project.
 
 ### Phase 2: Stabilization & Advanced Features (January 2026)
 Added AMA trend detection, blockchain integer-based precision system, comprehensive test suite, ghost order prevention, self-healing recovery layers, and fund-driven boundary sync. Ported the test suite from Jest to native Node.js assert to eliminate heavy dependencies. Resolved 12+ critical race conditions in fill processing.
 
 ### Phase 3: Architecture Refinement & COW Pattern (February 2026)
-Implemented Copy-on-Write grid architecture with immutable master grid, atomic boundary shifts, and deadlock resolution. Added multi-node health checking, dashboard scaffolding (Rust/ratatui), and spread correction redesign with edge-based strategy.
+Implemented Copy-on-Write grid architecture with immutable master grid, atomic boundary shifts, and deadlock resolution. Added multi-node health checking, dashboard scaffolding, and spread correction redesign with edge-based strategy.
 
 ### Phase 4: Market Adapter & Production Hardening (Late Feb - March 2026)
-Consolidated the market adapter with split data sources (Kibana, native API), AMA-derived grid center, fixed-cap fill batching, and credential daemon hardening. Removed cacheFunds tracking in favor of real-time commitment accounting. Expanded the Claw runtime. Released v0.6.0.
+Consolidated the market adapter with split data sources, AMA-derived grid center, fixed-cap fill batching, and credential daemon scaffolding. Replaced cached fund tracking with real-time commitment accounting. Expanded the Claw runtime. Released v0.6.0.
 
 ---
 
-### Phase 5: Signal Intelligence & Debt Runtime (March – June 2026)
-**Mar–Apr**: Derivative signal engine (SMA/MACD/RSI), dynamic-weight system with Kalman confirmation and ATR volatility scaling, Hurst/PE regime detection, credit/debt runtime for MPA borrow/repay and credit offers.
+### Phase 5: Signal Intelligence, Stable Release & Browser Compatibility (March – June 2026)
 
-**May**: Market adapter stabilization, AMA warmup rework, credential daemon hardening — v0.7.0. Shared AMA strategy, Kalman stability, adapter consolidation — v0.7.1–v0.7.4. Native BitShares integration (replaced `btsdex`), zero-dependency policy, full TypeScript migration — v0.7.5. Fill detection overhaul, BTS fee via AMM pool, centralized logging. Unlock hardening, background daemon, auto-update, per-bot logs — v0.7.6–v0.7.8.
+The project entered its most transformative phase. A derivative signal engine with dynamic trend-weighting and volatility scaling was added, alongside regime classification for adaptive trading behavior. A credit and debt runtime was built to manage MPA borrowing, repayment, and credit offers.
 
-**Jun 1–3**: Unlock status health, runtime self-healing (structural resync, targeted reconciliation), `node dexbot order` subcommand — v0.7.9–v0.7.10. COW grid-integrity closure, uncertainty-recovery hardening, foreign-daemon defense, CLI polish — v0.7.11.
+Stabilization followed: the market adapter was hardened, AMA warmup reworked, and the codebase shed all external runtime dependencies while migrating fully to TypeScript. Fill detection was overhauled, logging centralized, and the unlock/daemon infrastructure received a comprehensive security audit culminating in the first stable release — v1.0.0 on Jun 16.
 
-**Jun 4–9**: CLI polish, terminal color brightening, TradingView orientation, CEX seeding, quiet orderbook candles, whitelist/dynamic-weight hardening — v0.7.12–v0.7.15.
+The release introduced profile validation, on-chain authority resolution, a shared-account fund registry with cross-bot invariants, and proportional collateral allocation for credit positions. Immediately afterward, the codebase underwent a browser compatibility transformation — six portable abstractions replaced platform-specific code, pure-JS crypto fallbacks enabled browser execution, and the entire I/O pipeline was centralized through a storage adapter, making 140+ files browser-safe.
 
-**Jun 10–11**: Pipeline hardening, BUILD_DIR centralization, HMAC recovery, codebase audit — v0.7.16–v0.7.17. All @ts-nocheck removed (67 files annotated), race-condition batch 1, timeout hardening, DRY refactoring — v0.7.18.
+### Phase 6: Production Hardening & Iterative Refinement (July 2026)
 
-**Jun 12–16 — First stable release v1.0.0**:
-- Profile validation, logging overhaul (write queue/rotation/JSON), AMA delta threshold, on-chain authority resolution.
-- Credential hardening (8 finding groups), centralization of project-root/fs/math/magic-number utilities, error-path hardening (silent-catch elimination).
-- Post-release: docker context, root bypass, keep-alive recovery, phantom LP cleanup, chain client reconnect, headless unlock mode, Credit/MPA Claw bridge, test auto-discovery.
-- New subsystems: shared-account fund registry with cross-bot invariants, credit/MPA collateral proportional allocation, settings merge consolidation, vendored uPlot, node config editor.
-
-**Jun 17**: Fund registry fixes (canonical bot keys in whitelist, `this` context restoration in collapsed runtime); DEXBot comparison doc refresh.
-
-**Jun 18–19 — Browser compatibility core**:
-- Six portable abstractions: `StorageAdapter`, `CryptoProvider`, `Config`, `PATHS`, `ProcessDiscovery`, `KeyStore`; `env.ts` environment detection, `Runtime` singleton, `path_api.ts`.
-- Pure-JS crypto fallbacks (`pure_scrypt`, `pure_ripemd160`, `pure_secp256k1`), `ecc.browser.ts`, `ecc_selector.ts`, in-memory `StorageAdapter`, lazy `ws`/`pm2` loading.
-- 140+ files refactored to route through portable abstractions; 1288-line test suite; browser-safe surface complete.
-
-**Jun 20–21 — Credit runtime & I/O centralization**:
-- Credit runtime hardening (multi-asset collateral `assetId` wrapping, stale reborrow `renewOnly` bypass fix).
-- Full I/O pipeline centralization through `StorageAdapter` (15 newly browser-safe modules, 28-check bundle verification).
-- Shared `sleep()`/`writeJsonFileAtomic` utilities across 21 files; final browser-compat gaps closed (`base58check.ts` Buffer-free, `ecc.ts`/`paths.ts` env routing, serial/signing marked node-only).
-
-**Jun 22**: Browser-safe surface enforcement (lazy require wrappers, storage adapter path fix); credit runtime `disallowedDealIds` filter (1.22.x compat), `ratio`→`outputWeight` rename with shim; 15-file doc sweep.
-
-**Jun 25**: DAEMON_ERRORS retry-path fix (session-expiry retry never fired — hardcoded mismatch with canonical constants). Canonical error-code hardening via `DAEMON_CODES` and `MasterPasswordError.code`, replacing 12+ literal sites.
-
-**Jul 1–3**: v1.0.7 (hotfix) — subscription health watchdog, BROADCAST_DEADLINE graceful recovery (deadlock fix, bot-level retry, configurable daemon attempts) — 2 commits from v1.0.6.
-
-**Jul 5**: v1.0.8 — secondary pending-broadcasts deadlock fix (missed call site), market adapter log dedup in shared runtime, bot key resolution utilities, candle cache always-resolve. Comprehensive system invariants doc expansion with categorized prefixes (`INV-COW`, `INV-SYNC`, `INV-MAINT`, `INV-GRID`, `INV-RECON`, `INV-BATCH`, `INV-REG`, `INV-SUB`). 5 commits from v1.0.7.
-
-**Jul 12**: v1.1.1 — auto-startup bot-key migration, error handling fixes, JSON-key tracking, cleanup. 1 commit from v1.1.0.
+Post-stable work focused on reliability. Subscription health watchdogs, broadcast deadlock recovery at both bot and daemon level, and comprehensive system invariants documentation were added. A series of rapid releases (v1.1.1–v1.1.7) delivered multi-round AMA refits, oversize credit deal splitting with per-operation caps, dust detection hardening, bootstrap lifecycle fixes, lock contention reduction, and unique bot name enforcement.
 
 ---
 
 ## Architecture Evolution
 
-DEXBot2's architecture transitioned from monolithic utilities to a decoupled, event-driven, immutable state system:
-- **Phase 1-2**: Loose modules for order/account management, basic grid trading.
-- **Phase 3-4**: Copy-on-Write grid with atomic modifications, Market Adapter decoupling signals from execution.
-- **Phase 5**: Multi-layered runtime — COW core execution, signal pipeline (AMA/Kalman/regime), credit/debt MPA runtime, credit maintenance hardening, credential daemon.
-- **Post-5: Zero-Dependency & TypeScript Migration**: Full codebase migration from JavaScript to TypeScript with strict mode, `tsc` build pipeline, zero-dependency runtime via `tsx`, and explicit architectural policy removing all external runtime dependencies.
-- **Post-5.1: Fill Detection Overhaul**: Native BitShares fill detection rewrite — direct-notice dispatch, instance-based cursor, subscription reconnect, btsFeeState hardening
-- **Post-5.2: Runtime Self-Healing**: Chain-truth reconciliation for shortfalls and drift, structural resync signaling, order-batch fill guarding.
-- **Phase 6: Stable Release (v1.0.0)**: Production stability with a full browser-safe core. Consolidated logging (write queue, rotation, JSON), startup profile validation, final TS strict-mode, on-chain authority resolution, credential security hardening (8 finding groups), centralized project-root/fs/math utilities, and silent-catch elimination. Browser compatibility shipped via portable abstractions and pure-JS crypto with bundle verification; credit runtime and I/O pipeline centralization completed. (See Phase 5 timeline above for topic detail.)
+DEXBot2's architecture progressed through distinct maturity stages:
+- **Phases 1–2**: Modular order/account management and basic grid trading.
+- **Phases 3–4**: Copy-on-Write grid with atomic modifications; Market Adapter decoupling signals from execution.
+- **Phase 5**: Multi-layered runtime — COW core, signal pipeline, credit/debt MPA runtime, browser compatibility core, portable abstractions, and pure-JS crypto.
+- **Phase 6**: Incremental production hardening — iterative AMA refits, oversize deal splitting, dust/cancel pipeline fixes, lock contention reduction, unique bot name enforcement.
 
 ---
 
@@ -129,12 +99,13 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.1.3 → v1.1.4 | 3 | AMA4 slow correction 107.4→102.4, optimizer range 50-200→40-160, post-tag doc sync |
 | v1.1.4 → v1.1.5 | 2 | AMA refit (per-AMA λ weights, SMA-warmup optimizer, slow 62.1/71.7/82.7/95.5), `maxBorrowAmountPerOperation` + oversized-deal splitter |
 | v1.1.5 → v1.1.6 | 1 | amaS% revert 0.08→0.085 |
+| v1.1.6 → v1.1.7 | 4 | Dust cancel hardening, bootstrap lifecycle fixes, lock reduction, order analysis AMA key, doc cleanup |
 
 ---
 
 ## Development Statistics
 
-200+ automated test files (all TypeScript), 52 release entries. See **Version History** for commit breakdown by release.
+The project has accumulated 200+ automated test files across 55 release entries. See the **Version History** above for a per-release commit breakdown.
 
 ---
 
@@ -144,9 +115,9 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 |-----------|----------|--------|
 | Race conditions in fill processing | AsyncLock pattern with atomic operations | Eliminated 12+ critical race conditions |
 | Float precision in order sizes | Blockchain integer-based calculations (satoshi integers) | Deterministic behavior matching chain storage |
-| Ghost orders (tiny remainders in PARTIAL state) | Integer-based full-fill detection | Prevented stuck orders and fund drift |
+| Ghost orders (tiny remainders from partial fills) | Integer-based full-fill detection | Prevented stuck orders and fund drift |
 | Grid corruption during divergence | Copy-on-Write with atomic boundary shifts | Safe concurrent modifications, no data loss |
-| BTS fee accounting drift | Unified fee deduction in calculateAvailableFunds | Accurate fee tracking across all operations |
+| BTS fee accounting drift | Unified fee deduction model | Accurate fee tracking across all operations |
 | Rapid-restart cascading failures | Layer 1 & Layer 2 self-healing defenses | Stable restart with automatic recovery |
 
 ---
@@ -165,22 +136,28 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 
 ## Post-1.0.0: Completed
 
-- **Dependency Reduction**: Zero-dependency runtime via `tsx`, all external runtime dependencies removed (v0.7.5)
-- **Performance Analytics — PnL Tracking**: `analysis/trade_profitability.ts` — Kibana-driven FIFO/Sequential PnL with 16 metrics (July 2026, v1.0.9+)
+- **Browser Compatibility**: Portable abstractions, pure-JS crypto, 140+ file refactor for browser-safe surface
+- **Credit/MPA Runtime**: Multi-asset collateral support, stale reborrow fixes, oversize deal splitting with per-operation caps
+- **I/O Centralization**: Full pipeline routed through storage adapter, shared atomic utilities across 20+ files
+- **Self-Healing**: Structural resync, subscription watchdog, broadcast deadlock recovery at both bot and daemon level
+- **Performance Analytics**: Kibana-driven FIFO/sequential trade PnL with 16 metrics
+- **AMA Refits**: Multi-round parameter optimization with per-market weights and distance scaling
+- **System Invariants**: Comprehensive documented invariants across all subsystems (COW, sync, grid, reconciliation)
+- **Bot Identity**: Unique name enforcement with migration support
 
 ## Post-1.0.0: Planned
 
 - **Web & Terminal UI**: Browser-based and TUI dashboards for monitoring and tuning
-- **Backtesting Engine**: Replay historical candles through `OrderManager`/COW via a `MemoryExchange` drop-in at the `bitshares_client` boundary
-- **Performance Analytics — Remaining**: Grid efficiency metrics and HTML report generation
-- **Monorepo Split**: Package into `@dexbot/core`, `@dexbot/bitshares`, `@dexbot/indicators` for parallelized builds
-- **Injectable Module Interfaces**: Dependency inversion at call boundaries for testability (no event bus)
-- **Database (SQLite) + Zod Validation**: Replace JSON persistence, validate blockchain objects at the client boundary
+- **Backtesting Engine**: Historical candle replay through the trading engine via exchange abstraction
+- **Performance Analytics**: Grid efficiency metrics and HTML report generation
+- **Monorepo Split**: Package boundaries for parallelized builds
+- **Injectable Interfaces**: Dependency inversion at call boundaries for improved testability
+- **Database + Validation**: SQLite persistence with Zod schema validation at the blockchain boundary
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 14, 2026 (v1.1.6)
-**Total Commits**: 1,739
-**Date Range**: December 2, 2025 - July 14, 2026 (ongoing)
+**Last Updated**: July 15, 2026 (v1.1.7)
+**Total Commits**: 1,743
+**Date Range**: December 2, 2025 – July 15, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

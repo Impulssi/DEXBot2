@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.7] - 2026-07-15 - Dust Cancel Hardening, Bootstrap Lifecycle, Order Analysis AMA Key, Doc Cleanup
+
+### 2026-07-15
+
+- **Fix**: dust cancel hardening — post-fill path missed pre-gate seeding; `executeMaintenanceLogic` missing post-seed timer schedule; `cancelDustOrders` prune skipped `_dustRetryCount` (extracted shared `syncDustMaps` helper); disable branch didn't clear retry map; no retry backoff on persistent failures (`MAX_DUST_CANCEL_RETRIES=10`); refetch errors burned cancel retry budget (isolated via inner try/catch); post-cancel reseed used stale weights; `performGridResync` missing weight refresh + stale ghost entries. 4 new tests. (`dbf68037`).
+- **Fix**: bootstrap lifecycle consistency — `grid.ts` wraps `fullResync`/`initializeGrid` in try/finally to prevent stuck bootstrap flags; `dexbot_class.ts` wraps `reconcileAndPersistGrid` in bootstrap guards. Recovery state observability added (`_recoveryState.lastFailureAt/lastFailureReason`) across 5 deferred-failure sites (`ae8cd2eb`).
+- **Fix**: lock contention reduction — split `reconcileGridOrders` into Phase 1 (compute + cancel under lock) and Phase 2 (batch ops outside lock); capture fund snapshot under lock with pre-flight verify to catch TOCTOU (`ae8cd2eb`).
+- **Fix**: broadcast flag staleness — `isBroadcastingActive` auto-clears after 120s to prevent stuck flag; lock hierarchy doc with reentrancy warning (`ae8cd2eb`).
+- **Fix**: spurious timeout mitigation — extract syncPromise from `Promise.race` with re-race recovery in both `sync_engine.ts` and `dexbot_class.ts` (`ae8cd2eb`).
+- **Fix**: math hardening — clamp price tolerance sats to `MIN_ORDER_SIZE_FACTOR`; cap at `PRICE_TOLERANCE_MAX_PERCENT`/`MIN_ABSOLUTE`; warn on negative rounding diff (`ae8cd2eb`).
+- **Feat**: resolve AMA key in `node dexbot order` output — shows specific AMA variant (AMA1/AMA2/AMA3/AMA4) instead of generic `AMA:` label; displays `Grid:` for numeric `gridPrice` bots; pool/book/startPrice bots omit the line. Bounds percentage shows `+`/`-` sign based on trend direction. New `testResolveAmaKey` test (`302cec96`).
+- **Docs**: comprehensive doc cleanup across 30 files — ~25 JSDoc blocks added in claw subsystem; order subsystem method-table renumbering (grid 24→25); corrected stale references (KAMA→Kalman, .js→.ts, 2.5%→1.00% AMA delta threshold default); removed duplicate MEMU_RUNNER_SCRIPT path; removed stale FILLED/CANCELLED state refs from order index; QTradeX branding removal (`ac91bc28`).
+
 ## [1.1.6] - 2026-07-14 - Dust Detection Fix, Dedup Hardening, Chart AMA Alignment, amaS% Revert
 
 ### 2026-07-14
