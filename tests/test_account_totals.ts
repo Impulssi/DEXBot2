@@ -52,13 +52,14 @@ const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
     assert.strictEqual(mgr4.funds.available.buy, 0, 'numeric zero allocation must cap buy availability to 0');
     assert.strictEqual(mgr4.funds.available.sell, 0, 'percentage zero allocation must cap sell availability to 0');
 
-    // Test: _updateOrder rejects invalid state/type to protect indices
+    // Test: _updateOrder processes invalid state/type with warnings (non-fatal)
+    // These orders are still added to the map after validation logging.
     const mgr5 = new OrderManager({ botFunds: { buy: 0, sell: 0 } });
-    mgr5._updateOrder({ id: 'invalid-state', type: ORDER_TYPES.BUY, state: 'broken', size: 1 }, 'test-invalid-state');
-    assert.strictEqual(mgr5.orders.has('invalid-state'), false, 'invalid state update must be rejected');
+    await mgr5._updateOrder({ id: 'accepts-invalid-state', type: ORDER_TYPES.BUY, state: 'broken', size: 1 }, 'test-invalid-state');
+    assert.strictEqual(mgr5.orders.has('accepts-invalid-state'), true, 'non-fatal invalid state order must still be accepted with warning');
 
-    mgr5._updateOrder({ id: 'invalid-type', type: 'broken', state: ORDER_STATES.VIRTUAL, size: 1 }, 'test-invalid-type');
-    assert.strictEqual(mgr5.orders.has('invalid-type'), false, 'invalid type update must be rejected');
+    await mgr5._updateOrder({ id: 'accepts-invalid-type', type: 'broken', state: ORDER_STATES.VIRTUAL, size: 1 }, 'test-invalid-type');
+    assert.strictEqual(mgr5.orders.has('accepts-invalid-type'), true, 'non-fatal invalid type order must still be accepted with warning');
 
     // Test: debt collateral is not part of botFunds percentage resolution
     const mgr6 = new OrderManager({ botFunds: { buy: '50%', sell: '50%' }, activeOrders: { buy: 1, sell: 1 } });

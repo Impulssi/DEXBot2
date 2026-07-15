@@ -108,6 +108,15 @@ const GRID_CONSTANTS = {
     RMS_PERCENTAGE_SCALE: 100,  // Convert RMS percentage threshold from percent to decimal
 };
 
+function _snapshotFundState(manager) {
+    return {
+        buyFree: Number(manager.accountTotals?.buyFree || 0),
+        sellFree: Number(manager.accountTotals?.sellFree || 0),
+        buyLocked: Number(manager.accountTotals?.buyLocked || 0),
+        sellLocked: Number(manager.accountTotals?.sellLocked || 0),
+    };
+}
+
 const {
     floatToBlockchainInt,
     blockchainToFloat,
@@ -800,37 +809,41 @@ class Grid {
         // Suppress invariant warnings during full resync
         manager.startBootstrap();
 
-        // FIX: Use consistent optional chaining pattern for logger calls
-        manager.logger?.log?.('Starting full resync...', 'info');
-
-        await manager._initializeAssets();
-        await manager.fetchAccountTotals();
-
-        const chainOpenOrders = await readOpenOrdersFn();
-        if (!Array.isArray(chainOpenOrders)) return;
-
-        // CRITICAL: Filter out PARTIAL orders before synchronizing - they're from old grid
-        // and shouldn't be part of the fresh regenerated grid structure
-        const activeOrders = chainOpenOrders.filter(o => o.state !== ORDER_STATES.PARTIAL);
-
-        await manager.syncFromOpenOrders(activeOrders, { skipAccounting: true, fillLockAlreadyHeld: true });
-        manager.resetFunds();
-
-        await manager.persistGrid();
-        await Grid.initializeGrid(manager);
-
-        const { reconcileGridOrders } = require('./grid_reconcile');
-
-        // FIX: Add error context for debugging grid recalculation issues
         try {
-            await reconcileGridOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders, fillLockAlreadyHeld: true });
-        } catch (err: any) {
-            manager.logger?.log?.(`Error during startup order reconciliation: ${err.message}`, 'error');
-            throw new Error(`Grid recalculation failed during order reconciliation: ${err.message}`);
-        }
+            // FIX: Use consistent optional chaining pattern for logger calls
+            manager.logger?.log?.('Starting full resync...', 'info');
 
-        // FIX: Use consistent optional chaining pattern for logger calls
-        manager.logger?.log?.('Full resync complete.', 'info');
+            await manager._initializeAssets();
+            await manager.fetchAccountTotals();
+
+            const chainOpenOrders = await readOpenOrdersFn();
+            if (!Array.isArray(chainOpenOrders)) return;
+
+            // CRITICAL: Filter out PARTIAL orders before synchronizing - they're from old grid
+            // and shouldn't be part of the fresh regenerated grid structure
+            const activeOrders = chainOpenOrders.filter(o => o.state !== ORDER_STATES.PARTIAL);
+
+            await manager.syncFromOpenOrders(activeOrders, { skipAccounting: true, fillLockAlreadyHeld: true });
+            manager.resetFunds();
+
+            await manager.persistGrid();
+            await Grid.initializeGrid(manager);
+
+            const { reconcileGridOrders } = require('./grid_reconcile');
+
+            // FIX: Add error context for debugging grid recalculation issues
+            try {
+                await reconcileGridOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders, fillLockAlreadyHeld: true });
+            } catch (err: any) {
+                manager.logger?.log?.(`Error during startup order reconciliation: ${err.message}`, 'error');
+                throw new Error(`Grid recalculation failed during order reconciliation: ${err.message}`);
+            }
+
+            // FIX: Use consistent optional chaining pattern for logger calls
+            manager.logger?.log?.('Full resync complete.', 'info');
+        } finally {
+            manager.finishBootstrap();
+        }
     }
 
     /**
@@ -1393,6 +1406,7 @@ class Grid {
             : Number(manager.config.startPrice) || 0;
 
         // FIX: Use optional chaining for lock - if no lock exists, execute synchronously
+        let fundSnapshot = null;
         const executeSpreadCheck = async () => {
             const currentSpread = Grid.calculateCurrentSpread(manager);
 
@@ -1427,6 +1441,9 @@ class Grid {
             if (!correction) return false;
             const placeCount = correction.ordersToPlace?.length || 0;
             const updateCount = correction.ordersToUpdate?.length || 0;
+
+            // Capture fund snapshot under lock for pre-flight verification before broadcast
+            fundSnapshot = _snapshotFundState(manager);
             return (placeCount + updateCount) > 0;
         };
 
@@ -1439,7 +1456,17 @@ class Grid {
 
         // FIX: Apply blockchain operations OUTSIDE the lock to reduce lock contention
         // The lock is only needed for fund verification; order placement doesn't need it
-        if (shouldApplyCorrection && updateOrdersOnChainBatch && correction) {
+        // Pre-flight fund verification to mitigate TOCTOU between lock release and broadcast
+        if (shouldApplyCorrection && updateOrdersOnChainBatch && correction && fundSnapshot) {
+            const currentFunds = _snapshotFundState(manager);
+            const fundChanged = fundSnapshot.buyFree !== currentFunds.buyFree
+                || fundSnapshot.sellFree !== currentFunds.sellFree
+                || fundSnapshot.buyLocked !== currentFunds.buyLocked
+                || fundSnapshot.sellLocked !== currentFunds.sellLocked;
+            if (fundChanged) {
+                manager.logger?.log?.(`Spread correction aborted: fund state changed between lock release and broadcast (pre-flight check)`, 'warn');
+                return { ordersPlaced: 0, partialsMoved: 0 };
+            }
             try {
                 const batchResult = await updateOrdersOnChainBatch(correction);
                 if (!batchResult || batchResult.executed !== true) {

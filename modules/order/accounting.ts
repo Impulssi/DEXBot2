@@ -593,12 +593,22 @@ class Accountant {
 
         // NEW: Attempt immediate recovery if violation detected
         if (hasViolation) {
+            const doRecovery = async () => {
+                try {
+                    await this._attemptFundRecovery(mgr, 'Fund invariant violation');
+                } catch (err: any) {
+                    mgr.logger?.log?.(`[RECOVERY] Deferred recovery failed: ${err.message}`, 'error');
+                    mgr._recoveryState = mgr._recoveryState || {};
+                    mgr._recoveryState.lastFailureAt = Date.now();
+                    mgr._recoveryState.lastFailureReason = err.message;
+                }
+            };
             if (mgr._gridLock?.isLocked?.()) {
-                this._attemptFundRecovery(mgr, 'Fund invariant violation').catch(err => {
+                doRecovery().catch(err => {
                     mgr.logger?.log?.(`[RECOVERY] Deferred recovery scheduling failed: ${err.message}`, 'error');
                 });
             } else {
-                await this._attemptFundRecovery(mgr, 'Fund invariant violation');
+                await doRecovery();
             }
         }
     }
@@ -1053,6 +1063,9 @@ class Accountant {
 
                     this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure').catch(err => {
                         mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
+                        mgr._recoveryState = mgr._recoveryState || {};
+                        mgr._recoveryState.lastFailureAt = Date.now();
+                        mgr._recoveryState.lastFailureReason = err.message;
                     });
                 }
             } else if (commitmentDelta < 0) {

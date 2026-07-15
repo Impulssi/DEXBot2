@@ -320,6 +320,15 @@ let GRID_LIMITS = {
     // This trades off efficiency (larger minimum) for reliability (never hits rounding floor)
     MIN_ORDER_SIZE_FACTOR: 50,
 
+    // PRICE_TOLERANCE_MAX_PERCENT: Maximum price tolerance as fraction of grid price.
+    // Clamps calculatePriceTolerance so tiny dust-sized orders never produce tolerances
+    // larger than this fraction. 0.01 = 1% of price.
+    PRICE_TOLERANCE_MAX_PERCENT: 0.01,
+
+    // PRICE_TOLERANCE_MIN_ABSOLUTE: Floor for the price tolerance cap in price units.
+    // Ensures the cap is non-zero even for extremely cheap assets.
+    PRICE_TOLERANCE_MIN_ABSOLUTE: 0.0001,
+
     // GRID_REGENERATION_PERCENTAGE: Trigger threshold for automatic grid size recalculation.
     // Formula: IF (availableFunds / allocatedCapital) × 100 ≥ threshold → regenerate
     // Rationale: After fills, free balance rises relative to allocated grid capital.

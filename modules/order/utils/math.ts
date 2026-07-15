@@ -702,6 +702,9 @@ function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null)
 
     if (!orderSize || orderSize <= 0) return null;
 
+    // Minimum amount in blockchain satoshis that the chain will accept for an order.
+    // Uses GRID_LIMITS.MIN_ORDER_SIZE_FACTOR (same constant as getMinOrderSize).
+
     let orderSizeA, orderSizeB;
     if (orderType === 'sell' || orderType === 'SELL' || orderType === 'Sell') {
         orderSizeA = orderSize;
@@ -711,9 +714,15 @@ function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null)
         orderSizeA = orderSize / gridPrice;
     }
 
-    const termA = 1 / (orderSizeA * Math.pow(10, precisionA));
-    const termB = 1 / (orderSizeB * Math.pow(10, precisionB));
-    return (termA + termB) * gridPrice;
+    const minOrderSats = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR;
+    const satsA = Math.max(orderSizeA * Math.pow(10, precisionA), minOrderSats);
+    const satsB = Math.max(orderSizeB * Math.pow(10, precisionB), minOrderSats);
+
+    const termA = 1 / satsA;
+    const termB = 1 / satsB;
+    const tolerance = (termA + termB) * gridPrice;
+    const maxTolerance = Math.max(gridPrice * GRID_LIMITS.PRICE_TOLERANCE_MAX_PERCENT, GRID_LIMITS.PRICE_TOLERANCE_MIN_ABSOLUTE);
+    return Math.min(tolerance, maxTolerance);
 }
 
 /**
@@ -911,7 +920,11 @@ function allocateFundsByWeights(totalFunds, n, weight, incrementFactor, reverse 
         if (diff !== 0 && n > 0) {
             let largestIdx = 0;
             for (let j = 1; j < n; j++) if (units[j] > units[largestIdx]) largestIdx = j;
-            units[largestIdx] = Math.max(0, units[largestIdx] + diff);
+            const adjusted = units[largestIdx] + diff;
+            if (adjusted < 0) {
+                mathLogger.warn(`allocateFundsByWeights: rounding diff ${diff} exceeds largest slot ${units[largestIdx]}; total allocation will be less than target ${totalUnits}`);
+            }
+            units[largestIdx] = Math.max(0, adjusted);
         }
         for (let i = 0; i < n; i++) sizes[i] = blockchainToFloat(units[i], precision);
     } else {

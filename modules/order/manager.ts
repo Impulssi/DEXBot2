@@ -251,7 +251,8 @@ class StateManager {
         };
 
         this.broadcast = {
-            isBroadcasting: false
+            isBroadcasting: false,
+            startedAt: 0,
         };
 
         this.signals = {
@@ -349,13 +350,24 @@ class StateManager {
 
     startBroadcasting() {
         this.broadcast.isBroadcasting = true;
+        this.broadcast.startedAt = Date.now();
+        this.logger?.log?.('[BROADCAST] Flag set — fill processing will be deferred until stopBroadcasting()', 'debug');
     }
 
     stopBroadcasting() {
         this.broadcast.isBroadcasting = false;
+        this.broadcast.startedAt = 0;
     }
 
     isBroadcastingActive() {
+        if (this.broadcast.isBroadcasting && this.broadcast.startedAt > 0) {
+            const elapsed = Date.now() - this.broadcast.startedAt;
+            if (elapsed > 120000) {
+                this.logger?.log?.('[BROADCAST] Auto-clearing stale broadcast flag after 120s', 'warn');
+                this.broadcast.isBroadcasting = false;
+                this.broadcast.startedAt = 0;
+            }
+        }
         return this.broadcast.isBroadcasting;
     }
 
@@ -523,10 +535,19 @@ class OrderManager {
         this.processedFillTracker = new Map();
         this.processedFillStore = null;
 
-        this._syncLock = new AsyncLock();
-        this._fillProcessingLock = new AsyncLock();
+        // LOCK HIERARCHY (convention — not enforced at runtime to avoid false
+        // positives from async contention and multi-bot sharing a process).
+        // Acquire in ascending level order only:
+        //   Level 0: _divergenceLock  (divergence checks — outermost)
+        //   Level 1: _fillProcessingLock  (fill processing)
+        //   Level 2: _gridLock        (grid mutations)
+        //   Level 3: _syncLock        (sync operations)
+        //   Level 4: _fundLock        (fund operations — innermost)
+        // WARNING: AsyncLock is NOT reentrant.
         this._divergenceLock = new AsyncLock();
+        this._fillProcessingLock = new AsyncLock();
         this._gridLock = new AsyncLock();
+        this._syncLock = new AsyncLock();
         this._fundLock = new AsyncLock({ timeout: 30000 });
 
         this._recentlyRotatedOrderIds = new Set();
@@ -1683,6 +1704,9 @@ class OrderManager {
             }
         } catch (recalcErr: any) {
             this.logger.log(`[COW] Fund recalculation failed post-commit: ${recalcErr.message}`, 'error');
+            this._recoveryState = this._recoveryState || {};
+            this._recoveryState.lastFailureAt = Date.now();
+            this._recoveryState.lastFailureReason = recalcErr.message;
         } finally {
             this._clearWorkingGridRef();
         }

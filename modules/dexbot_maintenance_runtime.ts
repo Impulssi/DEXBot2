@@ -945,6 +945,9 @@ async function setupTriggerFileDetection(bot) {
                                 }
                             }).catch(err => {
                                 bot._warn(`Trigger reset lock error: ${err.message}`);
+                                bot.manager._recoveryState = bot.manager._recoveryState || {};
+                                bot.manager._recoveryState.lastFailureAt = Date.now();
+                                bot.manager._recoveryState.lastFailureReason = err.message;
                             });
                         }, 200);
                     }
@@ -1329,7 +1332,14 @@ function scheduleMaintenanceAfterIdle(ctx, context, options = {}) {
         ctx._maintenanceIdleTimer = null;
         if (ctx._shuttingDown) return;
         ctx._runGridMaintenance(context, timerOptions)
-            .catch(err => ctx._warn(`Deferred ${context} grid maintenance failed: ${err.message}`));
+            .catch(err => {
+                ctx._warn(`Deferred ${context} grid maintenance failed: ${err.message}`);
+                if (ctx.manager) {
+                    ctx.manager._recoveryState = ctx.manager._recoveryState || {};
+                    ctx.manager._recoveryState.lastFailureAt = Date.now();
+                    ctx.manager._recoveryState.lastFailureReason = err.message;
+                }
+            });
     }, delayMs);
 }
 
@@ -1379,6 +1389,11 @@ function scheduleDeferredGridResync(ctx, options = {}) {
             }
         }).catch(err => {
             ctx._warn(`Deferred trigger reset lock error: ${err.message}`);
+            if (ctx.manager) {
+                ctx.manager._recoveryState = ctx.manager._recoveryState || {};
+                ctx.manager._recoveryState.lastFailureAt = Date.now();
+                ctx.manager._recoveryState.lastFailureReason = err.message;
+            }
         });
     }, delayMs);
 }
@@ -1778,7 +1793,14 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
                         await runGridMaintenance(bot, 'dust-timer', { fillLockAlreadyHeld: true });
                     }
                 }
-            }).catch(err2 => bot._warn(`Error during dust fallback timer: ${err2.message}`));
+            }).catch(err2 => {
+                bot._warn(`Error during dust fallback timer: ${err2.message}`);
+                if (bot.manager) {
+                    bot.manager._recoveryState = bot.manager._recoveryState || {};
+                    bot.manager._recoveryState.lastFailureAt = Date.now();
+                    bot.manager._recoveryState.lastFailureReason = err2.message;
+                }
+            });
         }, delayMs);
     }
     return { cancelledCount, batchResult };

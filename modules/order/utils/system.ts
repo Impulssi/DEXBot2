@@ -60,6 +60,14 @@ const { runtime } = require('../../runtime');
 const { ensureDir, readJSON } = require('../../utils/fs_utils');
 const systemLogger = new Logger('System');
 
+function _debugLogAndNull(method, symA, symB) {
+    return (err) => {
+        // debug level: underlying derivePoolPrice/deriveMarketPrice already log at warn
+        systemLogger.debug(`derivePrice(${method}) for ${symA}/${symB}: ${err.message}`);
+        return null;
+    };
+}
+
 // ================================================================================
 // SECTION 1: PRICE DERIVATION
 // ================================================================================
@@ -328,25 +336,27 @@ const derivePrice = async (BitShares: any, symA: string, symB: string, mode: str
     const validModes = new Set(['pool', 'book', 'auto']);
 
     if (!validModes.has(mode)) {
+        systemLogger.debug(`derivePrice: invalid mode "${mode}" for ${symA}/${symB}`);
         return null;
     }
 
     if (mode === 'pool') {
-        return await derivePoolPrice(BitShares, symA, symB).catch(() => null);
+        return await derivePoolPrice(BitShares, symA, symB).catch(_debugLogAndNull('pool', symA, symB));
     }
 
     if (mode === 'book') {
-        return await deriveMarketPrice(BitShares, symA, symB).catch(() => null);
+        return await deriveMarketPrice(BitShares, symA, symB).catch(_debugLogAndNull('book', symA, symB));
     }
 
     // mode === 'auto': pool preferred, market fallback
     let poolP = null;
-    poolP = await derivePoolPrice(BitShares, symA, symB).catch(() => null);
+    poolP = await derivePoolPrice(BitShares, symA, symB).catch(_debugLogAndNull('auto/pool', symA, symB));
     if (poolP > 0) return poolP;
 
-    const m = await deriveMarketPrice(BitShares, symA, symB).catch(() => null);
+    const m = await deriveMarketPrice(BitShares, symA, symB).catch(_debugLogAndNull('auto/book', symA, symB));
     if (m > 0) return m;
 
+    systemLogger.debug(`derivePrice: all methods failed for ${symA}/${symB}`);
     return null;
 };
 
@@ -494,6 +504,7 @@ async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRef: stri
         const valuePerShare = totalValue / supplyFloat;
         return isValidNumber(valuePerShare) && valuePerShare > 0 ? valuePerShare : null;
     } catch (err: any) {
+        systemLogger.debug(`deriveLiquidityPoolTokenValue failed for ${shareAssetRef}/${denominationAssetRef}: ${err.message}`);
         return null;
     }
 }
