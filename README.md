@@ -218,6 +218,7 @@ node dexbot disable {all|<bot>} # Disable bot in config
 
 node dexbot stat                # Runtime status (unlock or PM2)
 node dexbot order               # Analyze order grids
+node dexbot order --export      # Export as HTML to root folder
 
 node dexbot update              # Update DEXBot2
 node dexbot clear               # Clear log files

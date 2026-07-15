@@ -10,7 +10,9 @@
  * - Total funds of AssetA and AssetB in the grid
  * - Grid slot distribution (% near center) vs grid composition
  *
- * Usage: tsx scripts/analyze-orders.ts
+ * Usage:
+ *   tsx scripts/analyze-orders.ts          # terminal output
+ *   tsx scripts/analyze-orders.ts --export     # standalone HTML report
  */
 
 const fs = require('fs');
@@ -1490,23 +1492,126 @@ function formatAnalysis(analysis) {
  * Output order: Files sorted by modification time (most recent first)
  * makes it easy to see which bots were most recently updated
  */
+/**
+ * generateHtmlReport: Export all analyses as a standalone HTML report.
+ *
+ * Produces a self-contained HTML file with visually styled cards, colored
+ * distribution bars, and aligned metrics — matching the terminal output's
+ * information density in a browser-friendly format.
+ *
+ * @param {Array<Object>} analyses - Array of analysis results from analyzeOrder()
+ */
+function generateHtmlReport(analyses) {
+  const cssColors = {
+    buy: '#00ff00',
+    buyDark: '#007700',
+    sell: '#ff0000',
+    sellDark: '#990000',
+    spread: '#ffff00',
+    cyan: '#5fffff',
+    gray: '#949494'
+  };
+
+  const htmlColorMap = {
+    [colors.buy]: `<span style="color:${cssColors.buy}">`,
+    [colors.sell]: `<span style="color:${cssColors.sell}">`,
+    [colors.buyDark]: `<span style="color:${cssColors.buyDark}">`,
+    [colors.sellDark]: `<span style="color:${cssColors.sellDark}">`,
+    [colors.spread]: `<span style="color:${cssColors.spread}">`,
+    [colors.cyan]: `<span style="color:${cssColors.cyan}">`,
+    [colors.gray]: `<span style="color:${cssColors.gray}">`,
+    '\x1b[97m': '<span style="color:#ffffff">' // white for spread bar
+  };
+
+  function ansiToHtml(str) {
+    let escaped = String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+    
+    let colorOpen = false;
+
+    return escaped.replace(/\x1b\[[0-9;]*m/g, code => {
+      let close = '';
+      if (colorOpen) {
+        colorOpen = false;
+        close = '</span>';
+      }
+
+      if (code === colors.reset) return close;
+
+      const html = htmlColorMap[code];
+      if (!html) return close;
+
+      colorOpen = true;
+      return close + html;
+    }) + (colorOpen ? '</span>' : '');
+  }
+
+  const reports = analyses.map(a => ansiToHtml(formatAnalysis(a))).join('\n');
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="darkreader-lock">
+<title>Order Analysis Report</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d1117; color: #c9d1d9; font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; padding: 24px; }
+  h1 { color: ${cssColors.cyan}; font-size: 20px; margin-bottom: 8px; }
+  .subtitle { color: ${cssColors.gray}; font-size: 13px; margin-bottom: 24px; }
+  .summary { margin-top: 16px; color: ${cssColors.cyan}; font-size: 13px; }
+  pre { 
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; 
+    font-size: 14px; 
+    line-height: 1.5; 
+    background: #000; 
+    padding: 16px; 
+    border-radius: 8px; 
+    border: 1px solid #30363d; 
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+<h1>🔍 Order Analysis</h1>
+<div class="subtitle">${analyses.length} bot${analyses.length !== 1 ? 's' : ''} analyzed — ${new Date().toLocaleString()}</div>
+<pre>${reports}</pre>
+<div class="summary">Total: ${analyses.length} analyzed</div>
+</body>
+</html>`;
+
+  const outPath = path.resolve('order-analysis.html');
+  fs.writeFileSync(outPath, html, 'utf-8');
+  console.log('HTML report written to ' + outPath);
+}
+
 function main() {
-  // Header
-  console.log(`\n${colors.cyan}🔍 Order Analysis${colors.reset}`);
-  console.log(`${colors.cyan}${'='.repeat(HEADER_WIDTH)}${colors.reset}`);
+  const exportHtml = process.argv.includes('--export');
+
+  if (!exportHtml) {
+    console.log(`\n${colors.cyan}🔍 Order Analysis${colors.reset}`);
+    console.log(`${colors.cyan}${'='.repeat(HEADER_WIDTH)}${colors.reset}`);
+  }
 
   // Get all order files sorted by modification time (newest first)
   const { files, skippedCandidates } = getOrderFiles();
 
   // Handle fully empty directory case. If files were skipped, report why below.
   if (files.length === 0 && skippedCandidates.length === 0) {
-    console.log('No order files found in profiles/orders/');
+    if (!exportHtml) {
+      console.log('No order files found in profiles/orders/');
+    }
     process.exit(0);
   }
 
   // Counters for summary statistics
   let analyzed = 0;
   let skipped = 0;
+  const analyses = [];
 
   /**
    * Process each order file
@@ -1531,15 +1636,19 @@ function main() {
 
       // Analyze the order grid (botKey is used to load the dynamic grid snapshot)
       const analysis = analyzeOrder(botData, config, botKey);
-      // Display formatted results
-      let output = formatAnalysis(analysis);
-      // Remove leading newline from first pair to avoid blank line after header
-      if (index === 0) {
-        output = output.replace(/^\n/, '');
-        console.log(output);
-        console.log('');  // Extra blank line after first batch
-      } else {
-        console.log(output);
+      analyses.push(analysis);
+
+      if (!exportHtml) {
+        // Display formatted results
+        let output = formatAnalysis(analysis);
+        // Remove leading newline from first pair to avoid blank line after header
+        if (index === 0) {
+          output = output.replace(/^\n/, '');
+          console.log(output);
+          console.log('');  // Extra blank line after first batch
+        } else {
+          console.log(output);
+        }
       }
       analyzed++;
 
@@ -1549,6 +1658,11 @@ function main() {
       skipped++;
     }
   });
+
+  if (exportHtml) {
+    generateHtmlReport(analyses);
+    return;
+  }
 
   if (skippedCandidates.length > 0) {
     console.log('');
@@ -1579,6 +1693,7 @@ module.exports = {
   getRawWeightValues,
   analyzeOrder,
   formatAnalysis,
+  generateHtmlReport,
   colors,
   DYNAMIC_GRID_SNAPSHOT_MAX_AGE_MS,
   DYNAMIC_WEIGHT_EPSILON,

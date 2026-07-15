@@ -66,6 +66,7 @@
  *   node dexbot update               - Update to latest version (pull + install + restart)
  *   node dexbot export <bot-name>    - Export trading history to CSV/JSON for QTradeX
  *   node dexbot order                - Analyze persisted order grids in profiles/orders/
+ *   node dexbot order --export       - Export order analysis as standalone HTML report
  *   node dexbot help                 - Show this help message
  *
  * NPM SCRIPTS (alternative invocation):
@@ -162,7 +163,7 @@ const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'drystart', 'keys', 'bots', 'pm2', 'update', 'export', 'order', 'clear', 'status', 'whitelist', 'unlock'];
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'drystart', 'keys', 'bots', 'pm2', 'update', 'export', 'order', 'clear', 'status', 'whitelist', 'unlock', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', key: 'keys', bot: 'bots', white: 'whitelist', stat: 'status', start: 'test', defaults: 'default' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
@@ -177,7 +178,7 @@ const CLI_EXAMPLES = [
     { title: 'Start bots with PM2', command: 'dexbot pm2', notes: 'Generates ecosystem config, authenticates, and starts PM2.' },
     { title: 'Update DEXBot2', command: 'node dexbot update', notes: 'Fetches latest code, updates dependencies, and restarts PM2.' },
     { title: 'Export bot trades for QTradeX', command: 'dexbot export bot-name', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' },
-    { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across profiles/orders/ and prints spread/increment/funds/distribution metrics.' },
+    { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across profiles/orders/ and prints spread/increment/funds/distribution metrics. Add --export for an HTML report.' },
     { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from profiles/logs/.' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
@@ -226,7 +227,7 @@ function printCLIUsage() {
     console.log('  bot               Launch the interactive bot configurator (modules/account_bots.ts).');
     console.log('  pm2               Start all active bots with PM2 (authenticate + generate config + start).');
     console.log('  update            Update DEXBot2 from the repository and restart active bots.');
-    console.log('  order             Analyze persisted order grids in profiles/orders/ (spread, increment, funds).');
+    console.log('  order             Analyze persisted order grids in profiles/orders/ (spread, increment, funds). Use --export for HTML.');
     console.log('  status, stat      Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Run credential daemon + bot (equivalent to `node unlock`).');
     console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune) are forwarded.');
@@ -1064,6 +1065,9 @@ async function handleCLICommands() {
             process.exit(0);
             return true;
         }
+        case 'help':
+            printCLIUsage();
+            process.exit(0);
         default:
             printCLIUsage();
             process.exit(1);
