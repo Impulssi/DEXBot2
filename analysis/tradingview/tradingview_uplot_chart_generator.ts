@@ -267,9 +267,56 @@ function generateHTML(data, title = 'TradingView Style Research') {
             color: #5ea1ff;
             border-color: rgba(94,161,255,0.45);
         }
-        .indicator input[type="number"].ama-fast-field {
-            width: 68px;
-            min-width: 68px;
+        .indicator .step-stack {
+            display: inline-flex;
+            flex-direction: column;
+            vertical-align: middle;
+            margin-left: 2px;
+        }
+        .indicator .step-btn {
+            appearance: none;
+            display: block;
+            width: 24px;
+            height: 13px;
+            border: 1px solid #3d4a5a;
+            background: #1a2332;
+            color: #8b949e;
+            font-size: 9px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0;
+            margin: 0;
+        }
+        .indicator .step-btn:first-child {
+            border-radius: 3px 3px 0 0;
+            border-bottom: none;
+        }
+        .indicator .step-btn:last-child {
+            border-radius: 0 0 3px 3px;
+        }
+        .indicator .step-btn:hover {
+            background: #263241;
+        }
+        .indicator .step-btn:active {
+            background: #3d4a5a;
+        }
+        .indicator input[type="text"] {
+            appearance: none;
+            border: 1px solid #263241;
+            background: rgba(6,8,12,0.95);
+            color: #d7e0ea;
+            border-radius: 8px;
+            padding: 7px 4px;
+            font-size: 12px;
+            outline: none;
+            width: 44px;
+            text-align: center;
+        }
+        .indicator input[type="text"]:focus {
+            border-color: #5ea1ff;
+        }
+        #ama-fast {
+            width: 38px;
         }
         .scale-toggle {
             appearance: none;
@@ -383,26 +430,46 @@ function generateHTML(data, title = 'TradingView Style Research') {
                     <div class="indicator">
                         <label><input type="checkbox" id="sma-toggle"${defaults.smaEnabled ? ' checked' : ''}> SMA</label>
                         <span class="tag">period</span>
-                        <input type="number" id="sma-period" min="1" step="1" value="${defaults.smaPeriod}">
+                        <input type="text" inputmode="numeric" id="sma-period" value="${defaults.smaPeriod}">
+                        <span class="step-stack">
+                            <button type="button" class="step-btn" id="sma-period-inc">▲</button>
+                            <button type="button" class="step-btn" id="sma-period-dec">▼</button>
+                        </span>
                     </div>
                     <div class="indicator">
                         <label><input type="checkbox" id="vwap-toggle"${defaults.vwapEnabled ? ' checked' : ''}> VWMA</label>
                         <span class="tag">bars</span>
-                        <input type="number" id="vwap-bars" min="24" max="2000" step="1" value="${defaults.vwapBars}">
+                        <input type="text" inputmode="numeric" id="vwap-bars" value="${defaults.vwapBars}">
+                        <span class="step-stack">
+                            <button type="button" class="step-btn" id="vwap-bars-inc">▲</button>
+                            <button type="button" class="step-btn" id="vwap-bars-dec">▼</button>
+                        </span>
                     </div>
                     <div class="indicator">
                         <label><input type="checkbox" id="ama-toggle"${defaults.amaEnabled ? ' checked' : ''}> AMA</label>
                         <span class="tag">er</span>
-                        <input type="number" id="ama-er" min="1" step="1" value="${defaults.amaDefaults.erPeriod}">
+                        <input type="text" inputmode="numeric" id="ama-er" value="${defaults.amaDefaults.erPeriod}">
+                        <span class="step-stack">
+                            <button type="button" class="step-btn" id="ama-er-inc">▲</button>
+                            <button type="button" class="step-btn" id="ama-er-dec">▼</button>
+                        </span>
                         <span class="tag">fast</span>
-                        <input type="number" class="ama-fast-field" id="ama-fast" min="0.1" step="0.1" value="${defaults.amaDefaults.fastPeriod}">
+                        <input type="text" inputmode="decimal" id="ama-fast" value="${defaults.amaDefaults.fastPeriod}">
+                        <span class="step-stack">
+                            <button type="button" class="step-btn" id="ama-fast-inc">▲</button>
+                            <button type="button" class="step-btn" id="ama-fast-dec">▼</button>
+                        </span>
                         <span class="tag">slow</span>
-                        <input type="number" id="ama-slow" min="0.1" step="0.1" value="${defaults.amaDefaults.slowPeriod}">
+                        <input type="text" inputmode="decimal" id="ama-slow" value="${defaults.amaDefaults.slowPeriod}">
+                        <span class="step-stack">
+                            <button type="button" class="step-btn" id="ama-slow-inc">▲</button>
+                            <button type="button" class="step-btn" id="ama-slow-dec">▼</button>
+                        </span>
                         <button type="button" class="reset-btn" id="ama-reset">Reset</button>
                     </div>
                     <div class="indicator" style="margin-top:4px">
-                        <label style="font-size:11px;color:#8b949e">Init Offset</label>
-                        <input type="range" id="ama-init-offset" min="-50" max="50" value="0" step="1" style="width:120px;vertical-align:middle">
+                        <label><input type="checkbox" id="ama-init-offset-toggle"> Init Offset</label>
+                        <input type="range" id="ama-init-offset" min="-50" max="50" value="0" step="1" style="width:120px;vertical-align:middle" disabled>
                         <span id="ama-init-offset-val" style="font-size:11px;color:#8b949e;width:32px;display:inline-block;text-align:right">0%</span>
                     </div>
                 </div>
@@ -461,6 +528,7 @@ function generateHTML(data, title = 'TradingView Style Research') {
             : Number(payload.amaDefaults?.slowPeriod || ${MARKET_ADAPTER.AMAS.AMA3.slowPeriod});
         let currentVwapEnabled = state.vwapEnabled ?? !!payload.vwapEnabled;
         let currentVwapBars = Number.isFinite(state.vwapBars) ? state.vwapBars : Number(payload.vwapBars || 500);
+        let currentAmaInitOffsetEnabled = false;
         let currentAmaInitOffset = Number.isFinite(state.amaInitOffset) ? state.amaInitOffset : 0;
         let currentPriceScale = state.priceScale || payload.priceScale || 'log';
         let currentPairMode = state.pairMode === 'inverse' ? 'inverse' : (payload.defaultPairMode === 'inverse' ? 'inverse' : 'normal');
@@ -1436,11 +1504,13 @@ function generateHTML(data, title = 'TradingView Style Research') {
             document.getElementById('sma-period').value = String(currentSmaPeriod);
             document.getElementById('ama-toggle').checked = currentAmaEnabled;
             document.getElementById('ama-er').value = String(currentAmaErPeriod);
-            document.getElementById('ama-fast').value = String(currentAmaFastPeriod);
-            document.getElementById('ama-slow').value = String(currentAmaSlowPeriod);
+            document.getElementById('ama-fast').value = currentAmaFastPeriod.toFixed(1);
+            document.getElementById('ama-slow').value = currentAmaSlowPeriod.toFixed(1);
             document.getElementById('vwap-toggle').checked = currentVwapEnabled;
             document.getElementById('vwap-bars').value = String(currentVwapBars);
+            document.getElementById('ama-init-offset-toggle').checked = currentAmaInitOffsetEnabled;
             document.getElementById('ama-init-offset').value = String(currentAmaInitOffset);
+            document.getElementById('ama-init-offset').disabled = !currentAmaInitOffsetEnabled;
             document.getElementById('ama-init-offset-val').textContent = currentAmaInitOffset + '%';
             setActiveTimeframe(currentTimeframe);
             refreshSubtitle();
@@ -1522,10 +1592,12 @@ function generateHTML(data, title = 'TradingView Style Research') {
             currentSmaPeriod = clamp(Math.round(Number(document.getElementById('sma-period').value) || 20), 1, 9999);
             currentAmaEnabled = document.getElementById('ama-toggle').checked;
             currentAmaErPeriod = clamp(Math.round(Number(document.getElementById('ama-er').value) || ${MARKET_ADAPTER.AMAS.AMA3.erPeriod}), 1, 999999);
-            currentAmaFastPeriod = clamp(Number(document.getElementById('ama-fast').value) || Number(payload.amaDefaults?.fastPeriod || ${MARKET_ADAPTER.AMAS.AMA3.fastPeriod}), 0.1, 999999);
-            currentAmaSlowPeriod = clamp(Number(document.getElementById('ama-slow').value) || Number(payload.amaDefaults?.slowPeriod || ${MARKET_ADAPTER.AMAS.AMA3.slowPeriod}), 0.1, 999999);
-            currentAmaInitOffset = snapInitOffset(document.getElementById('ama-init-offset').value);
+            currentAmaFastPeriod = Math.round(clamp(Number(document.getElementById('ama-fast').value) || Number(payload.amaDefaults?.fastPeriod || ${MARKET_ADAPTER.AMAS.AMA3.fastPeriod}), 0.1, 999999) * 10) / 10;
+            currentAmaSlowPeriod = Math.round(clamp(Number(document.getElementById('ama-slow').value) || Number(payload.amaDefaults?.slowPeriod || ${MARKET_ADAPTER.AMAS.AMA3.slowPeriod}), 0.1, 999999) * 10) / 10;
+            currentAmaInitOffsetEnabled = document.getElementById('ama-init-offset-toggle').checked;
+            currentAmaInitOffset = currentAmaInitOffsetEnabled ? snapInitOffset(document.getElementById('ama-init-offset').value) : 0;
             document.getElementById('ama-init-offset').value = String(currentAmaInitOffset);
+            document.getElementById('ama-init-offset').disabled = !currentAmaInitOffsetEnabled;
             document.getElementById('ama-init-offset-val').textContent = currentAmaInitOffset + '%';
             currentVwapEnabled = document.getElementById('vwap-toggle').checked;
             currentVwapBars = clamp(Math.round(Number(document.getElementById('vwap-bars').value) || 500), 24, 2000);
@@ -1566,13 +1638,50 @@ function generateHTML(data, title = 'TradingView Style Research') {
             }
             rerender(false);
         });
+        document.getElementById('ama-init-offset-toggle').addEventListener('change', syncInputs);
         ['sma-period', 'ama-er', 'ama-fast', 'ama-slow', 'vwap-bars'].forEach((id) => {
             document.getElementById(id).addEventListener('change', syncInputs);
             document.getElementById(id).addEventListener('blur', syncInputs);
         });
-        ['ama-er', 'ama-fast', 'ama-slow'].forEach((id) => {
+        ['ama-er'].forEach((id) => {
             document.getElementById(id).addEventListener('input', syncInputs);
         });
+        function makeStepper(id, step, lo, precision) {
+            const dec = document.getElementById(id + '-dec');
+            const inc = document.getElementById(id + '-inc');
+            if (!dec || !inc) return;
+            const input = document.getElementById(id);
+            function stepVal(dir) {
+                const val = parseFloat(input.value) || 0;
+                let next = dir < 0 ? Math.max(lo, val - step) : val + step;
+                if (precision === 0) next = Math.round(next);
+                else if (precision > 0) next = Math.round(next * Math.pow(10, precision)) / Math.pow(10, precision);
+                input.value = precision >= 0 ? next.toFixed(precision) : String(next);
+                syncInputs();
+            }
+            function addHold(el, dir) {
+                let timer = null;
+                function start() {
+                    stepVal(dir);
+                    timer = setTimeout(() => {
+                        timer = setInterval(() => stepVal(dir), 100);
+                    }, 300);
+                }
+                function stop() {
+                    if (timer) { clearInterval(timer); clearTimeout(timer); timer = null; }
+                }
+                el.addEventListener('mousedown', start);
+                el.addEventListener('mouseup', stop);
+                el.addEventListener('mouseleave', stop);
+            }
+            addHold(dec, -1);
+            addHold(inc, 1);
+        }
+        makeStepper('sma-period', 1, 1, 0);
+        makeStepper('vwap-bars', 1, 24, 0);
+        makeStepper('ama-er', 1, 1, 0);
+        makeStepper('ama-fast', 0.1, 0.1, 1);
+        makeStepper('ama-slow', 1, 0.1, 1);
         document.getElementById('ama-reset').addEventListener('click', resetAmaDefaults);
         document.getElementById('ama-init-offset').addEventListener('input', () => {
             const input = document.getElementById('ama-init-offset');
