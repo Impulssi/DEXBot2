@@ -209,6 +209,22 @@ constant is not the smoothing constant of the average ER.
 tsx analysis/ama_fitting/calibrate_convergence_er.ts --data <lp-file.json> --amas AMA3
 ```
 
+### `analyze_lambda_vs_slow.ts`
+
+Fixes ER and Fast at the AMA1 defaults (781 / 5.2), then scans λ (distance weight)
+over a range to find the optimal Slow period for each λ. Produces a 3-panel chart:
+λ→Slow, λ→Movement, and Slow→Movement (all cached slow values from 10 to maxSlow).
+
+Useful for understanding how λ shapes the optimal Slow independent of ER/Fast
+variation. The annotations on the λ→Slow chart mark where the four default AMA λ
+values land on the curve — differences of ±1–2 slow units vs the 3-D optimizer
+are expected since the optimizer also tunes ER and Fast simultaneously.
+
+```bash
+tsx analysis/ama_fitting/analyze_lambda_vs_slow.ts \
+  --data <lp-file.json> --maxSlow 250 --lambdaEnd 0.0045 --lambdaSteps 50
+```
+
 ### `analyze_ama_price_changes.ts`
 
 Simulates `AMA_DELTA_THRESHOLD_PERCENT` grid-reposition frequency for all four
