@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.8] - 2026-07-16 - Dust Timer Persistence, HTML Order Export, Chart Controls, Doc Cleanup
+
+### 2026-07-16
+
+- **Fix**: dust cancel timer now armed from all 4 detection entry points — reconnect safety-net sync, post-reset fill processing, periodic 5-min dust health check, and post-full-resync re-detect each call `_scheduleDustMaintenanceCheck` after seeding. Post-reset path wrapped in `_shuttingDown` guard (`038b81cb`).
+- **Feat**: persist dust-cancel timer state (`_dustSinceMap`/`_dustRetryCount`) across restarts via grid snapshot — `storeMasterGrid` gains params, `persistGridSnapshot` backward-compat fallback, startup hydration before `_persistAndRecoverIfNeeded` with valid-order-ID pruning. Browser-safety: `exitAfterStderrDrain` in `Runtime` interface replaces direct `process.*` calls in `graceful_shutdown.ts`. 2 new persistence tests (`4c7c3afc`).
+- **Feat**: HTML order analysis export with self-contained dark-themed report — CLI-matched ANSI colors, active/virtual contrast, `--export` shorthand, Dark Reader lock. `node dexbot help` command handler added (`9d0cdfba`).
+- **Feat**: overhaul TradingView chart input controls — text inputs + custom stepper buttons (hold-to-repeat), Init Offset toggle, precision handling (`469c9ffd`).
+- **Feat**: add lambda-vs-slow analysis script — 1D scan fixing ER=781/Fast=5.2, optimal Slow per λ, three-panel chart (`aa9a96c9`).
+- **Chore**: trim verbose JSDoc/headers across 6 files, document `critical` LOG_LEVEL in README, dedupe `.gitignore`, clarify force-push in AGENTS.md (`f07931c9`).
+
 ## [1.1.7] - 2026-07-15 - Dust Cancel Hardening, Bootstrap Lifecycle, Order Analysis AMA Key, Doc Cleanup
 
 ### 2026-07-15
