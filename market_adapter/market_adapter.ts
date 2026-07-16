@@ -2,70 +2,13 @@
 'use strict';
 
 /**
- * PRICE ADAPTER (standalone)
+ * PRICE ADAPTER — standalone or auto-launched by dexbot runtime.
  *
- * Purpose:
- * - Runs independently from dexbot runtime
- * - Loads active bots with AMA grid pricing from profiles/bots.json
- * - Uses built-in AMA defaults from constants, optionally overridden by pair-specific
- *   profiles in profiles/market_profiles.json
- * - Bootstraps 1h candles from Kibana once (if local file missing)
- * - Then updates candles from native BitShares API only
- * - Persists candles incrementally, prunes to AMA-required window
- * - Tracks a separate market center price per bot in market_adapter/state
- * - Creates recalculate.<botKey>.trigger when AMA center delta threshold is reached
+ * Loads active bots with AMA grid pricing, bootstraps candles from Kibana,
+ * updates incrementally from native BitShares API, and creates recalc triggers
+ * when the AMA center price moves past threshold.
  *
- * GRID RECALCULATION TRIGGERS (Five Independent Mechanisms):
- * ──────────────────────────────────────────────────────────
- *
- * MARKET ADAPTER (market_adapter_service.ts):
- *
- * 1. BOOTSTRAP / FIRST-TIME INIT
- *    Triggers when no previous center price exists (first run or state cleared).
- *    ├─ Always active (no threshold)
- *    └─ Use case: Establish initial grid center for a new bot
- *
- * 2. AMA DELTA THRESHOLD
- *    Triggers when AMA-computed market price moves past threshold from last center
- *    ├─ Controlled by: MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT
- *    ├─ Location: profiles/general.settings.json
- *    ├─ Default: 1.00% (grid resets when AMA moves ±1.00%)
- *    ├─ CLI override: --deltaPercent <percent>
- *    └─ Use case: Catch big market moves requiring grid repositioning
- *
- * 3. AMA SLOPE DELTA THRESHOLD
- *    Triggers when trend slope (AMA derivatives) changes significantly from
- *    the last accepted baseline. Gated by gridRangeScaling whitelist.
- *    ├─ Controlled by: AMA_SLOPE_DELTA_THRESHOLD_PERCENT / amaSlope.deltaThresholdPct
- *    └─ Use case: Recalibrate grid offset when trend intensity shifts
- *
- * GRID ENGINE (order/grid.ts):
- *
- * 4. RMS DIVERGENCE CHECK
- *    Triggers when calculated grid geometry diverges from on-chain state
- *    ├─ Controlled by: GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE
- *    ├─ Location: profiles/general.settings.json
- *    ├─ Default: 14.3% (balanced tolerance)
- *    ├─ Set to 0 to disable (Issue #5: RMS Divergence Check Disabling)
- *    └─ Use case: Detect order fill/rotation accumulation drift
- *
- * 5. GRID REGENERATION (ratio-based)
- *    Triggers when available free balance exceeds allocation threshold
- *    ├─ Controlled by: GRID_LIMITS.GRID_REGENERATION_PERCENTAGE
- *    ├─ Default: 3% (regen when free balance ≥ 3% of allocated capital)
- *    └─ Use case: Rebalance and utilize accumulated fill proceeds
- *
- * Note: Dynamic weights (AMA slope + Kalman + regime gate) are applied to
- * order sizing on every cycle independently of these triggers — they do not
- * cause a grid reset but adjust the buy/sell weight distribution continuously.
- *
- * AMA PROFILE SELECTION (per bot via gridPrice keyword):
- * ───────────────────────────────────────────────────────
- *   gridPrice: "ama"  or "ama3" => default (best backtest score)
- *   gridPrice: "ama1"             => min move, cap 25%
- *   gridPrice: "ama2"             => min move, cap 30%
- *   gridPrice: "ama3"             => min move, cap 35%
- *   gridPrice: "ama4"             => min move, cap 40%
+ * See market_adapter/README.md for full docs on triggers, profiles, and tuning.
  *
  * No wallet keys/password/auth required (read-only chain + Kibana bootstrap).
  */
@@ -1006,21 +949,8 @@ const ORDERS_DIR = PATHS.ORDERS_DIR;
 /**
  * Atomically write the dynamic grid snapshot for a bot to profiles/orders/<botKey>.dynamicgrid.json.
  * Contains AMA-derived center price and any computed effective weight offsets.
- * The bot reads this snapshot before every rebalance (fills, spread checks, divergence
- * corrections, etc.) — not only on grid reset — so fresh weights are applied to new orders.
+ * The bot reads this snapshot before every rebalance so fresh weights are applied to new orders.
  * Uses write-then-rename to prevent partial reads by the dexbot process.
- * @param {string} botKey      - Bot key (e.g. "iob-xrp-bts-0")
- * @param {number} gridCenterPrice - Current persisted grid center price (B/A format)
- * @param {Object} [options]
- * @param {number} [options.amaCenterPrice]   - Raw AMA center price before any downstream handling
- * @param {Object} [options.amaSlope]         - Raw AMA slope snapshot used for grid-scaling diagnostics
- * @param {Object} [options.gridRangeScalingAmaSlope] - Accepted slope baseline used for future slope-trigger comparisons
- * @param {number} [options.amaSlopeDeltaPercent] - Absolute slope delta percentage since the last accepted snapshot
- * @param {number} [options.amaSlopeThresholdPercent] - Trigger threshold used for slope-based recalc decisions
- * @param {number} [options.gridPriceOffsetPct] - Signed grid-center offset percentage derived from AMA slope
- * @param {Object} [options.dynamicWeights]   - Computed weight offsets for live order sizing
- * @param {string} [options.observedLastGridResetAt] - Reset timestamp seen before this adapter write was calculated
- * @returns {boolean} true on success
  */
 function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
     amaCenterPrice?: number;

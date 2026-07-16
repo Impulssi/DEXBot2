@@ -7,7 +7,6 @@ function normalizeAtrPeriod(period: any, defaultValue = MARKET_ADAPTER.DYNAMIC_W
     if (!Number.isFinite(value) || value <= 0) return defaultValue;
 
     const rounded = Math.round(value);
-    // Sync with research tool bounds: 3 to 30 bars
     return Math.max(3, Math.min(30, rounded));
 }
 

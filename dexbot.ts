@@ -264,18 +264,12 @@ if (cliArgs.includes(CLI_EXAMPLES_FLAG)) {
 // Connection handled centrally by modules/bitshares_client; use waitForConnected() when needed
 
 /**
- * DEXBot - Core trading bot class that manages grid-based market making
- *
- * Responsibilities:
- * - Initializes connection to BitShares and authenticates account
- * - Creates and manages an OrderManager instance for grid operations
- * - Places initial orders and listens for fills to replace them
- * - Handles grid synchronization with on-chain state
- * - Supports dry-run mode for testing without broadcasting
+ * DEXBot - Thin wrapper around SharedDEXBot for dexbot.ts CLI context.
+ * All trading lifecycle (grid, order management, sync) is handled by SharedDEXBot.
  *
  * @class
  */
-// Extend SharedDEXBot for dexbot.ts context (currently just a thin wrapper)
+// Extend SharedDEXBot for dexbot.ts context (thin wrapper)
 class DEXBot extends SharedDEXBot {
     constructor(config: any) {
         super(config, { logPrefix: '' });
@@ -799,7 +793,7 @@ async function exportBotTrades(botName: string | undefined) {
 
 /**
  * Parse and execute CLI commands.
- * Supported commands: start, drystart, reset, disable, key, bot, pm2, update, export
+ * Supported commands: test, drystart, reset, default, disable, keys, bots, pm2, update, export, order, clear, status, whitelist, unlock, help
  * @returns {Promise<boolean>} True if a command was handled, false otherwise
  */
 async function handleCLICommands() {

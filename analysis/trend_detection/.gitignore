@@ -1,16 +1,6 @@
 # Market data (changes with each fetch)
 data/*.json
 
-# Optimization results (changes with each optimization run)
-optimization_results_trend_1day.json
-
-# Generated charts (regenerated each run)
-chart_trend_1day_best.html
-
-# Backtest results (regenerated each run)
-backtest_results_trend_1day.json
-backtest_report_trend_1day.txt
-
 # Node modules (if ever needed)
 node_modules/
 package-lock.json

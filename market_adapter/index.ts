@@ -1,58 +1,6 @@
 /**
- * market_adapter/index.ts — Market Adapter Subsystem Entry Point
- *
- * Barrel export that consolidates the market adapter's public API.
- * Consumers can import from this index instead of targeting internal file paths.
- *
- * ===============================================================================
- * EXPORTS
- * ===============================================================================
- *
- * MAIN ADAPTER:
- * - MarketAdapterService   — Core price adapter service (core/market_adapter_service)
- * - market_adapter          — Top-level orchestrator (runOnceForAma, DEFAULTS, resolveBotCfg, etc.)
- *
- * CANDLE & INTERVAL UTILITIES:
- * - candle_utils            — Candle gap filling, merging
- * - interval_utils          — Shared interval label helper (toIntervalLabel)
- *
- * KIBANA / DATA SOURCES:
- * - kibana_client           — ES/Kibana search (kibanaSearch)
- * - kibana_market_candles   — Market candle queries (getMarketCandles, getMarketClosePrices)
- * - kibana_candles          — Lower-level Kibana document query helpers
- * - kibana_source           — LP candle data source from Kibana
- * - fetch_lp_data           — LP data fetching utilities
- *
- * AMA & STRATEGY CORE:
- * - ama                     — AMA calculation (calculateAMA, getAmaWarmupBars)
- * - ama_slope_model         — Slope weight computation
- * - regime_gate             — Regime multiplier and interpolation
- * - atr_calculator          — ATR calculation
- * - asymmetric_bounds       — Asymmetric grid bounds applyAsymmetricBounds
- * - config_normalizers      — ATR/volatility parameter normalizers
- *
- * CHARTING:
- * - lp_chart_core           — generateHTML for LP chart rendering
- * - lp_chart_runner         — LP chart orchestration (load, generate, save)
- * - lp_chart_strategy_loader — Strategy loading for charts
- *
- * UTILITIES:
- * - adapter_client          — BitShares client connection (connectClient, disconnectClient)
- * - chain                   — Market source / asset resolution helpers
- * - native_history          — Native market history normalization
- * - file_lock               — Cross-process file locking
- * - data_discovery          — LP data file discovery
- * - dynamic_grid_snapshot   — Live dynamic grid snapshot sync
- *
- * ===============================================================================
- * USAGE
- * ===============================================================================
- *
- *   const { MarketAdapterService, runOnceForAma, calculateAMA } = require('./market_adapter');
- *
- * ===============================================================================
- * NOTE
- * ===============================================================================
+ * market_adapter/index.ts — Barrel export for the market adapter subsystem.
+ * Consumers import from this index instead of targeting internal file paths.
  *
  * CLI-only scripts (merge_lp_data, ama_signal_runner) are NOT exported here
  * since they are standalone entry points, not library modules.

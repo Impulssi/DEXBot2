@@ -27,10 +27,10 @@ Git write actions include:
 - `git tag`
 - `git checkout` / `git switch` to another branch
 
-Branch-promotion scripts include:
-- `npm run ptest`
-- `npm run pdev`
-- `npm run pmain`
+Branch-promotion scripts (use force-push, not merge):
+- `npm run ptest` — push local `test` to `origin/test`
+- `npm run pdev` — force-push `test` → `origin/dev` (skips merge)
+- `npm run pmain` — force-push `test` → `origin/dev` **and** `origin/main` (skips dev staging and merge entirely)
 
 Read-only git commands are always allowed (for example: `git status`, `git diff`, `git log`, `git show`).
 
