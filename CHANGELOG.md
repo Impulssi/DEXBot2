@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.9] - 2026-07-16 - Immediate Dust Cancel, Duplicate Price Guard, Cleanup & Simplification
+
+### 2026-07-16
+
+- **Fix**: restore total-operation timeout in `syncFromOpenOrders` — the earlier simplification replaced `Promise.race` with `AsyncLock`'s built-in timeout, which only covers queue-wait time. Re-added explicit `Promise.race` over the entire lock-acquire-plus-execution so a hanging sync (slow RPC) is still caught. Spurious-timeout recovery not restored (microtask race is negligible at 20s granularity) (`modules/order/sync_engine.ts:362-394`).
+- **Fix**: harden `persistGrid` dirty-flag detection — replaced `arguments.length === 0` with `snapshotOrders === undefined` so the flag is correctly cleared even when callers pass `undefined` explicitly (e.g. `flushGridDirty` at `manager.ts:1143`, or test-wrappers forwarding arguments). Fixes `test_grid_dirty_flag_persistence.ts` DIRTY-011 (`modules/order/manager.ts:1791`).
+- **Fix**: update `test_dust_rebalance_logic.ts` weight assertion — the `refreshDynamicWeightDistribution` calls were intentionally removed as redundant; the test now asserts the constructor/mock weights persist unchanged through dust cancel (`tests/test_dust_rebalance_logic.ts:293-302`).
+- **Fix**: guard duplicate price level before any PASS 2 adoption attempt — moved the check to the top of the loop (before `findMatchingGridOrderByOpenOrder`), removed `matchedGridOrderIds` exclusion from the guard (permits inspection of siblings already adopted in the same PASS 2 iteration). 1 new regression test (`9ce0bd26`).
+- **Fix**: wrap dust-cancel 5-min health check in fill-processing lock — extracted `_setupDustHealthCheckInterval` with `fillLockAlreadyHeld` option threaded through `cancelDustOrders`/`_cancelDustOrders`. 1 new regression test (`e9aa6372`).
+- **Fix**: remove deferred dust-cancel timer system — cancel dust immediately on detection instead of timer-based deferral. Removed `_dustSinceMap`, `_dustRetryCount`, `_dustMaintenanceTimer`, `scheduleDustMaintenanceCheck`, `seedDustTimersFromPartialUpdates`, `getPendingDustDelayMs`, `syncDustMaps`, `recordDustFirstSeen`, `clearDustMaintenanceTimer`. Dust persistence removed from `storeMasterGrid`/`persistGridSnapshot`/`loadDustSince`/`loadDustRetryCount`. `DUST_CANCEL_DELAY_SEC` retained in `GRID_LIMITS` as unused for backward compat. Removed `dustCancelTriggeredAt`/`dustRecoveredFromChain` from `SyntheticFill`; simplified `DustCancelResult.batchResult`. Dust cancel delay prompt removed from interactive settings. Doc references updated across 5 files, ~740 lines of timer infrastructure deleted (`5224eb76`).
+- **Feat**: unify order analyzer formatting and forward CLI args — `formatCurrency` for AMA price display, pico/femto/atto SI prefixes, comma separators for values >=1000, `--export` flag forwarded through `dexbot.ts` to analyze-orders script (`4b9d91da`).
+- **Refactor**: dedup extraction, timer symmetry, lock cleanup, and sync timeout simplification — extracted `_isNewFillKey` helper (6 dedup blocks → ~15 lines), extracted lock wrapper from `_reconcileAfterUncertainBroadcast`, removed `Promise.race` + spurious-timeout recovery from `syncFromOpenOrders` (later revised — see fix above). Added `level` field to `AsyncLock`. Fixed `structuralResyncRequested` stripped in recovery setter and missing `_setupDustHealthCheckInterval` in trigger-reset startup path (`3a8656db`).
+- **Refactor**: simplify stale-cleaned tracking, remove dead recovery data and redundant weight refresh calls — `_staleCleanedOrderIds` changed from `Map<any, any>` to `Map<string, number>` with simple TTL (removed gridId tracking, recycled-slot tombstone, 500-entry cap, `_fillRecordRetentionMs`). Removed 7 dead `lastFailureReason` write sites. Removed unreachable `_gridSidesUpdated.size > 0` pipeline check. Removed 4 redundant `refreshDynamicWeightDistribution` calls including the per-fill-batch hot path. Fixed 3 pre-existing test failures (`f5cfcb8d`).
+
 ## [1.1.8] - 2026-07-16 - Dust Timer Persistence, HTML Order Export, Chart Controls, Doc Cleanup
 
 ### 2026-07-16

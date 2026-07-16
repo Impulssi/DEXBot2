@@ -1788,7 +1788,7 @@ class OrderManager {
         // passes an explicit snapshotOrders (e.g. from the startup
         // storeGrid callback), the dirty flag is for the LIVE grid, not
         // the supplied snapshot, so we leave it alone.
-        if (arguments.length === 0 && this._gridDirty) {
+        if (snapshotOrders === undefined && this._gridDirty) {
             this._clearGridDirty();
         }
 

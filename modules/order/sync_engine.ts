@@ -360,25 +360,51 @@ class SyncEngine {
         mgr.logger?.log?.(`[SYNC] Starting synchronization from ${chainOrders?.length || 0} blockchain orders...`, 'info');
 
         const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS;
+        let timedOut = false;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const syncStartedAt = Date.now();
         try {
-            const result = await mgr._syncLock.acquire(async () => {
-                const innerResult = await this._doSyncFromOpenOrders(chainOrders, options);
-                const unmatchedCount = Array.isArray(innerResult.unmatchedChainOrders)
-                    ? innerResult.unmatchedChainOrders.length
-                    : 0;
-                mgr._lastUnmatchedChainOrders = unmatchedCount > 0
-                    ? innerResult.unmatchedChainOrders.map(order => ({ ...order }))
-                    : [];
-                mgr._lastUnmatchedChainOrdersAt = unmatchedCount > 0 ? Date.now() : 0;
-                mgr.logger?.log?.(
-                    `[SYNC] Synchronization complete: ${innerResult.filledOrders.length} filled, ` +
-                    `${innerResult.updatedOrders.length} updated, ` +
-                    `${innerResult.ordersNeedingCorrection.length} needing correction.`, 'info');
-                return innerResult;
-            }, { timeout: timeoutMs });
-
+            const result = await Promise.race([
+                mgr._syncLock.acquire(async () => {
+                    const innerResult = await this._doSyncFromOpenOrders(chainOrders, options);
+                    if (timedOut) {
+                        mgr.logger?.log?.(
+                            `[SYNC] Sync completed after timeout (${Date.now() - syncStartedAt}ms) — ` +
+                            `lock released, result discarded`,
+                            'warn'
+                        );
+                        return innerResult;
+                    }
+                    const unmatchedCount = Array.isArray(innerResult.unmatchedChainOrders)
+                        ? innerResult.unmatchedChainOrders.length
+                        : 0;
+                    mgr._lastUnmatchedChainOrders = unmatchedCount > 0
+                        ? innerResult.unmatchedChainOrders.map(order => ({ ...order }))
+                        : [];
+                    mgr._lastUnmatchedChainOrdersAt = unmatchedCount > 0 ? Date.now() : 0;
+                    mgr.logger?.log?.(
+                        `[SYNC] Synchronization complete: ${innerResult.filledOrders.length} filled, ` +
+                        `${innerResult.updatedOrders.length} updated, ` +
+                        `${innerResult.ordersNeedingCorrection.length} needing correction.`, 'info');
+                    return innerResult;
+                }),
+                new Promise<never>((_, reject) => {
+                    timeoutHandle = setTimeout(() => {
+                        timedOut = true;
+                        reject(new Error(`Sync timed out after ${timeoutMs}ms`));
+                    }, timeoutMs);
+                })
+            ]);
+            clearTimeout(timeoutHandle);
             return result;
         } catch (err: any) {
+            clearTimeout(timeoutHandle);
+            if (err.message?.includes('timed out')) {
+                mgr.logger?.log?.(
+                    '[SYNC] Lock may be held by orphan after timeout; will release when inner work completes',
+                    'warn'
+                );
+            }
             mgr.logger?.log?.(`Sync lock error: ${err.message}`, 'error');
             throw err;
         }

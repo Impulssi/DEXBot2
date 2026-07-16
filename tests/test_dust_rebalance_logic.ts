@@ -292,13 +292,13 @@ async function testDustCancelSyntheticRotation() {
                 assert.strictEqual(fills[0].isDelayedRotationTrigger, true, 'Synthetic dust trigger should enter delayed rotation path');
                 assert.deepStrictEqual(
                     bot.config.weightDistribution,
-                    { sell: 0.38, buy: 0.18 },
-                    'dust cancel rebalance should refresh bot config to live dynamic weights'
+                    { sell: 0.6, buy: 0.4 },
+                    'dust cancel does NOT refresh dynamic weights (redundant call removed — weights refresh on next maintenance cycle)'
                 );
                 assert.deepStrictEqual(
                     bot.manager.config.weightDistribution,
-                    { sell: 0.38, buy: 0.18 },
-                    'dust cancel rebalance should refresh manager config to live dynamic weights'
+                    { sell: 0.6, buy: 0.4 },
+                    'dust cancel does NOT refresh manager config weights'
                 );
                 return { actions: [] };
             },

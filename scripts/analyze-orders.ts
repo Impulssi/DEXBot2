@@ -1591,7 +1591,7 @@ function generateHtmlReport(analyses) {
 
   const outPath = path.resolve('order-analysis.html');
   fs.writeFileSync(outPath, html, 'utf-8');
-  console.log(`\n📄 Order Analyze: ${'./' + path.relative(process.cwd(), outPath)}`);
+  console.log(`\n📄 Order Analysis: ${'./' + path.relative(process.cwd(), outPath)}`);
 }
 
 function main() {
