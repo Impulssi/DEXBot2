@@ -148,7 +148,6 @@ class DEXBot {
     _fillsUnsubscribe: any;
     _triggerWatcher: any;
     _triggerDebounceTimer: any;
-    _dustMaintenanceTimer: any;
     _deferredGridResyncTimer: any;
     _maintenanceIdleTimer: any;
     _mainLoopActive: boolean;
@@ -163,8 +162,6 @@ class DEXBot {
     _lastGridActivityAt: number;
     _currentCycleId: number;
     _autoCancelOrphanCycleMarker: number | null;
-    _dustSinceMap: Map<any, any>;
-    _dustRetryCount: Map<any, any>;
     _consecutiveConsumeFailures: number;
     _consumeFailureFirstAt: number;
     _reconnectUnregister: any;
@@ -251,7 +248,6 @@ class DEXBot {
         this._fillsUnsubscribe = null;
         this._triggerWatcher = null;
         this._triggerDebounceTimer = null;
-        this._dustMaintenanceTimer = null;
         this._deferredGridResyncTimer = null;
         this._maintenanceIdleTimer = null;
         this._mainLoopActive = false;
@@ -269,17 +265,7 @@ class DEXBot {
         this._currentCycleId = 0;
         this._autoCancelOrphanCycleMarker = null;
 
-        // Tracks when each order first entered the dust state (orderId → timestamp ms).
-        // Used by _cancelDustOrders to enforce DUST_CANCEL_DELAY_SEC.
-        // Entries are pruned when an order recovers from dust or is cancelled.
-        this._dustSinceMap = new Map();
-
-        // Tracks consecutive cancel failures per orderId for exponential backoff (Fix C).
-        // Entry is removed on success; at MAX_DUST_CANCEL_RETRIES the order is abandoned
-        // to prevent busy-looping on a persistently failing API call.
-        this._dustRetryCount = new Map();
-
-        // Lightweight dust health check interval (set during startup, cleared on shutdown).
+        // Dust cancellation uses immediate on-chain cancel — no maps or timers needed.
         this._dustHealthCheckTimer = null;
 
         // Fill consumer watchdog: consecutive failure tracking.
@@ -790,16 +776,12 @@ class DEXBot {
             const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed();
             const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx();
             const persistedBtsBalance = this.accountOrders.loadBtsBalance();
-            const persistedDustSince = this.accountOrders.loadDustSince();
-            const persistedDustRetryCount = this.accountOrders.loadDustRetryCount();
 
             return {
                 persistedGrid: repairedGrid,
                 persistedBtsFeesOwed,
                 persistedBoundaryIdx,
                 persistedBtsBalance,
-                persistedDustSince,
-                persistedDustRetryCount
             };
         } finally {
             this.manager.finishBootstrap();
@@ -977,16 +959,6 @@ class DEXBot {
     }
 
     /**
-     * Record first-seen timestamps for newly detected dust orders.
-     * Starts the dust cancellation timer from the moment checkGridHealth first
-     * flags an order, regardless of pipeline state.
-     * @param {Object} healthResult - Result from checkGridHealth
-     */
-    _recordDustFirstSeen(healthResult) {
-        DexbotMaintenanceRuntime.recordDustFirstSeen(this, healthResult);
-    }
-
-    /**
      * Finalize the bot startup after account and initial grid sync are complete.
      * Consolidates common logic for start() and startWithPrivateKey().
      * @param {Object} startupState - The startup state from _initializeStartupState.
@@ -998,8 +970,6 @@ class DEXBot {
             persistedBtsFeesOwed,
             persistedBoundaryIdx,
             persistedBtsBalance,
-            persistedDustSince,
-            persistedDustRetryCount
         } = startupState;
 
         try {
@@ -1042,18 +1012,18 @@ class DEXBot {
                                 }
                                 await this.manager.persistGrid();
 
-                                // Seed dust timers from any partials created by reconnect fills.
-                                // Schedule maintenance so the cancel timer starts immediately,
-                                // not waiting up to 5 minutes for the periodic health check.
+                                // Cancel any dust created by reconnect fills immediately.
                                 if (!this._shuttingDown) {
                                     try {
                                         const reconnectHealth = await this.manager.checkGridHealth(
                                             this.updateOrdersOnChainPlan.bind(this)
                                         );
-                                        this._recordDustFirstSeen(reconnectHealth);
-                                        this._scheduleDustMaintenanceCheck();
+                                        await this._cancelDustOrders({
+                                            buy: reconnectHealth.buyDustOrders,
+                                            sell: reconnectHealth.sellDustOrders,
+                                        });
                                     } catch (_dustErr: any) {
-                                        this._warn(`[RECONNECT] Dust detection failed: ${_dustErr.message}`);
+                                        this._warn(`[RECONNECT] Dust cancel failed: ${_dustErr.message}`);
                                     }
                                 }
                             });
@@ -1239,19 +1209,18 @@ class DEXBot {
 
                     }
 
-                    // Seed dust timers from any partials below threshold created during
-                    // post-reset fill processing. Runs regardless of abort/unmatched state
-                    // so the 30s timer starts from first detection.
-                    // Schedule maintenance so the cancel timer starts immediately.
+                    // Cancel any dust created by post-reset fills immediately.
                     if (!this._shuttingDown) {
                         try {
                             const postResetHealth = await this.manager.checkGridHealth(
                                 this.updateOrdersOnChainPlan.bind(this)
                             );
-                            this._recordDustFirstSeen(postResetHealth);
-                            this._scheduleDustMaintenanceCheck();
+                            await this._cancelDustOrders({
+                                buy: postResetHealth.buyDustOrders,
+                                sell: postResetHealth.sellDustOrders,
+                            });
                         } catch (_dustErr: any) {
-                            this._warn(`[POST-RESET] Dust detection failed: ${_dustErr.message}`);
+                            this._warn(`[POST-RESET] Dust cancel failed: ${_dustErr.message}`);
                         }
                     }
                     this._log('Bootstrap phase complete - fill processing resumed', 'info');
@@ -1342,10 +1311,6 @@ class DEXBot {
             // Lock order: _fillProcessingLock → _divergenceLock (canonical order, same as _consumeFillQueue)
             await this.manager._fillProcessingLock.acquire(async () => {
                 try {
-                    // Wire dust maps into the manager so every persistGridSnapshot call
-                    // (including the first _persistAndRecoverIfNeeded) serialises them.
-                    this.manager._dustSinceMap = this._dustSinceMap;
-                    this.manager._dustRetryCount = this._dustRetryCount;
 
                     this._refreshDynamicWeightDistribution('startup');
                     if (shouldRegenerate) {
@@ -1404,28 +1369,7 @@ class DEXBot {
 
                         await this._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (loaded grid)');
 
-                        // Hydrate dust-cancel timer state from persisted file before the first
-                        // _persistAndRecoverIfNeeded writes to disk. This prevents a crash between
-                        // persist and the former post-finishBootstrap hydration from wiping the
-                        // persisted dust state.
-                        if (persistedDustSince && typeof persistedDustSince === 'object') {
-                            const allOrders: any[] = Array.from(this.manager.orders.values());
-                            const validOrderIds = new Set(
-                                allOrders.filter(o => o.orderId).map(o => o.orderId)
-                            );
-                            for (const [orderId, firstSeen] of Object.entries(persistedDustSince)) {
-                                if (validOrderIds.has(orderId) && Number.isFinite(firstSeen)) {
-                                    this._dustSinceMap.set(orderId, firstSeen);
-                                }
-                            }
-                        }
-                        if (persistedDustRetryCount && typeof persistedDustRetryCount === 'object') {
-                            for (const [orderId, retries] of Object.entries(persistedDustRetryCount)) {
-                                if (this._dustSinceMap.has(orderId) && Number.isFinite(retries)) {
-                                    this._dustRetryCount.set(orderId, retries);
-                                }
-                            }
-                        }
+                        // Dust state is no longer persisted — cancelled immediately on detection.
 
                         await this._persistAndRecoverIfNeeded();
                     }
@@ -1445,13 +1389,14 @@ class DEXBot {
                     // CRITICAL: Pass lockAlreadyHeld since we're inside _fillProcessingLock.acquire()
                     await this._runGridMaintenance('startup', { fillLockAlreadyHeld: true });
 
-                    // Safety net: re-seed dust timers so PARTIAL orders below threshold
-                    // from a previous bot lifetime get detected immediately, even if
-                    // _runGridMaintenance was skipped (maintenance cooldown).
+                    // Cancel any dust from a previous bot lifetime immediately.
                     const startupHealth = await this.manager.checkGridHealth(
                         this.updateOrdersOnChainPlan.bind(this)
                     );
-                    this._recordDustFirstSeen(startupHealth);
+                    await this._cancelDustOrders({
+                        buy: startupHealth.buyDustOrders,
+                        sell: startupHealth.sellDustOrders,
+                    });
 
                     this._log('Bootstrap phase complete - fill processing resumed', 'info');
                 } finally {
@@ -1468,12 +1413,8 @@ class DEXBot {
             this._setupCreditWatchdogInterval();
             this._setupCredentialDaemonWatchdogInterval();
 
-            // Lightweight periodic dust health check (independent of open-orders sync loop).
-            // Catches PARTIAL orders below the dust threshold that were created by a prior
-            // bot instance (crash/restart) or by partial fills that didn't trigger inline
-            // full-fill promotion. Runs read-only checkGridHealth, seeds the 30s dust
-            // cancel timer, and schedules the maintenance timer that performs the actual
-            // blockchain cancel broadcast — no blockchain sync or lock acquisition required.
+            // Periodic dust health check — catches partials that fell below threshold
+            // without triggering the post-fill pipeline. Cancels immediately.
             const DUST_HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
             this._dustHealthCheckTimer = setInterval(async () => {
                 if (this._shuttingDown || !this.manager) return;
@@ -1481,8 +1422,16 @@ class DEXBot {
                     const health = await this.manager.checkGridHealth(
                         this.updateOrdersOnChainPlan?.bind(this)
                     );
-                    this._recordDustFirstSeen(health);
-                    this._scheduleDustMaintenanceCheck();
+                    const allDust = [
+                        ...(health.buyDustOrders || []),
+                        ...(health.sellDustOrders || []),
+                    ];
+                    if (allDust.length > 0) {
+                        await this._cancelDustOrders({
+                            buy: health.buyDustOrders,
+                            sell: health.sellDustOrders,
+                        });
+                    }
                 } catch {
                     // Silently retry next interval
                 }
@@ -1942,7 +1891,7 @@ class DEXBot {
                                     historyId: fill?.id
                                 });
                                 if (fillKey) pendingFillKeysForCurrentCycle.add(fillKey);
-                                await this._seedDustTimersFromPartialUpdates(resultHistory.updatedOrders, Date.now());
+                                // Dust is handled by post-fill detection below.
                                 if (resultHistory.filledOrders) resolvedOrders.push(...resultHistory.filledOrders);
                                 if (resultHistory.requiresOpenOrdersSync) requiresOpenOrdersSync = true;
                             }
@@ -1958,7 +1907,7 @@ class DEXBot {
                             this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (open orders mode)`, 'info');
                             const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
                             const resultOpenOrders = await this.manager.syncFromOpenOrders(chainOpenOrders, { fillLockAlreadyHeld: true });
-                            await this._seedDustTimersFromPartialUpdates(resultOpenOrders.updatedOrders, Date.now());
+                            // Dust is handled by post-fill detection below.
                             if (resultOpenOrders.filledOrders) resolvedOrders.push(...resultOpenOrders.filledOrders);
                             if (resultOpenOrders.ordersNeedingCorrection) ordersNeedingCorrection.push(...resultOpenOrders.ordersNeedingCorrection);
                         }
@@ -2025,19 +1974,14 @@ class DEXBot {
                         const shouldRunDustDetection = !abortedFillCycle && hasAnyFills;
 
                         if (shouldRunDustDetection) {
-                            // SAFE: Called inside _fillProcessingLock.acquire(), no concurrent fund modifications.
-                            // Fund state is already fresh from _processFillsWithBatching's internal resumeFundRecalc.
-
-                            // Read-only health check runs regardless of pipeline state so that
-                            // recordDustFirstSeen seeds the 30s timer from first detection (Issue A/G).
                             const healthResult = await this.manager.checkGridHealth(
                                 this.updateOrdersOnChainPlan.bind(this)
                             );
-                            this._recordDustFirstSeen(healthResult);
-
-                            const pipelineStatus = this.manager.isPipelineEmpty(this._getPipelineSignals());
-                            if (pipelineStatus.isEmpty) {
-                                // Refresh weights so cancelDustOrders uses live distribution
+                            const allDust = [
+                                ...(healthResult.buyDustOrders || []),
+                                ...(healthResult.sellDustOrders || []),
+                            ];
+                            if (allDust.length > 0) {
                                 this._refreshDynamicWeightDistribution('post-fill-dust');
                                 const dustCancelResult = await this._cancelDustOrders({
                                     buy: healthResult.buyDustOrders,
@@ -2046,17 +1990,6 @@ class DEXBot {
                                 if (dustCancelResult?.batchResult?.aborted) {
                                     abortedFillCycle = true;
                                 }
-                            } else {
-                                // Pipeline not empty — dust timer is already seeded above via
-                                // recordDustFirstSeen. Schedule the dust timer so the 30s wait
-                                // burns during the blockage instead of starting when it clears.
-                                this._scheduleDustMaintenanceCheck();
-                                const health = this.manager.getPipelineHealth();
-                                this.manager.logger.log(
-                                    `Deferring grid health check: ${pipelineStatus.reasons.join(', ')}. ` +
-                                    `Blocked for: ${health.blockedDurationHuman}`,
-                                    'debug'
-                                );
                             }
                         }
 
@@ -5212,54 +5145,15 @@ class DEXBot {
     }
 
     /**
-     * Cancel dust partial orders that have exceeded DUST_CANCEL_DELAY_SEC, treating each
-     * as a fully-filled slot so the grid can place a fresh counter-order there.
-     *
-     * Behaviour by GRID_LIMITS.DUST_CANCEL_DELAY_SEC:
-     *   -1  Disabled — returns immediately without action.
-     *    0  Cancel on first detection (no delay).
-     *    N  Cancel after N continuous seconds in dust state.
-     *
-     * The timer is tracked per orderId in this._dustSinceMap.  Orders that recover
-     * from dust (size grows back above threshold) have their timer reset automatically.
-     *
-     * After a successful cancel the order slot is virtualised (size=0, state=VIRTUAL)
-     * and a synthetic delayed-rotation event is sent through the normal fill pipeline.
-     *
-     * @param {{ buy: Array, sell: Array }} dustOrders - Dust order lists from checkGridHealth.
-     * @returns {Promise<{cancelledCount: number, batchResult: Object|null}>}
+     * Cancel dust partial orders immediately — no maps, no timers, no delay.
+     * Each dust order is cancelled on chain and its slot rotated through the
+     * synthetic-fill pipeline.
+     * @param {{ buy: Array, sell: Array }} dustOrders
+     * @returns {Promise<{cancelledCount: number, batchResult: {aborted: boolean}|null}>}
      * @private
      */
     async _cancelDustOrders({ buy: buyDust = [], sell: sellDust = [] } = {}) {
         return DexbotMaintenanceRuntime.cancelDustOrders(this, { buy: buyDust, sell: sellDust });
-    }
-
-    /**
-     * Clear the dust maintenance timer.
-     * @returns {void}
-     */
-    _clearDustMaintenanceTimer() {
-        return DexbotMaintenanceRuntime.clearDustMaintenanceTimer(this);
-    }
-
-    /**
-     * Schedule a dust maintenance check.
-     * @returns {void}
-     */
-    _scheduleDustMaintenanceCheck() {
-        return DexbotMaintenanceRuntime.scheduleDustMaintenanceCheck(this);
-    }
-
-    /**
-     * Seed dust timers immediately when a fill/update first leaves an order in dust state,
-     * instead of waiting for the next maintenance cycle to discover it.
-     * @param {Array<Object>} updatedOrders
-     * @param {number} [detectedAt=Date.now()]
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _seedDustTimersFromPartialUpdates(updatedOrders = [], detectedAt = Date.now()) {
-        return DexbotMaintenanceRuntime.seedDustTimersFromPartialUpdates(this, updatedOrders, detectedAt);
     }
 
     /**
@@ -5343,8 +5237,6 @@ class DEXBot {
             clearTimeout(this._structuralGridResyncTimer);
             this._structuralGridResyncTimer = null;
         }
-
-        this._clearDustMaintenanceTimer();
 
         if (this._dustHealthCheckTimer) {
             clearInterval(this._dustHealthCheckTimer);

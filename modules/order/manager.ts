@@ -477,10 +477,7 @@ class OrderManager {
     _gridDirty: boolean;
     _gridDirtyReasons: Map<string, number>;
     _gridDirtySince: number | null;
-    /** Reference to DEXBot._dustSinceMap, set during startup so persistGridSnapshot can serialise it. */
-    _dustSinceMap: Map<string, number> | null;
-    /** Reference to DEXBot._dustRetryCount, set during startup so persistGridSnapshot can serialise it. */
-    _dustRetryCount: Map<string, number> | null;
+
     _metrics: any;
     _currentWorkingGrid: any;
     _cowEngine: any;
@@ -567,8 +564,7 @@ class OrderManager {
         this._gridDirty = false;
         this._gridDirtyReasons = new Map();
         this._gridDirtySince = null;
-        this._dustSinceMap = null;
-        this._dustRetryCount = null;
+
 
         this._metrics = {
             fundRecalcCount: 0,
@@ -1784,10 +1780,7 @@ class OrderManager {
             return validation;
         }
 
-        await persistGridSnapshot(this, this.accountOrders, snapshotOrders, {
-            dustSince: this._dustSinceMap ? Object.fromEntries(this._dustSinceMap) : undefined,
-            dustRetryCount: this._dustRetryCount ? Object.fromEntries(this._dustRetryCount) : undefined,
-        });
+        await persistGridSnapshot(this, this.accountOrders, snapshotOrders);
 
         // On a successful live-grid persist (the default — no explicit
         // snapshotOrders was passed in), clear the dirty flag so that

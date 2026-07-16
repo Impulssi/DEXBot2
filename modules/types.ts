@@ -816,8 +816,6 @@ export interface ReplaySafeFillResult {
 export interface SyntheticFill {
   isPartial: boolean;
   isDelayedRotationTrigger?: boolean;
-  dustCancelTriggeredAt?: number;
-  dustRecoveredFromChain?: boolean;
 }
 
 export interface BotsConfigSnapshot {
@@ -852,7 +850,7 @@ export interface GridResyncOptions {
 
 export interface DustCancelResult {
   cancelledCount: number;
-  batchResult: { abortedForIllegalState: boolean; abortedForAccountingFailure: boolean } | null;
+  batchResult: { aborted: boolean } | null;
 }
 
 export interface MarketAdapterSyncResult {

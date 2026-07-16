@@ -117,8 +117,8 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 ## Maintenance Runtime
 
 - `INV-MAINT-001` Pipeline in-flight defers maintenance
-  - When `isPipelineEmpty` returns `isEmpty=false` (batch in-flight, recovery in-flight, or broadcasting active), `checkSpreadCondition` and broadcast actions (`cancelDustOrders`) must be skipped.
-  - A read-only `checkGridHealth` detection pass runs before the gate by design — it only populates `_dustSinceMap` so the dust timer starts burning while the pipeline is blocked; no broadcast/cancel may fire until the pipeline is empty.
+  - When `isPipelineEmpty` returns `isEmpty=false` (batch in-flight, recovery-in-flight, or broadcasting active), `checkSpreadCondition` and divergence corrections must be skipped.
+  - Dust cancels broadcast directly to chain and are safe to call regardless of pipeline state.
   - Pipeline signals (`batchInFlight`, `recoveryInFlight`, `broadcasting`) must be passed to `isPipelineEmpty`.
 
 - `INV-MAINT-002` Illegal state abort
@@ -138,8 +138,8 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - Recent activity tracking covers: fill queueing, fill processing completion, COW batch start/end, open-order sync, periodic fetches.
 
 - `INV-MAINT-005` Dust-first ordering
-  - Dust partials default to `DUST_CANCEL_DELAY_SEC` (30s).
-  - Grid resync and structural maintenance must be deferred until dust timers complete, plus an additional blockchain settle delay before retrying reset work.
+  - Dust partials are cancelled immediately on detection — no delay, no timer.
+  - Grid resync and structural maintenance wait only for the idle settle delay.
 
 ---
 

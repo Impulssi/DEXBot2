@@ -355,17 +355,8 @@ let GRID_LIMITS = {
     //   - This order would be rotated to free the slot
     PARTIAL_DUST_THRESHOLD_PERCENTAGE: 5,
 
-    // DUST_CANCEL_DELAY_SEC: Seconds to wait before auto-cancelling a dust partial as fully filled.
-    // When a partial order's remaining size falls below PARTIAL_DUST_THRESHOLD_PERCENTAGE,
-    // it can be cancelled on-chain and its slot freed for a fresh counter-order.
-    // Formula: IF (now - firstDustDetected) >= DUST_CANCEL_DELAY_SEC × 1000ms → cancel
-    // Values:
-    //   -1 = disabled — dust orders are never auto-cancelled
-    //    0 = cancel immediately on first dust detection in the active window
-    //    N = cancel after N seconds of continuous dust state (default: 30, timer resets if order recovers)
-    // Example: 30 → order stays dust for 30 seconds → cancel + treat slot as fully filled
-    //   - Bot then places a fresh order at proper size on the freed slot
-    //   - The cancelled dust remainder is returned to the bot's free balance
+    // DUST_CANCEL_DELAY_SEC: Legacy — no longer used. Dust is cancelled immediately on detection
+    // (no delay, no timer). Kept for backward-compat so existing configs don't break on load.
     DUST_CANCEL_DELAY_SEC: 30,
 
     // FUND_INVARIANT_PERCENT_TOLERANCE: Allowed percentage drift in fund tracking before triggering recovery.

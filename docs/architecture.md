@@ -1388,7 +1388,7 @@ The strategy engine has been significantly strengthened with improvements to fun
 - Improved dust detection algorithm prevents false positives
 - Detects dust as `< 5% of ideal order size`
 - Dust partials are absorbed into the next grid rebuild cycle (no merge/split mechanics)
-- **Auto-Cancellation**: `_cancelDustOrders()` (called post-fill and in periodic maintenance) cancels dust partials on-chain once they exceed `DUST_CANCEL_DELAY_SEC` seconds in dust state; timer tracked per `orderId` in `_dustSinceMap`. `-1` disables, `0` = instant, default 30s.
+- **Auto-Cancellation**: `_cancelDustOrders()` cancels dust partials on-chain immediately on detection — no delay, no timer maps, no retry budgets. Cancel is attempted post-fill (inside fill lock) and every 5-min health check (safety net).
 
 **3. Strict Order Size Constraints**
 - Orders validated to not exceed available funds

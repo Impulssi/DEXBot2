@@ -326,23 +326,14 @@ async function testDustCancelSyntheticRotation() {
             price: 0.9
         };
 
-        const firstPass = await bot._cancelDustOrders({ buy: [dustOrder], sell: [] });
-        assert.strictEqual(firstPass.cancelledCount, 0, 'Dust cancel should wait for the timer before triggering');
-        assert.strictEqual(cancelCalls, 0, 'Dust cancel should not run before timer expiry');
-        assert.strictEqual(processCalls, 0, 'Synthetic rotation should not run before timer expiry');
-
-        bot._dustSinceMap.set('1.7.900', Date.now() - (60 * 1_000) - 1);
-        const secondPass = await bot._cancelDustOrders({ buy: [dustOrder], sell: [] });
-        assert.strictEqual(secondPass.cancelledCount, 1, 'Dust cancel should fire once timer expires');
+        const result = await bot._cancelDustOrders({ buy: [dustOrder], sell: [] });
+        assert.strictEqual(result.cancelledCount, 1, 'Dust cancel should fire immediately');
         assert.strictEqual(cancelCalls, 1, 'Dust cancel should submit one cancel');
         assert.strictEqual(syncCalls, 1, 'Dust cancel should synchronize once');
         assert.strictEqual(processCalls, 1, 'Dust cancel should trigger the synthetic fill pipeline');
         assert.strictEqual(persistCalls, 2, 'Dust cancel should persist grid (COW path + end-of-tick flushGridDirty safety net)');
-        console.log('  ✓ Dust cancel triggers synthetic delayed rotation only after timer expiry');
+        console.log('  ✓ Dust cancel triggers synthetic delayed rotation immediately (no timer)');
     } finally {
-        if (typeof bot?._clearDustMaintenanceTimer === 'function') {
-            bot._clearDustMaintenanceTimer();
-        }
         chainOrders.cancelOrder = originalCancelOrder;
         weightFiles.cleanup();
     }
@@ -395,7 +386,6 @@ async function testDustCancelDoesNotBeatRealFill() {
             price: 1.1
         };
 
-        bot._dustSinceMap.set('1.7.901', Date.now() - (60 * 1_000) - 1);
         const result = await bot._cancelDustOrders({ buy: [], sell: [dustOrder] });
 
         assert.strictEqual(result.cancelledCount, 0, 'Failed cancel should not count as dust rotation');
@@ -403,9 +393,6 @@ async function testDustCancelDoesNotBeatRealFill() {
         assert.strictEqual(persistCalls, 0, 'Failed cancel should not persist synthetic changes');
         console.log('  ✓ Real fill / failed cancel path does not trigger synthetic rotation');
     } finally {
-        if (typeof bot?._clearDustMaintenanceTimer === 'function') {
-            bot._clearDustMaintenanceTimer();
-        }
         chainOrders.cancelOrder = originalCancelOrder;
     }
 }
@@ -791,14 +778,8 @@ async function testDustTrackingOnlyUsesTopLiveOrder() {
     bot.manager = manager;
 
     try {
-        const detectedAt = Date.now();
-        const innerDust = manager.orders.get('inner-dust-sell');
-
         const initialHealth = await Grid.checkWindowDust(manager);
         assert.strictEqual(initialHealth.sellDustOrders.length, 0, 'Interior dust should not be selected when top order is healthy');
-
-        await bot._seedDustTimersFromPartialUpdates([innerDust], detectedAt);
-        assert.strictEqual(bot._dustSinceMap.has('1.7.931'), false, 'Interior dust should not start a cancel timer');
 
         await manager._updateOrder({
             id: 'top-sell',
@@ -809,16 +790,12 @@ async function testDustTrackingOnlyUsesTopLiveOrder() {
             orderId: '1.7.930'
         });
 
-        const topDust = manager.orders.get('top-sell');
         const topHealth = await Grid.checkWindowDust(manager);
         assert.strictEqual(topHealth.sellDustOrders.length, 1, 'Top dust should be selected for tracking');
         assert.strictEqual(topHealth.sellDustOrders[0].orderId, '1.7.930', 'Top live sell should be the only tracked dust order');
 
-        await bot._seedDustTimersFromPartialUpdates([topDust], detectedAt + 1000);
-        assert.strictEqual(bot._dustSinceMap.get('1.7.930'), detectedAt + 1000, 'Top dust should start the cancel timer');
         console.log('  ✓ Only the top live order is eligible for dust tracking');
     } finally {
-        bot._clearDustMaintenanceTimer();
     }
 }
 
@@ -1511,24 +1488,11 @@ Promise.resolve()
     .then(() => testDustCancelSyntheticRotation())
     .then(() => testDustCancelDoesNotBeatRealFill())
     .then(() => testDustCancelOrderMissingClassifier())
-    .then(() => testDustCancelDoesNotTreatAccountMissingAsGone())
-    .then(() => testDustCancelFallbackRefetchesOpenOrders())
-    .then(() => testDustTimerStartsAtDustFill())
     .then(() => testDustThresholdUsesConfiguredPercentage())
     .then(() => testDustTrackingOnlyUsesTopLiveOrder())
     .then(() => testInteriorDustWithDuplicatePriceLevel())
     .then(() => testInteriorDustAdjacentGridLevelNotEligible())
-    .then(() => testStartupDustSchedulesTimer())
-    .then(() => testConsecutiveDustCancelSeeding())
-    .then(() => testDustReseedHealthFailureDoesNotAbort())
-    .then(() => testMaintenanceDefersStructuralWorkWhileDustPending())
     .then(() => testGridMaintenanceWaitsForQuietPeriod())
-    .then(() => testRecordDustFirstSeen())
-    .then(() => testGetPendingDustDelayMsSentinel())
-    .then(() => testDustCancelAbandonAfterRetries())
-    .then(() => testDustCancelSuccessResetsRetryCounter())
-    .then(() => testDustCancelDisableClearsMap())
-    .then(() => testDustCancelDelayZero())
     .finally(() => {
         Module._load = originalModuleLoad;
     })

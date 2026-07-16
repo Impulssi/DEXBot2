@@ -44,7 +44,7 @@ Follow this path through the codebase:
 - `modules/constants.ts::REGIME_TABLE` - Hurst/PE regime signal-strength table
 - `modules/dexbot_class.ts::_handleBatchHardAbort()` - Hard-abort recovery handler
 - `modules/dexbot_class.ts::_staleCleanedOrderIds` - Orphan-fill deduplication tracking
-- `modules/dexbot_class.ts::_cancelDustOrders()` - Auto-cancel dust partials; timer state in `_dustSinceMap`
+- `modules/dexbot_class.ts::_cancelDustOrders()` - Auto-cancel dust partials on-chain immediately (no timer)
 - `modules/credit_runtime.ts` - Debt workflow executor (MPA and credit offer)
 - `market_adapter/core/market_adapter_service.ts` - Signal pipeline (AMA, dynamic weights, collateral advisory)
 
@@ -145,7 +145,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Surplus** | Order outside the active window that can be rotated |
 | **Hard Surplus** | Order beyond the configured `activeOrders` count |
 | **Dust** | Partial order < 5% of ideal size |
-| **Dust Cancel** | Auto-cancellation of dust partials on-chain after `DUST_CANCEL_DELAY_SEC` seconds, freeing the slot for a fresh counter-order. Timer tracked per `orderId` in `_dustSinceMap`. |
+| **Dust Cancel** | Immediate on-chain cancel of dust partials on detection (no delay, no timer). Slot freed for a fresh counter-order. |
 
 ### Credit/Debt Runtime Concepts
 

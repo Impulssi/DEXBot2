@@ -31,7 +31,7 @@ rebuild around that snapshot.
 Each source is evaluated independently. Market-adapter full-resync requests are
 serialized through `profiles/recalculate.<botKey>.trigger`. Runtime maintenance
 paths execute under the order manager fill-processing lock and may defer until
-the bot is idle or pending dust-cancel timers have settled.
+the bot is idle (no fills, no sync in-flight).
 
 ---
 
@@ -52,7 +52,7 @@ before startup grid initialization.
 The bot executes the reset through `_performGridResync()`:
 
 1. Acquire `_fillProcessingLock`.
-2. Defer if the bot is not idle or a pending dust-cancel timer has not settled.
+2. Defer if the bot is not idle (fills or sync in-flight).
 3. Reload this bot's entry from `profiles/bots.json`.
 4. For full-recenter reset reasons, refresh `gridCenterPrice` in
    `<botKey>.dynamicgrid.json` from the latest `amaCenterPrice` before rebuilding.

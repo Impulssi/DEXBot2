@@ -140,7 +140,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Optimistic ChainFree**: The mechanism that allows the bot to trade with fill proceeds before they are finalized on-chain.
 - **Fill Batch Processing**: Fixed-cap batching for efficient fill processing (`<=4` unified, `>4` chunked)
 - **Partial Order Consolidation**: Simplified, direct consolidation through grid rebuilding (no merge/split mechanics)
-- **Dust Detection & Management**: Unhealthy partials are absorbed into next grid rebuild cycle or auto-cancelled on-chain after a configurable delay (`DUST_CANCEL_DELAY_SEC`)
+- **Dust Detection & Management**: Partials below the dust threshold are cancelled on-chain immediately on detection (no delay, no timer)
 - **BTS Fee Object Structure**: `netProceeds` field for accounting precision
 - **BUY Side Sizing & Fee Accounting**: Correct fee application by order side
 - **Mixed Order Fund Validation**: Separate validation for BUY vs SELL order fund checks

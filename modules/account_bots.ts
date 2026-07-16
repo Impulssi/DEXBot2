@@ -989,13 +989,8 @@ async function promptGeneralSettings() {
 
      while (!finished) {
           console.log('\x1b[1m--- General Settings (Global) ---\x1b[0m');
-          const dustCancelDisplay = settings.GRID_LIMITS.DUST_CANCEL_DELAY_SEC < 0
-              ? 'OFF'
-              : settings.GRID_LIMITS.DUST_CANCEL_DELAY_SEC === 0
-                  ? 'instant'
-                  : `${settings.GRID_LIMITS.DUST_CANCEL_DELAY_SEC}s`;
           console.log(`\x1b[1;33m1) Grid Health:\x1b[0m   \x1b[38;5;208mRatio:\x1b[0m ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, \x1b[38;5;208mRMS:\x1b[0m ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, \x1b[38;5;208mAMA Delta:\x1b[0m ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%`);
-          console.log(`\x1b[1;33m2) Order Recovery:\x1b[0m \x1b[38;5;208mDust:\x1b[0m ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%, \x1b[38;5;208mDustCancel:\x1b[0m ${dustCancelDisplay}`);
+          console.log(`\x1b[1;33m2) Order Recovery:\x1b[0m \x1b[38;5;208mDust Threshold:\x1b[0m ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
           const nodeCount = (settings.NODES.list || []).length;
           const hcIntervalMin = ((settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000).toFixed(0);
           const prefNodeDisplay = settings.NODES.selection?.preferredNode || 'none';
@@ -1032,11 +1027,7 @@ async function promptGeneralSettings() {
             case '2':
                 const dust = await askNumberWithBounds('Partial Dust Threshold %', settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE, 0.1, 50);
                 if (dust === '\x1b') break;
-                console.log('  \x1b[38;5;250mDust Cancel Delay: -1=off, 0=instant, N=seconds before auto-cancel\x1b[0m');
-                const dustCancel = await askIntegerInRange('Dust Cancel Delay (sec)', settings.GRID_LIMITS.DUST_CANCEL_DELAY_SEC, -1, 86400);
-                if (dustCancel === '\x1b') break;
                 settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE = dust;
-                settings.GRID_LIMITS.DUST_CANCEL_DELAY_SEC = dustCancel;
                 break;
             case '3':
                 settings.NODES.enabled = true;
