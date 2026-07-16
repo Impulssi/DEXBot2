@@ -681,6 +681,41 @@ class SyncEngine {
         for (const [chainOrderId, chainOrder] of parsedChainOrders) {
             if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
 
+            // The grid allows at most one order per price level. If a placed
+            // grid order already exists at the orphan's price (within tolerance),
+            // this orphan is a stale duplicate — skip adoption so the reconcile
+            // layer cancels it. Size is irrelevant; any duplicate violates the
+            // invariant. Check BEFORE any adoption attempt, including the first
+            // match (line 684), because a VIRTUAL slot at a nearby price can
+            // otherwise silently adopt the orphan before the duplicate guard runs.
+            const duplicatePriceOrder: any = Array.from(mgr.orders.values()).find((o: any) =>
+                o.type === chainOrder.type &&
+                isOrderPlaced(o) &&
+                Math.abs(o.price - chainOrder.price) <= calculatePriceTolerance(
+                    Math.min(o.price, chainOrder.price),
+                    Math.max(o.size, chainOrder.size),
+                    o.type, mgr.assets
+                )
+            );
+            if (duplicatePriceOrder) {
+                unmatchedChainOrders.push({
+                    chainOrderId,
+                    type: chainOrder.type,
+                    price: chainOrder.price,
+                    size: chainOrder.size,
+                    raw: rawChainOrders.get(chainOrderId),
+                    reason: 'duplicate-price-level',
+                    candidateSlotId: duplicatePriceOrder.id,
+                });
+                mgr.logger?.log?.(
+                    `[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +
+                    `size=${chainOrder.size}) — NOT adopted: duplicates price level of active ` +
+                    `${duplicatePriceOrder.id} (${duplicatePriceOrder.orderId} at ${duplicatePriceOrder.price})`,
+                    'warn'
+                );
+                continue;
+            }
+
             const match = findMatchingGridOrderByOpenOrder(
                 { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },
                 {
@@ -767,42 +802,11 @@ class SyncEngine {
                     'warn'
                 );
             } else {
-                // No grid slot matched by type+price+size. Fallback: find the nearest
-                // VIRTUAL slot (including spread slots) by price so the orphaned order
-                // becomes visible to checkWindowDust and can be dust-cancelled.
-                //
-                // BUT: the grid allows at most one order per price level. If an active
-                // grid order already exists at the same price (within tolerance), this
-                // orphan is a stale duplicate — skip adoption so the reconcile layer
-                // cancels it. Size is irrelevant; any duplicate violates the invariant.
-                const duplicatePriceOrder: any = Array.from(mgr.orders.values()).find((o: any) =>
-                    o.type === chainOrder.type &&
-                    isOrderPlaced(o) &&
-                    !matchedGridOrderIds.has(o.id) &&
-                    Math.abs(o.price - chainOrder.price) <= calculatePriceTolerance(
-                        Math.min(o.price, chainOrder.price),
-                        Math.max(o.size, chainOrder.size),
-                        o.type, mgr.assets
-                    )
-                );
-                if (duplicatePriceOrder) {
-                    unmatchedChainOrders.push({
-                        chainOrderId,
-                        type: chainOrder.type,
-                        price: chainOrder.price,
-                        size: chainOrder.size,
-                        raw: rawChainOrders.get(chainOrderId),
-                        reason: 'duplicate-price-level',
-                        candidateSlotId: duplicatePriceOrder.id,
-                    });
-                    mgr.logger?.log?.(
-                        `[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +
-                        `size=${chainOrder.size}) — NOT adopted: duplicates price level of active ` +
-                        `${duplicatePriceOrder.id} (${duplicatePriceOrder.orderId} at ${duplicatePriceOrder.price})`,
-                        'warn'
-                    );
-                    continue;
-                }
+                // No grid slot matched by type+price+size in the first pass.
+                // Fallback: adopt into the nearest VIRTUAL/spread slot so the
+                // orphan becomes visible to checkWindowDust for dust auto-cancel.
+                // The duplicate-price-level guard already ran above so it is not
+                // repeated here.
 
                 const adoptedSlot = findMatchingGridOrderByOpenOrder(
                     { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },

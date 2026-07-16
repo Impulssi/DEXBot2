@@ -212,6 +212,53 @@ async function runTests() {
         );
     }
 
+    console.log(' - Testing Two Orphans At Same Price With Two VIRTUAL Slots...');
+    {
+        // Two VIRTUAL SELL slots at price 100, two chain orphans at price 100.
+        // Without the matchedGridOrderIds exclusion fix, the second orphan would
+        // adopt into the second VIRTUAL slot creating two orders at the same price.
+        const manager = await createManager();
+        await manager._updateOrder({
+            id: 'slot-a', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SELL,
+            price: 100, size: 25, orderId: null
+        });
+        await manager._updateOrder({
+            id: 'slot-b', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SELL,
+            price: 100, size: 26, orderId: null
+        });
+
+        const result = await manager.sync.syncFromOpenOrders([
+            makeSellChainOrder('c-orphan-a', 25, 100),
+            makeSellChainOrder('c-orphan-b', 26, 100)
+        ]);
+
+        const slotA = manager.orders.get('slot-a');
+        const slotB = manager.orders.get('slot-b');
+        const adoptedId = slotA.orderId || slotB.orderId;
+
+        assert.ok(adoptedId, 'One of the two VIRTUAL slots must have adopted an orphan');
+        const adopted = slotA.orderId ? slotA : slotB;
+        const untouched = slotA.orderId ? slotB : slotA;
+        assert.strictEqual(
+            (slotA.orderId ? 1 : 0) + (slotB.orderId ? 1 : 0), 1,
+            'Only one of the two VIRTUAL slots should have an orderId'
+        );
+        assert.strictEqual(untouched.orderId, null, 'The second slot must remain VIRTUAL (no adoption)');
+        assert.strictEqual(untouched.state, ORDER_STATES.VIRTUAL, 'The second slot must retain VIRTUAL state');
+        assert.ok(
+            result.unmatchedChainOrders.some(u =>
+                u.chainOrderId === 'c-orphan-b' && u.reason === 'duplicate-price-level'
+            ) || result.unmatchedChainOrders.some(u =>
+                u.chainOrderId === 'c-orphan-a' && u.reason === 'duplicate-price-level'
+            ),
+            'The second orphan must be pushed to unmatchedChainOrders with duplicate-price-level reason'
+        );
+        assert.strictEqual(
+            result.unmatchedChainOrders.filter(u => u.reason === 'duplicate-price-level').length, 1,
+            'Exactly one duplicate-price-level entry in unmatchedChainOrders'
+        );
+    }
+
     console.log(' - Testing Non-Grid Pair Chain Orders Are Ignored...');
     {
         const manager = await createManager();
