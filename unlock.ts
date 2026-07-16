@@ -60,6 +60,7 @@ const foreignCredDaemon = require('./modules/launcher/foreign_cred_daemon');
 const { normalizeBotEntry, resolveRawBotEntries, loadSettingsFile } = require('./modules/bot_settings');
 const chainKeys = require('./modules/chain_keys');
 const credentialPolicy = require('./modules/credential_policy');
+const { getWhitelistFlags } = require('./modules/market_adapter_whitelist');
 const { ensureDir, readJSON, safeUnlink, writeJSON } = require('./modules/utils/fs_utils');
 const { createMarketAdapterWatchdog } = require('./modules/launcher/market_adapter_watchdog');
 const { isLikelyMarketAdapterProcess } = require('./modules/launcher/market_adapter_runtime');
@@ -820,9 +821,17 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                 } else {
                     console.log(`    ${colorStatus('(not running)', STATUS_COLORS.muted)}`);
                 }
+                function botKeyFromName(name) {
+                    return String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'bot';
+                }
                 console.log(`    ${statusLabel('Active:')}  ${formatBotCount(amaBots.length)}`);
                 for (const b of amaBots) {
-                    console.log(`      - ${colorStatus(b.name, STATUS_COLORS.ok)} (${b.gridPrice})`);
+                    const flags = getWhitelistFlags(botKeyFromName(b.name));
+                    const indicators = [];
+                    if (flags.asymmetricBounds) indicators.push('range');
+                    if (flags.dynamicWeight) indicators.push('weight');
+                    const suffix = indicators.length > 0 ? `, ${indicators.join(', ')}` : '';
+                    console.log(`      - ${colorStatus(b.name, STATUS_COLORS.ok)} (${b.gridPrice}${suffix})`);
                 }
                 return;
             }
