@@ -204,7 +204,8 @@ async function runTests() {
             config: {
                 assetA: 'USD',
                 assetB: 'EUR',
-                activeOrders: { buy: 10, sell: 10 }
+                activeOrders: { buy: 10, sell: 10 },
+                gridLimits: { GRID_REGENERATION_PERCENTAGE: 3 }
             },
             funds: {
                 total: { grid: { buy: 100, sell: 100 } },
@@ -419,6 +420,85 @@ async function runTests() {
             assert(Math.abs(manager._lastGridPricingContext.gridPrice - 1000) < 1e-9, 'AMA gridPrice should remain anchored to the persisted center price');
             assert(Math.abs(manager._lastGridPricingContext.offsetAdjustedStartPrice - 100.8) < 1e-9, 'AMA spread offset should adjust only the market placement price before bounds fallback');
             assert(Math.abs(manager._lastGridPricingContext.startPrice - 1000) < 1e-9, 'if the adjusted market price is still out of bounds, rebuild should continue to fall back to the AMA grid center');
+        } finally {
+            safeUnlink(amaFile)
+            if (originalWhitelist == null) {
+                safeUnlink(WHITELIST_FILE)
+            } else {
+                fs.writeFileSync(WHITELIST_FILE, originalWhitelist, 'utf8');
+            }
+            _resetBothWhitelistCaches();
+        }
+    }
+
+    console.log(' - Testing initializeGrid applies asymmetric bounds from root-level data without dynamicWeights...');
+    {
+        const botKey = `test-grid-root-bounds-${process.pid}`;
+        const ordersDir = path.join(__dirname, '..', 'profiles', 'orders');
+        const amaFile = path.join(ordersDir, `${botKey}.dynamicgrid.json`);
+        const originalWhitelist = fs.existsSync(WHITELIST_FILE)
+            ? fs.readFileSync(WHITELIST_FILE, 'utf8')
+            : null;
+
+        ensureDir(ordersDir);
+        writeJSON(WHITELIST_FILE, {
+            whitelist: {
+                [botKey]: { ama: true, dynamicWeight: false, asymmetricBounds: true }
+            }
+        });
+        _resetBothWhitelistCaches();
+        // Snapshot has root-level asymmetricBounds but no dynamicWeights.
+        // With trend=UP, buy side widens and sell side narrows.
+        writeJSON(amaFile, {
+            centerPrice: 1000,
+            amaCenterPrice: 1000,
+            asymmetricBounds: {
+                rawAsymmetryFactor: 0.08,
+                appliedAsymmetryFactor: 0.08,
+                trend: 'UP',
+            },
+            updatedAt: new Date().toISOString(),
+        });
+
+        try {
+            delete require.cache[gridModulePath];
+            delete require.cache[managerModulePath];
+            const FreshGrid = require('../modules/order/grid');
+            const { OrderManager: FreshOrderManager } = require('../modules/order/manager');
+            const manager = new FreshOrderManager({
+                assetA: 'TESTA',
+                assetB: 'TESTB',
+                botKey,
+                startPrice: 100,
+                gridPrice: 'ama',
+                minPrice: '2x',
+                maxPrice: '2x',
+                incrementPercent: 1,
+                targetSpreadPercent: 2,
+                weightDistribution: { buy: 0.5, sell: 0.5 },
+                botFunds: { buy: '100%', sell: '100%' },
+                activeOrders: { buy: 6, sell: 6 }
+            });
+
+            manager.assets = {
+                assetA: { id: '1.3.1', symbol: 'TESTA', precision: 5 },
+                assetB: { id: '1.3.2', symbol: 'TESTB', precision: 5 }
+            };
+            await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
+
+            await FreshGrid.initializeGrid(manager);
+
+            // With trend=UP and appliedAsymmetryFactor=0.08:
+            //   center=1000, minP=1000/2=500, maxP=1000*2=2000
+            //   resolvedMinP = 1000 / ((1000/500) * (1 - 0.08)) = 1000 / (2 * 0.92) = 543.478...
+            //   resolvedMaxP = 1000 * ((2000/1000) * (1 + 0.08)) = 1000 * (2 * 1.08) = 2160
+            assert(manager.orders.size > 0, 'initializeGrid should succeed with root-level asymmetricBounds');
+            assert(Math.abs(manager.config.minPrice - 543.4782608695652) < 1e-9,
+                'minPrice should be widened (UP trend) from root-level asymmetricBounds');
+            assert(Math.abs(manager.config.maxPrice - 2160) < 1e-9,
+                'maxPrice should be narrowed (UP trend) from root-level asymmetricBounds');
+            assert(Math.abs(manager._lastGridPricingContext.rangeScalingFactor - 0.08) < 1e-12,
+                'debug pricing should expose the root-level range-scaling factor');
         } finally {
             safeUnlink(amaFile)
             if (originalWhitelist == null) {

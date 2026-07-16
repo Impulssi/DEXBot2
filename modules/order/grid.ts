@@ -622,30 +622,57 @@ class Grid {
         if (gpSource === 'ama' && Number.isFinite(minP) && Number.isFinite(maxP)
             && isGridRangeScalingWhitelisted) {
             const dw = amaSnapshot?.dynamicWeights;
-            const maxAsymmetryFactor = resolveMaxAsymmetryFactor(
-                manager.config.asymmetricBounds?.maxAsymmetryFactor,
-                dw?.maxAsymmetryFactor,
-                MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR
-            );
-            const adjustment = applyAsymmetricBounds({
-                centerPrice: gp,
-                minPrice: minP,
-                maxPrice: maxP,
-                trend: dw?.trend,
-                slopeOffset: dw?.slopeOffset,
-                maxSlopeOffset: dw?.maxSlopeOffset,
-                maxAsymmetryFactor,
-            });
-            if (dw && Number.isFinite(adjustment.appliedAsymmetryFactor)) {
-                resolvedMinP = adjustment.resolvedMinPrice;
-                resolvedMaxP = adjustment.resolvedMaxPrice;
-                rangeScalingFactor = Number(adjustment.appliedAsymmetryFactor);
+            // Fallback to root-level asymmetricBounds when dynamicWeights is
+            // absent (asymmetricBounds: true without dynamicWeight: true).
+            const rootBounds = !dw && amaSnapshot?.asymmetricBounds
+                && typeof amaSnapshot.asymmetricBounds === 'object'
+                ? amaSnapshot.asymmetricBounds
+                : null;
+            if (dw) {
+                const maxAsymmetryFactor = resolveMaxAsymmetryFactor(
+                    manager.config.asymmetricBounds?.maxAsymmetryFactor,
+                    dw?.maxAsymmetryFactor,
+                    MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR
+                );
+                const adjustment = applyAsymmetricBounds({
+                    centerPrice: gp,
+                    minPrice: minP,
+                    maxPrice: maxP,
+                    trend: dw?.trend,
+                    slopeOffset: dw?.slopeOffset,
+                    maxSlopeOffset: dw?.maxSlopeOffset,
+                    maxAsymmetryFactor,
+                });
+                if (Number.isFinite(adjustment.appliedAsymmetryFactor)) {
+                    resolvedMinP = adjustment.resolvedMinPrice;
+                    resolvedMaxP = adjustment.resolvedMaxPrice;
+                    rangeScalingFactor = Number(adjustment.appliedAsymmetryFactor);
+                    manager.logger?.log?.(
+                        `[BOUND-ASYMMETRY] trend=${dw.trend} slopeOffset=${dw.slopeOffset.toFixed(4)} `
+                        + `raw=${(adjustment.rawAsymmetryFactor * 100).toFixed(1)}% `
+                        + `cap=${(maxAsymmetryFactor * 100).toFixed(0)}% `
+                        + `asymmetry=${(adjustment.appliedAsymmetryFactor * 100).toFixed(1)}% `
+                        + `min ${minP.toFixed(8)}→${resolvedMinP.toFixed(8)} `
+                        + `max ${maxP.toFixed(8)}→${resolvedMaxP.toFixed(8)}`,
+                        'info'
+                    );
+                }
+            } else if (rootBounds && Number.isFinite(rootBounds.appliedAsymmetryFactor)
+                && (rootBounds.trend === 'UP' || rootBounds.trend === 'DOWN')) {
+                const asymmetry = Number(rootBounds.appliedAsymmetryFactor);
+                const rootTrend = rootBounds.trend;
+                if (rootTrend === 'DOWN') {
+                    resolvedMinP = gp / ((gp / minP) * (1 + asymmetry));
+                    resolvedMaxP = gp * ((maxP / gp) * (1 - asymmetry));
+                } else {
+                    resolvedMinP = gp / ((gp / minP) * (1 - asymmetry));
+                    resolvedMaxP = gp * ((maxP / gp) * (1 + asymmetry));
+                }
+                rangeScalingFactor = asymmetry;
                 manager.logger?.log?.(
-                    `[BOUND-ASYMMETRY] trend=${dw.trend} slopeOffset=${dw.slopeOffset.toFixed(4)} `
-                    + `raw=${(adjustment.rawAsymmetryFactor * 100).toFixed(1)}% `
-                    + `cap=${(maxAsymmetryFactor * 100).toFixed(0)}% `
-                    + `asymmetry=${(adjustment.appliedAsymmetryFactor * 100).toFixed(1)}% `
-                    + `min ${minP.toFixed(8)}→${resolvedMinP.toFixed(8)} `
+                    `[BOUND-ASYMMETRY] trend=${rootTrend} `
+                    + `asymmetry=${(asymmetry * 100).toFixed(1)}% `
+                    + `(root-level) min ${minP.toFixed(8)}→${resolvedMinP.toFixed(8)} `
                     + `max ${maxP.toFixed(8)}→${resolvedMaxP.toFixed(8)}`,
                     'info'
                 );

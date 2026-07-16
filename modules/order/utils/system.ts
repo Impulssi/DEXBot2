@@ -552,6 +552,9 @@ function loadAmaCenterSnapshot(botKey: string): any {
                 ? Number(data.amaSlopeThresholdPercent)
                 : null,
             dynamicWeights: data?.dynamicWeights || null,
+            asymmetricBounds: data?.asymmetricBounds && typeof data.asymmetricBounds === 'object'
+                ? data.asymmetricBounds
+                : null,
         };
     } catch (_: any) {
         return null;

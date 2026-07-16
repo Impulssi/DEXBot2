@@ -961,6 +961,7 @@ function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
     gridPriceOffsetPct?: number;
     dynamicWeights?: any;
     observedLastGridResetAt?: string;
+    asymmetricBounds?: { rawAsymmetryFactor: number | null; appliedAsymmetryFactor: number; trend: string };
 } = {}) {
     try {
         const filePath = path.join(ORDERS_DIR, `${botKey}.dynamicgrid.json`);
@@ -1020,6 +1021,12 @@ function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
             preserveGridResetMetadata(payload, previousSnapshot);
             if (options.dynamicWeights && typeof options.dynamicWeights === 'object') {
                 payload.dynamicWeights = options.dynamicWeights;
+            }
+            // Persist root-level asymmetric bounds independently of
+            // dynamicWeights so display tools can render the grid range
+            // scaling percentage even when dynamicWeight is not enabled.
+            if (options.asymmetricBounds && typeof options.asymmetricBounds === 'object') {
+                payload.asymmetricBounds = options.asymmetricBounds;
             }
             return payload;
         });
