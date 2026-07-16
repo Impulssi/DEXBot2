@@ -234,6 +234,131 @@ function testBuildDynamicWeightInfoRejectsMissingEffectiveWeights() {
   }
 }
 
+function testBuildDynamicWeightInfoReadsRootAsymmetricBounds() {
+  const botKey = `dw-rootbounds-${Date.now()}`;
+  const updatedAt = new Date(Date.now() - 1000).toISOString();
+  writeSnapshot(botKey, {
+    updatedAt,
+    amaCenterPrice: 101,
+    // No dynamicWeights — root-level asymmetricBounds is written by the
+    // market adapter when asymmetricBounds: true but dynamicWeight: false.
+    asymmetricBounds: {
+      rawAsymmetryFactor: 0.08,
+      appliedAsymmetryFactor: 0.045,
+      trend: 'DOWN',
+    },
+  });
+
+  try {
+    const info = withWhitelist({
+      [botKey]: { ama: true, dynamicWeight: false, asymmetricBounds: true },
+    }, () => {
+      const { buildDynamicWeightInfo } = loadAnalyzer();
+      return buildDynamicWeightInfo(botKey, { gridPrice: 'ama', weightDistribution: { buy: 0.5, sell: 0.5 } });
+    });
+    assert.ok(info, 'expected adapter status for AMA bot with dynamicWeight: false');
+    assert.strictEqual(info.live, null, 'dynamicWeight: false should not expose live weights');
+    assert.strictEqual(info.amaCenterPrice, 101, 'AMA center should be available');
+    assert.strictEqual(info.appliedAsymmetryFactor, 0.045, 'root-level appliedAsymmetryFactor should be read');
+    assert.strictEqual(info.rawAsymmetryFactor, 0.08, 'root-level rawAsymmetryFactor should be read');
+    assert.strictEqual(info.trend, 'DOWN', 'root-level trend should be read');
+  } finally {
+    removeSnapshot(botKey);
+  }
+}
+
+function testBuildDynamicWeightInfoIgnoresRootBoundsWhenDynamicWeightsPresent() {
+  const botKey = `dw-ignoreroot-${Date.now()}`;
+  const updatedAt = new Date(Date.now() - 1000).toISOString();
+  writeSnapshot(botKey, {
+    updatedAt,
+    amaCenterPrice: 101,
+    // Both root-level and dynamicWeights data present.
+    asymmetricBounds: {
+      rawAsymmetryFactor: 0.99,
+      appliedAsymmetryFactor: 0.99,
+      trend: 'UP',
+    },
+    dynamicWeights: {
+      effectiveWeights: { sell: 0.55, buy: 0.45 },
+      baseWeights: { sell: 0.5, buy: 0.5 },
+      appliedAsymmetryFactor: 0.045,
+      rawAsymmetryFactor: 0.08,
+      trend: 'DOWN',
+      isReady: true,
+      finalOffset: 0.05,
+    },
+  });
+
+  try {
+    const info = withWhitelist({
+      [botKey]: { ama: true, dynamicWeight: true, asymmetricBounds: true },
+    }, () => {
+      const { buildDynamicWeightInfo } = loadAnalyzer();
+      return buildDynamicWeightInfo(botKey, { gridPrice: 'ama', weightDistribution: { buy: 0.5, sell: 0.5 } });
+    });
+    assert.ok(info, 'expected adapter status');
+    assert.strictEqual(info.live.buy, 0.45, 'live weights from dynamicWeights should be exposed');
+    assert.strictEqual(info.appliedAsymmetryFactor, 0.045, 'dynamicWeights.appliedAsymmetryFactor wins over root');
+    assert.strictEqual(info.rawAsymmetryFactor, 0.08, 'dynamicWeights.rawAsymmetryFactor wins over root');
+    assert.strictEqual(info.trend, 'DOWN', 'dynamicWeights.trend wins over root');
+  } finally {
+    removeSnapshot(botKey);
+  }
+}
+
+function testAnalyzeOrderIncludesAsymmetricBoundsFromRoot() {
+  const botKey = `dw-asymroot-${Date.now()}`;
+  const updatedAt = new Date(Date.now() - 1000).toISOString();
+  writeSnapshot(botKey, {
+    updatedAt,
+    amaCenterPrice: 101,
+    gridCenterPrice: 100,
+    asymmetricBounds: {
+      rawAsymmetryFactor: 0.04,
+      appliedAsymmetryFactor: 0.04,
+      trend: 'UP',
+    },
+  });
+
+  try {
+    const botData = {
+      meta: { assetA: 'BTS', assetB: 'XBTSX.USDT', updatedAt: new Date().toISOString() },
+      boundaryIdx: 0,
+      grid: [
+        { type: 'buy', state: 'active', orderId: 'a', price: 100, size: 1 },
+        { type: 'sell', state: 'active', orderId: 'b', price: 110, size: 1 },
+      ],
+    };
+    const config = {
+      gridPrice: 'ama',
+      minPrice: '1.55x',
+      maxPrice: '1.55x',
+      targetSpreadPercent: 2,
+      incrementPercent: 0.5,
+      activeOrders: { buy: 20, sell: 20 },
+      botFunds: { buy: '100%', sell: '100%' },
+      weightDistribution: { buy: 1, sell: 1 },
+    };
+    const analysis = withWhitelist({
+      [botKey]: { ama: true, dynamicWeight: false, asymmetricBounds: true },
+    }, () => {
+      const { analyzeOrder } = loadAnalyzer();
+      return analyzeOrder(botData, config, botKey);
+    });
+    assert.ok(analysis.asymmetricBounds, 'asymmetricBounds should be computed from root-level data');
+    assert.strictEqual(analysis.asymmetricBounds.trend, 'UP');
+    assert.strictEqual(analysis.asymmetricBounds.appliedAsymmetryFactor, 0.04);
+    // With trend=UP, the buy side widens and sell side narrows.
+    // center=101, minPrice=101/1.55≈65.16, maxPrice=101*1.55≈156.55
+    // Asymmetry UP: resolvedMin=101/((101/65.16)*(1-0.04)), resolvedMax=101*((156.55/101)*(1+0.04))
+    assert.ok(Number.isFinite(analysis.asymmetricBounds.resolvedMinPrice), 'resolvedMinPrice should be finite');
+    assert.ok(Number.isFinite(analysis.asymmetricBounds.resolvedMaxPrice), 'resolvedMaxPrice should be finite');
+  } finally {
+    removeSnapshot(botKey);
+  }
+}
+
 function testBuildDynamicWeightInfoRequiresAmaWhitelistForSnapshotStatus() {
   const botKey = `dw-not-whitelisted-${Date.now()}`;
   const updatedAt = new Date(Date.now() - 1000).toISOString();
@@ -642,6 +767,9 @@ async function main() {
   testBuildDynamicWeightInfoMissingSnapshot();
   testBuildDynamicWeightInfoFallsBackToConfigBase();
   testBuildDynamicWeightInfoRejectsMissingEffectiveWeights();
+  testBuildDynamicWeightInfoReadsRootAsymmetricBounds();
+  testBuildDynamicWeightInfoIgnoresRootBoundsWhenDynamicWeightsPresent();
+  testAnalyzeOrderIncludesAsymmetricBoundsFromRoot();
   testBuildDynamicWeightInfoRequiresAmaWhitelistForSnapshotStatus();
   testFormatWeightLineAmaWithoutDynamicWhitelistStaysWhite();
   testFormatWeightLineStaleAmaWithoutDynamicWhitelistShowsOffline();

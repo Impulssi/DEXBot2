@@ -198,15 +198,25 @@ function buildDynamicWeightInfo(botKey, config) {
   const updatedAtMs = Date.parse(String(snapshot.updatedAt || ''));
   const isRecent = Number.isFinite(updatedAtMs)
     && (Date.now() - updatedAtMs) <= DYNAMIC_GRID_SNAPSHOT_MAX_AGE_MS;
+  // Fallback to root-level asymmetricBounds when dynamicWeights is absent.
+  // The market adapter writes this when asymmetricBounds: true, regardless of
+  // whether dynamicWeight is enabled for this bot.
+  const rootBounds = !dw && snapshot?.asymmetricBounds && typeof snapshot.asymmetricBounds === 'object'
+    ? snapshot.asymmetricBounds
+    : null;
   const amaCenterPrice = Number.isFinite(Number(snapshot.amaCenterPrice))
     ? Number(snapshot.amaCenterPrice)
     : (Number.isFinite(Number(snapshot.gridCenterPrice)) ? Number(snapshot.gridCenterPrice) : null);
   const rawAsymmetryFactor = dw && Number.isFinite(Number(dw.rawAsymmetryFactor))
     ? Number(dw.rawAsymmetryFactor)
-    : null;
+    : (rootBounds && Number.isFinite(Number(rootBounds.rawAsymmetryFactor))
+        ? Number(rootBounds.rawAsymmetryFactor)
+        : null);
   const appliedAsymmetryFactor = dw && Number.isFinite(Number(dw.appliedAsymmetryFactor))
     ? Number(dw.appliedAsymmetryFactor)
-    : null;
+    : (rootBounds && Number.isFinite(Number(rootBounds.appliedAsymmetryFactor))
+        ? Number(rootBounds.appliedAsymmetryFactor)
+        : null);
   const maxAsymmetryFactor = dw && Number.isFinite(Number(dw.maxAsymmetryFactor))
     ? Number(dw.maxAsymmetryFactor)
     : null;
@@ -215,7 +225,8 @@ function buildDynamicWeightInfo(botKey, config) {
     base,
     dynamicWeightEnabled: whitelistFlags.dynamicWeight === true,
     isReady: dw ? dw.isReady === true : false,
-    trend: dw && typeof dw.trend === 'string' ? dw.trend : null,
+    trend: dw && typeof dw.trend === 'string' ? dw.trend
+      : (rootBounds && typeof rootBounds.trend === 'string' ? rootBounds.trend : null),
     finalOffset: dw && Number.isFinite(Number(dw.finalOffset)) ? Number(dw.finalOffset) : null,
     amaCenterPrice,
     centerPrice: Number.isFinite(Number(snapshot.centerPrice)) ? Number(snapshot.centerPrice) : null,

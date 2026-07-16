@@ -2081,13 +2081,19 @@ class MarketAdapterService {
             ? clampedCenterPrice
             : referencePrice;
         const gridPriceOffsetPlan = computeGridPriceOffsetPlan(bot, amaSlope);
+        // Compute asymmetry metrics for grid range scaling independently of
+        // dynamicWeight flag. Uses dynamicWeightsPayload when available, falls
+        // back to amaSlope so that asymmetricBounds: true works regardless of
+        // whether dynamicWeight: true is set.
+        const asymmetrySource = dynamicWeightsPayload || amaSlope;
+        const asymmetryMetrics = isAsymmetricBoundsWhitelisted && asymmetrySource
+            ? this.computeAppliedAsymmetryMetrics(bot, centerPrice, asymmetrySource)
+            : {
+                rawAsymmetryFactor: null,
+                appliedAsymmetryFactor: null,
+                maxAsymmetryFactor: null,
+            };
         if (dynamicWeightsPayload) {
-            const asymmetryMetrics = isAsymmetricBoundsWhitelisted
-                ? this.computeAppliedAsymmetryMetrics(bot, centerPrice, dynamicWeightsPayload)
-                : {
-                    rawAsymmetryFactor: null,
-                    appliedAsymmetryFactor: null,
-                };
             Object.assign(dynamicWeightsPayload, asymmetryMetrics);
             if (weights?.meta) {
                 Object.assign(weights.meta, asymmetryMetrics);
@@ -2127,6 +2133,19 @@ class MarketAdapterService {
             };
             if (isGridRangeScalingWhitelisted) {
                 payload.gridPriceOffsetPct = options.gridPriceOffsetPct ?? gridPriceOffsetPlan.gridPriceOffsetPct;
+                // Persist computed asymmetry metrics at root level so display
+                // tools can render the grid range scaling percentage even when
+                // dynamicWeight is not enabled for this bot.
+                if (Number.isFinite(asymmetryMetrics.appliedAsymmetryFactor)) {
+                    const asymTrend = (dynamicWeightsPayload || amaSlope)?.trend;
+                    if (asymTrend === 'UP' || asymTrend === 'DOWN') {
+                        payload.asymmetricBounds = {
+                            rawAsymmetryFactor: asymmetryMetrics.rawAsymmetryFactor,
+                            appliedAsymmetryFactor: asymmetryMetrics.appliedAsymmetryFactor,
+                            trend: asymTrend,
+                        };
+                    }
+                }
             }
             return payload;
         };
