@@ -164,7 +164,7 @@ const PROFILES_DIR = PATHS.PROFILES_DIR;
 
 
 const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'drystart', 'keys', 'bots', 'pm2', 'update', 'export', 'order', 'clear', 'status', 'whitelist', 'unlock', 'help'];
-const COMMAND_ALIASES: Record<string, string> = { orders: 'order', key: 'keys', bot: 'bots', white: 'whitelist', stat: 'status', start: 'test', defaults: 'default' };
+const COMMAND_ALIASES: Record<string, string> = { orders: 'order', key: 'keys', bot: 'bots', white: 'whitelist', stat: 'status', stats: 'status', start: 'test', defaults: 'default' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
@@ -228,7 +228,7 @@ function printCLIUsage() {
     console.log('  pm2               Start all active bots with PM2 (authenticate + generate config + start).');
     console.log('  update            Update DEXBot2 from the repository and restart active bots.');
     console.log('  order             Analyze persisted order grids in profiles/orders/ (spread, increment, funds). Use --export for HTML.');
-    console.log('  status, stat      Show bot runtime status (unlock monolithic/isolated or PM2).');
+    console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Run credential daemon + bot (equivalent to `node unlock`).');
     console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune) are forwarded.');
     console.log('  clear             Remove all log files from profiles/logs/ (runs scripts/clear-logs.sh).');
