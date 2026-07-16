@@ -359,51 +359,26 @@ class SyncEngine {
 
         mgr.logger?.log?.(`[SYNC] Starting synchronization from ${chainOrders?.length || 0} blockchain orders...`, 'info');
 
-        // Defense-in-depth: Use AsyncLock to ensure only one full-sync at a time
-        // Add timeout to prevent indefinite lock acquisition hangs
-        const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS; // Deadlock prevention timeout
-        const cancelToken = { isCancelled: false };
-
-        let syncPromise: Promise<any>;
+        const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS;
         try {
-            syncPromise = mgr._syncLock.acquire(async () => {
-                if (cancelToken.isCancelled) {
-                    throw new Error('Sync operation cancelled due to lock acquisition timeout');
-                }
-                const result = await this._doSyncFromOpenOrders(chainOrders, options);
-                const unmatchedCount = Array.isArray(result.unmatchedChainOrders)
-                    ? result.unmatchedChainOrders.length
+            const result = await mgr._syncLock.acquire(async () => {
+                const innerResult = await this._doSyncFromOpenOrders(chainOrders, options);
+                const unmatchedCount = Array.isArray(innerResult.unmatchedChainOrders)
+                    ? innerResult.unmatchedChainOrders.length
                     : 0;
                 mgr._lastUnmatchedChainOrders = unmatchedCount > 0
-                    ? result.unmatchedChainOrders.map(order => ({ ...order }))
+                    ? innerResult.unmatchedChainOrders.map(order => ({ ...order }))
                     : [];
                 mgr._lastUnmatchedChainOrdersAt = unmatchedCount > 0 ? Date.now() : 0;
-                mgr.logger?.log?.(`[SYNC] Synchronization complete: ${result.filledOrders.length} filled, ${result.updatedOrders.length} updated, ${result.ordersNeedingCorrection.length} needing correction.`, 'info');
-                return result;
-            }, { cancelToken });
+                mgr.logger?.log?.(
+                    `[SYNC] Synchronization complete: ${innerResult.filledOrders.length} filled, ` +
+                    `${innerResult.updatedOrders.length} updated, ` +
+                    `${innerResult.ordersNeedingCorrection.length} needing correction.`, 'info');
+                return innerResult;
+            }, { timeout: timeoutMs });
 
-            const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => {
-                    cancelToken.isCancelled = true;
-                    reject(new Error(`Sync lock timeout after ${timeoutMs}ms`));
-                }, timeoutMs)
-            );
-
-            return await Promise.race([syncPromise, timeoutPromise]);
+            return result;
         } catch (err: any) {
-            // Check if sync completed despite the timeout winning the race.
-            // If syncPromise has already settled, recover the result to prevent
-            // unnecessary recovery cycles from a false-positive timeout.
-            const fallback = await Promise.race([
-                syncPromise.then(r => ({ ok: true as const, result: r })),
-                new Promise<{ ok: false }>(resolve =>
-                    setTimeout(() => resolve({ ok: false }), 0)
-                )
-            ]);
-            if (fallback.ok) {
-                mgr.logger?.log?.(`[SYNC] Spurious timeout ignored — sync completed before timeout propagation.`, 'warn');
-                return fallback.result;
-            }
             mgr.logger?.log?.(`Sync lock error: ${err.message}`, 'error');
             throw err;
         }

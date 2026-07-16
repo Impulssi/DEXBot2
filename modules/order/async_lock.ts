@@ -85,22 +85,26 @@ interface QueueItem<T = unknown> {
 
 interface AsyncLockOptions {
     timeout?: number;
+    level?: number;
 }
 
 interface AcquireOptions {
     timeout?: number;
     cancelToken?: { isCancelled: boolean };
+    level?: number;
 }
 
 class AsyncLock {
     private _queue: QueueItem<any>[];
     private _locked: boolean;
     private _defaultTimeout: number | null;
+    private _level: number;
 
     constructor(options: AsyncLockOptions = {}) {
         this._queue = [];
         this._locked = false;
         this._defaultTimeout = options.timeout || null;
+        this._level = options.level ?? 0;
     }
 
     /**

@@ -539,17 +539,17 @@ class OrderManager {
         // LOCK HIERARCHY (convention — not enforced at runtime to avoid false
         // positives from async contention and multi-bot sharing a process).
         // Acquire in ascending level order only:
-        //   Level 0: _divergenceLock  (divergence checks — outermost)
+        //   Level 0: _divergenceLock   (divergence checks — outermost)
         //   Level 1: _fillProcessingLock  (fill processing)
-        //   Level 2: _gridLock        (grid mutations)
-        //   Level 3: _syncLock        (sync operations)
-        //   Level 4: _fundLock        (fund operations — innermost)
+        //   Level 2: _gridLock         (grid mutations)
+        //   Level 3: _syncLock         (sync operations)
+        //   Level 4: _fundLock         (fund operations — innermost)
         // WARNING: AsyncLock is NOT reentrant.
-        this._divergenceLock = new AsyncLock();
-        this._fillProcessingLock = new AsyncLock();
-        this._gridLock = new AsyncLock();
-        this._syncLock = new AsyncLock();
-        this._fundLock = new AsyncLock({ timeout: 30000 });
+        this._divergenceLock = new AsyncLock({ level: 0 });
+        this._fillProcessingLock = new AsyncLock({ level: 1 });
+        this._gridLock = new AsyncLock({ level: 2 });
+        this._syncLock = new AsyncLock({ level: 3 });
+        this._fundLock = new AsyncLock({ level: 4, timeout: 30000 });
 
         this._recentlyRotatedOrderIds = new Set();
         this._gridSidesUpdated = new Set();
@@ -1871,7 +1871,8 @@ class OrderManager {
             attemptCount: 0,
             lastAttemptAt: 0,
             inFlight: false,
-            lastFailureAt: 0
+            lastFailureAt: 0,
+            structuralResyncRequested: false
         };
         this._state.recovery = {
             ...fallback,
