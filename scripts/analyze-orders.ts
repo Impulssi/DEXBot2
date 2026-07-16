@@ -276,12 +276,19 @@ function formatCurrency(value) {
     if (abs >= 0.001) return formatCurrency(value * 1000) + 'm';
     if (abs >= 0.000001) return formatCurrency(value * 1000000) + 'μ';
     if (abs >= 1e-9) return formatCurrency(value * 1e9) + 'n';
+    if (abs >= 1e-12) return formatCurrency(value * 1e12) + 'p';
+    if (abs >= 1e-15) return formatCurrency(value * 1e15) + 'f';
+    if (abs >= 1e-18) return formatCurrency(value * 1e18) + 'a';
     return formatPrice6(value);
   }
   let intDigits = Math.floor(Math.log10(abs)) + 1;
   if (abs < 1) intDigits = 1;
-  if (intDigits >= 5) return String(Math.round(value));
-  return value.toFixed(5 - intDigits);
+  const formatted = intDigits >= 5
+    ? String(Math.round(value))
+    : value.toFixed(5 - intDigits);
+  return intDigits >= 4
+    ? formatted.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+    : formatted;
 }
 
 /**
@@ -1266,9 +1273,7 @@ function formatAnalysis(analysis) {
     if (analysis.gridPriceLabel && analysis.gridPriceValue != null) {
       lines.push(``);
       const rawPrice = Number(analysis.gridPriceValue);
-      const priceStr = rawPrice === 0 ? '0'
-        : (Math.abs(rawPrice) >= 1e5 ? String(Math.round(rawPrice))
-        : rawPrice.toPrecision(5));
+      const priceStr = formatCurrency(rawPrice);
 
       const priceColor = analysis.gridPriceStale ? colors.gray : '';
       const priceReset = priceColor ? colors.reset : '';
@@ -1586,7 +1591,7 @@ function generateHtmlReport(analyses) {
 
   const outPath = path.resolve('order-analysis.html');
   fs.writeFileSync(outPath, html, 'utf-8');
-  console.log('HTML report written to ' + outPath);
+  console.log(`\n📄 Order Analyze: ${'./' + path.relative(process.cwd(), outPath)}`);
 }
 
 function main() {

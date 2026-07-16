@@ -898,7 +898,7 @@ async function handleCLICommands() {
             const scriptArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
                 scriptSegments: ['scripts', 'analyze-orders'],
-                scriptArgs: [],
+                scriptArgs: cliArgs.slice(1),
             });
             const result = spawnSync(Config.EXEC_PATH, scriptArgs, {
                 cwd: PATHS.PROJECT_ROOT,
