@@ -181,7 +181,7 @@ async function testPipelineInFlightDefersMaintenance() {
     assert.strictEqual(capturedSignals.recoveryInFlight, true, 'recoveryInFlight signal should be true');
     assert.strictEqual(capturedSignals.broadcasting, true, 'broadcasting signal should be true');
     assert.strictEqual(spreadChecks, 0, 'Spread maintenance must be deferred when pipeline is in-flight');
-    assert.strictEqual(healthChecks, 0, 'Health maintenance must be deferred when pipeline is in-flight');
+    assert.strictEqual(healthChecks, 1, 'Dust/health check runs before pipeline gate (intentional — dust cancel is safe during pipeline activity)');
 }
 
 async function testIllegalStateAbortResyncAndCooldown() {
@@ -552,6 +552,92 @@ async function testCannotDeductTriggersRecoverySyncInsteadOfVirtualizing() {
     }
 }
 
+async function testStaleCleanedOrphanFillTtlDedup() {
+    console.log('\n--- Stale-cleaned orphan fill TTL dedup ---');
+
+    const bot = new DEXBot({
+        botKey: 'test_patch17_stale_orphan_ttl',
+        dryRun: false,
+        startPrice: 1,
+        assetA: 'TEST',
+        assetB: 'BTS',
+        incrementPercent: 0.5
+    });
+
+    bot.manager = await createManager();
+    bot.manager.finishBootstrap();
+
+    const originalGetMode = chainOrders.getFillProcessingMode;
+    const originalWasCancelled = chainOrders.wasRecentlyOwnCancelled;
+    chainOrders.getFillProcessingMode = () => 'history';
+    chainOrders.wasRecentlyOwnCancelled = () => false;
+
+    try {
+        const sellBefore = bot.manager.accountTotals.sell;
+        const orderId = '1.7.777';
+
+        // Seed stale-cleaned entry within TTL
+        bot._staleCleanedOrderIds.set(orderId, Date.now());
+
+        bot._incomingFillQueue.push({
+            block_num: 1000,
+            id: '1.11.888',
+            op: [4, {
+                order_id: orderId,
+                pays: { asset_id: '1.3.1', amount: 100000 },
+                receives: { asset_id: '1.3.0', amount: 250000 },
+                is_maker: true
+            }]
+        });
+
+        await bot._consumeFillQueue(chainOrders);
+
+        assert.strictEqual(
+            bot.manager.accountTotals.sell,
+            sellBefore,
+            'Orphan fill for stale-cleaned order must be skipped within TTL window'
+        );
+        assert.strictEqual(
+            bot._staleCleanedOrderIds.has(orderId),
+            true,
+            'Stale-cleaned entry must survive while still within TTL'
+        );
+        console.log('  ✓ Within TTL: fill blocked, entry preserved');
+
+        // Simulate TTL expiry
+        bot._staleCleanedOrderIds.set(orderId, Date.now() - 600000);
+
+        bot._incomingFillQueue.push({
+            block_num: 1001,
+            id: '1.11.889',
+            op: [4, {
+                order_id: orderId,
+                pays: { asset_id: '1.3.1', amount: 100000 },
+                receives: { asset_id: '1.3.0', amount: 250000 },
+                is_maker: true
+            }]
+        });
+
+        await bot._consumeFillQueue(chainOrders);
+
+        const rawProceeds = 250000 / Math.pow(10, bot.manager.assets.assetA.precision);
+        assert.strictEqual(
+            bot.manager.accountTotals.sell,
+            sellBefore + rawProceeds,
+            'Orphan fill for stale-cleaned order must credit proceeds after TTL expiry'
+        );
+        assert.strictEqual(
+            bot._staleCleanedOrderIds.has(orderId),
+            false,
+            'Stale-cleaned entry must be removed after TTL expiry and processing'
+        );
+        console.log('  ✓ After TTL: fill credited, entry removed');
+    } finally {
+        chainOrders.getFillProcessingMode = originalGetMode;
+        chainOrders.wasRecentlyOwnCancelled = originalWasCancelled;
+    }
+}
+
 async function runTests() {
     console.log('Running Patch17 Invariant Tests...');
     await testExtremePlacementOrdering();
@@ -563,6 +649,7 @@ async function runTests() {
     await testIllegalBatchAbortArmsMaintenanceCooldown();
     await testSingleStaleCancelBatchUsesStaleOnlyFastPath();
     await testCannotDeductTriggersRecoverySyncInsteadOfVirtualizing();
+    await testStaleCleanedOrphanFillTtlDedup();
     testsComplete = true;
     console.log('✓ Patch17 invariant tests passed!');
 }

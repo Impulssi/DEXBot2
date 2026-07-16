@@ -38,7 +38,8 @@ class MockManager {
             assetB: 'EUR',
             activeOrders: { buy: 10, sell: 10 },
             incrementPercent: 1,
-            weightDistribution: { buy: 1, sell: 1 }
+            weightDistribution: { buy: 1, sell: 1 },
+            gridLimits: { GRID_REGENERATION_PERCENTAGE: GRID_LIMITS.GRID_REGENERATION_PERCENTAGE }
         };
         this.orders = new Map();
         this.funds = {

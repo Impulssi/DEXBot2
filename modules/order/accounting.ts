@@ -600,7 +600,6 @@ class Accountant {
                     mgr.logger?.log?.(`[RECOVERY] Deferred recovery failed: ${err.message}`, 'error');
                     mgr._recoveryState = mgr._recoveryState || {};
                     mgr._recoveryState.lastFailureAt = Date.now();
-                    mgr._recoveryState.lastFailureReason = err.message;
                 }
             };
             if (mgr._gridLock?.isLocked?.()) {
@@ -1065,7 +1064,6 @@ class Accountant {
                         mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
                         mgr._recoveryState = mgr._recoveryState || {};
                         mgr._recoveryState.lastFailureAt = Date.now();
-                        mgr._recoveryState.lastFailureReason = err.message;
                     });
                 }
             } else if (commitmentDelta < 0) {

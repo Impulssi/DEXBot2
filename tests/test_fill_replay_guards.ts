@@ -26,14 +26,14 @@ async function createBotFixture(botKey, options = {}) {
         loadProcessedFills() {
             return new Map();
         },
-        async updateProcessedFillsBatch(savedBotKey, fills) {
-            const entries = fills instanceof Map ? Array.from(fills.entries()) : fills;
+        async updateProcessedFillsBatch(fills) {
+            const entries = fills instanceof Map ? Array.from(fills.entries()) : [];
             if ((options as any).failProcessedFillWrites) {
                 throw new Error((options as any).failProcessedFillWrites);
             }
             persistedFillBatches.push(entries);
             for (const [fillKey, timestamp] of entries) {
-                persistedFills.push({ savedBotKey, fillKey, timestamp });
+                persistedFills.push({ fillKey, timestamp });
             }
         }
     };

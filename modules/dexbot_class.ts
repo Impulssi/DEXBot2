@@ -137,7 +137,7 @@ class DEXBot {
     _credentialRecoveryNeeded: boolean;
     _credentialRecoveryInFlight: boolean;
     _credentialDaemonWatchdogInFlight: boolean;
-    _staleCleanedOrderIds: Map<any, any>;
+    _staleCleanedOrderIds: Map<string, number>;
     _staleCleanupRetentionMs: number;
     _metrics: any;
     _shuttingDown: boolean;
@@ -218,13 +218,9 @@ class DEXBot {
         this._credentialRecoveryInFlight = false;
         this._credentialDaemonWatchdogInFlight = false;
 
-        // Track order IDs whose grid slots were already freed by stale-order batch cleanup.
-        // When a batch fails because an order no longer exists on-chain (filled between our
-        // last sync and broadcast), the stale-cleanup converts the slot to VIRTUAL/SPREAD,
-        // releasing committed funds back to chainFree. If a fill event later arrives for
-        // that same order (orphan-fill), we must NOT credit the proceeds again — the capital
-        // was already freed. Track IDs with timestamps and retain them for a cooldown window
-        // to handle delayed history/RPC delivery of orphan fills.
+        // TTL cache of order IDs freed by stale-order batch cleanup.
+        // If an orphan fill arrives for a stale-cleaned order within the retention
+        // window, we skip the credit to avoid double-counting freed capital.
         this._staleCleanedOrderIds = new Map();
         this._staleCleanupRetentionMs = Math.max(this._fillDedupeWindowMs || 0, 5 * 60 * 1000);
 
@@ -535,22 +531,16 @@ class DEXBot {
 
         const updates = [];
 
-        for (const [gridId, gridOrder] of this.manager.orders.entries()) {
+        for (const [, gridOrder] of this.manager.orders.entries()) {
             if (!gridOrder?.orderId || !staleOrderIds.has(gridOrder.orderId)) continue;
-            this._staleCleanedOrderIds.set(gridOrder.orderId, {
-                markedAt: Date.now(),
-                gridId,
-            });
+            this._staleCleanedOrderIds.set(gridOrder.orderId, Date.now());
             updates.push({ ...virtualizeOrder(gridOrder), size: 0 });
         }
 
         // Register any stale IDs that had no matching grid slot
         for (const orderId of staleIds) {
             if (!this._staleCleanedOrderIds.has(orderId)) {
-                this._staleCleanedOrderIds.set(orderId, {
-                    markedAt: Date.now(),
-                    gridId: null,
-                });
+                this._staleCleanedOrderIds.set(orderId, Date.now());
             }
         }
 
@@ -1198,7 +1188,6 @@ class DEXBot {
                     // STEP 3: Spread check AFTER fills are processed and chain truth refreshed
                     await this.manager.recalculateFunds();
                     if (!postResetAborted && !postResetUnmatched) {
-                        this._refreshDynamicWeightDistribution('post-reset spread check');
                         const spreadResult = await this.manager.checkSpreadCondition(
                             BitShares,
                             this.updateOrdersOnChainPlan.bind(this)
@@ -1726,9 +1715,9 @@ class DEXBot {
                                 // When a batch fails due to a stale order reference, the cleanup converts the
                                 // slot to VIRTUAL/SPREAD, releasing committed funds to chainFree. If we also
                                 // credit the fill proceeds here, we double-count the capital.
-                                const staleEntry = this._staleCleanedOrderIds.get(fillOp.order_id);
-                                if (staleEntry && Number.isFinite(staleEntry.markedAt)) {
-                                    const staleAgeMs = Date.now() - staleEntry.markedAt;
+                                const staleMarkedAt = this._staleCleanedOrderIds.get(fillOp.order_id);
+                                if (staleMarkedAt != null) {
+                                    const staleAgeMs = Date.now() - staleMarkedAt;
                                     if (staleAgeMs <= this._staleCleanupRetentionMs) {
                                         this.manager.logger.log(
                                             `[ORPHAN-FILL] Skipping double-credit for stale-cleaned order ${fillOp.order_id} ` +
@@ -1737,28 +1726,6 @@ class DEXBot {
                                         );
                                         continue;
                                     }
-
-                                    // Entry expired. Check whether the grid slot was recycled.
-                                    // If the slot now holds a different order, the freed funds
-                                    // have already been re-deployed — crediting this fill would
-                                    // double-count.
-                                    if (staleEntry.gridId) {
-                                        const currentOrder = this.manager.orders.get(staleEntry.gridId);
-                                        if (currentOrder && currentOrder.orderId && currentOrder.orderId !== fillOp.order_id) {
-                                            this.manager.logger.log(
-                                                `[ORPHAN-FILL] Skipping credit for expired stale-cleaned order ${fillOp.order_id} ` +
-                                                `(slot ${staleEntry.gridId} recycled to ${currentOrder.orderId}, funds already freed)`,
-                                                'warn'
-                                            );
-                                            // Keep the tombstone entry — without it a delayed orphan
-                                            // fill after the cleanup TTL would miss the recycled-slot
-                                            // check and double-credit freed funds.
-                                            continue;
-                                        }
-                                    }
-
-                                    // Expired and slot not recycled — clean up the tracking entry
-                                    // and process as normal orphan fill below.
                                     this._staleCleanedOrderIds.delete(fillOp.order_id);
                                 }
 
@@ -1966,7 +1933,6 @@ class DEXBot {
                                 ...(healthResult.sellDustOrders || []),
                             ];
                             if (allDust.length > 0) {
-                                this._refreshDynamicWeightDistribution('post-fill-dust');
                                 const dustCancelResult = await this._cancelDustOrders({
                                     buy: healthResult.buyDustOrders,
                                     sell: healthResult.sellDustOrders,
@@ -2018,54 +1984,19 @@ class DEXBot {
                     this._metrics.fillProcessingTimeMs += Date.now() - batchStartTime;
 
                     // Prune expired stale-cleaned order IDs after each processing cycle.
-                    // Keep entries for a retention window to protect against delayed orphan-fill delivery.
                     if (this._staleCleanedOrderIds.size > 0) {
                         const now = Date.now();
                         let prunedCount = 0;
-                        for (const [orderId, entry] of this._staleCleanedOrderIds) {
-                            if (!entry || !Number.isFinite(entry.markedAt)) {
-                                this._staleCleanedOrderIds.delete(orderId);
-                                prunedCount++;
-                            } else if (entry.gridId === null && now - entry.markedAt > this._fillRecordRetentionMs) {
-                                // Entries without a gridId cannot use the recycled-slot
-                                // check (orphan fill → credit).  Prune them after the
-                                // full dedup retention window to close the gap where a
-                                // delayed fill could slip past the shorter cleanup TTL.
+                        for (const [orderId, markedAt] of this._staleCleanedOrderIds) {
+                            if (now - markedAt > this._staleCleanupRetentionMs) {
                                 this._staleCleanedOrderIds.delete(orderId);
                                 prunedCount++;
                             }
-                            // Entries with a gridId are kept indefinitely as recycled-slot
-                            // tombstones.  They are tiny (a few bytes) and few (only when
-                            // a COW batch fails due to a stale order).  Without them a
-                            // delayed orphan fill after TTL would miss the slot-recycling
-                            // check and double-credit freed funds.
                         }
-
-                        // Hard cap to prevent unbounded growth over the 7-day window.
-                        // Evicts oldest gridId:null entries first when the cap is exceeded.
-                        const STALE_CLEANED_CAP = 500;
-                        if (this._staleCleanedOrderIds.size > STALE_CLEANED_CAP) {
-                            const entries = [...this._staleCleanedOrderIds.entries()]
-                                .filter(([, e]) => e.gridId === null)
-                                .sort(([, a], [, b]) => (a.markedAt || 0) - (b.markedAt || 0));
-                            const toEvict = this._staleCleanedOrderIds.size - STALE_CLEANED_CAP;
-                            for (let i = 0; i < Math.min(toEvict, entries.length); i++) {
-                                this._staleCleanedOrderIds.delete(entries[i][0]);
-                                prunedCount++;
-                            }
-                            if (toEvict > entries.length) {
-                                this.manager.logger.log(
-                                    `[STALE-CLEANUP] Stale-cleaned map at cap (${STALE_CLEANED_CAP}); ` +
-                                    `${toEvict - entries.length} gridId entries retained indefinitely`,
-                                    'debug'
-                                );
-                            }
-                        }
-
                         if (prunedCount > 0) {
                             this.manager.logger.log(
                                 `[STALE-CLEANUP] Pruned ${prunedCount} expired stale-cleaned order IDs ` +
-                                `(retention=${this._fillRecordRetentionMs}ms, remaining=${this._staleCleanedOrderIds.size})`,
+                                `(retention=${this._staleCleanupRetentionMs}ms, remaining=${this._staleCleanedOrderIds.size})`,
                                 'debug'
                             );
                         }
@@ -2370,7 +2301,6 @@ class DEXBot {
                 this._warn(`Could not fetch account totals before initializing grid: ${errFetch && errFetch.message ? errFetch.message : errFetch}`);
             }
 
-            this._refreshDynamicWeightDistribution('initial order placement');
             await Grid.initializeGrid(this.manager);
 
             if (this.config.dryRun) {
@@ -3510,7 +3440,6 @@ class DEXBot {
                     }
                 }
 
-                this._refreshDynamicWeightDistribution(label);
                 const rebalanceResult = await this.manager.processFilledOrders(
                     fillBatch, fullExcludeSet, options
                 );
@@ -3638,7 +3567,6 @@ class DEXBot {
                         if (this.manager) {
                             this.manager._recoveryState = this.manager._recoveryState || {};
                             this.manager._recoveryState.lastFailureAt = Date.now();
-                            this.manager._recoveryState.lastFailureReason = err.message;
                         }
                     });
                 }, 1000);

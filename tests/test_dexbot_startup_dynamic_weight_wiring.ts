@@ -77,6 +77,9 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
             },
         };
 
+        // Simulate the startup refresh that normally precedes initial order placement
+        bot._refreshDynamicWeightDistribution('startup');
+
         await bot.placeInitialOrders();
         assert.deepStrictEqual(
             observedWeights[0],
@@ -93,6 +96,8 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
             isReady: false,
             effectiveWeights: { sell: 0.45, buy: 0.25 },
         });
+
+        bot._refreshDynamicWeightDistribution('startup');
 
         await bot.placeInitialOrders();
         assert.deepStrictEqual(

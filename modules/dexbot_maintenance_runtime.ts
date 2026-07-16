@@ -950,7 +950,6 @@ async function setupTriggerFileDetection(bot) {
                                 bot._warn(`Trigger reset lock error: ${err.message}`);
                                 bot.manager._recoveryState = bot.manager._recoveryState || {};
                                 bot.manager._recoveryState.lastFailureAt = Date.now();
-                                bot.manager._recoveryState.lastFailureReason = err.message;
                             });
                         }, 200);
                     }
@@ -1304,7 +1303,6 @@ function scheduleMaintenanceAfterIdle(ctx, context, options = {}) {
                 if (ctx.manager) {
                     ctx.manager._recoveryState = ctx.manager._recoveryState || {};
                     ctx.manager._recoveryState.lastFailureAt = Date.now();
-                    ctx.manager._recoveryState.lastFailureReason = err.message;
                 }
             });
     }, delayMs);
@@ -1352,7 +1350,6 @@ function scheduleDeferredGridResync(ctx, options = {}) {
             if (ctx.manager) {
                 ctx.manager._recoveryState = ctx.manager._recoveryState || {};
                 ctx.manager._recoveryState.lastFailureAt = Date.now();
-                ctx.manager._recoveryState.lastFailureReason = err.message;
             }
         });
     }, delayMs);

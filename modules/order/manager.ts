@@ -1427,14 +1427,15 @@ class OrderManager {
         this._cleanExpiredLocks();
         const reasons = [];
 
+        // invariant: _gridSidesUpdated is pre-cleared by executeMaintenanceLogic
+        // before calling isPipelineEmpty (see modules/dexbot_maintenance_runtime.ts:1378).
+        // Any new caller must pre-clear or add its own gating to avoid a permanently
+        // blocked pipeline.
         if (incomingFillQueueLength > 0) {
             reasons.push(`${incomingFillQueueLength} fills queued`);
         }
         if (this.ordersNeedingPriceCorrection.length > 0) {
             reasons.push(`${this.ordersNeedingPriceCorrection.length} corrections pending`);
-        }
-        if (this._gridSidesUpdated?.size > 0) {
-            reasons.push('grid divergence corrections pending');
         }
         if (shadowLocks > 0) {
             reasons.push(`${shadowLocks} shadow lock(s) active`);
@@ -1472,7 +1473,6 @@ class OrderManager {
         if (age < PIPELINE_TIMING.TIMEOUT_MS) return false;
 
         this.ordersNeedingPriceCorrection = [];
-        this._gridSidesUpdated.clear();
         this._pipelineBlockedSince = null;
         this._state.markPipelineClear();
         return true;
@@ -1708,7 +1708,6 @@ class OrderManager {
             this.logger.log(`[COW] Fund recalculation failed post-commit: ${recalcErr.message}`, 'error');
             this._recoveryState = this._recoveryState || {};
             this._recoveryState.lastFailureAt = Date.now();
-            this._recoveryState.lastFailureReason = recalcErr.message;
         } finally {
             this._clearWorkingGridRef();
         }
