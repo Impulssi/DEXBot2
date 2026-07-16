@@ -1041,6 +1041,21 @@ class DEXBot {
                                     if (this._shuttingDown) return;
                                 }
                                 await this.manager.persistGrid();
+
+                                // Seed dust timers from any partials created by reconnect fills.
+                                // Schedule maintenance so the cancel timer starts immediately,
+                                // not waiting up to 5 minutes for the periodic health check.
+                                if (!this._shuttingDown) {
+                                    try {
+                                        const reconnectHealth = await this.manager.checkGridHealth(
+                                            this.updateOrdersOnChainPlan.bind(this)
+                                        );
+                                        this._recordDustFirstSeen(reconnectHealth);
+                                        this._scheduleDustMaintenanceCheck();
+                                    } catch (_dustErr: any) {
+                                        this._warn(`[RECONNECT] Dust detection failed: ${_dustErr.message}`);
+                                    }
+                                }
                             });
                             try {
                                 await Promise.race([
@@ -1220,6 +1235,23 @@ class DEXBot {
                         if (spreadResult && spreadResult.ordersPlaced > 0) {
                             this._log(`✓ Spread correction after trigger reset: ${spreadResult.ordersPlaced} order(s) placed`);
                             await this._persistAndRecoverIfNeeded();
+                        }
+
+                    }
+
+                    // Seed dust timers from any partials below threshold created during
+                    // post-reset fill processing. Runs regardless of abort/unmatched state
+                    // so the 30s timer starts from first detection.
+                    // Schedule maintenance so the cancel timer starts immediately.
+                    if (!this._shuttingDown) {
+                        try {
+                            const postResetHealth = await this.manager.checkGridHealth(
+                                this.updateOrdersOnChainPlan.bind(this)
+                            );
+                            this._recordDustFirstSeen(postResetHealth);
+                            this._scheduleDustMaintenanceCheck();
+                        } catch (_dustErr: any) {
+                            this._warn(`[POST-RESET] Dust detection failed: ${_dustErr.message}`);
                         }
                     }
                     this._log('Bootstrap phase complete - fill processing resumed', 'info');
@@ -1439,8 +1471,9 @@ class DEXBot {
             // Lightweight periodic dust health check (independent of open-orders sync loop).
             // Catches PARTIAL orders below the dust threshold that were created by a prior
             // bot instance (crash/restart) or by partial fills that didn't trigger inline
-            // full-fill promotion. Runs read-only checkGridHealth and seeds the 30s dust
-            // cancel timer — no blockchain sync or lock acquisition required.
+            // full-fill promotion. Runs read-only checkGridHealth, seeds the 30s dust
+            // cancel timer, and schedules the maintenance timer that performs the actual
+            // blockchain cancel broadcast — no blockchain sync or lock acquisition required.
             const DUST_HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
             this._dustHealthCheckTimer = setInterval(async () => {
                 if (this._shuttingDown || !this.manager) return;
@@ -1449,6 +1482,7 @@ class DEXBot {
                         this.updateOrdersOnChainPlan?.bind(this)
                     );
                     this._recordDustFirstSeen(health);
+                    this._scheduleDustMaintenanceCheck();
                 } catch {
                     // Silently retry next interval
                 }

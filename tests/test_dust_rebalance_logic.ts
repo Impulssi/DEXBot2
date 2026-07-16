@@ -1480,6 +1480,32 @@ async function testDustCancelDisableClearsMap() {
     console.log('  ✓ Re-enable works correctly (no stale entries from disabled period)');
 }
 
+async function testDustCancelDelayZero() {
+    console.log('Testing DUST_CANCEL_DELAY_SEC = 0 (immediate cancel)...');
+
+    const now = Date.now();
+    const orderId = '1.7.999';
+    const bot: any = {
+        config: { gridLimits: { DUST_CANCEL_DELAY_SEC: 0 } },
+        _dustSinceMap: new Map([[orderId, now - 100]]),
+        _dustRetryCount: new Map(),
+        _dustMaintenanceTimer: null,
+        manager: {
+            _fillProcessingLock: { acquire: async (fn: any) => fn() },
+            synchronizeWithChain: async () => {},
+            logger: { log: () => {} },
+        },
+        account: 'test',
+        privateKey: 'test',
+    };
+    bot._log = () => {};
+    bot._warn = () => {};
+
+    const delay = getPendingDustDelayMs(bot);
+    assert.strictEqual(delay, null, 'returns null when remaining<=0 (dust eligible immediately)');
+    console.log('  ✓ getPendingDustDelayMs returns null when remaining<=0 (dust eligible immediately)');
+}
+
 Promise.resolve()
     .then(() => testDustTrigger())
     .then(() => testDustCancelSyntheticRotation())
@@ -1502,6 +1528,7 @@ Promise.resolve()
     .then(() => testDustCancelAbandonAfterRetries())
     .then(() => testDustCancelSuccessResetsRetryCounter())
     .then(() => testDustCancelDisableClearsMap())
+    .then(() => testDustCancelDelayZero())
     .finally(() => {
         Module._load = originalModuleLoad;
     })

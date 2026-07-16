@@ -866,6 +866,21 @@ function performGridResync(bot, options: {
 
             safeUnlink(self.triggerFile);
             self._log('Removed trigger file.');
+
+            // Re-detect dust after full resync so the timer starts from the
+            // new grid state rather than waiting up to 5 minutes.
+            // Schedule maintenance so the cancel timer starts immediately.
+            if (!self._shuttingDown) {
+                try {
+                    const resyncHealth = await self.manager.checkGridHealth(
+                        self.updateOrdersOnChainPlan?.bind(self)
+                    );
+                    recordDustFirstSeen(self, resyncHealth);
+                    scheduleDustMaintenanceCheck(self);
+                } catch (_dustErr: any) {
+                    self._warn(`[DUST-CANCEL] Post-resync dust re-detect failed: ${_dustErr.message}`);
+                }
+            }
         } catch (err: any) {
             self._log(`Error during triggered resync: ${err.message}`, 'error');
         } finally {
