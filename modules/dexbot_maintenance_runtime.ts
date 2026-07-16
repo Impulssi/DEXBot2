@@ -863,6 +863,7 @@ function performGridResync(bot, options: {
                     await cancelDustOrders(self, {
                         buy: resyncHealth.buyDustOrders,
                         sell: resyncHealth.sellDustOrders,
+                        fillLockAlreadyHeld: true,
                     });
                 } catch (_dustErr: any) {
                     self._warn(`[DUST] Post-resync dust cancel failed: ${_dustErr.message}`);
@@ -1414,6 +1415,7 @@ async function executeMaintenanceLogic(bot, context) {
         const dustCancelResult = await cancelDustOrders(bot, {
             buy: healthResult.buyDustOrders,
             sell: healthResult.sellDustOrders,
+            fillLockAlreadyHeld: true,
         });
         if (dustCancelResult?.batchResult?.aborted) {
             return;
@@ -1484,9 +1486,10 @@ async function executeMaintenanceLogic(bot, context) {
  * @param {Object} [options] - Dust cancellation options
  * @param {import('./types').Order[]} [options.buy=[]] - Buy-side dust orders
  * @param {import('./types').Order[]} [options.sell=[]] - Sell-side dust orders
+ * @param {boolean} [options.fillLockAlreadyHeld=false] - Skip fill-processing lock re-entry (caller already holds it)
  * @returns {Promise<{cancelledCount: number, batchResult: {aborted: boolean}|null}>}
  */
-async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } = {}) {
+async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [], fillLockAlreadyHeld = false } = {}) {
     const allDust = [...buyDust, ...sellDust];
     if (allDust.length === 0) return { cancelledCount: 0, batchResult: null };
 
@@ -1501,7 +1504,7 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
                     const chainOpenOrders = await chainOrders.readOpenOrders(accountRef);
                     await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', { fillLockAlreadyHeld: true });
                 } else {
-                    await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
+                    await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder', { fillLockAlreadyHeld });
                 }
             } catch (refetchErr) {
                 bot._warn(`[DUST] Cancel succeeded but refetch failed for ${order.id} (${order.orderId}): ${refetchErr.message}`);

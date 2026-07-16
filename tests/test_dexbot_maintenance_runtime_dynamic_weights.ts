@@ -955,9 +955,7 @@ async function testRmsDivergenceRunsFullGridResync() {
         ORDER_TYPES: { BUY: 'buy', SELL: 'sell' },
         TIMING: {},
         MAINTENANCE: {},
-        GRID_LIMITS: {
-            DUST_CANCEL_DELAY_SEC: -1,
-        },
+        GRID_LIMITS: {},
         LOGGING_CONFIG: {},
     });
     setCachedModule(systemPath, {

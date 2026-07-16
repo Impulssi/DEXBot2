@@ -1021,6 +1021,7 @@ class DEXBot {
                                         await this._cancelDustOrders({
                                             buy: reconnectHealth.buyDustOrders,
                                             sell: reconnectHealth.sellDustOrders,
+                                            fillLockAlreadyHeld: true,
                                         });
                                     } catch (_dustErr: any) {
                                         this._warn(`[RECONNECT] Dust cancel failed: ${_dustErr.message}`);
@@ -1218,6 +1219,7 @@ class DEXBot {
                             await this._cancelDustOrders({
                                 buy: postResetHealth.buyDustOrders,
                                 sell: postResetHealth.sellDustOrders,
+                                fillLockAlreadyHeld: true,
                             });
                         } catch (_dustErr: any) {
                             this._warn(`[POST-RESET] Dust cancel failed: ${_dustErr.message}`);
@@ -1396,6 +1398,7 @@ class DEXBot {
                     await this._cancelDustOrders({
                         buy: startupHealth.buyDustOrders,
                         sell: startupHealth.sellDustOrders,
+                        fillLockAlreadyHeld: true,
                     });
 
                     this._log('Bootstrap phase complete - fill processing resumed', 'info');
@@ -1414,28 +1417,9 @@ class DEXBot {
             this._setupCredentialDaemonWatchdogInterval();
 
             // Periodic dust health check — catches partials that fell below threshold
-            // without triggering the post-fill pipeline. Cancels immediately.
-            const DUST_HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
-            this._dustHealthCheckTimer = setInterval(async () => {
-                if (this._shuttingDown || !this.manager) return;
-                try {
-                    const health = await this.manager.checkGridHealth(
-                        this.updateOrdersOnChainPlan?.bind(this)
-                    );
-                    const allDust = [
-                        ...(health.buyDustOrders || []),
-                        ...(health.sellDustOrders || []),
-                    ];
-                    if (allDust.length > 0) {
-                        await this._cancelDustOrders({
-                            buy: health.buyDustOrders,
-                            sell: health.sellDustOrders,
-                        });
-                    }
-                } catch {
-                    // Silently retry next interval
-                }
-            }, DUST_HEALTH_CHECK_INTERVAL_MS);
+            // without triggering the post-fill pipeline. Cancels immediately inside the
+            // fill-processing lock to avoid racing with fill batches or sync operations.
+            this._setupDustHealthCheckInterval();
 
             if (this._isOpenOrdersSyncLoopEnabled()) {
                 this._startOpenOrdersSyncLoop();
@@ -1986,6 +1970,7 @@ class DEXBot {
                                 const dustCancelResult = await this._cancelDustOrders({
                                     buy: healthResult.buyDustOrders,
                                     sell: healthResult.sellDustOrders,
+                                    fillLockAlreadyHeld: true,
                                 });
                                 if (dustCancelResult?.batchResult?.aborted) {
                                     abortedFillCycle = true;
@@ -5148,12 +5133,46 @@ class DEXBot {
      * Cancel dust partial orders immediately — no maps, no timers, no delay.
      * Each dust order is cancelled on chain and its slot rotated through the
      * synthetic-fill pipeline.
-     * @param {{ buy: Array, sell: Array }} dustOrders
+     * @param {{ buy: Array, sell: Array, fillLockAlreadyHeld?: boolean }} options
      * @returns {Promise<{cancelledCount: number, batchResult: {aborted: boolean}|null}>}
      * @private
      */
-    async _cancelDustOrders({ buy: buyDust = [], sell: sellDust = [] } = {}) {
-        return DexbotMaintenanceRuntime.cancelDustOrders(this, { buy: buyDust, sell: sellDust });
+    async _cancelDustOrders({ buy: buyDust = [], sell: sellDust = [], fillLockAlreadyHeld = false } = {}) {
+        return DexbotMaintenanceRuntime.cancelDustOrders(this, { buy: buyDust, sell: sellDust, fillLockAlreadyHeld });
+    }
+
+    /**
+     * Set up the periodic dust health check interval.
+     * Catches partials below the dust threshold that were missed by the post-fill
+     * pipeline (e.g. from a prior bot lifetime after crash/restart).
+     * Cancels dust immediately inside the fill-processing lock.
+     * @private
+     */
+    _setupDustHealthCheckInterval() {
+        const DUST_HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+        this._dustHealthCheckTimer = setInterval(async () => {
+            if (this._shuttingDown || !this.manager) return;
+            try {
+                const health = await this.manager.checkGridHealth(
+                    this.updateOrdersOnChainPlan?.bind(this)
+                );
+                const allDust = [
+                    ...(health.buyDustOrders || []),
+                    ...(health.sellDustOrders || []),
+                ];
+                if (allDust.length > 0) {
+                    await this.manager._fillProcessingLock.acquire(async () => {
+                        await this._cancelDustOrders({
+                            buy: health.buyDustOrders,
+                            sell: health.sellDustOrders,
+                            fillLockAlreadyHeld: true,
+                        });
+                    });
+                }
+            } catch {
+                // Silently retry next interval
+            }
+        }, DUST_HEALTH_CHECK_INTERVAL_MS);
     }
 
     /**

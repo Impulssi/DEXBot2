@@ -357,7 +357,8 @@ let GRID_LIMITS = {
 
     // DUST_CANCEL_DELAY_SEC: Legacy — no longer used. Dust is cancelled immediately on detection
     // (no delay, no timer). Kept for backward-compat so existing configs don't break on load.
-    DUST_CANCEL_DELAY_SEC: 30,
+    // Default -1 (disabled) makes freshly-written configs self-documenting.
+    DUST_CANCEL_DELAY_SEC: -1,
 
     // FUND_INVARIANT_PERCENT_TOLERANCE: Allowed percentage drift in fund tracking before triggering recovery.
     // Formula: tolerance = max(precisionSlack, balance × percentTolerance)
