@@ -66,6 +66,7 @@
     "./dist/modules/launcher/credential_bootstrap.js": false,
     "./dist/modules/dexbot_maintenance_runtime.js": false,
     "./dist/modules/dexbot_class.js": false,
+    "./dist/modules/graceful_shutdown.js": false,
     "./dist/market_adapter/lp_chart_runner.js": false
   },
   "bugs": {

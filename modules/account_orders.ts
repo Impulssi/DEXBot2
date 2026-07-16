@@ -398,8 +398,10 @@ class AccountOrders {
    * @param {number|null} boundaryIdx - Optional master boundary index for StrategyEngine
    * @param {Object|null} assets - Optional asset metadata { assetA, assetB }
    * @param {Object|null} debugInputs - Optional debug-only input snapshot
+   * @param {Object|null} dustSince - Optional serialised _dustSinceMap { orderId: firstSeenMs }
+   * @param {Object|null} dustRetryCount - Optional serialised _dustRetryCount { orderId: retries }
    */
-  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null) {
+  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, dustSince: Record<string, number> | null = null, dustRetryCount: Record<string, number> | null = null) {
     // Use AsyncLock to serialize read-modify-write operations
     await this._persistenceLock.acquire(async () => {
       // Reload from disk before writing to prevent race conditions
@@ -434,6 +436,20 @@ class AccountOrders {
       // Initialize processedFills if missing (backward compat)
       if (!this.data.processedFills) {
         this.data.processedFills = {};
+      }
+
+      // Persist dust-cancel timer state so it survives process crashes.
+      // Both fields are deleted from the file when their maps are empty
+      // to avoid leaving stale data if the feature is later disabled.
+      if (dustSince && Object.keys(dustSince).length > 0) {
+        this.data.dustSince = dustSince;
+      } else {
+        delete this.data.dustSince;
+      }
+      if (dustRetryCount && Object.keys(dustRetryCount).length > 0) {
+        this.data.dustRetryCount = dustRetryCount;
+      } else {
+        delete this.data.dustRetryCount;
       }
 
       const timestamp = nowIso();
@@ -499,6 +515,38 @@ class AccountOrders {
     }
     if (this.data && this.data.btsBalance && typeof this.data.btsBalance === 'object') {
       return this.data.btsBalance;
+    }
+    return null;
+  }
+
+  /**
+   * Load persisted _dustSinceMap entries for this bot.
+   * Returns null if no dust state was persisted (fresh start / pre-persistence file).
+   * @param {boolean} forceReload - If true, reload from disk
+   * @returns {Record<string, number>|null} { orderId: firstSeenMs } or null
+   */
+  loadDustSince(forceReload: boolean = false): Record<string, number> | null {
+    if (forceReload) {
+      this.data = this._loadData() || emptyData();
+    }
+    if (this.data && this.data.dustSince && typeof this.data.dustSince === 'object') {
+      return this.data.dustSince;
+    }
+    return null;
+  }
+
+  /**
+   * Load persisted _dustRetryCount entries for this bot.
+   * Returns null if no dust retry state was persisted.
+   * @param {boolean} forceReload - If true, reload from disk
+   * @returns {Record<string, number>|null} { orderId: retries } or null
+   */
+  loadDustRetryCount(forceReload: boolean = false): Record<string, number> | null {
+    if (forceReload) {
+      this.data = this._loadData() || emptyData();
+    }
+    if (this.data && this.data.dustRetryCount && typeof this.data.dustRetryCount === 'object') {
+      return this.data.dustRetryCount;
     }
     return null;
   }

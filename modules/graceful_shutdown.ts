@@ -153,14 +153,15 @@ function setupGracefulShutdown() {
     runtime.onSignal('uncaughtException', async (err: any) => {
         shutdownLogger.error(`Uncaught exception: ${err?.stack || err}`);
         await executeCleanup();
-        runtime.exit(1);
+        // Drain stderr before exit so traces survive pipe to MONOLITHIC_ERROR_LOG
+        runtime.exitAfterStderrDrain(1);
     });
 
     // Handle unhandled rejections
     runtime.onSignal('unhandledRejection', async (reason, promise) => {
         shutdownLogger.error(`Unhandled rejection at: ${promise} reason: ${(reason as any)?.stack || reason}`);
         await executeCleanup();
-        runtime.exit(1);
+        runtime.exitAfterStderrDrain(1);
     });
 }
 

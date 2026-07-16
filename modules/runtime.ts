@@ -6,6 +6,7 @@ declare var window: any;
 
 export interface Runtime {
   exit(code?: number): void;
+  exitAfterStderrDrain(code: number): void;
   exitCode: number | undefined;
   kill(pid: number, signal?: string): boolean;
   onSignal(signal: string, handler: (...args: any[]) => void): void;
@@ -24,6 +25,10 @@ export interface Runtime {
 
 class NodeRuntime implements Runtime {
   exit(code?: number): void { process.exit(code); }
+  exitAfterStderrDrain(code: number): void {
+    this.exitCode = code;
+    process.stderr.write('', 'utf8', () => process.exit(code));
+  }
   get exitCode(): number | undefined { return process.exitCode as number | undefined; }
   set exitCode(code: number | undefined) { (process as any).exitCode = code; }
   kill(pid: number, signal?: string): boolean {
@@ -56,6 +61,7 @@ class NodeRuntime implements Runtime {
 
 class BrowserRuntime implements Runtime {
   exit(_code?: number): void { }
+  exitAfterStderrDrain(_code: number): void { }
   get exitCode(): number | undefined { return undefined; }
   set exitCode(_code: number | undefined) { }
   kill(_pid: number, _signal?: string): boolean { return false; }
