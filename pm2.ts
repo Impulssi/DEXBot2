@@ -198,7 +198,7 @@ function buildEcosystemApps(bots: any, { includeUpdater = true }: { includeUpdat
         const botName = bot.name || `bot-${index}`;
         return {
             name: botName,
-            script: runtimeScript('bot.js'),
+            script: buildRuntimeScriptPath(CODE_ROOT, ['bot']),
             args: botName,
             cwd: PATHS.PROJECT_ROOT,
             max_memory_restart: '250M',

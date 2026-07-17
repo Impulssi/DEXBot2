@@ -1,12 +1,34 @@
 {
-  "name": "dexbot2",
+  "name": "dexbot",
   "version": "1.1.10",
   "description": "The first open source trading bot with zero runtime dependencies and a fully adaptive market making strategy.",
-  "main": "dist/modules/chain_orders.js",
+  "main": "dist/modules/dexbot_class.js",
   "bin": {
     "dexbot": "./dist/dexbot.js",
     "bot": "./dist/bot.js"
   },
+  "files": [
+    "dist",
+    "scripts/clear-all.sh",
+    "scripts/clear-logs.sh",
+    "scripts/clear-market-adapter.sh",
+    "scripts/clear-orders.sh",
+    "scripts/create-bot-symlinks.sh",
+    "scripts/postinstall.js",
+    "scripts/reset-settings.sh",
+    "claw/scripts/memu_runner.py",
+    "claw/skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "preferGlobal": true,
   "scripts": {
     "pm2:unlock": "npm run build && node dist/pm2.js",
     "pm2:claw-only": "npm run build && node dist/pm2.js claw-only",
@@ -40,14 +62,17 @@
     "build": "npm run clean && tsc",
     "typecheck": "tsc --noEmit || true",
     "build:watch": "tsc --watch",
+    "version": "npm run version:sync && npm run build",
+    "postversion": "npm run build",
     "prepack": "npm run build",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "postinstall": "node scripts/postinstall.js"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/froooze/DEXBot2.git"
   },
-  "keywords": [],
+  "keywords": ["bitshares", "trading", "market-making", "grid-trading", "dex", "blockchain", "crypto", "algorithmic-trading"],
   "author": "",
   "license": "MIT",
   "type": "commonjs",

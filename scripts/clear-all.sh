@@ -17,8 +17,9 @@ NC='\033[0m' # No Color
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-ORDERS_DIR="${PROJECT_ROOT}/profiles/orders"
-LOGS_DIR="${PROJECT_ROOT}/profiles/logs"
+PROFILE_ROOT="${DEXBOT_PROFILE_ROOT:-${PROJECT_ROOT}/profiles}"
+ORDERS_DIR="${PROFILE_ROOT}/orders"
+LOGS_DIR="${PROFILE_ROOT}/logs"
 MA_DATA_DIR="${PROJECT_ROOT}/market_adapter/data"
 MA_STATE_DIR="${PROJECT_ROOT}/market_adapter/state"
 

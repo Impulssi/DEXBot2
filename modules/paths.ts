@@ -7,7 +7,18 @@ const MODULE_DIR = hasProcess() ? path.dirname(__dirname) : '';
 const PROJECT_ROOT = (hasProcess() && isDistRuntime(MODULE_DIR))
     ? path.dirname(MODULE_DIR)
     : MODULE_DIR;
-const PROFILES_DIR = path.join(PROJECT_ROOT, 'profiles');
+
+function resolveProfilesDir(): string {
+    if (Config.DEXBOT_PROFILE_ROOT) {
+        return Config.DEXBOT_PROFILE_ROOT;
+    }
+    if (Config.DEXBOT2_ROOT) {
+        return path.join(Config.DEXBOT2_ROOT, 'profiles');
+    }
+    return path.join(PROJECT_ROOT, 'profiles');
+}
+
+const PROFILES_DIR = resolveProfilesDir();
 
 const PATHS = {
   PROJECT_ROOT,

@@ -254,7 +254,7 @@ try {
      * Ensures .git directory exists so we can perform git operations
      */
     if (!fs.existsSync(path.join(PATHS.PROJECT_ROOT, '.git'))) {
-        throw new Error('Not a git repository. Manual update required.');
+        throw new Error('Not a git repository. If installed from npm, run: npm update -g dexbot');
     }
 
     /**

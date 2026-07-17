@@ -22,9 +22,10 @@ NC='\033[0m' # No Color
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-GENERAL_SETTINGS_FILE="${PROJECT_ROOT}/profiles/general.settings.json"
-MARKET_PROFILES_FILE="${PROJECT_ROOT}/profiles/market_profiles.json"
-MARKET_ADAPTER_SETTINGS_FILE="${PROJECT_ROOT}/profiles/market_adapter_settings.json"
+PROFILE_ROOT="${DEXBOT_PROFILE_ROOT:-${PROJECT_ROOT}/profiles}"
+GENERAL_SETTINGS_FILE="${PROFILE_ROOT}/general.settings.json"
+MARKET_PROFILES_FILE="${PROFILE_ROOT}/market_profiles.json"
+MARKET_ADAPTER_SETTINGS_FILE="${PROFILE_ROOT}/market_adapter_settings.json"
 
 # Functions
 log_info() {

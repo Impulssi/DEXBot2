@@ -6,9 +6,10 @@
 # Usage: ./scripts/create-bot-symlinks.sh
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-BOTS_CONFIG="$REPO_ROOT/profiles/bots.json"
-ECOSYSTEM_CONFIG="$REPO_ROOT/profiles/ecosystem.config.js"
-PROFILES_DIR="$REPO_ROOT/profiles"
+PROFILE_ROOT="${DEXBOT_PROFILE_ROOT:-${REPO_ROOT}/profiles}"
+BOTS_CONFIG="${PROFILE_ROOT}/bots.json"
+ECOSYSTEM_CONFIG="${PROFILE_ROOT}/ecosystem.config.js"
+PROFILES_DIR="${PROFILE_ROOT}"
 
 if [ ! -f "$BOTS_CONFIG" ]; then
     echo "Error: $BOTS_CONFIG not found"

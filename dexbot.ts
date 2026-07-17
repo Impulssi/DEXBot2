@@ -134,7 +134,6 @@ const {
 } = require('./modules/bot_settings');
 const { buildRuntimeScriptArgs } = require('./modules/launcher/runtime_entry');
 const { PATHS, getRecalculateTriggerFile } = require('./modules/paths');
-const { buildMarketAdapterWhitelistNpmArgs } = require('./modules/cli_whitelist_args');
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 
@@ -163,7 +162,8 @@ const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'drystart', 'keys', 'bots', 'pm2', 'update', 'export', 'order', 'clear', 'status', 'whitelist', 'unlock', 'help'];
+const BUILD_DIR = 'dist';
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'drystart', 'keys', 'bots', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', key: 'keys', bot: 'bots', white: 'whitelist', stat: 'status', stats: 'status', start: 'test', defaults: 'default' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
@@ -232,6 +232,9 @@ function printCLIUsage() {
     console.log('  unlock            Run credential daemon + bot (equivalent to `node unlock`).');
     console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune) are forwarded.');
     console.log('  clear             Remove all log files from profiles/logs/ (runs scripts/clear-logs.sh).');
+    console.log('  clear-orders      Remove all persisted order files from profiles/orders/.');
+    console.log('  clear-market-adapter  Remove market adapter data, state, and logs.');
+    console.log('  clear-all         Remove orders, logs, and market adapter files (combines the above).');
     console.log('Options:');
     console.log('  --cli-examples    Print curated CLI snippets.');
     console.log('  -h, --help        Show this help text.');
@@ -768,7 +771,7 @@ async function exportBotTrades(botName: string | undefined) {
         const botKey = botName.toLowerCase().replace(/\s+/g, '-');
 
         // Export trades and settings
-        const result = await exporter.exportBotTrades(botKey, bot, './exports');
+        const result = await exporter.exportBotTrades(botKey, bot, path.join(PATHS.PROFILES_DIR, 'exports'));
 
         if (result.success) {
             console.log(`\n${'='.repeat(60)}`);
@@ -881,10 +884,14 @@ async function handleCLICommands() {
             return true;
         case 'whitelist': {
             const { spawnSync } = require('child_process');
-            const result = spawnSync('npm', buildMarketAdapterWhitelistNpmArgs(cliArgs.slice(1)), {
+            const scriptArgs = buildRuntimeScriptArgs({
+                codeRoot: __dirname,
+                scriptSegments: ['scripts', 'generate_market_adapter_whitelist'],
+                scriptArgs: cliArgs.slice(1),
+            });
+            const result = spawnSync(Config.EXEC_PATH, scriptArgs, {
                 cwd: PATHS.PROJECT_ROOT,
                 stdio: 'inherit',
-                shell: true,
             });
             if (result.error) {
                 console.error(`whitelist: ${result.error.message}`);
@@ -913,7 +920,7 @@ async function handleCLICommands() {
         }
         case 'unlock': {
             const { spawnSync } = require('child_process');
-            const unlockScript = path.join(PATHS.PROJECT_ROOT, 'unlock.js');
+            const unlockScript = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js');
             const unlockArgs = [unlockScript, ...cliArgs.slice(1)];
             const result = spawnSync(Config.EXEC_PATH, unlockArgs, {
                 cwd: PATHS.PROJECT_ROOT,
@@ -922,15 +929,25 @@ async function handleCLICommands() {
             process.exit(result.status ?? 0);
             return true;
         }
-        case 'clear': {
+        case 'clear':
+        case 'clear-orders':
+        case 'clear-market-adapter':
+        case 'clear-all': {
             const { spawnSync } = require('child_process');
-            const clearScript = path.join(PATHS.PROJECT_ROOT, 'scripts', 'clear-logs.sh');
-            const result = spawnSync('bash', [clearScript], {
+            const scriptMap: Record<string, string> = {
+                clear: 'clear-logs.sh',
+                'clear-orders': 'clear-orders.sh',
+                'clear-market-adapter': 'clear-market-adapter.sh',
+                'clear-all': 'clear-all.sh',
+            };
+            const scriptName = scriptMap[command];
+            const scriptPath = path.join(PATHS.PROJECT_ROOT, 'scripts', scriptName);
+            const result = spawnSync('bash', [scriptPath], {
                 cwd: PATHS.PROJECT_ROOT,
                 stdio: 'inherit',
             });
             if (result.error) {
-                console.error(`clear: ${result.error.message}`);
+                console.error(`${command}: ${result.error.message}`);
                 process.exit(1);
             }
             process.exit(result.status ?? 0);
@@ -965,7 +982,7 @@ async function handleCLICommands() {
             }
 
             if (unlockRunning) {
-                const unlockScript = path.join(PATHS.PROJECT_ROOT, 'unlock.js');
+                const unlockScript = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js');
                 const result = spawnSync(Config.EXEC_PATH, [unlockScript, 'status'], {
                     cwd: PATHS.PROJECT_ROOT,
                     stdio: 'inherit',
@@ -1102,7 +1119,30 @@ async function runDefaultBots({ forceDryRun = false, sourceName = 'settings', la
  */
 async function bootstrap() {
     // Ensure profiles directory exists
-    const isNewSetup = ensureProfilesDirectory(PROFILES_DIR);
+    let isNewSetup = false;
+    try {
+        isNewSetup = ensureProfilesDirectory(PROFILES_DIR);
+    } catch (err: any) {
+        if (err && (err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'EROFS')) {
+            const { homedir } = require('os');
+            const { spawnSync: respawn } = require('child_process');
+            const fallbackDir = path.join(homedir(), '.config', 'dexbot2');
+            console.log(`Config directory not writable at: ${PROFILES_DIR}`);
+            console.log(`Auto-using ${fallbackDir} instead. Set DEXBOT_PROFILE_ROOT to override.\n`);
+            const newEnv = { ...process.env, DEXBOT_PROFILE_ROOT: fallbackDir };
+            const respawnResult = respawn(Config.EXEC_PATH, [__filename, ...process.argv.slice(2)], {
+                stdio: 'inherit',
+                env: newEnv,
+            });
+            if (respawnResult.error) {
+                console.error(`Respawn failed: ${respawnResult.error.message}`);
+                process.exit(1);
+            }
+            process.exit(respawnResult.status ?? 0);
+            return;
+        }
+        throw err;
+    }
 
     // Handle CLI commands early — commands like 'update' must work even
     // when profiles/ was just cleaned (isNewSetup = true), otherwise the
