@@ -370,7 +370,7 @@ class SyncEngine {
                     if (timedOut) {
                         mgr.logger?.log?.(
                             `[SYNC] Sync completed after timeout (${Date.now() - syncStartedAt}ms) — ` +
-                            `lock released, result discarded`,
+                            `timeout won the race; next sync will reconcile chain state`,
                             'warn'
                         );
                         return innerResult;
