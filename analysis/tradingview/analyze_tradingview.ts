@@ -5,22 +5,19 @@
 const fs = require('fs');
 const path = require('path');
 const { createSource } = require('../price_sources');
-const { generateHTML, loadMarketProfiles } = require('./tradingview_uplot_chart_generator');
+const { generateHTML } = require('./tradingview_uplot_chart_generator');
 const { MARKET_ADAPTER } = require('../../modules/constants');
 const { loadCandleFile } = require('../math_utils');
 const { ensureDir } = require('../../modules/utils/fs_utils');
 const { toIntervalLabel } = require('../../market_adapter/interval_utils');
-const { loadBotSettings, sanitizeKey, computeBotKey, resolveBotKey, resolveCandleFile, candleFileForBot } = require('../bot_key_utils');
+const { loadBotSettings, sanitizeKey, computeBotKey, resolveBotKey, resolveCandleFile, candleFileForBot, loadBotMeta, resolveAmaConfig } = require('../bot_key_utils');
 
 const { PATHS } = require('../../modules/paths');
 const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 const DEFAULT_CHART_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'tradingview_chart.html');
 const DEFAULT_AMA = MARKET_ADAPTER.AMAS.AMA3;
-const DEFAULT_AMA_KEY = String(MARKET_ADAPTER.DEFAULT_AMA_KEY).toUpperCase();
-const BUILTIN_AMAS = MARKET_ADAPTER.AMAS;
 const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
-const DEFAULT_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -30,9 +27,9 @@ function parseArgs() {
         title: string | null;
         priceScale: string;
         smaPeriod: number;
-        amaErPeriod: number;
-        amaFastPeriod: number;
-        amaSlowPeriod: number;
+        amaErPeriod: number | undefined;
+        amaFastPeriod: number | undefined;
+        amaSlowPeriod: number | undefined;
         smaEnabled: boolean;
         amaEnabled: boolean;
         vwapEnabled: boolean;
@@ -44,9 +41,9 @@ function parseArgs() {
         title: null,
         priceScale: 'log',
         smaPeriod: 500,
-        amaErPeriod: DEFAULT_AMA.erPeriod,
-        amaFastPeriod: DEFAULT_AMA.fastPeriod,
-        amaSlowPeriod: DEFAULT_AMA.slowPeriod,
+        amaErPeriod: undefined,
+        amaFastPeriod: undefined,
+        amaSlowPeriod: undefined,
         smaEnabled: false,
         amaEnabled: true,
         vwapEnabled: false,
@@ -82,19 +79,6 @@ function parseArgs() {
 function loadJsonMeta(filePath) {
     if (!filePath || !fs.existsSync(filePath)) return { meta: null, candles: null };
     return loadCandleFile(filePath);
-}
-
-function loadBotMeta(botKey, filePath = DEFAULT_BOTS_FILE) {
-    const settings = loadBotSettings(filePath);
-    const entries = Array.isArray(settings?.bots) ? settings.bots : [];
-    if (!botKey) return null;
-    const normalizedKey = String(botKey).toLowerCase();
-    const exact = entries.find((bot, index) => {
-      return computeBotKey(bot, index) === normalizedKey;
-    });
-    if (exact) return exact;
-    const loose = entries.find((bot) => sanitizeKey(bot?.name) === normalizedKey.replace(/-\d+$/, ''));
-    return loose || null;
 }
 
 function inferTitle(meta, fallback) {
@@ -149,26 +133,9 @@ async function main() {
             intervalSeconds: 3600,
         } : null);
         const title = config.title || inferTitle(jsonMeta, path.basename(srcConfig.filePath || 'tradingview'));
-        const marketProfiles = loadMarketProfiles();
-        const selectedProfile = botMeta && marketProfiles?.profiles
-            ? marketProfiles.profiles.find((entry) => String(entry.assetA) === String(botMeta.assetA) && String(entry.assetB) === String(botMeta.assetB) && Number(entry.intervalSeconds) === 3600)
-            : null;
-        const botAmaInline = (botMeta?.ama && typeof botMeta.ama === 'object') ? botMeta.ama : null;
-        let selectedAma = botAmaInline;
-        if (!selectedAma && selectedProfile?.amas) {
-            const rawGridPrice = String(botMeta?.gridPrice || '').trim().toLowerCase();
-            const isAmaKeyword = AMA_KEYWORDS.has(rawGridPrice);
-            const fallbackKey = selectedProfile.defaultAma || DEFAULT_AMA_KEY;
-            const requestedKey = isAmaKeyword
-                ? (rawGridPrice === 'ama' ? fallbackKey : rawGridPrice.toUpperCase())
-                : fallbackKey;
-            const fromProfile = selectedProfile.amas[requestedKey]
-                || selectedProfile.amas[fallbackKey];
-            const fromBuiltin = BUILTIN_AMAS[requestedKey] || BUILTIN_AMAS[fallbackKey];
-            selectedAma = fromProfile || fromBuiltin || null;
-        }
         const hasAmaGridPrice = AMA_KEYWORDS.has(String(botMeta?.gridPrice || '').trim().toLowerCase());
         const amaEnabled = hasAmaGridPrice ? config.amaEnabled : false;
+        const selectedAma = resolveAmaConfig(srcConfig.botKey);
 
         const html = generateHTML({
             candles,
@@ -177,14 +144,10 @@ async function main() {
                 assetB: { symbol: 'Asset B' },
             },
             smaPeriod: config.smaPeriod,
-            amaDefaults: selectedAma ? {
-                erPeriod: botAmaInline?.erPeriod || selectedAma.erPeriod,
-                fastPeriod: botAmaInline?.fastPeriod || selectedAma.fastPeriod,
-                slowPeriod: botAmaInline?.slowPeriod || selectedAma.slowPeriod,
-            } : {
-                erPeriod: config.amaErPeriod,
-                fastPeriod: config.amaFastPeriod,
-                slowPeriod: config.amaSlowPeriod,
+            amaDefaults: {
+                erPeriod: config.amaErPeriod ?? selectedAma.erPeriod,
+                fastPeriod: config.amaFastPeriod ?? selectedAma.fastPeriod,
+                slowPeriod: config.amaSlowPeriod ?? selectedAma.slowPeriod,
             },
             smaEnabled: config.smaEnabled,
             amaEnabled,
@@ -193,7 +156,6 @@ async function main() {
             priceScale: config.priceScale === 'linear' ? 'linear' : 'log',
             defaultTimeframe: '1h',
             marketAdapter: MARKET_ADAPTER,
-            marketProfiles,
         }, title);
 
         const chartDir = path.dirname(config.chartFile);
@@ -216,6 +178,5 @@ export = {
     parseArgs,
     loadJsonMeta,
     loadBotSettings,
-    loadBotMeta,
     inferTitle,
 };

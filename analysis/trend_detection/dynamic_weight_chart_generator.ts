@@ -88,6 +88,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
     });
     const kalmanIsReady      = results.map((r) => r.isReady ?? false);
     const signals            = results.map((r) => r.signal);
+    const amaLabel           = data.amaKey || 'AMA3';
     const ama3Prices         = results.map((r) => r.ama3Price ?? null);
     const amaErPeriod        = data.amaConfig?.erPeriod ?? MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY].erPeriod;
     const amaSlowPeriod      = data.amaConfig?.slowPeriod ?? MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY].slowPeriod;
@@ -267,7 +268,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
             <div class="section-label">PRICE (LOG)</div>
             <div class="legend">
                 <div class="legend-item"><div class="dot" style="background:#58a6ff;"></div>Price: <span id="l-price" class="legend-val" style="font-weight:bold;">-</span></div>
-                <div class="legend-item"><div class="dot" style="background:#e3b341;"></div>AMA3: <span id="l-ama3" class="legend-val" style="font-weight:bold;">-</span></div>
+                <div class="legend-item"><div class="dot" style="background:#e3b341;"></div>${amaLabel}: <span id="l-ama3" class="legend-val" style="font-weight:bold;">-</span></div>
                 <div class="legend-item"><div class="dot" style="background:#8b949e;"></div>Seed SMA: <span id="l-seed-sma" class="legend-val">-</span></div>
             </div>
             <div id="price-chart"></div>
@@ -1025,7 +1026,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
                 series: [
                     { label: 'Time' },
                     { label: 'Price', stroke: '#58a6ff', width: 1.5, scale: 'y', points: { show: false } },
-                    { label: 'AMA3',  stroke: '#e3b341', width: 1.5, scale: 'y', points: { show: false } },
+                    { label: '${amaLabel}',  stroke: '#e3b341', width: 1.5, scale: 'y', points: { show: false } },
                     { label: 'Seed SMA', stroke: '#8b949e', width: 1.5, dash: [4, 4], scale: 'y', points: { show: false } },
                 ],
                 axes: [

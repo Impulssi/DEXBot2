@@ -25,12 +25,9 @@ const { computeAmaSlopeWeights } = require('../market_adapter/core/strategies/am
 const { MARKET_ADAPTER } = require('../modules/constants');
 const { writeChartFile } = require('./chart_utils');
 const { getCandleClose } = require('./math_utils');
-const { resolveCandleFile } = require('./bot_key_utils');
+const { resolveCandleFile, resolveAmaConfig, resolveAmaKey } = require('./bot_key_utils');
 
 const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
-
-// AMA configuration — use AMA3 from constants (same as production)
-const AMA_CONFIG = MARKET_ADAPTER.AMAS.AMA3;
 
 // AMA Slope weight calculation config — use DEFAULTS from market adapter
 const AMA_WEIGHT_CONFIG = {
@@ -113,6 +110,8 @@ async function main() {
             if (!config.quiet) console.log(`[DynamicWeight] Resolved bot '${srcConfig.botKey}' → ${path.basename(candleFile)}`);
         }
 
+        const AMA_CONFIG = resolveAmaConfig(srcConfig.botKey);
+
         const source = createSource(config.source.type, srcConfig);
         if (!config.quiet) console.log(`[DynamicWeight] Loading candles from ${source.name}...`);
 
@@ -154,15 +153,14 @@ async function main() {
 
         // ── AMA weight calculation ───────────────────────────────────────────
         const closes = candles.map(c => getCandleClose(c) ?? 0);
-        const ama3Values = calculateAMA(closes, AMA_CONFIG);
+        const amaValues = calculateAMA(closes, AMA_CONFIG);
         for (let i = 0; i < allResults.length; i++) {
-            const amaPrice = ama3Values[i] ?? null;
             // The research chart keeps ATR out of the Kalman branch on purpose.
             // Production applies ATR later as a separate symmetric volatility penalty.
             const atr = 0;
             const weightVariance = 0;
 
-            const weights = computeAmaSlopeWeights(ama3Values.slice(0, i + 1), weightVariance, {
+            const weights = computeAmaSlopeWeights(amaValues.slice(0, i + 1), weightVariance, {
                 erPeriod: AMA_CONFIG.erPeriod,
                 slowPeriod: AMA_CONFIG.slowPeriod,
                 lookbackBars: config.lookbackBars ?? AMA_WEIGHT_CONFIG.lookbackBars,
@@ -175,8 +173,7 @@ async function main() {
                 maxVolatilityOffset: AMA_WEIGHT_CONFIG.maxVolatilityOffset,
             });
 
-            allResults[i].amaPrice = amaPrice;
-            allResults[i].ama3Price = ama3Values[i] ?? null;
+            allResults[i].ama3Price = amaValues[i] ?? null;
             allResults[i].atr = atr;
             allResults[i].weightVariance = weightVariance;
             allResults[i].amaSlopePct = weights.slopePct;
@@ -186,9 +183,12 @@ async function main() {
         }
 
         // ── Generate chart ───────────────────────────────────────────────────
+        const amaKey = resolveAmaKey(srcConfig.botKey);
+
         const html = generateHTML({
             allResults,
             amaConfig: AMA_CONFIG,
+            amaKey,
             amaWeightConfig: {
                 ...AMA_WEIGHT_CONFIG,
                 lookbackBars: config.lookbackBars ?? AMA_WEIGHT_CONFIG.lookbackBars,
