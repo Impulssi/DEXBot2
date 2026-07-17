@@ -48,6 +48,7 @@ dashboard/target/
 # Local helper artifacts
 .dexbot-aliases
 .codex
+.npmrc
 dexbot
 
 # Market adapter runtime/user-specific artifacts
