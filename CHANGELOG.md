@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.11] - 2026-07-18 - npm publish, README install options, CLI dist resolution, .npmrc ignore
+
+### 2026-07-18
+
+- **Feat**: prepare npm publish as `dexbot` package — renamed package from `dexbot2` to `dexbot`, added `files`/`engines`/`os`/`preferGlobal` metadata, npm lifecycle scripts (`version`/`postversion`/`postinstall`), and keywords. Profile directory now respects `DEXBOT_PROFILE_ROOT` / `DEXBOT2_ROOT` env vars with auto-respawn fallback to `~/.config/dexbot2` on read-only project root. CLI scripts resolve from `dist/` via `buildRuntimeScriptArgs` instead of shelling out. New `dexbot clear-orders`, `clear-market-adapter`, `clear-all` commands. Shell scripts updated for `DEXBOT_PROFILE_ROOT` (`dexbot.ts`, `modules/paths.ts`, `pm2.ts`, `package.json`, `scripts/`).
+- **Docs**: add `npm i dexbot` as Option A in Quick Start and Installation sections — users can now install from npm without cloning the repo; commands use `node dexbot` (`README.md`).
+- **Docs**: clarify sync timeout log message — rephrase "result discarded" to "timeout won the race; next sync will reconcile chain state" for operator clarity (`modules/order/sync_engine.ts:372-373`).
+- **Chore**: add `.npmrc` to `.gitignore` — prevents accidental commit of npm credentials (`.gitignore`).
+
 ## [1.1.10] - 2026-07-17 - Asymmetric Bounds Decoupling, CLI Stats Enhancement
 
 ### 2026-07-17

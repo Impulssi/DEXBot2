@@ -1,6 +1,6 @@
 {
   "name": "dexbot",
-  "version": "1.1.10",
+  "version": "1.1.11",
   "description": "The first open source trading bot with zero runtime dependencies and a fully adaptive market making strategy.",
   "main": "dist/modules/dexbot_class.js",
   "bin": {
@@ -72,7 +72,16 @@
     "type": "git",
     "url": "git+https://github.com/froooze/DEXBot2.git"
   },
-  "keywords": ["bitshares", "trading", "market-making", "grid-trading", "dex", "blockchain", "crypto", "algorithmic-trading"],
+  "keywords": [
+    "bitshares",
+    "trading",
+    "market-making",
+    "grid-trading",
+    "dex",
+    "blockchain",
+    "crypto",
+    "algorithmic-trading"
+  ],
   "author": "",
   "license": "MIT",
   "type": "commonjs",
