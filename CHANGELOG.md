@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.10] - 2026-07-17 - Asymmetric Bounds Decoupling, CLI Stats Enhancement
+
+### 2026-07-17
+
+- **Feat**: show `range`/`weight` indicators in `stats` output — reads whitelist flags and appends them alongside AMA version: `XRP-BTS (ama1, range, weight)` (`unlock.ts:824-834`).
+- **Feat**: add `stats` as CLI alias for `status` command (`dexbot.ts:167,231`).
+- **Fix**: propagate `asymmetricBounds` through snapshot writer, grid reader, and snapshot loader — three sites needed the root-level fallback for the `dynamicWeight: false, asymmetricBounds: true` path to work end-to-end (`market_adapter.ts`, `grid.ts`, `system.ts`).
+- **Fix**: decouple asymmetric bounds metrics from `dynamicWeight` flag — `asymmetryMetrics` now always computed when `isAsymmetricBoundsWhitelisted`, using `amaSlope` as fallback data source when `dynamicWeightsPayload` is absent; display reads root-level `snapshot.asymmetricBounds` (`market_adapter_service.ts`, `analyze-orders.ts`).
+
 ## [1.1.9] - 2026-07-16 - Immediate Dust Cancel, Duplicate Price Guard, Cleanup & Simplification
 
 ### 2026-07-16
