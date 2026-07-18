@@ -96,6 +96,7 @@ const {
     REBALANCE_STATES,
     COW_ACTIONS,
     TIMING,
+    PIPELINE_TIMING,
     MAINTENANCE,
     FILL_PROCESSING,
     DAEMON_CODES,
@@ -162,6 +163,8 @@ class DEXBot {
     _lastGridActivityAt: number;
     _currentCycleId: number;
     _autoCancelOrphanCycleMarker: number | null;
+    _autoCancelOrphanSubCount: number;
+    _orphanFillsCreditedThisCycle: boolean;
     _consecutiveConsumeFailures: number;
     _consumeFailureFirstAt: number;
     _reconnectUnregister: any;
@@ -261,6 +264,8 @@ class DEXBot {
         this._lastGridActivityAt = 0;
         this._currentCycleId = 0;
         this._autoCancelOrphanCycleMarker = null;
+        this._autoCancelOrphanSubCount = 0;
+        this._orphanFillsCreditedThisCycle = false;
 
         // Per-session guard: ghost order IDs successfully cancelled
         // (avoids spamming the chain with repeated cancel attempts for the same
@@ -1682,6 +1687,13 @@ class DEXBot {
             }
 
             await this.manager._fillProcessingLock.acquire(async () => {
+                // FIX 5: Reset orphan-fill credit flag at the start of each
+                // fill cycle. It is re-set when orphan fills are credited,
+                // and cleared again by _performStateRecovery after a fresh
+                // chain fetch. This prevents stale flags from silently
+                // suppressing genuine invariant violations.
+                this._orphanFillsCreditedThisCycle = false;
+
                 while (this._incomingFillQueue.length > 0) {
                     const batchStartTime = Date.now();
 
@@ -1760,6 +1772,12 @@ class DEXBot {
                                  if (accountingResult.status === 'missing_key') {
                                      requiresOpenOrdersSync = true;
                                  }
+                                 // FIX 5: Track orphan fill activity so the fund invariant
+                                 // check can widen tolerance temporarily. Without this flag,
+                                 // orphan credits applied to mgr.accountTotals may not be
+                                 // reflected in chainFree (sellFree/buyFree) from the last
+                                 // fetchAccountTotals, triggering a false-positive violation.
+                                 this._orphanFillsCreditedThisCycle = true;
                                 // Don't add to validFills - we can't do rebalancing without a grid slot
                                 // But the funds are now credited, preventing fund invariant violation
                                 continue;
@@ -1857,7 +1875,52 @@ class DEXBot {
 
                     this.manager.pauseFundRecalc();
                     try {
-                        allFilledOrders = await processValidFills(validFills);
+                        // FIX 1: Block-level fill batching — group valid fills by block
+                        // and process each block group as a unit. This prevents slot
+                        // collisions when fills from the same block (original + replacement
+                        // orders both filled) arrive in different sync batches. Processing
+                        // all fills from a block together lets the sync engine see every
+                        // fill for overlapping slots simultaneously.
+                        const fillsByBlock = new Map<number, any[]>();
+                        const fillsWithoutBlock: any[] = [];
+                        for (const fill of validFills) {
+                            if (fill.block_num != null) {
+                                const list = fillsByBlock.get(fill.block_num);
+                                if (list) list.push(fill);
+                                else fillsByBlock.set(fill.block_num, [fill]);
+                            } else {
+                                fillsWithoutBlock.push(fill);
+                            }
+                        }
+
+                        // Process block groups in ascending block order so the sync
+                        // engine sees a deterministic, chronological fill sequence.
+                        const sortedBlocks = [...fillsByBlock.keys()].sort((a, b) => a - b);
+                        const accumulatedOrders = [];
+                        let anyRequiresSync = false;
+                        for (const blockNum of sortedBlocks) {
+                            // Reset requiresOpenOrdersSync per block group so one
+                            // block's history-id gap doesn't force the next block
+                            // into an unnecessary open-orders snapshot re-fetch.
+                            requiresOpenOrdersSync = false;
+                            this.manager.logger.log(
+                                `[FILL-BLOCK] Processing ${fillsByBlock.get(blockNum)!.length} fill(s) from block ${blockNum}`,
+                                'debug'
+                            );
+                            const blockResult = await processValidFills(fillsByBlock.get(blockNum)!);
+                            accumulatedOrders.push(...blockResult);
+                            if (requiresOpenOrdersSync) anyRequiresSync = true;
+                        }
+                        requiresOpenOrdersSync = anyRequiresSync;
+                        if (fillsWithoutBlock.length > 0) {
+                            this.manager.logger.log(
+                                `[FILL-BLOCK] Processing ${fillsWithoutBlock.length} fill(s) without block info`,
+                                'debug'
+                            );
+                            const noBlockResult = await processValidFills(fillsWithoutBlock);
+                            accumulatedOrders.push(...noBlockResult);
+                        }
+                        allFilledOrders = accumulatedOrders;
 
                         // 4. Handle Price Corrections
                         if (ordersNeedingCorrection.length > 0) {
@@ -2852,7 +2915,7 @@ class DEXBot {
         }
 
         const adopted = [];
-        const discarded = [];
+        let discarded = [];
 
         // 2. For each pending broadcast, look for a chain match.
         for (const entry of pending) {
@@ -2870,8 +2933,54 @@ class DEXBot {
                 adopted.push({ slotId: entry.slotId, chainOrderId: match.id });
                 this.manager._pendingBroadcasts.delete(entry.fingerprint);
             } else {
-                discarded.push({ slotId: entry.slotId });
+                // Preserve full entry context so the recheck below can use
+                // both the fingerprint match path (against _pendingBroadcasts)
+                // and the near-match path (via finalInts/orderType), not just
+                // slotId alone.
+                discarded.push(entry);
             }
+        }
+
+        // ---- RACE MITIGATION: block-delay recheck before discarding creates ----
+        // BROADCAST_DEADLINE fires while the transaction may still be valid
+        // and land in the next block. Wait for up to 3 blocks (~1 BitShares
+        // block interval each) and re-check before permanently discarding.
+        const UNCERTAIN_RECHECK_MAX_ATTEMPTS = PIPELINE_TIMING.RETRY_MAX_ATTEMPTS; // 3
+        const UNCERTAIN_RECHECK_INTERVAL_MS = TIMING.MILLISECONDS_PER_SECOND * 3; // 3s
+        let recheckRound = 0;
+        while (discarded.length > 0 && recheckRound < UNCERTAIN_RECHECK_MAX_ATTEMPTS) {
+            recheckRound++;
+            await new Promise(r => setTimeout(r, UNCERTAIN_RECHECK_INTERVAL_MS));
+            let freshSnapshot;
+            try {
+                freshSnapshot = await chainOrders.readOpenOrders(accountRef);
+            } catch {
+                break;
+            }
+            const stillDiscarded = [];
+            for (const entry of discarded) {
+                const match = this._findChainOrderForSlot(
+                    freshSnapshot,
+                    entry.slotId,
+                    {
+                        sell: entry.finalInts?.sell,
+                        receive: entry.finalInts?.receive,
+                        orderType: entry.orderType || entry.order?.type,
+                        fingerprint: entry.fingerprint
+                    }
+                );
+                if (match) {
+                    adopted.push({ slotId: entry.slotId, chainOrderId: match.id });
+                    this.manager.logger.log(
+                        `[COW][UNCERTAIN] CREATE re-adopted after ${recheckRound} block(s): ` +
+                        `${entry.slotId}->${match.id}`,
+                        'info'
+                    );
+                } else {
+                    stillDiscarded.push(entry);
+                }
+            }
+            discarded = stillDiscarded;
         }
 
         // 3. Apply the result to the working grid.
@@ -2923,7 +3032,7 @@ class DEXBot {
         this.manager.logger.log(
             `[COW][UNCERTAIN] batchId=${err?.batchId || 'n/a'} ops=${opContexts.length} ` +
             `staleSinceMs=${err?.timeoutMs || 'n/a'} heartbeatAgeMs=${heartbeatAgeMs ?? 'n/a'} ` +
-            `adopted=${adopted.length} discarded=${discarded.length} elapsedMs=${elapsedMs}`,
+            `adopted=${adopted.length} discarded=${discarded.length} recheckRounds=${recheckRound} elapsedMs=${elapsedMs}`,
             adopted.length > 0 ? 'info' : 'warn'
         );
         if (adopted.length > 0) {
@@ -2936,7 +3045,7 @@ class DEXBot {
         }
         if (discarded.length > 0) {
             this.manager.logger.log(
-                `[COW][UNCERTAIN] Discarded planned CREATEs (no chain match): ${discarded
+                `[COW][UNCERTAIN] Discarded planned CREATEs (no chain match after ${recheckRound} recheck(s)): ${discarded
                     .map(d => d.slotId)
                     .join(', ')}`,
                 'warn'
@@ -2997,8 +3106,18 @@ class DEXBot {
      */
     async _autoCancelOneUnmatchedOrphan() {
         const cycleId = this._currentCycleId || 0;
+        // FIX 4: Higher cap during recovery mode so orphan backlog clears faster.
+        const recoveryActive = this.manager?._recoveryState?.structuralResyncRequested === true;
+        const cycleCap = recoveryActive ? 5 : 1;
+
         if (this._autoCancelOrphanCycleMarker === cycleId) {
-            return { cancelled: false, reason: 'cap-reached-this-cycle' };
+            if (this._autoCancelOrphanSubCount >= cycleCap) {
+                return { cancelled: false, reason: 'cap-reached-this-cycle', subCount: this._autoCancelOrphanSubCount };
+            }
+        } else {
+            // Reset sub-count on first call this cycle
+            this._autoCancelOrphanCycleMarker = cycleId;
+            this._autoCancelOrphanSubCount = 0;
         }
         const pending = (this.manager && this.manager._pendingBroadcasts instanceof Map)
             ? this.manager._pendingBroadcasts.size
@@ -3027,16 +3146,18 @@ class DEXBot {
             return { cancelled: false, reason: 'cancelOrder-unavailable' };
         }
         try {
-            this._autoCancelOrphanCycleMarker = cycleId;
-            this.manager.logger.log(
-                `[COW] Auto-cancelling 1/${unmatched.length} unmatched chain order ` +
-                `(${this._formatUnmatchedChainOrderForLog(target)}) — per-cycle cap=1.`,
-                'warn'
-            );
             await chainOrders.cancelOrder(this.account, this.privateKey, orderId);
             if (typeof chainOrders.recordOwnCancel === 'function') {
                 chainOrders.recordOwnCancel(orderId);
             }
+            // Increment sub-count only after a confirmed successful cancel.
+            // Failed cancels do not consume the per-cycle cap budget.
+            this._autoCancelOrphanSubCount++;
+            this.manager.logger.log(
+                `[COW] Auto-cancelled ${this._autoCancelOrphanSubCount}/${unmatched.length} unmatched chain order ` +
+                `(${this._formatUnmatchedChainOrderForLog(target)}) — per-cycle cap=${cycleCap}.`,
+                'warn'
+            );
             return { cancelled: true, orderId };
         } catch (err) {
             this.manager.logger.log(
@@ -3974,72 +4095,137 @@ class DEXBot {
             ? Array.from(this.manager._pendingBroadcasts.values()) as any[]
             : [];
         if (hasCreateActions && (unmatchedChainOrders.length > 0 || pendingBroadcasts.length > 0)) {
-            const blockers = [];
-            if (unmatchedChainOrders.length > 0) blockers.push(`${unmatchedChainOrders.length} unmatched chain order(s)`);
-            if (pendingBroadcasts.length > 0) blockers.push(`${pendingBroadcasts.length} pending broadcast(s)`);
-            const reasonText = blockers.join(' and ');
-            if (pendingBroadcasts.length > 0) {
-                this.manager.logger.log(
-                    `[COW] Rejecting CREATE batch: ${reasonText} from a prior uncertain ` +
-                    `broadcast. Running recovery before placing replacement orders.`,
-                    'error'
-                );
-            } else {
-                const sample = unmatchedChainOrders
-                    .slice(0, 3)
-                    .map(order => this._formatUnmatchedChainOrderForLog(order))
-                    .join(' | ');
-                this.manager.logger.log(
-                    `[COW] Rejecting CREATE batch: ${reasonText} ` +
-                    `are not represented in the grid${sample ? ` (${sample})` : ''}. ` +
-                    `Run structural reconciliation before placing replacement orders.`,
-                    'error'
-                );
-            }
-            if (typeof this.manager.requestStructuralGridResync === 'function') {
-                if (this.manager._recoveryState) this.manager._recoveryState.structuralResyncRequested = true;
-                await this.manager.requestStructuralGridResync(
-                    pendingBroadcasts.length > 0
-                        ? 'pending broadcasts before COW create'
-                        : 'unmatched chain orders before COW create',
-                    pendingBroadcasts.length > 0
-                        ? { pendingBroadcasts: pendingBroadcasts.map(p => p.slotId) }
-                        : { unmatchedChainOrders }
-                );
-            }
-            // If we have pending broadcasts, drive the recovery now so the
-            // next planning cycle has a clean state.
-            if (pendingBroadcasts.length > 0) {
-                try {
-                    await this._reconcileAfterUncertainBroadcast(
-                        new BroadcastUncertainError(
-                            'rejected CREATE batch had pending broadcasts',
-                            {
-                                operations: pendingBroadcasts.map(p => p.order),
-                                accountName: this.account,
-                                batchId: this._currentBatchId || null,
-                                payload: null,
-                                timeoutMs: null
+            // ---- FIX 3: Absorb unmatched orders instead of rejecting ----
+            // When unmatched chain orders exist, try to auto-cancel them
+            // inline to unblock the CREATE batch. Only fall through to
+            // full rejection + structural resync if cancellation fails.
+            let cancelledUnmatched = 0;
+            if (unmatchedChainOrders.length > 0 && pendingBroadcasts.length === 0) {
+                // Bounded-parallel cancellation: process unmatched orders in
+                // concurrent batches (3 at a time) to avoid serialising 19+
+                // individual cancel txs (~0.5s each = 10s batch hold).
+                const CANCEL_CONCURRENCY = 3;
+                const cancelable = unmatchedChainOrders.filter(u => {
+                    const oid = u?.id || u?.orderId || u?.chainOrderId;
+                    return Boolean(oid) && !u?.fingerprint;
+                });
+                for (let i = 0; i < cancelable.length; i += CANCEL_CONCURRENCY) {
+                    const batch = cancelable.slice(i, i + CANCEL_CONCURRENCY);
+                    const results = await Promise.allSettled(
+                        batch.map(async (unmatched) => {
+                            const orderId = unmatched.id || unmatched.orderId || unmatched.chainOrderId;
+                            this.manager.logger.log(
+                                `[COW] Auto-cancelling unmatched chain order ${orderId} ` +
+                                `(${this._formatUnmatchedChainOrderForLog(unmatched)}) to unblock CREATE batch.`,
+                                'warn'
+                            );
+                            await chainOrders.cancelOrder(this.account, this.privateKey, orderId);
+                            if (typeof chainOrders.recordOwnCancel === 'function') {
+                                chainOrders.recordOwnCancel(orderId);
                             }
-                        ),
-                        [],
-                        { fillLockAlreadyHeld: true }
+                        })
                     );
-                } catch (recoverErr) {
+                    for (const r of results) {
+                        if (r.status === 'fulfilled') cancelledUnmatched++;
+                        else this.manager.logger.log(
+                            `[COW] Failed to cancel unmatched chain order: ${r.reason?.message || r.reason}`,
+                            'warn'
+                        );
+                    }
+                }
+                if (cancelledUnmatched >= cancelable.length) {
                     this.manager.logger.log(
-                        `[COW] Recovery from pending broadcasts failed: ${recoverErr?.message || recoverErr}`,
-                        'error'
+                        `[COW] Cancelled all ${cancelledUnmatched} unmatched chain order(s); proceeding with CREATE batch.`,
+                        'warn'
+                    );
+                    // Optimistic clear: the cancel txs are sent but not yet
+                    // confirmed. If a cancel silently fails on chain, the
+                    // next sync cycle will re-detect the unmatched order and
+                    // re-enter this guard — that's safe because the cancel
+                    // is idempotent and the re-detection is non-blocking.
+                    this.manager._lastUnmatchedChainOrders = [];
+                } else {
+                    this.manager.logger.log(
+                        `[COW] Cancelled ${cancelledUnmatched}/${cancelable.length} unmatched chain order(s); ` +
+                        `remaining must be handled by structural reconciliation.`,
+                        'warn'
                     );
                 }
             }
-            return {
-                executed: false,
-                aborted: true,
-                reason: pendingBroadcasts.length > 0 ? 'PENDING_BROADCASTS' : 'UNMATCHED_CHAIN_ORDERS',
-                unmatchedChainOrders: pendingBroadcasts.length > 0 ? [] : unmatchedChainOrders,
-                pendingBroadcasts: pendingBroadcasts.map(p => p.slotId),
-                hadRotation: false
-            };
+
+            // Re-check after auto-cancel attempt
+            const remainingUnmatched = Array.isArray(this.manager?._lastUnmatchedChainOrders)
+                ? this.manager._lastUnmatchedChainOrders
+                : [];
+            if (remainingUnmatched.length > 0 || pendingBroadcasts.length > 0) {
+                const blockers = [];
+                if (remainingUnmatched.length > 0) blockers.push(`${remainingUnmatched.length} unmatched chain order(s)`);
+                if (pendingBroadcasts.length > 0) blockers.push(`${pendingBroadcasts.length} pending broadcast(s)`);
+                const reasonText = blockers.join(' and ');
+                if (pendingBroadcasts.length > 0) {
+                    this.manager.logger.log(
+                        `[COW] Rejecting CREATE batch: ${reasonText} from a prior uncertain ` +
+                        `broadcast. Running recovery before placing replacement orders.`,
+                        'error'
+                    );
+                } else {
+                    const sample = remainingUnmatched
+                        .slice(0, 3)
+                        .map(order => this._formatUnmatchedChainOrderForLog(order))
+                        .join(' | ');
+                    this.manager.logger.log(
+                        `[COW] Rejecting CREATE batch: ${reasonText} ` +
+                        `are not represented in the grid${sample ? ` (${sample})` : ''}. ` +
+                        `Run structural reconciliation before placing replacement orders.`,
+                        'error'
+                    );
+                }
+                if (typeof this.manager.requestStructuralGridResync === 'function') {
+                    if (this.manager._recoveryState) this.manager._recoveryState.structuralResyncRequested = true;
+                    await this.manager.requestStructuralGridResync(
+                        pendingBroadcasts.length > 0
+                            ? 'pending broadcasts before COW create'
+                            : 'unmatched chain orders before COW create',
+                        pendingBroadcasts.length > 0
+                            ? { pendingBroadcasts: pendingBroadcasts.map(p => p.slotId) }
+                            : { unmatchedChainOrders: remainingUnmatched }
+                    );
+                }
+                // If we have pending broadcasts, drive the recovery now so the
+                // next planning cycle has a clean state.
+                if (pendingBroadcasts.length > 0) {
+                    try {
+                        await this._reconcileAfterUncertainBroadcast(
+                            new BroadcastUncertainError(
+                                'rejected CREATE batch had pending broadcasts',
+                                {
+                                    operations: pendingBroadcasts.map(p => p.order),
+                                    accountName: this.account,
+                                    batchId: this._currentBatchId || null,
+                                    payload: null,
+                                    timeoutMs: null
+                                }
+                            ),
+                            [],
+                            { fillLockAlreadyHeld: true }
+                        );
+                    } catch (recoverErr) {
+                        this.manager.logger.log(
+                            `[COW] Recovery from pending broadcasts failed: ${recoverErr?.message || recoverErr}`,
+                            'error'
+                        );
+                    }
+                }
+                return {
+                    executed: false,
+                    aborted: true,
+                    reason: pendingBroadcasts.length > 0 ? 'PENDING_BROADCASTS' : 'UNMATCHED_CHAIN_ORDERS',
+                    unmatchedChainOrders: pendingBroadcasts.length > 0 ? [] : remainingUnmatched,
+                    pendingBroadcasts: pendingBroadcasts.map(p => p.slotId),
+                    hadRotation: false
+                };
+            }
+            // All unmatched were cancelled — fall through to continue batch
         }
 
         const { assetA, assetB } = this.manager.assets;

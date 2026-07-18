@@ -496,9 +496,21 @@ class Accountant {
           if (!Number.isFinite(buyPrecision) || !Number.isFinite(sellPrecision)) {
               return;  // Skip invariant check if precision not available
           }
-         const precisionSlackBuy = getPrecisionSlack(buyPrecision);
+          const precisionSlackBuy = getPrecisionSlack(buyPrecision);
          const precisionSlackSell = getPrecisionSlack(sellPrecision);
           const PERCENT_TOLERANCE = (mgr.config?.gridLimits?.FUND_INVARIANT_PERCENT_TOLERANCE) / 100;
+
+         // FIX 5: Widen tolerance when orphan fills were recently credited.
+         // Orphan fill accounting adjusts mgr.accountTotals optimistically, but
+         // chainFree (sellFree/buyFree) from the last fetchAccountTotals call
+         // may not yet reflect the proceeds. Widen tolerance to prevent false-
+         // positive violations that trigger unproductive recovery cycles.
+         // The flag is self-clearing: consumed by this check, re-set by the
+         // next orphan-fill credit, and also cleared by _performStateRecovery.
+         const orphanFillsActive = !!(mgr as any)._orphanFillsCreditedThisCycle;
+         (mgr as any)._orphanFillsCreditedThisCycle = false; // consume
+         const orphanToleranceMultiplier = orphanFillsActive ? 5 : 1;
+         const effectivePercentTolerance = PERCENT_TOLERANCE * orphanToleranceMultiplier;
 
          let hasViolation = false;
 
@@ -509,7 +521,7 @@ class Accountant {
          const expectedBuy = chainFreeBuy + chainBuy;
          const actualBuy = mgr.accountTotals?.buy;
          const diffBuy = Math.abs((actualBuy ?? expectedBuy) - expectedBuy);
-         const allowedBuyTolerance = Math.max(precisionSlackBuy, (actualBuy || expectedBuy) * PERCENT_TOLERANCE);
+         const allowedBuyTolerance = Math.max(precisionSlackBuy, (actualBuy || expectedBuy) * effectivePercentTolerance);
 
         if (actualBuy !== null && actualBuy !== undefined && diffBuy > allowedBuyTolerance) {
             hasViolation = true;
@@ -518,23 +530,23 @@ class Accountant {
             // This triggers immediate recovery attempt
             this._logThrottled(
                 'fund-invariant-buy',
-                `CRITICAL: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmountByPrecision(actualBuy, buyPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedBuy, buyPrecision)}) (diff: ${Format.formatAmountByPrecision(diffBuy, buyPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedBuyTolerance, buyPrecision)})`,
-                'error'
+                `CRITICAL: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmountByPrecision(actualBuy, buyPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedBuy, buyPrecision)}) (diff: ${Format.formatAmountByPrecision(diffBuy, buyPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedBuyTolerance, buyPrecision)}${orphanFillsActive ? ', orphan-fill buffer active' : ''})`,
+                orphanFillsActive ? 'warn' : 'error'
             );
         }
 
         const expectedSell = chainFreeSell + chainSell;
         const actualSell = mgr.accountTotals?.sell;
         const diffSell = Math.abs((actualSell ?? expectedSell) - expectedSell);
-        const allowedSellTolerance = Math.max(precisionSlackSell, (actualSell || expectedSell) * PERCENT_TOLERANCE);
+        const allowedSellTolerance = Math.max(precisionSlackSell, (actualSell || expectedSell) * effectivePercentTolerance);
 
         if (actualSell !== null && actualSell !== undefined && diffSell > allowedSellTolerance) {
             hasViolation = true;
             // CRITICAL FIX: Log as ERROR instead of WARN
             this._logThrottled(
                 'fund-invariant-sell',
-                `CRITICAL: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmountByPrecision(actualSell, sellPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedSell, sellPrecision)}) (diff: ${Format.formatAmountByPrecision(diffSell, sellPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedSellTolerance, sellPrecision)})`,
-                'error'
+                `CRITICAL: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmountByPrecision(actualSell, sellPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedSell, sellPrecision)}) (diff: ${Format.formatAmountByPrecision(diffSell, sellPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedSellTolerance, sellPrecision)}${orphanFillsActive ? ', orphan-fill buffer active' : ''})`,
+                orphanFillsActive ? 'warn' : 'error'
             );
         }
 
@@ -630,6 +642,12 @@ class Accountant {
 
         // 1. Fetch fresh blockchain state
         await mgr.fetchAccountTotals(accountRef);
+        // FIX 5: After a fresh chain fetch, reset the orphan-fill credit
+        // flag. The fetched values now incorporate on-chain fill proceeds,
+        // so the temporary invariant tolerance is no longer needed.
+        if ((mgr as any)._orphanFillsCreditedThisCycle) {
+            (mgr as any)._orphanFillsCreditedThisCycle = false;
+        }
 
         // 2. Sync from open orders
         const chainOrders = require('../chain_orders');
