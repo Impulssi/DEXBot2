@@ -474,7 +474,7 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
         assert.strictEqual(result.adopted[0].chainOrderId, '1.7.572312011');
         assert.strictEqual(result.discarded.length, 0);
         assert.strictEqual(bot.manager._pendingBroadcasts.size, 0, 'pending broadcasts must be cleared after recovery');
-        assert.strictEqual(readCalls, 1);
+        assert.strictEqual(readCalls, 2);
         assert.strictEqual(syncCalls, 1, 'syncFromOpenOrders must run even when all CREATEs are adopted, to link chain orders into grid slots');
     } finally {
         chainOrders.readOpenOrders = origReadOpenOrders;
@@ -1162,8 +1162,326 @@ async function main() {
     await testCowCatchBlockPassesFillLockAlreadyHeld();
     await testExecuteWithRetryOnUncertainRetriesOnce();
     await testExecuteWithRetrySkipsPartialOnChainState();
+    await testUpdateToCreateFallbackOnNotFound();
+    await testUpdateToCreateFallbackRotationBranch();
+    await testUpdateToCreateFallbackCreateAlsoFails();
+    await testRecoverFromPersistedGrid();
+    await testRecoverFromPersistedGridNoGrid();
     testsComplete = true;
     console.log('\nAll uncertain-broadcast tests passed (incl. retry + deadlock regression guards).');
+}
+
+// ── UPDATE→CREATE fallback: size-update branch ──────────────────────────
+async function testUpdateToCreateFallbackOnNotFound() {
+    console.log('\n[UNC-015] UPDATE→CREATE fallback on "not found" (size-update branch)...');
+    const bot = makeBot();
+    const slotId = 'slot-unc-015';
+    const actionOrderId = '1.7.999015';
+    const origBuildUpdate = chainOrders.buildUpdateOrderOp;
+    const origBuildCreate = chainOrders.buildCreateOrderOp;
+    const origExecuteStrategy = bot._executeOperationsWithStrategy;
+    const origValidateFunds = bot._validateOperationFunds;
+    const origExtractResults = bot._extractOperationResults;
+    const origFindMissing = bot._findMissingCreateResultContexts;
+    const origProcessBatch = bot._processBatchResults;
+    const origClearPending = bot._clearPendingBroadcasts;
+    const origIdToLock = bot.manager.lockOrders;
+    let capturedOps = null;
+    let capturedCtxs = null;
+    let pendingRecorded = null;
+    let loggedWarn = null;
+
+    bot.manager.orders.set(slotId, {
+        id: slotId, type: 'sell', price: 0.05, size: 100, orderId: actionOrderId
+    });
+    bot.manager.idsToLock = new Set();
+    bot.manager.lockOrders = (ids) => { bot.manager.idsToLock = ids; };
+    bot.manager.unlockOrders = () => {};
+    bot.manager.getChainFundsSnapshot = () => ({});
+    bot.manager.persistGrid = async () => ({ isValid: true });
+    bot.manager._commitWorkingGrid = async () => {};
+    bot.manager._clearGridDirty = () => {};
+    bot.manager.logger.log = (msg, level) => {
+        if (level === 'warn') loggedWarn = msg;
+    };
+
+    // buildUpdateOrderOp throws "not found" — the trigger for the fallback
+    chainOrders.buildUpdateOrderOp = async () => { throw new Error('Order 1.7.999015 not found'); };
+    // buildCreateOrderOp succeeds — the fallback CREATE path
+    chainOrders.buildCreateOrderOp = async (account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => ({
+        op: { fee: { amount: 0, asset_id: '1.3.0' } },
+        finalInts: { sell: Number(amountToSell), receive: Number(minToReceive), sellAssetId, receiveAssetId }
+    });
+
+    bot._validateOperationFunds = () => ({ isValid: true, summary: '', violations: [] });
+    bot._executeOperationsWithStrategy = async (_ops, ctxs) => {
+        capturedOps = _ops;
+        capturedCtxs = ctxs;
+        return { result: { success: true, operation_results: [[null, '1.7.999016']] }, opContexts: ctxs };
+    };
+    bot._extractOperationResults = () => [[null, '1.7.999016']];
+    bot._findMissingCreateResultContexts = () => [];
+    bot._processBatchResults = async () => ({});
+    bot._clearPendingBroadcasts = () => {};
+    bot._recordPendingBroadcast = (entry) => { pendingRecorded = entry; };
+
+    const cowResult = {
+        workingGrid: {}, workingIndexes: {}, workingBoundary: {},
+        actions: [{
+            type: COW_ACTIONS.UPDATE,
+            id: slotId, orderId: actionOrderId,
+            newSize: 100,
+            order: { type: 'sell', price: 0.05, size: 100 }
+        }]
+    };
+
+    try {
+        const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
+        assert.strictEqual(result.executed, true, 'UPDATE→CREATE fallback should produce a valid CREATE op and execute it');
+        assert(capturedOps, '_executeOperationsWithStrategy must be called');
+        assert.strictEqual(capturedOps.length, 1, 'one CREATE op should be in operations');
+        assert(capturedCtxs, 'opContexts must be passed to execution');
+        assert.strictEqual(capturedCtxs.length, 1, 'one CREATE context should replace the original UPDATE');
+        assert.strictEqual(capturedCtxs[0].kind, 'create', 'context kind must be create, not update');
+        assert.strictEqual(capturedCtxs[0].id, slotId, 'context should use the original slot id');
+        assert(pendingRecorded && typeof pendingRecorded === 'object', '_recordPendingBroadcast must be called');
+        assert.strictEqual(pendingRecorded.order.id, slotId, 'pending broadcast should record the correct slot');
+        assert(loggedWarn && loggedWarn.includes('Recovered "not found"'),
+            'should log the recovery warning');
+    } finally {
+        chainOrders.buildUpdateOrderOp = origBuildUpdate;
+        chainOrders.buildCreateOrderOp = origBuildCreate;
+        bot._executeOperationsWithStrategy = origExecuteStrategy;
+        bot._validateOperationFunds = origValidateFunds;
+        bot._extractOperationResults = origExtractResults;
+        bot._findMissingCreateResultContexts = origFindMissing;
+        bot._processBatchResults = origProcessBatch;
+        bot._clearPendingBroadcasts = origClearPending;
+        bot.manager.lockOrders = origIdToLock;
+    }
+    console.log('✓ UNC-015 passed');
+}
+
+// ── UPDATE→CREATE fallback: rotation branch ─────────────────────────────
+async function testUpdateToCreateFallbackRotationBranch() {
+    console.log('\n[UNC-015b] UPDATE→CREATE fallback on "not found" (rotation branch, newGridId !== id)...');
+    const bot = makeBot();
+    const oldSlotId = 'slot-unc-015b-old';
+    const newSlotId = 'slot-unc-015b-new';
+    const actionOrderId = '1.7.999015b';
+    const origBuildUpdate = chainOrders.buildUpdateOrderOp;
+    const origBuildCreate = chainOrders.buildCreateOrderOp;
+    const origExecuteStrategy = bot._executeOperationsWithStrategy;
+    const origValidateFunds = bot._validateOperationFunds;
+    const origExtractResults = bot._extractOperationResults;
+    const origFindMissing = bot._findMissingCreateResultContexts;
+    const origProcessBatch = bot._processBatchResults;
+    const origClearPending = bot._clearPendingBroadcasts;
+    let capturedCtxs = null;
+    let pendingRecorded = null;
+
+    bot.manager.orders.set(oldSlotId, { id: oldSlotId, type: 'sell', price: 0.05, size: 100, orderId: actionOrderId });
+    bot.manager.orders.set(newSlotId, { id: newSlotId, type: 'sell', price: 0.06, size: 90 });
+    bot.manager.getChainFundsSnapshot = () => ({});
+    bot.manager.persistGrid = async () => ({ isValid: true });
+    bot.manager._commitWorkingGrid = async () => {};
+    bot.manager._clearGridDirty = () => {};
+
+    chainOrders.buildUpdateOrderOp = async () => { throw new Error('Order 1.7.999015b not found'); };
+    chainOrders.buildCreateOrderOp = async (account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => ({
+        op: { fee: { amount: 0, asset_id: '1.3.0' } },
+        finalInts: { sell: Number(amountToSell), receive: Number(minToReceive), sellAssetId, receiveAssetId }
+    });
+
+    bot._validateOperationFunds = () => ({ isValid: true, summary: '', violations: [] });
+    bot._executeOperationsWithStrategy = async (_ops, ctxs) => {
+        capturedCtxs = ctxs;
+        return { result: { success: true, operation_results: [['1.7.999016', null]] }, opContexts: ctxs };
+    };
+    bot._extractOperationResults = () => [['1.7.999016', null]];
+    bot._findMissingCreateResultContexts = () => [];
+    bot._processBatchResults = async () => ({});
+    bot._clearPendingBroadcasts = () => {};
+    bot._recordPendingBroadcast = (entry) => { pendingRecorded = entry; };
+
+    const cowResult = {
+        workingGrid: {}, workingIndexes: {}, workingBoundary: {},
+        actions: [{
+            type: COW_ACTIONS.UPDATE,
+            id: oldSlotId,
+            orderId: actionOrderId,
+            newGridId: newSlotId,
+            newSize: 90,
+            newPrice: 0.06,
+            order: { type: 'sell', price: 0.06, size: 90 },
+            isRotation: true
+        }]
+    };
+
+    try {
+        const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
+        assert.strictEqual(result.executed, true);
+        assert(capturedCtxs, 'executeOperationsWithStrategy must be called');
+        assert.strictEqual(capturedCtxs.length, 1);
+        assert.strictEqual(capturedCtxs[0].kind, 'create', 'rotation UPDATE→CREATE should produce a CREATE context');
+        assert.strictEqual(capturedCtxs[0].id, newSlotId, 'rotation CREATE should target the new slot (newGridId)');
+        assert(pendingRecorded && typeof pendingRecorded === 'object', 'pending broadcast must be recorded');
+        assert.strictEqual(pendingRecorded.order.id, newSlotId, 'pending broadcast should use new slot id');
+    } finally {
+        chainOrders.buildUpdateOrderOp = origBuildUpdate;
+        chainOrders.buildCreateOrderOp = origBuildCreate;
+        bot._executeOperationsWithStrategy = origExecuteStrategy;
+        bot._validateOperationFunds = origValidateFunds;
+        bot._extractOperationResults = origExtractResults;
+        bot._findMissingCreateResultContexts = origFindMissing;
+        bot._processBatchResults = origProcessBatch;
+        bot._clearPendingBroadcasts = origClearPending;
+    }
+    console.log('✓ UNC-015b passed');
+}
+
+// ── UPDATE→CREATE fallback: CREATE also fails ───────────────────────────
+async function testUpdateToCreateFallbackCreateAlsoFails() {
+    console.log('\n[UNC-015c] UPDATE→CREATE fallback: CREATE also fails — fall through to error log...');
+    const bot = makeBot();
+    const slotId = 'slot-unc-015c';
+    const actionOrderId = '1.7.999015c';
+    const origBuildUpdate = chainOrders.buildUpdateOrderOp;
+    const origBuildCreate = chainOrders.buildCreateOrderOp;
+    const origValidateFunds = bot._validateOperationFunds;
+    let loggedError = null;
+    let loggedWarn = null;
+
+    bot.manager.orders.set(slotId, { id: slotId, type: 'sell', price: 0.05, size: 100, orderId: actionOrderId });
+    bot.manager.getChainFundsSnapshot = () => ({});
+    bot.manager.persistGrid = async () => ({ isValid: true });
+    bot.manager._commitWorkingGrid = async () => {};
+    bot.manager._clearGridDirty = () => {};
+    bot.manager.logger.log = (msg, level) => {
+        if (level === 'error') loggedError = msg;
+        if (level === 'warn') loggedWarn = msg;
+    };
+
+    chainOrders.buildUpdateOrderOp = async () => { throw new Error('Order 1.7.999015c does not exist'); };
+    // buildCreateOrderOp also fails
+    chainOrders.buildCreateOrderOp = async () => { throw new Error('insufficient funds'); };
+
+    bot._validateOperationFunds = () => ({ isValid: true, summary: '', violations: [] });
+    // Return skip (no ops to broadcast)
+    bot._executeOperationsWithStrategy = null;
+
+    const cowResult = {
+        workingGrid: {}, workingIndexes: {}, workingBoundary: {},
+        actions: [{
+            type: COW_ACTIONS.UPDATE,
+            id: slotId, orderId: actionOrderId,
+            newSize: 100,
+            order: { type: 'sell', price: 0.05, size: 100 }
+        }]
+    };
+
+    try {
+        const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
+        // With zero operations, the method returns executed:false
+        assert.strictEqual(result.executed, false, 'no ops to broadcast when both UPDATE and CREATE fallback fail');
+        assert(loggedWarn && loggedWarn.includes('CREATE fallback also failed'), 'CREATE failure should warn');
+        assert(loggedError && loggedError.includes('Failed to prepare update op'), 'original error should also be logged');
+    } finally {
+        chainOrders.buildUpdateOrderOp = origBuildUpdate;
+        chainOrders.buildCreateOrderOp = origBuildCreate;
+        bot._validateOperationFunds = origValidateFunds;
+    }
+    console.log('✓ UNC-015c passed');
+}
+
+// ── _recoverFromPersistedGrid: success path ─────────────────────────────
+async function testRecoverFromPersistedGrid() {
+    console.log('\n[UNC-016] _recoverFromPersistedGrid loads grid from disk and re-syncs...');
+    const bot = makeBot();
+    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origPersist = bot.manager.persistGrid;
+    let loadGridCalled = false;
+    let loadBoundaryCalled = false;
+    let syncCalledWith = null;
+    let persistCalled = false;
+
+    // _recoverFromPersistedGrid checks this.accountId first
+    bot.accountId = 'test-account';
+
+    // Mock Grid.loadGrid so we don't need to mock the entire internal
+    // manager contract (_gridLock, _initializeAssets, resetFunds,
+    // _applyOrderUpdate, etc.) — Grid.loadGrid is tested separately.
+    const Grid = require('../modules/order/grid');
+    const origLoadGrid = Grid.loadGrid;
+    Grid.loadGrid = async (manager, grid, boundaryIdx) => { /* no-op */ };
+
+    const persistedGrid = [
+        { id: 'slot-1', type: 'buy', price: 0.04, size: 200, orderId: '1.7.111' },
+        { id: 'slot-2', type: 'sell', price: 0.06, size: 100, orderId: '1.7.222' }
+    ];
+    const chainState = [
+        { id: '1.7.111', type: 'buy', price: 0.04, for_sale: 200 },
+        { id: '1.7.222', type: 'sell', price: 0.06, for_sale: 100 }
+    ];
+
+    bot.accountOrders = {
+        loadGrid: (force) => {
+            if (force) loadGridCalled = true;
+            return persistedGrid;
+        },
+        loadBoundaryIdx: (force) => {
+            if (force) loadBoundaryCalled = true;
+            return 42;
+        }
+    };
+
+    chainOrders.readOpenOrders = async (accountRef) => {
+        assert.strictEqual(accountRef, 'test-account');
+        return chainState;
+    };
+
+    bot.manager.syncFromOpenOrders = async (orders, options) => {
+        syncCalledWith = { orders, options };
+        return { filledOrders: [], updatedOrders: [] };
+    };
+    bot.manager.persistGrid = async () => {
+        persistCalled = true;
+        return { isValid: true };
+    };
+
+    try {
+        const result = await bot._recoverFromPersistedGrid();
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(loadGridCalled, true, 'loadGrid(true) must be called to force-reload from disk');
+        assert.strictEqual(loadBoundaryCalled, true, 'loadBoundaryIdx(true) must be called');
+        assert(syncCalledWith, 'syncFromOpenOrders must be called with chain data');
+        assert.strictEqual(syncCalledWith.orders, chainState, 'sync must receive the chain state');
+        assert.strictEqual(syncCalledWith.options.skipAccounting, true);
+        assert.strictEqual(syncCalledWith.options.fillLockAlreadyHeld, true);
+        assert.strictEqual(persistCalled, true, 'persistGrid must be called to save reconciled state');
+    } finally {
+        Grid.loadGrid = origLoadGrid;
+        chainOrders.readOpenOrders = origReadOpenOrders;
+        bot.manager.persistGrid = origPersist;
+    }
+    console.log('✓ UNC-016 passed');
+}
+
+// ── _recoverFromPersistedGrid: no persisted grid on disk ────────────────
+async function testRecoverFromPersistedGridNoGrid() {
+    console.log('\n[UNC-016b] _recoverFromPersistedGrid fails cleanly when no persisted grid exists...');
+    const bot = makeBot();
+
+    bot.accountOrders = {
+        loadGrid: () => null,
+        loadBoundaryIdx: () => null
+    };
+
+    const result = await bot._recoverFromPersistedGrid();
+    assert.strictEqual(result.success, false);
+    assert(result.reason, 'should provide a reason for failure');
+    assert(result.reason.includes('no persisted grid'), `reason should mention missing grid, got: ${result.reason}`);
+    console.log('✓ UNC-016b passed');
 }
 
 main().catch((err) => {

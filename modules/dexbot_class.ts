@@ -636,6 +636,85 @@ class DEXBot {
     }
 
     /**
+     * Reload the entire grid from the persisted on-disk snapshot and reconcile
+     * with current chain state.  This mirrors the startup recovery path that
+     * successfully recovered the fund invariants after the slot-115 cascade.
+     *
+     * Use as a runtime fallback when the lighter-weight syncFromOpenOrders
+     * recovery (uncertain broadcast or invariant drift) fails to converge.
+     *
+     * LOCK SAFETY: This method does NOT acquire _fillProcessingLock itself.
+     *   - When called from _reconcileAfterUncertainBroadcast (fallback after
+     *     syncFromOpenOrders fails), the caller already holds the fill lock.
+     *   - When called from requestStructuralGridResync (setTimeout callback),
+     *     the fill lock is NOT held. Grid.loadGrid does take _gridLock for
+     *     internal atomicity, but concurrent fill processing could mutate
+     *     manager.orders between loadGrid and syncFromOpenOrders. This matches
+     *     the startup pattern (dexbot_class.ts:1340-1342) which also runs
+     *     outside the fill lock — the _gridLock + syncFromOpenOrders
+     *     reconciliation is sufficient because syncFromOpenOrders re-reads
+     *     chain state and reconciles any intermediate mutations.
+     *
+     * @returns {Promise<{success: boolean, reason?: string}>}
+     */
+    async _recoverFromPersistedGrid() {
+        if (!this.accountOrders || !this.manager) {
+            return { success: false, reason: 'accountOrders or manager unavailable' };
+        }
+
+        const accountRef = this.accountId || this.account?.id || this.account;
+        if (!accountRef) {
+            return { success: false, reason: 'no account reference' };
+        }
+
+        this.manager.logger.log('[RECOVERY] Attempting full grid reload from persisted snapshot...', 'warn');
+
+        try {
+            // 1. Force reload from disk
+            const persistedGrid = this.accountOrders.loadGrid(true);
+            if (!persistedGrid || persistedGrid.length === 0) {
+                return { success: false, reason: 'no persisted grid on disk' };
+            }
+
+            const boundaryIdx = this.accountOrders.loadBoundaryIdx(true);
+
+            // 2. Load into manager (same path as startup at line 1340)
+            await Grid.loadGrid(this.manager, persistedGrid, boundaryIdx);
+
+            // 3. Read current chain state
+            const chainOpenOrders = await chainOrders.readOpenOrders(accountRef);
+
+            // 4. Reconcile
+            if (chainOpenOrders.length > 0 && this.manager?.syncFromOpenOrders) {
+                await this.manager.syncFromOpenOrders(chainOpenOrders, {
+                    skipAccounting: true,
+                    fillLockAlreadyHeld: true,
+                    protectCommittedOrders: true
+                });
+            }
+
+            // 5. Persist the reconciled state
+            if (typeof this.manager.persistGrid === 'function') {
+                await this.manager.persistGrid();
+            }
+
+            this.manager.logger.log(
+                `[RECOVERY] Grid reloaded from persisted snapshot: ${this.manager.orders.size} orders, ` +
+                `${chainOpenOrders.length} on-chain orders synced`,
+                'info'
+            );
+
+            return { success: true };
+        } catch (err: any) {
+            this.manager.logger.log(
+                `[RECOVERY] Full grid reload from persisted snapshot failed: ${err.message}`,
+                'error'
+            );
+            return { success: false, reason: err.message };
+        }
+    }
+
+    /**
      * Attempt to repair size-drift for specific order IDs by reading their
      * current on-chain state and correcting the local grid directly.
      * Falls back gracefully (returns false) on any error.
@@ -2983,15 +3062,28 @@ class DEXBot {
             discarded = stillDiscarded;
         }
 
-        // 3. Apply the result to the working grid.
+        // 3. Re-read the chain snapshot with the FRESHEST available state.
+        // The initial chainSnapshot at line 2898 may be stale for non-CREATE
+        // operations (updates, cancels) that were part of the uncertain batch
+        // but were never tracked in _pendingBroadcasts.  Without this re-read,
+        // syncFromOpenOrders would use the old snapshot and could miss
+        // successfully-landed UPDATE/CANCEL operations, leaving the grid out
+        // of sync — exactly what produced the slot-115 "not found" cascade.
+        let latestSnapshot;
+        try {
+            latestSnapshot = await chainOrders.readOpenOrders(accountRef);
+        } catch {
+            latestSnapshot = chainSnapshot;
+        }
+
         // Always run syncFromOpenOrders to link adopted chain orders into
         // their grid slots. Without this, a slot whose CREATE was adopted
         // stays VIRTUAL in the master grid, and the next COW planning cycle
         // sees it as a hole — placing a duplicate order at the same price.
         let hadRotation = false;
-        if (chainSnapshot && chainSnapshot.length > 0 && this.manager?.syncFromOpenOrders) {
+        if (latestSnapshot && latestSnapshot.length > 0 && this.manager?.syncFromOpenOrders) {
             try {
-                await this.manager.syncFromOpenOrders(chainSnapshot, {
+                await this.manager.syncFromOpenOrders(latestSnapshot, {
                     skipAccounting: true,
                     fillLockAlreadyHeld: true,
                     protectCommittedOrders: true
@@ -3002,6 +3094,17 @@ class DEXBot {
                     `[COW][UNCERTAIN] syncFromOpenOrders failed during recovery: ${syncErr?.message || syncErr}`,
                     'error'
                 );
+                // Fallback: reload entire grid from persisted snapshot and
+                // re-sync. This is the same path that succeeded during the
+                // restart at 20:08:38 in the slot-115 cascade.
+                this.manager.logger.log(
+                    '[COW][UNCERTAIN] syncFromOpenOrders failed; falling back to full grid reload from persisted snapshot',
+                    'warn'
+                );
+                const fallbackResult = await this._recoverFromPersistedGrid();
+                if (fallbackResult.success) {
+                    hadRotation = true;
+                }
             }
         }
 
@@ -3194,6 +3297,28 @@ class DEXBot {
                         'warn'
                     );
                     await this._ensureCredentialDaemonWritable('COW batch retry');
+
+                    // Reconcile grid state before retry. Between the first
+                    // broadcast attempt and now, orders may have been filled or
+                    // cancelled on chain — without a fresh sync the retry will
+                    // fail again with "not found" for the same stale operations.
+                    try {
+                        const accountRef = this.accountId || this.account?.id || this.account;
+                        const freshChain = await chainOrders.readOpenOrders(accountRef);
+                        if (freshChain.length > 0 && this.manager?.syncFromOpenOrders) {
+                            await this.manager.syncFromOpenOrders(freshChain, {
+                                skipAccounting: true,
+                                fillLockAlreadyHeld: true,
+                                protectCommittedOrders: true
+                            });
+                        }
+                    } catch (syncErr) {
+                        this.manager.logger.log(
+                            `[COW] Pre-retry sync failed (non-fatal): ${syncErr?.message || syncErr}`,
+                            'warn'
+                        );
+                    }
+
                     continue;
                 }
                 throw err;
@@ -4247,7 +4372,15 @@ class DEXBot {
                         const order = this.manager.orders.get(action.id) || { id: action.id, orderId: action.orderId };
                         opContexts.push({ kind: 'cancel', order });
                     } catch (err: any) {
-                        this.manager.logger.log(`Failed to prepare cancel op for ${action.id}: ${err.message}`, 'error');
+                        const orderNotFound = /\bnot found\b/i.test(err.message) || /\bdoes not exist\b/i.test(err.message);
+                        if (orderNotFound) {
+                            this.manager.logger.log(
+                                `[COW] Cancel skipped for ${action.id} (${action.orderId}): order already removed from chain`,
+                                'debug'
+                            );
+                        } else {
+                            this.manager.logger.log(`Failed to prepare cancel op for ${action.id}: ${err.message}`, 'error');
+                        }
                     }
                 } else if (action.type === COW_ACTIONS.CREATE) {
                     try {
@@ -4409,7 +4542,86 @@ class DEXBot {
                             type: orderType
                         };
                         opContexts.push({ kind: 'size-update', updateInfo: { partialOrder, newSize }, finalInts: op.finalInts });
+                    // Catch covers both rotation-update (line ~4470) and
+                    // size-update (line ~4515) branches — both call
+                    // buildUpdateOrderOp on a chain order that may have
+                    // been filled or cancelled since the COW plan was built.
                     } catch (err: any) {
+                        const orderNotFound = /\bnot found\b/i.test(err.message) || /\bdoes not exist\b/i.test(err.message);
+                        if (orderNotFound) {
+                            try {
+                                const fbOrder = action.order || this.manager.orders.get(action.id);
+                                const fbType = fbOrder?.type;
+                                const fbSize = action.newSize || fbOrder?.size || 0;
+                                // Price freshness: same pattern as regular CREATE path
+                                // (line ~4401-4415).  Use live price from the TARGET slot
+                                // (newGridId for rotation, action.id for size-update) so
+                                // the placed CREATE matches the current grid price, not
+                                // the potentially-stale planned price from the COW plan.
+                                const targetSlotId = action.newGridId || action.id;
+                                const plannedPrice = action.newPrice || action.order?.price || 0;
+                                const liveSlotForPrice = this.manager.orders.get(targetSlotId);
+                                const livePrice = liveSlotForPrice ? Number(liveSlotForPrice.price) : NaN;
+                                const priceDrift = Number.isFinite(plannedPrice) && Number.isFinite(livePrice)
+                                    ? Math.abs(livePrice - plannedPrice)
+                                    : 0;
+                                const fbPrice = (priceDrift > 0) ? livePrice : plannedPrice;
+                                if (priceDrift > 0) {
+                                    this.manager.logger.log(
+                                        `[COW] CREATE fallback price drift for ${action.id} -> ${targetSlotId}: ` +
+                                        `planned=${plannedPrice} live=${livePrice} (diff=${priceDrift})`,
+                                        'debug'
+                                    );
+                                }
+                                // Same size gate as the regular CREATE path (line ~4376)
+                                const sizeCheck = this._validateOrderSizeForExecution(fbSize, fbType, fbOrder, fbSize);
+                                if (!sizeCheck.isValid) {
+                                    this.manager.logger.log(
+                                        `[COW] CREATE fallback for ${action.id} rejected by size validation: ${sizeCheck.reason}`,
+                                        'warn'
+                                    );
+                                } else if (fbType && fbSize > 0 && fbPrice > 0) {
+                                    const fbArgs = buildCreateOrderArgs(
+                                        { type: fbType, size: fbSize, price: fbPrice },
+                                        assetA, assetB
+                                    );
+                                    const fbResult = await chainOrders.buildCreateOrderOp(
+                                        this.account,
+                                        fbArgs.amountToSell,
+                                        fbArgs.sellAssetId,
+                                        fbArgs.minToReceive,
+                                        fbArgs.receiveAssetId,
+                                        null
+                                    );
+                                    if (fbResult) {
+                                        operations.push(fbResult.op);
+                                        opContexts.push({
+                                            kind: 'create',
+                                            id: targetSlotId,
+                                            order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize },
+                                            args: { amountToSell: fbArgs.amountToSell, minToReceive: fbArgs.minToReceive },
+                                            finalInts: fbResult.finalInts
+                                        });
+                                        this._recordPendingBroadcast({
+                                            opIndex: operations.length - 1,
+                                            ctxIndex: opContexts.length - 1,
+                                            order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize },
+                                            finalInts: fbResult.finalInts
+                                        });
+                                        this.manager.logger.log(
+                                            `[COW] Recovered "not found" for ${action.id}: converted UPDATE to CREATE for slot ${targetSlotId}`,
+                                            'warn'
+                                        );
+                                        continue;
+                                    }
+                                }
+                            } catch (fbErr) {
+                                this.manager.logger.log(
+                                    `[COW] CREATE fallback also failed for ${action.id}: ${fbErr.message}`,
+                                    'warn'
+                                );
+                            }
+                        }
                         this.manager.logger.log(`Failed to prepare update op for ${action.id}: ${err.message}`, 'error');
                     }
                 }
@@ -5149,6 +5361,21 @@ class DEXBot {
 
                 this._structuralGridResyncRunning = true;
                 try {
+                    // First, try the lighter persisted-grid reload + chain
+                    // resync — the same path that succeeded during the startup
+                    // recovery at 20:08:38 in the slot-115 cascade. This
+                    // preserves existing grid prices and slot assignments
+                    // instead of rebuilding from scratch.
+                    const persistedResult = await this._recoverFromPersistedGrid();
+                    if (persistedResult.success) {
+                        if (this.manager?._recoveryState) {
+                            this.manager._recoveryState.attemptCount = 0;
+                            this.manager._recoveryState.lastAttemptAt = 0;
+                            this.manager._recoveryState.lastFailureAt = 0;
+                        }
+                        return;
+                    }
+
                     const suffix = unmatchedCount > 0 ? ` (${unmatchedCount} unmatched chain order(s))` : '';
                     this._warn(`[RECOVERY] Running structural full grid resync for ${reason}${suffix}`);
                     const resetResult = await this.requestGridReset('rms_structural_grid_resync', {
