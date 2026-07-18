@@ -75,8 +75,9 @@ async function runTests() {
         assert.strictEqual(result.ghostOrderId, '1.7.570062650', 'Should signal the chain order id for cancellation');
 
         const slot = manager.orders.get('slot-164');
-        assert.strictEqual(slot.state, ORDER_STATES.VIRTUAL, 'Order should be virtualized after full fill');
-        assert.strictEqual(slot.size, 0, 'Virtual order size should be 0');
+        assert.strictEqual(slot.state, ORDER_STATES.PARTIAL, 'Ghost order slot should be PARTIAL (not VIRTUAL) to prevent duplicate CREATE');
+        assert.strictEqual(slot.size, 0, 'Ghost order slot size should be 0');
+        assert.strictEqual(slot.orderId, '1.7.570062650', 'Ghost order slot should preserve orderId so guards see it as occupied');
     }
 
     console.log('✓ Ghost order fix tests passed!');

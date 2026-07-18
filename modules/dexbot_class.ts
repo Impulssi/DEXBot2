@@ -164,7 +164,7 @@ class DEXBot {
     _currentCycleId: number;
     _autoCancelOrphanCycleMarker: number | null;
     _autoCancelOrphanSubCount: number;
-    _orphanFillsCreditedThisCycle: boolean;
+    _orphanFillsCreditedAt: number | null;
     _consecutiveConsumeFailures: number;
     _consumeFailureFirstAt: number;
     _reconnectUnregister: any;
@@ -265,7 +265,7 @@ class DEXBot {
         this._currentCycleId = 0;
         this._autoCancelOrphanCycleMarker = null;
         this._autoCancelOrphanSubCount = 0;
-        this._orphanFillsCreditedThisCycle = false;
+        this._orphanFillsCreditedAt = null;
 
         // Per-session guard: ghost order IDs successfully cancelled
         // (avoids spamming the chain with repeated cancel attempts for the same
@@ -1687,12 +1687,14 @@ class DEXBot {
             }
 
             await this.manager._fillProcessingLock.acquire(async () => {
-                // FIX 5: Reset orphan-fill credit flag at the start of each
+                // Reset orphan-fill credit timestamp at the start of each
                 // fill cycle. It is re-set when orphan fills are credited,
-                // and cleared again by _performStateRecovery after a fresh
-                // chain fetch. This prevents stale flags from silently
-                // suppressing genuine invariant violations.
-                this._orphanFillsCreditedThisCycle = false;
+                // and consumed (set to null) on the next fund-invariant check
+                // in accounting.ts, which widens tolerance by 5x while set.
+                // Also cleared by _performStateRecovery after a fresh chain
+                // fetch. The timestamp value itself is not compared against a
+                // window — it acts as a consume-on-read boolean.
+                this._orphanFillsCreditedAt = null;
 
                 while (this._incomingFillQueue.length > 0) {
                     const batchStartTime = Date.now();
@@ -1772,12 +1774,10 @@ class DEXBot {
                                  if (accountingResult.status === 'missing_key') {
                                      requiresOpenOrdersSync = true;
                                  }
-                                 // FIX 5: Track orphan fill activity so the fund invariant
-                                 // check can widen tolerance temporarily. Without this flag,
-                                 // orphan credits applied to mgr.accountTotals may not be
-                                 // reflected in chainFree (sellFree/buyFree) from the last
-                                 // fetchAccountTotals, triggering a false-positive violation.
-                                 this._orphanFillsCreditedThisCycle = true;
+                                 // Record orphan fill credit timestamp for fund invariant
+                                 // tolerance widening. Accounting checks recency via
+                                 // _checkOrphanFillRecency() instead of a cross-module flag.
+                                 this._orphanFillsCreditedAt = Date.now();
                                 // Don't add to validFills - we can't do rebalancing without a grid slot
                                 // But the funds are now credited, preventing fund invariant violation
                                 continue;
@@ -2984,44 +2984,25 @@ class DEXBot {
         }
 
         // 3. Apply the result to the working grid.
-        // - For adopted entries: re-run a structural sync so the manager picks up
-        //   the chain order into the planned slot. The pre-broadcast guard
-        //   already cleared the working grid, so we use a fresh sync.
-        // - For discarded entries: leave the planned slot empty; the next
-        //   planning cycle will refill it.
-        // - Short-circuit the re-sync when every CREATE in the batch was
-        //   fingerprinted AND adopted (the happy path of a slow but successful
-        //   chain). The chain state is already known for those slots, so a full
-        //   sync would just produce a burst of false-positive "no adoptable
-        //   slot" warnings for any non-CREATE orders that were already in
-        //   place before this batch.
+        // Always run syncFromOpenOrders to link adopted chain orders into
+        // their grid slots. Without this, a slot whose CREATE was adopted
+        // stays VIRTUAL in the master grid, and the next COW planning cycle
+        // sees it as a hole — placing a duplicate order at the same price.
         let hadRotation = false;
-        const allCreatesAdopted = pending.length > 0
-            && pending.every(p => adopted.some(a => a.slotId === p.slotId));
-        const shouldRunHeavySync = !(allCreatesAdopted && discarded.length === 0);
-        if (shouldRunHeavySync) {
+        if (chainSnapshot && chainSnapshot.length > 0 && this.manager?.syncFromOpenOrders) {
             try {
-                if (chainSnapshot && chainSnapshot.length > 0 && this.manager?.syncFromOpenOrders) {
-                    await this.manager.syncFromOpenOrders(chainSnapshot, {
-                        skipAccounting: true,
-                        fillLockAlreadyHeld: true,
-                        protectCommittedOrders: true
-                    });
-                    hadRotation = true;
-                }
+                await this.manager.syncFromOpenOrders(chainSnapshot, {
+                    skipAccounting: true,
+                    fillLockAlreadyHeld: true,
+                    protectCommittedOrders: true
+                });
+                hadRotation = true;
             } catch (syncErr) {
                 this.manager.logger.log(
                     `[COW][UNCERTAIN] syncFromOpenOrders failed during recovery: ${syncErr?.message || syncErr}`,
                     'error'
                 );
             }
-        } else {
-            hadRotation = true;
-            this.manager.logger.log(
-                `[COW][UNCERTAIN] All ${adopted.length} fingerprinted CREATE(s) adopted; ` +
-                `skipping heavy re-sync to avoid false-positive unmatched warnings.`,
-                'debug'
-            );
         }
 
         // 4. Log structured summary.

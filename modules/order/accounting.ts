@@ -502,14 +502,15 @@ class Accountant {
 
          // FIX 5: Widen tolerance when orphan fills were recently credited.
          // Orphan fill accounting adjusts mgr.accountTotals optimistically, but
-         // chainFree (sellFree/buyFree) from the last fetchAccountTotals call
-         // may not yet reflect the proceeds. Widen tolerance to prevent false-
-         // positive violations that trigger unproductive recovery cycles.
-         // The flag is self-clearing: consumed by this check, re-set by the
-         // next orphan-fill credit, and also cleared by _performStateRecovery.
-         const orphanFillsActive = !!(mgr as any)._orphanFillsCreditedThisCycle;
-         (mgr as any)._orphanFillsCreditedThisCycle = false; // consume
-         const orphanToleranceMultiplier = orphanFillsActive ? 5 : 1;
+          // chainFree (sellFree/buyFree) from the last fetchAccountTotals call
+          // may not yet reflect the proceeds. Widen tolerance to prevent false-
+          // positive violations that trigger unproductive recovery cycles.
+          // The timestamp is self-clearing: consumed by this check, re-set by
+          // the next orphan-fill credit, and also cleared by
+          // _performStateRecovery.
+          const orphanFillsAt = (mgr as any)._orphanFillsCreditedAt;
+          (mgr as any)._orphanFillsCreditedAt = null; // consume
+          const orphanToleranceMultiplier = (orphanFillsAt != null) ? 5 : 1;
          const effectivePercentTolerance = PERCENT_TOLERANCE * orphanToleranceMultiplier;
 
          let hasViolation = false;
@@ -530,8 +531,8 @@ class Accountant {
             // This triggers immediate recovery attempt
             this._logThrottled(
                 'fund-invariant-buy',
-                `CRITICAL: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmountByPrecision(actualBuy, buyPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedBuy, buyPrecision)}) (diff: ${Format.formatAmountByPrecision(diffBuy, buyPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedBuyTolerance, buyPrecision)}${orphanFillsActive ? ', orphan-fill buffer active' : ''})`,
-                orphanFillsActive ? 'warn' : 'error'
+                `CRITICAL: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmountByPrecision(actualBuy, buyPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedBuy, buyPrecision)}) (diff: ${Format.formatAmountByPrecision(diffBuy, buyPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedBuyTolerance, buyPrecision)}${orphanFillsAt != null ? ', orphan-fill buffer active' : ''})`,
+                orphanFillsAt != null ? 'warn' : 'error'
             );
         }
 
@@ -545,8 +546,8 @@ class Accountant {
             // CRITICAL FIX: Log as ERROR instead of WARN
             this._logThrottled(
                 'fund-invariant-sell',
-                `CRITICAL: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmountByPrecision(actualSell, sellPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedSell, sellPrecision)}) (diff: ${Format.formatAmountByPrecision(diffSell, sellPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedSellTolerance, sellPrecision)}${orphanFillsActive ? ', orphan-fill buffer active' : ''})`,
-                orphanFillsActive ? 'warn' : 'error'
+                `CRITICAL: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmountByPrecision(actualSell, sellPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedSell, sellPrecision)}) (diff: ${Format.formatAmountByPrecision(diffSell, sellPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedSellTolerance, sellPrecision)}${orphanFillsAt != null ? ', orphan-fill buffer active' : ''})`,
+                orphanFillsAt != null ? 'warn' : 'error'
             );
         }
 
@@ -642,12 +643,10 @@ class Accountant {
 
         // 1. Fetch fresh blockchain state
         await mgr.fetchAccountTotals(accountRef);
-        // FIX 5: After a fresh chain fetch, reset the orphan-fill credit
-        // flag. The fetched values now incorporate on-chain fill proceeds,
-        // so the temporary invariant tolerance is no longer needed.
-        if ((mgr as any)._orphanFillsCreditedThisCycle) {
-            (mgr as any)._orphanFillsCreditedThisCycle = false;
-        }
+        // After a fresh chain fetch, reset the orphan-fill credit
+        // timestamp. The fetched values now incorporate on-chain fill
+        // proceeds, so the temporary invariant tolerance is no longer needed.
+        (mgr as any)._orphanFillsCreditedAt = null;
 
         // 2. Sync from open orders
         const chainOrders = require('../chain_orders');

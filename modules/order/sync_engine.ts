@@ -1139,7 +1139,6 @@ class SyncEngine {
                 const filledOrders = [];
                 const updatedOrders = [];
                 if (isEffectivelyFull) {
-                    mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
                     const filledOrder = {
                         ...matchedGridOrder,
                         blockNum: blockNum,
@@ -1147,13 +1146,42 @@ class SyncEngine {
                         isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
                     };
 
+                    if (ghostOrderId) {
+                        // Ghost order: the chain order still exists (other-side
+                        // rounding to 0) but the chain hasn't closed it yet.  Keep
+                        // the slot PARTIAL with its orderId so guards
+                        // (validateCreateTargetSlots, reconcileGrid) see the slot
+                        // as occupied and will NOT generate a duplicate CREATE.
+                        // The best-effort cancel in dexbot_class cleans up the
+                        // chain order; the next sync cycle virtualizes the
+                        // confirmed-free slot.
+                        mgr.logger.log(
+                            `[SYNC] Ghost full fill for order ${orderId} (slot ${matchedGridOrder.id}): ` +
+                            `preserving orderId ${ghostOrderId} as PARTIAL to block duplicate CREATE.`,
+                            'info'
+                        );
+                        const ghostOrder = {
+                            ...matchedGridOrder,
+                            size: 0,
+                            state: ORDER_STATES.PARTIAL,
+                            orderId: ghostOrderId,
+                        };
+                        const ghostOk = await mgr._updateOrder(ghostOrder, 'handle-fill-ghost', { skipAccounting: false, fee: 0 });
+                        if (ghostOk === false) {
+                            mgr.logger.log(`[SYNC] Failed to apply ghost fill state for order ${orderId}`, 'warn');
+                        }
+                        filledOrders.push(filledOrder);
+                        return { filledOrders, updatedOrders, partialFill: false, ghostOrderId };
+                    }
+
+                    mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
                     const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
                     const fullOk = await mgr._updateOrder(spreadOrder, 'handle-fill-full', { skipAccounting: false, fee: 0 });
                     if (fullOk === false) {
                         mgr.logger.log(`[SYNC] Failed to convert filled order ${orderId} to spread placeholder`, 'warn');
                     }
                     filledOrders.push(filledOrder);
-                    return { filledOrders, updatedOrders, partialFill: false, ...(ghostOrderId ? { ghostOrderId } : {}) };
+                    return { filledOrders, updatedOrders, partialFill: false };
                 } else {
                     mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${newSize}`, 'info');
                     const filledPortion = {

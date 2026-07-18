@@ -475,9 +475,7 @@ class OrderManager {
     _gridPersistenceSuspendedReason: any;
     _pendingBroadcasts: Map<any, any>;
     _committedOrderIds: Set<string>;
-    _gridDirty: boolean;
-    _gridDirtyReasons: Map<string, number>;
-    _gridDirtySince: number | null;
+    _gridDirtyAt: number | null;
 
     _metrics: any;
     _currentWorkingGrid: any;
@@ -563,9 +561,7 @@ class OrderManager {
         this._gridPersistenceSuspendedReason = null;
         this._pendingBroadcasts = new Map();
         this._committedOrderIds = new Set();
-        this._gridDirty = false;
-        this._gridDirtyReasons = new Map();
-        this._gridDirtySince = null;
+        this._gridDirtyAt = null;
 
 
         this._metrics = {
@@ -1019,13 +1015,6 @@ class OrderManager {
         const updatedOrder = deepFreeze({ ...nextOrder });
         const id = order.id;
 
-        // Clean up committed order tracking on virtualization.
-        // When a committed order transitions off-chain (fill/cancel), its orderId
-        // is removed so the recovery sync guard doesn't incorrectly preserve it.
-        if (oldOrder?.orderId && (updatedOrder.state === ORDER_STATES.VIRTUAL || updatedOrder.state === ORDER_STATES.SPREAD)) {
-            this._committedOrderIds.delete(oldOrder.orderId);
-        }
-
         Object.values(this._ordersByState).forEach(set => set.delete(id));
         Object.values(this._ordersByType).forEach(set => set.delete(id));
 
@@ -1096,12 +1085,9 @@ class OrderManager {
      * @returns {void}
      */
     _markGridDirty(reason = 'unknown', orderId: string = null) {
-        this._gridDirty = true;
-        if (this._gridDirtySince == null) {
-            this._gridDirtySince = Date.now();
+        if (this._gridDirtyAt == null) {
+            this._gridDirtyAt = Date.now();
         }
-        const key = orderId ? `${reason}:${orderId}` : reason;
-        this._gridDirtyReasons.set(key, (this._gridDirtyReasons.get(key) || 0) + 1);
     }
 
     /**
@@ -1109,9 +1095,7 @@ class OrderManager {
      * @returns {void}
      */
     _clearGridDirty() {
-        this._gridDirty = false;
-        this._gridDirtySince = null;
-        this._gridDirtyReasons.clear();
+        this._gridDirtyAt = null;
     }
 
     /**
@@ -1120,7 +1104,7 @@ class OrderManager {
      * @returns {boolean}
      */
     isGridDirty() {
-        return this._gridDirty === true;
+        return this._gridDirtyAt !== null;
     }
 
     /**
@@ -1138,7 +1122,7 @@ class OrderManager {
      * @returns {Promise<{skipped?: boolean, suspended?: boolean, isValid?: boolean, reason?: string}>}
      */
     async flushGridDirty(contextLabel = 'flush-grid-dirty') {
-        if (!this._gridDirty) {
+        if (this._gridDirtyAt == null) {
             return { skipped: true, reason: 'not-dirty' };
         }
         if (this._gridPersistenceSuspendedReason) {
@@ -1148,8 +1132,6 @@ class OrderManager {
             );
             return { skipped: true, suspended: true, reason: this._gridPersistenceSuspendedReason };
         }
-        const dirtyCount = this._gridDirtyReasons.size;
-        const dirtySince = this._gridDirtySince;
         const result = await this.persistGrid(undefined);
         if (result && result.skipped === true) {
             // Persistence was deferred (suspension, validation, etc.) — keep
@@ -1165,8 +1147,7 @@ class OrderManager {
         }
         this._clearGridDirty();
         this.logger?.log?.(
-            `[PERSISTENCE-FLUSH] Flushed ${dirtyCount} dirty mutation context(s) ` +
-            `(since ${new Date(dirtySince).toISOString()}) via ${contextLabel}`,
+            `[PERSISTENCE-FLUSH] Flushed dirty grid via ${contextLabel}`,
             'info'
         );
         return result || { isValid: true };
@@ -1805,7 +1786,7 @@ class OrderManager {
         // passes an explicit snapshotOrders (e.g. from the startup
         // storeGrid callback), the dirty flag is for the LIVE grid, not
         // the supplied snapshot, so we leave it alone.
-        if (snapshotOrders === undefined && this._gridDirty) {
+        if (snapshotOrders === undefined && this._gridDirtyAt != null) {
             this._clearGridDirty();
         }
 

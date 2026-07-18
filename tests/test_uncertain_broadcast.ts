@@ -475,7 +475,7 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
         assert.strictEqual(result.discarded.length, 0);
         assert.strictEqual(bot.manager._pendingBroadcasts.size, 0, 'pending broadcasts must be cleared after recovery');
         assert.strictEqual(readCalls, 1);
-        assert.strictEqual(syncCalls, 0, 'heavy re-sync is skipped when all CREATEs are adopted and no extra chain orders exist');
+        assert.strictEqual(syncCalls, 1, 'syncFromOpenOrders must run even when all CREATEs are adopted, to link chain orders into grid slots');
     } finally {
         chainOrders.readOpenOrders = origReadOpenOrders;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
@@ -564,7 +564,7 @@ async function testReconcileAcquiresFillLock() {
         );
         assert.strictEqual(result.uncertain, true);
         assert.strictEqual(lockAcquireCalls, 1, 'recovery should acquire the fill lock once');
-        assert.strictEqual(syncCalls, 0, 'heavy re-sync is skipped when all CREATEs are adopted and no extra chain orders exist');
+        assert.strictEqual(syncCalls, 1, 'syncFromOpenOrders must run even when all CREATEs are adopted, to link chain orders into grid slots');
     } finally {
         chainOrders.readOpenOrders = origReadOpenOrders;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;

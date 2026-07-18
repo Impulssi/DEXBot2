@@ -422,7 +422,12 @@ async function runTests() {
         const result = await manager.sync.syncFromFillHistory(fill);
         assert.strictEqual(result.partialFill, false, 'Stale local size should still resolve to full fill when rawOnChain is authoritative');
         assert.strictEqual(result.filledOrders.length, 1, 'Expected full fill with rawOnChain baseline');
-        assert.strictEqual(manager.orders.get('raw-baseline-1').state, ORDER_STATES.VIRTUAL, 'Filled slot should be virtualized after full fill');
+        // Ghost-order detection (other-side rounding to 0) keeps the slot
+        // PARTIAL with its orderId so guards (validateCreateTargetSlots,
+        // reconcileGrid) see it as occupied and block a duplicate CREATE.
+        const slot = manager.orders.get('raw-baseline-1');
+        assert.strictEqual(slot.state, ORDER_STATES.PARTIAL, 'Ghost-filled slot should be PARTIAL (not VIRTUAL) to prevent duplicate CREATE');
+        assert.strictEqual(slot.orderId, 'c-raw-baseline', 'Ghost-filled slot should preserve orderId so guards see it as occupied');
     }
 
     OrderUtils.getAssetFees = originalGetAssetFees;
