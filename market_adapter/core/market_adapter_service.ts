@@ -2466,6 +2466,9 @@ class MarketAdapterService {
             dynamicWeightApplied:     snapshotPersistedThisCycle && canApplyDynamicWeights,
             hasExplicitBaseWeights,
             pendingClosedCandle: false,
+            rawAsymmetryFactor: asymmetryMetrics.rawAsymmetryFactor,
+            appliedAsymmetryFactor: asymmetryMetrics.appliedAsymmetryFactor,
+            maxAsymmetryFactor: asymmetryMetrics.maxAsymmetryFactor,
         };
 
         return {
@@ -2527,6 +2530,9 @@ class MarketAdapterService {
             atr,
             weightVariance,
             pendingClosedCandle: false,
+            rawAsymmetryFactor: asymmetryMetrics.rawAsymmetryFactor,
+            appliedAsymmetryFactor: asymmetryMetrics.appliedAsymmetryFactor,
+            maxAsymmetryFactor: asymmetryMetrics.maxAsymmetryFactor,
         };
     }
 }

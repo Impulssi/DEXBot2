@@ -1232,9 +1232,12 @@ async function runOnce(cfg, state, contextCache) {
                 const m = r.weights.meta;
                 log(cfg, `  Inputs: ${buildDynamicWeightInputsLog(m, r.amaConfig)}`);
                 log(cfg, `  Tuning: ${buildDynamicWeightTuningLog(m)}`);
-                if (r.gridRangeScalingWhitelisted && m.slopeOffset && m.maxSlopeOffset && m.maxSlopeOffset > 0 && m.trend && m.trend !== 'NEUTRAL') {
-                    log(cfg, `  Asymmetric bounds: ${buildAsymmetricBoundsLog(m)}`);
-                }
+            }
+            if (isOneHourResult && r.gridRangeScalingWhitelisted) {
+                const asymSource = r.weights?.meta && Number.isFinite(r.weights.meta.rawAsymmetryFactor)
+                    ? r.weights.meta
+                    : r;
+                log(cfg, `  Asymmetric bounds: ${buildAsymmetricBoundsLog(asymSource)}`);
             }
             if (Array.isArray(r.amaComparison) && r.amaComparison.length > 0) {
                 const parts = r.amaComparison.map((a) => {
