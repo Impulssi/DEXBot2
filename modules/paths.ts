@@ -43,6 +43,7 @@ const PATHS = {
     MONOLITHIC_BOT_INFO: path.join(PROFILES_DIR, 'monolithic-bot.json'),
     MONOLITHIC_CRED_PID: path.join(PROFILES_DIR, 'monolithic-cred.pid'),
     NATIVE_VALIDATION_DIR: path.join(PROFILES_DIR, 'native_validation'),
+    FEE_CACHE_JSON: path.join(PROFILES_DIR, 'fee_cache.json'),
   },
 
   LOGS_DIR: path.join(PROFILES_DIR, 'logs'),

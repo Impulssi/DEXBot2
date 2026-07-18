@@ -577,9 +577,42 @@ function loadAmaCenterPrice(botKey: string): number | null {
 // ================================================================================
 
 /**
+ * Load previously persisted fee cache from disk.
+ * @returns {Record<string, any>} Cached fee data or empty object
+ */
+function _loadFeeCacheFromDisk(): Record<string, any> {
+    try {
+        const filePath = PATHS.PROFILES.FEE_CACHE_JSON;
+        if (storage.exists(filePath)) {
+            const diskCache = storage.readJSON(filePath);
+            if (diskCache && typeof diskCache === 'object') {
+                systemLogger.debug(`_loadFeeCacheFromDisk: loaded fee cache (${Object.keys(diskCache).length} assets)`);
+                return diskCache;
+            }
+        }
+    } catch (e: any) {
+        systemLogger.debug(`_loadFeeCacheFromDisk: ${e.message}`);
+    }
+    return {};
+}
+
+/**
+ * Persist fee cache to disk for recovery across restarts.
+ * @param {Record<string, any>} cache - Fee cache to persist
+ */
+function _saveFeeCacheToDisk(cache: Record<string, any>): void {
+    try {
+        storage.writeJSON(PATHS.PROFILES.FEE_CACHE_JSON, cache);
+    } catch (e: any) {
+        systemLogger.debug(`_saveFeeCacheToDisk: ${e.message}`);
+    }
+}
+
+/**
  * Initialize fee cache from blockchain.
  * Fetches BTS operation fees and asset market fees for all unique assets in config.
  * Populates internal fee cache used by math.js::getAssetFees.
+ * Falls back to disk-persisted cache if blockchain lookup fails.
  * 
  * @param {Array<Object>} botsConfig - Array of bot configurations
  * @param {Object} BitShares - BitShares client instance
@@ -592,54 +625,81 @@ async function initializeFeeCache(botsConfig: any[], BitShares: any): Promise<Re
         if (bot.assetB) uniqueAssets.add(bot.assetB);
     }
 
-    const cache: Record<string, any> = {};
+    // Seed from disk so previously cached assets survive transient API failures
+    const cache: Record<string, any> = _loadFeeCacheFromDisk();
+
+    const maxAttempts = FEE_PARAMETERS.FEE_CACHE_RETRY_ATTEMPTS;
+    const baseDelay = FEE_PARAMETERS.FEE_CACHE_RETRY_DELAY_MS;
+
     for (const assetSymbol of uniqueAssets) {
-        try {
-            if (assetSymbol === 'BTS') {
-                const globalProps = await BitShares.db.getGlobalProperties();
-                const currentFees = globalProps.parameters.current_fees.parameters;
-                const findFee = (opCode) => {
-                    const param = currentFees.find(p => p[0] === opCode);
-                    const fee = param?.[1]?.fee;
-                    const feeNum = toFiniteNumber(fee);
-                    return {
-                        raw: feeNum,
-                        satoshis: feeNum,
-                        bts: MathUtils.blockchainToFloat(feeNum, BTS_PRECISION)
+        let lastError: Error | null = null;
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                if (assetSymbol === 'BTS') {
+                    const globalProps = await BitShares.db.getGlobalProperties();
+                    const currentFees = globalProps.parameters.current_fees.parameters;
+                    const findFee = (opCode) => {
+                        const param = currentFees.find(p => p[0] === opCode);
+                        const fee = param?.[1]?.fee;
+                        const feeNum = toFiniteNumber(fee);
+                        return {
+                            raw: feeNum,
+                            satoshis: feeNum,
+                            bts: MathUtils.blockchainToFloat(feeNum, BTS_PRECISION)
+                        };
                     };
-                };
-                const makerFeeDiscountRaw = toFiniteNumber(
-                    globalProps?.parameters?.extensions?.maker_fee_discount_percent,
-                    FEE_PARAMETERS.MAKER_REFUND_PERCENT * 10000
-                );
-                cache.BTS = {
-                    limitOrderCreate: findFee(1),
-                    limitOrderCancel: findFee(2),
-                    limitOrderUpdate: findFee(77),
-                    makerFeeDiscountPercent: Math.max(0, makerFeeDiscountRaw) / 10000
-                };
-            } else {
-                const fullAsset = await lookupAsset(BitShares, assetSymbol);
-                const options = fullAsset.options || {};
-                cache[assetSymbol] = {
-                    assetId: fullAsset.id,
-                    symbol: assetSymbol,
-                    precision: fullAsset.precision,
-                    chargesMarketFees: (Number(options.flags || 0) & 0x01) !== 0,
-                    marketFee: { percent: (options.market_fee_percent || 0) / 100 },
-                    takerFee: options.taker_fee_percent ? { percent: options.taker_fee_percent / 100 } : null,
-                    maxMarketFee: {
-                        raw: options.max_market_fee || 0,
-                        float: MathUtils.blockchainToFloat(options.max_market_fee || 0, fullAsset.precision)
-                    }
-                };
+                    const makerFeeDiscountRaw = toFiniteNumber(
+                        globalProps?.parameters?.extensions?.maker_fee_discount_percent,
+                        FEE_PARAMETERS.MAKER_REFUND_PERCENT * 10000
+                    );
+                    cache.BTS = {
+                        limitOrderCreate: findFee(1),
+                        limitOrderCancel: findFee(2),
+                        limitOrderUpdate: findFee(77),
+                        makerFeeDiscountPercent: Math.max(0, makerFeeDiscountRaw) / 10000
+                    };
+                } else {
+                    const fullAsset = await lookupAsset(BitShares, assetSymbol);
+                    const options = fullAsset.options || {};
+                    cache[assetSymbol] = {
+                        assetId: fullAsset.id,
+                        symbol: assetSymbol,
+                        precision: fullAsset.precision,
+                        chargesMarketFees: (Number(options.flags || 0) & 0x01) !== 0,
+                        marketFee: { percent: (options.market_fee_percent || 0) / 100 },
+                        takerFee: options.taker_fee_percent ? { percent: options.taker_fee_percent / 100 } : null,
+                        maxMarketFee: {
+                            raw: options.max_market_fee || 0,
+                            float: MathUtils.blockchainToFloat(options.max_market_fee || 0, fullAsset.precision)
+                        }
+                    };
+                }
+                lastError = null;
+                break; // success
+            } catch (error: any) {
+                lastError = error;
+                if (attempt < maxAttempts) {
+                    const delay = baseDelay * attempt;
+                    systemLogger.warn(
+                        `initializeFeeCache: attempt ${attempt}/${maxAttempts} failed for ${assetSymbol}: ${error.message}. Retrying in ${delay}ms...`
+                    );
+                    await sleep(delay);
+                }
             }
-        } catch (error: any) {
-            systemLogger.warn(`initializeFeeCache: failed to parse asset ${assetSymbol}: ${error.message}`);
+        }
+
+        if (lastError) {
+            const hasDiskFallback = cache[assetSymbol] !== undefined;
+            systemLogger.warn(
+                `initializeFeeCache: all ${maxAttempts} attempts failed for ${assetSymbol}: ${lastError.message}` +
+                (hasDiskFallback ? '. Using previously cached value from disk.' : '.')
+            );
         }
     }
 
     MathUtils._setFeeCache(cache);
+    _saveFeeCacheToDisk(cache);
     return cache;
 }
 

@@ -517,6 +517,16 @@ let FEE_PARAMETERS = {
     // min_to_receive = expectedAmount × (1 - tolerance).
     POOL_SLIPPAGE_TOLERANCE: 0.02,
 
+    // FEE_CACHE_RETRY_ATTEMPTS: Number of retry attempts for fee cache initialization per asset.
+    // Each failed asset is retried with linear backoff (delay × attempt number).
+    // The sleep fires only between attempts, not after the final one, so 3 attempts
+    // produce 2 delays (1s + 2s = 3s worst-case wait per asset).
+    FEE_CACHE_RETRY_ATTEMPTS: 3,
+
+    // FEE_CACHE_RETRY_DELAY_MS: Base delay in ms between fee cache retry attempts.
+    // Actual delay = FEE_CACHE_RETRY_DELAY_MS × attempt_number (linear backoff).
+    FEE_CACHE_RETRY_DELAY_MS: 1000,
+
 };
 
 // Collateral ratio health zones for MPA position management.
