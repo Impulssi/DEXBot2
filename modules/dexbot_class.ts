@@ -168,6 +168,7 @@ class DEXBot {
     _credentialRecoveryDeferredTimer: any;
     _structuralGridResyncTimer: any;
     _structuralGridResyncRunning: boolean;
+    _ghostOrderCancelAttempted: Set<string> | null;
     _dustHealthCheckTimer: any;
     _lastBroadcastHeartbeatAt: number;
     _currentBatchId: any;
@@ -260,6 +261,11 @@ class DEXBot {
         this._lastGridActivityAt = 0;
         this._currentCycleId = 0;
         this._autoCancelOrphanCycleMarker = null;
+
+        // Per-session guard: ghost order IDs successfully cancelled
+        // (avoids spamming the chain with repeated cancel attempts for the same
+        // orphan residual on every fill cycle).
+        this._ghostOrderCancelAttempted = null as Set<string> | null;
 
         // Dust cancellation uses immediate on-chain cancel — no maps or timers needed.
         this._dustHealthCheckTimer = null;
@@ -1799,6 +1805,7 @@ class DEXBot {
                     // 3. Sync and Collect Filled Orders
                     let allFilledOrders = [];
                     let ordersNeedingCorrection = [];
+                    const pendingGhostOrders = new Set<string>();
                     const fillMode = chainOrders.getFillProcessingMode();
 
                     const processValidFills = async (fillsToSync) => {
@@ -1818,6 +1825,7 @@ class DEXBot {
                                 // Dust is handled by post-fill detection below.
                                 if (resultHistory.filledOrders) resolvedOrders.push(...resultHistory.filledOrders);
                                 if (resultHistory.requiresOpenOrdersSync) requiresOpenOrdersSync = true;
+                                if (resultHistory.ghostOrderId) pendingGhostOrders.add(resultHistory.ghostOrderId);
                             }
                         }
 
@@ -1851,6 +1859,33 @@ class DEXBot {
                         }
 
                     } finally {
+                        // 4b. Cancel orphaned chain orders detected by other-side rounding.
+                        //     These orders have a tiny residual that the bot treated as fully
+                        //     filled, but the blockchain did not close the order. We send a
+                        //     cancel tx to clean up the zombie order on chain.
+                        //     Runs in the finally so it still fires even if processValidFills
+                        //     throws after collecting ghost IDs into pendingGhostOrders.
+                        //     Each cancelOrder is individually try/caught so no per-order
+                        //     error can prevent resumeFundRecalc from running.
+                        if (pendingGhostOrders.size > 0) {
+                            if (!this._ghostOrderCancelAttempted) this._ghostOrderCancelAttempted = new Set<string>();
+                            for (const ghostOrderId of pendingGhostOrders) {
+                                if (this._ghostOrderCancelAttempted.has(ghostOrderId)) continue;
+                                try {
+                                    this.manager.logger.log(
+                                        `[SYNC] Cancelling orphaned chain order ${ghostOrderId} (other-side full-fill residual)`,
+                                        'info'
+                                    );
+                                    await chainOrders.cancelOrder(this.account, this.privateKey, ghostOrderId);
+                                    this._ghostOrderCancelAttempted.add(ghostOrderId);
+                                } catch (err: any) {
+                                    this.manager.logger.log(
+                                        `[SYNC] Failed to cancel orphaned order ${ghostOrderId}: ${err?.message || err}`,
+                                        'warn'
+                                    );
+                                }
+                            }
+                        }
                         await this.manager.resumeFundRecalc();
                     }
 

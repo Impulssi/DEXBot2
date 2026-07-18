@@ -923,10 +923,10 @@ class SyncEngine {
 
     /**
      * Process one incremental fill-history event.
-     * Returns `{ filledOrders, updatedOrders, partialFill, requiresOpenOrdersSync }`.
+     * Returns `{ filledOrders, updatedOrders, partialFill, requiresOpenOrdersSync, ghostOrderId? }`.
      * @param {Object} fill - Fill history event object
      * @param {Object} [options] - Persistence mode options
-     * @returns {Promise<Object>} { filledOrders, updatedOrders, partialFill, requiresOpenOrdersSync }
+     * @returns {Promise<Object>} { filledOrders, updatedOrders, partialFill, requiresOpenOrdersSync, ghostOrderId? }
      */
     async syncFromFillHistory(fill: any, options: Record<string, any> = {}) {
         const mgr = this.manager;
@@ -1111,6 +1111,8 @@ class SyncEngine {
                 const gridAlsoEmpty = currentSizeIntFromGrid <= 0;
                 let isEffectivelyFull = chainConfirmsEmpty || gridAlsoEmpty;
 
+                let ghostOrderId: string | undefined;
+
                 if (!isEffectivelyFull) {
                     // Check the "other" side's precision. If the remaining amount to receive/pay
                     // rounds to 0 on the blockchain, the order will be closed regardless of newSizeInt.
@@ -1121,6 +1123,7 @@ class SyncEngine {
                     if (floatToBlockchainInt(otherSize, otherPrecision) <= 0) {
                         mgr.logger.log(`[SYNC] Order ${orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. Treating as full fill to trigger rotation.`, 'info');
                         isEffectivelyFull = true;
+                        ghostOrderId = matchedGridOrder.orderId;
                     }
                 }
 
@@ -1141,7 +1144,7 @@ class SyncEngine {
                         mgr.logger.log(`[SYNC] Failed to convert filled order ${orderId} to spread placeholder`, 'warn');
                     }
                     filledOrders.push(filledOrder);
-                    return { filledOrders, updatedOrders, partialFill: false };
+                    return { filledOrders, updatedOrders, partialFill: false, ...(ghostOrderId ? { ghostOrderId } : {}) };
                 } else {
                     mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${newSize}`, 'info');
                     const filledPortion = {
