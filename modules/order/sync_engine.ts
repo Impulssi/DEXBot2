@@ -689,6 +689,15 @@ class SyncEngine {
                     }
                 }
             } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
+                // During recovery syncs (protectCommittedOrders=true), don't
+                // virtualize orders that were placed by a successful COW commit.
+                // The chain snapshot may lag behind confirmed transactions,
+                // causing correctly-placed orders to appear missing. Keeping them
+                // in the grid defers cleanup to the next normal sync cycle, which
+                // will correctly detect fills via the fill-history pipeline.
+                if (options.protectCommittedOrders && mgr._committedOrderIds.has(gridOrder.orderId)) {
+                    continue;
+                }
                 const currentGridOrder = mgr.orders.get(gridOrder.id) || gridOrder;
                 const hadOrderId = Boolean(currentGridOrder?.orderId);
                 const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);

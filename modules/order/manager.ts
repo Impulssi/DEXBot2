@@ -474,6 +474,7 @@ class OrderManager {
     _gridVersion: number;
     _gridPersistenceSuspendedReason: any;
     _pendingBroadcasts: Map<any, any>;
+    _committedOrderIds: Set<string>;
     _gridDirty: boolean;
     _gridDirtyReasons: Map<string, number>;
     _gridDirtySince: number | null;
@@ -561,6 +562,7 @@ class OrderManager {
         this._gridVersion = 0;
         this._gridPersistenceSuspendedReason = null;
         this._pendingBroadcasts = new Map();
+        this._committedOrderIds = new Set();
         this._gridDirty = false;
         this._gridDirtyReasons = new Map();
         this._gridDirtySince = null;
@@ -1016,6 +1018,14 @@ class OrderManager {
 
         const updatedOrder = deepFreeze({ ...nextOrder });
         const id = order.id;
+
+        // Clean up committed order tracking on virtualization.
+        // When a committed order transitions off-chain (fill/cancel), its orderId
+        // is removed so the recovery sync guard doesn't incorrectly preserve it.
+        if (oldOrder?.orderId && (updatedOrder.state === ORDER_STATES.VIRTUAL || updatedOrder.state === ORDER_STATES.SPREAD)) {
+            this._committedOrderIds.delete(oldOrder.orderId);
+        }
+
         Object.values(this._ordersByState).forEach(set => set.delete(id));
         Object.values(this._ordersByType).forEach(set => set.delete(id));
 
@@ -1672,6 +1682,13 @@ class OrderManager {
             this.boundaryIdx = workingBoundary;
             this._gridVersion++;
             committed = true;
+
+            // Track orderIds from successful COW commits for recovery sync protection.
+            // Cleared on every commit to reflect only the current confirmed state.
+            this._committedOrderIds.clear();
+            for (const [id, order] of finalMap.entries()) {
+                if (order.orderId) this._committedOrderIds.add(order.orderId);
+            }
 
             const freshIndexes = workingGrid.getIndexes();
             this._ordersByState = {
