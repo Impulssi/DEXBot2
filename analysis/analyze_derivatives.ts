@@ -73,7 +73,7 @@ interface PriceSource {
 function parseArgs(): CliConfig {
     const args = process.argv.slice(2);
     const config: CliConfig = {
-        source: { type: 'market_adapter', config: { botKey: 'XRP-BTS' } },
+        source: { type: 'market_adapter', config: { botKey: '' } },
         slowSmaPeriod:        500,
         fastSmaPeriod:        null,
         minBarsForConfirmation: 3,
@@ -144,7 +144,7 @@ Usage:
     [--bot-key KEY] [--file PATH]
 
 Sources:
-  market_adapter   Use market_adapter state (default)   --bot-key XRP-BTS
+  market_adapter   Use market_adapter state (default)   --bot-key KEY
   json             JSON candles file                    --file path/to/file.json
 
 Analyzer options:
@@ -176,7 +176,7 @@ Analyzer options:
 
   Source input:
     --source <type>  Data source (default market_adapter)
-    --bot-key KEY    Market adapter bot key (default XRP-BTS)
+    --bot-key KEY    Market adapter bot key (required)
     --file PATH      JSON candle input
     --pool ID        Kibana LP pool ID
     --precA N        Kibana asset precision A

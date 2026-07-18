@@ -65,7 +65,7 @@ function parseArgs() {
         clamp:     number;
         quiet:     boolean;
     } = {
-        source: { type: 'market_adapter', config: { botKey: 'XRP-BTS' } },
+        source: { type: 'market_adapter', config: { botKey: '' } },
         chartFile: DEFAULT_CHART_FILE,
         threshold: DEFAULT_THRESHOLD,
         atrPeriod: DEFAULT_ATR_PERIOD,

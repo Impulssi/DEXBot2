@@ -66,7 +66,7 @@ function parseArgs() {
         lookbackBars?: number;
         dispScaleMinPct?: number;
     } = {
-        source: { type: 'market_adapter', config: { botKey: 'XRP-BTS' } },
+        source: { type: 'market_adapter', config: { botKey: '' } },
         chartFile: 'analysis/charts/dynamic_weight_chart.html',
         alpha: MARKET_ADAPTER.DYNAMIC_WEIGHT_ALPHA,
         gain: MARKET_ADAPTER.DYNAMIC_WEIGHT_GAIN,

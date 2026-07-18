@@ -225,7 +225,7 @@ Pair-specific AMA profiles live in `profiles/market_profiles.json`:
 {
   "version": 1,
   "profiles": [{
-    "key": "XRP-BTS",
+    "key": "EXAMPLE-BOT",
     "assetA": "IOB.XRP",
     "assetB": "BTS",
     "intervalSeconds": 3600,
@@ -270,7 +270,7 @@ Pair-specific AMA profiles live in `profiles/market_profiles.json`:
     "assetASymbol": "IOB.XRP",
     "assetBSymbol": "BTS",
     "botOverrides": {
-      "XRP-BTS": {
+      "EXAMPLE-BOT": {
         "deltaThresholdPercent": 4.0,
         "defaultAmaKey": "AMA1"
       }

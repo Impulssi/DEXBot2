@@ -336,7 +336,7 @@ workers:
 ```json
 // Example bots.json entry
 {
-  "name": "XRP-BTS",
+  "name": "EXAMPLE-BOT",
   "active": true,
   "assetA": "IOB.XRP",
   "assetB": "BTS",

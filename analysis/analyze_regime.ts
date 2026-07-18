@@ -44,7 +44,7 @@ function parseArgs() {
         peM:         number;
         quiet:       boolean;
     } = {
-        source:      { type: 'market_adapter', config: { botKey: 'XRP-BTS' } },
+        source:      { type: 'market_adapter', config: { botKey: '' } },
         chartFile:   'analysis/charts/regime_chart.html',
         hurstWindow: HURST_CONFIG.window,
         peWindow:    PE_CONFIG.window,

@@ -15,7 +15,7 @@ All notable changes to this project will be documented in this file.
 
 ### 2026-07-17
 
-- **Feat**: show `range`/`weight` indicators in `stats` output — reads whitelist flags and appends them alongside AMA version: `XRP-BTS (ama1, range, weight)` (`unlock.ts:824-834`).
+- **Feat**: show `range`/`weight` indicators in `stats` output — reads whitelist flags and appends them alongside AMA version: `example-bot (ama1, range, weight)` (`unlock.ts:824-834`).
 - **Feat**: add `stats` as CLI alias for `status` command (`dexbot.ts:167,231`).
 - **Fix**: propagate `asymmetricBounds` through snapshot writer, grid reader, and snapshot loader — three sites needed the root-level fallback for the `dynamicWeight: false, asymmetricBounds: true` path to work end-to-end (`market_adapter.ts`, `grid.ts`, `system.ts`).
 - **Fix**: decouple asymmetric bounds metrics from `dynamicWeight` flag — `asymmetryMetrics` now always computed when `isAsymmetricBoundsWhitelisted`, using `amaSlope` as fallback data source when `dynamicWeightsPayload` is absent; display reads root-level `snapshot.asymmetricBounds` (`market_adapter_service.ts`, `analyze-orders.ts`).
@@ -92,7 +92,7 @@ All notable changes to this project will be documented in this file.
 - **Docs**: expanded `analysis/README.md` — added derivatives analysis entry and `npm run analysis:derivatives` script, fixed placeholder in trade_profitability CLI example, added missing `--file` examples for analyze_regime and analyze_kalman, linked trend_detection/README.md (`analysis/README.md`).
 - **Docs**: expanded `analysis/bot_fitting/README.md` — documented shared_utils.ts, auto-derive behavior for `--results`, default ratio values, output filenames, CLI tuning flags table, and worker-thread parallelization (`analysis/bot_fitting/README.md`).
 - **Docs**: updated `analysis/tradingview/README.md` — added `--scale` alias and date range fetching note, consolidated market adapter source section, updated default AMA slow period to 88.7 (`analysis/tradingview/README.md`).
-- **Docs**: changed `--bot-key` from required to optional with default `XRP-BTS` in DYNAMIC_WEIGHT_RESEARCH.md; fixed markdown link formatting in trend_detection/README.md (`analysis/trend_detection/DYNAMIC_WEIGHT_RESEARCH.md`, `analysis/trend_detection/README.md`).
+- **Docs**: changed `--bot-key` from required to optional in DYNAMIC_WEIGHT_RESEARCH.md; fixed markdown link formatting in trend_detection/README.md (`analysis/trend_detection/DYNAMIC_WEIGHT_RESEARCH.md`, `analysis/trend_detection/README.md`).
 - **Docs**: updated EVOLUTION.md summary and commit count (`docs/EVOLUTION.md`).
 - **Chore**: reduce `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT` from 0.085 to 0.08 — makes the AMA channel reach maximum influence more easily for improved responsiveness in trending markets (`665ab207`).
 

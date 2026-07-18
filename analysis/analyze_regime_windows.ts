@@ -58,7 +58,7 @@ function parseArgs() {
         chartFile: string;
         quiet:     boolean;
     } = {
-        source:    { type: 'market_adapter', config: { botKey: 'XRP-BTS' } },
+        source:    { type: 'market_adapter', config: { botKey: '' } },
         chartFile: 'analysis/charts/regime_windows_heatmap.html',
         quiet:     false,
     };

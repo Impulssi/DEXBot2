@@ -215,7 +215,7 @@ work that produced the current code).
 - **Approach:** Direct in-memory mutation of master grid during planning.
 - **Pattern:** Modify master directly → Broadcast to blockchain → No recovery mechanism.
 - **Vulnerability:** State corruption during any failure, no isolation between planning and committed state, no rollback capability.
-- **Incident:** This approach caused the XRP-BTS Price Jump incident — a sudden market move corrupted in-flight grid state because planning mutations were applied directly to the master grid, with no isolation or rollback.
+- **Incident:** This approach caused the Price Jump incident — a sudden market move corrupted in-flight grid state because planning mutations were applied directly to the master grid, with no isolation or rollback.
 
 ### Era 1: Frozen Master State (v1.0) — ✅ Retained as defense-in-depth
 - **Approach:** `Object.freeze()` on Maps and order objects.

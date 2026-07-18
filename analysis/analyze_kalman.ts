@@ -41,7 +41,7 @@ function parseArgs() {
         chartFile: string;
         quiet: boolean;
     } = {
-        source: { type: 'market_adapter', config: { botKey: 'XRP-BTS' } },
+        source: { type: 'market_adapter', config: { botKey: '' } },
         rNoise: 0.05,
         qNoise: 0.005,
         chartFile: 'analysis/charts/kalman_chart.html',

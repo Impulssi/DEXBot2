@@ -281,7 +281,7 @@ Yes — each bot entry in `profiles/bots.json` accepts an optional `logging` fie
 
 ```json
 {
-  "name": "XRP-BTS",
+  "name": "EXAMPLE-BOT",
   "logging": {
     "level": "debug",
     "config": {
