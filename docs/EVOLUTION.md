@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.1.11 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.1.12 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
@@ -53,7 +53,7 @@ The release introduced profile validation, on-chain authority resolution, a shar
 
 ### Phase 6: Production Hardening & Iterative Refinement (July 2026)
 
-Post-stable work focused on reliability. Subscription health watchdogs, broadcast deadlock recovery at both bot and daemon level, and comprehensive system invariants documentation were added. A series of rapid releases (v1.1.1–v1.1.10) delivered multi-round AMA refits, oversize credit deal splitting with per-operation caps, dust detection hardening, bootstrap lifecycle fixes, lock contention reduction, unique bot name enforcement, dust timer persistence, chart control overhauls, HTML order analysis exports, asymmetric bounds/dynamic-weight flag decoupling, and improved CLI stats output.
+Post-stable work focused on reliability. Subscription health watchdogs, broadcast deadlock recovery at both bot and daemon level, and comprehensive system invariants documentation were added. A series of rapid releases (v1.1.1–v1.1.12) delivered multi-round AMA refits, oversize credit deal splitting with per-operation caps, dust detection hardening, bootstrap lifecycle fixes, lock contention reduction, unique bot name enforcement, dust timer persistence, chart control overhauls, HTML order analysis exports, asymmetric bounds/dynamic-weight flag decoupling, improved CLI stats output, AMA config centralization for analysis tools, committed order protection during recovery, ghost order cleanup for rounding residuals, and price correction queue processing on startup.
 
 ---
 
@@ -63,7 +63,7 @@ DEXBot2's architecture progressed through distinct maturity stages:
 - **Phases 1–2**: Modular order/account management and basic grid trading.
 - **Phases 3–4**: Copy-on-Write grid with atomic modifications; Market Adapter decoupling signals from execution.
 - **Phase 5**: Multi-layered runtime — COW core, signal pipeline, credit/debt MPA runtime, browser compatibility core, portable abstractions, and pure-JS crypto.
-- **Phase 6**: Incremental production hardening — iterative AMA refits, oversize deal splitting, dust/cancel pipeline fixes, lock contention reduction, unique bot name enforcement, dust timer persistence, chart input control overhaul, HTML order analysis export, immediate dust cancel, duplicate price guard, stale-cleaned simplification, dedup/timer/lock cleanup.
+- **Phase 6**: Incremental production hardening — iterative AMA refits, oversize deal splitting, dust/cancel pipeline fixes, lock contention reduction, unique bot name enforcement, dust timer persistence, chart input control overhaul, HTML order analysis export, immediate dust cancel, duplicate price guard, stale-cleaned simplification, dedup/timer/lock cleanup, committed order protection, ghost order cleanup, price correction queue processing, AMA config centralization.
 
 ---
 
@@ -104,6 +104,7 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.1.8 → v1.1.9 | 6 | Immediate dust cancel, duplicate price guard, stale-cleaned simplification, dedup/timer/lock cleanup, order analyzer formatting |
 | v1.1.9 → v1.1.10 | 4 | Asymmetric bounds/dynamic-weight flag decoupling, propagation fixes, `stats` CLI alias, range/weight indicators in status output |
 | v1.1.10 → v1.1.11 | 3 | npm publish prep, README install options, `.npmrc` ignore, sync log clarity |
+| v1.1.11 → v1.1.12 | 5 | Committed order protection, ghost order cleanup, price correction queue, AMA config centralization, XRP-BTS default removal |
 
 ---
 
@@ -161,7 +162,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 18, 2026 (v1.1.11)
-**Total Commits**: 1,769
+**Last Updated**: July 18, 2026 (v1.1.12)
+**Total Commits**: 1,776
 **Date Range**: December 2, 2025 – July 18, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

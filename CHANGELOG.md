@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.12] - 2026-07-18 - Committed Order Protection, Ghost Order Cleanup, Price Correction Queue, AMA Config Centralization
+
+### 2026-07-18
+
+- **Fix**: process queued price corrections on startup and in maintenance loop — corrections queued by syncFromOpenOrders (via ordersNeedingPriceCorrection) were only processed inside _consumeFillQueue, which only runs when new fills arrive. For an idle market where sync detects a price mismatch during startup, the correction sat in the queue indefinitely, stalling the pipeline. Now processed immediately after startup sync and at the start of every maintenance cycle (`modules/dexbot_class.ts:1339`, `modules/dexbot_maintenance_runtime.ts:1399`).
+- **Fix**: protect committed orders from recovery sync virtualization — during UNCERTAIN broadcast and fund-invariant recovery, the full two-pass syncFromOpenOrders could virtualize orders that were correctly placed by prior successful COW commits when the chain snapshot lags behind confirmed transactions. New `_committedOrderIds` set tracked across COW commit boundaries; PASS 1 virtualization guard skips any orderId in the set (`modules/order/manager.ts`, `modules/order/sync_engine.ts`, `modules/dexbot_class.ts`, `modules/order/accounting.ts`).
+- **Fix**: cancel residual ghost orders left on chain by other-side rounding — when a fill leaves a tiny residual where opposite-asset value rounds to 0 at blockchain precision, the grid slot was virtualized but the chain order was never cancelled. New `ghostOrderId` return field drains orphan cancellations via a per-session guarded set to avoid repeat attempts (`modules/dexbot_class.ts`, `modules/order/sync_engine.ts`, `tests/test_ghost_order_fix.ts`).
+- **Fix**: remove hardcoded XRP-BTS defaults from analysis scripts and docs — all 6 analysis scripts now require `--bot-key` explicitly at runtime; documentation uses `EXAMPLE-BOT` placeholders instead of `XRP-BTS` (`analysis/analyze_dynamic_weight.ts`, `analysis/analyze_volatility.ts`, `analysis/analyze_kalman.ts`, `analysis/analyze_regime.ts`, `analysis/analyze_regime_windows.ts`, `analysis/analyze_derivatives.ts`, `docs/*.md`, `market_adapter/README.md`).
+- **Feat**: centralize AMA config resolution in bot_key_utils for analysis tools — shared `loadBotMeta`, `resolveAmaConfig` (inline > profile > built-in with preset merge, erSmoothPeriod on all paths, fast/slow swap guard), and `resolveAmaKey` extracted from individual scripts. Dynamic chart legend now shows the resolved AMA label (AMA1/AMA2/AMA3/AMA4) instead of hardcoded AMA3 (`analysis/bot_key_utils.ts`, `analysis/analyze_dynamic_weight.ts`, `analysis/analyze_tradingview.ts`, `analysis/trend_detection/dynamic_weight_chart_generator.ts`).
+
 ## [1.1.11] - 2026-07-18 - npm publish, README install options, CLI dist resolution, .npmrc ignore
 
 ### 2026-07-18
