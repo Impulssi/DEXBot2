@@ -637,23 +637,11 @@ class DEXBot {
 
     /**
      * Reload the entire grid from the persisted on-disk snapshot and reconcile
-     * with current chain state.  This mirrors the startup recovery path that
-     * successfully recovered the fund invariants after the slot-115 cascade.
+     * with current chain state. Mirrors the startup recovery path.
      *
-     * Use as a runtime fallback when the lighter-weight syncFromOpenOrders
-     * recovery (uncertain broadcast or invariant drift) fails to converge.
-     *
-     * LOCK SAFETY: This method does NOT acquire _fillProcessingLock itself.
-     *   - When called from _reconcileAfterUncertainBroadcast (fallback after
-     *     syncFromOpenOrders fails), the caller already holds the fill lock.
-     *   - When called from requestStructuralGridResync (setTimeout callback),
-     *     the fill lock is NOT held. Grid.loadGrid does take _gridLock for
-     *     internal atomicity, but concurrent fill processing could mutate
-     *     manager.orders between loadGrid and syncFromOpenOrders. This matches
-     *     the startup pattern (dexbot_class.ts:1340-1342) which also runs
-     *     outside the fill lock — the _gridLock + syncFromOpenOrders
-     *     reconciliation is sufficient because syncFromOpenOrders re-reads
-     *     chain state and reconciles any intermediate mutations.
+     * LOCK SAFETY: Does NOT acquire _fillProcessingLock. Caller must either
+     * hold it already or accept concurrent fill-processing risk — matches
+     * the startup pattern at line ~1340.
      *
      * @returns {Promise<{success: boolean, reason?: string}>}
      */
@@ -3062,13 +3050,9 @@ class DEXBot {
             discarded = stillDiscarded;
         }
 
-        // 3. Re-read the chain snapshot with the FRESHEST available state.
-        // The initial chainSnapshot at line 2898 may be stale for non-CREATE
-        // operations (updates, cancels) that were part of the uncertain batch
-        // but were never tracked in _pendingBroadcasts.  Without this re-read,
-        // syncFromOpenOrders would use the old snapshot and could miss
-        // successfully-landed UPDATE/CANCEL operations, leaving the grid out
-        // of sync — exactly what produced the slot-115 "not found" cascade.
+        // 3. Re-read chain with latest state. The initial snapshot may be
+        // stale for non-CREATE ops (updates/cancels) not tracked in
+        // _pendingBroadcasts — the seed cause of the slot-115 cascade.
         let latestSnapshot;
         try {
             latestSnapshot = await chainOrders.readOpenOrders(accountRef);
@@ -3076,10 +3060,9 @@ class DEXBot {
             latestSnapshot = chainSnapshot;
         }
 
-        // Always run syncFromOpenOrders to link adopted chain orders into
-        // their grid slots. Without this, a slot whose CREATE was adopted
-        // stays VIRTUAL in the master grid, and the next COW planning cycle
-        // sees it as a hole — placing a duplicate order at the same price.
+        // Always sync to link adopted chain orders into grid slots.
+        // Otherwise an adopted slot stays VIRTUAL and the next COW cycle
+        // places a duplicate order at the same price.
         let hadRotation = false;
         if (latestSnapshot && latestSnapshot.length > 0 && this.manager?.syncFromOpenOrders) {
             try {
@@ -3094,9 +3077,7 @@ class DEXBot {
                     `[COW][UNCERTAIN] syncFromOpenOrders failed during recovery: ${syncErr?.message || syncErr}`,
                     'error'
                 );
-                // Fallback: reload entire grid from persisted snapshot and
-                // re-sync. This is the same path that succeeded during the
-                // restart at 20:08:38 in the slot-115 cascade.
+                // Fallback: reload from persisted snapshot + re-sync.
                 this.manager.logger.log(
                     '[COW][UNCERTAIN] syncFromOpenOrders failed; falling back to full grid reload from persisted snapshot',
                     'warn'
@@ -3298,10 +3279,7 @@ class DEXBot {
                     );
                     await this._ensureCredentialDaemonWritable('COW batch retry');
 
-                    // Reconcile grid state before retry. Between the first
-                    // broadcast attempt and now, orders may have been filled or
-                    // cancelled on chain — without a fresh sync the retry will
-                    // fail again with "not found" for the same stale operations.
+                    // Reconcile before retry — stale ops would fail "not found".
                     try {
                         const accountRef = this.accountId || this.account?.id || this.account;
                         const freshChain = await chainOrders.readOpenOrders(accountRef);
@@ -4542,10 +4520,7 @@ class DEXBot {
                             type: orderType
                         };
                         opContexts.push({ kind: 'size-update', updateInfo: { partialOrder, newSize }, finalInts: op.finalInts });
-                    // Catch covers both rotation-update (line ~4470) and
-                    // size-update (line ~4515) branches — both call
-                    // buildUpdateOrderOp on a chain order that may have
-                    // been filled or cancelled since the COW plan was built.
+                    // Catch for both rotation-update and size-update branches.
                     } catch (err: any) {
                         const orderNotFound = /\bnot found\b/i.test(err.message) || /\bdoes not exist\b/i.test(err.message);
                         if (orderNotFound) {
@@ -4553,11 +4528,7 @@ class DEXBot {
                                 const fbOrder = action.order || this.manager.orders.get(action.id);
                                 const fbType = fbOrder?.type;
                                 const fbSize = action.newSize || fbOrder?.size || 0;
-                                // Price freshness: same pattern as regular CREATE path
-                                // (line ~4401-4415).  Use live price from the TARGET slot
-                                // (newGridId for rotation, action.id for size-update) so
-                                // the placed CREATE matches the current grid price, not
-                                // the potentially-stale planned price from the COW plan.
+                                // Live price from TARGET slot (same pattern as CREATE path).
                                 const targetSlotId = action.newGridId || action.id;
                                 const plannedPrice = action.newPrice || action.order?.price || 0;
                                 const liveSlotForPrice = this.manager.orders.get(targetSlotId);
@@ -4573,7 +4544,7 @@ class DEXBot {
                                         'debug'
                                     );
                                 }
-                                // Same size gate as the regular CREATE path (line ~4376)
+                                // Same size gate as regular CREATE path.
                                 const sizeCheck = this._validateOrderSizeForExecution(fbSize, fbType, fbOrder, fbSize);
                                 if (!sizeCheck.isValid) {
                                     this.manager.logger.log(
@@ -5361,11 +5332,7 @@ class DEXBot {
 
                 this._structuralGridResyncRunning = true;
                 try {
-                    // First, try the lighter persisted-grid reload + chain
-                    // resync — the same path that succeeded during the startup
-                    // recovery at 20:08:38 in the slot-115 cascade. This
-                    // preserves existing grid prices and slot assignments
-                    // instead of rebuilding from scratch.
+                    // Try the lighter persisted-grid reload before full reset.
                     const persistedResult = await this._recoverFromPersistedGrid();
                     if (persistedResult.success) {
                         if (this.manager?._recoveryState) {
