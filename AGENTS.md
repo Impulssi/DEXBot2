@@ -258,8 +258,19 @@ only; always check `package.json` before adding or removing a classification.
 - `modules/launcher/*` — credential daemon, bot supervisor, market adapter runtime, monolithic runtime
 - `modules/dexbot_maintenance_runtime.ts` — direct `fs` / `child_process` / `os` use
 - `modules/dexbot_class.ts` — imports `dexbot_maintenance_runtime`
+- `modules/credential_runtime.ts` — `require('./launcher/runtime_entry')`, process I/O
+- `modules/dexbot_credential_client.ts` — credential daemon protocol, Unix sockets
+- `modules/node_health_cache.ts` — node-only health tracking
+- `modules/process_discovery.ts` — reads `/proc/*`, Linux-specific
+- `modules/graceful_shutdown.ts` — `runtime.onSignal` / `runtime.exit`
+- `modules/order/logger.ts` — file I/O, process I/O
+- `modules/order/export.ts` — file I/O for CSV export
+- `modules/order/runner.ts` — heavy I/O calculation runner
+- `modules/storage/node_adapter.ts` — direct `fs` wrapper
+- `modules/key_store.ts` — key file management
 - `unlock.ts`, `bot.ts`, `dexbot.ts`, `pm2.ts`, `credential-daemon.ts` — CLI entry points
 - `market_adapter/lp_chart_runner.ts` — `require('child_process')` for chart rendering
+- `market_adapter/ama_signal_runner.ts` — CLI script, `process.exit` / `process.stdout`
 
 **Environment detection** — always go through `modules/env.ts`:
 ```ts

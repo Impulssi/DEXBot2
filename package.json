@@ -101,7 +101,17 @@
     "./dist/modules/dexbot_maintenance_runtime.js": false,
     "./dist/modules/dexbot_class.js": false,
     "./dist/modules/graceful_shutdown.js": false,
-    "./dist/market_adapter/lp_chart_runner.js": false
+    "./dist/modules/process_discovery.js": false,
+    "./dist/modules/credential_runtime.js": false,
+    "./dist/modules/dexbot_credential_client.js": false,
+    "./dist/modules/node_health_cache.js": false,
+    "./dist/modules/storage/node_adapter.js": false,
+    "./dist/modules/key_store.js": false,
+    "./dist/modules/order/logger.js": false,
+    "./dist/modules/order/export.js": false,
+    "./dist/modules/order/runner.js": false,
+    "./dist/market_adapter/lp_chart_runner.js": false,
+    "./dist/market_adapter/ama_signal_runner.js": false
   },
   "bugs": {
     "url": "https://github.com/froooze/DEXBot2/issues"
