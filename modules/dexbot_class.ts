@@ -1336,6 +1336,15 @@ class DEXBot {
                         let startupChainOpenOrders = chainOpenOrders;
                         const syncResult = await this.manager.syncFromOpenOrders(startupChainOpenOrders, { skipAccounting: true, fillLockAlreadyHeld: true });
 
+                        // Process price corrections queued during startup sync.
+                        // These are not picked up by _consumeFillQueue until a fill
+                        // arrives, which may never come for an idle market.
+                        if (syncResult.ordersNeedingCorrection?.length > 0) {
+                            await correctAllPriceMismatches(
+                                this.manager, this.account, this.privateKey, chainOrders
+                            );
+                        }
+
                         if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
                             this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
                             const batchResult = await this._processFillsWithBatching(

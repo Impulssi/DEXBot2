@@ -22,7 +22,7 @@ const { parseJsonWithComments } = require('./order/utils/system');
 const { cloneWeightDistribution, calculateOrderCreationFees, calculateSwapInAmount, floatToBlockchainInt, blockchainToFloat } = require('./order/utils/math');
 const { updateDynamicGridSnapshotSync } = require('../market_adapter/utils/dynamic_grid_snapshot');
 const { reconcileGridOrders } = require('./order/grid_reconcile');
-const { formatUnmatchedChainOrder, getSideBudget } = require('./order/utils/order');
+const { formatUnmatchedChainOrder, getSideBudget, correctAllPriceMismatches } = require('./order/utils/order');
 const { getStorage } = require('./storage');
 const storage = getStorage();
 const { ensureDir, safeUnlink } = require('./utils/fs_utils');
@@ -1391,6 +1391,21 @@ async function executeMaintenanceLogic(bot, context) {
             'warn'
         );
         return;
+    }
+
+    // Process any price corrections queued by prior sync operations before
+    // the pipeline gate. Pending corrections block isPipelineEmpty, and no
+    // other code path clears them outside of _consumeFillQueue (which only
+    // runs when new fills arrive). Without this, a single correction queued
+    // during startup or periodic sync can stall the pipeline indefinitely.
+    const pendingCorrections = bot.manager.ordersNeedingPriceCorrection?.length || 0;
+    if (pendingCorrections > 0) {
+        const correctionResult = await correctAllPriceMismatches(
+            bot.manager, bot.account, bot.privateKey, chainOrders
+        );
+        if (correctionResult.failed > 0) {
+            bot._warn(`[MAINT] ${correctionResult.failed}/${pendingCorrections} price correction(s) failed`);
+        }
     }
 
     // Dust detection runs before the pipeline gate. Cancellation is immediate
