@@ -9,7 +9,7 @@ installBitsharesClientStub(bitsharesClientPath);
 const chainOrders = require('../modules/chain_orders');
 const chainKeys = require('../modules/chain_keys');
 const { OrderManager } = require('../modules/order/manager');
-const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DAEMON_CODES } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DAEMON_CODES, DAEMON_ERRORS } = require('../modules/constants');
 const {
     BroadcastUncertainError,
     executeOperationsViaCredentialDaemon
@@ -648,6 +648,124 @@ async function testCredentialClientBroadcastTimeoutBecomesUncertain() {
     console.log('✓ UNC-008f passed');
 }
 
+async function testCredentialClientFallbackRetrySucceeds() {
+    console.log('\n[UNC-008i-1] credential client fallbackNodes: 1 fallback, 1st DEADLINE → 2nd succeeds...');
+    const operations = [{ op_name: 'limit_order_cancel', op_data: { order: '1.7.1' } }];
+    let requestCount = 0;
+    const transport = installFakeCredentialDaemonTransport((request, socket) => {
+        requestCount++;
+        if (requestCount === 1) {
+            assert.strictEqual(request.nodeUrl, undefined, 'First attempt has no nodeUrl override');
+            socket.endLine({ success: false, code: DAEMON_CODES.BROADCAST_DEADLINE, error: 'inner deadline' });
+        } else {
+            assert.strictEqual(request.nodeUrl, 'wss://fallback-1.bitshares.org/ws', 'Second attempt uses fallback nodeUrl');
+            socket.endLine({ success: true, operation_results: [] });
+        }
+    });
+    try {
+        const result = await executeOperationsViaCredentialDaemon('test-account', operations, {
+            socketPath: transport.socketPath,
+            requestType: 'broadcast',
+            timeoutMs: 100,
+            fallbackNodes: ['wss://fallback-1.bitshares.org/ws'],
+        });
+        assert.ok(result.success);
+        assert.strictEqual(requestCount, 2, 'Should retry once on fallback');
+    } finally {
+        transport.restore();
+    }
+    console.log('✓ UNC-008i-1 passed');
+}
+
+async function testCredentialClientFallbackRetryExhausted() {
+    console.log('\n[UNC-008i-2] credential client fallbackNodes: all DEADLINE → throws after exhausting...');
+    const operations = [{ op_name: 'limit_order_cancel', op_data: { order: '1.7.2' } }];
+    let requestCount = 0;
+    const transport = installFakeCredentialDaemonTransport((request, socket) => {
+        requestCount++;
+        socket.endLine({ success: false, code: DAEMON_CODES.BROADCAST_DEADLINE, error: 'inner deadline' });
+    });
+    try {
+        await assert.rejects(
+            () => executeOperationsViaCredentialDaemon('test-account', operations, {
+                socketPath: transport.socketPath,
+                requestType: 'broadcast',
+                timeoutMs: 100,
+                fallbackNodes: [
+                    'wss://fallback-1.bitshares.org/ws',
+                    'wss://fallback-2.bitshares.org/ws',
+                ],
+            }),
+            (err) => {
+                assert(err instanceof BroadcastUncertainError);
+                assert.strictEqual(err.code, 'BROADCAST_UNCERTAIN');
+                return true;
+            }
+        );
+        assert.strictEqual(requestCount, 3, 'Should try all 3 nodes (1 primary + 2 fallbacks)');
+    } finally {
+        transport.restore();
+    }
+    console.log('✓ UNC-008i-2 passed');
+}
+
+async function testCredentialClientFallbackSkipsPlainError() {
+    console.log('\n[UNC-008i-3] credential client fallbackNodes: plain Error → no retry...');
+    const operations = [{ op_name: 'limit_order_cancel', op_data: { order: '1.7.3' } }];
+    let requestCount = 0;
+    const transport = installFakeCredentialDaemonTransport((request, socket) => {
+        requestCount++;
+        socket.endLine({ success: false, error: DAEMON_ERRORS.SESSION_EXPIRED + ':session expired' });
+    });
+    try {
+        await assert.rejects(
+            () => executeOperationsViaCredentialDaemon('test-account', operations, {
+                socketPath: transport.socketPath,
+                requestType: 'broadcast',
+                timeoutMs: 100,
+                fallbackNodes: ['wss://fallback-1.bitshares.org/ws'],
+            }),
+            (err) => {
+                assert(!(err instanceof BroadcastUncertainError));
+                assert(err.message.includes(DAEMON_ERRORS.SESSION_EXPIRED));
+                return true;
+            }
+        );
+        assert.strictEqual(requestCount, 1, 'Should not retry on plain errors');
+    } finally {
+        transport.restore();
+    }
+    console.log('✓ UNC-008i-3 passed');
+}
+
+async function testCredentialClientFallbackEmptyList() {
+    console.log('\n[UNC-008i-4] credential client fallbackNodes: [] → no retry (regression guard)...');
+    const operations = [{ op_name: 'limit_order_cancel', op_data: { order: '1.7.4' } }];
+    let requestCount = 0;
+    const transport = installFakeCredentialDaemonTransport((request, socket) => {
+        requestCount++;
+        socket.endLine({ success: false, code: DAEMON_CODES.BROADCAST_DEADLINE, error: 'inner deadline' });
+    });
+    try {
+        await assert.rejects(
+            () => executeOperationsViaCredentialDaemon('test-account', operations, {
+                socketPath: transport.socketPath,
+                requestType: 'broadcast',
+                timeoutMs: 100,
+                fallbackNodes: [],
+            }),
+            (err) => {
+                assert(err instanceof BroadcastUncertainError);
+                return true;
+            }
+        );
+        assert.strictEqual(requestCount, 1, 'Empty fallback list should not retry');
+    } finally {
+        transport.restore();
+    }
+    console.log('✓ UNC-008i-4 passed');
+}
+
 async function testExecuteBatchDoesNotRetryUncertainDaemonBroadcast() {
     console.log('\n[UNC-008g] chain_orders.executeBatch does not retry uncertain daemon broadcasts...');
     let requestCount = 0;
@@ -1030,6 +1148,10 @@ async function main() {
     await testCowBatchAdvancesCycleMarker();
     await testCredentialClientDeadlineReplyBecomesUncertain();
     await testCredentialClientBroadcastTimeoutBecomesUncertain();
+    await testCredentialClientFallbackRetrySucceeds();
+    await testCredentialClientFallbackRetryExhausted();
+    await testCredentialClientFallbackSkipsPlainError();
+    await testCredentialClientFallbackEmptyList();
     await testExecuteBatchDoesNotRetryUncertainDaemonBroadcast();
     await testExecuteBatchRetriesExpiredDaemonSessionOnly();
     await testExecuteBatchRetryPreservesUncertainBroadcastHandling();

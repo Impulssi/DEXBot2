@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.13] - 2026-07-18 - Dust Cancel Node Fallback
+
+### 2026-07-18
+
+- **Fix**: centralized node-fallback retry for BROADCAST_DEADLINE — `executeOperationsViaCredentialDaemon` now accepts `fallbackNodes: string[]`. On `BroadcastUncertainError` it automatically cycles through fallbacks with a 1 s gap before raising the last error. Dust cancel (`cancelOrderWithNodeFallback`) passes the bot's healthy-node list (excluding primary) through; COW batch and other callers can reuse the same mechanism by passing `fallbackNodes` in `extraOptions`. Adds per-request `nodeUrl` passthrough in the credential daemon protocol and structured audit-log `nodeUrl` fields for multi-node timeout correlation (`modules/dexbot_credential_client.ts:223-289`, `credential-daemon.ts:411-413`).
+
 ## [1.1.12] - 2026-07-18 - Committed Order Protection, Ghost Order Cleanup, Price Correction Queue, AMA Config Centralization
 
 ### 2026-07-18

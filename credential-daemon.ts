@@ -379,7 +379,7 @@ async function executeOperationsWithClient(client: any, operations: any) {
     };
 }
 
-async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn: any) {
+async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn: any, nodeUrl: string | null = null) {
     // The inner deadline caps the TOTAL time spent across BOTH retry attempts
     // so we always reply to the bot well before its outer socket timer
     // (CREDENTIAL_BROADCAST_TIMEOUT_MS) fires. If we don't reply in time, the
@@ -406,10 +406,16 @@ async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn
 
     const maxRetries = TIMING?.CREDENTIAL_DAEMON_BROADCAST_RETRIES ?? 2;
     const work = (async () => {
+        // If a specific node URL is requested, override the global node list
+        // for this broadcast so the retry uses a different backend.
+        const effectiveNodeList = nodeUrl
+            ? [nodeUrl]
+            : (_nativeNodeList.length > 0 ? _nativeNodeList : NODE_MANAGEMENT.DEFAULT_NODES);
+
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 if (_nativeChainClient.getStatus() !== 'connected') {
-                    _nativeChainClient.setNodes(_nativeNodeList.length > 0 ? _nativeNodeList : NODE_MANAGEMENT.DEFAULT_NODES);
+                    _nativeChainClient.setNodes(effectiveNodeList);
                     await _nativeChainClient.connect();
                 }
                 const { createSigningClient } = require('./modules/bitshares-native');
@@ -803,11 +809,13 @@ function processRequest(requestStr: string, socket: any) {
                     }
 
                     const privateKey = await loadCurrentPrivateKey(accountName);
+                    const broadcastNodeUrl = typeof request.nodeUrl === 'string' ? request.nodeUrl : null;
                     let signResult: any;
                     try {
                         signResult = await broadcastWithRetry(
                             accountName, privateKey,
-                            (client: any) => client.broadcast(operation)
+                            (client: any) => client.broadcast(operation),
+                            broadcastNodeUrl
                         );
                     } catch (broadcastErr: any) {
                         if (broadcastErr && broadcastErr.code === DAEMON_CODES.BROADCAST_DEADLINE) {
@@ -815,6 +823,7 @@ function processRequest(requestStr: string, socket: any) {
                                 event: 'sign_timeout',
                                 accountName,
                                 sessionId,
+                                nodeUrl: broadcastNodeUrl,
                                 opCount: 1,
                                 opTypes: [operation && operation.op_name].filter(Boolean),
                                 ageMs: broadcastErr.ageMs,
@@ -908,11 +917,13 @@ function processRequest(requestStr: string, socket: any) {
                     }
 
                     const privateKey = await loadCurrentPrivateKey(accountName);
+                    const broadcastNodeUrl = typeof request.nodeUrl === 'string' ? request.nodeUrl : null;
                     let signResult: any;
                     try {
                         signResult = await broadcastWithRetry(
                             accountName, privateKey,
-                            (client: any) => executeOperationsWithClient(client, operations)
+                            (client: any) => executeOperationsWithClient(client, operations),
+                            broadcastNodeUrl
                         );
                     } catch (broadcastErr: any) {
                         if (broadcastErr && broadcastErr.code === DAEMON_CODES.BROADCAST_DEADLINE) {
@@ -920,6 +931,7 @@ function processRequest(requestStr: string, socket: any) {
                                 event: 'sign_timeout',
                                 accountName,
                                 sessionId,
+                                nodeUrl: broadcastNodeUrl,
                                 opCount: operations.length,
                                 opTypes: operations.map((o: any) => o && o.op_name).filter(Boolean),
                                 ageMs: broadcastErr.ageMs,

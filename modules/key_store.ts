@@ -36,7 +36,7 @@ export interface KeyStore {
 
     resolveSigningKey(accountName: string, vaultSecret?: any, chainClient?: any): Promise<any>;
     isDaemonSigningKey(key: any): boolean;
-    executeOperations(accountName: string, operations: any[], signingKey: any): Promise<SigningResult>;
+    executeOperations(accountName: string, operations: any[], signingKey: any, extraOptions?: Record<string, any>): Promise<SigningResult>;
 
     loadAccounts(): any;
     saveAccounts(data: any): void;
@@ -106,7 +106,7 @@ export class DaemonKeyStore implements KeyStore {
         return chainKeys.isDaemonSigningToken(key);
     }
 
-    async executeOperations(accountName: string, operations: any[], signingKey: any): Promise<SigningResult> {
+    async executeOperations(accountName: string, operations: any[], signingKey: any, extraOptions: Record<string, any> = {}): Promise<SigningResult> {
         if (this.isDaemonSigningKey(signingKey)) {
             try {
                 const result = await executeOperationsViaCredentialDaemon(accountName, operations, {
@@ -115,6 +115,8 @@ export class DaemonKeyStore implements KeyStore {
                     botHmacSecret: signingKey.botHmacSecret || null,
                     requestType: 'broadcast',
                     batchId: signingKey.batchId || null,
+                    ...(extraOptions.nodeUrl ? { nodeUrl: extraOptions.nodeUrl } : {}),
+                    ...(extraOptions.fallbackNodes ? { fallbackNodes: extraOptions.fallbackNodes } : {}),
                 });
                 return {
                     success: true,
@@ -150,6 +152,7 @@ export class DaemonKeyStore implements KeyStore {
                         botHmacSecret: signingKey.botHmacSecret || null,
                         requestType: 'broadcast',
                         batchId: signingKey.batchId || null,
+                        ...(extraOptions.fallbackNodes ? { fallbackNodes: extraOptions.fallbackNodes } : {}),
                     });
                     return {
                         success: true,

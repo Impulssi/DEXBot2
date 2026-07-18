@@ -464,8 +464,8 @@ function isDaemonSigningToken(value) {
  * @param {Array<import('./types').CreatedOperation>} operations - Array of operation objects
  * @returns {Promise<import('./types').BroadcastResult>} Broadcast result
  */
-async function executeViaDaemonToken(accountName, signingToken, operations) {
-    return getKeyStore().executeOperations(accountName, operations, signingToken);
+async function executeViaDaemonToken(accountName, signingToken, operations, extraOptions = {}) {
+    return getKeyStore().executeOperations(accountName, operations, signingToken, extraOptions);
 }
 
 /**
@@ -1007,17 +1007,21 @@ async function buildCancelOrderOp(accountName, orderId) {
  * @param {string} accountName - The name of the account.
  * @param {string|Object} privateKey - The private key for signing (or daemon signing token).
  * @param {string} orderId - The ID of the order to cancel.
+ * @param {Object} [extraOptions] - Optional overrides.
+ * @param {string} [extraOptions.nodeUrl] - Specific BitShares node URL for the broadcast.
+ *   Only effective when using a daemon signing token (the createAccountClient
+ *   fallback path ignores this field).
  * @returns {Promise<Object>} Success object with order ID and verification metadata.
  * @throws {Error} If cancellation fails.
  */
-async function cancelOrder(accountName, privateKey, orderId) {
+async function cancelOrder(accountName, privateKey, orderId, extraOptions = {}) {
     let accountId = null;
     try {
         const op = await buildCancelOrderOp(accountName, orderId);
         accountId = op.op_data.fee_paying_account;
 
         if (isDaemonSigningToken(privateKey)) {
-            const result = await executeViaDaemonToken(accountName, privateKey, [op]);
+            const result = await executeViaDaemonToken(accountName, privateKey, [op], extraOptions);
             recordOwnCancel(orderId);
             chainOrdersLogger.info(`Order ${orderId} cancelled successfully`);
             return { success: true, orderId, verified: true, raw: result.raw, operation_results: result.operation_results };

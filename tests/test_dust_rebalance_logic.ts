@@ -26,7 +26,13 @@ Module._load = function(request, parent, isMain) {
                 broadcast: async () => ({})
             }),
             setSuppressConnectionLog: () => {},
-            getNodeManager: () => null,
+            getNodeManager: () => ({
+                getHealthyNodes: () => [
+                    'wss://primary.bitshares.org/ws',
+                    'wss://alt-1.bitshares.org/ws',
+                    'wss://alt-2.bitshares.org/ws',
+                ],
+            }),
             getNodeStats: () => null,
             getNodeSummary: () => null,
             _internal: { get connected() { return false; } }
@@ -397,6 +403,83 @@ async function testDustCancelDoesNotBeatRealFill() {
     }
 }
 
+async function testDustCancelNodeFallback() {
+    console.log('Testing Dust Cancel Node Fallback after BROADCAST_DEADLINE...');
+
+    const originalCancelOrder = chainOrders.cancelOrder;
+    let bot;
+    try {
+        let cancelCalls = 0;
+        let syncCalls = 0;
+        let processCalls = 0;
+        let persistCalls = 0;
+
+        bot = new DEXBot({
+            botKey: 'test_dust_cancel_fallback',
+            dryRun: false,
+            startPrice: 1,
+            assetA: 'TESTA',
+            assetB: 'BTS',
+            incrementPercent: 0.5,
+            weightDistribution: { sell: 0.6, buy: 0.4 },
+        });
+        bot.account = 'test-account';
+        bot.privateKey = 'test-key';
+        bot.manager = {
+            synchronizeWithChain: async (payload) => {
+                syncCalls++;
+                return { newOrders: [], ordersNeedingCorrection: [] };
+            },
+            processFilledOrders: async (fills) => {
+                processCalls++;
+                return { actions: [] };
+            },
+            persistGrid: async () => {
+                persistCalls++;
+                return { isValid: true };
+            },
+            recalculateFunds: async () => {},
+            checkGridHealth: async () => ({ buyDustOrders: [], sellDustOrders: [] }),
+            config: {
+                weightDistribution: { sell: 0.6, buy: 0.4 },
+            },
+        };
+
+        // The helper passes fallbackNodes to cancelOrder; retry cycling is
+        // handled inside executeOperationsViaCredentialDaemon (tested
+        // separately in the credential-client suite). Here we just verify
+        // that fallbackNodes are wired and errors propagate correctly.
+        chainOrders.cancelOrder = async (account, key, orderId, extraOptions) => {
+            cancelCalls++;
+            assert.ok(extraOptions, 'cancelOrder receives extraOptions');
+            assert.deepStrictEqual(
+                extraOptions.fallbackNodes,
+                ['wss://alt-1.bitshares.org/ws', 'wss://alt-2.bitshares.org/ws'],
+                'fallbackNodes includes alt nodes after primary'
+            );
+            return { success: true, orderId };
+        };
+
+        const dustOrder = {
+            id: 'dust-buy-1',
+            orderId: '1.7.903',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.PARTIAL,
+            size: 0.1,
+            price: 0.9,
+        };
+
+        const result = await bot._cancelDustOrders({ buy: [dustOrder], sell: [] });
+        assert.strictEqual(result.cancelledCount, 1, 'Fallback should succeed');
+        assert.strictEqual(cancelCalls, 1, 'cancelOrder called once (retry in credential client)');
+        assert.strictEqual(syncCalls, 1, 'Should sync after successful cancel');
+        assert.strictEqual(processCalls, 1, 'Should process synthetic fill');
+        console.log('  ✓ Dust cancel passes fallbackNodes to cancelOrder');
+    } finally {
+        chainOrders.cancelOrder = originalCancelOrder;
+    }
+}
+
 async function testDustCancelOrderMissingClassifier() {
     console.log('Testing Dust Cancel Order-Missing Classifier...');
 
@@ -724,6 +807,7 @@ Promise.resolve()
     .then(() => testDustTrigger())
     .then(() => testDustCancelSyntheticRotation())
     .then(() => testDustCancelDoesNotBeatRealFill())
+    .then(() => testDustCancelNodeFallback())
     .then(() => testDustCancelOrderMissingClassifier())
     .then(() => testDustThresholdUsesConfiguredPercentage())
     .then(() => testDustTrackingOnlyUsesTopLiveOrder())

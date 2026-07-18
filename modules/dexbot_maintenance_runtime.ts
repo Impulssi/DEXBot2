@@ -3,8 +3,9 @@ const { createHash } = require('./crypto/sync');
 const fs = require('fs');
 const { path } = require('./path_api');
 const { spawn } = require('child_process');
-const { BitShares } = require('./bitshares_client');
+const { BitShares, getNodeManager } = require('./bitshares_client');
 const chainOrders = require('./chain_orders');
+const { BroadcastUncertainError } = require('./dexbot_credential_client');
 const { Config, hasOpenOrdersSyncLoopMsSet, getOpenOrdersSyncLoopMs } = require('./config');
 const Grid = require('./order/grid');
 const { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } = require('./constants');
@@ -1490,6 +1491,39 @@ async function executeMaintenanceLogic(bot, context) {
 }
 
 /**
+ * Cancel a single order, retrying on alternate BitShares nodes when the
+ * credential daemon reports BROADCAST_DEADLINE.  The daemon already retries
+ * 3× internally against its own node list; if it still hits the deadline
+ * the node itself may be unhealthy.  We hand the full healthy-node list
+ * (excluding the primary) to the credential client, which cycles through
+ * the fallbacks with a 1 s gap and raises the last BroadcastUncertainError
+ * only when all nodes are exhausted.
+ *
+ * The daemon's session is validated early in processRequest (before the
+ * broadcast), so a BROADCAST_DEADLINE reply cannot be caused by an expired
+ * session — re-using the original signing token is correct.
+ *
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./types').Order} order
+ * @returns {Promise<*>} Result from chainOrders.cancelOrder
+ */
+async function cancelOrderWithNodeFallback(bot, order) {
+    try {
+        const nodes = getNodeManager().getHealthyNodes();
+        const fallbackNodes = nodes.length > 1 ? nodes.slice(1) : undefined;
+        return await chainOrders.cancelOrder(
+            bot.account, bot.privateKey, order.orderId,
+            fallbackNodes ? { fallbackNodes } : {}
+        );
+    } catch (err) {
+        if (err instanceof BroadcastUncertainError) {
+            bot._warn(`[DUST] All nodes exhausted for ${order.id} (${order.orderId})`);
+        }
+        throw err;
+    }
+}
+
+/**
  * Cancel dust orders immediately — no delay, no timer, no maps.
  * Each dust order is cancelled on chain and its slot is rotated through
  * the normal synthetic-fill pipeline. Failures are logged and retried on
@@ -1509,7 +1543,7 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [], f
     for (const order of allDust) {
         if (!order.orderId) continue;
         try {
-            const cancelResult = await chainOrders.cancelOrder(bot.account, bot.privateKey, order.orderId);
+            const cancelResult = await cancelOrderWithNodeFallback(bot, order);
             try {
                 if (cancelResult?.verifiedAfterFailure) {
                     const accountRef = bot.accountId || bot.account;
