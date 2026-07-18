@@ -2429,7 +2429,8 @@ class DEXBot {
             const openOrders = await chainOrders.readOpenOrders(accountRef);
             const recoveryResult = await this.manager.syncFromOpenOrders(openOrders, {
                 skipAccounting: false,
-                fillLockAlreadyHeld: true
+                fillLockAlreadyHeld: true,
+                protectCommittedOrders: true
             });
             this._preserveMissingCreateBlockersAfterRecovery(preRecoveryMissingCreateBlockers, recoveryResult);
             // Persist any master grid mutations from the recovery sync. The

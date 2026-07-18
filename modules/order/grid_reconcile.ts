@@ -341,7 +341,8 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
                 skipAccounting: false,
                 source: 'chainOrderIdExtractionFailure',
                 gridLockAlreadyHeld: true,
-                fillLockAlreadyHeld
+                fillLockAlreadyHeld,
+                protectCommittedOrders: true
             });
         } catch (syncErr: any) {
             logger?.log?.(`[_createOrderFromGrid] Recovery sync failed: ${syncErr.message}`, 'error');
@@ -378,7 +379,8 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
             skipAccounting: false,
             source: 'cancelOrder',
             gridLockAlreadyHeld: true,
-            fillLockAlreadyHeld
+            fillLockAlreadyHeld,
+            protectCommittedOrders: true
         });
     } else {
         // CRITICAL: Use _applySync (lock-free) since caller holds _gridLock
@@ -406,7 +408,8 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
             skipAccounting: false,
             source,
             gridLockAlreadyHeld: true,
-            fillLockAlreadyHeld
+            fillLockAlreadyHeld,
+            protectCommittedOrders: true
         });
         return freshChainOrders;
     } catch (syncErr: any) {

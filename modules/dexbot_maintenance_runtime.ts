@@ -1514,7 +1514,7 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [], f
                 if (cancelResult?.verifiedAfterFailure) {
                     const accountRef = bot.accountId || bot.account;
                     const chainOpenOrders = await chainOrders.readOpenOrders(accountRef);
-                    await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', { fillLockAlreadyHeld: true });
+                    await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', { fillLockAlreadyHeld: true, protectCommittedOrders: true });
                 } else {
                     await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder', { fillLockAlreadyHeld });
                 }

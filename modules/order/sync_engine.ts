@@ -334,7 +334,7 @@ class SyncEngine {
     /**
      * Synchronize grid orders with blockchain open orders snapshot.
      * @param {Array|null} chainOrders - Array of blockchain order objects
-     * @param {Object} [options={}] - Sync options (e.g., { skipAccounting: true })
+     * @param {Object} [options={}] - Sync options (e.g., { skipAccounting: true, protectCommittedOrders: true })
      * @returns {Promise<Object>} Result with filledOrders, updatedOrders, ordersNeedingCorrection
      */
     async syncFromOpenOrders(chainOrders: any[] | null, options: Record<string, any> = {}) {
@@ -1407,7 +1407,8 @@ class SyncEngine {
                 // so they still use optimistic accounting deltas.
                 return this.syncFromOpenOrders(chainData, {
                     skipAccounting: false,
-                    fillLockAlreadyHeld: options?.fillLockAlreadyHeld
+                    fillLockAlreadyHeld: options?.fillLockAlreadyHeld,
+                    protectCommittedOrders: options?.protectCommittedOrders
                 });
 
             case 'periodicBlockchainFetch': {
