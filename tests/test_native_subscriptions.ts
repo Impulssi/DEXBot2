@@ -543,12 +543,21 @@ function makeAccountRecord(account) {
         const originalClearTimeout = global.clearTimeout;
         const retryDelays = [];
         let retryCallback = null;
+        const liveTimers = new Set<any>();
         (global as any).setTimeout = (fn: any, delay: any) => {
+            const handle = { retryTimer: true, delay };
+            liveTimers.add(handle);
             retryDelays.push(delay);
             retryCallback = fn;
-            return { retryTimer: true };
+            return handle;
         };
-        global.clearTimeout = () => {};
+        global.clearTimeout = (handle: any) => {
+            if (handle) {
+                liveTimers.delete(handle);
+                const idx = retryDelays.lastIndexOf(handle.delay);
+                if (idx !== -1) retryDelays.splice(idx, 1);
+            }
+        };
 
         try {
             let subscriptionComplete = false;
@@ -661,12 +670,21 @@ function makeAccountRecord(account) {
         const originalClearTimeout = global.clearTimeout;
         const retryDelays = [];
         let retryCallback = null;
+        const liveTimers = new Set<any>();
         (global as any).setTimeout = (fn: any, delay: any) => {
+            const handle = { retryTimer: true, delay };
+            liveTimers.add(handle);
             retryDelays.push(delay);
             retryCallback = fn;
-            return { retryTimer: true };
+            return handle;
         };
-        global.clearTimeout = () => {};
+        global.clearTimeout = (handle: any) => {
+            if (handle) {
+                liveTimers.delete(handle);
+                const idx = retryDelays.lastIndexOf(handle.delay);
+                if (idx !== -1) retryDelays.splice(idx, 1);
+            }
+        };
 
         try {
             let subscriptionComplete = false;

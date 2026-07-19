@@ -124,13 +124,38 @@ function createSubscriptionManager(chainClient: any): any {
 
         subscriptionsLogger.debug(`fetchFillHistoryEntries: account=${accountId}, cursor=${cursorHistoryId}, start=${startHistoryId}, maxPages=${maxPages}, pageLimit=${pageLimit}`);
 
+        const FETCH_PAGE_TIMEOUT_MS = require('../constants').TIMING.FETCH_HISTORY_PAGE_TIMEOUT_MS;
+        const FETCH_TOTAL_DEADLINE_MS = require('../constants').TIMING.FETCH_HISTORY_TOTAL_DEADLINE_MS;
+        const scanStartedAt = Date.now();
+
         while (true) {
-            const page = await Promise.resolve(fetchPage(
-                accountId,
-                cursorHistoryId,
-                pageLimit,
-                startHistoryId
-            ));
+            // Outer deadline: if the total scan takes longer than
+            // FETCH_HISTORY_TOTAL_DEADLINE_MS, return partial results rather
+            // than blocking notice processing indefinitely.
+            if (Date.now() - scanStartedAt > FETCH_TOTAL_DEADLINE_MS) {
+                subscriptionsLogger.warn(
+                    `fetchFillHistoryEntries: total deadline (${FETCH_TOTAL_DEADLINE_MS}ms) exceeded for ${accountId}; ` +
+                    `returning ${entries.length} entries across ${pagesFetched} page(s)`
+                );
+                break;
+            }
+
+            let pageTimer: ReturnType<typeof setTimeout> | undefined;
+            const page = await Promise.race([
+                Promise.resolve(fetchPage(
+                    accountId,
+                    cursorHistoryId,
+                    pageLimit,
+                    startHistoryId
+                )),
+                new Promise<any[]>((_, reject) => {
+                    pageTimer = setTimeout(() => {
+                        reject(new Error(`fetchFillHistoryEntries: page ${pagesFetched + 1} timed out after ${FETCH_PAGE_TIMEOUT_MS}ms`));
+                    }, FETCH_PAGE_TIMEOUT_MS);
+                })
+            ]).finally(() => {
+                if (pageTimer) clearTimeout(pageTimer);
+            });
             pagesFetched++;
 
             const pageLen = Array.isArray(page) ? page.length : 0;
@@ -312,10 +337,21 @@ function createSubscriptionManager(chainClient: any): any {
                 // are actually lost — they're just discovered on the next scan
                 // instead of via push notification.
                 sub.lastNoticeAt = stampNow;
+
+                // Re-entrancy guard: if _processingHistory is true, a history scan
+                // for this subscription is already in flight. Skip this notice — the
+                // active scan already walks from the cursor forward and will catch
+                // any fills this notice describes. Without this guard, concurrent
+                // scans race on lastDeliveredHistoryId advancement, causing
+                // double-processing or skipped fills.
+                if (sub._processingHistory) continue;
+                sub._processingHistory = true;
+
                 const existing = pendingScans.get(sub);
                 if (existing) {
                     if ((now - existing.lastNoticeAt) < noticeCoalesceMs) {
                         existing.lastNoticeAt = now;
+                        sub._processingHistory = false;
                         continue;
                     }
                     clearTimeout(existing.timer);
@@ -325,14 +361,20 @@ function createSubscriptionManager(chainClient: any): any {
                     const entry = { timer: null as any, lastNoticeAt: now };
                     entry.timer = setTimeout(() => {
                         pendingScans.delete(sub);
-                        processObjects(sub, data).catch((err: any) => {
+                        (processObjects(sub, data).catch((err: any) => {
                             subscriptionsLogger.warn(`processObjects (coalesced) error for ${sub.accountName}: ${err?.message}`);
+                        })).finally(() => {
+                            sub._processingHistory = false;
                         });
                     }, noticeCoalesceMs);
                     if (typeof entry.timer.unref === 'function') entry.timer.unref();
                     pendingScans.set(sub, entry);
                 } else {
-                    await processObjects(sub, data);
+                    try {
+                        await processObjects(sub, data);
+                    } finally {
+                        sub._processingHistory = false;
+                    }
                 }
             }
             return;

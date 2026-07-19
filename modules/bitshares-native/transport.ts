@@ -166,8 +166,17 @@ function createTransport(config: TransportConfig = {}) {
     function scheduleReconnect(): void {
         if (intentionalClose || !autoreconnect || nodeList.length === 0 || reconnectTimer) return;
         if (reconnectAttempts >= maxReconnectAttempts) {
-            transportLogger.warn(`Max reconnection attempts (${maxReconnectAttempts}) reached, giving up`);
+            // Switch to slow perpetual retry instead of giving up permanently.
+            // The transport will keep polling at SLOW_RECONNECT_INTERVAL_MS until
+            // either a connection succeeds or intentionalClose is set.
+            const SLOW_RECONNECT_INTERVAL_MS = require('../constants').TIMING.SLOW_RECONNECT_INTERVAL_MS;
+            transportLogger.warn(`Max reconnection attempts (${maxReconnectAttempts}) reached; switching to slow perpetual retry every ${SLOW_RECONNECT_INTERVAL_MS / 1000}s`);
+            reconnectAttempts = maxReconnectAttempts; // stay in slow mode
             setStatus('closed');
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                tryConnect().catch(() => scheduleReconnect());
+            }, SLOW_RECONNECT_INTERVAL_MS);
             return;
         }
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts) + Math.random() * 1000, 30000);
@@ -302,6 +311,32 @@ function createTransport(config: TransportConfig = {}) {
         };
     }
 
+    function _onConnected(socket: WebSocketLike, url: string, idx: number, wasReconnect: boolean): Promise<void> {
+        if (ws) {
+            ws.onclose = null;
+            try { ws.close(); } catch (_: any) {}
+        }
+        ws = socket;
+        nodeUrl = url;
+        nodeIndex = idx;
+        reconnectAttempts = 0;
+        setupMessageHandler(socket);
+        return (async () => {
+            if (validateNode) {
+                await validateNode();
+            }
+            setStatus('connected');
+            startKeepAlive();
+            if (wasReconnect && onReconnect) {
+                try {
+                    await onReconnect(nodeUrl);
+                } catch (err: any) {
+                    transportLogger.warn(`Reconnect callback (subscription re-establishment) failed: ${err?.message || err}`);
+                }
+            }
+        })();
+    }
+
     async function tryConnect(): Promise<void> {
         intentionalClose = false;
         const list = [...nodeList];
@@ -310,36 +345,50 @@ function createTransport(config: TransportConfig = {}) {
             return;
         }
 
-        const errors: Error[] = [];
+        const wasReconnect = reconnectAttempts > 0;
 
+        // Parallel connect strategy: race all nodes concurrently so the fastest
+        // connecting node wins. Each individual connectOne still has its own
+        // per-node timeout (connectTimeoutMs), so worst-case wall time is
+        // connectTimeoutMs instead of list.length * connectTimeoutMs.
+        const connectPromises = list.map((url, i) => {
+            const idx = (nodeIndex + i) % list.length;
+            const actualUrl = list[idx];
+            return connectOne(actualUrl)
+                .then(socket => ({ socket, url: actualUrl, idx }))
+                .catch(err => { throw { url: actualUrl, error: err }; });
+        });
+
+        try {
+            setStatus('connecting');
+            const winner: any = await Promise.any(connectPromises);
+            // Cancel remaining in-flight connections (best-effort, no throw).
+            for (const p of connectPromises) {
+                p.then((other: any) => {
+                    if (other.socket && other.socket !== winner?.socket) {
+                        try { other.socket.close(); } catch (_: any) {}
+                    }
+                }).catch(() => {});
+            }
+            await _onConnected(winner.socket, winner.url, winner.idx, wasReconnect);
+            return;
+        } catch (firstErr: any) {
+            // All parallel attempts failed. Fall back to sequential retry for
+            // environments where parallel connection floods are problematic.
+            const errMsg = firstErr?.errors ? firstErr.errors.map((e: any) => e?.message || e).join('; ') : (firstErr?.message || firstErr);
+            transportLogger.warn(`Parallel connect failed (${list.length} nodes), falling back to sequential: ${errMsg}`);
+            // Fall through to sequential logic below
+        }
+
+        // Sequential fallback pass.
+        const errors: Error[] = [];
         for (let i = 0; i < list.length; i++) {
             const idx = (nodeIndex + i) % list.length;
             const url = list[idx];
             try {
                 setStatus('connecting');
                 const socket = await connectOne(url);
-                if (ws) {
-                    ws.onclose = null;
-                    try { ws.close(); } catch (_: any) {}
-                }
-                ws = socket;
-                nodeUrl = url;
-                nodeIndex = idx;
-                const wasReconnect = reconnectAttempts > 0;
-                reconnectAttempts = 0;
-                setupMessageHandler(socket);
-                if (validateNode) {
-                    await validateNode();
-                }
-                setStatus('connected');
-                startKeepAlive();
-                if (wasReconnect && onReconnect) {
-                    try {
-                        await onReconnect(nodeUrl);
-                    } catch (err: any) {
-                        transportLogger.warn(`Reconnect callback (subscription re-establishment) failed: ${err?.message || err}`);
-                    }
-                }
+                await _onConnected(socket, url, idx, wasReconnect);
                 return;
             } catch (err: any) {
                 if (ws) {

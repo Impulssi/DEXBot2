@@ -129,6 +129,12 @@ class Logger {
     async _drainQueue() {
         this._writeTimer = null;
         if (this._draining || this._writeQueue.length === 0) return;
+
+        // Capture a drain deadline so a single stuck write never hangs flush()
+        // indefinitely. If _drainQueue runs past this timeout, force-resolve
+        // the flush promise and drop remaining lines rather than blocking
+        // shutdown or the caller forever.
+        const drainDeadline = Date.now() + 10000; // 10s max per drain cycle
         this._draining = true;
 
         const batch = this._writeQueue.splice(0, this._maxQueueSize);
@@ -159,6 +165,17 @@ class Logger {
         }
 
         this._draining = false;
+
+        // If drain took too long, force-resolve the flush promise so callers
+        // (including shutdown) are not blocked indefinitely.
+        if (Date.now() >= drainDeadline) {
+            const timedOutResolve = this._flushResolve;
+            this._flushResolve = null;
+            if (timedOutResolve) timedOutResolve();
+            console.error(`[LOGGER] Drain timeout — ${this._writeQueue.length} lines remaining`);
+            this._writeQueue = []; // discard remaining to prevent infinite loop
+            return;
+        }
 
         if (this._writeQueue.length > 0) {
             // Resolve will be re-attached when flush() is called again
@@ -276,8 +293,8 @@ class Logger {
      * Wait until the write queue is empty.
      * Call during shutdown to guarantee all pending lines are flushed.
      */
-    flush(): Promise<void> {
-        return new Promise((resolve) => {
+    flush(timeoutMs: number = 15000): Promise<void> {
+        const inner = new Promise<void>((resolve) => {
             if (this._writeQueue.length === 0 && !this._draining) {
                 resolve();
                 return;
@@ -289,6 +306,14 @@ class Logger {
             }
             this._drainQueue();
         });
+        return Promise.race([
+            inner,
+            new Promise<void>((resolve) => {
+                setTimeout(() => {
+                    resolve();
+                }, timeoutMs);
+            })
+        ]);
     }
 
     /**

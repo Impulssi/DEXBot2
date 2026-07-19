@@ -467,6 +467,9 @@ class Accountant {
                     });
             };
 
+            // Deliberate: only the last pending snapshot runs. Intermediate snapshots
+            // that self-correct within consecutive recalc calls are transient fluctuations,
+            // not systemic drift. Running all snapshots in sequence would queue unboundedly.
             if (this._isVerifyingInvariants) {
                 this._pendingInvariantSnapshot = snapshot;
             } else {
@@ -878,6 +881,21 @@ class Accountant {
 
          if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
 
+         // Stale-fetch guard: if accountTotals was fetched too long ago, refuse
+         // optimistic deduction and force the caller to re-fetch. This prevents
+         // optimistic balance drift from diverging too far from chain reality
+         // between periodic blockchain fetches.
+         const MAX_ACCOUNT_TOTALS_AGE_MS = require('../constants').TIMING.MAX_ACCOUNT_TOTALS_AGE_MS;
+         const lastFetched = mgr.accountTotals._lastFetchedAt || 0;
+         if (Date.now() - lastFetched > MAX_ACCOUNT_TOTALS_AGE_MS) {
+             mgr.logger.log(
+                 `[chainFree] ${orderType} ${operation}: STALE accountTotals (age=${Date.now() - lastFetched}ms > ${MAX_ACCOUNT_TOTALS_AGE_MS}ms). ` +
+                 `Skipping optimistic deduction; caller should re-fetch.`,
+                 'warn'
+             );
+             return false;
+         }
+
          const current = toFiniteNumber(mgr.accountTotals[key]);
          if (current < size) {
              mgr.logger.log(`[chainFree] ${orderType} ${operation}: INSUFFICIENT FUNDS (have ${Format.formatAmount8(current)}, need ${Format.formatAmount8(size)})`, 'warn');
@@ -1097,11 +1115,25 @@ class Accountant {
                         throw err;
                     }
 
-                    this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure').catch(err => {
-                        mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
-                        mgr._recoveryState = mgr._recoveryState || {};
-                        mgr._recoveryState.lastFailureAt = Date.now();
-                    });
+                    // Promote recovery from fire-and-forget to a stored promise.
+                    // Subsequent callers can await the in-flight recovery before
+                    // attempting new deductions, reducing redundant recovery cycles.
+                    if (!mgr._pendingRecovery) {
+                        mgr._pendingRecovery = this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure')
+                            .catch(err => {
+                                mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
+                                mgr._recoveryState = mgr._recoveryState || {};
+                                mgr._recoveryState.lastFailureAt = Date.now();
+                            })
+                            .finally(() => {
+                                mgr._pendingRecovery = null;
+                            });
+                    } else {
+                        mgr.logger?.log?.(
+                            `[ACCOUNTING] Recovery already in-flight; waiting for existing recovery to complete before retry deduction of ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide}`,
+                            'warn'
+                        );
+                    }
                 }
             } else if (commitmentDelta < 0) {
                 // Release capital: move from Committed back to Free

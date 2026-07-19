@@ -644,41 +644,48 @@ class CreditRuntime {
     async _resolveMpaFeedPrice(debtAssetId, collateralAssetId, options: { includeSource?: boolean } = {}) {
         if (!debtAssetId || !collateralAssetId) return null;
 
+        const MPA_FEED_MAX_AGE_MS = require('./constants').TIMING.MPA_FEED_MAX_AGE_MS;
         const posKey = this._positionKey(debtAssetId, collateralAssetId);
         const cached = positiveOrNull(this.state.positions[posKey]?.mpaFeedPrice);
+        const cachedAt = this.state.positions[posKey]?.mpaFeedPriceAt || 0;
+        const cachedIsFresh = cached !== null && (Date.now() - cachedAt) < MPA_FEED_MAX_AGE_MS;
 
         const bitassetData = await this._resolveBitassetData(debtAssetId);
         const debtAsset = await this._resolveAsset(debtAssetId);
         const collateralAsset = await this._resolveAsset(collateralAssetId);
         if (!debtAsset || !collateralAsset) {
             if (options.includeSource) {
-                return cached !== null
+                return cachedIsFresh
                     ? { price: cached, source: 'cached-feed' }
                     : { price: null, source: 'missing-feed' };
             }
-            return cached;
+            return cachedIsFresh ? cached : null;
         }
 
         const feedPrice = this._computeBtsPerDebt(bitassetData?.current_feed?.settlement_price, debtAsset, collateralAsset);
         if (Number.isFinite(feedPrice) && feedPrice > 0) {
             if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
             this.state.positions[posKey].mpaFeedPrice = feedPrice;
+            this.state.positions[posKey].mpaFeedPriceAt = Date.now();
             return options.includeSource ? { price: feedPrice, source: 'live-feed' } : feedPrice;
         }
 
         if (options.includeSource) {
-            return cached !== null
+            return cachedIsFresh
                 ? { price: cached, source: 'cached-feed' }
                 : { price: null, source: 'missing-feed' };
         }
-        return cached;
+        return cachedIsFresh ? cached : null;
     }
 
     async _resolveCreditConversionRate(lendingItem, debtAssetId, collateralAssetId, options: { includeSource?: boolean } = {}) {
         if (!debtAssetId || !collateralAssetId) return null;
 
+        const CREDIT_RATE_MAX_AGE_MS = require('./constants').TIMING.CREDIT_RATE_MAX_AGE_MS;
         const posKey = this._positionKey(debtAssetId, collateralAssetId);
         const cached = positiveOrNull(this.state.positions[posKey]?.creditConversionRate);
+        const cachedAt = this.state.positions[posKey]?.creditConversionRateAt || 0;
+        const cachedIsFresh = cached !== null && (Date.now() - cachedAt) < CREDIT_RATE_MAX_AGE_MS;
 
         const offerIds = new Set();
 
@@ -696,22 +703,22 @@ class CreditRuntime {
 
         if (offerIds.size === 0) {
             if (options.includeSource) {
-                return cached !== null
+                return cachedIsFresh
                     ? { price: cached, source: 'cached-offer' }
                     : { price: null, source: 'missing-offer' };
             }
-            return cached;
+            return cachedIsFresh ? cached : null;
         }
 
         const debtAsset = await this._resolveAsset(debtAssetId);
         const collateralAsset = await this._resolveAsset(collateralAssetId);
         if (!debtAsset || !collateralAsset) {
             if (options.includeSource) {
-                return cached !== null
+                return cachedIsFresh
                     ? { price: cached, source: 'cached-offer' }
                     : { price: null, source: 'missing-offer' };
             }
-            return cached;
+            return cachedIsFresh ? cached : null;
         }
 
         const offerObjects = await this._dbCall('get_objects', [Array.from(offerIds)]);
@@ -736,16 +743,17 @@ class CreditRuntime {
 
                 if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
                 this.state.positions[posKey].creditConversionRate = rate;
+                this.state.positions[posKey].creditConversionRateAt = Date.now();
                 return options.includeSource ? { price: rate, source: 'live-offer' } : rate;
             }
         }
 
         if (options.includeSource) {
-            return cached !== null
+            return cachedIsFresh
                 ? { price: cached, source: 'cached-offer' }
                 : { price: null, source: 'missing-offer' };
         }
-        return cached;
+        return cachedIsFresh ? cached : null;
     }
 
     async _calculateCollateralDistribution() {
@@ -1333,6 +1341,7 @@ class CreditRuntime {
                 if (!Number.isFinite(rate) || rate <= 0) continue;
                 if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
                 this.state.positions[posKey].creditConversionRate = rate;
+                this.state.positions[posKey].creditConversionRateAt = Date.now();
                 break;
             }
         }
@@ -2107,13 +2116,26 @@ class CreditRuntime {
     async _getOfferById(offerId) {
         if (!offerId) return null;
         const cacheKey = `offer:${offerId}`;
-        if (this._objectCache.has(cacheKey)) {
-            return this._objectCache.get(cacheKey);
+        const cached = this._objectCache.get(cacheKey);
+        if (cached) {
+            // Check TTL: re-fetch from chain if the cached offer is too old.
+            // Offers rarely change their min_deal_amount, so a moderate TTL
+            // (OFFER_CACHE_TTL_MS, default 10min) balances freshness with RPC
+            // load. Without this guard, a stale cached min_deal_amount could
+            // cause deal-split guards to pass against a value that no longer
+            // holds on-chain.
+            const OFFER_CACHE_TTL_MS = require('./constants').TIMING.OFFER_CACHE_TTL_MS;
+            const cachedAt = cached._cachedAt || 0;
+            if (Date.now() - cachedAt < OFFER_CACHE_TTL_MS) {
+                return cached;
+            }
+            // Expired: fall through to re-fetch
+            this._objectCache.delete(cacheKey);
         }
         const objects = await this._dbCall('get_objects', [[offerId]]);
         const offer = Array.isArray(objects) ? objects[0] : null;
         if (offer) {
-            this._objectCache.set(cacheKey, offer);
+            this._objectCache.set(cacheKey, { ...offer, _cachedAt: Date.now() });
         }
         return offer;
     }

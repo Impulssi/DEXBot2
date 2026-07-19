@@ -315,6 +315,60 @@ let TIMING = {
     // but requestStructuralGridResync was not yet wired (startup path).
     // Default: 300000 (5min) — gives the initial resync time to resolve.
     GRID_BLOAT_RESYNC_GRACE_MS: 300000,
+
+    // MAX_ACCOUNT_TOTALS_AGE_MS: Maximum age of cached accountTotals before
+    // optimistic deductions are refused and a fresh chain fetch is required.
+    // Prevents optimistic balance drift from diverging too far from chain reality
+    // between periodic blockchain fetches.
+    // Default: 120000 (2 min) — 2x the shared-account fetch interval so single-bot
+    // setups always have a recent-enough baseline.
+    MAX_ACCOUNT_TOTALS_AGE_MS: 120000,
+
+    // SAFETY_PAUSE_TIMEOUT_MS: Maximum duration a fund recalculation pause may
+    // remain active. If pauseFundRecalc is not resumed within this window, a
+    // safety watchdog force-resets the counter to prevent permanent fund recalc
+    // suppression from a missed finally block.
+    // Default: 30000 (30s) — ample for any bulk operation that pauses recalc.
+    SAFETY_PAUSE_TIMEOUT_MS: 30000,
+
+    // LOGGER_DRAIN_TIMEOUT_MS: Per-cycle timeout for logger _drainQueue.
+    // If a single drain cycle exceeds this, remaining lines are discarded and
+    // the flush promise is force-resolved to prevent hanging shutdown.
+    // Default: 10000 (10s) — generous for file I/O.
+    LOGGER_DRAIN_TIMEOUT_MS: 10000,
+
+    // SLOW_RECONNECT_INTERVAL_MS: Interval for perpetual reconnect polling
+    // after all standard exponential-backoff attempts are exhausted.
+    // Default: 60000 (60s) — slow but ensures eventual reconnection.
+    SLOW_RECONNECT_INTERVAL_MS: 60000,
+
+    // FETCH_HISTORY_PAGE_TIMEOUT_MS: Per-page timeout inside
+    // fetchFillHistoryEntries. Prevents a single slow page from blocking
+    // the entire history scan for RPC_TIMEOUT_MS.
+    // Default: 10000 (10s).
+    FETCH_HISTORY_PAGE_TIMEOUT_MS: 10000,
+
+    // FETCH_HISTORY_TOTAL_DEADLINE_MS: Outer deadline for the entire
+    // fetchFillHistoryEntries loop. If the scan takes longer than this,
+    // it returns partial results rather than blocking notice processing.
+    // Default: 60000 (60s).
+    FETCH_HISTORY_TOTAL_DEADLINE_MS: 60000,
+
+    // OFFER_CACHE_TTL_MS: TTL for the credit runtime's _objectCache entry
+    // for credit offers. After this age, _getOfferById re-fetches from chain.
+    // Default: 600000 (10 min) — offers rarely change, so a moderate cache is safe.
+    OFFER_CACHE_TTL_MS: 600000,
+
+    // MPA_FEED_MAX_AGE_MS: Maximum age for a cached MPA feed price fallback.
+    // If the last known feed price is older than this, it is considered stale
+    // and unavailable rather than silently using an outdated value.
+    // Default: 1800000 (30 min).
+    MPA_FEED_MAX_AGE_MS: 1800000,
+
+    // CREDIT_RATE_MAX_AGE_MS: Maximum age for a cached credit conversion rate
+    // fallback. Same rationale as MPA_FEED_MAX_AGE_MS.
+    // Default: 900000 (15 min).
+    CREDIT_RATE_MAX_AGE_MS: 900000,
 };
 
 // Grid limits and scaling constants
@@ -1490,10 +1544,10 @@ let NATIVE_CLIENT = {
 
         // SUBSCRIPTION_SILENT_THRESHOLD_MS: If a subscription has not received
         // any notice (fill or non-fill) within this window, the watchdog
-        // triggers a resubscribe + history scan. Default: 5 minutes.
-        // Choose a value longer than the expected quiet period between
-        // account operations — low-activity bots should use 10–15 min.
-        SUBSCRIPTION_SILENT_THRESHOLD_MS: 300000,
+        // triggers a resubscribe + history scan. Default: 2 minutes.
+        // Reduced from 5min to detect fill-stream death faster without
+        // excessive resubscribes on low-activity accounts.
+        SUBSCRIPTION_SILENT_THRESHOLD_MS: 120000,
     },
 
     // -------------------------------------------------------------------------

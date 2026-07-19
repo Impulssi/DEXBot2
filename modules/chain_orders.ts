@@ -1119,9 +1119,12 @@ async function executeBatch(accountName, privateKey, operations) {
  *
  * @param {String} accountRef - account name or id
  * @param {Array<String>} assets - array of asset ids or symbols to query (e.g. ['1.3.0','IOB.XRP'])
+ * @param {Object} [options] - Optional parameters
+ * @param {boolean} [options.includeCreditDeals=false] - When true, also query credit
+ *        deal collateral and subtract it from free balances for each asset.
  * @returns {Object} mapping assetRef -> { assetId, symbol, precision, freeRaw, lockedRaw, free, locked, total }
  */
-async function getOnChainAssetBalances(accountRef, assets) {
+async function getOnChainAssetBalances(accountRef, assets, options: Record<string, any> = {}) {
     if (!accountRef) return {};
     try {
         await waitForConnected();
@@ -1154,6 +1157,29 @@ async function getOnChainAssetBalances(accountRef, assets) {
             const baseId = String(o.sell_price.base.asset_id);
             const forSale = toFiniteNumber(o.for_sale);
             lockedInt.set(baseId, (lockedInt.get(baseId) || 0) + forSale);
+        }
+
+        // When includeCreditDeals is set, also subtract unvested credit deal
+        // collateral from the free balance. The order manager otherwise sees an
+        // inflated free balance on accounts that also run credit bots.
+        if (options?.includeCreditDeals) {
+            try {
+                const deals = await BitShares.db.get_credit_deals_by_borrower([accountId]).catch(() => []);
+                if (Array.isArray(deals) && deals.length > 0) {
+                    for (const deal of deals) {
+                        if (!deal) continue;
+                        const collateralAssetId = String(deal.collateralAssetId || deal.collateral_asset_id || '');
+                        if (!collateralAssetId) continue;
+                        const collateralRaw = toFiniteNumber(deal.collateralAmount || deal.amount || 0);
+                        if (collateralRaw <= 0) continue;
+                        // Subtract collateral from free (it's not spendable by limit orders)
+                        // The credit runtime accounts for this as committed credit collateral.
+                        freeInt.set(collateralAssetId, Math.max(0, (freeInt.get(collateralAssetId) || 0) - collateralRaw));
+                    }
+                }
+            } catch (dealErr) {
+                chainOrdersLogger.warn(`getOnChainAssetBalances: failed to fetch credit deals for ${accountRef}: ${dealErr?.message}`);
+            }
         }
 
         // If assets omitted, build list from balances and limit_orders

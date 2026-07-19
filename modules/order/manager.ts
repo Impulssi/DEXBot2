@@ -470,10 +470,12 @@ class OrderManager {
     _recentlyRotatedOrderIds: Set<any>;
     _gridSidesUpdated: Set<any>;
     _pauseFundRecalc: number;
+    _pauseFundRecalcWatchdog: ReturnType<typeof setTimeout> | null;
     _pauseRecalcLogging: boolean;
     _throwOnIllegalState: boolean;
     _pipelineBlockedSince: any;
     _recoveryAttempted: boolean;
+    _syncGeneration: number;
     _gridVersion: number;
     _gridPersistenceSuspendedReason: any;
     _pendingBroadcasts: Map<any, any>;
@@ -556,10 +558,12 @@ class OrderManager {
         this._recentlyRotatedOrderIds = new Set();
         this._gridSidesUpdated = new Set();
         this._pauseFundRecalc = 0;
+        this._pauseFundRecalcWatchdog = null;
         this._pauseRecalcLogging = false;
         this._throwOnIllegalState = false;
         this._pipelineBlockedSince = null;
         this._recoveryAttempted = false;
+        this._syncGeneration = 0;
         this._gridVersion = 0;
         this._gridPersistenceSuspendedReason = null;
         this._pendingBroadcasts = new Map();
@@ -771,7 +775,7 @@ class OrderManager {
     }
 
     async _setAccountTotals(totals) {
-        this.accountTotals = { ...(this.accountTotals || {}), ...totals };
+        this.accountTotals = { ...(this.accountTotals || {}), ...totals, _lastFetchedAt: Date.now() };
         if (!this.funds) this.resetFunds();
 
         await this._recalculateFunds();
@@ -860,6 +864,29 @@ class OrderManager {
      */
     pauseFundRecalc() {
         this._pauseFundRecalc++;
+        // Safety watchdog: if pauseFundRecalc is not resumed within the timeout,
+        // force-reset the counter to prevent permanent suppression from a missed
+        // finally block. Only set when depth goes from 0 → 1 so only the outermost
+        // pause has a watchdog.
+        if (this._pauseFundRecalc === 1) {
+            const SAFETY_PAUSE_TIMEOUT_MS = require('../constants').TIMING.SAFETY_PAUSE_TIMEOUT_MS;
+            if (this._pauseFundRecalcWatchdog) {
+                clearTimeout(this._pauseFundRecalcWatchdog);
+            }
+            this._pauseFundRecalcWatchdog = setTimeout(() => {
+                if (this._pauseFundRecalc > 0) {
+                    this.logger?.log?.(
+                        `[MANAGER] pauseFundRecalc safety watchdog: resetting depth from ${this._pauseFundRecalc} to 0`,
+                        'warn'
+                    );
+                    this._pauseFundRecalc = 0;
+                    this._pauseFundRecalcWatchdog = null;
+                    this._recalculateFunds().catch((err: any) => {
+                        this.logger?.log?.(`[MANAGER] Watchdog recalc failed: ${err.message}`, 'error');
+                    });
+                }
+            }, SAFETY_PAUSE_TIMEOUT_MS);
+        }
     }
 
     /**
@@ -870,6 +897,10 @@ class OrderManager {
     async resumeFundRecalc() {
         this._pauseFundRecalc = Math.max(0, this._pauseFundRecalc - 1);
         if (this._pauseFundRecalc === 0) {
+            if (this._pauseFundRecalcWatchdog) {
+                clearTimeout(this._pauseFundRecalcWatchdog);
+                this._pauseFundRecalcWatchdog = null;
+            }
             await this.recalculateFunds();
         }
     }

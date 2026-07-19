@@ -366,10 +366,32 @@ class SyncEngine {
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         let forceReleaseHandle: ReturnType<typeof setTimeout> | undefined;
         const syncStartedAt = Date.now();
+        // Capture sync generation so the orphan callback can detect that it
+        // was force-released and abort early instead of running to completion.
+        const captureGeneration = (mgr as any)._syncGeneration ?? 0;
         try {
             const result = await Promise.race([
                 mgr._syncLock.acquire(async () => {
+                    // Early-abort check: if forceRelease incremented _syncGeneration
+                    // while we were waiting in the lock queue, this callback is
+                    // orphaned and should return immediately.
+                    if (((mgr as any)._syncGeneration ?? 0) !== captureGeneration) {
+                        mgr.logger?.log?.('[SYNC] Sync abandoned: force-released before lock acquired', 'warn');
+                        return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
+                    }
+
                     const innerResult = await this._doSyncFromOpenOrders(chainOrders, options);
+
+                    // Re-check generation after sync completes: if forceRelease fired
+                    // during the sync, this result is orphaned — discard it.
+                    if (((mgr as any)._syncGeneration ?? 0) !== captureGeneration) {
+                        mgr.logger?.log?.(
+                            `[SYNC] Sync abandoned: force-released during sync (${Date.now() - syncStartedAt}ms); discarding result`,
+                            'warn'
+                        );
+                        return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
+                    }
+
                     if (timedOut) {
                         mgr.logger?.log?.(
                             `[SYNC] Sync completed after timeout (${Date.now() - syncStartedAt}ms) — ` +
@@ -412,9 +434,12 @@ class SyncEngine {
                 if (forceReleaseMs > 0 && mgr._syncLock && typeof mgr._syncLock.forceRelease === 'function') {
                     forceReleaseHandle = setTimeout(() => {
                         if (mgr._syncLock.isLocked()) {
+                            // Increment the sync generation so the orphan callback
+                            // can detect it was force-released and abort early.
+                            (mgr as any)._syncGeneration = ((mgr as any)._syncGeneration || 0) + 1;
                             const released = mgr._syncLock.forceRelease();
                             mgr.logger?.log?.(
-                                `[SYNC] Force-released sync lock (${released} queued ops cleared) after ${forceReleaseMs}ms grace period`,
+                                `[SYNC] Force-released sync lock (generation=${(mgr as any)._syncGeneration}, ${released} queued ops cleared) after ${forceReleaseMs}ms grace period`,
                                 'warn'
                             );
                         }
@@ -511,7 +536,7 @@ class SyncEngine {
 
         // Collect all order IDs that might be modified during reconciliation
         // Lock them to prevent concurrent modifications from createOrder/cancelOrder
-        const orderIdsToLock = new Set();
+        const orderIdsToLock = new Set<string>();
         for (const gridOrder of mgr.orders.values()) {
             // Lock any order with a chain orderId (already on-chain)
             if (gridOrder.orderId) {
@@ -524,6 +549,24 @@ class SyncEngine {
             }
         }
 
+        // Re-verify that all collected order IDs still exist in mgr.orders before
+        // locking. A concurrent createOrder/cancelOrder could have removed or
+        // modified an order between collection above and the lock call below.
+        // The _gridLock serializes the main reconciliation against _applyOrderUpdate,
+        // but this re-verification catches the window before _gridLock acquisition.
+        const validOrderIds = new Set<string>();
+        for (const id of orderIdsToLock) {
+            if (mgr.orders.has(id)) {
+                validOrderIds.add(id);
+            } else {
+                mgr.logger?.log?.(
+                    `[SYNC] Order ${id} disappeared between collection and locking; skipping`,
+                    'debug'
+                );
+            }
+        }
+        const orderIdsToLockFinal = [...validOrderIds];
+
         const chainOrderIdsOnGrid = new Set<string>();
         const matchedGridOrderIds = new Set<string>();
         const filledOrders = [];
@@ -532,16 +575,16 @@ class SyncEngine {
         const unmatchedChainOrders = [];
 
         // Lock orders before reconciliation
-        mgr.lockOrders([...orderIdsToLock]);
+        mgr.lockOrders(orderIdsToLockFinal);
 
         // Keep lock leases alive during long reconciliation runs.
         const refreshEveryMs = Math.max(TIMING.LOCK_REFRESH_MIN_MS, Math.floor(TIMING.LOCK_TIMEOUT_MS / 3));
         const refreshLockLeases = () => {
             const expiresAt = Date.now() + TIMING.LOCK_TIMEOUT_MS;
-            for (const id of orderIdsToLock) {
+            for (const id of orderIdsToLockFinal) {
                 mgr.shadowOrderIds.set(id, expiresAt);
             }
-            mgr.logger?.log?.(`Refreshed lock leases for ${orderIdsToLock.size} orders`, 'debug');
+            mgr.logger?.log?.(`Refreshed lock leases for ${orderIdsToLockFinal.length} orders`, 'debug');
         };
 
         refreshLockLeases();
@@ -578,7 +621,7 @@ class SyncEngine {
         } finally {
             clearInterval(lockRefreshTimer);
             // Unlock after reconciliation completes
-            mgr.unlockOrders([...orderIdsToLock]);
+            mgr.unlockOrders(orderIdsToLockFinal);
         }
 
         return { filledOrders, updatedOrders, ordersNeedingCorrection, unmatchedChainOrders };
@@ -718,6 +761,15 @@ class SyncEngine {
                 // Always-on is safe because committed IDs are self-cleaning:
                 // filled/virtualized orders are absent from the next commit's
                 // finalMap, so their IDs drop out on the next atomic rebuild.
+                //
+                // SAFETY: _committedOrderIds is replaced atomically (reference swap)
+                // by _commitCowPlan. The sync reads has(gridOrder.orderId) against the
+                // current reference. If a concurrent COW commit replaces the set mid-sync,
+                // the new set is a superset (only adds entries for newly committed orders).
+                // An order in the superset was just committed, so it is genuinely on-chain
+                // and should not be virtualized. An order removed from the old set was
+                // filled/virtualized, which the sync will detect independently via the
+                // chain snapshot. Superset behavior is safe for this guard.
                 if (mgr._committedOrderIds?.has(gridOrder.orderId)) {
                     continue;
                 }
@@ -1081,9 +1133,10 @@ class SyncEngine {
                 let chainRefetched = false;
 
                 // -----------------------------------------------------------------
-                // Drift-only refetch: the cache is self-correcting across sequential
-                // websocket fills, but if a fill was ever missed (reconnect, restart,
-                // reorg, external activity), the cache and the grid can disagree.
+                // Drift-only refetch: the cache is self-correcting across
+                // sequential websocket fills, but if a fill was ever missed
+                // (reconnect, restart, reorg, external activity), the cache and
+                // the grid can disagree.
                 // The only signal we can detect from the in-memory state is a
                 // consistent drift: cached for_sale < grid size. Chain `for_sale`
                 // can only decrease, so a smaller cached value is an obvious
