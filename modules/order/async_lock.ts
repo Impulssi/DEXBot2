@@ -97,12 +97,14 @@ interface AcquireOptions {
 class AsyncLock {
     private _queue: QueueItem<any>[];
     private _locked: boolean;
+    private _generation: number;
     private _defaultTimeout: number | null;
     private _level: number;
 
     constructor(options: AsyncLockOptions = {}) {
         this._queue = [];
         this._locked = false;
+        this._generation = 0;
         this._defaultTimeout = options.timeout || null;
         this._level = options.level ?? 0;
     }
@@ -179,6 +181,8 @@ class AsyncLock {
             return this._processQueue();
         }
 
+        const generation = ++this._generation;
+
         try {
             // Execute the callback (guaranteed to be alone)
             const result = await callback();
@@ -186,9 +190,14 @@ class AsyncLock {
         } catch (err: any) {
             reject(err);
         } finally {
-            // Unlock and process next item in queue
-            this._locked = false;
-            this._processQueue();
+            // Only release the lock if generation matches — if forceRelease
+            // was called while this callback was running, the generation was
+            // incremented and we must not touch _locked (a new acquirer may
+            // be using it). The stale callback exits silently.
+            if (generation === this._generation) {
+                this._locked = false;
+                this._processQueue();
+            }
         }
     }
 
@@ -228,19 +237,25 @@ class AsyncLock {
      * the locked state AND the queue. Use when an operation has timed out
      * but the underlying callback may still be running — subsequent
      * acquirers will be allowed in while the stale callback eventually
-     * completes and finds the lock already free.
+     * completes and is silently ignored via the generation-guard in
+     * _processQueue's finally block.
      *
-     * SCOPE NOTE: forceRelease is currently only wired for _syncLock
-     * (see Gap 3 in sync_engine.ts). The same stuck-callback-in-lock
-     * scenario applies to _fillProcessingLock, _divergenceLock, and
-     * _gridLock. If future issues show permanent lock-hold on those,
-     * apply the same forceRelease pattern used in synchronizeWithChain:
-     * a grace-period timeout that calls forceRelease if the lock is
-     * still held after the callback should have completed.
+     * SAFETY: The generation counter (_generation) is bumped before the
+     * queue is cleared. When the stale callback's finally block runs, it
+     * compares its captured generation against the current value — a
+     * mismatch means the lock was force-released since acquire, so it
+     * skips touching _locked / _processQueue entirely. This prevents the
+     * stale callback from interfering with a new acquirer that claimed
+     * the lock after forceRelease.
+     *
      * @returns {number} Count of cleared items
      */
     forceRelease(): number {
         const count = this._queue.length;
+        // Increment generation to invalidate any in-flight callback's
+        // finally block — it will see generation mismatch and skip
+        // touching _locked / _processQueue.
+        this._generation++;
         while (this._queue.length > 0) {
             const { reject } = this._queue.shift();
             reject(new Error('Lock force-released'));
