@@ -1665,11 +1665,14 @@ class OrderManager {
             committed = true;
 
             // Track orderIds from successful COW commits for recovery sync protection.
-            // Cleared on every commit to reflect only the current confirmed state.
-            this._committedOrderIds.clear();
+            // Build a new set from the committed finalMap and atomically swap to
+            // avoid the intermediate empty state that clear() creates — a crash
+            // during clear()+repopulate would lose all committed IDs.
+            const newCommittedIds = new Set<string>();
             for (const [id, order] of finalMap.entries()) {
-                if (order.orderId) this._committedOrderIds.add(order.orderId);
+                if (order.orderId) newCommittedIds.add(order.orderId);
             }
+            this._committedOrderIds = newCommittedIds;
 
             const freshIndexes = workingGrid.getIndexes();
             this._ordersByState = {

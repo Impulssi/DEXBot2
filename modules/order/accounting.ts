@@ -737,9 +737,24 @@ class Accountant {
           if (hasAttemptLimit && state.attemptCount >= maxAttemptsRaw) {
               this._logThrottled(
                   'recovery-max-attempts',
-                  `[RECOVERY] Skipping recovery: max attempts reached (${state.attemptCount}/${maxAttemptsRaw})`,
+                  `[RECOVERY] Max attempts reached (${state.attemptCount}/${maxAttemptsRaw}). ` +
+                  `Entering idle-only mode — no new orders will be placed until next fill or sync cycle.`,
                   'warn'
               );
+              // Gap 5: Set exhausted mode to block further CREATEs until the next
+              // fill or blockchain fetch resets the recovery state. This prevents the
+              // bot from spinning unproductively and generating more orphan orders.
+              if (mgr && !mgr._recoveryExhaustedAt) {
+                  mgr._recoveryExhaustedAt = Date.now();
+                  if (mgr.logger) {
+                      mgr.logger.log(
+                          '[RECOVERY-EXHAUSTED] Recovery attempts exhausted. Bot will stop placing new orders ' +
+                          'until the next fill or periodic sync cycle. Existing orders remain active and will ' +
+                          'continue to be monitored. Manual intervention may be required if this state persists.',
+                          'error'
+                      );
+                  }
+              }
               return false;
           }
 
@@ -831,17 +846,20 @@ class Accountant {
        * Called at the start of each fill processing cycle to allow fresh recovery attempts.
        * @returns {void}
        */
-       resetRecoveryState() {
-            if (!this.manager) return;
-            this.manager._recoveryAttempted = false;
-            this.manager._recoveryState = {
-                attemptCount: 0,
-                lastAttemptAt: 0,
-                inFlight: false,
-                lastFailureAt: 0,
-                structuralResyncRequested: false
-            };
-        }
+        resetRecoveryState() {
+             if (!this.manager) return;
+             this.manager._recoveryAttempted = false;
+             this.manager._recoveryState = {
+                 attemptCount: 0,
+                 lastAttemptAt: 0,
+                 inFlight: false,
+                 lastFailureAt: 0,
+                 structuralResyncRequested: false
+             };
+             // Gap 5: Clear exhausted flag so the bot can attempt new CREATEs
+             // on the next fill or periodic sync cycle.
+             this.manager._recoveryExhaustedAt = null;
+         }
 
     /**
      * Check if sufficient funds exist AND atomically deduct (FREE portion only).

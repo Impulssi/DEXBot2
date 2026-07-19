@@ -169,6 +169,51 @@ class Grid {
     }
 
     /**
+     * Detect grid bloat: compares total grid size to expected maximum based on
+     * actual placed orders (ACTIVE/PARTIAL with orderId) plus gap slots plus 1
+     * tolerance slot. Accepts either an array (from persisted grid load) or a
+     * Map (from manager.orders at runtime).
+     *
+     * Formula: maxAllowed = placedCount + gapSlots + 1
+     *
+     * @param {Object} manager - OrderManager instance (provides config).
+     * @param {Array|Map} orders - Grid orders as array or Map.
+     * @returns {{bloated: boolean, details?: {gridSize: number, placedCount: number, numBuyActive: number, numSellActive: number, gapSlots: number, maxAllowed: number}}}
+     */
+    static isGridBloated(manager, orders) {
+        const gridSize = Array.isArray(orders) ? orders.length : orders.size;
+        if (!gridSize || !manager?.config) return { bloated: false };
+
+        const config = manager.config;
+        const incPct = config.incrementPercent || 0.3;
+        if (incPct <= 0) return { bloated: false };
+
+        const targetSpreadPct = config.targetSpreadPercent || incPct * 2;
+        const orderList = Array.isArray(orders) ? orders : Array.from(orders.values());
+
+        const numBuyActive = orderList.filter((o: any) =>
+            o.type === ORDER_TYPES.BUY &&
+            (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL) &&
+            o.orderId
+        ).length;
+        const numSellActive = orderList.filter((o: any) =>
+            o.type === ORDER_TYPES.SELL &&
+            (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL) &&
+            o.orderId
+        ).length;
+        const placedCount = numBuyActive + numSellActive;
+        if (!placedCount) return { bloated: false };
+
+        const gapSlots = Grid.calculateGapSlots(incPct, targetSpreadPct);
+        const maxAllowed = placedCount + gapSlots + 1;
+
+        return {
+            bloated: gridSize > maxAllowed,
+            details: { gridSize, placedCount, numBuyActive, numSellActive, gapSlots, maxAllowed }
+        };
+    }
+
+    /**
      * Public wrapper for side sizing context.
      * Keeps StrategyEngine decoupled from Grid private internals.
      *
@@ -491,6 +536,31 @@ class Grid {
                 manager.boundaryIdx = boundaryIdx;
                 // FIX: Use consistent optional chaining pattern for logger calls
                 manager.logger?.log?.(`Restored boundary index: ${boundaryIdx}`, 'info');
+            }
+
+            // Gap 6: Grid size cap — validate grid slot count against expected maximum.
+            // Formula: placedOrders (active+partial with orderId) + gapSlots + 1 tolerance slot.
+            const bloatResult = Grid.isGridBloated(manager, grid);
+            if (bloatResult.bloated) {
+                const d = bloatResult.details;
+                manager.logger?.log?.(
+                    `[GRID-BLOAT] Grid size ${d.gridSize} exceeds expected maximum ${d.maxAllowed} ` +
+                    `(placed=${d.placedCount} buy=${d.numBuyActive} sell=${d.numSellActive} ` +
+                    `gapSlots=${d.gapSlots}). Triggering protective structural resync.`,
+                    'warn'
+                );
+                manager._gridBloatDetectedAt = Date.now();
+                if (typeof manager.requestStructuralGridResync === 'function') {
+                    manager.requestStructuralGridResync(
+                        'grid-bloat-detected',
+                        { reason: `Grid size ${d.gridSize} exceeds maximum ${d.maxAllowed}` }
+                    ).catch((err: any) => {
+                        manager.logger?.log?.(
+                            `[GRID-BLOAT] Structural resync request failed: ${err.message}`,
+                            'error'
+                        );
+                    });
+                }
             }
 
             manager.pauseRecalcLogging();

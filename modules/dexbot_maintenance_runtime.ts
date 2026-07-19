@@ -23,7 +23,7 @@ const { parseJsonWithComments } = require('./order/utils/system');
 const { cloneWeightDistribution, calculateOrderCreationFees, calculateSwapInAmount, floatToBlockchainInt, blockchainToFloat } = require('./order/utils/math');
 const { updateDynamicGridSnapshotSync } = require('../market_adapter/utils/dynamic_grid_snapshot');
 const { reconcileGridOrders } = require('./order/grid_reconcile');
-const { formatUnmatchedChainOrder, getSideBudget, correctAllPriceMismatches } = require('./order/utils/order');
+const { formatUnmatchedChainOrder, getSideBudget, correctAllPriceMismatches, isOrderOnChain } = require('./order/utils/order');
 const { getStorage } = require('./storage');
 const storage = getStorage();
 const { ensureDir, safeUnlink } = require('./utils/fs_utils');
@@ -1392,6 +1392,81 @@ async function executeMaintenanceLogic(bot, context) {
             'warn'
         );
         return;
+    }
+
+    // Grid bloat re-check: if a previous Grid.loadGrid detected bloat and set
+    // _gridBloatDetectedAt, verify the grid is still oversized after a grace
+    // period. If it hasn't resolved and no structural resync is in flight,
+    // trigger one. This catches bloat that occurred during startup (before
+    // requestStructuralGridResync was wired) or bloat that survived a prior
+    // resync attempt.
+    if (bot.manager._gridBloatDetectedAt && typeof bot.manager.requestStructuralGridResync === 'function') {
+        const graceMs = TIMING.GRID_BLOAT_RESYNC_GRACE_MS || 300000;
+        if (Date.now() - bot.manager._gridBloatDetectedAt >= graceMs) {
+            const bloatResult = Grid.isGridBloated(bot.manager, bot.manager.orders);
+            if (bloatResult.bloated) {
+                const d = bloatResult.details;
+                bot._log(
+                    `[GRID-BLOAT] Grid size ${d.gridSize} still exceeds expected maximum ${d.maxAllowed} ` +
+                    `after grace period. Triggering structural resync.`,
+                    'warn'
+                );
+                bot.manager.requestStructuralGridResync(
+                    'grid-bloat-persistent',
+                    { reason: `Grid size ${d.gridSize} still exceeds max ${d.maxAllowed} after grace` }
+                ).catch((err: any) => {
+                    bot.manager?.logger?.log?.(
+                        `[GRID-BLOAT] Structural resync request failed: ${err.message}`,
+                        'error'
+                    );
+                });
+            } else {
+                delete bot.manager._gridBloatDetectedAt;
+                bot._log('[GRID-BLOAT] Grid size returned to normal. Clearing bloat flag.', 'info');
+            }
+        }
+    }
+
+    // Gap 4: Periodic lightweight consistency check. Fetches open order count
+    // from chain and compares to grid active order count. Triggers a targeted
+    // sync when significant divergence is detected. Runs at most once per
+    // LIGHTWEIGHT_SYNC_CHECK_INTERVAL_MS to limit blockchain query load.
+    // Skip if the COW pipeline has active CREATEs in flight to avoid racing
+    // with batch broadcasts — transient mismatches are expected during a COW cycle.
+    if (
+        !bot._batchInFlight &&
+        !(bot.manager?._pendingBroadcasts?.size > 0) &&
+        (bot._lightweightSyncCheckAt == null || Date.now() - bot._lightweightSyncCheckAt >= TIMING.LIGHTWEIGHT_SYNC_CHECK_INTERVAL_MS)
+    ) {
+        bot._lightweightSyncCheckAt = Date.now();
+        try {
+            const chainOpenOrdersResult = await chainOrders.readOpenOrders(bot.accountId);
+            const chainOrdersCount = chainOpenOrdersResult.length;
+            const gridActive = Array.from(bot.manager.orders.values()).filter(
+                (o: any) => isOrderOnChain(o)
+            ).length;
+            const diff = Math.abs(chainOrdersCount - gridActive);
+            if (diff > 2) {
+                bot._log(
+                    `[LIGHTWEIGHT-SYNC] Order count mismatch: chain=${chainOrdersCount}, grid=${gridActive} ` +
+                    `(diff=${diff}). Triggering targeted sync to reconcile.`,
+                    'warn'
+                );
+                if (bot.manager?.synchronizeWithChain) {
+                    await bot.manager.synchronizeWithChain(chainOpenOrdersResult, 'readOpenOrders', {
+                        fillLockAlreadyHeld: true
+                    });
+                }
+            } else if (diff > 0) {
+                bot._log(
+                    `[LIGHTWEIGHT-SYNC] Order count mismatch: chain=${chainOrdersCount}, grid=${gridActive} ` +
+                    `(diff=${diff}). Minor divergence — expected during normal operation.`,
+                    'debug'
+                );
+            }
+        } catch (e: any) {
+            bot._log(`[LIGHTWEIGHT-SYNC] Check failed: ${e.message}`, 'debug');
+        }
     }
 
     // Process any price corrections queued by prior sync operations before

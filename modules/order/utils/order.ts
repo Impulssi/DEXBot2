@@ -283,9 +283,24 @@ function buildFillKey(fillOrParts) {
  * @returns {Promise<Object>} Result {success, cancelled, skipped, error, orderGone}
  */
 async function correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders) {
-    const { gridOrder, chainOrderId, expectedPrice, size, type, isSurplus } = correctionInfo;
+    const { gridOrder, chainOrderId, expectedPrice, size, type, isSurplus, cancelOnly } = correctionInfo;
     const stillNeeded = manager.ordersNeedingPriceCorrection?.some(c => c.chainOrderId === chainOrderId);
     if (!stillNeeded) return { success: true, skipped: true };
+
+    // Cancel-only entries (e.g., duplicate price level orphans) — cancel without
+    // updating any grid slot. The orphan has no matching grid slot to convert.
+    if (cancelOnly) {
+        try {
+            const sideLabel = type === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
+            manager.logger?.log?.(`[CORRECTION] Cancelling duplicate orphan ${sideLabel} order ${chainOrderId}`, 'info');
+            await accountOrders.cancelOrder(accountName, privateKey, chainOrderId);
+            return { success: true, cancelled: true };
+        } catch (error: any) {
+            return { success: false, error: error.message, orderGone: error.message?.includes('not found') };
+        } finally {
+            manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+        }
+    }
 
     // Surplus/type-mismatch entries need cancellation, not a price update
     if (isSurplus) {

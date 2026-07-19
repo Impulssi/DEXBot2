@@ -97,6 +97,7 @@ const {
     COW_ACTIONS,
     TIMING,
     PIPELINE_TIMING,
+    GRID_LIMITS,
     MAINTENANCE,
     FILL_PROCESSING,
     DAEMON_CODES,
@@ -158,6 +159,7 @@ class DEXBot {
     _batchInFlight: boolean;
     _recoverySyncInFlight: boolean;
     _lastTargetedDriftSyncAt: number;
+    _lightweightSyncCheckAt: number;
     _targetedDriftSyncCooldownMs: number;
     _maintenanceCooldownCycles: number;
     _lastGridActivityAt: number;
@@ -259,6 +261,7 @@ class DEXBot {
         this._batchInFlight = false;
         this._recoverySyncInFlight = false;
         this._lastTargetedDriftSyncAt = 0;
+        this._lightweightSyncCheckAt = 0;
         this._targetedDriftSyncCooldownMs = this.config.timing.TARGETED_DRIFT_SYNC_COOLDOWN_MS;
         this._maintenanceCooldownCycles = 0;
         this._lastGridActivityAt = 0;
@@ -669,6 +672,11 @@ class DEXBot {
             // 2. Load into manager (same path as startup at line 1340)
             await Grid.loadGrid(this.manager, persistedGrid, boundaryIdx);
 
+            // Gap 1: Grid snapshot sanity check — shared logic with startup path.
+            if (await this._rejectCorruptedGridSnapshot('recovery')) {
+                return { success: false, reason: 'corrupted grid snapshot rejected (fund drift)' };
+            }
+
             // 3. Read current chain state
             const chainOpenOrders = await chainOrders.readOpenOrders(accountRef);
 
@@ -700,6 +708,36 @@ class DEXBot {
             );
             return { success: false, reason: err.message };
         }
+    }
+
+    /**
+     * Reject a corrupted grid snapshot when catastrophic fund drift is detected.
+     * Shared between startup and recovery paths to avoid duplicating the
+     * drift-ratio math and snapshot-clearing logic.
+     *
+     * @param {'startup'|'recovery'} context - Controls log prefix.
+     * @returns {Promise<boolean>} True if the snapshot was rejected (cleared).
+     */
+    async _rejectCorruptedGridSnapshot(context) {
+        if (!this.manager?.checkFundDriftAfterFills) return false;
+        const driftCheck = this.manager.checkFundDriftAfterFills();
+        if (driftCheck.isValid) return false;
+
+        const tag = context === 'recovery' ? '[RECOVERY][SNAPSHOT-REJECT]' : '[SNAPSHOT-REJECT]';
+        this._warn(
+            `${tag} Corrupted grid snapshot detected: ` +
+            `drift sell=${driftCheck.driftSell.toFixed(2)} buy=${driftCheck.driftBuy.toFixed(2)}. ` +
+            `Deleting corrupted snapshot.`
+        );
+        if (this.accountOrders && typeof this.accountOrders.clearGrid === 'function') {
+            try {
+                await this.accountOrders.clearGrid();
+                this._warn(`${tag} Corrupted grid snapshot deleted.`);
+            } catch (clearErr) {
+                this._warn(`${tag} Failed to delete corrupted snapshot: ${clearErr.message}`);
+            }
+        }
+        return true;
     }
 
     /**
@@ -1447,6 +1485,9 @@ class DEXBot {
                         // Dust state is no longer persisted — cancelled immediately on detection.
 
                         await this._persistAndRecoverIfNeeded();
+
+                        // Gap 1: Grid snapshot sanity check — shared logic with recovery path.
+                        await this._rejectCorruptedGridSnapshot('startup');
                     }
 
                     // Drain any fills that arrived during startup while still in bootstrap
@@ -3085,6 +3126,23 @@ class DEXBot {
                 const fallbackResult = await this._recoverFromPersistedGrid();
                 if (fallbackResult.success) {
                     hadRotation = true;
+                } else {
+                    this.manager.logger.log(
+                        `[COW][UNCERTAIN] Persisted grid reload failed: ${fallbackResult.reason}. ` +
+                        `Escalating to structural resync.`,
+                        'warn'
+                    );
+                    if (typeof this.manager.requestStructuralGridResync === 'function') {
+                        this.manager.requestStructuralGridResync(
+                            'cow-uncertain-recovery-failed',
+                            { reason: fallbackResult.reason }
+                        ).catch((escalateErr: any) => {
+                            this.manager.logger.log(
+                                `[COW][UNCERTAIN] Escalation to structural resync failed: ${escalateErr.message}`,
+                                'error'
+                            );
+                        });
+                    }
                 }
             }
         }
@@ -4166,6 +4224,27 @@ class DEXBot {
         }
 
         const hasCreateActions = actions.some(action => action.type === COW_ACTIONS.CREATE);
+
+        // Gap 5: Recovery exhausted — block all CREATES. The bot has exhausted
+        // its recovery attempt budget and needs a fill or sync cycle to reset.
+        // Existing orders remain active and are monitored, but no new orders
+        // are placed until recovery resets.
+        if (hasCreateActions && this.manager?._recoveryExhaustedAt) {
+            const exhaustedAge = Date.now() - this.manager._recoveryExhaustedAt;
+            this.manager.logger.log?.(
+                `[RECOVERY-EXHAUSTED] Blocking ${actions.filter(a => a.type === COW_ACTIONS.CREATE).length} CREATE(s) ` +
+                `(exhausted ${(exhaustedAge / 1000).toFixed(0)}s ago). ` +
+                `Waiting for next fill or sync cycle to reset recovery state.`,
+                'warn'
+            );
+            return {
+                executed: false,
+                aborted: true,
+                reason: 'RECOVERY_EXHAUSTED',
+                hadRotation: false
+            };
+        }
+
         const unmatchedChainOrders = Array.isArray(this.manager?._lastUnmatchedChainOrders)
             ? this.manager._lastUnmatchedChainOrders
             : [];
@@ -4217,7 +4296,7 @@ class DEXBot {
                         );
                     }
                 }
-                if (cancelledUnmatched >= cancelable.length) {
+                if (cancelable.length > 0 && cancelledUnmatched >= cancelable.length) {
                     this.manager.logger.log(
                         `[COW] Cancelled all ${cancelledUnmatched} unmatched chain order(s); proceeding with CREATE batch.`,
                         'warn'
@@ -4228,7 +4307,7 @@ class DEXBot {
                     // re-enter this guard — that's safe because the cancel
                     // is idempotent and the re-detection is non-blocking.
                     this.manager._lastUnmatchedChainOrders = [];
-                } else {
+                } else if (cancelable.length > 0) {
                     this.manager.logger.log(
                         `[COW] Cancelled ${cancelledUnmatched}/${cancelable.length} unmatched chain order(s); ` +
                         `remaining must be handled by structural reconciliation.`,
@@ -5379,6 +5458,7 @@ class DEXBot {
             fillProcessingLockActive: this.manager?._fillProcessingLock?.isLocked() || false,
             divergenceLockActive: this.manager?._divergenceLock?.isLocked() || false,
             shadowLocksActive: this.manager?.shadowOrderIds?.size || 0,
+            recoveryExhaustedAt: this.manager?._recoveryExhaustedAt || null,
             recentFillsTracked: this._recentlyProcessedFills.size
         };
     }

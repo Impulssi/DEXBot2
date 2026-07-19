@@ -97,7 +97,19 @@ async function runTests() {
 
         bot._wireStructuralGridResyncRequest();
 
-        (manager as any)._lastUnmatchedChainOrders = [{
+        // Monkeypatch chainOrders.cancelOrder to avoid real blockchain calls.
+        // The auto-cancel path in _updateOrdersOnChainBatchCOW attempts to cancel
+        // unmatched chain orders before blocking the CREATE batch. The test
+        // verifies the guard path, so we make cancelOrder throw to simulate a
+        // failed cancellation attempt.
+        const chainOrdersModule = require('../modules/chain_orders');
+        const originalCancelOrder = chainOrdersModule.cancelOrder;
+        chainOrdersModule.cancelOrder = async () => {
+            throw new Error('Simulated cancel failure for test');
+        };
+
+        try {
+            (manager as any)._lastUnmatchedChainOrders = [{
             chainOrderId: '1.7.572303058',
             type: ORDER_TYPES.SELL,
             price: 1.101,
@@ -162,6 +174,9 @@ async function runTests() {
         );
 
         console.log('\u2713 COW-STRUCTURAL-RESYNC-001 passed');
+        } finally {
+            chainOrdersModule.cancelOrder = originalCancelOrder;
+        }
     }
 
     console.log(' - Duplicate structural resync schedule is deduped (timer + in-flight)...');

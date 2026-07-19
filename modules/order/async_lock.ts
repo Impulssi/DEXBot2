@@ -221,6 +221,33 @@ class AsyncLock {
         }
         return count;
     }
+
+    /**
+     * Force-release the lock and clear all queued operations.
+     * Unlike clearQueue() which keeps the lock held, this resets both
+     * the locked state AND the queue. Use when an operation has timed out
+     * but the underlying callback may still be running — subsequent
+     * acquirers will be allowed in while the stale callback eventually
+     * completes and finds the lock already free.
+     *
+     * SCOPE NOTE: forceRelease is currently only wired for _syncLock
+     * (see Gap 3 in sync_engine.ts). The same stuck-callback-in-lock
+     * scenario applies to _fillProcessingLock, _divergenceLock, and
+     * _gridLock. If future issues show permanent lock-hold on those,
+     * apply the same forceRelease pattern used in synchronizeWithChain:
+     * a grace-period timeout that calls forceRelease if the lock is
+     * still held after the callback should have completed.
+     * @returns {number} Count of cleared items
+     */
+    forceRelease(): number {
+        const count = this._queue.length;
+        while (this._queue.length > 0) {
+            const { reject } = this._queue.shift();
+            reject(new Error('Lock force-released'));
+        }
+        this._locked = false;
+        return count;
+    }
 }
 
 export = AsyncLock;

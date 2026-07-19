@@ -293,6 +293,27 @@ let TIMING = {
     // reconciliation cycles. Prevents rapid re-triggering when the grid is
     // oscillating around the drift threshold.
     TARGETED_DRIFT_SYNC_COOLDOWN_MS: 60000,
+
+    // LIGHTWEIGHT_SYNC_CHECK_INTERVAL_MS: Interval for the lightweight open-orders consistency
+    // check in the maintenance loop. Fetches on-chain order count and compares to grid active
+    // order count without a full sync. Catches silent divergence early (e.g., orders that were
+    // cancelled externally or never placed).
+    // Default: 900000 (15 min) — balances detection speed with blockchain query load.
+    LIGHTWEIGHT_SYNC_CHECK_INTERVAL_MS: 900000,
+
+    // SYNC_LOCK_FORCE_RELEASE_AGE_MS: Maximum age for a sync lock before it is force-released.
+    // If a sync operation holds the lock longer than this, the lock is released so subsequent
+    // syncs are not permanently blocked. The sync that timed out continues running but the lock
+    // is detached from it.
+    // Default: 40000 (40s) — 2x SYNC_LOCK_TIMEOUT_MS, gives slow operations time to finish.
+    SYNC_LOCK_FORCE_RELEASE_AGE_MS: 40000,
+
+    // GRID_BLOAT_RESYNC_GRACE_MS: Grace period before the maintenance runtime
+    // re-triggers a structural resync for a previously detected grid bloat.
+    // Prevents immediate re-triggering when Grid.loadGrid already scheduled one
+    // but requestStructuralGridResync was not yet wired (startup path).
+    // Default: 300000 (5min) — gives the initial resync time to resolve.
+    GRID_BLOAT_RESYNC_GRACE_MS: 300000,
 };
 
 // Grid limits and scaling constants
@@ -360,17 +381,7 @@ let GRID_LIMITS = {
     // Default -1 (disabled) makes freshly-written configs self-documenting.
     DUST_CANCEL_DELAY_SEC: -1,
 
-    // FUND_INVARIANT_PERCENT_TOLERANCE: Allowed percentage drift in fund tracking before triggering recovery.
-    // Formula: tolerance = max(precisionSlack, balance × percentTolerance)
-    // Rationale: Fund tracking can drift due to:
-    //   1. Float arithmetic rounding (resolved by precisionSlack, ~10^-precision)
-    //   2. In-flight blockchain transactions (resolved by percentTolerance)
-    //   3. Fee accumulation from multiple operations
-    // Default: 0.1% (0.1%) means for 1000 BTS balance, drift up to 1 BTS is tolerated
-    //   - Accounts for ~5 fill-fee events before recovery triggered
-    //   - Too low: false positives (recoveries on healthy operations)
-    //   - Too high: undetected drift (fund leaks)
-    // Drifts larger than this tolerance trigger immediate recovery (re-sync from blockchain).
+    // Allowed drift fraction before triggering fund-invariant recovery (0.1% = 0.001).
     FUND_INVARIANT_PERCENT_TOLERANCE: 0.1,
 
     // MIN_SPREAD_ORDERS: Minimum number of empty slots in spread zone (between best buy and best sell).
@@ -432,6 +443,7 @@ let GRID_LIMITS = {
     // Drift beyond strict tolerance but within multiplier × tolerance is
     // tagged as "price-drift-orphan" instead of rejected outright.
     PRICE_DRIFT_TOLERANCE_MULTIPLIER: 4,
+
 };
 
 // Increment percentage bounds for grid configuration

@@ -360,8 +360,10 @@ class SyncEngine {
         mgr.logger?.log?.(`[SYNC] Starting synchronization from ${chainOrders?.length || 0} blockchain orders...`, 'info');
 
         const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS;
+        const forceReleaseMs = TIMING.SYNC_LOCK_FORCE_RELEASE_AGE_MS;
         let timedOut = false;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        let forceReleaseHandle: ReturnType<typeof setTimeout> | undefined;
         const syncStartedAt = Date.now();
         try {
             const result = await Promise.race([
@@ -375,6 +377,7 @@ class SyncEngine {
                         );
                         return innerResult;
                     }
+                    clearTimeout(forceReleaseHandle);
                     const unmatchedCount = Array.isArray(innerResult.unmatchedChainOrders)
                         ? innerResult.unmatchedChainOrders.length
                         : 0;
@@ -396,10 +399,26 @@ class SyncEngine {
                 })
             ]);
             clearTimeout(timeoutHandle);
+            clearTimeout(forceReleaseHandle);
             return result;
         } catch (err: any) {
             clearTimeout(timeoutHandle);
+            clearTimeout(forceReleaseHandle);
             if (err.message?.includes('timed out')) {
+                // Gap 3: Schedule a force-release of the sync lock if the inner
+                // operation doesn't complete within the grace window. This prevents
+                // a single stuck sync from permanently blocking all subsequent syncs.
+                if (forceReleaseMs > 0 && mgr._syncLock && typeof mgr._syncLock.forceRelease === 'function') {
+                    forceReleaseHandle = setTimeout(() => {
+                        if (mgr._syncLock.isLocked()) {
+                            const released = mgr._syncLock.forceRelease();
+                            mgr.logger?.log?.(
+                                `[SYNC] Force-released sync lock (${released} queued ops cleared) after ${forceReleaseMs}ms grace period`,
+                                'warn'
+                            );
+                        }
+                    }, Math.max(1000, forceReleaseMs - (Date.now() - syncStartedAt)));
+                }
                 mgr.logger?.log?.(
                     '[SYNC] Lock may be held by orphan after timeout; will release when inner work completes',
                     'warn'
@@ -748,6 +767,18 @@ class SyncEngine {
                     `${duplicatePriceOrder.id} (${duplicatePriceOrder.orderId} at ${duplicatePriceOrder.price})`,
                     'warn'
                 );
+                // Gap 2: Queue duplicate chain order for cancellation via the correction
+                // mechanism (called from _performSyncFromOpenOrders). Duplicate price levels
+                // block new placements. Cancelling proactively unblocks CREATEs.
+                queueCorrection({
+                    gridOrder: duplicatePriceOrder,
+                    chainOrderId,
+                    expectedPrice: chainOrder.price,
+                    size: chainOrder.size,
+                    type: chainOrder.type,
+                    isSurplus: true,
+                    cancelOnly: true,
+                });
                 continue;
             }
 
@@ -833,9 +864,30 @@ class SyncEngine {
             } else if (match) {
                 mgr.logger?.log?.(
                     `Warning: Orphan chain order ${chainOrderId} matched grid order ${match.id}, ` +
-                    `but grid order was already matched to another chain order. Skipping to prevent double-assignment.`,
+                    `but grid order was already matched to another chain order. Queuing orphan for cancellation.`,
                     'warn'
                 );
+                queueCorrection({
+                    gridOrder: match,
+                    chainOrderId,
+                    expectedPrice: chainOrder.price,
+                    size: chainOrder.size,
+                    type: chainOrder.type,
+                    isSurplus: true,
+                    cancelOnly: true,
+                });
+                // Also push to unmatchedChainOrders so the existing auto-cancel
+                // path at dexbot_class.ts:4262 can pick it up if the correction
+                // mechanism does not fire first.
+                unmatchedChainOrders.push({
+                    chainOrderId,
+                    type: chainOrder.type,
+                    price: chainOrder.price,
+                    size: chainOrder.size,
+                    raw: rawChainOrders.get(chainOrderId),
+                    reason: 'already-matched-slot',
+                    candidateSlotId: match.id,
+                });
             } else {
                 // No grid slot matched by type+price+size in the first pass.
                 // Fallback: adopt into the nearest VIRTUAL/spread slot so the
