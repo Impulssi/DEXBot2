@@ -944,14 +944,15 @@ class DEXBot {
         return DexbotFillRuntime.buildOrphanFillFallbackKey(this, fill);
     }
 
-    _isNewFillKey(fillKey, processedFillKeys, label = '') {
+    _isNewFillKey(fillKey, processedFillKeys, label = '', orderId = '') {
         const now = Date.now();
         if (this._recentlyQueuedFills.has(fillKey)) {
             const lastProcessed = this._recentlyQueuedFills.get(fillKey);
             if (now - lastProcessed < this._fillDedupeWindowMs) {
                 if (label) {
+                    const idSuffix = orderId ? ` for ${orderId}` : '';
                     this.manager?.logger?.log?.(
-                        `${label} Skipping duplicate fill (processed ${now - lastProcessed}ms ago)`, 'debug');
+                        `${label} Skipping duplicate fill${idSuffix} (processed ${now - lastProcessed}ms ago)`, 'debug');
                 }
                 return false;
             }
@@ -1232,7 +1233,7 @@ class DEXBot {
                                 if (!orphanFillKey) {
                                     orphanFillKey = this._buildOrphanFillFallbackKey(fill);
                                 }
-                                if (orphanFillKey && !this._isNewFillKey(orphanFillKey, processedFillKeys, '[POST-RESET]')) {
+                                if (orphanFillKey && !this._isNewFillKey(orphanFillKey, processedFillKeys, '[POST-RESET]', fillOp.order_id)) {
                                     continue;
                                 }
 
@@ -1251,7 +1252,7 @@ class DEXBot {
                             this._log(`[POST-RESET] Processing fill for ${gridOrder.type} order ${gridOrder.id} at price ${gridOrder.price}`);
 
                             const trackedFillKey = buildFillKey(fill);
-                            if (trackedFillKey && !this._isNewFillKey(trackedFillKey, processedFillKeys, '[POST-RESET]')) {
+                            if (trackedFillKey && !this._isNewFillKey(trackedFillKey, processedFillKeys, '[POST-RESET]', fillOp.order_id)) {
                                 continue;
                             }
 
@@ -1873,7 +1874,7 @@ class DEXBot {
                                 if (!orphanFillKey) {
                                     orphanFillKey = this._buildOrphanFillFallbackKey(fill);
                                 }
-                                if (orphanFillKey && !this._isNewFillKey(orphanFillKey, processedFillKeys, '[ORPHAN-FILL]')) {
+                                if (orphanFillKey && !this._isNewFillKey(orphanFillKey, processedFillKeys, '[ORPHAN-FILL]', fillOp.order_id)) {
                                     continue;
                                 }
 
@@ -1909,7 +1910,7 @@ class DEXBot {
                                 requiresOpenOrdersSync = true;
                                 continue;
                             }
-                            if (!this._isNewFillKey(fillKey, processedFillKeys, '[FILL]')) {
+                            if (!this._isNewFillKey(fillKey, processedFillKeys, '[FILL]', fillOp.order_id)) {
                                 continue;
                             }
                             validFills.push(fill);
@@ -2294,7 +2295,7 @@ class DEXBot {
                 if (!orphanFillKey) {
                     orphanFillKey = this._buildOrphanFillFallbackKey(fill);
                 }
-                if (orphanFillKey && !this._isNewFillKey(orphanFillKey, processedFillKeys, '[BOOTSTRAP]')) {
+                if (orphanFillKey && !this._isNewFillKey(orphanFillKey, processedFillKeys, '[BOOTSTRAP]', fillOp.order_id)) {
                     continue;
                 }
 
@@ -2309,7 +2310,7 @@ class DEXBot {
             }
 
             const trackedFillKey = buildFillKey(fill);
-            if (trackedFillKey && !this._isNewFillKey(trackedFillKey, processedFillKeys, '[BOOTSTRAP]')) {
+            if (trackedFillKey && !this._isNewFillKey(trackedFillKey, processedFillKeys, '[BOOTSTRAP]', fillOp.order_id)) {
                 continue;
             }
 
