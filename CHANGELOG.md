@@ -12,6 +12,8 @@ All notable changes to this project will be documented in this file.
 - **Fix**: browser-compat — classify 11 additional node-only modules in `AGENTS.md` and `package.json` `"browser": false` map (`credential_runtime`, `dexbot_credential_client`, `node_health_cache`, `process_discovery`, `graceful_shutdown`, `order/logger`, `order/export`, `order/runner`, `storage/node_adapter`, `key_store`, `market_adapter/ama_signal_runner`).
 - **Chore**: remove unnecessary `./` prefix in `bin` paths.
 
+## [1.1.13] - 2026-07-18 - COW Recovery Hardening, Fee Cache Persistence, Node Fallback
+
 ### 2026-07-18
 
 - **Fix**: centralized node-fallback retry for BROADCAST_DEADLINE — `executeOperationsViaCredentialDaemon` now accepts `fallbackNodes: string[]`. On `BroadcastUncertainError` it automatically cycles through fallbacks with a 1 s gap before raising the last error. Dust cancel (`cancelOrderWithNodeFallback`) passes the bot's healthy-node list (excluding primary) through; COW batch and other callers can reuse the same mechanism by passing `fallbackNodes` in `extraOptions`. Adds per-request `nodeUrl` passthrough in the credential daemon protocol and structured audit-log `nodeUrl` fields for multi-node timeout correlation (`modules/dexbot_credential_client.ts:223-289`, `credential-daemon.ts:411-413`).
