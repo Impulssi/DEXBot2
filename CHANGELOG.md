@@ -2,7 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.1.13] - 2026-07-18 - COW Recovery Hardening, Fee Cache Persistence, Node Fallback
+## [1.1.14] - 2026-07-19 - Node Blacklist Sync, Async-Lock ForceRelease Safety, Gap Regression Fixes
+
+### 2026-07-19
+
+- **Fix**: synchronize node-failure blacklisting across broadcast and health-check paths — `reportNodeFailure` centralized in `node_manager.ts` so both `BROADCAST_DEADLINE` errors and health-check misses share one 24h blacklist budget (3 failures). `onNodeFailed` callback threaded through `CredentialClientOptions`; dust cancel and `key_store` paths forward failures. Blacklist cooldown reduced from 7d → 24h (`modules/node_manager.ts:564`, `modules/dexbot_credential_client.ts:43`, `modules/dexbot_maintenance_runtime.ts:1593`, `modules/constants.ts`).
+- **Fix**: prevent stale async-lock callback from stealing lock after `forceRelease` — added generation counter to `AsyncLock`; `forceRelease` increments the generation, invalidating any in-flight callback's tag. Stale `finally` block exits silently instead of releasing the lock from under a legitimate holder (`modules/order/async_lock.ts`).
+- **Fix**: close six gap regressions in the v1.1.13 recovery hardening — (1) snapshot sanity check ported into `_recoverFromPersistedGrid` (centralized `_rejectCorruptedGridSnapshot`), (2) duplicate orphan cancellation in `sync_engine.ts:864`, (3) sync lock force-release scope documentation, (4) lightweight consistency check gated on `!_batchInFlight && !_pendingBroadcasts`, (5) `recoveryExhaustedAt` exposed in `getMetrics()`, (6) grid bloat detection with `Grid.isGridBloated` static method and maintenance-runtime re-check. Also: `committedOrderIds` atomic swap (no intermediate empty state), COW uncertain escalation → `requestStructuralGridResync` on failure, dead constant cleanup (`modules/dexbot_class.ts`, `modules/order/sync_engine.ts`, `modules/order/grid.ts`, `modules/dexbot_maintenance_runtime.ts`).
+- **Fix**: browser-compat — classify 11 additional node-only modules in `AGENTS.md` and `package.json` `"browser": false` map (`credential_runtime`, `dexbot_credential_client`, `node_health_cache`, `process_discovery`, `graceful_shutdown`, `order/logger`, `order/export`, `order/runner`, `storage/node_adapter`, `key_store`, `market_adapter/ama_signal_runner`).
+- **Chore**: remove unnecessary `./` prefix in `bin` paths.
 
 ### 2026-07-18
 
