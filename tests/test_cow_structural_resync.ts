@@ -330,6 +330,408 @@ async function runTests() {
         console.log('\u2713 COW-STRUCTURAL-RESYNC-003 passed');
     }
 
+    console.log(' - COW auto-cancel succeeds: unmatched orders cancelled, CREATE batch proceeds...');
+    {
+        const bot = new DEXBot({
+            botKey: 'test_cow_auto_cancel_happy',
+            dryRun: false,
+            startPrice: 1,
+            assetA: 'BTS',
+            assetB: 'USD',
+            incrementPercent: 0.5
+        });
+
+        const masterOrders = new Map([
+            ['slot-new', createOrder('slot-new', {
+                state: ORDER_STATES.VIRTUAL,
+                orderId: ''
+            })]
+        ]);
+
+        const manager = {
+            assets: {
+                assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
+                assetB: { id: '1.3.1', precision: 5, symbol: 'USD' }
+            },
+            orders: masterOrders,
+            logger: { log: () => {}, logFundsStatus: () => {} },
+            lockOrders: () => {},
+            unlockOrders: () => {},
+            _setRebalanceState: () => {},
+            startBroadcasting: () => {},
+            stopBroadcasting: () => {},
+            pauseFundRecalc: () => {},
+            resumeFundRecalc: async () => {},
+            _commitWorkingGrid: async () => {},
+            persistGrid: async () => ({ isValid: true }),
+            _clearWorkingGridRef: () => {},
+            _recoveryState: {
+                attemptCount: 0,
+                lastAttemptAt: 0,
+                lastFailureAt: 0,
+                structuralResyncRequested: false
+            }
+        };
+
+        bot.manager = manager;
+        bot.account = 'test-account';
+        bot.privateKey = 'test-private-key';
+        bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
+        bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
+
+        let executeCalls = 0;
+        bot._executeOperationsWithStrategy = async (ops, ctxs) => {
+            executeCalls += 1;
+            return {
+                result: {
+                    success: true,
+                    operation_results: ctxs.map((ctx, i) => [0, `1.7.${90000000 + i}`])
+                },
+                opContexts: ctxs
+            };
+        };
+
+        // Stub chainOrders.cancelOrder to succeed (simulate blockchain cancel).
+        const chainOrdersModule = require('../modules/chain_orders');
+        const originalCancelOrder = chainOrdersModule.cancelOrder;
+        const originalRecordOwnCancel = chainOrdersModule.recordOwnCancel;
+        let cancelledOrderIds = [];
+        chainOrdersModule.cancelOrder = async (_account, _key, orderId) => {
+            cancelledOrderIds.push(orderId);
+            return { success: true, orderId };
+        };
+        chainOrdersModule.recordOwnCancel = () => {};
+
+        // Stub buildCreateOrderOp to return a valid op without blockchain access.
+        const originalBuildCreate = chainOrdersModule.buildCreateOrderOp;
+        chainOrdersModule.buildCreateOrderOp = async () => ({
+            op: { op_name: 'limit_order_create', op_data: { fee: { amount: 0, asset_id: '1.3.0' } } },
+            finalInts: { sell: 1000000, receive: 500000, sellAssetId: '1.3.0', receiveAssetId: '1.3.1' }
+        });
+
+        try {
+            // Two unmatched chain orders without fingerprints (cancelable).
+            (manager as any)._lastUnmatchedChainOrders = [
+                { chainOrderId: '1.7.572303058', type: ORDER_TYPES.SELL, price: 1.101, size: 10 },
+                { chainOrderId: '1.7.572303059', type: ORDER_TYPES.BUY, price: 0.999, size: 5 }
+            ];
+
+            const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
+            const result = await bot._updateOrdersOnChainBatchCOW({
+                workingGrid,
+                workingIndexes: workingGrid.getIndexes(),
+                workingBoundary: 0,
+                actions: [{
+                    type: COW_ACTIONS.CREATE,
+                    id: 'slot-new',
+                    order: {
+                        id: 'slot-new',
+                        type: ORDER_TYPES.SELL,
+                        price: 1.1,
+                        size: 10,
+                        state: ORDER_STATES.VIRTUAL,
+                        orderId: ''
+                    }
+                }]
+            });
+
+            // Batch must have proceeded (not aborted).
+            assert.strictEqual(result.executed, true, 'Batch must be executed (not aborted)');
+            assert.strictEqual(result.aborted, undefined, 'Batch must not be marked aborted');
+
+            // Both unmatched orders must have been cancelled.
+            assert.strictEqual(cancelledOrderIds.length, 2, 'Both unmatched orders must be cancelled');
+            assert.ok(cancelledOrderIds.includes('1.7.572303058'), 'First unmatched order cancelled');
+            assert.ok(cancelledOrderIds.includes('1.7.572303059'), 'Second unmatched order cancelled');
+
+            // _lastUnmatchedChainOrders must be optimistically cleared.
+            assert.strictEqual(
+                manager._lastUnmatchedChainOrders.length,
+                0,
+                '_lastUnmatchedChainOrders must be cleared after successful auto-cancel'
+            );
+
+            // The broadcast must have been attempted.
+            assert.strictEqual(executeCalls, 1, '_executeOperationsWithStrategy must be called once');
+
+            // Structural resync must NOT have been triggered.
+            assert.strictEqual(
+                manager._recoveryState.structuralResyncRequested,
+                false,
+                'Structural resync must not be requested when auto-cancel succeeds'
+            );
+
+            console.log('\u2713 COW-STRUCTURAL-RESYNC-004 passed');
+        } finally {
+            chainOrdersModule.cancelOrder = originalCancelOrder;
+            chainOrdersModule.recordOwnCancel = originalRecordOwnCancel;
+            chainOrdersModule.buildCreateOrderOp = originalBuildCreate;
+        }
+    }
+
+    console.log(' - COW auto-cancel partial failure: some cancels fail, batch is rejected...');
+    {
+        const bot = new DEXBot({
+            botKey: 'test_cow_auto_cancel_partial',
+            dryRun: false,
+            startPrice: 1,
+            assetA: 'BTS',
+            assetB: 'USD',
+            incrementPercent: 0.5
+        });
+
+        const masterOrders = new Map([
+            ['slot-new', createOrder('slot-new', {
+                state: ORDER_STATES.VIRTUAL,
+                orderId: ''
+            })]
+        ]);
+
+        const manager = {
+            assets: {
+                assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
+                assetB: { id: '1.3.1', precision: 5, symbol: 'USD' }
+            },
+            orders: masterOrders,
+            logger: { log: () => {}, logFundsStatus: () => {} },
+            lockOrders: () => {},
+            unlockOrders: () => {},
+            _setRebalanceState: () => {},
+            startBroadcasting: () => {},
+            stopBroadcasting: () => {},
+            pauseFundRecalc: () => {},
+            resumeFundRecalc: async () => {},
+            _commitWorkingGrid: async () => {},
+            persistGrid: async () => {},
+            _clearWorkingGridRef: () => {},
+            _recoveryState: {
+                attemptCount: 0,
+                lastAttemptAt: 0,
+                lastFailureAt: 0,
+                structuralResyncRequested: false
+            }
+        };
+
+        bot.manager = manager;
+        bot.account = 'test-account';
+        bot.privateKey = 'test-private-key';
+        bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
+        bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
+
+        let executeCalls = 0;
+        bot._executeOperationsWithStrategy = async () => {
+            executeCalls += 1;
+            return {
+                result: { success: true, operation_results: [[1, '1.7.12345']] },
+                opContexts: []
+            };
+        };
+
+        const requestGridResetCalls = [];
+        bot.requestGridReset = async (reason, options) => {
+            requestGridResetCalls.push({ reason, options });
+            return { success: true };
+        };
+
+        bot._wireStructuralGridResyncRequest();
+
+        // Stub chainOrders.cancelOrder: first succeeds, second fails.
+        const chainOrdersModule = require('../modules/chain_orders');
+        const originalCancelOrder = chainOrdersModule.cancelOrder;
+        let cancelCallCount = 0;
+        chainOrdersModule.cancelOrder = async (_account, _key, orderId) => {
+            cancelCallCount++;
+            if (cancelCallCount === 1) return { success: true, orderId };
+            throw new Error('Simulated cancel failure for second order');
+        };
+        const originalRecordOwnCancel = chainOrdersModule.recordOwnCancel;
+        chainOrdersModule.recordOwnCancel = () => {};
+
+        try {
+            // Two cancelable unmatched orders.
+            (manager as any)._lastUnmatchedChainOrders = [
+                { chainOrderId: '1.7.572303058', type: ORDER_TYPES.SELL, price: 1.101, size: 10 },
+                { chainOrderId: '1.7.572303059', type: ORDER_TYPES.BUY, price: 0.999, size: 5 }
+            ];
+
+            const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
+            const result = await bot._updateOrdersOnChainBatchCOW({
+                workingGrid,
+                workingIndexes: workingGrid.getIndexes(),
+                workingBoundary: 0,
+                actions: [{
+                    type: COW_ACTIONS.CREATE,
+                    id: 'slot-new',
+                    order: {
+                        id: 'slot-new',
+                        type: ORDER_TYPES.SELL,
+                        price: 1.1,
+                        size: 10,
+                        state: ORDER_STATES.VIRTUAL,
+                        orderId: ''
+                    }
+                }]
+            });
+
+            // Batch must be aborted because not all cancels succeeded.
+            assert.strictEqual(result.executed, false, 'Batch must be aborted on partial cancel failure');
+            assert.strictEqual(result.aborted, true, 'Batch must be marked aborted');
+            assert.strictEqual(result.reason, 'UNMATCHED_CHAIN_ORDERS', 'Abort reason must be UNMATCHED_CHAIN_ORDERS');
+            assert.strictEqual(executeCalls, 0, 'No broadcast must be attempted');
+
+            // _lastUnmatchedChainOrders must NOT be cleared (partial failure).
+            assert.ok(
+                manager._lastUnmatchedChainOrders.length > 0,
+                '_lastUnmatchedChainOrders must not be cleared on partial cancel failure'
+            );
+
+            // Structural resync must be requested.
+            assert.strictEqual(
+                manager._recoveryState.structuralResyncRequested,
+                true,
+                'Structural resync must be requested when auto-cancel is partial'
+            );
+
+            console.log('\u2713 COW-STRUCTURAL-RESYNC-005 passed');
+        } finally {
+            chainOrdersModule.cancelOrder = originalCancelOrder;
+            chainOrdersModule.recordOwnCancel = originalRecordOwnCancel;
+        }
+    }
+
+    console.log(' - COW auto-cancel skips fingerprinted entries (missing-create-result)...');
+    {
+        const bot = new DEXBot({
+            botKey: 'test_cow_auto_cancel_fingerprinted',
+            dryRun: false,
+            startPrice: 1,
+            assetA: 'BTS',
+            assetB: 'USD',
+            incrementPercent: 0.5
+        });
+
+        const masterOrders = new Map([
+            ['slot-new', createOrder('slot-new', {
+                state: ORDER_STATES.VIRTUAL,
+                orderId: ''
+            })]
+        ]);
+
+        const manager = {
+            assets: {
+                assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
+                assetB: { id: '1.3.1', precision: 5, symbol: 'USD' }
+            },
+            orders: masterOrders,
+            logger: { log: () => {}, logFundsStatus: () => {} },
+            lockOrders: () => {},
+            unlockOrders: () => {},
+            _setRebalanceState: () => {},
+            startBroadcasting: () => {},
+            stopBroadcasting: () => {},
+            pauseFundRecalc: () => {},
+            resumeFundRecalc: async () => {},
+            _commitWorkingGrid: async () => {},
+            persistGrid: async () => {},
+            _clearWorkingGridRef: () => {},
+            _recoveryState: {
+                attemptCount: 0,
+                lastAttemptAt: 0,
+                lastFailureAt: 0,
+                structuralResyncRequested: false
+            }
+        };
+
+        bot.manager = manager;
+        bot.account = 'test-account';
+        bot.privateKey = 'test-private-key';
+        bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
+        bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
+
+        let executeCalls = 0;
+        bot._executeOperationsWithStrategy = async () => {
+            executeCalls += 1;
+            return {
+                result: { success: true, operation_results: [[1, '1.7.12345']] },
+                opContexts: []
+            };
+        };
+
+        const requestGridResetCalls = [];
+        bot.requestGridReset = async (reason, options) => {
+            requestGridResetCalls.push({ reason, options });
+            return { success: true };
+        };
+
+        bot._wireStructuralGridResyncRequest();
+
+        // Stub chainOrders.cancelOrder — should NOT be called.
+        const chainOrdersModule = require('../modules/chain_orders');
+        const originalCancelOrder = chainOrdersModule.cancelOrder;
+        let cancelCalls = 0;
+        chainOrdersModule.cancelOrder = async () => {
+            cancelCalls++;
+            throw new Error('cancelOrder must not be called for fingerprinted entries');
+        };
+        const originalRecordOwnCancel = chainOrdersModule.recordOwnCancel;
+        chainOrdersModule.recordOwnCancel = () => {};
+
+        try {
+            // Only fingerprinted unmatched orders (missing-create-result style).
+            (manager as any)._lastUnmatchedChainOrders = [
+                {
+                    chainOrderId: 'unknown',
+                    type: ORDER_TYPES.SELL,
+                    price: 1.101,
+                    size: 10,
+                    reason: 'missing-create-result',
+                    slotId: 'slot-missing',
+                    fingerprint: 'type=sell,price=1.101000,size=10'
+                }
+            ];
+
+            const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
+            const result = await bot._updateOrdersOnChainBatchCOW({
+                workingGrid,
+                workingIndexes: workingGrid.getIndexes(),
+                workingBoundary: 0,
+                actions: [{
+                    type: COW_ACTIONS.CREATE,
+                    id: 'slot-new',
+                    order: {
+                        id: 'slot-new',
+                        type: ORDER_TYPES.SELL,
+                        price: 1.1,
+                        size: 10,
+                        state: ORDER_STATES.VIRTUAL,
+                        orderId: ''
+                    }
+                }]
+            });
+
+            // cancelOrder must NOT have been called (no cancelable entries).
+            assert.strictEqual(cancelCalls, 0, 'cancelOrder must not be called when all entries are fingerprinted');
+
+            // Batch must be rejected (fingerprinted entries block CREATEs).
+            assert.strictEqual(result.executed, false, 'Batch must be aborted for fingerprinted unmatched orders');
+            assert.strictEqual(result.aborted, true, 'Batch must be marked aborted');
+            assert.strictEqual(result.reason, 'UNMATCHED_CHAIN_ORDERS', 'Abort reason must be UNMATCHED_CHAIN_ORDERS');
+            assert.strictEqual(executeCalls, 0, 'No broadcast must be attempted');
+
+            // Structural resync must be triggered.
+            assert.strictEqual(
+                manager._recoveryState.structuralResyncRequested,
+                true,
+                'Structural resync must be requested for fingerprinted unmatched orders'
+            );
+
+            console.log('\u2713 COW-STRUCTURAL-RESYNC-006 passed');
+        } finally {
+            chainOrdersModule.cancelOrder = originalCancelOrder;
+            chainOrdersModule.recordOwnCancel = originalRecordOwnCancel;
+        }
+    }
+
     console.log('\u2713 COW structural resync wiring tests passed!');
 }
 
