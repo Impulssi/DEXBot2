@@ -7,7 +7,7 @@ const { BitShares, getNodeManager } = require('./bitshares_client');
 const chainOrders = require('./chain_orders');
 const { BroadcastUncertainError } = require('./dexbot_credential_client');
 const { Config, hasOpenOrdersSyncLoopMsSet, getOpenOrdersSyncLoopMs } = require('./config');
-const { isGridBloated, isGridBloatGraceActive, clearGridBloatFlag, loadGrid, recalculateGrid, monitorDivergence } = require('./order/grid');;
+const { isGridBloated, isGridBloatGraceActive, clearGridBloatFlag, loadGrid, recalculateGrid, monitorDivergence } = require('./order/grid');
 const { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } = require('./constants');
 const { PATHS } = require('./paths');
 const { buildRuntimeScriptPath, isDistCodeRoot } = require('./launcher/runtime_entry');
@@ -222,7 +222,6 @@ async function maybeRunTargetedDriftReconciliation(bot, context) {
                 privateKey: bot.privateKey,
                 chainOrders,
                 chainOpenOrders: openOrders,
-                fillLockAlreadyHeld: true,
             });
             await bot._executeBatchIfNeeded(reconcileResult, `targeted ${context} reconcile`);
         }
@@ -864,7 +863,6 @@ function performGridResync(bot, options: {
                     await cancelDustOrders(self, {
                         buy: resyncHealth.buyDustOrders,
                         sell: resyncHealth.sellDustOrders,
-                        fillLockAlreadyHeld: true,
                     });
                 } catch (_dustErr: any) {
                     self._warn(`[DUST] Post-resync dust cancel failed: ${_dustErr.message}`);
@@ -972,9 +970,9 @@ async function setupTriggerFileDetection(bot) {
  */
 async function performPeriodicGridChecks(bot) {
     if (typeof bot._runGridMaintenance === 'function') {
-        await bot._runGridMaintenance('periodic', { fillLockAlreadyHeld: true });
+        await bot._runGridMaintenance('periodic');
     } else {
-        await runGridMaintenance(bot, 'periodic', { fillLockAlreadyHeld: true });
+        await runGridMaintenance(bot, 'periodic');
     }
 }
 
@@ -1021,7 +1019,7 @@ function startOpenOrdersSyncLoop(bot) {
                         bot.manager._fillProcessingLock.getQueueLength() === 0) {
                         await bot.manager._fillProcessingLock.acquire(async () => {
                             const chainOpenOrders = await readOpenOrdersFn.call(chainOrders, bot.accountId);
-                            const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', { fillLockAlreadyHeld: true });
+                            const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
                             if (syncResult?.filledOrders && syncResult.filledOrders.length > 0) {
                                 bot._log(`Open-orders sync loop: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
@@ -1147,7 +1145,7 @@ function setupBlockchainFetchInterval(bot) {
                     if (!bot.config.dryRun) {
                         try {
                             chainOpenOrders = await chainOrders.readOpenOrders(bot.accountId);
-                            const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'periodicBlockchainFetch', { fillLockAlreadyHeld: true });
+                            const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'periodicBlockchainFetch');
 
                             if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
                                 bot._log(`Periodic sync: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
@@ -1285,14 +1283,8 @@ function scheduleMaintenanceAfterIdle(ctx, context, options = {}) {
     const delayMs = getMaintenanceIdleDelayMs(ctx);
     if (!(delayMs > 0)) return;
 
-    // The caller will have returned (and released _fillProcessingLock, if it
-    // was held) by the time this deferred callback fires, so the deferred
-    // run must always acquire the lock itself. Override any caller-supplied
-    // fillLockAlreadyHeld=true so the deferred path can't deadlock against
-    // a lock the caller no longer owns.
     const timerOptions = {
         ...(options || {}),
-        fillLockAlreadyHeld: false,
     };
 
     ctx._maintenanceIdleTimer = setTimeout(() => {
@@ -1453,9 +1445,7 @@ async function executeMaintenanceLogic(bot, context) {
                     'warn'
                 );
                 if (bot.manager?.synchronizeWithChain) {
-                    await bot.manager.synchronizeWithChain(chainOpenOrdersResult, 'readOpenOrders', {
-                        fillLockAlreadyHeld: true
-                    });
+                    await bot.manager.synchronizeWithChain(chainOpenOrdersResult, 'readOpenOrders');
                 }
             } else if (diff > 0) {
                 bot._log(
@@ -1503,7 +1493,6 @@ async function executeMaintenanceLogic(bot, context) {
         const dustCancelResult = await cancelDustOrders(bot, {
             buy: healthResult.buyDustOrders,
             sell: healthResult.sellDustOrders,
-            fillLockAlreadyHeld: true,
         });
         if (dustCancelResult?.batchResult?.aborted) {
             return;
@@ -1615,10 +1604,9 @@ async function cancelOrderWithNodeFallback(bot, order) {
  * @param {Object} [options] - Dust cancellation options
  * @param {import('./types').Order[]} [options.buy=[]] - Buy-side dust orders
  * @param {import('./types').Order[]} [options.sell=[]] - Sell-side dust orders
- * @param {boolean} [options.fillLockAlreadyHeld=false] - Skip fill-processing lock re-entry (caller already holds it)
  * @returns {Promise<{cancelledCount: number, batchResult: {aborted: boolean}|null}>}
  */
-async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [], fillLockAlreadyHeld = false } = {}) {
+async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } = {}) {
     const allDust = [...buyDust, ...sellDust];
     if (allDust.length === 0) return { cancelledCount: 0, batchResult: null };
 
@@ -1631,9 +1619,9 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [], f
                 if (cancelResult?.verifiedAfterFailure) {
                     const accountRef = bot.accountId || bot.account;
                     const chainOpenOrders = await chainOrders.readOpenOrders(accountRef);
-                    await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', { fillLockAlreadyHeld: true, protectCommittedOrders: true });
+                    await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
                 } else {
-                    await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder', { fillLockAlreadyHeld });
+                    await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
                 }
             } catch (refetchErr) {
                 bot._warn(`[DUST] Cancel succeeded but refetch failed for ${order.id} (${order.orderId}): ${refetchErr.message}`);
@@ -1667,19 +1655,14 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [], f
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {string} [context='periodic'] - Context label for logging
  * @param {Object} [options] - Maintenance options
- * @param {boolean} [options.fillLockAlreadyHeld=false] - Skip fill lock acquisition if already held
  * @param {boolean} [options.skipIdle=false] - Skip idle delay check
  * @returns {Promise<void>}
  */
 async function runGridMaintenance(
     bot,
     context = 'periodic',
-    options: { fillLockAlreadyHeld?: boolean; skipIdle?: boolean } = {}
+    options: { skipIdle?: boolean } = {}
 ) {
-    if (options === null || typeof options !== 'object' || Array.isArray(options)) {
-        throw new TypeError('Grid maintenance options must be an object');
-    }
-    const fillLockAlreadyHeld = options.fillLockAlreadyHeld === true;
     const skipIdle = options.skipIdle === true;
     if (!skipIdle) {
         const idleDelayMs = getMaintenanceIdleDelayMs(bot);
@@ -1697,13 +1680,6 @@ async function runGridMaintenance(
     try {
         if (!bot.manager) return;
 
-        // Lock-ordering contract:
-        //   - When fillLockAlreadyHeld=false this function acquires
-        //     _fillProcessingLock first, then _divergenceLock (canonical order).
-        //   - When fillLockAlreadyHeld=true the caller must already hold
-        //     _fillProcessingLock; only _divergenceLock is acquired here.
-        // AsyncLock is NOT reentrant — acquiring in the reverse order anywhere
-        // else in the bot would deadlock against the path above.
         const runWithDivergenceLock = async () => {
             // Re-check orders size under the divergence lock to avoid a TOCTOU
             // race with concurrent order mutations. The previous placement
@@ -1713,13 +1689,9 @@ async function runGridMaintenance(
             await executeMaintenanceLogic(bot, context);
         };
 
-        if (fillLockAlreadyHeld) {
+        await bot.manager._fillProcessingLock.acquire(async () => {
             await bot.manager._divergenceLock.acquire(runWithDivergenceLock);
-        } else {
-            await bot.manager._fillProcessingLock.acquire(async () => {
-                await bot.manager._divergenceLock.acquire(runWithDivergenceLock);
-            });
-        }
+        });
     } catch (err: any) {
         bot._warn(`Error during ${context} grid maintenance: ${err.message}`);
         throw err;

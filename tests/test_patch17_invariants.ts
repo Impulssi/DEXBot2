@@ -1,6 +1,6 @@
 const assert = require('assert');
 const DEXBot = require('../modules/dexbot_class');
-const { _getSizingContext, _recalculateGridOrderSizesFromBlockchain } = require('../modules/order/grid');;
+const { _getSizingContext, _recalculateGridOrderSizesFromBlockchain } = require('../modules/order/grid');
 const chainOrders = require('../modules/chain_orders');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../modules/constants');

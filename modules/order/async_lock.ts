@@ -59,10 +59,11 @@
  *   3. Execute callback (guaranteed alone)
  *   4. Set _locked = false and process next queued item
  *
- * REENTRANCY WARNING:
- * This lock is NOT reentrant. If a function holding the lock attempts to
- * acquire it again (nested call), it will DEADLOCK as the second request
- * will wait forever in the queue for the first one to release it.
+ * REENTRANCY:
+ * This lock IS reentrant. If a function holding the lock calls acquire()
+ * again (nested call), the callback is executed immediately without
+ * queueing. This eliminates the need for callers to track whether they
+ * already hold the lock via external flags.
  *
  * CRITICAL INVARIANTS:
  * - _locked = true ONLY if callback is currently executing
@@ -97,6 +98,7 @@ interface AcquireOptions {
 class AsyncLock {
     private _queue: QueueItem<any>[];
     private _locked: boolean;
+    private _holding: boolean;
     private _generation: number;
     private _defaultTimeout: number | null;
     private _level: number;
@@ -104,6 +106,7 @@ class AsyncLock {
     constructor(options: AsyncLockOptions = {}) {
         this._queue = [];
         this._locked = false;
+        this._holding = false;
         this._generation = 0;
         this._defaultTimeout = options.timeout || null;
         this._level = options.level ?? 0;
@@ -118,6 +121,13 @@ class AsyncLock {
      * @returns {Promise} Result of callback execution
      */
     async acquire<T>(callback: () => Promise<T>, options: AcquireOptions = {}): Promise<T> {
+        // Re-entrant: if we are already inside this lock's execution context,
+        // run the callback directly. This avoids deadlock when callers deep
+        // in the call chain need to acquire the same lock.
+        if (this._holding) {
+            return callback();
+        }
+
         const timeout = options.timeout || this._defaultTimeout;
         const cancelToken = options.cancelToken;
 
@@ -182,6 +192,7 @@ class AsyncLock {
         }
 
         const generation = ++this._generation;
+        this._holding = true;
 
         try {
             // Execute the callback (guaranteed to be alone)
@@ -190,6 +201,7 @@ class AsyncLock {
         } catch (err: any) {
             reject(err);
         } finally {
+            this._holding = false;
             // Only release the lock if generation matches — if forceRelease
             // was called while this callback was running, the generation was
             // incremented and we must not touch _locked (a new acquirer may
@@ -207,6 +219,15 @@ class AsyncLock {
      */
     isLocked(): boolean {
         return this._locked;
+    }
+
+    /**
+     * Check if the current execution context already holds this lock.
+     * When true, callers can skip lock acquisition because the callback
+     * would execute immediately via the re-entrant path anyway.
+     */
+    isReentrant(): boolean {
+        return this._holding;
     }
 
     /**
@@ -256,6 +277,7 @@ class AsyncLock {
         // finally block — it will see generation mismatch and skip
         // touching _locked / _processQueue.
         this._generation++;
+        this._holding = false;
         while (this._queue.length > 0) {
             const { reject, timer } = this._queue.shift();
             if (timer) clearTimeout(timer);

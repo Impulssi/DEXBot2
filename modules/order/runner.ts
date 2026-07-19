@@ -60,7 +60,7 @@
 const { path } = require('../path_api');
 const { OrderManager } = require('./manager');
 const { PATHS } = require('../paths');
-const { initializeGrid } = require('./grid');;
+const { initializeGrid } = require('./grid');
 const { readBotsFileSync } = require('../bots_file_lock');
 const { Config } = require('../config');
 const { parseJsonWithComments, sleep } = require('./utils/system');

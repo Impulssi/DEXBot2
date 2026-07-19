@@ -266,7 +266,7 @@ async function main() {
     };
 
     await runtime.refreshState();
-    const result = await runtime.runMaintenance('credit-renewal-test', { fillLockAlreadyHeld: true });
+    const result = await runtime.runMaintenance('credit-renewal-test');
     const opNames = summarizeOperations(dryRunCalls);
     const repayCount = opNames.filter((name) => name === 'credit_deal_repay').length;
     const acceptCount = opNames.filter((name) => name === 'credit_offer_accept').length;

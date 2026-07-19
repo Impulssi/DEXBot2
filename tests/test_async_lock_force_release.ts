@@ -85,8 +85,8 @@ async function runTests() {
         assert.strictEqual(result, 42);
     }
 
-    // Test 4: forceRelease with queued waiters
-    console.log(' - forceRelease clears queued waiters...');
+    // Test 4: re-entrant acquire executes directly (no queue)
+    console.log(' - Re-entrant acquire executes directly...');
     {
         const lock = new AsyncLock();
         const gate = deferred();
@@ -99,25 +99,15 @@ async function runTests() {
         await new Promise(r => setTimeout(r, 10));
         assert.strictEqual(lock.isLocked(), true);
 
+        // With re-entrant lock, nested acquire runs the callback directly
         let qExecuted = false;
         const pQ = lock.acquire(async () => {
             qExecuted = true;
         });
 
-        assert.strictEqual(lock.getQueueLength(), 1);
-
-        const count = lock.forceRelease();
-        assert.strictEqual(count, 1, 'Must have cleared 1 queued item');
-        assert.strictEqual(lock.getQueueLength(), 0);
-
-        // Queued item must have been rejected
-        try {
-            await pQ;
-            assert.fail('Queued operation must have been rejected');
-        } catch (err) {
-            assert.strictEqual(err.message, 'Lock force-released');
-        }
-        assert.strictEqual(qExecuted, false, 'Queued callback must not execute');
+        assert.strictEqual(qExecuted, true, 'Re-entrant acquire must execute callback directly');
+        assert.strictEqual(lock.getQueueLength(), 0, 'Queue must be empty (re-entrant)');
+        assert.strictEqual(lock.isLocked(), true, 'Lock must still be held by A');
 
         // Let A finish naturally
         gate.resolve();
@@ -137,6 +127,42 @@ async function runTests() {
 
         let result = await lock.acquire(async () => 'works');
         assert.strictEqual(result, 'works');
+    }
+
+    // Test 6: forceRelease resets lock for new acquirer; stale callback is ignored
+    console.log(' - forceRelease rejects stale callback via generation guard...');
+    {
+        const lock = new AsyncLock();
+        const gate = deferred();
+
+        // A acquires the lock and suspends
+        const pA = lock.acquire(async () => {
+            await gate.promise;
+        });
+
+        await new Promise(r => setTimeout(r, 10));
+        assert.strictEqual(lock.isLocked(), true, 'A must hold lock');
+
+        // forceRelease while A is still running — increments generation,
+        // resets _locked, clears queue (re-entrant path prevents queueing,
+        // but generation guard protects stale finally).
+        lock.forceRelease();
+        assert.strictEqual(lock.isLocked(), false, 'Lock must be free after forceRelease');
+
+        // B acquires and completes normally (lock is reusable)
+        let result = await lock.acquire(async () => 99);
+        assert.strictEqual(result, 99, 'New acquire after forceRelease must succeed');
+        assert.strictEqual(lock.isLocked(), false, 'Lock free after B completes');
+
+        // Let A's stale callback finish — generation mismatch means its
+        // finally block skips _locked = false. Verify the lock is still free.
+        gate.resolve();
+        await pA;
+        assert.strictEqual(lock.isLocked(), false, 'Lock still free after stale A completes');
+
+        // Lock still usable after stale callback settles
+        result = await lock.acquire(async () => 42);
+        assert.strictEqual(result, 42, 'Lock usable after stale callback settles');
     }
 
     console.log('\n✓ AsyncLock Force-Release tests passed!');

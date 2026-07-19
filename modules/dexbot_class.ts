@@ -435,7 +435,7 @@ class DEXBot {
             this.manager.logger.log(`Triggering state recovery sync (${reason})...`, 'info');
             await this.manager.fetchAccountTotals(this.accountId);
             const openOrders = await chainOrders.readOpenOrders(this.accountId);
-            await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: true, fillLockAlreadyHeld: true, protectCommittedOrders: true });
+            await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
             if (typeof this.manager.persistGrid === 'function') {
                 await this.manager.persistGrid();
             }
@@ -685,11 +685,9 @@ class DEXBot {
 
             // 4. Reconcile
             if (chainOpenOrders.length > 0 && this.manager?.syncFromOpenOrders) {
-                await this.manager.syncFromOpenOrders(chainOpenOrders, {
-                    skipAccounting: true,
-                    fillLockAlreadyHeld: true,
-                    protectCommittedOrders: true
-                });
+                    await this.manager.syncFromOpenOrders(chainOpenOrders, {
+                        skipAccounting: true,
+                    });
             }
 
             // 5. Persist the reconciled state
@@ -1131,7 +1129,7 @@ class DEXBot {
                                 if (this._shuttingDown) return;
                                 const chainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
                                 if (this._shuttingDown) return;
-                                const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', { fillLockAlreadyHeld: true });
+                                const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
                                 if (this._shuttingDown) return;
                                 if (syncResult?.filledOrders?.length > 0) {
                                     this._log(`Post-reconnect sync: ${syncResult.filledOrders.length} grid order(s) found filled.`, 'info');
@@ -1149,7 +1147,6 @@ class DEXBot {
                                         await this._cancelDustOrders({
                                             buy: reconnectHealth.buyDustOrders,
                                             sell: reconnectHealth.sellDustOrders,
-                                            fillLockAlreadyHeld: true,
                                         });
                                     } catch (_dustErr: any) {
                                         this._warn(`[RECONNECT] Dust cancel failed: ${_dustErr.message}`);
@@ -1280,7 +1277,7 @@ class DEXBot {
                         if (requiresOpenOrdersSync) {
                             this._log('[POST-RESET] Falling back to open-orders sync for fill(s) missing replay-safe history identifiers', 'warn');
                             const postResetChainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
-                            const syncResult = await this.manager.syncFromOpenOrders(postResetChainOpenOrders, { fillLockAlreadyHeld: true });
+                            const syncResult = await this.manager.syncFromOpenOrders(postResetChainOpenOrders);
                             if (syncResult.filledOrders?.length > 0) {
                                 await this._processFillsWithBatching(syncResult.filledOrders, new Set(), '[POST-RESET] open-orders fallback');
                             }
@@ -1324,7 +1321,6 @@ class DEXBot {
                             await this._cancelDustOrders({
                                 buy: postResetHealth.buyDustOrders,
                                 sell: postResetHealth.sellDustOrders,
-                                fillLockAlreadyHeld: true,
                             });
                         } catch (_dustErr: any) {
                             this._warn(`[POST-RESET] Dust cancel failed: ${_dustErr.message}`);
@@ -1427,7 +1423,7 @@ class DEXBot {
                         if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
                             this._log('Generating new grid and syncing with existing on-chain orders...');
                             await Grid.initializeGrid(this.manager);
-                            await this.manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true, fillLockAlreadyHeld: true });
+                            await this.manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true });
                             const rebalanceResult = await reconcileGridOrders({
                                 manager: this.manager,
                                 config: this.config,
@@ -1435,7 +1431,6 @@ class DEXBot {
                                 privateKey: this.privateKey,
                                 chainOrders,
                                 chainOpenOrders,
-                                fillLockAlreadyHeld: true,
                             });
 
                             await this._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (regenerated grid)');
@@ -1448,7 +1443,7 @@ class DEXBot {
                         this._log('Found active session. Loading and syncing existing grid.');
                         await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
                         let startupChainOpenOrders = chainOpenOrders;
-                        const syncResult = await this.manager.syncFromOpenOrders(startupChainOpenOrders, { skipAccounting: true, fillLockAlreadyHeld: true });
+                        const syncResult = await this.manager.syncFromOpenOrders(startupChainOpenOrders, { skipAccounting: true });
 
                         // Process price corrections queued during startup sync.
                         // These are not picked up by _consumeFillQueue until a fill
@@ -1470,7 +1465,7 @@ class DEXBot {
                                 // Refresh open orders so startup reconcile works with post-batch chain reality
                                 // and avoids reconciling against a stale pre-batch snapshot.
                                 startupChainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
-                                await this.manager.synchronizeWithChain(startupChainOpenOrders, 'readOpenOrders', { fillLockAlreadyHeld: true });
+                                await this.manager.synchronizeWithChain(startupChainOpenOrders, 'readOpenOrders');
                             }
                         }
 
@@ -1481,7 +1476,6 @@ class DEXBot {
                             privateKey: this.privateKey,
                             chainOrders,
                             chainOpenOrders: startupChainOpenOrders,
-                            fillLockAlreadyHeld: true,
                         });
 
                         await this._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (loaded grid)');
@@ -1507,7 +1501,7 @@ class DEXBot {
                     // Perform initial grid maintenance (thresholds, divergence, spread, health)
                     // Consolidated into shared logic to ensure consistent behavior at boot and runtime.
                     // CRITICAL: Pass lockAlreadyHeld since we're inside _fillProcessingLock.acquire()
-                    await this._runGridMaintenance('startup', { fillLockAlreadyHeld: true });
+                    await this._runGridMaintenance('startup');
 
                     // Cancel any dust from a previous bot lifetime immediately.
                     const startupHealth = await this.manager.checkGridHealth(
@@ -1516,7 +1510,6 @@ class DEXBot {
                     await this._cancelDustOrders({
                         buy: startupHealth.buyDustOrders,
                         sell: startupHealth.sellDustOrders,
-                        fillLockAlreadyHeld: true,
                     });
 
                     this._log('Bootstrap phase complete - fill processing resumed', 'info');
@@ -1529,7 +1522,7 @@ class DEXBot {
             await this._setupTriggerFileDetection();
             await this._setupCreditRuntime();
             await this._refreshAndSyncCreditRuntime();
-            await this._runCreditRuntimeMaintenance('startup', { fillLockAlreadyHeld: true });
+            await this._runCreditRuntimeMaintenance('startup');
             this._setupBlockchainFetchInterval();
             this._setupCreditWatchdogInterval();
             this._setupCredentialDaemonWatchdogInterval();
@@ -1578,8 +1571,7 @@ class DEXBot {
             let openOrders = await chainOrders.readOpenOrders(this.accountId);
             const syncResult = await this.manager.synchronizeWithChain(
                 openOrders,
-                'readOpenOrders',
-                { fillLockAlreadyHeld: true }
+                'readOpenOrders'
             );
             let aborted = false;
             if (syncResult?.filledOrders?.length > 0) {
@@ -1591,7 +1583,7 @@ class DEXBot {
                 );
                 if (!batchResult?.aborted) {
                     openOrders = await chainOrders.readOpenOrders(this.accountId);
-                    await this.manager.synchronizeWithChain(openOrders, 'readOpenOrders', { fillLockAlreadyHeld: true });
+                    await this.manager.synchronizeWithChain(openOrders, 'readOpenOrders');
                 } else {
                     aborted = true;
                 }
@@ -1977,7 +1969,7 @@ class DEXBot {
                             }
                             this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (open orders mode)`, 'info');
                             const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
-                            const resultOpenOrders = await this.manager.syncFromOpenOrders(chainOpenOrders, { fillLockAlreadyHeld: true });
+                            const resultOpenOrders = await this.manager.syncFromOpenOrders(chainOpenOrders);
                             // Dust is handled by post-fill detection below.
                             if (resultOpenOrders.filledOrders) resolvedOrders.push(...resultOpenOrders.filledOrders);
                             if (resultOpenOrders.ordersNeedingCorrection) ordersNeedingCorrection.push(...resultOpenOrders.ordersNeedingCorrection);
@@ -2128,7 +2120,6 @@ class DEXBot {
                                 const dustCancelResult = await this._cancelDustOrders({
                                     buy: healthResult.buyDustOrders,
                                     sell: healthResult.sellDustOrders,
-                                    fillLockAlreadyHeld: true,
                                 });
                                 if (dustCancelResult?.batchResult?.aborted) {
                                     abortedFillCycle = true;
@@ -2143,7 +2134,7 @@ class DEXBot {
                         // After: Grid maintenance waits for isPipelineEmpty() before structural changes
                         // Run only when the cycle contains at least one full fill.
                         if (shouldRunPostFillChecks && !abortedFillCycle) {
-                            await this._runGridMaintenance('post-fill', { fillLockAlreadyHeld: true });
+                            await this._runGridMaintenance('post-fill');
                         }
                     } else if (pendingFillKeysForCurrentCycle.size > 0) {
                         await this._flushProcessedFillPersistenceForKeys(
@@ -2335,7 +2326,7 @@ class DEXBot {
         if (requiresOpenOrdersSync) {
             this._log('[BOOTSTRAP] Falling back to open-orders sync for fill(s) missing replay-safe history identifiers', 'warn');
             const bootstrapChainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
-            const syncResult = await this.manager.syncFromOpenOrders(bootstrapChainOpenOrders, { fillLockAlreadyHeld: true });
+            const syncResult = await this.manager.syncFromOpenOrders(bootstrapChainOpenOrders);
             if (syncResult.filledOrders?.length > 0) {
                 const queuedOrderIds = new Set(validFills.map(fill => fill?.gridOrder?.orderId).filter(Boolean));
                 for (const filledOrder of syncResult.filledOrders) {
@@ -2604,8 +2595,6 @@ class DEXBot {
             const openOrders = await chainOrders.readOpenOrders(accountRef);
             const recoveryResult = await this.manager.syncFromOpenOrders(openOrders, {
                 skipAccounting: false,
-                fillLockAlreadyHeld: true,
-                protectCommittedOrders: true
             });
             this._preserveMissingCreateBlockersAfterRecovery(preRecoveryMissingCreateBlockers, recoveryResult);
             // Persist any master grid mutations from the recovery sync. The
@@ -2959,18 +2948,15 @@ class DEXBot {
      * @param {Array<Object>} opContexts - Original opContexts from the failed batch
      * @returns {Promise<Object>} Result object compatible with batch return shape
      */
-    async _reconcileAfterUncertainBroadcast(err, opContexts, options: { fillLockAlreadyHeld?: boolean; [key: string]: any } = {}) {
+    async _reconcileAfterUncertainBroadcast(err, opContexts, options: Record<string, any> = {}) {
         if (
-            options.fillLockAlreadyHeld !== true &&
             this.manager?._fillProcessingLock &&
-            typeof this.manager._fillProcessingLock.acquire === 'function'
+            typeof this.manager._fillProcessingLock.acquire === 'function' &&
+            !this.manager._fillProcessingLock.isReentrant()
         ) {
-            return this.manager._fillProcessingLock.acquire(async () => (
-                this._reconcileAfterUncertainBroadcast(err, opContexts, {
-                    ...options,
-                    fillLockAlreadyHeld: true
-                })
-            ));
+            return this.manager._fillProcessingLock.acquire(() =>
+                this._reconcileAfterUncertainBroadcast(err, opContexts, options)
+            );
         }
         return this._reconcileAfterUncertainBroadcastImpl(err, opContexts, options);
     }
@@ -3113,8 +3099,6 @@ class DEXBot {
             try {
                 await this.manager.syncFromOpenOrders(latestSnapshot, {
                     skipAccounting: true,
-                    fillLockAlreadyHeld: true,
-                    protectCommittedOrders: true
                 });
                 hadRotation = true;
             } catch (syncErr) {
@@ -3396,8 +3380,6 @@ class DEXBot {
                         if (freshChain.length > 0 && this.manager?.syncFromOpenOrders) {
                             await this.manager.syncFromOpenOrders(freshChain, {
                                 skipAccounting: true,
-                                fillLockAlreadyHeld: true,
-                                protectCommittedOrders: true
                             });
                         }
                     } catch (syncErr) {
@@ -3898,7 +3880,7 @@ class DEXBot {
             this._resumeGridPersistenceAfterCredentialRecovery('credential recovery started');
             const runRecovery = async () => {
                 await this._triggerStateRecoverySync('credential daemon restored');
-                await this._runGridMaintenance('credential-recovery', { fillLockAlreadyHeld: true });
+                await this._runGridMaintenance('credential-recovery');
             };
             if (this.manager?._fillProcessingLock) {
                 await this.manager._fillProcessingLock.acquire(runRecovery);
@@ -4421,8 +4403,7 @@ class DEXBot {
                                     timeoutMs: null
                                 }
                             ),
-                            [],
-                            { fillLockAlreadyHeld: true }
+                            []
                         );
                     } catch (recoverErr) {
                         this.manager.logger.log(
@@ -4887,7 +4868,7 @@ class DEXBot {
             // throwing would re-enter the catch loop on the next attempt and
             // potentially double-publish.
             if (err instanceof BroadcastUncertainError) {
-                return await this._reconcileAfterUncertainBroadcast(err, opContexts, { fillLockAlreadyHeld: true });
+                return await this._reconcileAfterUncertainBroadcast(err, opContexts);
             }
 
             // Handle hard abort
@@ -5270,7 +5251,7 @@ class DEXBot {
     async _runCreditOnlyStartup() {
         await this._setupCreditRuntime();
         await this._refreshAndSyncCreditRuntime();
-        await this._runCreditRuntimeMaintenance('startup', { fillLockAlreadyHeld: true });
+        await this._runCreditRuntimeMaintenance('startup');
         this._setupCreditWatchdogInterval();
         this._setupCredentialDaemonWatchdogInterval();
         this._log('DEXBot started (credit-only mode)');
@@ -5281,8 +5262,7 @@ class DEXBot {
      * Called by the periodic blockchain fetch interval to check if grid needs updates.
      *
      * IMPORTANT: This method MUST only be called from within _fillProcessingLock.acquire()
-     * (specifically from _setupBlockchainFetchInterval). It passes fillLockAlreadyHeld
-     * to avoid deadlock with _consumeFillQueue which uses the same lock ordering.
+     * (specifically from _setupBlockchainFetchInterval).
      *
      * @private
      */
@@ -5434,21 +5414,24 @@ class DEXBot {
         }
     }
 
-    async requestGridReset(reason = 'structural change', options: { refreshCenterPrice?: boolean; fillLockAlreadyHeld?: boolean; [key: string]: any } = {}) {
+    async requestGridReset(reason = 'structural change', options: { refreshCenterPrice?: boolean; [key: string]: any } = {}) {
         if (!this.manager || typeof this._performGridResync !== 'function') {
             return { skipped: true, reason: 'grid resync unavailable' };
         }
 
         const message = reason ? `[CR-RESET] ${reason}` : '[CR-RESET] grid reset requested';
-        // Manual/programmatic resets should advance the persisted center baseline
-        // before rebuilding the grid, unless a caller explicitly disables it.
         this._log(`${message}; rebuilding grid from fresh on-chain state`, 'info');
         const resetOptions = {
             ...options,
             refreshCenterPrice: options.refreshCenterPrice !== false,
         };
 
-        if (options.fillLockAlreadyHeld || !this.manager._fillProcessingLock) {
+        // Skip acquire if no lock exists (no fill processing to serialize against)
+        // or if the caller already holds the lock (re-entrant). In the latter case
+        // the lock's isReentrant() check prevents queueing and runs inline.
+        // Otherwise, wait on the queue — this is the intended path for callers
+        // outside the fill-processing context that need exclusive access.
+        if (!this.manager._fillProcessingLock || this.manager._fillProcessingLock.isReentrant()) {
             return this._performGridResync(resetOptions);
         }
 
@@ -5567,12 +5550,12 @@ class DEXBot {
      * Cancel dust partial orders immediately — no maps, no timers, no delay.
      * Each dust order is cancelled on chain and its slot rotated through the
      * synthetic-fill pipeline.
-     * @param {{ buy: Array, sell: Array, fillLockAlreadyHeld?: boolean }} options
+     * @param {{ buy: Array, sell: Array }} options
      * @returns {Promise<{cancelledCount: number, batchResult: {aborted: boolean}|null}>}
      * @private
      */
-    async _cancelDustOrders({ buy: buyDust = [], sell: sellDust = [], fillLockAlreadyHeld = false } = {}) {
-        return DexbotMaintenanceRuntime.cancelDustOrders(this, { buy: buyDust, sell: sellDust, fillLockAlreadyHeld });
+    async _cancelDustOrders({ buy: buyDust = [], sell: sellDust = [] } = {}) {
+        return DexbotMaintenanceRuntime.cancelDustOrders(this, { buy: buyDust, sell: sellDust });
     }
 
     /**
@@ -5599,7 +5582,6 @@ class DEXBot {
                         await this._cancelDustOrders({
                             buy: health.buyDustOrders,
                             sell: health.sellDustOrders,
-                            fillLockAlreadyHeld: true,
                         });
                     });
                 }
@@ -5625,7 +5607,6 @@ class DEXBot {
      *
      * LOCK ORDERING:
      * - Canonical order: _fillProcessingLock → _divergenceLock
-     * - This function handles lock acquisition based on fillLockAlreadyHeld parameter
      * - When called from post-fill context, fill lock is already held
      * - When called from periodic context, both locks must be acquired
      * - Matches the order used in _consumeFillQueue to prevent deadlocks

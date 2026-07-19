@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { isGridBloated } = require('../modules/order/grid');;
+const { isGridBloated } = require('../modules/order/grid');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 function makeOrder(id, type, overrides = {}) {

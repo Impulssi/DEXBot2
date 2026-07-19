@@ -533,6 +533,7 @@ async function testReconcileAcquiresFillLock() {
 
     bot.manager._fillProcessingLock = {
         acquire: async (fn) => {
+            if (insideLock) return fn();
             lockAcquireCalls++;
             insideLock = true;
             try {
@@ -540,12 +541,13 @@ async function testReconcileAcquiresFillLock() {
             } finally {
                 insideLock = false;
             }
-        }
+        },
+        isReentrant: () => insideLock,
     };
     bot.manager.syncFromOpenOrders = async (_orders, options) => {
         syncCalls++;
         assert.strictEqual(insideLock, true, 'recovery sync must run while fill lock is held');
-        assert.strictEqual(options.fillLockAlreadyHeld, true, 'inner sync should reuse the held fill lock');
+        // AsyncLock is re-entrant; flag no longer needed
         return { filledOrders: [], updatedOrders: [], unmatchedChainOrders: [] };
     };
     bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false, reason: 'test-noop' });
@@ -1051,7 +1053,7 @@ function makeBot() {
 }
 
 async function testCowCatchBlockPassesFillLockAlreadyHeld() {
-    console.log('\n[UNC-012] _updateOrdersOnChainBatchCOW passes fillLockAlreadyHeld:true to reconcile...');
+    console.log('\n[UNC-012] _updateOrdersOnChainBatchCOW recovery path...');
     const bot = makeBot();
     const slotId = 'slot-unc-012';
     const actionOrderId = '1.7.999999';
@@ -1076,7 +1078,7 @@ async function testCowCatchBlockPassesFillLockAlreadyHeld() {
     };
 
     bot._reconcileAfterUncertainBroadcast = async (_err, _ctxs, opts) => {
-        reconcileOptions = opts;
+        reconcileOptions = opts || {};
         return { executed: false, uncertain: true };
     };
 
@@ -1096,8 +1098,7 @@ async function testCowCatchBlockPassesFillLockAlreadyHeld() {
     try {
         await bot._updateOrdersOnChainBatchCOW(cowResult);
         assert(reconcileOptions, '_reconcileAfterUncertainBroadcast must be called');
-        assert.strictEqual(reconcileOptions.fillLockAlreadyHeld, true,
-            'reconcile must receive fillLockAlreadyHeld:true to avoid reentrant deadlock');
+        // AsyncLock is re-entrant; fillLockAlreadyHeld flag no longer needed
     } finally {
         chainOrders.buildUpdateOrderOp = origBuildUpdate;
         bot._executeOperationsWithStrategy = origExecuteStrategy;
@@ -1442,12 +1443,26 @@ async function testRecoverFromPersistedGrid() {
     // _recoverFromPersistedGrid checks this.accountId first
     bot.accountId = 'test-account';
 
-    // Mock loadGrid so we don't need to mock the entire internal
-    // manager contract (_gridLock, _initializeAssets, resetFunds,
-    // _applyOrderUpdate, etc.) — loadGrid is tested separately.
-    const { loadGrid } = require('../modules/order/grid');;
-    const origLoadGrid = loadGrid;
-    loadGrid = async (manager, grid, boundaryIdx) => { /* no-op */ };
+    // Add the properties that the real loadGrid and syncFromOpenOrders need
+    bot.manager._gridLock = {
+        acquire: async (fn) => fn(),
+        isLocked: () => false,
+        isReentrant: () => false,
+    };
+    bot.manager._syncLock = {
+        acquire: async (fn) => fn(),
+        isLocked: () => false,
+        isReentrant: () => false,
+        forceRelease: () => 0,
+    };
+    bot.manager._fillProcessingLock = undefined;
+    bot.manager._applyOrderUpdate = async () => true;
+    bot.manager._initializeAssets = async () => {};
+    bot.manager.resetFunds = () => {};
+    bot.manager.pauseRecalcLogging = () => {};
+    bot.manager.resumeRecalcLogging = () => {};
+    bot.manager.funds = { btsFeesOwed: 0 };
+    bot.manager.boundaryIdx = 0;
 
     const persistedGrid = [
         { id: 'slot-1', type: 'buy', price: 0.04, size: 200, orderId: '1.7.111' },
@@ -1484,6 +1499,7 @@ async function testRecoverFromPersistedGrid() {
     };
 
     try {
+
         const result = await bot._recoverFromPersistedGrid();
         assert.strictEqual(result.success, true);
         assert.strictEqual(loadGridCalled, true, 'loadGrid(true) must be called to force-reload from disk');
@@ -1491,10 +1507,9 @@ async function testRecoverFromPersistedGrid() {
         assert(syncCalledWith, 'syncFromOpenOrders must be called with chain data');
         assert.strictEqual(syncCalledWith.orders, chainState, 'sync must receive the chain state');
         assert.strictEqual(syncCalledWith.options.skipAccounting, true);
-        assert.strictEqual(syncCalledWith.options.fillLockAlreadyHeld, true);
+        // AsyncLock is re-entrant; fillLockAlreadyHeld flag eliminated
         assert.strictEqual(persistCalled, true, 'persistGrid must be called to save reconciled state');
     } finally {
-        loadGrid = origLoadGrid;
         chainOrders.readOpenOrders = origReadOpenOrders;
         bot.manager.persistGrid = origPersist;
     }

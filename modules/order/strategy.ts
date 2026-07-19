@@ -61,7 +61,7 @@ const {
     isOrderPlaced
 } = require("./utils/order");
 const { floatToBlockchainInt, getPrecisionByOrderType } = require('./utils/math');
-const { calculateGapSlots, hasAnyDust } = require('./grid');;
+const { calculateGapSlots, hasAnyDust } = require('./grid');
 
 class StrategyEngine {
     manager: any;

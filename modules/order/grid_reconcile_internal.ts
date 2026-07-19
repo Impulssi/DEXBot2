@@ -166,7 +166,7 @@ function _findLargestOrder(unmatchedOrders: any, updateCount: any): { order: any
  * @returns {Promise<{gridIndex: number, gridOrder: Object}|null>} Grid slot info or null
  * @private
  */
-async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, unmatchedOrders, updateCount, orderType, dryRun, fillLockAlreadyHeld = false }: { chainOrders: any; account: any; privateKey: any; manager: any; unmatchedOrders: any; updateCount: any; orderType: any; dryRun: any; fillLockAlreadyHeld?: boolean }): Promise<{ index: number; orderType: any } | null> {
+async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, unmatchedOrders, updateCount, orderType, dryRun }: { chainOrders: any; account: any; privateKey: any; manager: any; unmatchedOrders: any; updateCount: any; orderType: any; dryRun: any; }): Promise<{ index: number; orderType: any } | null> {
     if (dryRun) return null;
     if (!Array.isArray(unmatchedOrders) || unmatchedOrders.length === 0) return null;
 
@@ -196,7 +196,6 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
             chainOrderObj: largestOrder,
             releaseUntrackedFunds: true,
             dryRun,
-            fillLockAlreadyHeld,
         });
         logger?.log?.(`Cancelled largest order ${orderId}`, 'info');
 
@@ -221,7 +220,7 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
  * @returns {Promise<void>}
  * @private
  */
-async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun, fillLockAlreadyHeld = false }: { chainOrders: any; account: any; privateKey: any; manager: any; gridOrder: any; dryRun: any; fillLockAlreadyHeld?: boolean }): Promise<void> {
+async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun }: { chainOrders: any; account: any; privateKey: any; manager: any; gridOrder: any; dryRun: any; }): Promise<void> {
     if (dryRun) return;
 
     // ATOMIC RE-VERIFICATION: Ensure slot is still virtual and hasn't been filled by recovery sync
@@ -283,8 +282,6 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
                 skipAccounting: false,
                 source: 'chainOrderIdExtractionFailure',
                 gridLockAlreadyHeld: true,
-                fillLockAlreadyHeld,
-                protectCommittedOrders: true
             });
         } catch (syncErr: any) {
             logger?.log?.(`[_createOrderFromGrid] Recovery sync failed: ${syncErr.message}`, 'error');
@@ -308,7 +305,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
  * @returns {Promise<void>}
  * @private
  */
-async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun, chainOrderObj, releaseUntrackedFunds = false, fillLockAlreadyHeld = false }: { chainOrders: any; account: any; privateKey: any; manager: any; chainOrderId: any; dryRun: any; chainOrderObj: any; releaseUntrackedFunds?: boolean; fillLockAlreadyHeld?: boolean }): Promise<void> {
+async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun, chainOrderObj, releaseUntrackedFunds = false }: { chainOrders: any; account: any; privateKey: any; manager: any; chainOrderId: any; dryRun: any; chainOrderObj: any; releaseUntrackedFunds?: boolean; }): Promise<void> {
     if (dryRun) return;
 
     const cancelResult = await chainOrders.cancelOrder(account, privateKey, chainOrderId);
@@ -321,8 +318,6 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
             skipAccounting: false,
             source: 'cancelOrder',
             gridLockAlreadyHeld: true,
-            fillLockAlreadyHeld,
-            protectCommittedOrders: true
         });
     } else {
         // CRITICAL: Use _applySync (lock-free) since caller holds _gridLock
@@ -339,7 +334,7 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
     }
 }
 
-async function _recoverStartupSyncFailure({ chainOrders, manager, account, logger, triggerMessage, source, fillLockAlreadyHeld = false }: { chainOrders: any; manager: any; account: any; logger: any; triggerMessage: any; source: any; fillLockAlreadyHeld?: boolean }): Promise<any> {
+async function _recoverStartupSyncFailure({ chainOrders, manager, account, logger, triggerMessage, source }: { chainOrders: any; manager: any; account: any; logger: any; triggerMessage: any; source: any; }): Promise<any> {
     try {
         logger?.log?.(triggerMessage, 'warn');
         const freshChainOrders = await chainOrders.readOpenOrders(
@@ -350,8 +345,6 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
             skipAccounting: false,
             source,
             gridLockAlreadyHeld: true,
-            fillLockAlreadyHeld,
-            protectCommittedOrders: true
         });
         return freshChainOrders;
     } catch (syncErr: any) {
@@ -550,7 +543,6 @@ async function _executeStartupSequentialUpdateFallback({
     privateKey,
     manager,
     dryRun,
-    fillLockAlreadyHeld = false,
 }: {
     updatePlans: any;
     chainOrders: any;
@@ -558,7 +550,6 @@ async function _executeStartupSequentialUpdateFallback({
     privateKey: any;
     manager: any;
     dryRun: any;
-    fillLockAlreadyHeld?: boolean;
 }): Promise<{ executed: number; skipped: number; failed: number }> {
     if (!Array.isArray(updatePlans) || updatePlans.length === 0 || dryRun) {
         return { executed: 0, skipped: 0, failed: 0 };
@@ -599,8 +590,7 @@ async function _executeStartupSequentialUpdateFallback({
                 logger,
                 triggerMessage: `Startup: Triggering recovery sync after sequential update failure for ${plan.chainOrderId}`,
                 source: 'startupReconcileSequentialUpdateFailure',
-                fillLockAlreadyHeld,
-            });
+                });
 
             queue = _refreshStartupUpdatePlans(queue, refreshedChainOrders);
         }
@@ -618,7 +608,6 @@ async function _createStartupOrderWithHandling({
     orderLabel,
     dryRun,
     recovery,
-    fillLockAlreadyHeld = false
 }: {
     chainOrders: any;
     account: any;
@@ -628,10 +617,9 @@ async function _createStartupOrderWithHandling({
     orderLabel: any;
     dryRun: any;
     recovery: any;
-    fillLockAlreadyHeld?: boolean;
 }): Promise<void> {
     try {
-        await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun, fillLockAlreadyHeld });
+        await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
     } catch (err: any) {
         manager?.logger?.log?.(`Startup: Failed to create ${orderLabel}: ${err.message}`, 'error');
 
@@ -643,8 +631,7 @@ async function _createStartupOrderWithHandling({
                 logger: manager?.logger,
                 triggerMessage: recovery.triggerMessage,
                 source: recovery.source,
-                fillLockAlreadyHeld,
-            });
+                });
         }
     }
 }
@@ -673,7 +660,6 @@ async function _executeStartupCreateGroupBatch({
     dryRun,
     groupIndex,
     totalGroups,
-    fillLockAlreadyHeld = false,
 }: {
     group: any;
     chainOrders: any;
@@ -683,7 +669,6 @@ async function _executeStartupCreateGroupBatch({
     dryRun: any;
     groupIndex: any;
     totalGroups: any;
-    fillLockAlreadyHeld?: boolean;
 }): Promise<void> {
     if (!Array.isArray(group) || group.length === 0 || dryRun) return;
     if (typeof chainOrders?.buildCreateOrderOp !== 'function' || typeof chainOrders?.executeBatch !== 'function') {
@@ -770,8 +755,7 @@ async function _executeStartupCreateGroupBatch({
                 logger,
                 triggerMessage: recovery.triggerMessage,
                 source: recovery.source,
-                fillLockAlreadyHeld,
-            });
+                });
         }
     } catch (err: any) {
         logger?.log?.(`Startup: Failed to create group ${groupIndex + 1}/${totalGroups}: ${err.message}`, 'error');
@@ -782,7 +766,6 @@ async function _executeStartupCreateGroupBatch({
             logger,
             triggerMessage: recovery.triggerMessage,
             source: recovery.source,
-            fillLockAlreadyHeld,
         });
     }
 }
@@ -802,7 +785,6 @@ async function _executePlannedStartupCreates({
     privateKey,
     manager,
     dryRun,
-    fillLockAlreadyHeld = false,
 }: {
     createPlans: any;
     chainOrders: any;
@@ -810,7 +792,6 @@ async function _executePlannedStartupCreates({
     privateKey: any;
     manager: any;
     dryRun: any;
-    fillLockAlreadyHeld?: boolean;
 }): Promise<void> {
     const logger = manager?.logger;
     const groups = _buildOutsideInCreateGroups(createPlans);
@@ -834,8 +815,7 @@ async function _executePlannedStartupCreates({
                 dryRun,
                 groupIndex: i,
                 totalGroups: groups.length,
-                fillLockAlreadyHeld,
-            });
+                });
             continue;
         }
 
@@ -853,8 +833,7 @@ async function _executePlannedStartupCreates({
                 orderLabel: plan.orderLabel,
                 dryRun,
                 recovery: plan.recovery,
-                fillLockAlreadyHeld,
-            });
+                });
         }
     }
 }
@@ -871,7 +850,6 @@ async function _reconcileStartupSide({
     dryRun,
     plannedCreates,
     plannedUpdates,
-    fillLockAlreadyHeld = false,
 }: {
     orderType: any;
     targetCount: any;
@@ -884,7 +862,6 @@ async function _reconcileStartupSide({
     dryRun: any;
     plannedCreates: any;
     plannedUpdates: any;
-    fillLockAlreadyHeld?: boolean;
 }): Promise<{ chainCount: any }> {
     const logger = manager?.logger;
     const sideUpper = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
@@ -921,7 +898,6 @@ async function _reconcileStartupSide({
             updateCount,
             orderType,
             dryRun,
-            fillLockAlreadyHeld,
         });
         if (cancelInfo) cancelledIndex = cancelInfo.index;
     }
@@ -1021,7 +997,6 @@ async function _reconcileStartupSide({
                     chainOrderObj: x.chain,
                     releaseUntrackedFunds: true,
                     dryRun,
-                    fillLockAlreadyHeld,
                 });
                 logger?.log?.(`Startup: Successfully cancelled excess ${sideUpper} order ${x.chain.id}`, 'info');
                 cancelCount--;
@@ -1039,7 +1014,7 @@ async function _reconcileStartupSide({
                 if (cancelCount <= 0) break;
                 logger?.log?.(`Startup: Cancelling excess matched ${sideUpper} ${o.orderId} (grid ${o.id})`, 'warn');
                 try {
-                    await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun, chainOrderObj: o, fillLockAlreadyHeld });
+                    await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun, chainOrderObj: o });
                     logger?.log?.(`Startup: Successfully cancelled excess matched ${sideUpper} order ${o.orderId} (grid ${o.id})`, 'info');
                     cancelCount--;
                 } catch (err: any) {

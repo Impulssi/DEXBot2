@@ -2,7 +2,7 @@ const assert = require('assert');
 
 const MaintenanceRuntime = require('../modules/dexbot_maintenance_runtime');
 const chainOrders = require('../modules/chain_orders');
-const { monitorDivergence } = require('../modules/order/grid');;
+const { monitorDivergence } = require('../modules/order/grid');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 async function runTests() {
@@ -85,7 +85,7 @@ async function runTests() {
             _processFillsWithBatching: async () => ({ aborted: false }),
             _syncOpenOrdersAndProcessFills: async function (tag) {
                 const openOrders = await chainOrders.readOpenOrders(this.accountId);
-                const syncResult = await this.manager.synchronizeWithChain(openOrders, 'readOpenOrders', { fillLockAlreadyHeld: true });
+                const syncResult = await this.manager.synchronizeWithChain(openOrders, 'readOpenOrders');
                 return { syncResult, aborted: false, hasUnmatched: 0 };
             },
             _executeBatchIfNeeded: async () => ({ executed: false }),

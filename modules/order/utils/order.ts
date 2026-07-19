@@ -1153,7 +1153,7 @@ function getSideBudget(side, funds, config, totalTarget) {
     if (isBtsSide) {
         const btsFees = MathUtils.calculateOrderCreationFees(
             config.assetA, config.assetB, totalTarget,
-            config?.feeParams?.BTS_RESERVATION_MULTIPLIER
+            config?.feeParams?.BTS_RESERVATION_MULTIPLIER ?? FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER
         );
         return Math.max(0, allocated - btsFees);
     }

@@ -657,7 +657,7 @@ class Accountant {
         // from chain. During this pass we only want to reconcile grid structure/order
         // mapping against open orders; re-applying optimistic accounting deltas here
         // double-counts commitment changes and can amplify invariant drift.
-        const syncResult = await mgr.syncFromOpenOrders(openOrders, { skipAccounting: true, fillLockAlreadyHeld: true, protectCommittedOrders: true });
+        const syncResult = await mgr.syncFromOpenOrders(openOrders, { skipAccounting: true });
         const unmatchedChainOrders = Array.isArray(syncResult?.unmatchedChainOrders)
             ? syncResult.unmatchedChainOrders
             : [];

@@ -7,7 +7,7 @@
  */
 
 const assert = require('assert');
-const { compareGrids } = require('../modules/order/grid');;
+const { compareGrids } = require('../modules/order/grid');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
 const { GRID_COMPARISON } = GRID_LIMITS;
 const Format = require('../modules/order/format');

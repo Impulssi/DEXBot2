@@ -34,7 +34,7 @@ setCachedModule(startupReconcilePath, {
 });
 
 const chainOrders = require('../modules/chain_orders');
-const { loadGrid, initializeGrid } = require('../modules/order/grid');;
+const { loadGrid, initializeGrid } = require('../modules/order/grid');
 delete require.cache[dexbotClassPath];
 const DEXBot = require('../modules/dexbot_class');
 

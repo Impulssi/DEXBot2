@@ -1,6 +1,6 @@
 
 const assert = require('assert');
-const { checkAndUpdateGridIfNeeded } = require('../modules/order/grid');;
+const { checkAndUpdateGridIfNeeded } = require('../modules/order/grid');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
 const { initializeFeeCache } = require('../modules/order/utils/system');
 

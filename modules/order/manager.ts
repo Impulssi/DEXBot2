@@ -68,7 +68,7 @@ const AsyncLock = require('./async_lock');
 const Accountant = require('./accounting');
 const StrategyEngine = require('./strategy');
 const SyncEngine = require('./sync_engine');
-const { calculateCurrentSpread, checkSpreadCondition, checkGridHealth } = require('./grid');;
+const { calculateCurrentSpread, checkSpreadCondition, checkGridHealth } = require('./grid');
 const Format = require('./format');
 const { toFiniteNumber, isValidNumber } = Format;
 
@@ -235,6 +235,7 @@ class StateManager {
         };
 
         this.recovery = {
+            phase: 'idle',
             attemptCount: 0,
             lastAttemptAt: 0,
             inFlight: false,
@@ -297,12 +298,14 @@ class StateManager {
     }
 
     recordRecoveryAttempt() {
+        this.recovery.phase = 'scanning';
         this.recovery.attemptCount++;
         this.recovery.lastAttemptAt = Date.now();
         this.recovery.inFlight = true;
     }
 
     completeRecovery(success) {
+        this.recovery.phase = success ? 'idle' : 'executing';
         this.recovery.inFlight = false;
         if (!success) {
             this.recovery.lastFailureAt = Date.now();
@@ -1904,6 +1907,7 @@ class OrderManager {
 
     set _recoveryState(value) {
         const fallback = {
+            phase: 'idle',
             attemptCount: 0,
             lastAttemptAt: 0,
             inFlight: false,

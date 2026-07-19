@@ -334,7 +334,7 @@ class SyncEngine {
     /**
      * Synchronize grid orders with blockchain open orders snapshot.
      * @param {Array|null} chainOrders - Array of blockchain order objects
-     * @param {Object} [options={}] - Sync options (e.g., { skipAccounting: true, protectCommittedOrders: true })
+     * @param {Object} [options={}] - Sync options (e.g., { skipAccounting: true })
      * @returns {Promise<Object>} Result with filledOrders, updatedOrders, ordersNeedingCorrection
      */
     async syncFromOpenOrders(chainOrders: any[] | null, options: Record<string, any> = {}) {
@@ -348,12 +348,13 @@ class SyncEngine {
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
         }
 
-        if (!options?.fillLockAlreadyHeld && mgr._fillProcessingLock) {
+        // Skip re-acquiring if we're already inside _fillProcessingLock's
+        // execution context (the lock is re-entrant). The old fillLockAlreadyHeld
+        // flag achieved the same goal by being passed through the call chain;
+        // now the lock knows whether the caller already holds it.
+        if (mgr._fillProcessingLock && !mgr._fillProcessingLock.isReentrant()) {
             return mgr._fillProcessingLock.acquire(async () => {
-                return this.syncFromOpenOrders(chainOrders, {
-                    ...options,
-                    fillLockAlreadyHeld: true
-                });
+                return this.syncFromOpenOrders(chainOrders, options);
             });
         }
 
@@ -708,13 +709,16 @@ class SyncEngine {
                     }
                 }
             } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
-                // During recovery syncs (protectCommittedOrders=true), don't
-                // virtualize orders that were placed by a successful COW commit.
+                // Don't virtualize orders placed by a successful COW commit.
                 // The chain snapshot may lag behind confirmed transactions,
-                // causing correctly-placed orders to appear missing. Keeping them
-                // in the grid defers cleanup to the next normal sync cycle, which
-                // will correctly detect fills via the fill-history pipeline.
-                if (options.protectCommittedOrders && mgr._committedOrderIds.has(gridOrder.orderId)) {
+                // causing correctly-placed orders to appear missing. _committedOrderIds
+                // is atomically rebuilt from every successful COW commit
+                // (manager.ts:_commitCowPlan) and is always active for all sync
+                // paths — previously gated on options.protectCommittedOrders.
+                // Always-on is safe because committed IDs are self-cleaning:
+                // filled/virtualized orders are absent from the next commit's
+                // finalMap, so their IDs drop out on the next atomic rebuild.
+                if (mgr._committedOrderIds?.has(gridOrder.orderId)) {
                     continue;
                 }
                 const currentGridOrder = mgr.orders.get(gridOrder.id) || gridOrder;
@@ -1484,9 +1488,7 @@ class SyncEngine {
                 // Plain open-order syncs do not imply a fresh account balance fetch,
                 // so they still use optimistic accounting deltas.
                 return this.syncFromOpenOrders(chainData, {
-                    skipAccounting: false,
-                    fillLockAlreadyHeld: options?.fillLockAlreadyHeld,
-                    protectCommittedOrders: options?.protectCommittedOrders
+                    skipAccounting: false
                 });
 
             case 'periodicBlockchainFetch': {
@@ -1495,8 +1497,7 @@ class SyncEngine {
                 // commitment deltas here double-deducts newly adopted or resized
                 // open orders from already-fetched free balances.
                 return this.syncFromOpenOrders(chainData, {
-                    skipAccounting: true,
-                    fillLockAlreadyHeld: options?.fillLockAlreadyHeld
+                    skipAccounting: true
                 });
             }
         }

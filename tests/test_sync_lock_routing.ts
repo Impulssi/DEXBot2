@@ -136,25 +136,44 @@ async function testSyncEngineCancelOrderAcquiresGridLock() {
 }
 
 async function testOpenOrdersSyncUsesFillLockContract() {
-    console.log('\n[SYNC-LOCK-003] syncFromOpenOrders acquires fill lock unless caller already holds it...');
+    console.log('\n[SYNC-LOCK-003] syncFromOpenOrders acquires fill lock (re-entrant safe)...');
     const manager = createManagerFixture();
 
     let fillLockAcquireCalls = 0;
+    let insideLock = false;
     const realFillLock = manager._fillProcessingLock;
     manager._fillProcessingLock = {
         acquire: async (callback) => {
+            if (insideLock) return callback();
+            insideLock = true;
             fillLockAcquireCalls += 1;
-            return await callback();
+            try {
+                return await callback();
+            } finally {
+                insideLock = false;
+            }
         },
         isLocked: () => realFillLock.isLocked(),
+        isReentrant: () => insideLock,
         getQueueLength: () => realFillLock.getQueueLength(),
     };
 
     await manager.syncFromOpenOrders([]);
     assert.strictEqual(fillLockAcquireCalls, 1, 'direct open-orders sync should acquire _fillProcessingLock');
 
-    await manager.syncFromOpenOrders([], { fillLockAlreadyHeld: true });
-    assert.strictEqual(fillLockAcquireCalls, 1, 'caller-owned fill lock should bypass reacquisition');
+    // Second call (lock no longer held) acquires again — expected.
+    await manager.syncFromOpenOrders([]);
+    assert.strictEqual(fillLockAcquireCalls, 2, 'second call acquires again (lock was released)');
+
+    // Third call: re-entrant path — call syncFromOpenOrders from inside the lock.
+    // The mock sets insideLock before running the callback, so the nested
+    // syncFromOpenOrders sees isReentrant() === true and skips re-acquisition.
+    fillLockAcquireCalls = 0;
+    insideLock = false;
+    await manager._fillProcessingLock.acquire(async () => {
+        await manager.syncFromOpenOrders([]);
+    });
+    assert.strictEqual(fillLockAcquireCalls, 1, 'nested syncFromOpenOrders must use re-entrant path (no re-acquire)');
 
     console.log('  PASS');
 }

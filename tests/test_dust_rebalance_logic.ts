@@ -43,7 +43,7 @@ Module._load = function(request, parent, isMain) {
 
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, TIMING } = require('../modules/constants');
-const { checkWindowDust, hasAnyDust, getDustOrders } = require('../modules/order/grid');;
+const { checkWindowDust, hasAnyDust, getDustOrders } = require('../modules/order/grid');
 const { _setFeeCache } = require('../modules/order/utils/math');
 const chainOrders = require('../modules/chain_orders');
 const DEXBot = require('../modules/dexbot_class');

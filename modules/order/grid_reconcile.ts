@@ -38,7 +38,6 @@ async function attemptResumePersistedGridByPriceMatch({
     chainOpenOrders,
     logger,
     storeGrid,
-    fillLockAlreadyHeld = false,
 }) {
     if (!Array.isArray(persistedGrid) || persistedGrid.length === 0) return { resumed: false, matchedCount: 0 };
     if (!Array.isArray(chainOpenOrders) || chainOpenOrders.length === 0) return { resumed: false, matchedCount: 0 };
@@ -48,7 +47,7 @@ async function attemptResumePersistedGridByPriceMatch({
         logger && logger.log && logger.log('No matching active order IDs found. Attempting to match by price...', 'info');
         const { loadGrid } = require('./grid');
         await loadGrid(manager, persistedGrid);
-        await manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', { fillLockAlreadyHeld });
+        await manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', {});
 
         const matchedOrderIds = new Set(
             (Array.from(manager.orders.values()) as any[])
@@ -97,7 +96,6 @@ async function decideStartupGridAction({
     logger,
     storeGrid,
     attemptResumeFn = attemptResumePersistedGridByPriceMatch,
-    fillLockAlreadyHeld = false,
 }) {
     const persisted = Array.isArray(persistedGrid) ? persistedGrid : [];
     const chain = Array.isArray(chainOpenOrders) ? chainOpenOrders : [];
@@ -113,7 +111,7 @@ async function decideStartupGridAction({
     }
 
     if (chain.length > 0) {
-        const resume = await attemptResumeFn({ manager, persistedGrid: persisted, chainOpenOrders: chain, logger, storeGrid, fillLockAlreadyHeld });
+        const resume = await attemptResumeFn({ manager, persistedGrid: persisted, chainOpenOrders: chain, logger, storeGrid });
         return { shouldRegenerate: !resume.resumed, hasActiveMatch: false, resumedByPrice: !!resume.resumed, matchedCount: resume.matchedCount || 0 };
     }
 
@@ -146,7 +144,6 @@ async function reconcileGridOrders({
     privateKey,
     chainOrders,
     chainOpenOrders,
-    fillLockAlreadyHeld = false,
 }) {
     // Parameter validation
     if (!manager || typeof manager.synchronizeWithChain !== 'function') {
@@ -258,7 +255,6 @@ async function reconcileGridOrders({
                             dryRun,
                             chainOrderObj: u.chain,
                             releaseUntrackedFunds: true,
-                            fillLockAlreadyHeld,
                         });
                         cancelledDuplicateIds.add(p.orderId);
                         logger?.log?.(
@@ -312,7 +308,6 @@ async function reconcileGridOrders({
             dryRun,
             plannedCreates,
             plannedUpdates,
-            fillLockAlreadyHeld,
         });
 
         const buyResult = await _reconcileStartupSide({
@@ -327,7 +322,6 @@ async function reconcileGridOrders({
             dryRun,
             plannedCreates,
             plannedUpdates,
-            fillLockAlreadyHeld,
         });
 
         return { plannedCreates, plannedUpdates, chainSellCount: sellResult.chainCount, chainBuyCount: buyResult.chainCount };
@@ -370,7 +364,6 @@ async function reconcileGridOrders({
                         logger,
                         triggerMessage: `Startup: Triggering recovery sync after update batch failure (attempt ${attempt}/${maxBatchAttempts})`,
                         source: 'startupReconcileUpdateBatchFailure',
-                        fillLockAlreadyHeld,
                     });
 
                     updatePlans = _refreshStartupUpdatePlans(updatePlans, refreshedChainOrders);
@@ -399,7 +392,6 @@ async function reconcileGridOrders({
                     privateKey,
                     manager,
                     dryRun,
-                    fillLockAlreadyHeld,
                 });
 
                 if (fallbackResult.executed > 0 || fallbackResult.skipped > 0 || fallbackResult.failed > 0) {
@@ -422,7 +414,6 @@ async function reconcileGridOrders({
             privateKey,
             manager,
             dryRun,
-            fillLockAlreadyHeld,
         });
     }
 

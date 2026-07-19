@@ -1119,7 +1119,7 @@ async function testMpaDebtFirstThenCollateralFallbackTriggersReset() {
     assert.strictEqual(calls[0].operations[0].op_data.delta_collateral.amount < 0, true, 'combined op should withdraw collateral after the capped debt increase');
     assert.deepStrictEqual(result.mpa[0].executed.map((entry) => entry.leg), ['combined'], 'maintenance should record combined execution');
     assert.strictEqual(result.mpa[0].resetResult.reason, 'cr-adjustment', 'grid reset should be requested after CR adjustment');
-    assert.strictEqual(resetCalls[0].options.fillLockAlreadyHeld, true, 'periodic CR reset should reuse the existing fill lock');
+    // AsyncLock is re-entrant; periodic CR reset doesn't need fillLockAlreadyHeld
 
     const persisted = JSON.parse(fs.readFileSync(path.join(baseDir, 'credit_runtime', 'credit-bot-cr-reset.json'), 'utf8'));
     assert.strictEqual(typeof persisted.lastGridResetAt, 'string', 'reset timestamp should be persisted');
@@ -2269,6 +2269,7 @@ async function testPendingReborrowUsesFallbackOfferWhenOriginalUnavailable() {
       manager: {
         _fillProcessingLock: {
           acquire: async (fn) => fn(),
+          isReentrant: () => false,
         },
         fetchAccountTotals: async (accountId) => {
           fetchTotalsCalls.push(accountId);
@@ -2361,6 +2362,7 @@ async function testPendingFallbackWaitsWhileSourceDealActive() {
       manager: {
         _fillProcessingLock: {
           acquire: async (fn) => fn(),
+          isReentrant: () => false,
         },
         fetchAccountTotals: async (accountId) => {
           fetchTotalsCalls.push(accountId);
@@ -2637,6 +2639,7 @@ async function testCreditMaintenanceBorrowsTowardAssignedTarget() {
       manager: {
         _fillProcessingLock: {
           acquire: async (fn) => fn(),
+          isReentrant: () => false,
         },
         fetchAccountTotals: async (accountId) => {
           fetchTotalsCalls.push(accountId);
@@ -2675,7 +2678,7 @@ async function testCreditMaintenanceBorrowsTowardAssignedTarget() {
     assert.strictEqual(fetchTotalsCalls.length, 1, 'credit capital updates should refresh account totals before threshold checks');
     assert.strictEqual(gridMaintenanceCalls.length, 1, 'credit capital updates should check the grid maintenance thresholds');
     assert.strictEqual(gridMaintenanceCalls[0].context, 'credit capital update');
-    assert.strictEqual(gridMaintenanceCalls[0].options.fillLockAlreadyHeld, true);
+    // AsyncLock is re-entrant; fillLockAlreadyHeld flag is eliminated
   } finally {
     restore();
     try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
@@ -3189,6 +3192,7 @@ async function testProactiveRepayBundlesReborrowInSingleBatch() {
       manager: {
         _fillProcessingLock: {
           acquire: async (fn) => fn(),
+          isReentrant: () => false,
         },
         fetchAccountTotals: async () => {},
       },
@@ -3337,6 +3341,7 @@ async function testProactiveRepayReborrowMultiAssetOffer() {
       manager: {
         _fillProcessingLock: {
           acquire: async (fn) => fn(),
+          isReentrant: () => false,
         },
         fetchAccountTotals: async () => {},
       },
@@ -3622,6 +3627,7 @@ async function testCollateralSwitchSkippedWithoutBalance() {
       manager: {
         _fillProcessingLock: {
           acquire: async (fn) => fn(),
+          isReentrant: () => false,
         },
         fetchAccountTotals: async () => {},
       },
@@ -3783,6 +3789,7 @@ async function testPendingReborrowDropsStaleEntryWhenReplacementExists() {
       manager: {
         _fillProcessingLock: {
           acquire: async (fn) => fn(),
+          isReentrant: () => false,
         },
         fetchAccountTotals: async (accountId) => {
           fetchTotalsCalls.push(accountId);
@@ -3875,6 +3882,7 @@ async function testProactiveRepayPrunesStalePendingReborrow() {
       manager: {
         _fillProcessingLock: {
           acquire: async (fn) => fn(),
+          isReentrant: () => false,
         },
         fetchAccountTotals: async () => {},
       },

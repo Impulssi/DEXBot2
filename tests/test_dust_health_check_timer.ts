@@ -47,8 +47,7 @@ async function test() {
         }),
         logger: { log: () => {} },
     };
-    bot._cancelDustOrders = async ({ buy, sell, fillLockAlreadyHeld }) => {
-        assert.strictEqual(fillLockAlreadyHeld, true, 'Should pass fillLockAlreadyHeld=true inside the lock');
+    bot._cancelDustOrders = async ({ buy, sell }) => {
         assert.strictEqual(sell.length, 1, 'Should pass detected dust orders');
         cancelCalled = true;
         return { cancelledCount: 1, batchResult: { aborted: false } };

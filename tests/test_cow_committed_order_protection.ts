@@ -25,7 +25,7 @@ async function runTests() {
         return mgr;
     };
 
-    console.log(' - Protection flag preserves committed order during recovery sync...');
+    console.log(' - _committedOrderIds always protects during snapshot sync...');
     {
         const manager = await createManager();
         await manager._updateOrder({
@@ -33,41 +33,42 @@ async function runTests() {
             size: 100, price: 50, orderId: '1.7.100'
         });
         manager._committedOrderIds.add('1.7.100');
-        const result = await manager.sync.syncFromOpenOrders([], { protectCommittedOrders: true });
+        const result = await manager.sync.syncFromOpenOrders([], {});
         const order = manager.orders.get('slot-1');
-        assert.strictEqual(order.state, ORDER_STATES.ACTIVE, 'Committed order should remain ACTIVE with protection flag');
+        assert.strictEqual(order.state, ORDER_STATES.ACTIVE, 'Committed order should remain ACTIVE during snapshot sync');
         assert.strictEqual(result.filledOrders.length, 0, 'No fills should be reported for protected order');
     }
 
-    console.log(' - Missing flag virtualizes committed order...');
+    console.log(' - Non-committed order is virtualized...');
     {
         const manager = await createManager();
         await manager._updateOrder({
             id: 'slot-2', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
             size: 100, price: 50, orderId: '1.7.101'
         });
-        manager._committedOrderIds.add('1.7.101');
         const result = await manager.sync.syncFromOpenOrders([], {});
         const order = manager.orders.get('slot-2');
-        assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Committed order should be virtualized without protection flag');
-        assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported for unprotected order');
+        assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Non-committed order should be virtualized');
+        assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported for non-committed order');
         assert.strictEqual(result.filledOrders[0].id, 'slot-2', 'Fill should reference the correct slot');
     }
 
-    console.log(' - Flag does not protect non-committed order...');
+    console.log(' - Order removed from committed set is not protected...');
     {
         const manager = await createManager();
         await manager._updateOrder({
             id: 'slot-3', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
             size: 100, price: 50, orderId: '1.7.102'
         });
-        const result = await manager.sync.syncFromOpenOrders([], { protectCommittedOrders: true });
+        manager._committedOrderIds.add('1.7.102');
+        manager._committedOrderIds.delete('1.7.102');
+        const result = await manager.sync.syncFromOpenOrders([], {});
         const order = manager.orders.get('slot-3');
-        assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Non-committed order should be virtualized even with protection flag');
-        assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported for non-committed order');
+        assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Order removed from committed set should be virtualized');
+        assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported');
     }
 
-    console.log(' - Order removed from committed set on fill is not protected...');
+    console.log(' - Protection works through synchronizeWithChain readOpenOrders...');
     {
         const manager = await createManager();
         await manager._updateOrder({
@@ -75,14 +76,12 @@ async function runTests() {
             size: 100, price: 50, orderId: '1.7.103'
         });
         manager._committedOrderIds.add('1.7.103');
-        manager._committedOrderIds.delete('1.7.103');
-        const result = await manager.sync.syncFromOpenOrders([], { protectCommittedOrders: true });
+        const result = await manager.synchronizeWithChain([], 'readOpenOrders', {});
         const order = manager.orders.get('slot-4');
-        assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Order removed from committed set should be virtualized');
-        assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported');
+        assert.strictEqual(order.state, ORDER_STATES.ACTIVE, 'Committed order should remain ACTIVE via synchronizeWithChain readOpenOrders');
     }
 
-    console.log(' - Protection flag threaded through synchronizeWithChain readOpenOrders...');
+    console.log(' - Protection always active for readOpenOrders source...');
     {
         const manager = await createManager();
         await manager._updateOrder({
@@ -90,22 +89,9 @@ async function runTests() {
             size: 100, price: 50, orderId: '1.7.104'
         });
         manager._committedOrderIds.add('1.7.104');
-        const result = await manager.synchronizeWithChain([], 'readOpenOrders', { protectCommittedOrders: true });
-        const order = manager.orders.get('slot-5');
-        assert.strictEqual(order.state, ORDER_STATES.ACTIVE, 'Committed order should remain ACTIVE via synchronizeWithChain with protection flag');
-    }
-
-    console.log(' - Protection flag not passed through synchronizeWithChain readOpenOrders...');
-    {
-        const manager = await createManager();
-        await manager._updateOrder({
-            id: 'slot-6', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
-            size: 100, price: 50, orderId: '1.7.105'
-        });
-        manager._committedOrderIds.add('1.7.105');
         const result = await manager.synchronizeWithChain([], 'readOpenOrders', {});
-        const order = manager.orders.get('slot-6');
-        assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Committed order should be virtualized via synchronizeWithChain without protection flag');
+        const order = manager.orders.get('slot-5');
+        assert.strictEqual(order.state, ORDER_STATES.ACTIVE, 'Committed order should remain ACTIVE — protection is always on for snapshot syncs');
     }
 
     console.log('All committed order protection tests passed.');

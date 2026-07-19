@@ -13,7 +13,7 @@
  * - Each line displays price progression and percentage increment between levels
  */
 
-const { createOrderGrid } = require('../modules/order/grid');;
+const { createOrderGrid } = require('../modules/order/grid');
 const { DEFAULT_CONFIG } = require('../modules/constants');
 const Format = require('../modules/order/format');
 

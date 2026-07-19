@@ -1843,12 +1843,11 @@ class CreditRuntime {
             }
             return this.bot._runGridMaintenance(context, {
                 ...options,
-                fillLockAlreadyHeld: true,
             });
         };
 
         try {
-            if (options.fillLockAlreadyHeld === true || !lock || typeof lock.acquire !== 'function') {
+            if (!lock || typeof lock.acquire !== 'function' || lock.isReentrant()) {
                 return await runCheck();
             }
             return await lock.acquire(runCheck);
@@ -2075,9 +2074,7 @@ class CreditRuntime {
         } else if (shouldAutoReborrow && deferredReborrowRequest && !inlineReborrowPlanned && sourceDealStillActive) {
             this.warn(`credit runtime: deferred reborrow for deal ${dealSummary.id} dropped — source deal still active on-chain after repay`);
         }
-        await this._checkGridMaintenanceAfterCreditUpdate('credit capital update', {
-            fillLockAlreadyHeld: options.fillLockAlreadyHeld === true,
-        });
+        await this._checkGridMaintenanceAfterCreditUpdate('credit capital update');
         await this.persistState('credit repay');
         return result;
     }
@@ -2500,7 +2497,6 @@ class CreditRuntime {
                 await this.repayCreditDeal(currentDeal, currentPiece, {
                     autoReborrow: true,
                     specificPolicy: lendingItem,
-                    fillLockAlreadyHeld: runtimeContext?.options?.fillLockAlreadyHeld === true,
                 });
 
                 prevPieceAt = Date.now();
@@ -2513,9 +2509,7 @@ class CreditRuntime {
             if (totalPiecesThisCycle < MAX_PIECES_PER_CYCLE) {
                 await this.refreshCreditState({}, lendingItem);
             }
-            const gridResult = await this._checkGridMaintenanceAfterCreditUpdate('credit restructure', {
-                fillLockAlreadyHeld: runtimeContext?.options?.fillLockAlreadyHeld === true,
-            });
+            const gridResult = await this._checkGridMaintenanceAfterCreditUpdate('credit restructure');
             return { action: 'restructured', gridMaintenanceResult: gridResult };
         }
         return null;
@@ -2759,9 +2753,7 @@ class CreditRuntime {
             if (typeof this.bot?.requestGridReset === 'function') {
                 try {
                     const resetReason = plan.resetReason || 'cr-adjustment';
-                    const resetResult = await this.bot.requestGridReset(resetReason, {
-                        fillLockAlreadyHeld: options.fillLockAlreadyHeld ?? (context === 'periodic'),
-                    });
+                    const resetResult = await this.bot.requestGridReset(resetReason);
                     this.state.lastGridResetAt = new Date().toISOString();
                     return { plan, executed, resetResult };
                 } catch (err: any) {
@@ -2857,7 +2849,6 @@ class CreditRuntime {
                         collateralAsset: configuredCollateralAssetId,
                         pendingReleaseCollateralAmount: isCollateralMismatch ? null : existingCollateralAmount,
                         specificPolicy: lendingItem,
-                        fillLockAlreadyHeld: runtimeContext?.options?.fillLockAlreadyHeld === true,
                     });
 
                     // Prune only the stale entries that existed before the call
@@ -2933,7 +2924,6 @@ class CreditRuntime {
                     };
                     await this.refreshCreditState({}, lendingItem);
                     const gridMaintenanceResult = await this._checkGridMaintenanceAfterCreditUpdate('credit capital update', {
-                        fillLockAlreadyHeld: runtimeContext?.options?.fillLockAlreadyHeld === true,
                     });
                     return {
                         plan: increasePlan,

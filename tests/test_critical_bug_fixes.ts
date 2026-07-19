@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-const { createOrderGrid } = require('../modules/order/grid');;
+const { createOrderGrid } = require('../modules/order/grid');
 
 console.log('='.repeat(80));
 console.log('Testing Critical Bug Fixes (COW)');

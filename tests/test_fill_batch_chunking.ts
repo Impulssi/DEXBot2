@@ -7,7 +7,7 @@
 
 const assert = require('assert');
 const DEXBot = require('../modules/dexbot_class');
-const { _getSizingContext } = require('../modules/order/grid');;
+const { _getSizingContext } = require('../modules/order/grid');
 const { FILL_PROCESSING, ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 const MAX_BATCH = FILL_PROCESSING.MAX_FILL_BATCH_SIZE;
