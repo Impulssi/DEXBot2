@@ -204,6 +204,9 @@ node unlock --foreground
 
 # Start with claw automation
 node unlock --claw-only
+
+# Start credit-only worker (no grid trading, just credit runtime)
+node unlock credit
 ```
 
 ### Overview of CLI Commands

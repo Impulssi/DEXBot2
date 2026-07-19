@@ -5,6 +5,7 @@ DEXBot2 supports native BitShares debt workflows through the bot-level `debtPoli
 ## Contents
 
 - [Configuration Format](#configuration-format)
+- [Credit-Only Mode](#credit-only-mode)
 - [Collateral Distribution](#collateral-distribution)
 - [Runtime Timing](#runtime-timing)
 - [MPA Maintenance](#mpa-maintenance)
@@ -36,9 +37,10 @@ Add `debtPolicy` to a bot entry in `profiles/bots.json`:
 {
   "name": "credit-bot-1",
   "preferredAccount": "my-account",
-  "assetA": "BTS",
-  "assetB": "HONEST.USD",
   "active": true,
+
+  "creditOnly": true,
+
   "debtPolicy": {
     "maxCollateralAmount": "80%",
     "lending": [
@@ -127,6 +129,22 @@ Add `debtPolicy` to a bot entry in `profiles/bots.json`:
 </details>
 
 There is no separate enable switch. If `debtPolicy.lending` is present, non-empty, and every item has a valid `collateralAsset`, the credit runtime loads for that bot.
+
+## Credit-Only Mode
+
+Set `creditOnly: true` on a bot entry to run only the credit runtime — no grid trading, order management, or fill processing.
+
+```json
+{ "name": "Credit", "active": true, "creditOnly": true,
+  "preferredAccount": "my-account", "debtPolicy": { "lending": [...] } }
+```
+
+No trading fields (`assetA`, `assetB`, `startPrice`, `incrementPercent`, `activeOrders`, `botFunds`) are needed.
+
+```bash
+node unlock credit          # Integrated — credential daemon + supervisor
+node unlock <bot-name>      # Start a named bot directly
+```
 
 ### Collateral Increase Thresholds
 

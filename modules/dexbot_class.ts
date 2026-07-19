@@ -295,27 +295,30 @@ class DEXBot {
     _validateStartupConfig(config) {
         const errors = [];
 
-        // Validate startPrice is numeric or valid string mode
-        const startPrice = config.startPrice;
-        const validPriceModes = ['pool', 'book'];
-        const isPriceNumeric = typeof startPrice === 'number' && Number.isFinite(startPrice) && startPrice > 0;
-        const isPriceMode = typeof startPrice === 'string' && validPriceModes.includes(startPrice.toLowerCase());
-        if (!isPriceNumeric && !isPriceMode) {
-            errors.push(`startPrice must be a positive number or valid mode (${validPriceModes.join('/')}), got: ${startPrice}`);
-        }
+        // Skip trading field validation in credit-only mode
+        if (!config.creditOnly) {
+            // Validate startPrice is numeric or valid string mode
+            const startPrice = config.startPrice;
+            const validPriceModes = ['pool', 'book'];
+            const isPriceNumeric = typeof startPrice === 'number' && Number.isFinite(startPrice) && startPrice > 0;
+            const isPriceMode = typeof startPrice === 'string' && validPriceModes.includes(startPrice.toLowerCase());
+            if (!isPriceNumeric && !isPriceMode) {
+                errors.push(`startPrice must be a positive number or valid mode (${validPriceModes.join('/')}), got: ${startPrice}`);
+            }
 
-        // Validate assetA and assetB are present
-        if (!config.assetA || typeof config.assetA !== 'string') {
-            errors.push(`assetA must be a non-empty string, got: ${config.assetA}`);
-        }
-        if (!config.assetB || typeof config.assetB !== 'string') {
-            errors.push(`assetB must be a non-empty string, got: ${config.assetB}`);
-        }
+            // Validate assetA and assetB are present
+            if (!config.assetA || typeof config.assetA !== 'string') {
+                errors.push(`assetA must be a non-empty string, got: ${config.assetA}`);
+            }
+            if (!config.assetB || typeof config.assetB !== 'string') {
+                errors.push(`assetB must be a non-empty string, got: ${config.assetB}`);
+            }
 
-        // Validate incrementPercent
-        const increment = config.incrementPercent;
-        if (!Number.isFinite(increment) || increment <= 0 || increment > 100) {
-            errors.push(`incrementPercent must be between 0 and 100, got: ${increment}`);
+            // Validate incrementPercent
+            const increment = config.incrementPercent;
+            if (!Number.isFinite(increment) || increment <= 0 || increment > 100) {
+                errors.push(`incrementPercent must be between 0 and 100, got: ${increment}`);
+            }
         }
 
         // Throw all validation errors at once
@@ -5250,6 +5253,10 @@ class DEXBot {
      */
     async _runStartupSequence() {
         try {
+            if (this.config.creditOnly) {
+                await this._runCreditOnlyStartup();
+                return;
+            }
             const startupState = await this._initializeStartupState();
             await this._finishStartupSequence(startupState);
         } catch (err: any) {
@@ -5257,6 +5264,15 @@ class DEXBot {
             await this.shutdown();
             throw err;
         }
+    }
+
+    async _runCreditOnlyStartup() {
+        await this._setupCreditRuntime();
+        await this._refreshAndSyncCreditRuntime();
+        await this._runCreditRuntimeMaintenance('startup', { fillLockAlreadyHeld: true });
+        this._setupCreditWatchdogInterval();
+        this._setupCredentialDaemonWatchdogInterval();
+        this._log('DEXBot started (credit-only mode)');
     }
 
     /**

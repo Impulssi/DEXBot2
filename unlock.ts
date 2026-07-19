@@ -106,13 +106,15 @@ const controller = createCredentialDaemonController({ root: PATHS.PROJECT_ROOT, 
 const DEFAULT_STARTUP_GRACE_MS = 750;
 const botProcessRef: { current: any } = { current: null };
 
-function printLauncherHeader({ botName = null, clawOnly = false, isolated = false, dryrun = false, headless = false } = {}) {
+function printLauncherHeader({ botName = null, clawOnly = false, creditOnly = false, isolated = false, dryrun = false, headless = false } = {}) {
     console.log('='.repeat(50));
     console.log('DEXBot2 Unlock Launcher');
     if (dryrun) console.log('Mode: dryrun (no transactions)');
     if (isolated) console.log('Mode: isolated (per-bot processes)');
     if (headless) console.log('Mode: headless (non-interactive password)');
-    if (clawOnly) {
+    if (creditOnly) {
+        console.log(`Starting credit-only worker: ${botName || 'auto-detect'}`);
+    } else if (clawOnly) {
         console.log('Starting credential daemon only');
     } else if (botName) {
         console.log(`Starting bot: ${botName}`);
@@ -435,10 +437,21 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
         return;
     }
 
-    const { botName, clawOnly, isolated, dryrun, headless, passwordFile } = parsed;
-    const selectedBot = botName ? resolveBotEntryForName(botName) : null;
-    let launchedBotNames = getLaunchedBotNames(botName);
-    const shouldStartMonolithicBackground = !clawOnly && !isolated && !isDetachedSupervisorChild && !isMonolithicBgChild && !forceForeground;
+    const { botName, clawOnly, creditOnly, isolated, dryrun, headless, passwordFile } = parsed;
+    let effectiveBotName = botName;
+    if (creditOnly && !effectiveBotName) {
+        const creditBots = listConfiguredBots().filter((b: any) => b.creditOnly === true && b.active !== false);
+        if (creditBots.length === 0) {
+            throw new Error('No credit-only bot found. Add "creditOnly": true to a bot entry in bots.json');
+        }
+        effectiveBotName = creditBots[0].name;
+        if (creditBots.length > 1) {
+            console.log(`Multiple credit-only bots found; starting first: ${effectiveBotName}`);
+        }
+    }
+    const selectedBot = effectiveBotName ? resolveBotEntryForName(effectiveBotName) : null;
+    let launchedBotNames = getLaunchedBotNames(effectiveBotName);
+    const shouldStartMonolithicBackground = !clawOnly && !creditOnly && !isolated && !isDetachedSupervisorChild && !isMonolithicBgChild && !forceForeground;
     let daemonReleased = false;
 
     if (botName && !selectedBot) {
@@ -448,7 +461,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
     if (shouldStartMonolithicBackground) {
         const { pid } = readLiveMonolithicPid();
         if (pid > 0) {
-            printLauncherHeader({ botName, clawOnly, isolated, dryrun, headless });
+            printLauncherHeader({ botName: effectiveBotName || botName, clawOnly, creditOnly, isolated, dryrun, headless });
             console.log(`DEXBot2 already running in background (PID ${pid}).`);
             console.log('Use `node unlock stat` to inspect it, or `node unlock restart` to restart it.');
             process.exitCode = 0;
@@ -458,7 +471,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
 
     try {
         if (!isDetachedSupervisorChild) {
-            printLauncherHeader({ botName, clawOnly, isolated, dryrun, headless });
+            printLauncherHeader({ botName: effectiveBotName || botName, clawOnly, creditOnly, isolated, dryrun, headless });
 
             await ensureNoForeignCredentialDaemon();
 
@@ -466,7 +479,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             let daemonOutFd = null;
             let daemonErrFd = null;
 
-            if (!clawOnly && !isolated && !forceForeground) {
+            if (!clawOnly && !creditOnly && !isolated && !forceForeground) {
                 ensureMonolithicLogDir();
                 daemonOutFd = storage.open(MONOLITHIC_OUT_LOG, 'a', 0o600);
                 try {
@@ -598,8 +611,8 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
 
         try {
             do {
-                launchedBotNames = getLaunchedBotNames(botName);
-                const dexbotArgs = buildDexbotStartArgs(botName, dryrun);
+                launchedBotNames = getLaunchedBotNames(effectiveBotName || botName);
+                const dexbotArgs = buildDexbotStartArgs(effectiveBotName || botName, dryrun);
 
                 const botProcess = spawn(Config.EXEC_PATH, dexbotArgs, {
                     cwd: PATHS.PROJECT_ROOT,
@@ -614,7 +627,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                     try {
                         storage.writeFile(
                             MONOLITHIC_BOT_INFO_FILE,
-                            JSON.stringify({ botName, botNames: launchedBotNames, pid: botProcess.pid, starttime: botStat?.starttime ?? null }),
+                            JSON.stringify({ botName: effectiveBotName || botName, botNames: launchedBotNames, pid: botProcess.pid, starttime: botStat?.starttime ?? null }),
                             { mode: 0o600 }
                         );
                     } catch (_) {}

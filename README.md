@@ -206,6 +206,7 @@ Defaults in [`modules/constants.ts`](modules/constants.ts) are overridable at gl
 ```bash
 node unlock              # Start all active bots
 node unlock --dryrun     # Dry-run (no transactions broadcast)
+node unlock credit       # Credit-only worker
 node unlock stat         # Runtime status
 node unlock stop         # Stop the monolithic runtime
 node unlock restart      # Restart the monolithic runtime

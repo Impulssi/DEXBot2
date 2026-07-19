@@ -91,29 +91,6 @@ gh pr create --title "<title>" --body-file - <<'EOF'
 EOF
 ```
 
-Recommended template:
-
-```text
-fix: <short summary>
-
-<1-2 line context>
-
-## <Fix area 1>
-File: <path>
-- Problem:
-- Impact:
-- Solution:
-
-## <Fix area 2>
-File: <path>
-- Problem:
-- Impact:
-- Solution:
-
-## Testing Notes
-- <test/verification>
-```
-
 ## Key Files
 
 ### Entry Points
@@ -224,59 +201,20 @@ npm run version:check
 npm run version:sync
 ```
 
-## Quick Commands
-```bash
-# Create feature
-git checkout test && git pull origin test
-git checkout -b feature/my-feature test
-
-# Merge to test
-git checkout test && git pull origin test && git merge --no-ff feature/my-feature && git push origin test
-
-# Integrate to dev
-git checkout dev && git pull origin dev && git merge --no-ff test && git push origin dev
-
-# Release to main
-git checkout main && git pull origin main && git merge --no-ff dev && git push origin main
-```
-
 ## Browser-Safe Surface
 
-When adding or modifying code, respect the Node-vs-browser split. The bot
-ships both a Node CLI runtime and the building blocks for an in-browser
-operator UI; mixing the two surfaces inside a shared module is the most
-common cause of `require('fs')` / `process.kill` / Unix-socket regressions
-in the browser bundle.
-
 **Convention: everything is browser-safe unless listed below as Node-only.**
-
-**Enforcement:** `package.json` "browser" field is the source of truth — it maps every
-Node-only **compiled** entry (dist/*.js) to `false`. The list below is documentation
-only; always check `package.json` before adding or removing a classification.
+`package.json` "browser" field is the source of truth — always check it before
+adding or removing a classification.
 
 **Node-only** (must not be reached from a browser bundle):
-- `modules/launcher/*` — credential daemon, bot supervisor, market adapter runtime, monolithic runtime
-- `modules/dexbot_maintenance_runtime.ts` — direct `fs` / `child_process` / `os` use
-- `modules/dexbot_class.ts` — imports `dexbot_maintenance_runtime`
-- `modules/credential_runtime.ts` — `require('./launcher/runtime_entry')`, process I/O
-- `modules/dexbot_credential_client.ts` — credential daemon protocol, Unix sockets
-- `modules/node_health_cache.ts` — node-only health tracking
-- `modules/process_discovery.ts` — reads `/proc/*`, Linux-specific
-- `modules/graceful_shutdown.ts` — `runtime.onSignal` / `runtime.exit`
-- `modules/order/logger.ts` — file I/O, process I/O
-- `modules/order/export.ts` — file I/O for CSV export
-- `modules/order/runner.ts` — heavy I/O calculation runner
-- `modules/storage/node_adapter.ts` — direct `fs` wrapper
-- `modules/key_store.ts` — key file management
-- `unlock.ts`, `bot.ts`, `dexbot.ts`, `pm2.ts`, `credential-daemon.ts` — CLI entry points
-- `market_adapter/lp_chart_runner.ts` — `require('child_process')` for chart rendering
-- `market_adapter/ama_signal_runner.ts` — CLI script, `process.exit` / `process.stdout`
+`modules/launcher/*`, `modules/dexbot_maintenance_runtime.ts`, `modules/dexbot_class.ts`, `modules/credential_runtime.ts`, `modules/dexbot_credential_client.ts`, `modules/node_health_cache.ts`, `modules/process_discovery.ts`, `modules/graceful_shutdown.ts`, `modules/order/logger.ts`, `modules/order/export.ts`, `modules/order/runner.ts`, `modules/storage/node_adapter.ts`, `modules/key_store.ts`, `unlock.ts`, `bot.ts`, `dexbot.ts`, `pm2.ts`, `credential-daemon.ts`, `market_adapter/lp_chart_runner.ts`, `market_adapter/ama_signal_runner.ts`
 
 **Environment detection** — always go through `modules/env.ts`:
 ```ts
 import { isBrowser, hasProcess } from './env';
 ```
-Do not inline `typeof window` / `typeof globalThis.window` / `typeof process` checks. The 6+ inline ternaries that used to exist in `bitshares-native/*` and `runtime.ts` were consolidated into the helpers above.
+Do not inline `typeof window` / `typeof globalThis.window` / `typeof process` checks.
 
 ## Config Caching Trap (Tests)
 

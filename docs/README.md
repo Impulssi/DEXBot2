@@ -18,6 +18,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 ### 💳 [MPA and Credit Usage](MPA_CREDIT_USAGE.md)
 *User-facing MPA and credit offer workflow guide.*
 - **Debt Policy**: Per-bot `debtPolicy.lending` configuration where each item declares its own `collateralAsset`
+- **Credit-Only Mode**: Run credit runtime without grid trading (`creditOnly: true`, `node unlock credit`)
 - **MPA Borrowing**: Call-order updates with debt-first CR planning
 - **Credit Offers**: Accept/repay with auto-reborrow and LP-backed collateral valuation
 - **Watchdog Timing**: Dedicated credit deal renewal interval and expiry threshold settings
@@ -86,7 +87,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Data Flow**: Visualization of how market data becomes trading operations and then blockchain transactions.
 - **Zero-Dependency Policy**: Formal policy rationale, trading-bot special-case justification, and practical implications (native blockchain client, crypto, testing, persistence)
 - **Market Adapter Signal Pipeline**: AMA center, dynamic weights, regime detection, and collateral advisories
-- **Credit/Debt Runtime**: Native MPA and credit offer workflows with CR planning and grid reset coupling
+- **Credit/Debt Runtime**: Native MPA and credit offer workflows with CR planning and grid reset coupling; `creditOnly` mode for runtime-only operation without grid trading
 
 ### 📖 [Developer Guide](developer_guide.md)
 *Your daily companion for coding.*

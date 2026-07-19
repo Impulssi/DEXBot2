@@ -20,7 +20,7 @@ function stripUnlockFlags(args: string[]): string[] {
     const result: string[] = [];
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (a === '--headless' || a === '--isolated' || a === '--dryrun' || a === '--foreground' || a === 'claw-only' || a === '--claw-only') {
+        if (a === '--headless' || a === '--isolated' || a === '--dryrun' || a === '--foreground' || a === 'claw-only' || a === '--claw-only' || a === 'credit' || a === '--credit') {
             continue;
         }
         if (a === '--password-file') {
@@ -40,6 +40,7 @@ function stripUnlockFlags(args: string[]): string[] {
 function parseUnlockArgs(argv = process.argv) {
     const args = argv.slice(2);
     const clawOnly = args.includes('--claw-only') || args.includes('claw-only');
+    const creditOnly = args.includes('--credit') || args.includes('credit');
     const isolated = args.includes('--isolated');
     const dryrun = args.includes('--dryrun');
     const headless = args.includes('--headless');
@@ -50,10 +51,7 @@ function parseUnlockArgs(argv = process.argv) {
         let cmd = positionalArgs[0];
         const target = positionalArgs[1] || null;
 
-        // Normalize whole-runtime controls:
-        //   restart, restart all -> restart-all
-        //   stop, stop all       -> stop-all
-        // Keep stop/restart <botName> for isolated per-bot control.
+        // Normalize whole-runtime controls: restart/stop (no target or 'all') → *-all
         const consumedAll = (cmd === 'restart' || cmd === 'stop') && (!target || target === 'all');
         if (consumedAll) {
             cmd += '-all';
@@ -62,6 +60,7 @@ function parseUnlockArgs(argv = process.argv) {
         return {
             botName: null,
             clawOnly: false,
+            creditOnly: false,
             isolated: false,
             dryrun: false,
             headless: false,
@@ -70,9 +69,11 @@ function parseUnlockArgs(argv = process.argv) {
         };
     }
 
+    const resolvedBotName = findFirstPositionalArg(positionalArgs) || Config.BOT_NAME || null;
     return {
-        botName: clawOnly ? null : findFirstPositionalArg(positionalArgs) || Config.BOT_NAME || null,
+        botName: resolvedBotName,
         clawOnly,
+        creditOnly,
         isolated,
         dryrun,
         headless,

@@ -173,6 +173,7 @@ let DEFAULT_CONFIG = {
     // Bot control
     active: true,                 // Whether bot should actively place/manage orders
     dryRun: false,                // If true, simulate operations without blockchain transactions
+    creditOnly: false,            // If true, skip grid trading and only run credit operations
 
     // Trading pair
     assetA: null,                 // Base asset symbol (e.g., "BTS")

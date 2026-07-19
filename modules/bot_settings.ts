@@ -68,7 +68,8 @@ function selectActiveBotEntries(settings: any): any[] {
 
 function validateBotEntry(b: any, i: number, src: string): string | null {
     const problems = [];
-    const required = ['assetA', 'assetB', 'activeOrders', 'botFunds'];
+    const isCreditOnly = b.creditOnly === true;
+    const required = isCreditOnly ? [] : ['assetA', 'assetB', 'activeOrders', 'botFunds'];
     for (const k of required) {
         if (!(k in b)) problems.push(`missing '${k}'`);
     }

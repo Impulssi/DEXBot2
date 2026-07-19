@@ -673,5 +673,34 @@ assert(
     'validateBotEntry should reject non-boolean MPA debtOnly'
 );
 
+// creditOnly: true skips the required-field checks for trading fields
+const creditOnlyBot = {
+    name: 'Credit',
+    active: true,
+    creditOnly: true,
+    preferredAccount: 'my-account',
+    debtPolicy: {
+        lending: [
+            { asset: 'USD', collateralAsset: 'BTS', type: 'mpa', maxCollateralRatio: 2.0 },
+        ],
+    },
+};
+assert.strictEqual(
+    validateBotEntry(creditOnlyBot, 0, 'test'),
+    null,
+    'validateBotEntry should accept creditOnly bot without trading fields'
+);
+
+// creditOnly: false (or missing) still requires trading fields
+const nonCreditBot = {
+    name: 'NoCredit',
+    active: true,
+};
+const result = validateBotEntry(nonCreditBot, 0, 'test');
+assert(
+    result && result.includes('assetA'),
+    'validateBotEntry should require assetA when creditOnly is not set'
+);
+
 console.log('bot settings tests passed');
 process.exit(0);
