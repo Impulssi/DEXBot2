@@ -2,63 +2,13 @@
 
 const { NATIVE_CLIENT } = require('../constants');
 const { RESOLVERS } = NATIVE_CLIENT;
+const { LRUCache } = require('./lru_cache');
 
 const ASSET_TTL_MS: number = RESOLVERS.ASSET_TTL_MS;
 const ACCOUNT_TTL_MS: number = RESOLVERS.ACCOUNT_TTL_MS;
 const MAX_ASSETS: number = RESOLVERS.MAX_ASSETS;
 const MAX_ACCOUNTS: number = RESOLVERS.MAX_ACCOUNTS;
 const LRU_DEFAULT_SIZE: number = RESOLVERS.LRU_DEFAULT_SIZE;
-
-interface CacheEntry {
-    value: any;
-    ts: number;
-}
-
-class LRUCache {
-    maxSize: number;
-    ttlMs: number | null;
-    cache: Map<string, CacheEntry>;
-
-    constructor(maxSize: number = LRU_DEFAULT_SIZE, ttlMs: number | null = null) {
-        this.maxSize = maxSize;
-        this.ttlMs = ttlMs;
-        this.cache = new Map();
-    }
-
-    get(key: string): any | undefined {
-        const entry = this.cache.get(key);
-        if (!entry) return undefined;
-
-        if (this.ttlMs && Date.now() - entry.ts > this.ttlMs) {
-            this.cache.delete(key);
-            return undefined;
-        }
-
-        this.cache.delete(key);
-        this.cache.set(key, entry);
-        return entry.value;
-    }
-
-    set(key: string, value: any): void {
-        if (this.cache.has(key)) {
-            this.cache.delete(key);
-        } else if (this.cache.size >= this.maxSize) {
-            const firstKey = this.cache.keys().next().value;
-            if (firstKey !== undefined) this.cache.delete(firstKey);
-        }
-        this.cache.set(key, { value, ts: Date.now() });
-    }
-
-    delete(key: string): void {
-        this.cache.delete(key);
-    }
-
-    clear(): void {
-        this.cache.clear();
-    }
-
-    get size(): number { return this.cache.size; }
-}
 
 interface ChainClientDb {
     get_assets(ids: string[]): Promise<any[]>;
@@ -185,4 +135,4 @@ function createResolvers(chainClient: ChainClient) {
     };
 }
 
-export = { createResolvers, LRUCache };
+export = { createResolvers };

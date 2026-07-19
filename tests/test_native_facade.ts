@@ -88,7 +88,8 @@ console.log('  PASS: All required exports present');
 // ── Test 3: Resolvers ────────────────────────────────────────────────────
 
 console.log('Resolvers (LRU Cache)');
-const { LRUCache, createResolvers } = require('../modules/bitshares-native/resolvers');
+const { LRUCache } = require('../modules/bitshares-native/lru_cache');
+const { createResolvers } = require('../modules/bitshares-native/resolvers');
 
 // LRU Cache
 const cache = new LRUCache(3, 60000);

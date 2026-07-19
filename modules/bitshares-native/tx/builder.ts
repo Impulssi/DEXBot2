@@ -5,6 +5,7 @@ const { TRANSACTION, CHAIN } = NATIVE_CLIENT;
 const { ops: serialOps } = require('../serial');
 const getEcc = require('../crypto/ecc_selector');
 const { sha256, sign } = getEcc();
+const txCache = require('./tx_cache');
 
 const MAX_TX_SIZE: number = TRANSACTION.MAX_SIZE_BYTES;
 const MAX_OPS_PER_TX: number = TRANSACTION.MAX_OPS_PER_TX;
@@ -12,6 +13,20 @@ const DEFAULT_EXPIRE_SEC: number = TRANSACTION.DEFAULT_EXPIRE_SEC;
 const TX_EXPIRATION_MAX_SEC: number = TRANSACTION.MAX_EXPIRE_SEC;
 const DEFAULT_FEE_ASSET: string = CHAIN.CORE_ASSET_ID;
 const GRAPHENE_CHAIN_ID: string = CHAIN.CHAIN_ID;
+
+const OP_TYPE_IDS: Record<string, number> = {
+    transfer: 0,
+    limit_order_create: 1,
+    limit_order_cancel: 2,
+    call_order_update: 3,
+    fill_order: 4,
+    asset_settle: 17,
+    credit_offer_accept: 72,
+    credit_deal_repay: 73,
+    credit_deal_update: 76,
+    limit_order_update: 77,
+    liquidity_pool_exchange: 63,
+};
 
 class TransactionTooLargeError extends Error {
     code: string;
@@ -115,10 +130,20 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
         async setRequiredFees(feeAssetId: string = DEFAULT_FEE_ASSET) {
             if (ops.length === 0) return;
 
+            const opList = this._getSerializedOps();
+            const cacheKey = txCache.buildFeeCacheKey(opList, feeAssetId);
+            const cachedFees = txCache.getFees(cacheKey);
+            if (cachedFees && cachedFees.length === ops.length) {
+                for (let i = 0; i < ops.length; i++) {
+                    ops[i].params.fee = cachedFees[i];
+                }
+                return;
+            }
+
             try {
-                const opList = this._getSerializedOps();
                 const fees = await chainClient.db.call('get_required_fees', [opList, feeAssetId]);
                 if (Array.isArray(fees) && fees.length === ops.length) {
+                    txCache.setFees(cacheKey, fees);
                     for (let i = 0; i < ops.length; i++) {
                         ops[i].params.fee = fees[i];
                     }
@@ -194,24 +219,10 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
         },
 
         _buildSerializedOp(type: string, params: any): [number, any] {
-            const opTypeIds: Record<string, number> = {
-                transfer: 0,
-                limit_order_create: 1,
-                limit_order_cancel: 2,
-                call_order_update: 3,
-                fill_order: 4,
-                asset_settle: 17,
-                credit_offer_accept: 72,
-                credit_deal_repay: 73,
-                credit_deal_update: 76,
-                limit_order_update: 77,
-                liquidity_pool_exchange: 63,
-            };
-
-            const typeId = opTypeIds[type];
+            const typeId = OP_TYPE_IDS[type];
             const serializer = (serialOps as SerialOps)[type];
 
-            if (!serializer) {
+            if (typeId === undefined || !serializer) {
                 throw new Error(`Unknown operation type: ${type}`);
             }
 

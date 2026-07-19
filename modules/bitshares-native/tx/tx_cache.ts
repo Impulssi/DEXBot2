@@ -1,0 +1,67 @@
+'use strict';
+
+const { NATIVE_CLIENT } = require('../../constants');
+const { LRUCache } = require('../lru_cache');
+const Logger = require('../../logger');
+const txCacheLogger = new Logger('TxCache');
+
+const { TX_BUILDER } = NATIVE_CLIENT;
+
+// Resolve fee cache TTL: env override > constants default
+function _resolveFeeCacheTtl(): number {
+    try {
+        const { hasTxBuilderFeeCacheTtlSet, getTxBuilderFeeCacheTtl } = require('../../config');
+        if (hasTxBuilderFeeCacheTtlSet()) {
+            const v = getTxBuilderFeeCacheTtl();
+            if (typeof v === 'number' && v > 0) return v;
+        }
+    } catch (err: any) {
+        txCacheLogger.warn(`Failed to load TX_BUILDER_FEE_CACHE_TTL_MS config, using default: ${err?.message || err}`);
+    }
+    return TX_BUILDER.FEE_CACHE_TTL_MS;
+}
+
+let _feeCache: any = null;
+
+function _ensureFeeCache(): any {
+    if (!_feeCache) {
+        _feeCache = new LRUCache(1000, _resolveFeeCacheTtl());
+    }
+    return _feeCache;
+}
+
+/**
+ * Build a fee cache key from serialized operations and the fee asset ID.
+ * Includes the full op data to avoid stale fees when the same op type
+ * has different parameters (e.g. different amounts or extensions).
+ */
+function buildFeeCacheKey(opList: Array<[number, any]>, feeAssetId: string): string {
+    const parts: string[] = [];
+    for (const [typeId, params] of opList) {
+        parts.push(`${typeId}:${JSON.stringify(params)}`);
+    }
+    return parts.join('|') + ':' + feeAssetId;
+}
+
+function getFees(cacheKey: string): any[] | undefined {
+    const cache = _ensureFeeCache();
+    const value: any = cache.get(cacheKey);
+    if (!value) return undefined;
+    return value;
+}
+
+function setFees(cacheKey: string, fees: any[]): void {
+    const cache = _ensureFeeCache();
+    cache.set(cacheKey, fees);
+}
+
+function invalidateFees(): void {
+    if (_feeCache) _feeCache.clear();
+}
+
+export = {
+    buildFeeCacheKey,
+    getFees,
+    setFees,
+    invalidateFees,
+};

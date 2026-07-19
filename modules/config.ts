@@ -74,6 +74,8 @@ const Config: {
     // ── Numeric controls ────────────────────────────────────────────
     /** Raw value of OPEN_ORDERS_SYNC_LOOP_MS (use getOpenOrdersSyncLoopMs() instead). */
     _OPEN_ORDERS_SYNC_LOOP_MS_RAW: string | undefined;
+    /** Raw value of TX_BUILDER_FEE_CACHE_TTL_MS (use getTxBuilderFeeCacheTtl() instead). */
+    _TX_BUILDER_FEE_CACHE_TTL_MS_RAW: string | undefined;
     CALC_CYCLES: number;
     CALC_DELAY_MS: number;
     DEXBOT_MANAGED_CRED_PID: string | undefined;
@@ -136,6 +138,7 @@ const Config: {
 
     // ── Numeric controls ────────────────────────────────────────────
     _OPEN_ORDERS_SYNC_LOOP_MS_RAW: str('OPEN_ORDERS_SYNC_LOOP_MS'),
+    _TX_BUILDER_FEE_CACHE_TTL_MS_RAW: str('TX_BUILDER_FEE_CACHE_TTL_MS'),
     CALC_CYCLES: num('CALC_CYCLES', 3),
     CALC_DELAY_MS: num('CALC_DELAY_MS', 500),
     DEXBOT_MANAGED_CRED_PID: str('DEXBOT_MANAGED_CRED_PID'),
@@ -176,6 +179,16 @@ function getOpenOrdersSyncLoopMs(): number | undefined {
         : undefined;
 }
 
+function hasTxBuilderFeeCacheTtlSet(): boolean {
+    return hasOwn('TX_BUILDER_FEE_CACHE_TTL_MS');
+}
+
+function getTxBuilderFeeCacheTtl(): number | undefined {
+    return Config._TX_BUILDER_FEE_CACHE_TTL_MS_RAW !== undefined
+        ? Number(Config._TX_BUILDER_FEE_CACHE_TTL_MS_RAW)
+        : undefined;
+}
+
 function setUmask(mode: number): void {
     if (hasProcess()) { process.umask(mode); }
 }
@@ -184,5 +197,7 @@ export = {
     Config,
     hasOpenOrdersSyncLoopMsSet,
     getOpenOrdersSyncLoopMs,
+    hasTxBuilderFeeCacheTtlSet,
+    getTxBuilderFeeCacheTtl,
     setUmask,
 };

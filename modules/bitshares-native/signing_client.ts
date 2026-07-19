@@ -1,6 +1,7 @@
 'use strict';
 
 const { createTransactionBuilder } = require('./tx/builder');
+const txCache = require('./tx/tx_cache');
 
 const Logger = require('../logger');
 const signingClientLogger = new Logger('SigningClient');
@@ -86,7 +87,16 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
                 if (!broadcastFn) {
                     throw new Error('Broadcast API does not support transaction broadcast');
                 }
-                const result = await broadcastFn(signed.signedTxObject);
+                let result: any;
+                try {
+                    result = await broadcastFn(signed.signedTxObject);
+                } catch (err: any) {
+                    const msg = String(err?.message || err || '');
+                    if (/fee/i.test(msg)) {
+                        txCache.invalidateFees();
+                    }
+                    throw err;
+                }
 
                 if (result && Array.isArray(result.operation_results)) {
                     return { ...result, operation_results: result.operation_results };

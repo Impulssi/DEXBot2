@@ -2,12 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.2.0] - 2026-07-19 - Credit-Only Mode, Boundary Shift Recovery
+## [1.2.0] - 2026-07-19 - Credit-Only Mode, Boundary Shift Recovery, Order System Hardening
 
 ### 2026-07-19
 
 - **Feat**: add `creditOnly: true` bot flag — skips all grid trading infrastructure (validation, orders, fills, sync) and runs only the credit runtime for MPA position management and credit offer maintenance (`modules/constants.ts`, `modules/bot_settings.ts`, `modules/dexbot_class.ts`, `modules/launcher/launch_modes.ts`, `unlock.ts`).
 - **Feat**: `node unlock credit` — auto-discovers the first active credit-only bot, skips monolithic background daemon (`unlock.ts`).
+- **Feat**: add LRU fee cache to `get_required_fees` calls — `tx/tx_cache.ts` with configurable TTL (default 24h, env `TX_BUILDER_FEE_CACHE_TTL_MS`); `builder.ts:setRequiredFees` checks cache before RPC, stores on success; `signing_client.ts` invalidates on broadcast errors matching `/fee/i` (`modules/bitshares-native/tx/tx_cache.ts`, `modules/bitshares-native/tx/builder.ts`, `modules/bitshares-native/signing_client.ts`).
+- **Feat**: extract `LRUCache` from `resolvers.ts` to own module `lru_cache.ts` (`modules/bitshares-native/lru_cache.ts`, `modules/bitshares-native/resolvers.ts`).
 - **Fix**: recover lost boundary shift after uncertain broadcast discard — when COW broadcast fails with `BROADCAST_DEADLINE`, the recovery discards unconfirmed CREATEs but never applies the boundary shift the fill cycle's COW plan would have committed. Now calculates net boundary shift from all planned CREATEs and applies it directly (`modules/dexbot_class.ts:3199-3244`).
 - **Fix**: `effectiveBotName` used in `MONOLITHIC_BOT_INFO_FILE` instead of raw `botName` (`unlock.ts:630`).
 - **Fix**: restore missing v1.1.13 header in CHANGELOG.md (`CHANGELOG.md`).
@@ -15,6 +17,19 @@ All notable changes to this project will be documented in this file.
 - **Fix**: remove dead `typeof workingGrid.getBaseVersion === 'function'` guard — `WorkingGrid` has no such method, fallback always triggered (`modules/order/utils/validate.ts:966`).
 - **Fix**: `_applySync` `cancelOrder` dual-signature — normalized from bare-string/object overload to canonical object form (`{ orderId, clearSize? }`). Changed `grid_reconcile.ts:387` bare-string call; simplified sync_engine.ts dispatch (`modules/order/sync_engine.ts`, `modules/order/grid_reconcile.ts`).
 - **Fix**: `_rebalanceState.toLowerCase()` null guard — `_rebalanceState` is always initialized but now has defensive `|| ''` (`modules/order/manager.ts:1056`).
+- **Fix**: stale broadcast flag permanently blocking rebalancing — `isPlanningActive()` now delegates to `_state.isBroadcastingActive()` which auto-clears after 120s instead of using raw `isBroadcasting()` which never cleared (`modules/order/manager.ts`).
+- **Fix**: orphan-fill tolerance widening consumed on first invariant check — `_orphanFillsCreditedAt` no longer consumed inside `_verifyFundInvariants`; persists through full fill cycle so all `recalculateFunds` calls see consistent tolerance (`modules/order/accounting.ts`).
+- **Fix**: grid-bloat resync loop in `loadGrid` — added `Grid.isGridBloatGraceActive()` and `Grid.clearGridBloatFlag()` shared helpers; `loadGrid` checks grace window before requesting resync; maintenance runtime deduplicates inline grace logic (`modules/order/grid.ts`, `modules/dexbot_maintenance_runtime.ts`).
+- **Fix**: AsyncLock `forceRelease` orphaned timers — `clearTimeout(timer)` before rejecting queued items to prevent stale no-op callbacks lingering in the event loop (`modules/order/async_lock.ts`).
+- **Fix**: parallel node connect with `Promise.any` — fastest node wins; slow perpetual retry after max attempts stays in slow mode instead of looping back to exponential (`modules/bitshares-native/transport.ts`).
+- **Fix**: subscription re-entrancy guard — prevents concurrent history scan races; per-page timeout + total deadline for `fetchFillHistoryEntries` with proper timer cleanup (no timer leak) (`modules/bitshares-native/subscriptions.ts`).
+- **Fix**: fund accounting stale-fetch guard — refuses optimistic deduction when `accountTotals` exceeds `MAX_ACCOUNT_TOTALS_AGE_MS`; deduplicated in-flight recovery via stored `_pendingRecovery` promise (`modules/order/accounting.ts`).
+- **Fix**: sync generation counter force-releases orphan callbacks; order ID re-verification before locking in reconciliation (`modules/order/sync_engine.ts`).
+- **Fix**: `getOnChainAssetBalances` gains `includeCreditDeals` option to subtract credit deal collateral from free balance (opt-in, backward-compatible) (`modules/chain_orders.ts`).
+- **Fix**: credit runtime TTL-gated staleness for MPA feed prices, credit conversion rates, and `_getOfferById` cache — stale cache returns null instead of silently using outdated values (`modules/credit_runtime.ts`).
+- **Fix**: order logger drain deadline — discards remaining lines after 10s; `flush()` accepts configurable timeout (`modules/order/logger.ts`).
+- **Fix**: restore `fillOp.order_id` in dedup log messages — `_isNewFillKey` lost orderId context during dedup extraction refactor; added optional `orderId` param so logs read "Skipping duplicate fill for X" instead of bare message (`modules/dexbot_class.ts`).
+- **Fix**: replace hardcoded `'buy'/'sell'` string literals with `ORDER_TYPES` constants in `checkFundDrift` (`modules/order/utils/validate.ts`).
 - **Refactor**: convert `Grid` class (28 static methods, zero instance state) to plain exported functions. Self-calls use direct function references. No behavioral change (`modules/order/grid.ts`, all callers).
 - **Refactor**: extract shared `adjustBudgetForBtsFees()` to eliminate BTS fee-reservation logic duplicated between `Grid._getSizingContext()` and `getSideBudget()`. Both call sites now use the same canonical math. Preserves the `Math.min(allocated, sideFree - btsDeficit * share)` cap from `getSideBudget`. Consolidates the `calculateOrderCreationFees` call (previously duplicated across both branches) into a single site (`modules/order/utils/order.ts`, `modules/order/grid.ts`).
 - **Refactor**: split `grid_reconcile.ts` (1550 lines) — extracted 22 internal helpers into `grid_reconcile_internal.ts` (1067 lines). Main file reduced to 454 lines with the 3 public exports plus imports (`modules/order/grid_reconcile.ts`, `modules/order/grid_reconcile_internal.ts`).
@@ -23,9 +38,13 @@ All notable changes to this project will be documented in this file.
 - **Chore**: replace hardcoded `'active'/'partial'` string literals with `ORDER_STATES.ACTIVE/PARTIAL` in `calculateRequiredFunds` (`modules/order/utils/validate.ts:200`).
 - **Chore**: replace hardcoded `'buy'/'sell'` string literals with `ORDER_TYPES.BUY/SELL` in same function (`modules/order/utils/validate.ts:202-203`).
 - **Chore**: document `pauseFundRecalc`/`pauseRecalcLogging` coupling — JSDoc explains when to pair them vs use independently (`modules/order/manager.ts:838-868`).
+- **Chore**: safety watchdog on `pauseRecalcLogging` — auto-resets after `SAFETY_PAUSE_TIMEOUT_MS` to prevent permanent debug-log suppression from missed finally block (`modules/order/manager.ts`).
 - **Chore**: make `protectCommittedOrders` always-on in `syncFromOpenOrders` — `_committedOrderIds` is atomically rebuilt on every COW commit and is self-cleaning; the flag was only ever true at call sites that already held the fill lock, and was removed along with `fillLockAlreadyHeld` as part of AsyncLock reentrancy cleanup (`modules/order/sync_engine.ts`).
+- **Chore**: rename `OPERATIONS.LIQUIDITY_POOL` → `LIQUIDITY_POOL_EXCHANGE` for consistency with core protocol naming; add `OP_LIQUIDITY_POOL_EXCHANGE` and `OPERATION_NAMES[63]` (`modules/bitshares-native/serial/chain_constants.ts`).
+- **Chore**: reduce `SUBSCRIPTION_SILENT_THRESHOLD_MS` from 5min to 2min for faster dead-subscription detection (`modules/constants.ts`).
 - **Docs**: new Credit-Only Mode section in `docs/MPA_CREDIT_USAGE.md`; removed redundant sections from `AGENTS.md` (template, quick commands), shortened Browser-Safe Surface, collapsed Node-only list.
 - **Test**: `test_bot_settings.ts` covers creditOnly validation positive and required-fields negative cases.
+- **Test**: happy-path and edge-case coverage for COW auto-cancel unmatched orders (`tests/test_cow_structural_resync.ts`).
 
 ## [1.1.14] - 2026-07-19 - Node Blacklist Sync, Async-Lock ForceRelease Safety, Gap Regression Fixes
 

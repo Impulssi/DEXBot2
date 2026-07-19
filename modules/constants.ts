@@ -1384,7 +1384,7 @@ let NATIVE_CLIENT = {
         CREDIT_DEAL_REPAY:    73,
         CREDIT_DEAL_UPDATE:   76,
         LIMIT_ORDER_UPDATE:   77,
-        LIQUIDITY_POOL:       63,
+        LIQUIDITY_POOL_EXCHANGE: 63,
     },
 
     // -------------------------------------------------------------------------
@@ -1582,6 +1582,16 @@ let NATIVE_CLIENT = {
     },
 
     // -------------------------------------------------------------------------
+    // TX_BUILDER — Transaction builder RPC cache (tx/builder.js, tx/tx_cache.js)
+    // -------------------------------------------------------------------------
+    TX_BUILDER: {
+        // TTL for cached get_required_fees results (ms).
+        // Fee parameters change only via governance proposals (rare).
+        // Stale cache → node rejects tx → retry with fresh fetch.
+        FEE_CACHE_TTL_MS: 86_400_000,     // 24 hours
+    },
+
+    // -------------------------------------------------------------------------
     // ECC — Cryptographic constants (crypto/ecc.js, reference only)
     // -------------------------------------------------------------------------
     // These are protocol-level constants that MUST NOT be changed.
@@ -1704,6 +1714,7 @@ Object.freeze(NATIVE_CLIENT.TRANSACTION);
 Object.freeze(NATIVE_CLIENT.TRANSPORT);
 Object.freeze(NATIVE_CLIENT.SUBSCRIPTIONS);
 Object.freeze(NATIVE_CLIENT.RESOLVERS);
+Object.freeze(NATIVE_CLIENT.TX_BUILDER);
 Object.freeze(NATIVE_CLIENT.ECC);
 Object.freeze(NATIVE_CLIENT);
 Object.freeze(MARKET_ADAPTER.RUNTIME_DEFAULTS);
