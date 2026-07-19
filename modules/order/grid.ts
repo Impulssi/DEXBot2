@@ -214,6 +214,37 @@ class Grid {
     }
 
     /**
+     * Check whether the grid-bloat grace period is still active, i.e. a
+     * bloat detection happened recently enough that a structural resync
+     * has not had time to resolve it.
+     *
+     * Used by both Grid.loadGrid (to suppress redundant resync requests)
+     * and the maintenance runtime (to decide when to re-check after the
+     * grace window expires) so the two policies share one definition of
+     * the grace window.
+     *
+     * @param {Object} manager - OrderManager instance.
+     * @returns {{active: boolean, elapsed: number, graceMs: number}}
+     */
+    static isGridBloatGraceActive(manager) {
+        const graceMs = Number(TIMING?.GRID_BLOAT_RESYNC_GRACE_MS) || TIMING.GRID_BLOAT_RESYNC_GRACE_MS;
+        if (!manager._gridBloatDetectedAt) {
+            return { active: false, elapsed: 0, graceMs };
+        }
+        const elapsed = Date.now() - manager._gridBloatDetectedAt;
+        return { active: elapsed < graceMs, elapsed, graceMs };
+    }
+
+    /**
+     * Clear the grid-bloat detection timestamp once the grid size has
+     * returned to normal. Shared so both call sites use the same key.
+     * @param {Object} manager - OrderManager instance.
+     */
+    static clearGridBloatFlag(manager) {
+        delete manager._gridBloatDetectedAt;
+    }
+
+    /**
      * Public wrapper for side sizing context.
      * Keeps StrategyEngine decoupled from Grid private internals.
      *
@@ -543,23 +574,32 @@ class Grid {
             const bloatResult = Grid.isGridBloated(manager, grid);
             if (bloatResult.bloated) {
                 const d = bloatResult.details;
-                manager.logger?.log?.(
-                    `[GRID-BLOAT] Grid size ${d.gridSize} exceeds expected maximum ${d.maxAllowed} ` +
-                    `(placed=${d.placedCount} buy=${d.numBuyActive} sell=${d.numSellActive} ` +
-                    `gapSlots=${d.gapSlots}). Triggering protective structural resync.`,
-                    'warn'
-                );
-                manager._gridBloatDetectedAt = Date.now();
-                if (typeof manager.requestStructuralGridResync === 'function') {
-                    manager.requestStructuralGridResync(
-                        'grid-bloat-detected',
-                        { reason: `Grid size ${d.gridSize} exceeds maximum ${d.maxAllowed}` }
-                    ).catch((err: any) => {
-                        manager.logger?.log?.(
-                            `[GRID-BLOAT] Structural resync request failed: ${err.message}`,
-                            'error'
-                        );
-                    });
+                const grace = Grid.isGridBloatGraceActive(manager);
+                if (grace.active) {
+                    manager.logger?.log?.(
+                        `[GRID-BLOAT] Grid size ${d.gridSize} exceeds expected maximum ${d.maxAllowed} ` +
+                        `(grace period active ${grace.elapsed}ms/${grace.graceMs}ms). Skipping re-request.`,
+                        'debug'
+                    );
+                } else {
+                    manager.logger?.log?.(
+                        `[GRID-BLOAT] Grid size ${d.gridSize} exceeds expected maximum ${d.maxAllowed} ` +
+                        `(placed=${d.placedCount} buy=${d.numBuyActive} sell=${d.numSellActive} ` +
+                        `gapSlots=${d.gapSlots}). Triggering protective structural resync.`,
+                        'warn'
+                    );
+                    manager._gridBloatDetectedAt = Date.now();
+                    if (typeof manager.requestStructuralGridResync === 'function') {
+                        manager.requestStructuralGridResync(
+                            'grid-bloat-detected',
+                            { reason: `Grid size ${d.gridSize} exceeds maximum ${d.maxAllowed}` }
+                        ).catch((err: any) => {
+                            manager.logger?.log?.(
+                                `[GRID-BLOAT] Structural resync request failed: ${err.message}`,
+                                'error'
+                            );
+                        });
+                    }
                 }
             }
 

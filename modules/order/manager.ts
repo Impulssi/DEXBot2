@@ -618,10 +618,15 @@ class OrderManager {
     }
 
     /**
+     * Whether the manager is in the middle of a rebalance plan or broadcast.
+     * NOT a pure predicate: delegates to _state.isBroadcastingActive()
+     * (see StateManager.isBroadcastingActive, manager.ts:362) which
+     * auto-clears a stale broadcast flag after 120s (producing a warn log)
+     * so that a hung broadcast cannot permanently block rebalancing.
      * @returns {boolean}
      */
     isPlanningActive() {
-        return this.isRebalancing() || this.isBroadcasting();
+        return this.isRebalancing() || this._state.isBroadcastingActive();
     }
 
     /**

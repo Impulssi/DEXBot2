@@ -505,11 +505,13 @@ class Accountant {
           // chainFree (sellFree/buyFree) from the last fetchAccountTotals call
           // may not yet reflect the proceeds. Widen tolerance to prevent false-
           // positive violations that trigger unproductive recovery cycles.
-          // The timestamp is self-clearing: consumed by this check, re-set by
-          // the next orphan-fill credit, and also cleared by
-          // _performStateRecovery.
+          // The timestamp is set at orphan-fill credit time and cleared by
+          // _performStateRecovery (after a fresh chain fetch) or at the start
+          // of the next fill cycle (_orphanFillsCreditedAt = null). It is NOT
+          // consumed by this check — the widened tolerance persists through the
+          // entire fill cycle so that multiple recalculateFunds calls within
+          // the same cycle all see consistent tolerance.
           const orphanFillsAt = (mgr as any)._orphanFillsCreditedAt;
-          (mgr as any)._orphanFillsCreditedAt = null; // consume
           const orphanToleranceMultiplier = (orphanFillsAt != null) ? 5 : 1;
          const effectivePercentTolerance = PERCENT_TOLERANCE * orphanToleranceMultiplier;
 

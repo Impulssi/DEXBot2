@@ -257,7 +257,8 @@ class AsyncLock {
         // touching _locked / _processQueue.
         this._generation++;
         while (this._queue.length > 0) {
-            const { reject } = this._queue.shift();
+            const { reject, timer } = this._queue.shift();
+            if (timer) clearTimeout(timer);
             reject(new Error('Lock force-released'));
         }
         this._locked = false;

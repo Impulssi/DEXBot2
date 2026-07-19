@@ -1401,14 +1401,14 @@ async function executeMaintenanceLogic(bot, context) {
     // requestStructuralGridResync was wired) or bloat that survived a prior
     // resync attempt.
     if (bot.manager._gridBloatDetectedAt && typeof bot.manager.requestStructuralGridResync === 'function') {
-        const graceMs = TIMING.GRID_BLOAT_RESYNC_GRACE_MS || 300000;
-        if (Date.now() - bot.manager._gridBloatDetectedAt >= graceMs) {
+        const grace = Grid.isGridBloatGraceActive(bot.manager);
+        if (!grace.active) {
             const bloatResult = Grid.isGridBloated(bot.manager, bot.manager.orders);
             if (bloatResult.bloated) {
                 const d = bloatResult.details;
                 bot._log(
                     `[GRID-BLOAT] Grid size ${d.gridSize} still exceeds expected maximum ${d.maxAllowed} ` +
-                    `after grace period. Triggering structural resync.`,
+                    `after grace period (${grace.graceMs}ms). Triggering structural resync.`,
                     'warn'
                 );
                 bot.manager.requestStructuralGridResync(
@@ -1421,7 +1421,7 @@ async function executeMaintenanceLogic(bot, context) {
                     );
                 });
             } else {
-                delete bot.manager._gridBloatDetectedAt;
+                Grid.clearGridBloatFlag(bot.manager);
                 bot._log('[GRID-BLOAT] Grid size returned to normal. Clearing bloat flag.', 'info');
             }
         }
