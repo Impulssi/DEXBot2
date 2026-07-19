@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-07-19 - Credit-Only Mode, Boundary Shift Recovery
+
+### 2026-07-19
+
+- **Feat**: add `creditOnly: true` bot flag — skips all grid trading infrastructure (validation, orders, fills, sync) and runs only the credit runtime for MPA position management and credit offer maintenance (`modules/constants.ts`, `modules/bot_settings.ts`, `modules/dexbot_class.ts`, `modules/launcher/launch_modes.ts`, `unlock.ts`).
+- **Feat**: `node unlock credit` — auto-discovers the first active credit-only bot, skips monolithic background daemon (`unlock.ts`).
+- **Fix**: recover lost boundary shift after uncertain broadcast discard — when COW broadcast fails with `BROADCAST_DEADLINE`, the recovery discards unconfirmed CREATEs but never applies the boundary shift the fill cycle's COW plan would have committed. Now calculates net boundary shift from all planned CREATEs and applies it directly (`modules/dexbot_class.ts:3199-3244`).
+- **Fix**: `effectiveBotName` used in `MONOLITHIC_BOT_INFO_FILE` instead of raw `botName` (`unlock.ts:630`).
+- **Fix**: restore missing v1.1.13 header in CHANGELOG.md (`CHANGELOG.md`).
+- **Docs**: new Credit-Only Mode section in `docs/MPA_CREDIT_USAGE.md`; removed redundant sections from `AGENTS.md` (template, quick commands), shortened Browser-Safe Surface, collapsed Node-only list.
+- **Test**: `test_bot_settings.ts` covers creditOnly validation positive and required-fields negative cases.
+
 ## [1.1.14] - 2026-07-19 - Node Blacklist Sync, Async-Lock ForceRelease Safety, Gap Regression Fixes
 
 ### 2026-07-19

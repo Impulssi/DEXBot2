@@ -189,8 +189,10 @@ When bumping the version for a release:
    `analysis/ama_fitting/package.json`, `claw/tests/test_claw_mcp_transport.ts`,
    `docs/README.md`, `docs/DEXBOT_COMPARISON.md`,
    `docs/FUND_MOVEMENT_AND_ACCOUNTING.md`, `docs/EVOLUTION.md`).
-3. Add entries to `CHANGELOG.md` and `docs/EVOLUTION.md`, then update the
-   EVOLUTION.md footer (commit count, last updated version/date).
+3. Add entries to `CHANGELOG.md` covering **all changes since the last
+   release** (review `git log <last-tag>..HEAD`), update `docs/EVOLUTION.md`,
+   and refresh the EVOLUTION.md footer (commit count, last updated
+   version/date).
 4. Commit the version bump + docs.
 
 ```bash

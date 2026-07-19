@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.1.14 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.2.0 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
@@ -151,6 +151,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 - **AMA Refits**: Multi-round parameter optimization with per-market weights and distance scaling
 - **System Invariants**: Comprehensive documented invariants across all subsystems (COW, sync, grid, reconciliation)
 - **Bot Identity**: Unique name enforcement with migration support
+- **Credit-Only Mode**: Runtime-only operation for MPA/credit workflows without grid trading infrastructure
 
 ## Post-1.0.0: Planned
 
@@ -164,7 +165,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 19, 2026 (v1.1.14)
-**Total Commits**: 1,832
+**Last Updated**: July 19, 2026 (v1.2.0)
+**Total Commits**: 1,835
 **Date Range**: December 2, 2025 – July 19, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
