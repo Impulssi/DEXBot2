@@ -3196,9 +3196,57 @@ class DEXBot {
             );
         }
 
+        // Boundary shift recovery: the COW batch that should have committed the
+        // boundary shift from this fill cycle failed before commit. Every planned
+        // CREATE in the batch represents a fill whose opposite-side boundary step
+        // was lost — regardless of whether the individual CREATE was later adopted
+        // on chain (adopted) or not (discarded). Manually adjust manager.boundaryIdx
+        // so the next COW cycle (triggered by the next fill or periodic maintenance)
+        // generates replacement opposite-side orders using the correct boundary.
+        //
+        // NOTE: Direct mutation of manager.boundaryIdx outside a COW commit
+        // violates the invariant stated in grid.ts:1217-1220 (boundary must only
+        // be updated atomically inside _commitWorkingGrid). This is intentional
+        // here because the COW commit already failed — the invariant was already
+        // broken by the broadcast uncertainty, and the adjustment only restores
+        // the state to what the successful commit would have produced.
+        if (hadRotation && this.manager && pending.length > 0) {
+            let boundaryShift = 0;
+            for (const entry of pending) {
+                const orderType = entry.orderType || entry.order?.type;
+                if (orderType === ORDER_TYPES.SELL) {
+                    boundaryShift--; // SELL CREATE → fill was BUY → boundary LEFT
+                } else if (orderType === ORDER_TYPES.BUY) {
+                    boundaryShift++; // BUY CREATE → fill was SELL → boundary RIGHT
+                }
+            }
+            if (boundaryShift !== 0) {
+                const oldIdx = this.manager.boundaryIdx;
+                if (typeof oldIdx === 'number') {
+                    const maxIdx = Math.max(0, (this.manager.orders?.size || 1) - 1);
+                    const newIdx = Math.max(0, Math.min(maxIdx, oldIdx + boundaryShift));
+                    if (newIdx !== oldIdx) {
+                        this.manager.boundaryIdx = newIdx;
+                        this.manager.logger.log(
+                            `[COW][UNCERTAIN] Boundary adjusted by ${boundaryShift} ` +
+                            `(${adopted.length} adopted / ${discarded.length} discarded CREATE(s)): ` +
+                            `${oldIdx} → ${newIdx}. Next COW cycle will generate replacement opposite-side orders.`,
+                            'warn'
+                        );
+                        if (typeof this.manager._markGridDirty === 'function') {
+                            this.manager._markGridDirty(
+                                `boundary adjustment after ${pending.length} planned CREATE(s)`
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Persist master grid mutations from the reconciliation sync and any
         // orphan auto-cancellation that ran above. These apply outside the COW
-        // broadcast path and would otherwise be in-memory only.
+        // broadcast path and would otherwise be in-memory only. The boundary
+        // adjustment above is also persisted here.
         if (typeof this.manager?.persistGrid === 'function') {
             await this.manager.persistGrid();
         }
