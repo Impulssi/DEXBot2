@@ -291,8 +291,8 @@ function checkFundDrift(orders: Map<string, any>, accountTotals: any, assets: an
         const size = toFiniteNumber(order.size);
         if (size <= 0 || !isOrderOnChain(order)) continue;
 
-        if (order.type === 'buy') gridBuy += size;
-        else if (order.type === 'sell') gridSell += size;
+        if (order.type === ORDER_TYPES.BUY) gridBuy += size;
+        else if (order.type === ORDER_TYPES.SELL) gridSell += size;
     }
 
     const chainFreeBuy = accountTotals?.buyFree || 0;

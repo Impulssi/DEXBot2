@@ -8,8 +8,7 @@
  *
  * The fix is a dirty-flag pattern on OrderManager:
  *   - Every successful _updateOrder() / applyGridUpdateBatch() call
- *     sets `_gridDirty = true` and records the reason in
- *     `_gridDirtyReasons`.
+ *     sets `_gridDirtyAt` to the current timestamp.
  *   - The new `flushGridDirty()` method persists the grid iff the
  *     flag is set, then clears it.
  *   - `_processFillsWithBatching` calls `flushGridDirty('end-of-tick')`
@@ -17,16 +16,16 @@
  *     mutations that did not reach a known persistGrid() site.
  *
  * These tests cover:
- *   1. _updateOrder() flips _gridDirty to true.
- *   2. applyGridUpdateBatch() flips _gridDirty to true.
+ *   1. _updateOrder() flips isGridDirty to true.
+ *   2. applyGridUpdateBatch() flips isGridDirty to true.
  *   3. flushGridDirty() persists iff dirty; idempotent on clean grid.
  *   4. flushGridDirty() honours suspendGridPersistence().
- *   5. flushGridDirty() clears the flag and reasons on success.
+ *   5. flushGridDirty() clears the flag on success.
  *   6. flushGridDirty() keeps the flag set on validation failure
  *      so a later tick can retry.
  *   7. isGridDirty() reports the current state.
  *   8. End-of-tick flush catches the slot-108 partial-fill regression.
- *   9. The dirty-flag reasons track distinct call contexts.
+ *   9. _markGridDirty() can be called for external mutations.
  */
 
 const assert = require('assert');
@@ -102,7 +101,7 @@ function createFixture() {
 }
 
 async function testDirtyFlagSetOnUpdate() {
-    console.log('\n[DIRTY-001] _updateOrder sets _gridDirty=true...');
+    console.log('\n[DIRTY-001] _updateOrder sets isGridDirty=true...');
     const { manager, persistCalls } = createFixture();
     assert.strictEqual(manager.isGridDirty(), false, 'Grid should start clean');
 
@@ -116,16 +115,12 @@ async function testDirtyFlagSetOnUpdate() {
     }, 'handle-fill-partial', { skipAccounting: true });
 
     assert.strictEqual(manager.isGridDirty(), true, 'Grid should be dirty after _updateOrder');
-    assert.ok(manager._gridDirtyReasons.size >= 1, 'At least one reason should be recorded');
-    assert.ok(manager._gridDirtyReasons.has('handle-fill-partial:slot-1') ||
-              manager._gridDirtyReasons.has('handle-fill-partial'),
-              'Reason should include context label');
     assert.strictEqual(persistCalls.length, 0, 'persistGrid should NOT be called by _updateOrder alone');
-    console.log(`   ✓ Grid dirty after _updateOrder, ${manager._gridDirtyReasons.size} reason(s) recorded`);
+    console.log('   ✓ Grid dirty after _updateOrder');
 }
 
 async function testDirtyFlagSetOnBatch() {
-    console.log('\n[DIRTY-002] applyGridUpdateBatch sets _gridDirty=true...');
+    console.log('\n[DIRTY-002] applyGridUpdateBatch sets isGridDirty=true...');
     const { manager } = createFixture();
     assert.strictEqual(manager.isGridDirty(), false);
 
@@ -149,7 +144,7 @@ async function testDirtyFlagSetOnBatch() {
     ], 'partial-fill-batch', { skipAccounting: true });
 
     assert.strictEqual(manager.isGridDirty(), true, 'Grid should be dirty after applyGridUpdateBatch');
-    console.log(`   ✓ Grid dirty after batch update (${manager._gridDirtyReasons.size} reasons)`);
+    console.log('   ✓ Grid dirty after batch update');
 }
 
 async function testFlushDirtyPersists() {
@@ -168,8 +163,7 @@ async function testFlushDirtyPersists() {
     assert.strictEqual(result?.isValid, true, 'Flush should succeed');
     assert.strictEqual(persistCalls.length, 1, 'persistGrid should be called once');
     assert.strictEqual(manager.isGridDirty(), false, 'Grid should be clean after successful flush');
-    assert.strictEqual(manager._gridDirtyReasons.size, 0, 'Reasons should be cleared after flush');
-    console.log(`   ✓ persistGrid called ${persistCalls.length}×, flag cleared, reasons cleared`);
+    console.log(`   ✓ persistGrid called ${persistCalls.length}×, flag cleared`);
 }
 
 async function testFlushDirtyNoOpWhenClean() {
@@ -204,8 +198,6 @@ async function testPersistGridClearsDirtyFlag() {
     assert.strictEqual(persistCalls.length, 1);
     assert.strictEqual(manager.isGridDirty(), false,
         'Dirty flag should be cleared after successful live-grid persist');
-    assert.strictEqual(manager._gridDirtyReasons.size, 0,
-        'Reasons should be cleared after successful live-grid persist');
 
     // The subsequent end-of-tick flush should be a no-op (no second write).
     const endOfTick = await manager.flushGridDirty('end-of-tick');
@@ -293,8 +285,7 @@ async function testFlushDirtyKeepsFlagOnValidationFailure() {
     assert.strictEqual(persistCalls.length, 0,
         'persistCalls spy is bound to the original stub, not the corruption stub');
     assert.strictEqual(manager.isGridDirty(), true, 'Dirty flag must remain so a later tick can retry');
-    assert.ok(manager._gridDirtyReasons.size >= 1, 'Reasons must remain');
-    console.log('   ✓ Validation failure: flag preserved, reasons preserved, retry possible');
+    console.log('   ✓ Validation failure: flag preserved, retry possible');
 }
 
 async function testIsGridDirtyReportsState() {
@@ -345,50 +336,16 @@ async function testSlot108RegressionScenario() {
     console.log('   ✓ slot-108 partial-only fill size 0.0001 persisted via end-of-tick flush');
 }
 
-async function testDirtyReasonsTrackDistinctContexts() {
-    console.log('\n[DIRTY-009] dirty-flag reasons track distinct call contexts...');
-    const { manager } = createFixture();
-
-    await manager._updateOrder({
-        id: 'slot-1',
-        type: ORDER_TYPES.SELL,
-        state: ORDER_STATES.PARTIAL,
-        price: 100,
-        size: 5,
-        orderId: '1.7.100'
-    }, 'handle-fill-partial', { skipAccounting: true });
-
-    await manager._updateOrder({
-        id: 'slot-108',
-        type: ORDER_TYPES.SELL,
-        state: ORDER_STATES.PARTIAL,
-        price: 1018.96,
-        size: 0.0001,
-        orderId: '1.7.572952363'
-    }, 'handle-fill-partial', { skipAccounting: true });
-
-    // Both calls use the same context label, so they should merge
-    // into a single reason with count 2.
-    const reasonEntries = Array.from(manager._gridDirtyReasons.entries());
-    assert.ok(reasonEntries.length >= 1, 'At least one reason entry');
-    const totalCount = reasonEntries.reduce((s, [, c]) => s + c, 0);
-    assert.strictEqual(totalCount, 2, 'Two mutations recorded');
-    console.log(`   ✓ ${reasonEntries.length} distinct reason key(s), total ${totalCount} mutations tracked`);
-}
-
 async function testMarkGridDirtyPublicMethod() {
-    console.log('\n[DIRTY-010] markGridDirty can be called externally for non-_updateOrder mutations...');
+    console.log('\n[DIRTY-009] _markGridDirty can be called for external mutations...');
     const { manager } = createFixture();
     assert.strictEqual(manager.isGridDirty(), false);
 
-    manager._markGridDirty('external-mutation', 'slot-1');
+    manager._markGridDirty();
     assert.strictEqual(manager.isGridDirty(), true);
-    assert.ok(manager._gridDirtyReasons.has('external-mutation:slot-1'),
-              'Reason should be recorded with order ID');
 
     manager._clearGridDirty();
     assert.strictEqual(manager.isGridDirty(), false);
-    assert.strictEqual(manager._gridDirtyReasons.size, 0);
     console.log('   ✓ _markGridDirty + _clearGridDirty work for external mutation sites');
 }
 
@@ -404,7 +361,6 @@ async function testMarkGridDirtyPublicMethod() {
         await testFlushDirtyKeepsFlagOnValidationFailure();
         await testIsGridDirtyReportsState();
         await testSlot108RegressionScenario();
-        await testDirtyReasonsTrackDistinctContexts();
         await testMarkGridDirtyPublicMethod();
 
         testsComplete = true;

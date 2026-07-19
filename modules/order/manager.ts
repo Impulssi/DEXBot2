@@ -472,6 +472,7 @@ class OrderManager {
     _pauseFundRecalc: number;
     _pauseFundRecalcWatchdog: ReturnType<typeof setTimeout> | null;
     _pauseRecalcLogging: boolean;
+    _pauseRecalcLoggingWatchdog: ReturnType<typeof setTimeout> | null;
     _throwOnIllegalState: boolean;
     _pipelineBlockedSince: any;
     _recoveryAttempted: boolean;
@@ -481,6 +482,7 @@ class OrderManager {
     _pendingBroadcasts: Map<any, any>;
     _committedOrderIds: Set<string>;
     _gridDirtyAt: number | null;
+    _pendingRecovery: Promise<void> | null;
 
     _metrics: any;
     _currentWorkingGrid: any;
@@ -560,6 +562,7 @@ class OrderManager {
         this._pauseFundRecalc = 0;
         this._pauseFundRecalcWatchdog = null;
         this._pauseRecalcLogging = false;
+        this._pauseRecalcLoggingWatchdog = null;
         this._throwOnIllegalState = false;
         this._pipelineBlockedSince = null;
         this._recoveryAttempted = false;
@@ -569,7 +572,7 @@ class OrderManager {
         this._pendingBroadcasts = new Map();
         this._committedOrderIds = new Set();
         this._gridDirtyAt = null;
-
+        this._pendingRecovery = null;
 
         this._metrics = {
             fundRecalcCount: 0,
@@ -869,7 +872,6 @@ class OrderManager {
         // finally block. Only set when depth goes from 0 → 1 so only the outermost
         // pause has a watchdog.
         if (this._pauseFundRecalc === 1) {
-            const SAFETY_PAUSE_TIMEOUT_MS = require('../constants').TIMING.SAFETY_PAUSE_TIMEOUT_MS;
             if (this._pauseFundRecalcWatchdog) {
                 clearTimeout(this._pauseFundRecalcWatchdog);
             }
@@ -885,7 +887,7 @@ class OrderManager {
                         this.logger?.log?.(`[MANAGER] Watchdog recalc failed: ${err.message}`, 'error');
                     });
                 }
-            }, SAFETY_PAUSE_TIMEOUT_MS);
+            }, TIMING.SAFETY_PAUSE_TIMEOUT_MS);
         }
     }
 
@@ -921,6 +923,14 @@ class OrderManager {
      */
     pauseRecalcLogging() {
         this._pauseRecalcLogging = true;
+        this._pauseRecalcLoggingWatchdog = setTimeout(() => {
+            this.logger?.log?.(
+                `[MANAGER] pauseRecalcLogging safety watchdog: forcing resume after ${TIMING.SAFETY_PAUSE_TIMEOUT_MS}ms`,
+                'warn'
+            );
+            this._pauseRecalcLogging = false;
+            this._pauseRecalcLoggingWatchdog = null;
+        }, TIMING.SAFETY_PAUSE_TIMEOUT_MS);
     }
 
     /**
@@ -929,6 +939,10 @@ class OrderManager {
      */
     resumeRecalcLogging() {
         this._pauseRecalcLogging = false;
+        if (this._pauseRecalcLoggingWatchdog) {
+            clearTimeout(this._pauseRecalcLoggingWatchdog);
+            this._pauseRecalcLoggingWatchdog = null;
+        }
     }
 
     /**
@@ -1105,7 +1119,7 @@ class OrderManager {
             await this.recalculateFunds();
         }
 
-        this._markGridDirty(context, id);
+        this._markGridDirty();
 
         return true;
     }
@@ -1149,11 +1163,9 @@ class OrderManager {
      * other paths (e.g. raw `this.orders.set(...)` from a refactor) should
      * invoke this explicitly so the dirty-flag invariant still holds.
      *
-     * @param {string} [reason='unknown'] - Context label for diagnostics
-     * @param {string} [orderId=null] - Order that triggered the mutation
      * @returns {void}
      */
-    _markGridDirty(reason = 'unknown', orderId: string = null) {
+    _markGridDirty() {
         if (this._gridDirtyAt == null) {
             this._gridDirtyAt = Date.now();
         }
@@ -1241,7 +1253,6 @@ class OrderManager {
             return rebalanceResult;
         }
 
-        const { WorkingGrid } = require('./working_grid');
         const workingGrid = new WorkingGrid(this.orders, { baseVersion: this._gridVersion });
         return { 
             actions: [], 
@@ -1904,6 +1915,9 @@ class OrderManager {
         });
     }
 
+    // Delegates to _state.rebalance (StateManager's internal field).
+    // Single source of truth — the getter/setter exists only for backward
+    // compat with code that reads _rebalanceState directly.
     get _rebalanceState() {
         return this._state.getRebalanceState();
     }
