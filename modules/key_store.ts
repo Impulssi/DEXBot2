@@ -117,6 +117,7 @@ export class DaemonKeyStore implements KeyStore {
                     batchId: signingKey.batchId || null,
                     ...(extraOptions.nodeUrl ? { nodeUrl: extraOptions.nodeUrl } : {}),
                     ...(extraOptions.fallbackNodes ? { fallbackNodes: extraOptions.fallbackNodes } : {}),
+                    ...(typeof extraOptions.onNodeFailed === 'function' ? { onNodeFailed: extraOptions.onNodeFailed } : {}),
                 });
                 return {
                     success: true,
@@ -153,6 +154,7 @@ export class DaemonKeyStore implements KeyStore {
                         requestType: 'broadcast',
                         batchId: signingKey.batchId || null,
                         ...(extraOptions.fallbackNodes ? { fallbackNodes: extraOptions.fallbackNodes } : {}),
+                        ...(typeof extraOptions.onNodeFailed === 'function' ? { onNodeFailed: extraOptions.onNodeFailed } : {}),
                     });
                     return {
                         success: true,

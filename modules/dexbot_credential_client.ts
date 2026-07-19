@@ -37,6 +37,7 @@ interface CredentialClientOptions {
     batchId?: string | null;
     nodeUrl?: string;
     fallbackNodes?: string[];
+    onNodeFailed?: (nodeUrl: string) => void;
 }
 
 interface CredentialDaemonMeta {
@@ -234,6 +235,10 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
     const maxAttempts = 1 + fallbackNodes.length;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        // attempt 0 uses options.nodeUrl (typically undefined, meaning the daemon's
+        // default node list); subsequent attempts cycle through fallbackNodes[].
+        // onNodeFailed is only invoked when nodeUrl is truthy, so the primary
+        // node is never reported through this callback — only the named fallbacks.
         const nodeUrl = attempt === 0 ? (options.nodeUrl || undefined) : fallbackNodes[attempt - 1];
 
         const payload: RequestPayload = { type: 'execute-operations', accountName, operations };
@@ -290,12 +295,17 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
             // fine.
             throw new Error(errMsg);
         } catch (err) {
-            if (err instanceof BroadcastUncertainError && attempt < maxAttempts - 1) {
-                const label = extractHostname(nodeUrl || '') || 'primary';
-                const nextHost = extractHostname(fallbackNodes[attempt]);
-                console.warn(`[cred-daemon-client] BROADCAST_DEADLINE on ${label}, retrying fallback ${nextHost}...`);
-                await new Promise((resolve) => setTimeout(resolve, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS));
-                continue;
+            if (err instanceof BroadcastUncertainError) {
+                if (typeof options.onNodeFailed === 'function' && nodeUrl) {
+                    options.onNodeFailed(nodeUrl);
+                }
+                if (attempt < maxAttempts - 1) {
+                    const label = extractHostname(nodeUrl || '') || 'primary';
+                    const nextHost = extractHostname(fallbackNodes[attempt]);
+                    console.warn(`[cred-daemon-client] BROADCAST_DEADLINE on ${label}, retrying fallback ${nextHost}...`);
+                    await new Promise((resolve) => setTimeout(resolve, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS));
+                    continue;
+                }
             }
             throw err;
         }

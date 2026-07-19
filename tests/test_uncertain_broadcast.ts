@@ -766,6 +766,39 @@ async function testCredentialClientFallbackEmptyList() {
     console.log('✓ UNC-008i-4 passed');
 }
 
+async function testCredentialClientFallbackReportsFailedNode() {
+    console.log('\n[UNC-008i-5] credential client fallbackNodes: fires onNodeFailed on DEADLINE...');
+    const operations = [{ op_name: 'limit_order_cancel', op_data: { order: '1.7.5' } }];
+    let requestCount = 0;
+    const failedNodes: string[] = [];
+    const transport = installFakeCredentialDaemonTransport((request, socket) => {
+        requestCount++;
+        socket.endLine({ success: false, code: DAEMON_CODES.BROADCAST_DEADLINE, error: 'inner deadline' });
+    });
+    try {
+        await assert.rejects(
+            () => executeOperationsViaCredentialDaemon('test-account', operations, {
+                socketPath: transport.socketPath,
+                requestType: 'broadcast',
+                timeoutMs: 100,
+                fallbackNodes: [
+                    'wss://fallback-1.bitshares.org/ws',
+                    'wss://fallback-2.bitshares.org/ws',
+                ],
+                onNodeFailed: (nodeUrl) => { failedNodes.push(nodeUrl); },
+            }),
+            (err) => err instanceof BroadcastUncertainError
+        );
+        assert.strictEqual(requestCount, 3, 'Should try all 3 nodes');
+        assert.strictEqual(failedNodes.length, 2, 'onNodeFailed fires for both fallbacks (primary has no nodeUrl)');
+        assert.strictEqual(failedNodes[0], 'wss://fallback-1.bitshares.org/ws', 'First failing fallback reported');
+        assert.strictEqual(failedNodes[1], 'wss://fallback-2.bitshares.org/ws', 'Last exhausted fallback also reported');
+    } finally {
+        transport.restore();
+    }
+    console.log('✓ UNC-008i-5 passed');
+}
+
 async function testExecuteBatchDoesNotRetryUncertainDaemonBroadcast() {
     console.log('\n[UNC-008g] chain_orders.executeBatch does not retry uncertain daemon broadcasts...');
     let requestCount = 0;
@@ -1152,6 +1185,7 @@ async function main() {
     await testCredentialClientFallbackRetryExhausted();
     await testCredentialClientFallbackSkipsPlainError();
     await testCredentialClientFallbackEmptyList();
+    await testCredentialClientFallbackReportsFailedNode();
     await testExecuteBatchDoesNotRetryUncertainDaemonBroadcast();
     await testExecuteBatchRetriesExpiredDaemonSessionOnly();
     await testExecuteBatchRetryPreservesUncertainBroadcastHandling();

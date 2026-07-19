@@ -371,25 +371,7 @@ class NodeManager {
                 ws.close();
             }
         } catch (err: any) {
-            // Node failed health check
-            stats.failureCount++;
-            stats.lastCheckTime = new Date().toISOString();
-            stats.lastErrorMessage = err.message;
-
-            // Check if should be blacklisted
-            if (stats.failureCount >= this.config.healthCheck.blacklistThreshold) {
-                stats.status = 'blacklisted';
-                stats.blacklistedAt = Date.now();
-                this.saveBlacklistState();
-
-                if (this._shouldLogBlacklistWarning(nodeUrl, err.message)) {
-                    this.logger.warn(`✗ ${nodeUrl.substring(0, 40)}... BLACKLISTED (${err.message})`);
-                }
-            } else {
-                stats.status = 'failed';
-                this.logger.debug(`✗ ${nodeUrl.substring(0, 40)}... FAILED attempt ${stats.failureCount} (${err.message})`);
-            }
-
+            this.reportNodeFailure(nodeUrl, err.message, 'health-check');
             return { status: stats.status, latency: null, error: err.message };
         }
     }
@@ -577,6 +559,41 @@ class NodeManager {
     getBestNode(): string | null {
         const healthy = this.getHealthyNodes();
         return healthy.length > 0 ? healthy[0] : null;
+    }
+
+    /**
+     * Report a node failure (from health check or broadcast).
+     * Increments failureCount and auto-blacklists when the threshold is reached.
+     * All node-failure paths route through here so the retry budget is synchronized.
+     * @param {string} nodeUrl - Node URL that failed
+     * @param {string} [errorMessage] - Optional error description
+     * @param {string} [source] - Failure source ('health-check' or 'broadcast'); controls log level
+     */
+    reportNodeFailure(nodeUrl: string, errorMessage?: string, source?: string): void {
+        const stats = this.nodeStats.get(nodeUrl);
+        if (!stats) {
+            this.logger.warn(`Node ${nodeUrl} not in configured list, cannot report failure`);
+            return;
+        }
+        const isHealthCheck = source === 'health-check';
+        stats.failureCount++;
+        stats.lastCheckTime = new Date().toISOString();
+        if (errorMessage) stats.lastErrorMessage = errorMessage;
+
+        if (stats.failureCount >= this.config.healthCheck.blacklistThreshold) {
+            stats.status = 'blacklisted';
+            stats.blacklistedAt = Date.now();
+            this.saveBlacklistState();
+            this.saveHealthCache();
+
+            if (this._shouldLogBlacklistWarning(nodeUrl, errorMessage || '')) {
+                this.logger.warn(`✗ ${nodeUrl.substring(0, 40)}... BLACKLISTED after ${stats.failureCount} failures (${errorMessage || 'unknown'})`);
+            }
+        } else {
+            stats.status = 'failed';
+            const log = isHealthCheck ? this.logger.debug.bind(this.logger) : this.logger.warn.bind(this.logger);
+            log(`⚠ ${nodeUrl.substring(0, 40)}... FAILED attempt ${stats.failureCount}/${this.config.healthCheck.blacklistThreshold} (${errorMessage || 'unknown'})`);
+        }
     }
 
     /**

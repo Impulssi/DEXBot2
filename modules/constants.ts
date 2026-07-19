@@ -689,7 +689,7 @@ let NODE_MANAGEMENT = {
     HEALTH_CHECK_TIMEOUT_MS: 5000,      // 5 seconds per check
     MAX_PING_MS: 3000,                  // Max acceptable latency
     BLACKLIST_THRESHOLD: 3,             // Failures before blacklist
-    BLACKLIST_COOLDOWN_MS: 7 * 24 * 60 * 60 * 1000,  // 7 days before retrying blacklisted nodes
+    BLACKLIST_COOLDOWN_MS: 24 * 60 * 60 * 1000,  // 24 hours before retrying blacklisted nodes
 
     // Expected chain ID (BitShares mainnet)
     EXPECTED_CHAIN_ID: '4018d7844c78f6a6c41c6a552b898022310fc5dec06da467ee7905a8dad512c8',

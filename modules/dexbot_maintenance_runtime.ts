@@ -1584,11 +1584,19 @@ async function executeMaintenanceLogic(bot, context) {
  */
 async function cancelOrderWithNodeFallback(bot, order) {
     try {
-        const nodes = getNodeManager().getHealthyNodes();
+        const nodeManager = getNodeManager();
+        const nodes = nodeManager.getHealthyNodes();
         const fallbackNodes = nodes.length > 1 ? nodes.slice(1) : undefined;
         return await chainOrders.cancelOrder(
             bot.account, bot.privateKey, order.orderId,
-            fallbackNodes ? { fallbackNodes } : {}
+            fallbackNodes
+                ? {
+                    fallbackNodes,
+                    onNodeFailed: (nodeUrl: string) => {
+                        nodeManager.reportNodeFailure(nodeUrl, 'BROADCAST_DEADLINE', 'broadcast');
+                    },
+                }
+                : {}
         );
     } catch (err) {
         if (err instanceof BroadcastUncertainError) {
