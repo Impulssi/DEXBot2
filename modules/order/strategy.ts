@@ -61,7 +61,7 @@ const {
     isOrderPlaced
 } = require("./utils/order");
 const { floatToBlockchainInt, getPrecisionByOrderType } = require('./utils/math');
-const Grid = require('./grid');
+const { calculateGapSlots, hasAnyDust } = require('./grid');;
 
 class StrategyEngine {
     manager: any;
@@ -330,7 +330,7 @@ class StrategyEngine {
         if (allSlots.length === 0) return { targetGrid: new Map(), boundaryIdx: currentBoundaryIdx };
 
         // 1. Determine new boundary based on fills (Boundary Crawl)
-        const gapSlots = Grid.calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
+        const gapSlots = calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
         const newBoundaryIdx = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots);
 
         // 2. Assign Roles (Buy/Sell/Spread)
@@ -470,7 +470,7 @@ class StrategyEngine {
      */
     hasAnyDust(partials, side) {
         const mgr = this.manager;
-        return Grid.hasAnyDust(mgr, partials, side);
+        return hasAnyDust(mgr, partials, side);
     }
 
 }

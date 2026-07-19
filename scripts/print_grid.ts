@@ -13,7 +13,7 @@
  * - Each line displays price progression and percentage increment between levels
  */
 
-const Grid = require('../modules/order/grid');
+const { createOrderGrid } = require('../modules/order/grid');;
 const { DEFAULT_CONFIG } = require('../modules/constants');
 const Format = require('../modules/order/format');
 
@@ -48,8 +48,8 @@ function printGridSample() {
   };
 
   // Generate order grid using the configuration
-  // Grid.createOrderGrid returns { orders, boundaryIdx, initialSpreadCount }
-  const { orders, initialSpreadCount } = Grid.createOrderGrid(config);
+  // createOrderGrid returns { orders, boundaryIdx, initialSpreadCount }
+  const { orders, initialSpreadCount } = createOrderGrid(config);
 
   // Separate sell and buy orders, extracting just the prices
   const sell = orders.filter((o: any) => o.type === 'sell').map((o: any) => o.price);

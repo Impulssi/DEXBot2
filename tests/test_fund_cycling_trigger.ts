@@ -1,6 +1,6 @@
 
 const assert = require('assert');
-const Grid = require('../modules/order/grid');
+const { checkAndUpdateGridIfNeeded } = require('../modules/order/grid');;
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
 const { initializeFeeCache } = require('../modules/order/utils/system');
 
@@ -96,7 +96,7 @@ async function testThresholdExceeded() {
     const manager = new MockManager({ gridBuy: 1000, chainFreeBuy: 50 });
     populateOrders(manager, 'buy');
 
-    const result = Grid.checkAndUpdateGridIfNeeded(manager);
+    const result = checkAndUpdateGridIfNeeded(manager);
     const ratio = (50 / 1050) * 100;
     console.log(`  chainFreeBuy=50, allocated=1050, ratio=${ratio.toFixed(2)}% (threshold=${threshold}%)`);
     console.log(`  buyUpdated=${result.buyUpdated}`);
@@ -113,7 +113,7 @@ async function testThresholdNotExceeded() {
     const manager = new MockManager({ gridBuy: 1000, chainFreeBuy: 5 });
     populateOrders(manager, 'buy');
 
-    const result = Grid.checkAndUpdateGridIfNeeded(manager);
+    const result = checkAndUpdateGridIfNeeded(manager);
     const ratio = (5 / 1005) * 100;
     console.log(`  chainFreeBuy=5, allocated=1005, ratio=${ratio.toFixed(2)}% (threshold=${threshold}%)`);
     console.log(`  buyUpdated=${result.buyUpdated}`);
@@ -132,7 +132,7 @@ async function testBothSidesIndependent() {
     populateOrders(manager, 'buy');
     populateOrders(manager, 'sell');
 
-    const result = Grid.checkAndUpdateGridIfNeeded(manager);
+    const result = checkAndUpdateGridIfNeeded(manager);
     console.log(`  buy ratio=${(80 / 1080 * 100).toFixed(2)}%, sell ratio=${(10 / 1010 * 100).toFixed(2)}%`);
     console.log(`  buyUpdated=${result.buyUpdated} (expected true), sellUpdated=${result.sellUpdated} (expected false)`);
 
@@ -146,7 +146,7 @@ async function testZeroGridSkipped() {
 
     const manager = new MockManager({ gridBuy: 0, gridSell: 0, chainFreeBuy: 100, chainFreeSell: 100 });
 
-    const result = Grid.checkAndUpdateGridIfNeeded(manager);
+    const result = checkAndUpdateGridIfNeeded(manager);
     console.log(`  buyUpdated=${result.buyUpdated}, sellUpdated=${result.sellUpdated}`);
 
     assert.strictEqual(result.buyUpdated, false, 'Zero grid buy should skip');
@@ -162,7 +162,7 @@ async function testExactThresholdBoundary() {
     // Use 31 → ratio = 31/1031 = 3.006% ≥ 3% → triggers
     const manager1 = new MockManager({ gridBuy: 1000, chainFreeBuy: 31 });
     populateOrders(manager1, 'buy');
-    const result1 = Grid.checkAndUpdateGridIfNeeded(manager1);
+    const result1 = checkAndUpdateGridIfNeeded(manager1);
     const ratio1 = (31 / 1031) * 100;
     console.log(`  chainFreeBuy=31, ratio=${ratio1.toFixed(3)}% → buyUpdated=${result1.buyUpdated} (expected true)`);
     assert.strictEqual(result1.buyUpdated, true, 'Just above threshold should trigger');
@@ -170,7 +170,7 @@ async function testExactThresholdBoundary() {
     // Use 29 → ratio = 29/1029 = 2.818% < 3% → does not trigger
     const manager2 = new MockManager({ gridBuy: 1000, chainFreeBuy: 29 });
     populateOrders(manager2, 'buy');
-    const result2 = Grid.checkAndUpdateGridIfNeeded(manager2);
+    const result2 = checkAndUpdateGridIfNeeded(manager2);
     const ratio2 = (29 / 1029) * 100;
     console.log(`  chainFreeBuy=29, ratio=${ratio2.toFixed(3)}% → buyUpdated=${result2.buyUpdated} (expected false)`);
     assert.strictEqual(result2.buyUpdated, false, 'Just below threshold should not trigger');

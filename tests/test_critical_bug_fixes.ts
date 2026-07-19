@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-const Grid = require('../modules/order/grid');
+const { createOrderGrid } = require('../modules/order/grid');;
 
 console.log('='.repeat(80));
 console.log('Testing Critical Bug Fixes (COW)');
@@ -44,7 +44,7 @@ async function testCOWRebalanceProducesValidActions() {
     console.log('-'.repeat(80));
 
     const mgr = await setupManager();
-    const { orders, boundaryIdx } = Grid.createOrderGrid(mgr.config);
+    const { orders, boundaryIdx } = createOrderGrid(mgr.config);
 
     // Index
     for (const o of orders) {

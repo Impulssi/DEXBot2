@@ -1,5 +1,5 @@
 /**
- * Test suite for Grid.compareGrids() function
+ * Test suite for compareGrids() function
  * 
  * Tests the grid comparison metric that calculates normalized sum of squared
  * relative differences between calculated and persisted grids separately by side,
@@ -7,7 +7,7 @@
  */
 
 const assert = require('assert');
-const Grid = require('../modules/order/grid');
+const { compareGrids } = require('../modules/order/grid');;
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
 const { GRID_COMPARISON } = GRID_LIMITS;
 const Format = require('../modules/order/format');
@@ -60,7 +60,7 @@ function logTest(testName, passed, details = '') {
 
 console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
 
-// Wrap all tests in async IIFE to support async Grid.compareGrids()
+// Wrap all tests in async IIFE to support async compareGrids()
 (async () => {
 
 // Test 1: Identical grids should return 0 for both sides
@@ -72,22 +72,22 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.85, 18)
     ];
     const grid2 = [...grid1];
-    const result = await Grid.compareGrids(grid1, grid2);
+    const result = await compareGrids(grid1, grid2);
     const passed = result.buy.metric === 0 && result.sell.metric === 0 && result.totalMetric === 0;
     logTest('Identical grids', passed, `buy=${result.buy.metric}, sell=${result.sell.metric}`);
 }
 
 // Test 2: Empty grids should return 0
 {
-    const result = await Grid.compareGrids([], []);
+    const result = await compareGrids([], []);
     const passed = result.buy.metric === 0 && result.sell.metric === 0 && result.totalMetric === 0;
     logTest('Empty grids', passed);
 }
 
 // Test 3: Null/undefined inputs should return 0
 {
-    const result1 = await Grid.compareGrids(null, []);
-    const result2 = await Grid.compareGrids([], null);
+    const result1 = await compareGrids(null, []);
+    const result2 = await compareGrids([], null);
     const passed = result1.buy.metric === 0 && result2.buy.metric === 0;
     logTest('Null/undefined inputs', passed);
 }
@@ -102,7 +102,7 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.90, 10),
         createOrder(ORDER_TYPES.BUY, 0.85, 10)
     ];
-    const result = await Grid.compareGrids(calculated, persisted);
+    const result = await compareGrids(calculated, persisted);
     const passed = result.sell.metric === 0 && result.buy.metric > 0;
      logTest('Only BUY orders - SELL metric = 0', passed, `buy=${Format.formatPrice6(result.buy.metric)}, sell=${result.sell.metric}`);
 }
@@ -117,7 +117,7 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.SELL, 1.0, 10),
         createOrder(ORDER_TYPES.SELL, 0.95, 10)
     ];
-    const result = await Grid.compareGrids(calculated, persisted);
+    const result = await compareGrids(calculated, persisted);
     const passed = result.buy.metric === 0 && result.sell.metric > 0;
      logTest('Only SELL orders - BUY metric = 0', passed, `buy=${result.buy.metric}, sell=${Format.formatPrice6(result.sell.metric)}`);
 }
@@ -132,7 +132,7 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.SELL, 1.0, 10),
         createOrder(ORDER_TYPES.BUY, 0.90, 10)
     ];
-    const result = await Grid.compareGrids(calculated, persisted);
+    const result = await compareGrids(calculated, persisted);
     const tolerance = 0.0001;
     const passed = Math.abs(result.sell.metric - 0.166667) < tolerance && Math.abs(result.buy.metric - 0.047619) < tolerance;
     logTest('Different divergence by side', passed, `buy=${result.buy.metric.toFixed(6)}, sell=${result.sell.metric.toFixed(6)}`);
@@ -152,7 +152,7 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.8, 15),
         createOrder(ORDER_TYPES.BUY, 0.7, 10)
     ];
-    const result = await Grid.compareGrids(calculated, persisted);
+    const result = await compareGrids(calculated, persisted);
     const tolerance = 0.0001;
     const sellPassed = Math.abs(result.sell.metric - 0.117851) < tolerance;
     const buyPassed = Math.abs(result.buy.metric - 0.353553) < tolerance;
@@ -170,7 +170,7 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.SELL, 1.0, 0),
         createOrder(ORDER_TYPES.BUY, 0.90, 0)
     ];
-    const result = await Grid.compareGrids(calculated, persisted);
+    const result = await compareGrids(calculated, persisted);
     const passed = result.sell.metric === 1.0 && result.buy.metric === 1.0 && result.totalMetric === 1.0;
     logTest('Zero persisted size on both sides', passed, `buy=${result.buy.metric}, sell=${result.sell.metric}`);
 }
@@ -187,7 +187,7 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.SELL, 1.0, 10, 'sell-0'),   // Matches: (10-12)/12 = -0.166
         createOrder(ORDER_TYPES.BUY, 0.90, 15, 'buy-0')     // Matches: (15-18)/18 = -0.166
     ];
-    const result = await Grid.compareGrids(calculated, persisted);
+    const result = await compareGrids(calculated, persisted);
     const tolerance = 0.01;
     const passed = Math.abs(result.sell.metric - 0.71686) < tolerance && Math.abs(result.buy.metric - 0.71686) < tolerance;
     logTest('Unmatched orders detected by grid ID', passed, `buy=${result.buy.metric.toFixed(6)}, sell=${result.sell.metric.toFixed(6)}`);
@@ -207,7 +207,7 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.90, 10)
     ];
     
-    const result = await Grid.compareGrids(calculated, persisted, manager);
+    const result = await compareGrids(calculated, persisted, manager);
     
     const passed = result.buy.updated === true && result.sell.updated === false;
     logTest('Only BUY side updated when threshold exceeded', passed,
@@ -226,7 +226,7 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.90, 10)
     ];
     
-    const result = await Grid.compareGrids(calculated, persisted, manager);
+    const result = await compareGrids(calculated, persisted, manager);
     
     const passed = result.buy.updated === false && result.sell.updated === true;
     logTest('Only SELL side updated when threshold exceeded', passed,
@@ -245,7 +245,7 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.90, 10)
     ];
     
-    const result = await Grid.compareGrids(calculated, persisted, manager);
+    const result = await compareGrids(calculated, persisted, manager);
     
     const passed = result.buy.updated === true && result.sell.updated === true;
     logTest('Both sides updated when both exceed threshold', passed,
@@ -264,7 +264,7 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.90, 10)
     ];
     
-    const result = await Grid.compareGrids(calculated, persisted, manager);
+    const result = await compareGrids(calculated, persisted, manager);
     
     const passed = result.buy.updated === false && result.sell.updated === false;
     logTest('No sides updated when all below threshold', passed);

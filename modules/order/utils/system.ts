@@ -798,7 +798,7 @@ async function retryPersistenceIfNeeded(manager: any): Promise<boolean> {
 async function applyGridDivergenceCorrections(manager: any, accountOrders: any, botKey: string, updateOrdersOnChainBatchFn: Function): Promise<void> {
     if (isBrowser()) throw new Error('applyGridDivergenceCorrections is not available in browser');
     if (!manager._gridLock) return;
-    const Grid = require('../grid');
+    const { calculateGapSlots, updateGridFromBlockchainSnapshot } = require('../grid');
     const { WorkingGrid } = require('../working_grid');
     const { hasActionForOrder, removeActionsForOrder } = require('./validate');
 
@@ -831,7 +831,7 @@ async function applyGridDivergenceCorrections(manager: any, accountOrders: any, 
         }
 
         try {
-            resizeCowResult = await Grid.updateGridFromBlockchainSnapshot(manager, resizeOrderType, true, pendingBoundaryIdx);
+            resizeCowResult = await updateGridFromBlockchainSnapshot(manager, resizeOrderType, true, pendingBoundaryIdx);
         } catch (err: any) {
             manager.logger?.log?.(`[DIVERGENCE-COW] Grid resize failed: ${err.message}`, 'error');
             manager._gridSidesUpdated.clear();
@@ -1052,8 +1052,8 @@ function syncBoundaryToFunds(manager: any): { changed: boolean; newIdx?: number 
     const availA = (manager.funds?.available?.sell || 0);
     const availB = (manager.funds?.available?.buy || 0);
     const allSlots = (Array.from(manager.orders.values()) as any[]).sort((a, b) => a.price - b.price);
-    const Grid = require('../grid');
-    const gapSlots = Grid.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
+    const { calculateGapSlots } = require('../grid');
+    const gapSlots = calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
 
     // Determine the index range permitted by master-grid slot assignments.
     // Both virtual and active orders count: the boundary must stay strictly

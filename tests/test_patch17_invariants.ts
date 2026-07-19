@@ -1,6 +1,6 @@
 const assert = require('assert');
 const DEXBot = require('../modules/dexbot_class');
-const Grid = require('../modules/order/grid');
+const { _getSizingContext, _recalculateGridOrderSizesFromBlockchain } = require('../modules/order/grid');;
 const chainOrders = require('../modules/chain_orders');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../modules/constants');
@@ -329,11 +329,11 @@ async function testGridResizeRespectsBudgetAfterCap() {
     }
     await mgr.resumeFundRecalc();
 
-    await Grid._recalculateGridOrderSizesFromBlockchain(mgr, ORDER_TYPES.BUY);
+    await _recalculateGridOrderSizesFromBlockchain(mgr, ORDER_TYPES.BUY);
 
     const buyOrders = Array.from(mgr.orders.values()).filter(o => (o as any).type === ORDER_TYPES.BUY);
     const allocatedBuy = buyOrders.reduce((sum, o) => (sum as any) + Number((o as any).size || 0), 0);
-    const buyCtx = await Grid._getSizingContext(mgr, 'buy');
+    const buyCtx = await _getSizingContext(mgr, 'buy');
     const buyBudget = Number(buyCtx?.budget || 0);
 
     assert(

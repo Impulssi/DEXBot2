@@ -68,7 +68,7 @@ const AsyncLock = require('./async_lock');
 const Accountant = require('./accounting');
 const StrategyEngine = require('./strategy');
 const SyncEngine = require('./sync_engine');
-const Grid = require('./grid');
+const { calculateCurrentSpread, checkSpreadCondition, checkGridHealth } = require('./grid');;
 const Format = require('./format');
 const { toFiniteNumber, isValidNumber } = Format;
 
@@ -837,6 +837,22 @@ class OrderManager {
     }
 
     /**
+     * Suppress fund recalculation during batch mutations.
+     *
+     * Use when multiple _applyOrderUpdate calls would each trigger redundant
+     * recalculateFunds (e.g. grid load, grid init, fill batch). Must be paired
+     * with resumeFundRecalc() in a try/finally block.
+     *
+     * Supports nesting via depth counter — only the outermost resume triggers
+     * the single consolidated recalculation.
+     *
+     * For bulk mutation sites that also need to suppress debug RECALC logging
+     * during the loop, pair this with pauseRecalcLogging()/resumeRecalcLogging().
+     *
+     * Use independently of pauseRecalcLogging when you need recalc to still run
+     * per-operation but want to batch the trigger (e.g. _updateOrdersForSide
+     * needs per-call chain-free tracking but suppresses log spam).
+     *
      * @returns {void}
      */
     pauseFundRecalc() {
@@ -844,6 +860,8 @@ class OrderManager {
     }
 
     /**
+     * Resume fund recalculation and trigger one consolidated recalculateFunds()
+     * when the outermost resume completes.
      * @returns {Promise<void>}
      */
     async resumeFundRecalc() {
@@ -854,6 +872,17 @@ class OrderManager {
     }
 
     /**
+     * Suppress only the debug-level [RECALC] log lines inside recalculateFunds().
+     *
+     * Lighter than pauseFundRecalc — recalculation still runs, only log output
+     * is suppressed. Use when individual _updateOrder calls must update chain-free
+     * balances but the iterative debug logging would flood output
+     * (e.g. _updateOrdersForSide grid resize loop).
+     *
+     * When paired with pauseFundRecalc/resumeFundRecalc (grid load/init),
+     * both calcs and logging are suppressed during the batch. When used alone
+     * (_updateOrdersForSide), recalc runs per-call but logs are suppressed.
+     *
      * @returns {void}
      */
     pauseRecalcLogging() {
@@ -861,6 +890,7 @@ class OrderManager {
     }
 
     /**
+     * Resume recalc debug logging.
      * @returns {void}
      */
     resumeRecalcLogging() {
@@ -1053,7 +1083,7 @@ class OrderManager {
 
         try {
             this._currentWorkingGrid.markStale(
-                `master mutation during ${this._rebalanceState.toLowerCase()} (${context})`
+                `master mutation during ${(this._rebalanceState || '').toLowerCase()} (${context})`
             );
             this._currentWorkingGrid.syncFromMaster(this.orders, orderId, this._gridVersion);
         } catch (syncErr: any) {
@@ -1377,7 +1407,7 @@ class OrderManager {
      * @returns {Promise<Object>}
      */
     async checkSpreadCondition(BitShares, batchCb) {
-        return await Grid.checkSpreadCondition(this, BitShares, batchCb);
+        return await checkSpreadCondition(this, BitShares, batchCb);
     }
 
     /**
@@ -1385,14 +1415,14 @@ class OrderManager {
      * @returns {Promise<Object>}
      */
     async checkGridHealth(batchCb) {
-        return await Grid.checkGridHealth(this, batchCb);
+        return await checkGridHealth(this, batchCb);
     }
 
     /**
      * @returns {Object} Current spread calculation
      */
     calculateCurrentSpread() {
-        return Grid.calculateCurrentSpread(this);
+        return calculateCurrentSpread(this);
     }
 
     /**

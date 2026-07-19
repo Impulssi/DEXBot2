@@ -197,12 +197,12 @@ function calculateRequiredFunds(grid: any, precisions: Record<string, any> = {})
         const size = toFiniteNumber(order.size ?? order.amount);
 
         const state = order.state;
-        const isActive = state === 'active' || state === 'partial';
+        const isActive = state === ORDER_STATES.ACTIVE || state === ORDER_STATES.PARTIAL;
 
         if (isActive && isOrderOnChain(order)) {
-            if (order.type === 'buy') {
+            if (order.type === ORDER_TYPES.BUY) {
                 buyRequiredInt += floatToBlockchainInt(size, buyPrecision);
-            } else if (order.type === 'sell') {
+            } else if (order.type === ORDER_TYPES.SELL) {
                 sellRequiredInt += floatToBlockchainInt(size, sellPrecision);
             }
         }
@@ -963,9 +963,7 @@ function evaluateCommit(workingGrid: any, options: any = {}) {
         };
     }
 
-    const baseVersion = (typeof workingGrid.getBaseVersion === 'function')
-        ? workingGrid.getBaseVersion()
-        : workingGrid.baseVersion;
+    const baseVersion = workingGrid.baseVersion;
 
     if (baseVersion === null || baseVersion === undefined) {
         return {

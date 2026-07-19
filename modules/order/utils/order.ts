@@ -1103,6 +1103,38 @@ function deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSl
 }
 
 /**
+ * Shared BTS fee adjustment math used by both getSideBudget and Grid._getSizingContext.
+ *
+ * Deducts BTS creation fees from allocated budget when the holding side has BTS,
+ * or proportionally shares BTS fee deficits across both sides for non-BTS pairs.
+ *
+ * @param {number} allocated - Raw allocated budget for this side
+ * @param {boolean} isBtsSide - Whether this side holds BTS
+ * @param {number} formulaBudget - Pre-calculated BTS fee estimate
+ * @param {number} minBtsValue - Configured minimum BTS reserve (or 0)
+ * @param {number} btsFree - Available free BTS balance
+ * @param {number} sideFree - Free balance of this side's asset
+ * @param {number} totalFree - Total free balance across both sides
+ * @returns {number} Budget adjusted for BTS fee reservation
+ */
+function adjustBudgetForBtsFees(allocated, isBtsSide, formulaBudget, minBtsValue, btsFree, sideFree, totalFree) {
+    if (allocated <= 0) return 0;
+
+    if (isBtsSide) {
+        return Math.max(0, allocated - formulaBudget);
+    }
+
+    const effectiveMin = (minBtsValue > 0) ? minBtsValue : formulaBudget;
+    const btsDeficit = Math.max(0, effectiveMin - btsFree);
+    if (btsDeficit > 0) {
+        const share = totalFree > 0 ? sideFree / totalFree : 0.5;
+        return Math.max(0, Math.min(allocated, sideFree - btsDeficit * share));
+    }
+
+    return allocated;
+}
+
+/**
  * Calculate side budget after BTS fee deduction.
  *
  * @param {string} side - 'buy' or 'sell'
@@ -1114,37 +1146,34 @@ function deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSl
 function getSideBudget(side, funds, config, totalTarget) {
     const isBuy = side === 'buy';
     const allocated = isBuy ? (funds.allocatedBuy || 0) : (funds.allocatedSell || 0);
-
-    const btsReservationMultiplier = config?.feeParams?.BTS_RESERVATION_MULTIPLIER ?? FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
+    if (allocated <= 0) return 0;
 
     const isBtsSide = (isBuy && config.assetB === 'BTS') || (!isBuy && config.assetA === 'BTS');
-    if (isBtsSide && allocated > 0) {
+
+    if (isBtsSide) {
         const btsFees = MathUtils.calculateOrderCreationFees(
             config.assetA, config.assetB, totalTarget,
-            btsReservationMultiplier
+            config?.feeParams?.BTS_RESERVATION_MULTIPLIER
         );
         return Math.max(0, allocated - btsFees);
     }
 
-    // Non-BTS pair: reserve proportional share for BTS fee budget
-    if (!isBtsSide && allocated > 0 && funds.btsBalance) {
-        const formulaBudget = MathUtils.calculateOrderCreationFees(
-            config.assetA, config.assetB, totalTarget,
-            btsReservationMultiplier
-        );
-        const configMin = config.min_BTS_value;
-        const effectiveMin = (configMin > 0) ? configMin : formulaBudget;
-        const btsFree = funds.btsBalance.free || 0;
-        const btsDeficit = Math.max(0, effectiveMin - btsFree);
-        if (btsDeficit > 0) {
-            const sideFree = isBuy ? (funds.chainFreeBuy || 0) : (funds.chainFreeSell || 0);
-            const totalFree = (funds.chainFreeBuy || 0) + (funds.chainFreeSell || 0);
-            const share = totalFree > 0 ? sideFree / totalFree : 0.5;
-            return Math.max(0, Math.min(allocated, sideFree - btsDeficit * share));
-        }
-    }
+    if (!funds.btsBalance) return allocated;
 
-    return allocated;
+    const btsReservationMultiplier = config?.feeParams?.BTS_RESERVATION_MULTIPLIER ?? FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
+    const formulaBudget = MathUtils.calculateOrderCreationFees(
+        config.assetA, config.assetB, totalTarget,
+        btsReservationMultiplier
+    );
+    return adjustBudgetForBtsFees(
+        allocated,
+        false,
+        formulaBudget,
+        config.min_BTS_value || 0,
+        funds.btsBalance?.free || 0,
+        isBuy ? (funds.chainFreeBuy || 0) : (funds.chainFreeSell || 0),
+        (funds.chainFreeBuy || 0) + (funds.chainFreeSell || 0),
+    );
 }
 
 /**
@@ -1219,6 +1248,7 @@ export = {
     buildDelta,
     getOrderSize,
     deriveTargetBoundary,
+    adjustBudgetForBtsFees,
     getSideBudget,
     calculateBudgetedSizes,
     buildCreateOpFingerprint

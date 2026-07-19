@@ -34,14 +34,14 @@ setCachedModule(startupReconcilePath, {
 });
 
 const chainOrders = require('../modules/chain_orders');
-const Grid = require('../modules/order/grid');
+const { loadGrid, initializeGrid } = require('../modules/order/grid');;
 delete require.cache[dexbotClassPath];
 const DEXBot = require('../modules/dexbot_class');
 
 async function testPlaceInitialOrdersRefreshesAndFallsBack() {
     const botKey = 'test_startup_dynamic_weight_initial';
     const weightFiles = withDynamicWeightFiles(botKey);
-    const originalInitializeGrid = Grid.initializeGrid;
+    const originalInitializeGrid = initializeGrid;
 
     try {
         const observedWeights = [];
@@ -50,7 +50,7 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
             effectiveWeights: { sell: 0.45, buy: 0.25 },
         });
 
-        Grid.initializeGrid = async (manager) => {
+        initializeGrid = async (manager) => {
             observedWeights.push({ ...manager.config.weightDistribution });
         };
 
@@ -112,7 +112,7 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
         );
         assert.strictEqual(persistCalls, 2, 'dry-run placement should persist grid each time');
     } finally {
-        Grid.initializeGrid = originalInitializeGrid;
+        initializeGrid = originalInitializeGrid;
         weightFiles.cleanup();
     }
 }
@@ -122,7 +122,7 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
     const weightFiles = withDynamicWeightFiles(botKey);
     const originalListenForFills = chainOrders.listenForFills;
     const originalReadOpenOrders = chainOrders.readOpenOrders;
-    const originalLoadGrid = Grid.loadGrid;
+    const originalLoadGrid = loadGrid;
 
     try {
         weightFiles.writeSnapshot({
@@ -136,7 +136,7 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
 
         chainOrders.listenForFills = async () => async () => {};
         chainOrders.readOpenOrders = async () => [];
-        Grid.loadGrid = async () => {
+        loadGrid = async () => {
             loadGridCalls++;
         };
 
@@ -226,7 +226,7 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
     } finally {
         chainOrders.listenForFills = originalListenForFills;
         chainOrders.readOpenOrders = originalReadOpenOrders;
-        Grid.loadGrid = originalLoadGrid;
+        loadGrid = originalLoadGrid;
         weightFiles.cleanup();
     }
 }

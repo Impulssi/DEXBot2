@@ -60,7 +60,7 @@
 const { path } = require('../path_api');
 const { OrderManager } = require('./manager');
 const { PATHS } = require('../paths');
-const Grid = require('./grid');
+const { initializeGrid } = require('./grid');;
 const { readBotsFileSync } = require('../bots_file_lock');
 const { Config } = require('../config');
 const { parseJsonWithComments, sleep } = require('./utils/system');
@@ -126,7 +126,7 @@ async function runOrderManagerCalculation() {
     } catch (err: any) { throw err; }
 
     const manager = new OrderManager(botConfig);
-    await Grid.initializeGrid(manager);
+    await initializeGrid(manager);
 
     const cycles = Config.CALC_CYCLES;
     const delayMs = Config.CALC_DELAY_MS;

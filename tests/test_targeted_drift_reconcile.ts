@@ -2,14 +2,14 @@ const assert = require('assert');
 
 const MaintenanceRuntime = require('../modules/dexbot_maintenance_runtime');
 const chainOrders = require('../modules/chain_orders');
-const Grid = require('../modules/order/grid');
+const { monitorDivergence } = require('../modules/order/grid');;
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 async function runTests() {
     console.log('Running Targeted Drift Reconcile Tests...');
 
     const originalReadOpenOrders = chainOrders.readOpenOrders;
-    const originalMonitorDivergence = Grid.monitorDivergence;
+    const originalMonitorDivergence = monitorDivergence;
 
     try {
         console.log(' - Testing active-order shortfall triggers open-order sync...');
@@ -23,7 +23,7 @@ async function runTests() {
             assert.strictEqual(accountId, '1.2.345', 'targeted sync should read orders for the bot account');
             return [{ id: '1.7.9001' }];
         };
-        Grid.monitorDivergence = async () => ({
+        monitorDivergence = async () => ({
             needsUpdate: false,
             buy: { ratio: false, rms: false, metric: 0 },
             sell: { ratio: false, rms: false, metric: 0 },
@@ -107,7 +107,7 @@ async function runTests() {
         console.log('✓ Targeted drift reconcile tests passed!');
     } finally {
         chainOrders.readOpenOrders = originalReadOpenOrders;
-        Grid.monitorDivergence = originalMonitorDivergence;
+        monitorDivergence = originalMonitorDivergence;
     }
 }
 

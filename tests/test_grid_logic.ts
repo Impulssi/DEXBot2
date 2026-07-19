@@ -9,7 +9,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const Grid = require('../modules/order/grid');
+const { calculateGapSlots, getSizingContext, createOrderGrid, initializeGrid, checkAndUpdateGridIfNeeded, hasAnyDust } = require('../modules/order/grid');;
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, BUILD_DIR } = require('../modules/constants');
 const { OrderManager } = require('../modules/order/manager');
 const { allocateFundsByWeights, getSingleDustThreshold } = require('../modules/order/utils/math');
@@ -30,7 +30,7 @@ async function runTests() {
     console.log(' - Testing createOrderGrid() Basic Structure...');
     {
         const config = { startPrice: 100, minPrice: 50, maxPrice: 200, incrementPercent: 1, targetSpreadPercent: 2 };
-        const { orders, initialSpreadCount } = Grid.createOrderGrid(config);
+        const { orders, initialSpreadCount } = createOrderGrid(config);
 
         assert(orders !== undefined);
         assert(Array.isArray(orders));
@@ -49,7 +49,7 @@ async function runTests() {
     console.log(' - Testing Price Orientation...');
     {
         const config = { startPrice: 100, minPrice: 50, maxPrice: 200, incrementPercent: 2, targetSpreadPercent: 4 };
-        const { orders } = Grid.createOrderGrid(config);
+        const { orders } = createOrderGrid(config);
 
         orders.forEach(o => {
             if (o.type === ORDER_TYPES.BUY) assert(o.price <= config.startPrice);
@@ -61,7 +61,7 @@ async function runTests() {
     console.log(' - Testing Price Bounds...');
     {
         const config = { startPrice: 100, minPrice: 40, maxPrice: 160, incrementPercent: 5, targetSpreadPercent: 10 };
-        const { orders } = Grid.createOrderGrid(config);
+        const { orders } = createOrderGrid(config);
 
         orders.forEach(o => {
             if (o.type === ORDER_TYPES.BUY) {
@@ -83,7 +83,7 @@ async function runTests() {
         ];
 
         invalidConfigs.forEach(cfg => {
-            assert.throws(() => Grid.createOrderGrid(cfg));
+            assert.throws(() => createOrderGrid(cfg));
         });
     }
 
@@ -93,7 +93,7 @@ async function runTests() {
         try {
             DEFAULT_CONFIG.incrementPercent = 0.8;
 
-            const gap = Grid.calculateGapSlots(undefined, 0);
+            const gap = calculateGapSlots(undefined, 0);
 
             const step = 1 + (DEFAULT_CONFIG.incrementPercent / 100);
             const minSpreadPercent = DEFAULT_CONFIG.incrementPercent * GRID_LIMITS.MIN_SPREAD_FACTOR;
@@ -109,17 +109,17 @@ async function runTests() {
     console.log(' - Testing minPrice validation and empty-grid protection...');
     {
         assert.throws(
-            () => Grid.createOrderGrid({ startPrice: 100, minPrice: 0, maxPrice: 200, incrementPercent: 1, targetSpreadPercent: 2 }),
+            () => createOrderGrid({ startPrice: 100, minPrice: 0, maxPrice: 200, incrementPercent: 1, targetSpreadPercent: 2 }),
             /minPrice.*positive/i
         );
 
         assert.throws(
-            () => Grid.createOrderGrid({ startPrice: 100, minPrice: 99.9, maxPrice: 100.1, incrementPercent: 1, targetSpreadPercent: 2 }),
+            () => createOrderGrid({ startPrice: 100, minPrice: 99.9, maxPrice: 100.1, incrementPercent: 1, targetSpreadPercent: 2 }),
             /produced no price levels/i
         );
 
         assert.throws(
-            () => Grid.createOrderGrid({ startPrice: 100, minPrice: 99, maxPrice: 101, incrementPercent: 1, targetSpreadPercent: 2 }),
+            () => createOrderGrid({ startPrice: 100, minPrice: 99, maxPrice: 101, incrementPercent: 1, targetSpreadPercent: 2 }),
             /imbalanced rail/i
         );
     }
@@ -127,7 +127,7 @@ async function runTests() {
     console.log(' - Testing Geometric Progression...');
     {
         const config = { startPrice: 100, minPrice: 50, maxPrice: 200, incrementPercent: 1, targetSpreadPercent: 2 };
-        const { orders } = Grid.createOrderGrid(config);
+        const { orders } = createOrderGrid(config);
 
         const buyOrders = orders.filter(o => o.type === ORDER_TYPES.BUY).sort((a, b) => a.price - b.price);
         if (buyOrders.length > 1) {
@@ -173,7 +173,7 @@ async function runTests() {
         const sideSlots = Array.from(manager.orders.values())
             .filter(o => (o as any).type === ORDER_TYPES.BUY)
             .sort((a, b) => (a as any).price - (b as any).price);
-        const ctx = await Grid.getSizingContext(manager, 'buy');
+        const ctx = await getSizingContext(manager, 'buy');
         const idealSizes = allocateFundsByWeights(
             ctx.budget,
             sideSlots.length,
@@ -195,7 +195,7 @@ async function runTests() {
         });
 
         const partial = manager.orders.get(partialId);
-        assert.strictEqual(await Grid.hasAnyDust(manager, [partial], 'buy'), true, 'BUY dust detection should match market-oriented geometric sizing');
+        assert.strictEqual(await hasAnyDust(manager, [partial], 'buy'), true, 'BUY dust detection should match market-oriented geometric sizing');
     }
 
     console.log(' - Testing regeneration trigger uses cache and available funds...');
@@ -227,13 +227,13 @@ async function runTests() {
             }
         };
 
-        // Grid.checkAndUpdateGridIfNeeded uses calculateAvailableFundsValue internally
+        // checkAndUpdateGridIfNeeded uses calculateAvailableFundsValue internally
         // For this mock to work, we set up buyFree = 4 (>= 3% of 100 grid = 3)
-        const above = Grid.checkAndUpdateGridIfNeeded(mockManager);
+        const above = checkAndUpdateGridIfNeeded(mockManager);
         assert.strictEqual(above.buyUpdated, true, 'Available funds above threshold (4%) should trigger buy-side update');
 
         mockManager.accountTotals.buyFree = 2;
-        const below = Grid.checkAndUpdateGridIfNeeded(mockManager);
+        const below = checkAndUpdateGridIfNeeded(mockManager);
         assert.strictEqual(below.buyUpdated, false, 'Available funds below threshold (<2%) should not trigger update');
     }
 
@@ -272,7 +272,7 @@ async function runTests() {
             };
             await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
 
-            await FreshGrid.initializeGrid(manager);
+            await FreshinitializeGrid(manager);
 
             assert(manager.orders.size > 0, 'initializeGrid should succeed even when configured startPrice is outside resolved bounds');
             assert(manager.config.minPrice > 400 && manager.config.minPrice < 600, 'minPrice should be resolved from AMA center in case-insensitive mode');
@@ -336,7 +336,7 @@ async function runTests() {
             };
             await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
 
-            await FreshGrid.initializeGrid(manager);
+            await FreshinitializeGrid(manager);
 
             assert(manager.orders.size > 0, 'initializeGrid should succeed with AMA gridPrice');
             assert.strictEqual(manager._lastGridPricingContext.gridPrice, 1100, 'debug pricing should expose the resolved grid price once');
@@ -413,7 +413,7 @@ async function runTests() {
             };
             await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
 
-            await FreshGrid.initializeGrid(manager);
+            await FreshinitializeGrid(manager);
 
             assert(manager.orders.size > 0, 'initializeGrid should succeed with an offset AMA snapshot');
             assert.strictEqual(manager._lastGridPricingContext.gridPriceOffsetPct, 0.8, 'debug pricing should expose the persisted spread offset');
@@ -486,7 +486,7 @@ async function runTests() {
             };
             await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
 
-            await FreshGrid.initializeGrid(manager);
+            await FreshinitializeGrid(manager);
 
             // With trend=UP and appliedAsymmetryFactor=0.08:
             //   center=1000, minP=1000/2=500, maxP=1000*2=2000
@@ -566,7 +566,7 @@ async function runTests() {
             };
             await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
 
-            await FreshGrid.initializeGrid(manager);
+            await FreshinitializeGrid(manager);
 
             assert(manager.orders.size > 0, 'initializeGrid should succeed with spread offset disabled');
             assert.strictEqual(manager._lastGridPricingContext.gridPriceOffsetPct, 0, 'debug pricing should hide ignored spread offset');

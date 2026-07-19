@@ -1442,12 +1442,12 @@ async function testRecoverFromPersistedGrid() {
     // _recoverFromPersistedGrid checks this.accountId first
     bot.accountId = 'test-account';
 
-    // Mock Grid.loadGrid so we don't need to mock the entire internal
+    // Mock loadGrid so we don't need to mock the entire internal
     // manager contract (_gridLock, _initializeAssets, resetFunds,
-    // _applyOrderUpdate, etc.) — Grid.loadGrid is tested separately.
-    const Grid = require('../modules/order/grid');
-    const origLoadGrid = Grid.loadGrid;
-    Grid.loadGrid = async (manager, grid, boundaryIdx) => { /* no-op */ };
+    // _applyOrderUpdate, etc.) — loadGrid is tested separately.
+    const { loadGrid } = require('../modules/order/grid');;
+    const origLoadGrid = loadGrid;
+    loadGrid = async (manager, grid, boundaryIdx) => { /* no-op */ };
 
     const persistedGrid = [
         { id: 'slot-1', type: 'buy', price: 0.04, size: 200, orderId: '1.7.111' },
@@ -1494,7 +1494,7 @@ async function testRecoverFromPersistedGrid() {
         assert.strictEqual(syncCalledWith.options.fillLockAlreadyHeld, true);
         assert.strictEqual(persistCalled, true, 'persistGrid must be called to save reconciled state');
     } finally {
-        Grid.loadGrid = origLoadGrid;
+        loadGrid = origLoadGrid;
         chainOrders.readOpenOrders = origReadOpenOrders;
         bot.manager.persistGrid = origPersist;
     }

@@ -11,6 +11,16 @@ All notable changes to this project will be documented in this file.
 - **Fix**: recover lost boundary shift after uncertain broadcast discard — when COW broadcast fails with `BROADCAST_DEADLINE`, the recovery discards unconfirmed CREATEs but never applies the boundary shift the fill cycle's COW plan would have committed. Now calculates net boundary shift from all planned CREATEs and applies it directly (`modules/dexbot_class.ts:3199-3244`).
 - **Fix**: `effectiveBotName` used in `MONOLITHIC_BOT_INFO_FILE` instead of raw `botName` (`unlock.ts:630`).
 - **Fix**: restore missing v1.1.13 header in CHANGELOG.md (`CHANGELOG.md`).
+- **Fix**: `mgr.startPrice` → `mgr.config.startPrice` in fund recalculation — SPREAD orders would silently be excluded from fund totals if they ever carried positive size (`modules/order/accounting.ts:391-392`).
+- **Fix**: remove dead `typeof workingGrid.getBaseVersion === 'function'` guard — `WorkingGrid` has no such method, fallback always triggered (`modules/order/utils/validate.ts:966`).
+- **Fix**: `_applySync` `cancelOrder` dual-signature — normalized from bare-string/object overload to canonical object form (`{ orderId, clearSize? }`). Changed `grid_reconcile.ts:387` bare-string call; simplified sync_engine.ts dispatch (`modules/order/sync_engine.ts`, `modules/order/grid_reconcile.ts`).
+- **Fix**: `_rebalanceState.toLowerCase()` null guard — `_rebalanceState` is always initialized but now has defensive `|| ''` (`modules/order/manager.ts:1056`).
+- **Refactor**: convert `Grid` class (28 static methods, zero instance state) to plain exported functions. Self-calls use direct function references. No behavioral change (`modules/order/grid.ts`, all callers).
+- **Refactor**: extract shared `adjustBudgetForBtsFees()` to eliminate BTS fee-reservation logic duplicated between `Grid._getSizingContext()` and `getSideBudget()`. Both call sites now use the same canonical math. Preserves the `Math.min(allocated, sideFree - btsDeficit * share)` cap from `getSideBudget`. Moves `calculateOrderCreationFees` call inside conditional branches to avoid unnecessary fee lookups (`modules/order/utils/order.ts`, `modules/order/grid.ts`).
+- **Refactor**: split `grid_reconcile.ts` (1550 lines) — extracted 22 internal helpers into `grid_reconcile_internal.ts` (1067 lines). Main file reduced to 454 lines with the 3 public exports plus imports (`modules/order/grid_reconcile.ts`, `modules/order/grid_reconcile_internal.ts`).
+- **Chore**: replace hardcoded `'active'/'partial'` string literals with `ORDER_STATES.ACTIVE/PARTIAL` in `calculateRequiredFunds` (`modules/order/utils/validate.ts:200`).
+- **Chore**: replace hardcoded `'buy'/'sell'` string literals with `ORDER_TYPES.BUY/SELL` in same function (`modules/order/utils/validate.ts:202-203`).
+- **Chore**: document `pauseFundRecalc`/`pauseRecalcLogging` coupling — JSDoc explains when to pair them vs use independently (`modules/order/manager.ts:838-868`).
 - **Docs**: new Credit-Only Mode section in `docs/MPA_CREDIT_USAGE.md`; removed redundant sections from `AGENTS.md` (template, quick commands), shortened Browser-Safe Surface, collapsed Node-only list.
 - **Test**: `test_bot_settings.ts` covers creditOnly validation positive and required-fields negative cases.
 

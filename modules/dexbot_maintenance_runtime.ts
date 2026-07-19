@@ -7,7 +7,7 @@ const { BitShares, getNodeManager } = require('./bitshares_client');
 const chainOrders = require('./chain_orders');
 const { BroadcastUncertainError } = require('./dexbot_credential_client');
 const { Config, hasOpenOrdersSyncLoopMsSet, getOpenOrdersSyncLoopMs } = require('./config');
-const Grid = require('./order/grid');
+const { isGridBloated, isGridBloatGraceActive, clearGridBloatFlag, loadGrid, recalculateGrid, monitorDivergence } = require('./order/grid');;
 const { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } = require('./constants');
 const { PATHS } = require('./paths');
 const { buildRuntimeScriptPath, isDistCodeRoot } = require('./launcher/runtime_entry');
@@ -834,7 +834,7 @@ function performGridResync(bot, options: {
             }
 
             const readFn = () => chainOrders.readOpenOrders(self.accountId);
-            await Grid.recalculateGrid(self.manager, {
+            await recalculateGrid(self.manager, {
                 readOpenOrdersFn: readFn,
                 chainOrders,
                 account: self.account,
@@ -1394,16 +1394,16 @@ async function executeMaintenanceLogic(bot, context) {
         return;
     }
 
-    // Grid bloat re-check: if a previous Grid.loadGrid detected bloat and set
+    // Grid bloat re-check: if a previous loadGrid detected bloat and set
     // _gridBloatDetectedAt, verify the grid is still oversized after a grace
     // period. If it hasn't resolved and no structural resync is in flight,
     // trigger one. This catches bloat that occurred during startup (before
     // requestStructuralGridResync was wired) or bloat that survived a prior
     // resync attempt.
     if (bot.manager._gridBloatDetectedAt && typeof bot.manager.requestStructuralGridResync === 'function') {
-        const grace = Grid.isGridBloatGraceActive(bot.manager);
+        const grace = isGridBloatGraceActive(bot.manager);
         if (!grace.active) {
-            const bloatResult = Grid.isGridBloated(bot.manager, bot.manager.orders);
+            const bloatResult = isGridBloated(bot.manager, bot.manager.orders);
             if (bloatResult.bloated) {
                 const d = bloatResult.details;
                 bot._log(
@@ -1421,7 +1421,7 @@ async function executeMaintenanceLogic(bot, context) {
                     );
                 });
             } else {
-                Grid.clearGridBloatFlag(bot.manager);
+                clearGridBloatFlag(bot.manager);
                 bot._log('[GRID-BLOAT] Grid size returned to normal. Clearing bloat flag.', 'info');
             }
         }
@@ -1513,7 +1513,7 @@ async function executeMaintenanceLogic(bot, context) {
             const persistedGridData = bot.accountOrders.loadGrid(true) || [];
             const calculatedGrid = Array.from(bot.manager.orders.values());
 
-            const divergence = await Grid.monitorDivergence(bot.manager, calculatedGrid, persistedGridData);
+            const divergence = await monitorDivergence(bot.manager, calculatedGrid, persistedGridData);
 
             if (divergence.needsUpdate) {
                 const hasRmsDivergence = !!(divergence.buy.rms || divergence.sell.rms);

@@ -43,7 +43,7 @@ Module._load = function(request, parent, isMain) {
 
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, TIMING } = require('../modules/constants');
-const Grid = require('../modules/order/grid');
+const { checkWindowDust, hasAnyDust, getDustOrders } = require('../modules/order/grid');;
 const { _setFeeCache } = require('../modules/order/utils/math');
 const chainOrders = require('../modules/chain_orders');
 const DEXBot = require('../modules/dexbot_class');
@@ -118,8 +118,8 @@ async function testDustTrigger() {
     const sellPartials = Array.from(manager.orders.values())
         .filter(o => (o as any).type === ORDER_TYPES.SELL && (o as any).state === ORDER_STATES.PARTIAL);
 
-    const buyHasDust = buyPartials.length > 0 && await Grid.hasAnyDust(manager, buyPartials, 'buy');
-    const sellHasDust = sellPartials.length > 0 && await Grid.hasAnyDust(manager, sellPartials, 'sell');
+    const buyHasDust = buyPartials.length > 0 && await hasAnyDust(manager, buyPartials, 'buy');
+    const sellHasDust = sellPartials.length > 0 && await hasAnyDust(manager, sellPartials, 'sell');
 
     assert.strictEqual(buyHasDust, true, 'Buy side should have dust');
     assert.strictEqual(sellHasDust, false, 'Sell side should NOT have dust (no partials)');
@@ -142,8 +142,8 @@ async function testDustTrigger() {
     const sellPartials2 = Array.from(manager.orders.values())
         .filter(o => (o as any).type === ORDER_TYPES.SELL && (o as any).state === ORDER_STATES.PARTIAL);
 
-    const buyHasDust2 = buyPartials2.length > 0 && await Grid.hasAnyDust(manager, buyPartials2, 'buy');
-    const sellHasDust2 = sellPartials2.length > 0 && await Grid.hasAnyDust(manager, sellPartials2, 'sell');
+    const buyHasDust2 = buyPartials2.length > 0 && await hasAnyDust(manager, buyPartials2, 'buy');
+    const sellHasDust2 = sellPartials2.length > 0 && await hasAnyDust(manager, sellPartials2, 'sell');
 
     assert.strictEqual(buyHasDust2, true, 'Buy side should have dust');
     assert.strictEqual(sellHasDust2, true, 'Sell side should have dust');
@@ -570,7 +570,7 @@ async function testDustThresholdUsesConfiguredPercentage() {
             orderId: '1.7.912'
         });
 
-        const dustOrders = await Grid.getDustOrders(manager, [manager.orders.get('threshold-sell-2')], 'sell');
+        const dustOrders = await getDustOrders(manager, [manager.orders.get('threshold-sell-2')], 'sell');
         assert.strictEqual(dustOrders.length, 1, 'Configured dust threshold should classify the order as dust');
         console.log('  ✓ Dust detection respects configured threshold percentage');
     } catch (err) {
@@ -655,7 +655,7 @@ async function testDustTrackingOnlyUsesTopLiveOrder() {
     bot.manager = manager;
 
     try {
-        const initialHealth = await Grid.checkWindowDust(manager);
+        const initialHealth = await checkWindowDust(manager);
         assert.strictEqual(initialHealth.sellDustOrders.length, 0, 'Interior dust should not be selected when top order is healthy');
 
         await manager._updateOrder({
@@ -667,7 +667,7 @@ async function testDustTrackingOnlyUsesTopLiveOrder() {
             orderId: '1.7.930'
         });
 
-        const topHealth = await Grid.checkWindowDust(manager);
+        const topHealth = await checkWindowDust(manager);
         assert.strictEqual(topHealth.sellDustOrders.length, 1, 'Top dust should be selected for tracking');
         assert.strictEqual(topHealth.sellDustOrders[0].orderId, '1.7.930', 'Top live sell should be the only tracked dust order');
 
@@ -757,7 +757,7 @@ async function testInteriorDustWithDuplicatePriceLevel() {
     await manager._updateOrder({ id: 'dup-dust-sell', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, size: 0.00001, price: 1.01, orderId: '1.7.941' });
     await manager._updateOrder({ id: 'outer-sell', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, size: 10, price: 1.03, orderId: '1.7.942' });
 
-    const health = await Grid.checkWindowDust(manager);
+    const health = await checkWindowDust(manager);
     assert.strictEqual(health.sellDustOrders.length, 1, 'Interior dust with duplicate price level should be eligible');
     assert.strictEqual(health.sellDustOrders[0].orderId, '1.7.941', 'Duplicate-price-level interior dust should be detected');
     console.log('  ✓ Interior partial with active sibling at same price is eligible for dust');
@@ -796,7 +796,7 @@ async function testInteriorDustAdjacentGridLevelNotEligible() {
     await manager._updateOrder({ id: 's2', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, size: 0.00001, price: 1.02, orderId: '1.7.951' });
     await manager._updateOrder({ id: 's3', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, size: 10, price: 1.03, orderId: '1.7.952' });
 
-    const health = await Grid.checkWindowDust(manager);
+    const health = await checkWindowDust(manager);
     // s2 at 1.02 is between 1.01 and 1.03 — adjacent but NOT same price level.
     // The tolerance uses Math.max(0.00001, 10)=10 → tight tolerance (~2e-6) → 0.01 >> 2e-6 → no match.
     assert.strictEqual(health.sellDustOrders.length, 0, 'Interior partial at adjacent price level should not be eligible for dust');

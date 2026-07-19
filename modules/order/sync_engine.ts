@@ -1419,10 +1419,8 @@ class SyncEngine {
                 break;
             }
             case 'cancelOrder': {
-                const orderId = typeof chainData === 'object' && chainData !== null
-                    ? chainData.orderId
-                    : chainData;
-                const clearSize = !!(typeof chainData === 'object' && chainData !== null && chainData.clearSize);
+                const orderId = chainData.orderId;
+                const clearSize = !!chainData.clearSize;
                 let btsFeeData;
                 try {
                     btsFeeData = getAssetFees('BTS');

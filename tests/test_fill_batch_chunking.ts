@@ -7,7 +7,7 @@
 
 const assert = require('assert');
 const DEXBot = require('../modules/dexbot_class');
-const Grid = require('../modules/order/grid');
+const { _getSizingContext } = require('../modules/order/grid');;
 const { FILL_PROCESSING, ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 const MAX_BATCH = FILL_PROCESSING.MAX_FILL_BATCH_SIZE;
@@ -361,8 +361,8 @@ async function runTests() {
 
     // --- Test 13: bootstrap fills go through standard pipeline with MAX_BATCH chunking ---
     {
-        const originalSizingContext = Grid._getSizingContext;
-        Grid._getSizingContext = async () => null;
+        const originalSizingContext = _getSizingContext;
+        _getSizingContext = async () => null;
         try {
             const bot = makeBootstrapBot();
             const totalFills = MAX_BATCH + 2;
@@ -387,7 +387,7 @@ async function runTests() {
             assert.strictEqual(pipelineCalls[0].label, '[BOOTSTRAP] fill processing', 'pipeline context label set');
             console.log(`  ✓ bootstrap fills delegated to standard pipeline (${totalFills} fills, unified plan)`);
         } finally {
-            Grid._getSizingContext = originalSizingContext;
+            _getSizingContext = originalSizingContext;
         }
     }
 

@@ -388,8 +388,8 @@ class Accountant {
              // - SPREAD type: derive from price relation to startPrice (market midpoint)
              //   * price < startPrice → BUY side (lower prices are bids)
              //   * price >= startPrice → SELL side (higher prices are asks)
-             const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && order.price < mgr.startPrice);
-             const isSell = order.type === ORDER_TYPES.SELL || (order.type === ORDER_TYPES.SPREAD && order.price >= mgr.startPrice);
+              const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && order.price < mgr.config.startPrice);
+              const isSell = order.type === ORDER_TYPES.SELL || (order.type === ORDER_TYPES.SPREAD && order.price >= mgr.config.startPrice);
 
              if (isBuy) {
                  if (isActive) {
