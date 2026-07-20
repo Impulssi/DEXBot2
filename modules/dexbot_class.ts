@@ -1498,6 +1498,32 @@ class DEXBot {
 
                     this.manager.finishBootstrap();
 
+                    // Refresh account totals after bootstrap to eliminate the timing
+                    // gap between the initial balance fetch and grid operations (sync,
+                    // reconcile, fills). Without this, the first maintenance cycle sees
+                    // a fund drift (expected at bootstrap) and triggers an unnecessary
+                    // invariant violation + full recovery cycle.
+                    // Bound by a timeout to avoid blocking _fillProcessingLock on a
+                    // flaky node. If the fetch times out, continue with cached values;
+                    // the next periodic maintenance cycle will retry.
+                    const FETCH_TIMEOUT_MS = 30000;
+                    let _fetchTimeoutHandle: NodeJS.Timeout;
+                    try {
+                        await Promise.race([
+                            this.manager.fetchAccountTotals(),
+                            new Promise((_, reject) => {
+                                _fetchTimeoutHandle = setTimeout(() => reject(new Error('timeout')), FETCH_TIMEOUT_MS);
+                            })
+                        ]);
+                    } catch (fetchErr: any) {
+                        this._log(
+                            `[STARTUP] [${this.config?.botKey || 'unknown'}] fetchAccountTotals ${fetchErr.message === 'timeout' ? 'timed out' : 'failed'} (${fetchErr.message}). Continuing with cached account totals.`,
+                            'warn'
+                        );
+                    } finally {
+                        clearTimeout(_fetchTimeoutHandle!);
+                    }
+
                     // Perform initial grid maintenance (thresholds, divergence, spread, health)
                     // Consolidated into shared logic to ensure consistent behavior at boot and runtime.
                     // CRITICAL: Pass lockAlreadyHeld since we're inside _fillProcessingLock.acquire()

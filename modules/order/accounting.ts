@@ -872,34 +872,36 @@ class Accountant {
      * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
      * @param {number} size - Amount to deduct from chainFree
      * @param {string} [operation='move'] - Label for logging
-     * @returns {Promise<boolean>} true if deduction succeeded, false if insufficient funds
+     * @returns {Promise<{ok: boolean, reason?: string}>} {ok: true} on success, {ok: false, reason} on failure
      */
     async tryDeductFromChainFree(orderType, size, operation = 'move') {
          const mgr = this.manager;
          const isBuy = orderType === ORDER_TYPES.BUY;
          const key = isBuy ? 'buyFree' : 'sellFree';
 
-         if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
+          if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) {
+              return { ok: false, reason: 'undefined' };
+          }
 
-         // Stale-fetch guard: if accountTotals was fetched too long ago, refuse
-         // optimistic deduction and force the caller to re-fetch. This prevents
-         // optimistic balance drift from diverging too far from chain reality
-         // between periodic blockchain fetches.
-         const MAX_ACCOUNT_TOTALS_AGE_MS = require('../constants').TIMING.MAX_ACCOUNT_TOTALS_AGE_MS;
-         const lastFetched = mgr.accountTotals._lastFetchedAt || 0;
-         if (Date.now() - lastFetched > MAX_ACCOUNT_TOTALS_AGE_MS) {
-             mgr.logger.log(
-                 `[chainFree] ${orderType} ${operation}: STALE accountTotals (age=${Date.now() - lastFetched}ms > ${MAX_ACCOUNT_TOTALS_AGE_MS}ms). ` +
-                 `Skipping optimistic deduction; caller should re-fetch.`,
-                 'warn'
-             );
-             return false;
-         }
+          // Stale-fetch guard: if accountTotals was fetched too long ago, refuse
+          // optimistic deduction and force the caller to re-fetch. This prevents
+          // optimistic balance drift from diverging too far from chain reality
+          // between periodic blockchain fetches.
+          const MAX_ACCOUNT_TOTALS_AGE_MS = require('../constants').TIMING.MAX_ACCOUNT_TOTALS_AGE_MS;
+          const lastFetched = mgr.accountTotals._lastFetchedAt || 0;
+          if (Date.now() - lastFetched > MAX_ACCOUNT_TOTALS_AGE_MS) {
+              mgr.logger.log(
+                  `[chainFree] ${orderType} ${operation}: STALE accountTotals (age=${Date.now() - lastFetched}ms > ${MAX_ACCOUNT_TOTALS_AGE_MS}ms). ` +
+                  `Skipping optimistic deduction; caller should re-fetch.`,
+                  'warn'
+              );
+              return { ok: false, reason: 'stale' };
+          }
 
-         const current = toFiniteNumber(mgr.accountTotals[key]);
+          const current = toFiniteNumber(mgr.accountTotals[key]);
          if (current < size) {
              mgr.logger.log(`[chainFree] ${orderType} ${operation}: INSUFFICIENT FUNDS (have ${Format.formatAmount8(current)}, need ${Format.formatAmount8(size)})`, 'warn');
-             return false;
+             return { ok: false, reason: 'insufficient' };
          }
 
          const oldValue = mgr.accountTotals[key];
@@ -908,7 +910,7 @@ class Accountant {
          if (mgr.logger && mgr.logger.level === 'debug') {
              mgr.logger.log(`[ACCOUNTING] ${key} -${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])} (was ${Format.formatAmount8(oldValue)})`, 'debug');
          }
-         return true;
+         return { ok: true };
     }
 
     /**
@@ -1091,28 +1093,39 @@ class Accountant {
             if (commitmentDelta > 0) {
                 // Lock capital: move from Free to Committed
                 const commitmentSide = newSideType || newOrder.type;
-                const deducted = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
-                if (!deducted) {
+                const result = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
+                if (!result.ok) {
                     const failure = {
-                        code: 'ACCOUNTING_COMMITMENT_FAILED',
+                        code: result.reason === 'stale' ? 'ACCOUNTING_STALE_ACCOUNT_TOTALS' : 'ACCOUNTING_COMMITMENT_FAILED',
                         side: commitmentSide,
                         amount: commitmentDelta,
                         context,
+                        reason: result.reason,
                         at: Date.now()
                     };
                     mgr._lastAccountingFailure = failure;
 
-                    mgr.logger?.log?.(
-                        `[ACCOUNTING] CRITICAL: Failed to lock ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Scheduling recovery.`,
-                        'error'
-                    );
-
-                    if (mgr._throwOnIllegalState) {
-                        const err = new Error(
-                            `CRITICAL ACCOUNTING STATE: failed to lock ${Format.formatAmount8(commitmentDelta)} ${commitmentSide} during ${context}`
+                    if (result.reason === 'stale') {
+                        mgr.logger?.log?.(
+                            `[ACCOUNTING] Stale accountTotals: skipping optimistic lock of ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Recovery scheduled.`,
+                            'warn'
                         );
-                        (err as any).code = 'ACCOUNTING_COMMITMENT_FAILED';
-                        throw err;
+                        // Schedule recovery but DON'T throw — staleness is transient.
+                        // The batch already confirmed on-chain; aborting the commit
+                        // would orphan a successful broadcast from the grid state.
+                    } else {
+                        mgr.logger?.log?.(
+                            `[ACCOUNTING] CRITICAL: Failed to lock ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Scheduling recovery.`,
+                            'error'
+                        );
+
+                        if (mgr._throwOnIllegalState) {
+                            const err = new Error(
+                                `CRITICAL ACCOUNTING STATE: failed to lock ${Format.formatAmount8(commitmentDelta)} ${commitmentSide} during ${context}`
+                            );
+                            (err as any).code = 'ACCOUNTING_COMMITMENT_FAILED';
+                            throw err;
+                        }
                     }
 
                     // Promote recovery from fire-and-forget to a stored promise.
