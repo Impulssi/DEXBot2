@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.2.1] - 2026-07-20 - Adopt-Boundary Shift, Correction Reliability, Credential Daemon Leak, StateManager Inline
+## [1.2.1] - 2026-07-20 - Code-Review Fixes, Stale-Totals Safety, Correction Reliability, StateManager Inline
 
 ### 2026-07-20
 
@@ -13,6 +13,11 @@ All notable changes to this project will be documented in this file.
 - **Test**: add regression coverage for stale accounting and `orderGone` dedup paths.
 - **Refactor**: inline `StateManager` class into `OrderManager` — removes ~220 lines of wrapper delegation. State fields become direct `OrderManager` fields; public methods (`isBootstrapping`, `isBroadcastingActive`, etc.) move directly onto the manager. Backward-compat getter/setter pairs retained for `_recoveryState`, `_gridRegenState`, `_lastIllegalState`, `_lastAccountingFailure` (`modules/order/manager.ts`).
 - **Refactor**: merge `SyncResult` and `FillHistoryResult` into a single `SyncResult` type with optional fields. Rename `StateManagerState` → `ManagerStateSnapshot` in types. Update JSDoc references (`modules/types.ts`, `modules/order/sync_engine.ts`).
+- **Fix**: `pauseRecalcLogging` timer leak on nested calls — now clears the old watchdog before setting a new one (`modules/order/manager.ts`).
+- **Fix**: force-released sync mutations no longer persist orphaned entries in `ordersNeedingPriceCorrection` — snapshot queue length before sync, truncate on generation-mismatch discard (`modules/order/sync_engine.ts`).
+- **Fix**: false-positive recovery after stale-totals COW commit — refresh `accountTotals` before `recalculateFunds()` when the last accounting failure was `'stale'` (`modules/order/manager.ts`).
+- **Fix**: `isPlanningActive()` side-effect widened — extracted auto-clear to `_clearStaleBroadcastFlag()` called once per maintenance tick; `isBroadcastingActive()` is now a pure getter with no side-effects (`modules/order/manager.ts`, `modules/dexbot_maintenance_runtime.ts`).
+- **Fix**: remove dead argument to `_markGridDirty` at boundary adjustment site (`modules/dexbot_class.ts`).
 
 ## [1.2.0] - 2026-07-19 - Credit-Only Mode, Boundary Shift Recovery, Order System Hardening
 
