@@ -12,7 +12,8 @@ const { randomBytes, createHmac, timingSafeEqual } = require('./crypto/sync');
 const { BitShares } = require('./bitshares_client');
 const { isPositiveInt } = require('./order/utils/math');
 const { parseJsonWithComments } = require('./order/utils/system');
-const { FEE_PARAMETERS } = require('./constants');
+const { FEE_PARAMETERS, NATIVE_CLIENT } = require('./constants');
+const { RESOLVERS } = NATIVE_CLIENT;
 const { getCredentialReadyFilePath, assertPrivatePathSecurity } = require('./credential_runtime');
 const { PATHS } = require('./paths');
 const Logger = require('./logger');
@@ -79,8 +80,10 @@ const BUILTIN_DEFAULT_POLICY = Object.freeze({
     executable: null,
 });
 
+const { LRUCache } = require('./bitshares-native/lru_cache');
+
 const policyCache = new Map();
-const assetRefResolutionCache = new Map();
+const assetRefResolutionCache = new LRUCache(RESOLVERS.LRU_DEFAULT_SIZE, RESOLVERS.ASSET_TTL_MS);
 
 type AssetResolver = (assetRef: string) => Promise<string | null>;
 let _externalAssetResolver: AssetResolver | null = null;
@@ -97,9 +100,8 @@ function setExternalAssetResolver(resolver: AssetResolver | null): void {
 async function resolveAssetRefToId(assetRef: string): Promise<string | null> {
     if (!assetRef || typeof assetRef !== 'string') return null;
     const cacheKey = String(assetRef);
-    if (assetRefResolutionCache.has(cacheKey)) {
-        return assetRefResolutionCache.get(cacheKey);
-    }
+    const cached = assetRefResolutionCache.get(cacheKey);
+    if (cached !== undefined) return cached;
 
     let resolvedId = null;
 

@@ -682,11 +682,12 @@ function handleConnection(socket: any) {
     });
 
     socket.on('end', () => {
-        // Connection closed
+        socket.destroy();
     });
 
-    socket.on('error', (_error: any) => {
-        // Client disconnected or error
+    socket.on('error', (error: any) => {
+        daemonLogger.debug?.('[credential-daemon] Socket error: ' + (error?.message || error));
+        socket.destroy();
     });
 }
 
@@ -981,6 +982,7 @@ function sendSuccess(socket: any, data: any) {
         ...data
     });
     socket.write(response + '\n');
+    socket.end();
 }
 
 /**
@@ -997,6 +999,7 @@ function sendError(socket: any, message: string, code: string | null = null) {
         ...(code ? { code } : {})
     });
     socket.write(response + '\n');
+    socket.end();
 }
 
 /**
