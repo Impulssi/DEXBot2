@@ -735,7 +735,9 @@ let NODE_MANAGEMENT = {
         'wss://dex.iobanker.com/ws',
         'wss://api.dex.trading/',
         'wss://api.bts.mobi/ws',
-        'wss://api.btslebin.com/ws'
+        'wss://api.btslebin.com/ws',
+        'wss://api.bitshares.dev/ws',
+        'wss://bitsharesapi.loclx.io'
     ],
 
     // Health check defaults
