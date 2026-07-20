@@ -228,7 +228,7 @@ class StrategyEngine {
                 const currentSlot = mgr.orders.get(filledOrder.id);
                 const slotReused = currentSlot && hasOnChainId(currentSlot) && filledOrder.orderId && currentSlot.orderId !== filledOrder.orderId;
 
-                if (currentSlot && !slotReused && isOrderPlaced(currentSlot)) {
+                if (currentSlot && !slotReused && isOrderPlaced(currentSlot) && currentSlot.size > 0) {
                     mgr.logger.log(`[STRATEGY] Virtualizing filled slot ${filledOrder.id}`, 'debug');
                     const ok = await mgr._updateOrder(
                         { ...virtualizeOrder(currentSlot), size: 0 },

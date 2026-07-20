@@ -755,10 +755,10 @@ class SyncEngine {
                         updatedOrder.state = (chainSizeInt < currentSizeInt)
                             ? ORDER_STATES.PARTIAL
                             : gridOrder.state;
-                        await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting, fee: 0 });
+                        await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting: true, fee: 0 });
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', { skipAccounting, fee: 0 });
+                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', { skipAccounting: true, fee: 0 });
                         filledOrders.push(spreadOrder);
                         updatedOrders.push(spreadOrder);
                     }
@@ -788,7 +788,7 @@ class SyncEngine {
                 const currentGridOrder = mgr.orders.get(gridOrder.id) || gridOrder;
                 const hadOrderId = Boolean(currentGridOrder?.orderId);
                 const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
-                await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', { skipAccounting, fee: 0 });
+                await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', { skipAccounting: true, fee: 0 });
 
                 // Only genuine disappearances (had orderId) count as fills.
                 if (hadOrderId) {
@@ -1064,8 +1064,11 @@ class SyncEngine {
         const fillOp = fill.op[1];
         const blockNum = fill.block_num;
         const historyId = fill.id;
-        const isMaker = fillOp.is_maker !== false;  // Default missing flag to maker for consistency with accounting
         const orderId = fillOp.order_id;
+        if (fillOp.is_maker === undefined) {
+            mgr.logger.log(`[SYNC] is_maker flag missing from fill data for order ${orderId}; defaulting to maker`, 'warn');
+        }
+        const isMaker = fillOp.is_maker !== false;  // Default missing flag to maker for consistency with accounting
         const fillKey = buildFillKey({ orderId, blockNum, historyId });
 
         const paysAmountRaw = toFiniteNumber(fillOp.pays?.amount);
@@ -1083,22 +1086,22 @@ class SyncEngine {
              return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: true };
          }
 
-         // Optimistically update account totals to reflect the fill
-         // This prevents fund invariant violations during the window between fill detection and next blockchain fetch
-         const appliedAccounting = await mgr.accountant.processFillAccounting(fillOp, fillKey, { persistenceMode });
-         if (!appliedAccounting) {
-             mgr.logger.log(`[SYNC] Replay detected for fill ${fillKey}; skipping duplicate order mutation`, 'debug');
-             return { filledOrders: [], updatedOrders: [], partialFill: false };
-         }
-
          // Lock the order to prevent concurrent modifications from createOrder/cancelOrder/sync
-         // This is critical to prevent TOCTOU races where fill processing updates a stale order
+         // TOCTOU: lock before processFillAccounting so _buildBtsDeferredRefundAdjustment
+         // reads order state (btsFeeState) under the same lock as the state update below.
          const orderIdsToLock = new Set([orderId]);
          mgr.lockOrders([...orderIdsToLock]);
 
         try {
             mgr.pauseFundRecalc();
             try {
+                // Optimistically update account totals to reflect the fill.
+                // Under lock — btsFeeState on mgr.orders is stable for _buildBtsDeferredRefundAdjustment.
+                const appliedAccounting = await mgr.accountant.processFillAccounting(fillOp, fillKey, { persistenceMode });
+                if (!appliedAccounting) {
+                    mgr.logger.log(`[SYNC] Replay detected for fill ${fillKey}; skipping duplicate order mutation`, 'debug');
+                    return { filledOrders: [], updatedOrders: [], partialFill: false };
+                }
                 const paysAmount = paysAmountRaw;
 
                 const assetAPrecision = mgr.assets?.assetA?.precision;

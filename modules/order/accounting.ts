@@ -1326,8 +1326,8 @@ class Accountant {
             return netProceeds;
         } catch (err: any) {
             this.manager?.logger?.log?.(
-                `[FILL-FEE] Failed to compute fees for ${assetSymbol}: ${err.message}. Using raw proceeds (${Format.formatAmount8(rawAmount)}).`,
-                'warn'
+                `[FILL-FEE] CRITICAL: Failed to compute fees for ${assetSymbol}: ${err.message}. Using raw proceeds (${Format.formatAmount8(rawAmount)}) — fund tracking will over-credit by un-deducted fee.`,
+                'error'
             );
             return rawAmount;
         }
@@ -1353,11 +1353,17 @@ class Accountant {
          if (!pays || !receives) return false;
 
          // Default to maker (not taker) because:
-        // 1. This bot primarily places orders (maker orders, not taker)
-        // 2. Maker fees are CHEAPER: 10% of fee vs 100% for taker
-        // 3. When is_maker is missing, it's safer to assume maker (the normal case)
-        // 4. Makers get 90% refund on BTS fees, so we account for that
-        const isMaker = fillOp.is_maker !== false;
+         // 1. This bot primarily places orders (maker orders, not taker)
+         // 2. Maker fees are CHEAPER: 10% of fee vs 100% for taker
+         // 3. When is_maker is missing, it's safer to assume maker (the normal case)
+         // 4. Makers get 90% refund on BTS fees, so we account for that
+         if (fillOp.is_maker === undefined) {
+             mgr?.logger?.log?.(
+                 `[FILL-FEE] is_maker flag missing from fill data for order ${fillOp.order_id}; defaulting to maker — fee and BTS refund will be optimistic`,
+                 'warn'
+             );
+         }
+         const isMaker = fillOp.is_maker !== false;
 
         const assetAId = mgr.assets?.assetA?.id;
         const assetBId = mgr.assets?.assetB?.id;
