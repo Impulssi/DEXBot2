@@ -380,6 +380,12 @@ class SyncEngine {
                         return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
                     }
 
+                    // Snapshot the correction queue length so we can roll back
+                    // side-effect pushes if forceRelease fires during the sync.
+                    const preSyncCorrectionLen = Array.isArray(mgr.ordersNeedingPriceCorrection)
+                        ? mgr.ordersNeedingPriceCorrection.length
+                        : 0;
+
                     const innerResult = await this._doSyncFromOpenOrders(chainOrders, options);
 
                     // Re-check generation after sync completes: if forceRelease fired
@@ -389,6 +395,12 @@ class SyncEngine {
                             `[SYNC] Sync abandoned: force-released during sync (${Date.now() - syncStartedAt}ms); discarding result`,
                             'warn'
                         );
+                        // Roll back any corrections that _performSyncFromOpenOrders may
+                        // have pushed to the manager-level queue — the caller discarding
+                        // the result will never process them, leaving orphaned entries.
+                        if (Array.isArray(mgr.ordersNeedingPriceCorrection) && mgr.ordersNeedingPriceCorrection.length > preSyncCorrectionLen) {
+                            mgr.ordersNeedingPriceCorrection.length = preSyncCorrectionLen;
+                        }
                         return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
                     }
 

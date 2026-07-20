@@ -350,7 +350,7 @@ class OrderManager {
         //   Level 2: _gridLock         (grid mutations)
         //   Level 3: _syncLock         (sync operations)
         //   Level 4: _fundLock         (fund operations — innermost)
-        // WARNING: AsyncLock is NOT reentrant.
+        // Note: AsyncLock IS re-entrant (acquire detects nested calls via _holding).
         this._divergenceLock = new AsyncLock({ level: 0 });
         this._fillProcessingLock = new AsyncLock({ level: 1 });
         this._gridLock = new AsyncLock({ level: 2 });
@@ -436,11 +436,22 @@ class OrderManager {
     }
 
     /**
-     * Auto-clears a stale broadcast flag after 120s so a hung
-     * broadcast cannot permanently block rebalancing.
+     * Whether a broadcast is currently active (no side-effects).
      * @returns {boolean}
      */
     isBroadcastingActive() {
+        return this._broadcastingFlag;
+    }
+
+    /**
+     * Auto-clears a stale broadcast flag after 120s so a hung
+     * broadcast cannot permanently block rebalancing.
+     * Separated from isBroadcastingActive() so the side-effect only
+     * runs from one well-defined location (maintenance logic) instead
+     * of from every read call-site.
+     * @returns {void}
+     */
+    _clearStaleBroadcastFlag() {
         if (this._broadcastingFlag && this._broadcastingStartedAt > 0) {
             const elapsed = Date.now() - this._broadcastingStartedAt;
             if (elapsed > 120000) {
@@ -449,7 +460,6 @@ class OrderManager {
                 this._broadcastingStartedAt = 0;
             }
         }
-        return this._broadcastingFlag;
     }
 
     /**
@@ -749,6 +759,9 @@ class OrderManager {
      */
     pauseRecalcLogging() {
         this._pauseRecalcLogging = true;
+        if (this._pauseRecalcLoggingWatchdog) {
+            clearTimeout(this._pauseRecalcLoggingWatchdog);
+        }
         this._pauseRecalcLoggingWatchdog = setTimeout(() => {
             this.logger?.log?.(
                 `[MANAGER] pauseRecalcLogging safety watchdog: forcing resume after ${TIMING.SAFETY_PAUSE_TIMEOUT_MS}ms`,
@@ -1602,6 +1615,16 @@ class OrderManager {
 
         try {
             if (!skipRecalc) {
+                // If the last accounting failure was due to stale accountTotals,
+                // the commit proceeded without locking funds. Refresh accountTotals
+                // before recalculateFunds() to avoid a false-positive drift recovery.
+                if (this._lastAccountingFailure?.reason === 'stale') {
+                    this.logger.log(
+                        '[COW] Stale accountTotals during commit; refreshing before recalculateFunds to avoid false recovery',
+                        'warn'
+                    );
+                    await this.fetchAccountTotals(this.accountId);
+                }
                 await this.recalculateFunds();
             }
             const duration = Date.now() - startTime;

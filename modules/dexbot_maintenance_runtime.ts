@@ -1357,6 +1357,11 @@ function scheduleDeferredGridResync(ctx, options = {}) {
  * @returns {Promise<void>}
  */
 async function executeMaintenanceLogic(bot, context) {
+    // Clear stale broadcast flag first so any downstream gating on
+    // isBroadcastingActive() (e.g. recalculateFunds, BTS balance check)
+    // sees the freshest state rather than a hung flag.
+    bot.manager._clearStaleBroadcastFlag();
+
     await bot.manager.recalculateFunds();
     await checkBtsBalanceAndAcquire(bot);
     bot.manager.clearStalePipelineOperations();

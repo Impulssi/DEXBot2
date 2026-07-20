@@ -3256,9 +3256,7 @@ class DEXBot {
                             'warn'
                         );
                         if (typeof this.manager._markGridDirty === 'function') {
-                            this.manager._markGridDirty(
-                                `boundary adjustment after ${adopted.length} adopted CREATE(s)`
-                            );
+                            this.manager._markGridDirty();
                         }
                     }
                 }
