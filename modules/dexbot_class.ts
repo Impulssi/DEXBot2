@@ -1253,6 +1253,8 @@ class DEXBot {
                                 continue;
                             }
 
+                            this.manager.lockOrders([gridOrder.id]);
+                            try {
                              const accountingResult = await this._applyReplaySafeTrackedFillAccounting(fill, fillOp, {
                                  context: 'POST-RESET',
                                  logger: { log: this._log.bind(this) },
@@ -1271,6 +1273,9 @@ class DEXBot {
                             if (result.aborted) {
                                 this._warn('[POST-RESET] Aborted batch due to illegal state; skipping grid persistence this cycle');
                                 continue;
+                            }
+                            } finally {
+                                this.manager.unlockOrders([gridOrder.id]);
                             }
                         }
 
@@ -1916,7 +1921,7 @@ class DEXBot {
                             // Process both maker and taker fills for our grid orders
                             // Grid validation ensures we only process fills belonging to our account
                             // Taker fills are included because the bot may execute market orders or act as taker
-                            const roleStr = fillOp.is_maker ? 'maker' : 'taker';
+                            const roleStr = fillOp.is_maker !== false ? 'maker' : 'taker';
                             this.manager.logger.log(`Processing ${roleStr} fill for order ${fillOp.order_id}`, 'debug');
 
                             const fillKey = buildFillKey(fill);
@@ -2331,6 +2336,8 @@ class DEXBot {
                 continue;
             }
 
+            this.manager.lockOrders([gridOrder.id]);
+            try {
             const accountingResult = await this._applyReplaySafeTrackedFillAccounting(fill, fillOp, {
                 context: 'BOOTSTRAP',
                 replayMessage: (op) => `[BOOTSTRAP] Replay detected for ${op.order_id}; skipping duplicate bootstrap rebalance`
@@ -2346,7 +2353,10 @@ class DEXBot {
             validFills.push({ ...fill, gridOrder });
 
             const fillType = gridOrder.type === ORDER_TYPES.BUY ? 'BUY' : 'SELL';
-            this._log(`[BOOTSTRAP] Fill detected: ${fillType} order (${fillOp.is_maker ? 'maker' : 'taker'})`);
+            this._log(`[BOOTSTRAP] Fill detected: ${fillType} order (${fillOp.is_maker !== false ? 'maker' : 'taker'})`);
+            } finally {
+                this.manager.unlockOrders([gridOrder.id]);
+            }
          }
 
         if (requiresOpenOrdersSync) {

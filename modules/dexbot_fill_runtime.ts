@@ -71,6 +71,9 @@ function buildOrphanFillFallbackKey(bot, fill) {
     const paysAmount = fillOp?.pays?.amount;
     const receivesAssetId = fillOp?.receives?.asset_id;
     const receivesAmount = fillOp?.receives?.amount;
+    if (fillOp?.is_maker == null) {
+        bot?._warn?.(`[ORPHAN-FALLBACK] is_maker undefined for fill ${fillOp?.order_id}; defaulting to 'maker' for dedup key`);
+    }
     const makerRole = fillOp?.is_maker === false ? 'taker' : 'maker';
     // Include operation-type ID, transaction-in-block index, and
     // operation-in-transaction index to reduce collision risk when

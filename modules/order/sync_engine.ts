@@ -918,7 +918,7 @@ class SyncEngine {
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(bestMatch);
                         filledOrders.push({ ...bestMatch });
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting, fee: 0 });
+                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting: true, fee: 0 });
                         updatedOrders.push(spreadOrder);
                         chainOrderIdsOnGrid.add(chainOrderId);
                         continue;
@@ -926,7 +926,7 @@ class SyncEngine {
                 } else if (wasPartial) {
                     bestMatch.state = ORDER_STATES.PARTIAL;
                 }
-                await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting, fee: 0 });
+                await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting: true, fee: 0 });
                 updatedOrders.push(bestMatch);
                 chainOrderIdsOnGrid.add(chainOrderId);
             } else if (match) {
@@ -999,7 +999,7 @@ class SyncEngine {
                     };
                     matchedGridOrderIds.add(adoptedSlot.id);
                     chainOrderIdsOnGrid.add(chainOrderId);
-                    await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting, fee: 0 });
+                    await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: true, fee: 0 });
                     updatedOrders.push(adoptedOrder);
                     mgr.logger?.log?.(
                         `[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +
