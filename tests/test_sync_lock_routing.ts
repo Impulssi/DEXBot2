@@ -14,7 +14,7 @@ function createManagerFixture() {
     manager.accountant = {
         updateOptimisticFreeBalance: async () => {},
         recalculateFunds: async () => {},
-        tryDeductFromChainFree: async () => true,
+        tryDeductFromChainFree: async () => ({ ok: true }),
         addToChainFree: async () => true
     };
 

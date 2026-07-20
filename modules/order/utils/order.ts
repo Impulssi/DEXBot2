@@ -77,6 +77,16 @@ const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = MathUtils;
 const Logger = require('../../logger');
 const orderLogger = new Logger('Order');
 
+const ORDER_GONE_ERROR_FRAGMENT = 'not found';
+
+function _filterUnmatchedChainOrders(manager: any, chainOrderId: string): void {
+    if (Array.isArray(manager._lastUnmatchedChainOrders)) {
+        manager._lastUnmatchedChainOrders = manager._lastUnmatchedChainOrders.filter(
+            u => (u?.id || u?.orderId || u?.chainOrderId) !== chainOrderId
+        );
+    }
+}
+
 // ================================================================================
 // SECTION 1: CHAIN ORDER MATCHING & RECONCILIATION
 // ================================================================================
@@ -290,20 +300,31 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
     // Cancel-only entries (e.g., duplicate price level orphans) — cancel without
     // updating any grid slot. The orphan has no matching grid slot to convert.
     if (cancelOnly) {
+        let shouldRemove = false;
         try {
             const sideLabel = type === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
             manager.logger?.log?.(`[CORRECTION] Cancelling duplicate orphan ${sideLabel} order ${chainOrderId}`, 'info');
             await accountOrders.cancelOrder(accountName, privateKey, chainOrderId);
+            _filterUnmatchedChainOrders(manager, chainOrderId);
+            shouldRemove = true;
             return { success: true, cancelled: true };
         } catch (error: any) {
-            return { success: false, error: error.message, orderGone: error.message?.includes('not found') };
+            const orderGone = error.message?.includes(ORDER_GONE_ERROR_FRAGMENT);
+            if (orderGone) {
+                shouldRemove = true;
+                _filterUnmatchedChainOrders(manager, chainOrderId);
+            }
+            return { success: false, error: error.message, orderGone };
         } finally {
-            manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+            if (shouldRemove) {
+                manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+            }
         }
     }
 
     // Surplus/type-mismatch entries need cancellation, not a price update
     if (isSurplus) {
+        let shouldRemove = false;
         try {
             const sideLabel = type === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
             manager.logger?.log?.(`[CORRECTION] Cancelling surplus/mismatched ${sideLabel} order ${chainOrderId} for slot ${gridOrder?.id || 'unknown'}`, 'info');
@@ -315,11 +336,20 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
                     fee: 0
                 });
             }
+            _filterUnmatchedChainOrders(manager, chainOrderId);
+            shouldRemove = true;
             return { success: true, cancelled: true };
         } catch (error: any) {
-            return { success: false, error: error.message, orderGone: error.message?.includes('not found') };
+            const orderGone = error.message?.includes(ORDER_GONE_ERROR_FRAGMENT);
+            if (orderGone) {
+                shouldRemove = true;
+                _filterUnmatchedChainOrders(manager, chainOrderId);
+            }
+            return { success: false, error: error.message, orderGone };
         } finally {
-            manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+            if (shouldRemove) {
+                manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+            }
         }
     }
 
@@ -332,16 +362,26 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
         minToReceive = size / expectedPrice;
     }
 
+    let shouldRemove = false;
     try {
         const updateResult = await accountOrders.updateOrder(accountName, privateKey, chainOrderId, { amountToSell, minToReceive });
         if (updateResult === null) {
+            shouldRemove = true;
             return { success: false, error: 'skipped' };
         }
+        shouldRemove = true;
         return { success: true };
     } catch (error: any) {
-        return { success: false, error: error.message, orderGone: error.message?.includes('not found') };
+        const orderGone = error.message?.includes(ORDER_GONE_ERROR_FRAGMENT);
+        if (orderGone) {
+            shouldRemove = true;
+            _filterUnmatchedChainOrders(manager, chainOrderId);
+        }
+        return { success: false, error: error.message, orderGone };
     } finally {
-        manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+        if (shouldRemove) {
+            manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+        }
     }
 }
 

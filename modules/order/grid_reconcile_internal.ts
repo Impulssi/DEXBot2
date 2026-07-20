@@ -381,7 +381,7 @@ function _prepareStartupUpdatePlan(plan: any, manager: any, logger: any): any {
 
     const currentSlot = manager.orders.get(gridOrder.id);
     if (!currentSlot || (currentSlot.orderId && currentSlot.orderId !== chainOrderId)) {
-        logger?.log?.(`Startup: Skip update ${chainOrderId} -> ${gridOrder.id}; slot already mapped (${currentSlot?.orderId || 'none'})`, 'warn');
+        logger?.log?.(`Startup: Skip update ${chainOrderId} -> ${gridOrder.id}; slot already mapped (${currentSlot?.orderId || 'none'})`, 'debug');
         return null;
     }
     if (currentSlot.orderId === chainOrderId) {
@@ -556,7 +556,20 @@ async function _executeStartupSequentialUpdateFallback({
     }
 
     const logger = manager?.logger;
-    let queue = updatePlans.slice(0);
+
+    // Pre-filter: skip plans whose slots were already resolved by the recovery
+    // sync that ran after the last failed batch attempt. This avoids flooding
+    // the log with "slot already mapped" warnings for every plan.
+    const plans = updatePlans.filter(plan => {
+        const prepared = _prepareStartupUpdatePlan(plan, manager, logger);
+        return prepared !== null;
+    });
+    if (plans.length === 0) {
+        logger?.log?.('Startup: All pending updates already resolved by recovery sync; skipping sequential fallback.', 'warn');
+        return { executed: 0, skipped: 0, failed: 0 };
+    }
+
+    let queue = plans;
     let executed = 0;
     let skipped = 0;
     let failed = 0;
