@@ -641,7 +641,7 @@ class SyncEngine {
      * @param {Array<Object>} ordersNeedingCorrection - Output array: orders flagged for price correction
      * @param {Array<Object>} unmatchedChainOrders - Output array: open chain orders with no adoptable grid slot
      * @param {Object} options - Sync options (skipAccounting, etc.)
-     * @returns {Promise<{filledOrders: Array, updatedOrders: Array, ordersNeedingCorrection: Array, unmatchedChainOrders: Array}>}
+     * @returns {Promise<import('./types').SyncResult>}
      */
     async _performSyncFromOpenOrders(mgr: any, assetAPrecision: number, assetBPrecision: number, parsedChainOrders: Map<string, any>, rawChainOrders: Map<string, any>,
         chainOrderIdsOnGrid: Set<string>, matchedGridOrderIds: Set<string>, filledOrders: any[], updatedOrders: any[], ordersNeedingCorrection: any[], unmatchedChainOrders: any[], options: Record<string, any>) {
@@ -1040,10 +1040,9 @@ class SyncEngine {
 
     /**
      * Process one incremental fill-history event.
-     * Returns `{ filledOrders, updatedOrders, partialFill, requiresOpenOrdersSync, ghostOrderId? }`.
      * @param {Object} fill - Fill history event object
      * @param {Object} [options] - Persistence mode options
-     * @returns {Promise<Object>} { filledOrders, updatedOrders, partialFill, requiresOpenOrdersSync, ghostOrderId? }
+     * @returns {Promise<import('./types').SyncResult>}
      */
     async syncFromFillHistory(fill: any, options: Record<string, any> = {}) {
         const mgr = this.manager;

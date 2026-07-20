@@ -403,7 +403,7 @@ class DEXBot {
             shadowLocks: this.manager?.shadowOrderIds?.size || 0,
             batchInFlight: this._batchInFlight,
             recoveryInFlight: this._recoverySyncInFlight,
-            broadcasting: this.manager?._state?.isBroadcastingActive() || false
+            broadcasting: this.manager?.isBroadcastingActive?.() || false
         };
     }
 
@@ -1781,11 +1781,11 @@ class DEXBot {
         try {
             // BOOTSTRAP OPTIMIZATION: During bootstrap, prioritize fill processing over grid-wide checks
             // Process fills immediately with side-only rebalancing (no expensive full grid recalculations)
-            if (this.manager._state.isBootstrapping()) {
+            if (this.manager.isBootstrapping()) {
                 // During bootstrap: skip lock contention checks, process fills directly
                 let bootstrapSkipped = false;
                 await this.manager._fillProcessingLock.acquire(async () => {
-                    if (!this.manager._state.isBootstrapping()) {
+                    if (!this.manager.isBootstrapping()) {
                         // Bootstrap finished while waiting for the lock — no
                         // work to do, but the iteration is still healthy.
                         bootstrapSkipped = true;
@@ -3885,7 +3885,7 @@ class DEXBot {
             return;
         }
 
-        if (this.manager?._state?.isBootstrapping?.() || this.manager?._state?.isBroadcastingActive?.()) {
+        if (this.manager?.isBootstrapping?.() || this.manager?.isBroadcastingActive?.()) {
             if (!this._credentialRecoveryDeferredTimer) {
                 this.manager?.logger?.log?.(
                     '[CREDENTIAL] Deferring credential recovery until startup/broadcast activity is idle.',

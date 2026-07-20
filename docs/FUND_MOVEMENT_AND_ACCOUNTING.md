@@ -806,4 +806,4 @@ To prevent "Time-of-Check to Time-of-Use" errors:
 3.  **Bootstrapping:** Fills arriving during startup (`isBootstrapping=true`) are queued until the grid is fully reconciled.
 
 ---
-*Technical Reference for DEXBot2 v1.2.0 release*
+*Technical Reference for DEXBot2 v1.2.1 release*

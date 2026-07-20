@@ -1603,7 +1603,7 @@ export async function checkGridHealth(manager, updateOrdersOnChainBatch = null) 
         if (!manager) return { buyDust: false, sellDust: false, buyDustOrders: [], sellDustOrders: [] };
 
         // Skip health checks during bootstrap to prevent spamming warnings
-        if (manager._state.isBootstrapping()) return { buyDust: false, sellDust: false, buyDustOrders: [], sellDustOrders: [] };
+        if (manager.isBootstrapping()) return { buyDust: false, sellDust: false, buyDustOrders: [], sellDustOrders: [] };
 
         // Health checks are scoped to the active on-chain window only.
         // This keeps detection aligned with maintenance actions that operate on

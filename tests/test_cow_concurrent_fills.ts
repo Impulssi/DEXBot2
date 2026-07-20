@@ -119,10 +119,11 @@ async function testFillDuringBroadcastingSyncsToWorkingGrid() {
     ];
     const { manager, logs } = createManagerFixture(orders);
 
-    // Simulate entering BROADCASTING state
+    // Simulate entering BROADCASTING state (matching production pattern in dexbot_class.ts)
     const workingGrid = new WorkingGrid(manager.orders, { baseVersion: manager._gridVersion });
     manager._currentWorkingGrid = workingGrid;
     manager._setRebalanceState('BROADCASTING');
+    manager.startBroadcasting();
 
     // Simulate a fill arriving during broadcast
     await manager._applyOrderUpdate(
@@ -164,6 +165,7 @@ async function testCommitRejectedAfterFillDuringBroadcast() {
     workingGrid.set('slot-1', createOrder('slot-1', { price: 1.5, size: 120 }));
     manager._currentWorkingGrid = workingGrid;
     manager._setRebalanceState('BROADCASTING');
+    manager.startBroadcasting();
 
     // Simulate fill arriving during broadcast (increments version)
     await manager._applyOrderUpdate(
@@ -265,6 +267,7 @@ async function testStalenessIncludesPhaseContext() {
     const wg2 = new WorkingGrid(mgr2.orders, { baseVersion: mgr2._gridVersion });
     mgr2._currentWorkingGrid = wg2;
     mgr2._setRebalanceState('BROADCASTING');
+    mgr2.startBroadcasting();
     await mgr2._applyOrderUpdate({ id: 'slot-1', size: 50 }, 'test');
     assert.ok(wg2.getStaleReason().includes('broadcasting'), 'should include broadcasting');
     mgr2._clearWorkingGridRef();

@@ -10,8 +10,7 @@
  *
  * SECTION 1: EXTERNAL DEPENDENCIES
  * SECTION 2: COW REBALANCE ENGINE
- * SECTION 3: STATE MANAGER
- * SECTION 4: ORDER MANAGER CLASS
+ * SECTION 3: ORDER MANAGER CLASS
  * ===============================================================================
  */
 
@@ -97,7 +96,7 @@ const { toFiniteNumber, isValidNumber } = Format;
 // 1. Master grid NEVER modified during planning (immutable during rebalance)
 // 2. Fills that arrive during rebalance are QUEUED, not lost
 // 3. Working grid is DISPOSABLE - if rebalance fails, discard it
-// 4. Only ONE rebalance plan active at a time (StateManager.rebalance)
+// 4. Only ONE rebalance plan active at a time (_rebalanceState)
 // 5. Staleness detection aborts if master changes (fills, manual commands)
 //
 // FILL HANDLING DURING REBALANCE:
@@ -210,229 +209,7 @@ class COWRebalanceEngine {
 }
 
 // ===============================================================================
-// SECTION 3: STATE MANAGER
-// ===============================================================================
-
-class StateManager {
-    logger: any;
-    rebalance: any;
-    recovery: any;
-    gridRegen: any;
-    bootstrap: any;
-    broadcast: any;
-    signals: any;
-    pipeline: any;
-
-    constructor(options: any = {}) {
-        this.logger = options.logger || null;
-        this.reset();
-    }
-
-    reset() {
-        this.rebalance = {
-            state: REBALANCE_STATES.NORMAL,
-            currentWorkingGrid: null
-        };
-
-        this.recovery = {
-            phase: 'idle',
-            attemptCount: 0,
-            lastAttemptAt: 0,
-            inFlight: false,
-            lastFailureAt: 0
-        };
-
-        this.gridRegen = {
-            buy: { armed: true, lastTriggeredAt: 0 },
-            sell: { armed: true, lastTriggeredAt: 0 }
-        };
-
-        this.bootstrap = {
-            isBootstrapping: false
-        };
-
-        this.broadcast = {
-            isBroadcasting: false,
-            startedAt: 0,
-        };
-
-        this.signals = {
-            lastIllegalState: null,
-            lastAccountingFailure: null
-        };
-
-        this.pipeline = {
-            blockedSince: null,
-            recoveryAttempted: false
-        };
-
-    }
-
-    getRebalanceState() {
-        return this.rebalance.state;
-    }
-
-    setRebalanceState(state) {
-        this.rebalance.state = state;
-        this.logger?.log(`[COW] Rebalance state: ${state}`, 'debug');
-    }
-
-    isRebalancing() {
-        return this.rebalance.state === REBALANCE_STATES.REBALANCING;
-    }
-
-    isBroadcasting() {
-        return this.rebalance.state === REBALANCE_STATES.BROADCASTING;
-    }
-
-    setWorkingGrid(workingGrid) {
-        this.rebalance.currentWorkingGrid = workingGrid;
-    }
-
-    getWorkingGrid() {
-        return this.rebalance.currentWorkingGrid;
-    }
-
-    clearWorkingGrid() {
-        this.rebalance.currentWorkingGrid = null;
-    }
-
-    recordRecoveryAttempt() {
-        this.recovery.phase = 'scanning';
-        this.recovery.attemptCount++;
-        this.recovery.lastAttemptAt = Date.now();
-        this.recovery.inFlight = true;
-    }
-
-    completeRecovery(success) {
-        this.recovery.phase = success ? 'idle' : 'executing';
-        this.recovery.inFlight = false;
-        if (!success) {
-            this.recovery.lastFailureAt = Date.now();
-        }
-    }
-
-    isRecoveryInFlight() {
-        return this.recovery.inFlight;
-    }
-
-    getRecoveryStats() {
-        return { ...this.recovery };
-    }
-
-    isSideArmed(side) {
-        return this.gridRegen[side]?.armed ?? false;
-    }
-
-    disarmSide(side) {
-        if (this.gridRegen[side]) {
-            this.gridRegen[side].armed = false;
-            this.gridRegen[side].lastTriggeredAt = Date.now();
-        }
-    }
-
-    armSide(side) {
-        if (this.gridRegen[side]) {
-            this.gridRegen[side].armed = true;
-        }
-    }
-
-    startBootstrap() {
-        this.bootstrap.isBootstrapping = true;
-        this.logger?.log('[BOOTSTRAP] Started', 'debug');
-    }
-
-    finishBootstrap() {
-        this.bootstrap.isBootstrapping = false;
-        this.logger?.log('[BOOTSTRAP] Finished', 'debug');
-    }
-
-    isBootstrapping() {
-        return this.bootstrap.isBootstrapping;
-    }
-
-    startBroadcasting() {
-        this.broadcast.isBroadcasting = true;
-        this.broadcast.startedAt = Date.now();
-        this.logger?.log?.('[BROADCAST] Flag set — fill processing will be deferred until stopBroadcasting()', 'debug');
-    }
-
-    stopBroadcasting() {
-        this.broadcast.isBroadcasting = false;
-        this.broadcast.startedAt = 0;
-    }
-
-    isBroadcastingActive() {
-        if (this.broadcast.isBroadcasting && this.broadcast.startedAt > 0) {
-            const elapsed = Date.now() - this.broadcast.startedAt;
-            if (elapsed > 120000) {
-                this.logger?.log?.('[BROADCAST] Auto-clearing stale broadcast flag after 120s', 'warn');
-                this.broadcast.isBroadcasting = false;
-                this.broadcast.startedAt = 0;
-            }
-        }
-        return this.broadcast.isBroadcasting;
-    }
-
-    setIllegalStateSignal(signal) {
-        this.signals.lastIllegalState = {
-            ...signal,
-            at: Date.now()
-        };
-    }
-
-    consumeIllegalStateSignal() {
-        const signal = this.signals.lastIllegalState;
-        this.signals.lastIllegalState = null;
-        return signal;
-    }
-
-    setAccountingFailureSignal(signal) {
-        this.signals.lastAccountingFailure = {
-            ...signal,
-            at: Date.now()
-        };
-    }
-
-    consumeAccountingFailureSignal() {
-        const signal = this.signals.lastAccountingFailure;
-        this.signals.lastAccountingFailure = null;
-        return signal;
-    }
-
-    markPipelineBlocked() {
-        if (!this.pipeline.blockedSince) {
-            this.pipeline.blockedSince = Date.now();
-        }
-    }
-
-    markPipelineClear() {
-        this.pipeline.blockedSince = null;
-        this.pipeline.recoveryAttempted = false;
-    }
-
-    getPipelineBlockedDuration() {
-        return this.pipeline.blockedSince ? Date.now() - this.pipeline.blockedSince : 0;
-    }
-
-    isPipelineBlocked() {
-        return this.pipeline.blockedSince !== null;
-    }
-
-    getState() {
-        return {
-            rebalance: { ...this.rebalance, currentWorkingGrid: null },
-            recovery: { ...this.recovery },
-            gridRegen: { ...this.gridRegen },
-            bootstrap: { ...this.bootstrap },
-            broadcast: { ...this.broadcast },
-            pipeline: { ...this.pipeline }
-        };
-    }
-}
-
-// ===============================================================================
-// SECTION 4: ORDER MANAGER CLASS
+// SECTION 3: ORDER MANAGER CLASS
 // ===============================================================================
 
 class OrderManager {
@@ -445,7 +222,14 @@ class OrderManager {
     accountant: any;
     strategy: any;
     sync: any;
-    _state: any;
+    _rebalanceState: string;
+    _bootstrapping: boolean;
+    _broadcastingFlag: boolean;
+    _broadcastingStartedAt: number;
+    _illegalStateSignal: any;
+    _accountingFailureSignal: any;
+    _recoveryStateValue: { phase: string; attemptCount: number; lastAttemptAt: number; inFlight: boolean; lastFailureAt: number; structuralResyncRequested?: boolean };
+    _gridRegenStateValue: { buy: { armed: boolean; lastTriggeredAt: number }; sell: { armed: boolean; lastTriggeredAt: number } };
     _ordersByState: Record<string, Set<string>>;
     _ordersByType: Record<string, Set<string>>;
     targetSpreadCount: number;
@@ -512,7 +296,23 @@ class OrderManager {
         this.strategy = new StrategyEngine(this);
         this.sync = new SyncEngine(this);
 
-        this._state = new StateManager({ logger: this.logger });
+        this._rebalanceState = REBALANCE_STATES.NORMAL;
+        this._bootstrapping = false;
+        this._broadcastingFlag = false;
+        this._broadcastingStartedAt = 0;
+        this._illegalStateSignal = null;
+        this._accountingFailureSignal = null;
+        this._recoveryStateValue = {
+            phase: 'idle',
+            attemptCount: 0,
+            lastAttemptAt: 0,
+            inFlight: false,
+            lastFailureAt: 0
+        };
+        this._gridRegenStateValue = {
+            buy: { armed: true, lastTriggeredAt: 0 },
+            sell: { armed: true, lastTriggeredAt: 0 }
+        };
 
         // Index Sets use mutable mutation patterns controlled via _applyOrderUpdate
         // These are private implementation details and must NOT be mutated directly
@@ -584,7 +384,8 @@ class OrderManager {
             metricsStartTime: Date.now()
         };
 
-        this._state.startBootstrap();
+        this._bootstrapping = true;
+        this.logger?.log('[BOOTSTRAP] Started', 'debug');
         this._currentWorkingGrid = null;
         this._cowEngine = null;
 
@@ -605,45 +406,66 @@ class OrderManager {
 
     _clearWorkingGridRef() {
         this._currentWorkingGrid = null;
-        this._state.clearWorkingGrid();
-        this._state.setRebalanceState(REBALANCE_STATES.NORMAL);
+        this._rebalanceState = REBALANCE_STATES.NORMAL;
     }
 
     _setRebalanceState(state) {
-        this._state.setRebalanceState(state);
+        this._rebalanceState = state;
+        this.logger?.log(`[COW] Rebalance state: ${state}`, 'debug');
     }
 
     /**
      * @returns {boolean}
      */
     isRebalancing() {
-        return this._state.isRebalancing();
+        return this._rebalanceState === REBALANCE_STATES.REBALANCING;
     }
 
     /**
      * @returns {boolean}
      */
     isBroadcasting() {
-        return this._state.isBroadcasting();
+        return this._rebalanceState === REBALANCE_STATES.BROADCASTING;
+    }
+
+    /**
+     * @returns {boolean}
+     */
+    isBootstrapping() {
+        return this._bootstrapping;
+    }
+
+    /**
+     * Auto-clears a stale broadcast flag after 120s so a hung
+     * broadcast cannot permanently block rebalancing.
+     * @returns {boolean}
+     */
+    isBroadcastingActive() {
+        if (this._broadcastingFlag && this._broadcastingStartedAt > 0) {
+            const elapsed = Date.now() - this._broadcastingStartedAt;
+            if (elapsed > 120000) {
+                this.logger?.log?.('[BROADCAST] Auto-clearing stale broadcast flag after 120s', 'warn');
+                this._broadcastingFlag = false;
+                this._broadcastingStartedAt = 0;
+            }
+        }
+        return this._broadcastingFlag;
     }
 
     /**
      * Whether the manager is in the middle of a rebalance plan or broadcast.
-     * NOT a pure predicate: delegates to _state.isBroadcastingActive()
-     * (see StateManager.isBroadcastingActive, manager.ts:362) which
-     * auto-clears a stale broadcast flag after 120s (producing a warn log)
-     * so that a hung broadcast cannot permanently block rebalancing.
      * @returns {boolean}
      */
     isPlanningActive() {
-        return this.isRebalancing() || this._state.isBroadcastingActive();
+        return this.isRebalancing() || this.isBroadcastingActive();
     }
 
     /**
      * @returns {void}
      */
     startBootstrap() {
-        this._state.startBootstrap();
+        this._bootstrapping = true;
+        this.logger?.log('[BOOTSTRAP] Started', 'debug');
     }
 
     /**
@@ -652,8 +474,9 @@ class OrderManager {
     finishBootstrap() {
         const result = { hadDrift: false, driftInfo: null };
 
-        if (this._state.isBootstrapping()) {
-            this._state.finishBootstrap();
+        if (this._bootstrapping) {
+            this._bootstrapping = false;
+            this.logger?.log('[BOOTSTRAP] Finished', 'debug');
 
             // Validate fund state at bootstrap completion - if drift exists here,
             // it's not transient (grid is now stable) and indicates a potential bug
@@ -678,14 +501,17 @@ class OrderManager {
      * @returns {void}
      */
     startBroadcasting() {
-        this._state.startBroadcasting();
+        this._broadcastingFlag = true;
+        this._broadcastingStartedAt = Date.now();
+        this.logger?.log?.('[BROADCAST] Flag set — fill processing will be deferred until stopBroadcasting()', 'debug');
     }
 
     /**
      * @returns {void}
      */
     stopBroadcasting() {
-        this._state.stopBroadcasting();
+        this._broadcastingFlag = false;
+        this._broadcastingStartedAt = 0;
     }
 
     /**
@@ -1066,11 +892,12 @@ class OrderManager {
             const fatalError = validation.errors.find(e => e.isFatal || e.code === 'ILLEGAL_SPREAD_STATE');
             if (fatalError) {
                 this.logger.log(fatalError.message, 'error');
-                this._state.setIllegalStateSignal({
+                this._illegalStateSignal = {
                     id: order.id,
                     context,
-                    message: fatalError.message
-                });
+                    message: fatalError.message,
+                    at: Date.now()
+                };
                 if (this._throwOnIllegalState) {
                     const err: any = new Error(fatalError.message);
                     err.code = fatalError.code;
@@ -1436,14 +1263,18 @@ class OrderManager {
      * @returns {Object|null} The consumed signal or null
      */
     consumeIllegalStateSignal() {
-        return this._state.consumeIllegalStateSignal();
+        const signal = this._illegalStateSignal;
+        this._illegalStateSignal = null;
+        return signal;
     }
 
     /**
      * @returns {Object|null} The consumed signal or null
      */
     consumeAccountingFailureSignal() {
-        return this._state.consumeAccountingFailureSignal();
+        const signal = this._accountingFailureSignal;
+        this._accountingFailureSignal = null;
+        return signal;
     }
 
     /**
@@ -1517,16 +1348,14 @@ class OrderManager {
         if (recoveryInFlight) {
             reasons.push('recovery sync in-flight');
         }
-        if (broadcasting || this._state.isBroadcastingActive()) {
+        if (broadcasting || this.isBroadcastingActive()) {
             reasons.push('broadcasting active orders');
         }
 
         if (reasons.length > 0 && !this._pipelineBlockedSince) {
             this._pipelineBlockedSince = Date.now();
-            this._state.markPipelineBlocked();
         } else if (reasons.length === 0) {
             this._pipelineBlockedSince = null;
-            this._state.markPipelineClear();
         }
 
         return {
@@ -1545,7 +1374,6 @@ class OrderManager {
 
         this.ordersNeedingPriceCorrection = [];
         this._pipelineBlockedSince = null;
-        this._state.markPipelineClear();
         return true;
     }
 
@@ -1787,8 +1615,10 @@ class OrderManager {
             }
         } catch (recalcErr: any) {
             this.logger.log(`[COW] Fund recalculation failed post-commit: ${recalcErr.message}`, 'error');
-            this._recoveryState = this._recoveryState || {};
-            this._recoveryState.lastFailureAt = Date.now();
+            if (!this._recoveryStateValue) {
+                this._recoveryStateValue = { phase: 'idle', attemptCount: 0, lastAttemptAt: 0, inFlight: false, lastFailureAt: 0 };
+            }
+            this._recoveryStateValue.lastFailureAt = Date.now();
         } finally {
             this._clearWorkingGridRef();
         }
@@ -1805,7 +1635,7 @@ class OrderManager {
         const result = validateGridForPersistence(this.orders, this.accountTotals);
         const allowBootstrapTransient = options.allowBootstrapTransient !== false;
 
-        if (!result.isValid && allowBootstrapTransient && this._state.isBootstrapping()) {
+        if (!result.isValid && allowBootstrapTransient && this._bootstrapping) {
             this.logger.log(`[BOOTSTRAP] Transient state (expected): ${result.reason}`, 'debug');
             return { isValid: true, reason: null };
         }
@@ -1882,7 +1712,14 @@ class OrderManager {
     getMetrics() {
         return {
             ...this._metrics,
-            state: this._state.getState(),
+            state: {
+                rebalance: { state: this._rebalanceState, currentWorkingGrid: null },
+                recovery: { ...this._recoveryStateValue },
+                gridRegen: { ...this._gridRegenStateValue },
+                bootstrap: { isBootstrapping: this._bootstrapping },
+                broadcast: { isBroadcasting: this._broadcastingFlag, startedAt: this._broadcastingStartedAt },
+                pipeline: { blockedSince: this._pipelineBlockedSince, recoveryAttempted: this._recoveryAttempted }
+            },
             currentTime: Date.now()
         };
     }
@@ -1915,39 +1752,34 @@ class OrderManager {
         });
     }
 
-    // Delegates to _state.rebalance (StateManager's internal field).
-    // Single source of truth — the getter/setter exists only for backward
-    // compat with code that reads _rebalanceState directly.
-    get _rebalanceState() {
-        return this._state.getRebalanceState();
-    }
-
-    set _rebalanceState(value) {
-        this._state.setRebalanceState(value);
-    }
-
     get _lastIllegalState() {
-        return this._state.signals?.lastIllegalState || null;
+        return this._illegalStateSignal || null;
     }
 
     set _lastIllegalState(value) {
         if (value) {
-            this._state.setIllegalStateSignal(value);
+            this._illegalStateSignal = {
+                ...value,
+                at: Date.now()
+            };
         }
     }
 
     get _lastAccountingFailure() {
-        return this._state.signals?.lastAccountingFailure || null;
+        return this._accountingFailureSignal || null;
     }
 
     set _lastAccountingFailure(value) {
         if (value) {
-            this._state.setAccountingFailureSignal(value);
+            this._accountingFailureSignal = {
+                ...value,
+                at: Date.now()
+            };
         }
     }
 
     get _recoveryState() {
-        return this._state.recovery;
+        return this._recoveryStateValue;
     }
 
     set _recoveryState(value) {
@@ -1959,21 +1791,21 @@ class OrderManager {
             lastFailureAt: 0,
             structuralResyncRequested: false
         };
-        this._state.recovery = {
+        this._recoveryStateValue = {
             ...fallback,
             ...(value && typeof value === 'object' ? value : {})
         };
     }
 
     get _gridRegenState() {
-        return this._state.gridRegen;
+        return this._gridRegenStateValue;
     }
 
     set _gridRegenState(value) {
         if (!value || typeof value !== 'object') return;
 
         const defaultSide = { armed: true, lastTriggeredAt: 0 };
-        this._state.gridRegen = {
+        this._gridRegenStateValue = {
             buy: { ...defaultSide, ...(value.buy || {}) },
             sell: { ...defaultSide, ...(value.sell || {}) }
         };

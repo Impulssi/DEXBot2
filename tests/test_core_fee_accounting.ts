@@ -38,7 +38,7 @@ async function createManager() {
         assetB: { id: '1.3.121', precision: 5 },
     };
     await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
-    mgr._state.isBootstrapping = () => true;
+    mgr.isBootstrapping = () => true;
     return mgr;
 }
 

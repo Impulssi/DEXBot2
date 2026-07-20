@@ -91,7 +91,7 @@ async function runTests() {
 
         // Mock _verifyFundInvariants to count calls based on bootstrap state
         manager.accountant._verifyFundInvariants = async () => {
-            if (manager._state.isBootstrapping()) {
+            if (manager.isBootstrapping()) {
                 invariantCallsDuringBootstrap++;
             } else {
                 invariantCallsAfterBootstrap++;

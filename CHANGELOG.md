@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1] - 2026-07-20 - Adopt-Boundary Shift, Correction Reliability, Credential Daemon Leak, StateManager Inline
+
+### 2026-07-20
+
+- **Fix**: only shift boundary for adopted CREATEs in uncertain broadcast recovery — previously all planned CREATEs (including discarded ones) shifted the grid boundary, causing phantom order positions on next cycle (`modules/dexbot_class.ts`, `tests/`).
+- **Fix**: stale `accountTotals` no longer HARD-ABORTs COW commit — transient staleness logs WARN and schedules recovery instead of throwing `ACCOUNTING_COMMITMENT_FAILED`. Also refresh totals after bootstrap to prevent unnecessary full recovery on first maintenance cycle (`modules/order/accounting.ts`, `modules/dexbot_class.ts`).
+- **Fix**: credential daemon memory leak — `socket.end()` after final write; `socket.destroy()` on close/error to prevent socket half-close accumulation (210MB RSS growth over 7d). Also switch credential policy's `assetRefResolutionCache` from unbounded `Map` to `LRUCache` (`credential-daemon.ts`, `modules/credential_policy.ts`).
+- **Fix**: order correction reliability — deduplicate orphan cancels by filtering `_lastUnmatchedChainOrders` after successful cancel; retain entries in `ordersNeedingPriceCorrection` on transient errors (don't drop from retry queue); skip redundant sequential fallback when recovery already resolved all pending updates (`modules/order/sync_engine.ts`, `modules/order/utils/order.ts`, `modules/order/grid_reconcile.ts`).
+- **Test**: add regression coverage for stale accounting and `orderGone` dedup paths.
+- **Refactor**: inline `StateManager` class into `OrderManager` — removes ~220 lines of wrapper delegation. State fields become direct `OrderManager` fields; public methods (`isBootstrapping`, `isBroadcastingActive`, etc.) move directly onto the manager. Backward-compat getter/setter pairs retained for `_recoveryState`, `_gridRegenState`, `_lastIllegalState`, `_lastAccountingFailure` (`modules/order/manager.ts`).
+- **Refactor**: merge `SyncResult` and `FillHistoryResult` into a single `SyncResult` type with optional fields. Rename `StateManagerState` → `ManagerStateSnapshot` in types. Update JSDoc references (`modules/types.ts`, `modules/order/sync_engine.ts`).
+
 ## [1.2.0] - 2026-07-19 - Credit-Only Mode, Boundary Shift Recovery, Order System Hardening
 
 ### 2026-07-19

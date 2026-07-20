@@ -634,14 +634,11 @@ export interface TargetGridEntry {
 export interface SyncResult {
   filledOrders: Order[];
   updatedOrders: Order[];
-  ordersNeedingCorrection: PriceCorrectionEntry[];
-}
-
-export interface FillHistoryResult {
-  filledOrders: Order[];
-  updatedOrders: Order[];
-  partialFill: boolean;
+  ordersNeedingCorrection?: PriceCorrectionEntry[];
+  unmatchedChainOrders?: any[];
+  partialFill?: boolean;
   requiresOpenOrdersSync?: boolean;
+  ghostOrderId?: string;
 }
 
 export interface SynchronizeResult {
@@ -711,13 +708,12 @@ export interface RecoveryState {
   lastFailureAt: number;
 }
 
-export interface StateManagerState {
+export interface ManagerStateSnapshot {
   rebalance: PipelineState;
   recovery: RecoveryState;
   gridRegen: { buy: GridRegenSideState; sell: GridRegenSideState };
   bootstrap: { isBootstrapping: boolean };
-  broadcast: { isBroadcasting: boolean };
-  signals: { lastIllegalState: SignalEntry | null; lastAccountingFailure: AccountingFailureSignal | null };
+  broadcast: { isBroadcasting: boolean; startedAt: number };
   pipeline: { blockedSince: number | null; recoveryAttempted: boolean };
 }
 
@@ -729,7 +725,7 @@ export interface Metrics {
   spreadRoleConversionBlocked: number;
   lastSyncDurationMs: number;
   metricsStartTime: number;
-  state: StateManagerState;
+  state: ManagerStateSnapshot;
   currentTime: number;
 }
 

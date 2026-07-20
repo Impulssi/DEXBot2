@@ -937,11 +937,11 @@ The `isBootstrapping` flag is guaranteed to be cleared using try-finally:
 
 ```javascript
 async start() {
-    this.isBootstrapping = true;
+    manager.startBootstrap();
     try {
         // All startup phases...
     } finally {
-        this.isBootstrapping = false;  // Always cleared, even on error
+        manager.finishBootstrap();  // Always cleared, even on error
     }
 }
 ```
