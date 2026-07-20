@@ -3028,7 +3028,11 @@ class DEXBot {
                 }
             );
             if (match) {
-                adopted.push({ slotId: entry.slotId, chainOrderId: match.id });
+                adopted.push({
+                    slotId: entry.slotId,
+                    chainOrderId: match.id,
+                    orderType: entry.orderType || entry.order?.type,
+                });
                 this.manager._pendingBroadcasts.delete(entry.fingerprint);
             } else {
                 // Preserve full entry context so the recheck below can use
@@ -3068,7 +3072,11 @@ class DEXBot {
                     }
                 );
                 if (match) {
-                    adopted.push({ slotId: entry.slotId, chainOrderId: match.id });
+                    adopted.push({
+                        slotId: entry.slotId,
+                        chainOrderId: match.id,
+                        orderType: entry.orderType || entry.order?.type,
+                    });
                     this.manager.logger.log(
                         `[COW][UNCERTAIN] CREATE re-adopted after ${recheckRound} block(s): ` +
                         `${entry.slotId}->${match.id}`,
@@ -3185,26 +3193,26 @@ class DEXBot {
         }
 
         // Boundary shift recovery: the COW batch that should have committed the
-        // boundary shift from this fill cycle failed before commit. Every planned
-        // CREATE in the batch represents a fill whose opposite-side boundary step
-        // was lost — regardless of whether the individual CREATE was later adopted
-        // on chain (adopted) or not (discarded). Manually adjust manager.boundaryIdx
-        // so the next COW cycle (triggered by the next fill or periodic maintenance)
-        // generates replacement opposite-side orders using the correct boundary.
+        // boundary shift from this fill cycle failed before commit. Only COUNT
+        // ADOPTED CREATEs — orders that actually landed on-chain. Discarded
+        // CREATEs represent orders that never existed, so the grid must NOT
+        // shift the boundary for them. The next fill cycle's
+        // calculateTargetGrid → deriveTargetBoundary will recompute the correct
+        // boundary from scratch for any discarded slots.
         //
         // NOTE: Direct mutation of manager.boundaryIdx outside a COW commit
         // violates the invariant stated in grid.ts:1217-1220 (boundary must only
         // be updated atomically inside _commitWorkingGrid). This is intentional
         // here because the COW commit already failed — the invariant was already
         // broken by the broadcast uncertainty, and the adjustment only restores
-        // the state to what the successful commit would have produced.
-        if (hadRotation && this.manager && pending.length > 0) {
+        // the state to what the successful commit would have produced for
+        // orders that are confirmed on-chain.
+        if (hadRotation && this.manager && adopted.length > 0) {
             let boundaryShift = 0;
-            for (const entry of pending) {
-                const orderType = entry.orderType || entry.order?.type;
-                if (orderType === ORDER_TYPES.SELL) {
+            for (const entry of adopted) {
+                if (entry.orderType === ORDER_TYPES.SELL) {
                     boundaryShift--; // SELL CREATE → fill was BUY → boundary LEFT
-                } else if (orderType === ORDER_TYPES.BUY) {
+                } else if (entry.orderType === ORDER_TYPES.BUY) {
                     boundaryShift++; // BUY CREATE → fill was SELL → boundary RIGHT
                 }
             }
@@ -3217,13 +3225,13 @@ class DEXBot {
                         this.manager.boundaryIdx = newIdx;
                         this.manager.logger.log(
                             `[COW][UNCERTAIN] Boundary adjusted by ${boundaryShift} ` +
-                            `(${adopted.length} adopted / ${discarded.length} discarded CREATE(s)): ` +
+                            `(${adopted.length} adopted CREATE(s), ${discarded.length} discarded): ` +
                             `${oldIdx} → ${newIdx}. Next COW cycle will generate replacement opposite-side orders.`,
                             'warn'
                         );
                         if (typeof this.manager._markGridDirty === 'function') {
                             this.manager._markGridDirty(
-                                `boundary adjustment after ${pending.length} planned CREATE(s)`
+                                `boundary adjustment after ${adopted.length} adopted CREATE(s)`
                             );
                         }
                     }

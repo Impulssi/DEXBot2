@@ -1202,6 +1202,9 @@ async function main() {
     await testUpdateToCreateFallbackCreateAlsoFails();
     await testRecoverFromPersistedGrid();
     await testRecoverFromPersistedGridNoGrid();
+    await testBoundaryShiftAllDiscarded();
+    await testBoundaryShiftMixedAdoptedDiscarded();
+    await testBoundaryShiftAllAdopted();
     testsComplete = true;
     console.log('\nAll uncertain-broadcast tests passed (incl. retry + deadlock regression guards).');
 }
@@ -1531,6 +1534,183 @@ async function testRecoverFromPersistedGridNoGrid() {
     assert(result.reason, 'should provide a reason for failure');
     assert(result.reason.includes('no persisted grid'), `reason should mention missing grid, got: ${result.reason}`);
     console.log('✓ UNC-016b passed');
+}
+
+// ── Boundary shift: all CREATEs discarded → boundary must NOT shift ─────
+async function testBoundaryShiftAllDiscarded() {
+    console.log('\n[UNC-017] Boundary shift recovery: all CREATEs discarded → boundaryIdx unchanged...');
+    const bot = makeBot();
+    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
+
+    const INITIAL_BOUNDARY = 5;
+    bot.manager.boundaryIdx = INITIAL_BOUNDARY;
+    bot.manager.persistGrid = async () => ({ isValid: true });
+    bot.manager._markGridDirty = () => {};
+
+    // Populate grid with enough orders so maxIdx >= INITIAL_BOUNDARY
+    for (let i = 0; i <= 9; i++) {
+        const side = i <= INITIAL_BOUNDARY ? 'buy' : 'sell';
+        bot.manager.orders.set(`slot-${i}`, { id: `slot-${i}`, type: side, price: 0.05 + i * 0.001, size: 1 });
+    }
+
+    // Record 2 pending CREATEs: 1 BUY, 1 SELL
+    bot._recordPendingBroadcast({
+        opIndex: 0, ctxIndex: 0,
+        order: { id: 'buy-1', type: 'buy', price: 0.05, size: 1 },
+        finalInts: { sell: 5000000, receive: 100000000 }
+    });
+    bot._recordPendingBroadcast({
+        opIndex: 1, ctxIndex: 1,
+        order: { id: 'sell-1', type: 'sell', price: 0.06, size: 1 },
+        finalInts: { sell: 100000000, receive: 5000000 }
+    });
+
+    // Chain has NO matching orders → both CREATEs discarded
+    chainOrders.readOpenOrders = async () => [];
+    bot.manager.syncFromOpenOrders = async () =>
+        ({ filledOrders: [], updatedOrders: [], unmatchedChainOrders: [] });
+    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
+
+    try {
+        const result = await bot._reconcileAfterUncertainBroadcast(
+            new BroadcastUncertainError('timeout', {
+                operations: [{ op_name: 'limit_order_create' }, { op_name: 'limit_order_create' }],
+                accountName: 'test-account', batchId: 'batch-discard', timeoutMs: 30000
+            }),
+            [{ kind: 'create', id: 'buy-1' }, { kind: 'create', id: 'sell-1' }]
+        );
+        assert.strictEqual(result.uncertain, true);
+        assert.strictEqual(result.adopted.length, 0, 'no CREATEs should be adopted');
+        assert.strictEqual(result.discarded.length, 2, 'both CREATEs should be discarded');
+        assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY,
+            'boundaryIdx must NOT shift when all CREATEs are discarded');
+    } finally {
+        chainOrders.readOpenOrders = origReadOpenOrders;
+        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
+    }
+    console.log('✓ UNC-017 passed');
+}
+
+// ── Boundary shift: mixed adopted/discarded → boundary shifts for adopted only ─
+async function testBoundaryShiftMixedAdoptedDiscarded() {
+    console.log('\n[UNC-017b] Boundary shift recovery: mixed adopted/discarded → boundary shifts for adopted only...');
+    const bot = makeBot();
+    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
+
+    const INITIAL_BOUNDARY = 5;
+    bot.manager.boundaryIdx = INITIAL_BOUNDARY;
+    bot.manager.persistGrid = async () => ({ isValid: true });
+    bot.manager._markGridDirty = () => {};
+
+    // Populate grid with enough orders so maxIdx >= INITIAL_BOUNDARY + shift
+    for (let i = 0; i <= 9; i++) {
+        const side = i <= INITIAL_BOUNDARY ? 'buy' : 'sell';
+        bot.manager.orders.set(`slot-${i}`, { id: `slot-${i}`, type: side, price: 0.05 + i * 0.001, size: 1 });
+    }
+
+    // 2 pending CREATEs: 1 BUY, 1 SELL
+    bot._recordPendingBroadcast({
+        opIndex: 0, ctxIndex: 0,
+        order: { id: 'buy-1', type: 'buy', price: 0.05, size: 1 },
+        finalInts: { sell: 5000000, receive: 100000000 }
+    });
+    bot._recordPendingBroadcast({
+        opIndex: 1, ctxIndex: 1,
+        order: { id: 'sell-1', type: 'sell', price: 0.06, size: 1 },
+        finalInts: { sell: 100000000, receive: 5000000 }
+    });
+
+    // Chain has only the BUY order → BUY adopted, SELL discarded
+    chainOrders.readOpenOrders = async () => [
+        makeChainOrder('1.7.300', 'buy', 5000000, 100000000)
+    ];
+    bot.manager.syncFromOpenOrders = async () =>
+        ({ filledOrders: [], updatedOrders: [], unmatchedChainOrders: [] });
+    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
+
+    try {
+        const result = await bot._reconcileAfterUncertainBroadcast(
+            new BroadcastUncertainError('timeout', {
+                operations: [{ op_name: 'limit_order_create' }, { op_name: 'limit_order_create' }],
+                accountName: 'test-account', batchId: 'batch-mixed', timeoutMs: 30000
+            }),
+            [{ kind: 'create', id: 'buy-1' }, { kind: 'create', id: 'sell-1' }]
+        );
+        assert.strictEqual(result.uncertain, true);
+        assert.strictEqual(result.adopted.length, 1, '1 CREATE should be adopted');
+        assert.strictEqual(result.adopted[0].slotId, 'buy-1', 'BUY CREATE should be adopted');
+        assert.strictEqual(result.adopted[0].orderType, 'buy', 'adopted entry should carry orderType');
+        assert.strictEqual(result.discarded.length, 1, '1 CREATE should be discarded');
+        // BUY adopted → shift +1. SELL discarded → NOT counted.
+        assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY + 1,
+            'boundaryIdx must shift +1 for adopted BUY only (discarded SELL not counted)');
+    } finally {
+        chainOrders.readOpenOrders = origReadOpenOrders;
+        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
+    }
+    console.log('✓ UNC-017b passed');
+}
+
+// ── Boundary shift: all CREATEs adopted → boundary shifts for all ──────
+async function testBoundaryShiftAllAdopted() {
+    console.log('\n[UNC-017c] Boundary shift recovery: all CREATEs adopted → boundary shifts for all...');
+    const bot = makeBot();
+    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
+
+    const INITIAL_BOUNDARY = 5;
+    bot.manager.boundaryIdx = INITIAL_BOUNDARY;
+    bot.manager.persistGrid = async () => ({ isValid: true });
+    bot.manager._markGridDirty = () => {};
+
+    // Populate grid with enough orders so maxIdx >= INITIAL_BOUNDARY + shift
+    for (let i = 0; i <= 9; i++) {
+        const side = i <= INITIAL_BOUNDARY ? 'buy' : 'sell';
+        bot.manager.orders.set(`slot-${i}`, { id: `slot-${i}`, type: side, price: 0.05 + i * 0.001, size: 1 });
+    }
+
+    // 2 pending CREATEs: both BUY
+    bot._recordPendingBroadcast({
+        opIndex: 0, ctxIndex: 0,
+        order: { id: 'buy-1', type: 'buy', price: 0.05, size: 1 },
+        finalInts: { sell: 5000000, receive: 100000000 }
+    });
+    bot._recordPendingBroadcast({
+        opIndex: 1, ctxIndex: 1,
+        order: { id: 'buy-2', type: 'buy', price: 0.04, size: 1 },
+        finalInts: { sell: 4000000, receive: 80000000 }
+    });
+
+    // Chain has both BUY orders → both adopted
+    chainOrders.readOpenOrders = async () => [
+        makeChainOrder('1.7.400', 'buy', 5000000, 100000000),
+        makeChainOrder('1.7.401', 'buy', 4000000, 80000000)
+    ];
+    bot.manager.syncFromOpenOrders = async () =>
+        ({ filledOrders: [], updatedOrders: [], unmatchedChainOrders: [] });
+    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
+
+    try {
+        const result = await bot._reconcileAfterUncertainBroadcast(
+            new BroadcastUncertainError('timeout', {
+                operations: [{ op_name: 'limit_order_create' }, { op_name: 'limit_order_create' }],
+                accountName: 'test-account', batchId: 'batch-adopt-all', timeoutMs: 30000
+            }),
+            [{ kind: 'create', id: 'buy-1' }, { kind: 'create', id: 'buy-2' }]
+        );
+        assert.strictEqual(result.uncertain, true);
+        assert.strictEqual(result.adopted.length, 2, 'both CREATEs should be adopted');
+        assert.strictEqual(result.discarded.length, 0, 'no CREATEs should be discarded');
+        // 2 BUY adopted → shift +2
+        assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY + 2,
+            'boundaryIdx must shift +2 for 2 adopted BUY CREATEs');
+    } finally {
+        chainOrders.readOpenOrders = origReadOpenOrders;
+        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
+    }
+    console.log('✓ UNC-017c passed');
 }
 
 main().catch((err) => {
