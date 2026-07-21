@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.3] - 2026-07-21 - Uncertain-Broadcast Grid Corruption Fix, Unmatched-Order Adoption, Grid-Bloat Loop Fix
+
+### 2026-07-21
+
+- **Fix**: prevent grid corruption from uncertain broadcasts — discarded CREATEs in `_reconcileAfterUncertainBroadcast` left virtual slots stuck at size=0 (no follow-up rebalance). Now restores target size on virtual slots with no orderId (`modules/dexbot_class.ts`).
+- **Fix**: unmatched chain orders no longer auto-cancelled — old guard destroyed legitimate on-chain positions to unblock CREATE batches. Replaced with `syncFromOpenOrders` adoption + unconditional structural resync. Preserves positions and prevents permanent gaps (`modules/dexbot_class.ts`).
+- **Fix**: `_lastUnmatchedChainOrders` only overwritten when sync actually processed orders (>0 filled+updated+corrected). Prevents dropping stale entries on force-release or lock-contention early exits (`modules/dexbot_class.ts`).
+- **Fix**: `isGridBloated` formula false-flagged full-rail grids (many virtual slots outside active window). Changed from `placedCount + gapSlots + 1` to `estimatedRailSize + gapSlots + MIN_SPREAD_ORDERS`. Prevents infinite bloat-resync loop (`modules/order/grid.ts`).
+- **Fix**: `loadGrid` reassigns stale SPREAD/BUY/SELL types on virtual slots from old boundary positions — types are corrected on every grid load (`modules/order/grid.ts`).
+- **Fix**: `_recoverFromPersistedGrid` returns `{ success: false }` when grid still bloated after reload, so `requestStructuralGridResync` falls through to full `requestGridReset` (`modules/dexbot_class.ts`).
+- **Fix**: empty-side spread correction never fired — `shouldFlagOutOfSpread` returned 0 when either side had zero on-chain orders. Now returns nominal gap slot count so correction activates a SPREAD slot (`modules/order/utils/order.ts`).
+- **Fix**: boundary-at-rail-edge triggers structural resync — when boundary crawl clamps to 0 or `allSlots.length-1`, fill pressure could wipe out a side. `checkSpreadCondition` now triggers `requestStructuralGridResync` when one side is empty and boundary leaves <2 slots (`modules/order/grid.ts`).
+- **Fix**: TOCTOU silent abort in spread correction — when funds changed between lock release and broadcast, correction silently aborted indefinitely. Now re-plans with fresh funds instead (`modules/order/grid.ts`).
+- **Fix**: budget dilution from virtual slots in `calculateGeometricSizeForSpreadCorrection` — counted all orders including hundreds of virtual slots, diluting correction size to dust. Now counts only on-chain (ACTIVE+PARTIAL) orders (`modules/order/grid.ts`).
+- **Fix**: `adjustBudgetForBtsFees` regression — c3c0fcdc refactor clamped non-BTS budget to 0 when `sideFree=0` (all capital committed). Restored deduction against `allocated`, matching original semantic (`modules/order/utils/order.ts`).
+- **Fix**: pending-broadcasts path extracted to a clean separate block in COW guard — no behavioral change, improves readability (`modules/dexbot_class.ts`).
+- **Fix**: unmatched order sample logged for operator visibility — top 3 unmatched entries included in COW CREATE rejection log (`modules/dexbot_class.ts`).
+- **Fix**: `_recoverFromPersistedGrid` rejects when unmatched chain orders remain after sync — prevents stale persisted grid from being accepted when it produces inconsistent state (`modules/dexbot_class.ts`).
+- **Fix**: `_autoCancelOneUnmatchedOrphan` narrowed to only cancel `price-drift-orphan` entries — all other unmatched types (duplicate-price-level, already-matched-slot, etc.) are adoptable positions preserved for structural resync (`modules/dexbot_class.ts`).
+- **Fix**: structural resync safeguard after `skipAccounting` restore in uncertain broadcast — schedules resync when discarded CREATEs were restored, ensuring fund accounting is recalculated (`modules/dexbot_class.ts`).
+- **Fix**: `performGridResync` explicitly clears `_lastUnmatchedChainOrders` after successful rebuild — prevents COW guard from holding stale unmatched entries from before resync (`modules/dexbot_maintenance_runtime.ts`).
+- **Fix**: improved logging when sync returns without processing in COW guard — distinguishes lock contention (debug) from stale unmatched entries (warn); updates `_lastUnmatchedChainOrders` when sync result has different unmatched count (`modules/dexbot_class.ts`).
+- **Test**: `test_grid_logic.ts` — fixed `FreshinitializeGrid` typo (5 sites), updated `shouldFlagOutOfSpread` empty-side assertion from 0 to 4 (`tests/test_grid_logic.ts`).
+- **Test**: `test_spread_redistribution_fallback.ts` — fixed by `adjustBudgetForBtsFees` regression fix above (`tests/test_spread_redistribution_fallback.ts`).
+- **Test**: `test_cow_structural_resync.ts` — updated "auto-cancel succeeds" to test adoption path (cancel not called, batch rejected, resync requested) (`tests/test_cow_structural_resync.ts`).
+- **Test**: `test_uncertain_broadcast.ts` — updated 3 existing tests to use `price-drift-orphan` reason; added 2 new tests: `testAutoCancelOnlyPriceDriftOrphans` and `testRecoverFromPersistedGridUnmatchedRemain` (`tests/test_uncertain_broadcast.ts`).
+- **Test**: `test_grid_bloat.ts` — full-rail 290-slot "not bloated" case, `loadGrid` stale-virtual-slot type reassignment test (`tests/test_grid_bloat.ts`).
+
 ## [1.2.2] - 2026-07-21 - Invariant Sabotage Prevention, Regression Hardening, Code-Review Cleanup
 
 ### 2026-07-21
