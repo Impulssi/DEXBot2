@@ -1202,6 +1202,7 @@ async function main() {
     await testUpdateToCreateFallbackCreateAlsoFails();
     await testRecoverFromPersistedGrid();
     await testRecoverFromPersistedGridNoGrid();
+    await testRecoverFromPersistedGridBloated();
     await testBoundaryShiftAllDiscarded();
     await testBoundaryShiftMixedAdoptedDiscarded();
     await testBoundaryShiftAllAdopted();
@@ -1534,6 +1535,100 @@ async function testRecoverFromPersistedGridNoGrid() {
     assert(result.reason, 'should provide a reason for failure');
     assert(result.reason.includes('no persisted grid'), `reason should mention missing grid, got: ${result.reason}`);
     console.log('✓ UNC-016b passed');
+}
+
+// ── _recoverFromPersistedGrid: rejects bloated grid after reload ────────
+async function testRecoverFromPersistedGridBloated() {
+    console.log('\n[UNC-016c] _recoverFromPersistedGrid rejects grid that is still bloated after reload...');
+    const bot = makeBot();
+    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origPersist = bot.manager.persistGrid;
+    let loadGridCalled = false;
+
+    bot.accountId = 'test-account';
+
+    bot.manager._gridLock = {
+        acquire: async (fn) => fn(),
+        isLocked: () => false,
+        isReentrant: () => false,
+    };
+    bot.manager._syncLock = {
+        acquire: async (fn) => fn(),
+        isLocked: () => false,
+        isReentrant: () => false,
+        forceRelease: () => 0,
+    };
+    bot.manager._fillProcessingLock = undefined;
+    // _applyOrderUpdate must actually store orders so the post-reload
+    // isGridBloated check sees non-empty data.
+    bot.manager.orders = new Map();
+    bot.manager._applyOrderUpdate = async (order: any) => {
+        bot.manager.orders.set(order.id, { ...order });
+    };
+    bot.manager._initializeAssets = async () => {};
+    bot.manager.resetFunds = () => {};
+    bot.manager.pauseRecalcLogging = () => {};
+    bot.manager.resumeRecalcLogging = () => {};
+    bot.manager.funds = { btsFeesOwed: 0 };
+    bot.manager.boundaryIdx = 0;
+    bot.manager.config = {
+        incrementPercent: 0.3,
+        targetSpreadPercent: 0.6,
+    };
+
+    // Bloated grid: 60 active at geometric prices → railEstimate ~60,
+    // maxAllowed = 60 + gap + 5 ≈ 67. But we inject 100 extra VIRTUAL
+    // slots at tightly clustered prices (all at 1.0), so gridSize=160
+    // far exceeds the price-range estimate from min/max prices.
+    const activeOrders = [];
+    for (let i = 0; i < 30; i++) activeOrders.push({
+        id: 'b' + i, type: 'buy', state: 'active',
+        price: 1.0 * Math.pow(1.003, i), size: 10, orderId: '1.7.' + i,
+    });
+    for (let i = 0; i < 30; i++) activeOrders.push({
+        id: 's' + i, type: 'sell', state: 'active',
+        price: 1.0 * Math.pow(1.003, 100 + i), size: 10, orderId: '1.7.' + (100 + i),
+    });
+    const virtualExtra = [];
+    for (let i = 0; i < 100; i++) virtualExtra.push({
+        id: 'x' + i, type: 'spread', state: 'virtual',
+        price: 1.0, size: 0, orderId: '',
+    });
+    const persistedGrid = [...activeOrders, ...virtualExtra];
+
+    const chainState = activeOrders.map((o: any) => ({
+        id: o.orderId, type: o.type, price: o.price, for_sale: o.size,
+    }));
+
+    bot.accountOrders = {
+        loadGrid: (force) => {
+            if (force) loadGridCalled = true;
+            return persistedGrid;
+        },
+        loadBoundaryIdx: () => 0,
+    };
+
+    chainOrders.readOpenOrders = async () => chainState;
+
+    bot.manager.syncFromOpenOrders = async () => ({ filledOrders: [], updatedOrders: [] });
+    bot.manager.persistGrid = async () => ({ isValid: true });
+
+    try {
+        const result = await bot._recoverFromPersistedGrid();
+        // loadGrid's inner bloat check may also fire requestStructuralGridResync
+        // (async fire-and-forget), but the outer check must reject because the
+        // grid is still oversized after reload.
+        assert.strictEqual(result.success, false,
+            'Recovery must reject bloated grid: success=' + result.success +
+            ' reason=' + (result.reason || 'none'));
+        assert(result.reason, 'should provide a reason');
+        assert(result.reason.includes('still bloated'),
+            `reason should mention bloat, got: ${result.reason}`);
+    } finally {
+        chainOrders.readOpenOrders = origReadOpenOrders;
+        bot.manager.persistGrid = origPersist;
+    }
+    console.log('✓ UNC-016c passed');
 }
 
 // ── Boundary shift: all CREATEs discarded → boundary must NOT shift ─────

@@ -698,6 +698,30 @@ class DEXBot {
                 'info'
             );
 
+            // If the reloaded grid is still bloated, reject recovery so the
+            // caller falls through to a full grid reset (requestGridReset).
+            // Without this check, a bloated snapshot gets accepted as "success"
+            // and the structural-resync loop loads the same broken state forever.
+            //
+            // NOTE: loadGrid() already fires requestStructuralGridResync when it
+            // detects bloat internally, so the inner async resync may be in flight
+            // by the time this outer check runs. That's fine — the structural-resync
+            // gate (_structuralGridResyncRunning / _structuralGridResyncTimer) dedup's
+            // concurrent requests. This outer check exists so the synchronous return
+            // value is honest about the state; the inner resync is a safety net.
+            const { isGridBloated } = require('./order/grid');
+            const ordersArr = Array.from(this.manager.orders.values());
+            const bloatPostRecovery = isGridBloated(this.manager, ordersArr);
+            if (bloatPostRecovery.bloated) {
+                const d = bloatPostRecovery.details;
+                this.manager.logger.log(
+                    `[RECOVERY] Persisted grid reloaded but still bloated ` +
+                    `(${d.gridSize} slots, max ${d.maxAllowed}). Rejecting — full grid reset required.`,
+                    'warn'
+                );
+                return { success: false, reason: 'grid still bloated after reload' };
+            }
+
             return { success: true };
         } catch (err: any) {
             this.manager.logger.log(

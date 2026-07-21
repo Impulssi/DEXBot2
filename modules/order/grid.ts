@@ -185,11 +185,38 @@ export function isGridBloated(manager, orders) {
         if (!placedCount) return { bloated: false };
 
         const gapSlots = calculateGapSlots(incPct, targetSpreadPct);
-        const maxAllowed = placedCount + gapSlots + 1;
+
+        // Estimate expected full-rail size from actual min/max prices in the grid.
+        // A normal grid has one geometric price level per increment step across
+        // the full price range, plus gapSlots for the spread zone.
+        // This correctly handles the full-rail grid layout (many virtual slots
+        // outside the active window) and only flags true bloat where spread-
+        // correction inserts or other duplication have added EXTRA slots beyond
+        // what the price range would produce.
+        //
+        // The buffer uses MIN_SPREAD_ORDERS to cover:
+        //   1. Estimation error from createOrderGrid's sqrt(step) starting
+        //      offset (~1 geometric level per side)
+        //   2. Headroom for legitimate spread-correction inserts
+        const prices = orderList
+            .map((o: any) => o.price)
+            .filter((p: any) => p != null && Number.isFinite(p));
+        let expectedTotal = 0;
+        if (prices.length > 0) {
+            const minP = Math.min(...prices);
+            const maxP = Math.max(...prices);
+            if (minP > 0 && maxP > minP) {
+                const step = 1 + incPct / 100;
+                expectedTotal = Math.floor(Math.log(maxP / minP) / Math.log(step)) + 1;
+            }
+        }
+        const railEstimate = Math.max(expectedTotal, placedCount);
+        const buffer = (config.gridLimits?.MIN_SPREAD_ORDERS ?? GRID_LIMITS.MIN_SPREAD_ORDERS);
+        const maxAllowed = railEstimate + gapSlots + buffer;
 
         return {
             bloated: gridSize > maxAllowed,
-            details: { gridSize, placedCount, numBuyActive, numSellActive, gapSlots, maxAllowed }
+            details: { gridSize, placedCount, numBuyActive, numSellActive, gapSlots, maxAllowed, railEstimate }
         };
     }
 
@@ -531,6 +558,41 @@ export async function loadGrid(manager, grid, boundaryIdx = null) {
                 manager.boundaryIdx = boundaryIdx;
                 // FIX: Use consistent optional chaining pattern for logger calls
                 manager.logger?.log?.(`Restored boundary index: ${boundaryIdx}`, 'info');
+            }
+
+            // Reassign slot types for virtual slots based on current boundary.
+            // Over time, boundary shifts leave stale SPREAD/BUY/SELL types on
+            // virtual slots that no longer match their position. Virtual slots
+            // have no on-chain commitment, so their type is safely corrected.
+            if (typeof boundaryIdx === 'number') {
+                const gapSlots = calculateGapSlots(
+                    manager.config?.incrementPercent,
+                    manager.config?.targetSpreadPercent,
+                    manager.config?.gridLimits
+                );
+                const buyEndIdx = boundaryIdx;
+                const sellStartIdx = boundaryIdx + gapSlots + 1;
+                let reassignCount = 0;
+                grid = grid.map((slot, i) => {
+                    if (slot.state === ORDER_STATES.VIRTUAL && !slot.orderId) {
+                        const correctType = (i <= buyEndIdx)
+                            ? ORDER_TYPES.BUY
+                            : (i >= sellStartIdx)
+                                ? ORDER_TYPES.SELL
+                                : ORDER_TYPES.SPREAD;
+                        if (slot.type !== correctType) {
+                            reassignCount++;
+                            return { ...slot, type: correctType };
+                        }
+                    }
+                    return slot;
+                });
+                if (reassignCount > 0) {
+                    manager.logger?.log?.(
+                        `[GRID-LOAD] Reassigned ${reassignCount} stale virtual slot type(s) based on boundary ${boundaryIdx}`,
+                        'warn'
+                    );
+                }
             }
 
             // Gap 6: Grid size cap — validate grid slot count against expected maximum.
