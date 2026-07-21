@@ -3249,6 +3249,36 @@ class DEXBot {
                     .join(', ')}`,
                 'warn'
             );
+
+            // Restore target grid sizes for discarded CREATEs so the slots are
+            // not left as virtual/0 after recovery. Without this, the slot stays
+            // at size 0 (set by the fill handler) and is never reactivated until
+            // a fresh fill cycle triggers another rebalance that happens to succeed.
+            // entry.order is the pending-broadcast target order (captured at broadcast
+            // time); its .id matches entry.slotId — the lookup below keys on slotId.
+            for (const entry of discarded) {
+                if (entry.order && entry.slotId) {
+                    const current = this.manager.orders.get(entry.slotId);
+                    if (current && current.state === ORDER_STATES.VIRTUAL && !current.orderId) {
+                        try {
+                            await this.manager._applyOrderUpdate(
+                                { ...entry.order, state: ORDER_STATES.VIRTUAL, orderId: null },
+                                'uncertain-recovery-restore-size',
+                                { skipAccounting: true, fee: 0 }
+                            );
+                            this.manager.logger.log(
+                                `[COW][UNCERTAIN] Restored target size for discarded CREATE slot ${entry.slotId} (size: ${entry.order.size})`,
+                                'info'
+                            );
+                        } catch (restoreErr) {
+                            this.manager.logger.log(
+                                `[COW][UNCERTAIN] Failed to restore size for slot ${entry.slotId}: ${restoreErr?.message || restoreErr}`,
+                                'warn'
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         this._clearPendingBroadcasts();
@@ -4378,136 +4408,124 @@ class DEXBot {
             ? Array.from(this.manager._pendingBroadcasts.values()) as any[]
             : [];
         if (hasCreateActions && (unmatchedChainOrders.length > 0 || pendingBroadcasts.length > 0)) {
-            // ---- FIX 3: Absorb unmatched orders instead of rejecting ----
-            // When unmatched chain orders exist, try to auto-cancel them
-            // inline to unblock the CREATE batch. Only fall through to
-            // full rejection + structural resync if cancellation fails.
-            let cancelledUnmatched = 0;
-            if (unmatchedChainOrders.length > 0 && pendingBroadcasts.length === 0) {
-                // Bounded-parallel cancellation: process unmatched orders in
-                // concurrent batches (3 at a time) to avoid serialising 19+
-                // individual cancel txs (~0.5s each = 10s batch hold).
-                const CANCEL_CONCURRENCY = 3;
-                const cancelable = unmatchedChainOrders.filter(u => {
-                    const oid = u?.id || u?.orderId || u?.chainOrderId;
-                    return Boolean(oid) && !u?.fingerprint;
-                });
-                for (let i = 0; i < cancelable.length; i += CANCEL_CONCURRENCY) {
-                    const batch = cancelable.slice(i, i + CANCEL_CONCURRENCY);
-                    const results = await Promise.allSettled(
-                        batch.map(async (unmatched) => {
-                            const orderId = unmatched.id || unmatched.orderId || unmatched.chainOrderId;
-                            this.manager.logger.log(
-                                `[COW] Auto-cancelling unmatched chain order ${orderId} ` +
-                                `(${this._formatUnmatchedChainOrderForLog(unmatched)}) to unblock CREATE batch.`,
-                                'warn'
-                            );
-                            await chainOrders.cancelOrder(this.account, this.privateKey, orderId);
-                            if (typeof chainOrders.recordOwnCancel === 'function') {
-                                chainOrders.recordOwnCancel(orderId);
-                            }
-                        })
-                    );
-                    for (const r of results) {
-                        if (r.status === 'fulfilled') cancelledUnmatched++;
-                        else this.manager.logger.log(
-                            `[COW] Failed to cancel unmatched chain order: ${r.reason?.message || r.reason}`,
-                            'warn'
-                        );
-                    }
-                }
-                if (cancelable.length > 0 && cancelledUnmatched >= cancelable.length) {
-                    this.manager.logger.log(
-                        `[COW] Cancelled all ${cancelledUnmatched} unmatched chain order(s); proceeding with CREATE batch.`,
-                        'warn'
-                    );
-                    // Optimistic clear: the cancel txs are sent but not yet
-                    // confirmed. If a cancel silently fails on chain, the
-                    // next sync cycle will re-detect the unmatched order and
-                    // re-enter this guard — that's safe because the cancel
-                    // is idempotent and the re-detection is non-blocking.
-                    this.manager._lastUnmatchedChainOrders = [];
-                } else if (cancelable.length > 0) {
-                    this.manager.logger.log(
-                        `[COW] Cancelled ${cancelledUnmatched}/${cancelable.length} unmatched chain order(s); ` +
-                        `remaining must be handled by structural reconciliation.`,
-                        'warn'
-                    );
-                }
-            }
-
-            // Re-check after auto-cancel attempt
-            const remainingUnmatched = Array.isArray(this.manager?._lastUnmatchedChainOrders)
-                ? this.manager._lastUnmatchedChainOrders
-                : [];
-            if (remainingUnmatched.length > 0 || pendingBroadcasts.length > 0) {
-                const blockers = [];
-                if (remainingUnmatched.length > 0) blockers.push(`${remainingUnmatched.length} unmatched chain order(s)`);
-                if (pendingBroadcasts.length > 0) blockers.push(`${pendingBroadcasts.length} pending broadcast(s)`);
-                const reasonText = blockers.join(' and ');
-                if (pendingBroadcasts.length > 0) {
-                    this.manager.logger.log(
-                        `[COW] Rejecting CREATE batch: ${reasonText} from a prior uncertain ` +
-                        `broadcast. Running recovery before placing replacement orders.`,
-                        'error'
-                    );
-                } else {
-                    const sample = remainingUnmatched
-                        .slice(0, 3)
-                        .map(order => this._formatUnmatchedChainOrderForLog(order))
-                        .join(' | ');
-                    this.manager.logger.log(
-                        `[COW] Rejecting CREATE batch: ${reasonText} ` +
-                        `are not represented in the grid${sample ? ` (${sample})` : ''}. ` +
-                        `Run structural reconciliation before placing replacement orders.`,
-                        'error'
-                    );
-                }
+            // ---- Handle pending broadcasts first ----
+            if (pendingBroadcasts.length > 0) {
+                this.manager.logger.log(
+                    `[COW] Rejecting CREATE batch: ${pendingBroadcasts.length} pending broadcast(s) from a prior uncertain ` +
+                    `broadcast. Running recovery before placing replacement orders.`,
+                    'error'
+                );
                 if (typeof this.manager.requestStructuralGridResync === 'function') {
                     if (this.manager._recoveryState) this.manager._recoveryState.structuralResyncRequested = true;
                     await this.manager.requestStructuralGridResync(
-                        pendingBroadcasts.length > 0
-                            ? 'pending broadcasts before COW create'
-                            : 'unmatched chain orders before COW create',
-                        pendingBroadcasts.length > 0
-                            ? { pendingBroadcasts: pendingBroadcasts.map(p => p.slotId) }
-                            : { unmatchedChainOrders: remainingUnmatched }
+                        'pending broadcasts before COW create',
+                        { pendingBroadcasts: pendingBroadcasts.map(p => p.slotId) }
                     );
                 }
-                // If we have pending broadcasts, drive the recovery now so the
-                // next planning cycle has a clean state.
-                if (pendingBroadcasts.length > 0) {
-                    try {
-                        await this._reconcileAfterUncertainBroadcast(
-                            new BroadcastUncertainError(
-                                'rejected CREATE batch had pending broadcasts',
-                                {
-                                    operations: pendingBroadcasts.map(p => p.order),
-                                    accountName: this.account,
-                                    batchId: this._currentBatchId || null,
-                                    payload: null,
-                                    timeoutMs: null
-                                }
-                            ),
-                            []
-                        );
-                    } catch (recoverErr) {
-                        this.manager.logger.log(
-                            `[COW] Recovery from pending broadcasts failed: ${recoverErr?.message || recoverErr}`,
-                            'error'
-                        );
-                    }
+                try {
+                    await this._reconcileAfterUncertainBroadcast(
+                        new BroadcastUncertainError(
+                            'rejected CREATE batch had pending broadcasts',
+                            {
+                                operations: pendingBroadcasts.map(p => p.order),
+                                accountName: this.account,
+                                batchId: this._currentBatchId || null,
+                                payload: null,
+                                timeoutMs: null
+                            }
+                        ),
+                        []
+                    );
+                } catch (recoverErr) {
+                    this.manager.logger.log(
+                        `[COW] Recovery from pending broadcasts failed: ${recoverErr?.message || recoverErr}`,
+                        'error'
+                    );
                 }
                 return {
                     executed: false,
                     aborted: true,
-                    reason: pendingBroadcasts.length > 0 ? 'PENDING_BROADCASTS' : 'UNMATCHED_CHAIN_ORDERS',
-                    unmatchedChainOrders: pendingBroadcasts.length > 0 ? [] : remainingUnmatched,
-                    pendingBroadcasts: pendingBroadcasts.map(p => p.slotId),
+                    reason: 'PENDING_BROADCASTS',
                     hadRotation: false
                 };
             }
-            // All unmatched were cancelled — fall through to continue batch
+
+            // ---- Unmatched orders: adopt instead of cancel ----
+            // Unmatched orders are legitimate on-chain positions the grid
+            // hasn't adopted yet. Cancelling them destroys capital and
+            // creates gaps in the order book. Instead, re-sync to adopt
+            // them into the grid, then reject (the sync invalidated the
+            // working grid, so the existing COW plan is stale).
+            // NOTE: syncFromOpenOrders may be a partial no-op under certain
+            // lock conditions (e.g. _fillProcessingLock + !isReentrant).
+            // Structural resync scheduled below handles adoption regardless.
+            const unmatchedSample = unmatchedChainOrders
+                .slice(0, 3)
+                .map(o => this._formatUnmatchedChainOrderForLog(o))
+                .join(' | ');
+            this.manager.logger.log(
+                `[COW] ${unmatchedChainOrders.length} unmatched chain order(s) blocking CREATES ` +
+                (unmatchedSample ? `(${unmatchedSample})` : '') +
+                ` — adopting via sync instead of cancelling`,
+                'info'
+            );
+            try {
+                const accountRef = this.account;
+                const freshSnapshot = await chainOrders.readOpenOrders(accountRef);
+                if (freshSnapshot && freshSnapshot.length > 0) {
+                    const syncResult = await this.manager.syncFromOpenOrders(freshSnapshot, {
+                        skipAccounting: true,
+                    });
+                    // Only overwrite _lastUnmatchedChainOrders when sync actually
+                    // processed orders (filled + updated + corrected > 0).
+                    // Force-release and lock-contention early-exit paths return
+                    // empty arrays without touching _lastUnmatchedChainOrders —
+                    // overwriting with [] would drop stale unmatched entries.
+                    if (syncResult && Array.isArray(syncResult.unmatchedChainOrders)) {
+                        const processed = (syncResult.filledOrders?.length || 0) +
+                                          (syncResult.updatedOrders?.length || 0) +
+                                          (syncResult.ordersNeedingCorrection?.length || 0);
+                        if (processed > 0) {
+                            this.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders;
+                            this.manager.logger.log(
+                                `[COW] Adopted chain order(s) via sync: ${processed} processed, ` +
+                                `${syncResult.unmatchedChainOrders.length} still unmatched`,
+                                'info'
+                            );
+                        } else {
+                            this.manager.logger.log(
+                                `[COW] Sync returned without processing (lock contention or empty snapshot); ` +
+                                `relying on structural resync`,
+                                'debug'
+                            );
+                        }
+                    }
+                }
+            } catch (syncErr) {
+                this.manager.logger.log(
+                    `[COW] Failed to sync/unmatched orders: ${syncErr?.message || syncErr}`,
+                    'warn'
+                );
+            }
+            // Working grid is stale after master grid mutation from sync.
+            // Request structural resync to rebuild the grid on the next cycle.
+            if (typeof this.manager.requestStructuralGridResync === 'function') {
+                if (this.manager._recoveryState) this.manager._recoveryState.structuralResyncRequested = true;
+                await this.manager.requestStructuralGridResync(
+                    'unmatched chain orders before COW create',
+                    { unmatchedChainOrders: unmatchedChainOrders }
+                );
+            }
+            this.manager.logger.log(
+                `[COW] Rejecting CREATE batch after sync: working grid invalidated by master mutation`,
+                'info'
+            );
+            return {
+                executed: false,
+                aborted: true,
+                reason: 'UNMATCHED_CHAIN_ORDERS',
+                hadRotation: false
+            };
         }
 
         const { assetA, assetB } = this.manager.assets;
