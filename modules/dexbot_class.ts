@@ -698,6 +698,26 @@ class DEXBot {
                 'info'
             );
 
+            // Gap 2: Check for unmatched chain orders after reload + sync.
+            // If the sync resolved all unmatched entries, _lastUnmatchedChainOrders
+            // was cleared by the sync engine. If any remain, the persisted snapshot
+            // produced an inconsistent grid — reject so the structural resync
+            // falls through to requestGridReset (full rebuild from chain).
+            const remainingUnmatched = Array.isArray(this.manager?._lastUnmatchedChainOrders)
+                ? this.manager._lastUnmatchedChainOrders
+                : [];
+            if (remainingUnmatched.length > 0) {
+                const sample = remainingUnmatched.slice(0, 3)
+                    .map(o => this._formatUnmatchedChainOrderForLog(o))
+                    .join(' | ');
+                this.manager.logger.log(
+                    `[RECOVERY] Persisted grid reloaded but ${remainingUnmatched.length} unmatched chain order(s) ` +
+                    `remain${sample ? ` (${sample})` : ''}. Rejecting — full grid reset required.`,
+                    'warn'
+                );
+                return { success: false, reason: `grid inconsistent after reload: ${remainingUnmatched.length} unmatched remain` };
+            }
+
             // If the reloaded grid is still bloated, reject recovery so the
             // caller falls through to a full grid reset (requestGridReset).
             // Without this check, a bloated snapshot gets accepted as "success"
@@ -3281,6 +3301,37 @@ class DEXBot {
             }
         }
 
+        // ---- Structural resync safeguard after skipAccounting restore ----
+        // The discarded CREATE restore above used skipAccounting: true to avoid
+        // double-counting when the structural resync recalculates accounting
+        // from scratch. Ensure one is scheduled — if already in-flight (timer
+        // or running), the existing resync will handle the accounting fix.
+        if (discarded.length > 0 && typeof this.manager?.requestStructuralGridResync === 'function') {
+            const alreadyScheduled = this._structuralGridResyncRunning || this._structuralGridResyncTimer;
+            if (!alreadyScheduled) {
+                this.manager.logger.log(
+                    `[COW][UNCERTAIN] Scheduling structural resync after discarded CREATE restore ` +
+                    `(skipAccounting used — resync needed for fund recalculation)`,
+                    'info'
+                );
+                this.manager.requestStructuralGridResync(
+                    'cow-uncertain-accounting-repair',
+                    { discardedCount: discarded.length }
+                ).catch((err: any) => {
+                    this.manager.logger.log(
+                        `[COW][UNCERTAIN] Failed to schedule accounting repair resync: ${err.message}`,
+                        'error'
+                    );
+                });
+            } else {
+                this.manager.logger.log(
+                    `[COW][UNCERTAIN] Structural resync already ${this._structuralGridResyncRunning ? 'running' : 'scheduled'}; ` +
+                    `it will repair accounting after discarded CREATE restore`,
+                    'debug'
+                );
+            }
+        }
+
         this._clearPendingBroadcasts();
 
         // Post-recovery safety net: if there are still unmatched chain
@@ -3359,18 +3410,22 @@ class DEXBot {
     }
 
     /**
-     * Auto-cancel a single unmatched chain order from the recovery snapshot.
+     * Auto-cancel a price-drift orphan from the unmatched-order snapshot.
+     *
+     * Only cancels entries with reason === 'price-drift-orphan' — these are
+     * surplus orders that drifted away from their slot price and have no
+     * adoptable grid slot. All other unmatched orders (duplicate-price-level,
+     * already-matched-slot, etc.) are adoptable positions that the structural
+     * resync will integrate into the grid; cancelling them destroys capital.
      *
      * This is the post-recovery safety net: if, after
-     * _reconcileAfterUncertainBroadcast runs, there are still chain orders
-     * the bot doesn't recognize (e.g. from a network partition, or from a
-     * daemon timeout that we couldn't even fingerprint), we cancel ONE of
-     * them per call. Per-cycle cap = 1 — the next cycle will pick up the
-     * next unmatched order if more remain.
+     * _reconcileAfterUncertainBroadcast runs, there are still price-drift
+     * orphans, cancel ONE per cycle. Per-cycle cap = 1 (or 5 in recovery mode)
+     * — the next cycle will pick up the next orphan if more remain.
      *
      * Safety conditions (ALL must hold):
      *   1. _pendingBroadcasts is empty (no in-flight recovery)
-     *   2. _lastUnmatchedChainOrders is non-empty
+     *   2. _lastUnmatchedChainOrders contains at least one price-drift-orphan
      *   3. The current cycle has not already auto-cancelled an orphan
      *      (tracked via this._autoCancelOrphanCycleMarker)
      *
@@ -3406,16 +3461,27 @@ class DEXBot {
         if (unmatched.length === 0) {
             return { cancelled: false, reason: 'no-unmatched' };
         }
-        const priceDriftOrphan = unmatched.find(u => u && u.reason === 'price-drift-orphan');
-        const target = priceDriftOrphan || unmatched[0];
-        const orderId = target?.id || target?.orderId || target?.chainOrderId;
+        // Check for fingerprinted entries first — these came from a pending
+        // broadcast (missing-create-result) and must be handled by the recovery
+        // path, not by auto-cancel. The first fingerprinted entry is checked
+        // regardless of its reason field.
+        const fingerprinted = unmatched.find(u => u && u.fingerprint);
+        if (fingerprinted) {
+            return { cancelled: false, reason: 'fingerprinted-handle-via-recovery' };
+        }
+
+        // Only cancel price-drift orphans — these are surplus orders that
+        // drifted away from their assigned slot price and have no adoptable
+        // grid slot. All other unmatched orders (duplicate-price-level,
+        // already-matched-slot, etc.) are adoptable positions that the structural
+        // resync will integrate into the grid — cancelling them destroys capital.
+        const target = unmatched.find(u => u && u.reason === 'price-drift-orphan');
+        if (!target) {
+            return { cancelled: false, reason: 'no-price-drift-orphan', message: 'no price-drift orphan to cancel; other unmatched orders are adoptable' };
+        }
+        const orderId = target.id || target.orderId || target.chainOrderId;
         if (!orderId) {
             return { cancelled: false, reason: 'no-orderId' };
-        }
-        if (target?.fingerprint) {
-            // Fingerprinted unmatched orders came from a pending broadcast.
-            // The recovery path is the right place to handle them, not here.
-            return { cancelled: false, reason: 'fingerprinted-handle-via-recovery' };
         }
         if (!chainOrders?.cancelOrder) {
             return { cancelled: false, reason: 'cancelOrder-unavailable' };
@@ -4493,11 +4559,31 @@ class DEXBot {
                                 'info'
                             );
                         } else {
+                            // processed === 0 with unmatched still present means the
+                            // sync could not adopt the unmatched chain orders. This is
+                            // normal when called re-entrantly (inside _fillProcessingLock):
+                            // the sync engine runs inline and either timed out (unlikely
+                            // for a re-entrant call) or all chain orders were already
+                            // matched — leaving only stale unmatched entries.
+                            const syncUnmatchedCount = syncResult.unmatchedChainOrders.length;
                             this.manager.logger.log(
-                                `[COW] Sync returned without processing (lock contention or empty snapshot); ` +
-                                `relying on structural resync`,
-                                'debug'
+                                `[COW] Sync returned without processing (processed=0, ` +
+                                `unmatched=${syncUnmatchedCount} in result, ` +
+                                `_lastUnmatchedChainOrders=${unmatchedChainOrders.length}). ` +
+                                `Structural resync will handle adoption.`,
+                                syncUnmatchedCount > 0 ? 'warn' : 'debug'
                             );
+                            // If the sync result itself has unmatched entries that
+                            // differ from _lastUnmatchedChainOrders, adopt them now
+                            // so the stale tracker is more accurate for the resync.
+                            if (syncUnmatchedCount > 0 && syncUnmatchedCount !== unmatchedChainOrders.length) {
+                                this.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders.map((o: any) => ({ ...o }));
+                                this.manager.logger.log(
+                                    `[COW] Updated _lastUnmatchedChainOrders from sync result: ` +
+                                    `${unmatchedChainOrders.length} → ${syncUnmatchedCount}`,
+                                    'debug'
+                                );
+                            }
                         }
                     }
                 }

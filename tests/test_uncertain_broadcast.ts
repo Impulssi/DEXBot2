@@ -911,13 +911,13 @@ async function testExecuteBatchRetryPreservesUncertainBroadcastHandling() {
 }
 
 async function testAutoCancelPerCycleCap() {
-    console.log('\n[UNC-009] _autoCancelOneUnmatchedOrphan enforces per-cycle cap=1...');
+    console.log('\n[UNC-009] _autoCancelOneUnmatchedOrphan only cancels price-drift-orphan entries, enforces per-cycle cap=1...');
     const bot = makeBot();
     bot._currentCycleId = 7;
     bot.manager._lastUnmatchedChainOrders = [
-        { id: '1.7.111', orderId: '1.7.111', reason: 'unknown' },
-        { id: '1.7.222', orderId: '1.7.222', reason: 'unknown' },
-        { id: '1.7.333', orderId: '1.7.333', reason: 'unknown' }
+        { id: '1.7.111', orderId: '1.7.111', reason: 'price-drift-orphan' },
+        { id: '1.7.222', orderId: '1.7.222', reason: 'price-drift-orphan' },
+        { id: '1.7.333', orderId: '1.7.333', reason: 'price-drift-orphan' }
     ];
 
     // Stub cancelOrder so we can count calls.
@@ -956,11 +956,11 @@ async function testAutoCancelPerCycleCap() {
 }
 
 async function testAutoCancelUsesSyncEngineChainOrderIdShape() {
-    console.log('\n[UNC-009b] _autoCancelOneUnmatchedOrphan handles sync-engine chainOrderId shape...');
+    console.log('\n[UNC-009b] _autoCancelOneUnmatchedOrphan handles sync-engine chainOrderId shape (price-drift-orphan)...');
     const bot = makeBot();
     bot._currentCycleId = 11;
     bot.manager._lastUnmatchedChainOrders = [
-        { chainOrderId: '1.7.777', type: 'sell', price: 0.05, size: 1, reason: 'unknown' }
+        { chainOrderId: '1.7.777', type: 'sell', price: 0.05, size: 1, reason: 'price-drift-orphan' }
     ];
 
     let cancelledOrderId = null;
@@ -989,7 +989,7 @@ async function testAutoCancelSkipsWhenPendingBroadcasts() {
     const bot = makeBot();
     bot._currentCycleId = 9;
     bot.manager._lastUnmatchedChainOrders = [
-        { id: '1.7.555', orderId: '1.7.555', reason: 'unknown' }
+        { id: '1.7.555', orderId: '1.7.555', reason: 'price-drift-orphan' }
     ];
     bot.manager._pendingBroadcasts.set('some-fp', { slotId: 'sell-1' });
 
@@ -1011,6 +1011,34 @@ async function testAutoCancelSkipsFingerprinted() {
     assert.strictEqual(r.cancelled, false, 'fingerprinted unmatched must be left to recovery');
     assert.strictEqual(r.reason, 'fingerprinted-handle-via-recovery');
     console.log('✓ UNC-011 passed');
+}
+
+async function testAutoCancelOnlyPriceDriftOrphans() {
+    console.log('\n[UNC-011b] _autoCancelOneUnmatchedOrphan skips non-price-drift orphans...');
+    const bot = makeBot();
+    bot._currentCycleId = 12;
+    // Three unmatched entries with NO price-drift-orphan reason.
+    bot.manager._lastUnmatchedChainOrders = [
+        { id: '1.7.111', orderId: '1.7.111', reason: 'unknown' },
+        { id: '1.7.222', orderId: '1.7.222', reason: 'duplicate-price-level' },
+        { id: '1.7.333', orderId: '1.7.333', reason: 'already-matched-slot' }
+    ];
+    const origCancel = chainOrders.cancelOrder;
+    let cancelCalled = false;
+    chainOrders.cancelOrder = async () => { cancelCalled = true; };
+    const origRecord = chainOrders.recordOwnCancel;
+    chainOrders.recordOwnCancel = () => {};
+
+    try {
+        const r = await bot._autoCancelOneUnmatchedOrphan();
+        assert.strictEqual(r.cancelled, false, 'must not cancel non-price-drift orphans');
+        assert.strictEqual(r.reason, 'no-price-drift-orphan', 'reason must indicate no price-drift orphan');
+        assert.strictEqual(cancelCalled, false, 'cancelOrder must not be called');
+    } finally {
+        chainOrders.cancelOrder = origCancel;
+        chainOrders.recordOwnCancel = origRecord;
+    }
+    console.log('✓ UNC-011b passed');
 }
 
 function makeBot() {
@@ -1194,6 +1222,7 @@ async function main() {
     await testAutoCancelUsesSyncEngineChainOrderIdShape();
     await testAutoCancelSkipsWhenPendingBroadcasts();
     await testAutoCancelSkipsFingerprinted();
+    await testAutoCancelOnlyPriceDriftOrphans();
     await testCowCatchBlockPassesFillLockAlreadyHeld();
     await testExecuteWithRetryOnUncertainRetriesOnce();
     await testExecuteWithRetrySkipsPartialOnChainState();
@@ -1203,6 +1232,7 @@ async function main() {
     await testRecoverFromPersistedGrid();
     await testRecoverFromPersistedGridNoGrid();
     await testRecoverFromPersistedGridBloated();
+    await testRecoverFromPersistedGridUnmatchedRemain();
     await testBoundaryShiftAllDiscarded();
     await testBoundaryShiftMixedAdoptedDiscarded();
     await testBoundaryShiftAllAdopted();
@@ -1629,6 +1659,91 @@ async function testRecoverFromPersistedGridBloated() {
         bot.manager.persistGrid = origPersist;
     }
     console.log('✓ UNC-016c passed');
+}
+
+// ── _recoverFromPersistedGrid: rejects when unmatched orders remain ─────
+async function testRecoverFromPersistedGridUnmatchedRemain() {
+    console.log('\n[UNC-016d] _recoverFromPersistedGrid rejects when unmatched chain orders remain after sync...');
+    const bot = makeBot();
+    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origPersist = bot.manager.persistGrid;
+
+    bot.accountId = 'test-account';
+
+    bot.manager._gridLock = {
+        acquire: async (fn) => fn(),
+        isLocked: () => false,
+        isReentrant: () => false,
+    };
+    bot.manager._syncLock = {
+        acquire: async (fn) => fn(),
+        isLocked: () => false,
+        isReentrant: () => false,
+        forceRelease: () => 0,
+    };
+    bot.manager._fillProcessingLock = undefined;
+    bot.manager._applyOrderUpdate = async () => true;
+    bot.manager._initializeAssets = async () => {};
+    bot.manager.resetFunds = () => {};
+    bot.manager.pauseRecalcLogging = () => {};
+    bot.manager.resumeRecalcLogging = () => {};
+    bot.manager.funds = { btsFeesOwed: 0 };
+    bot.manager.boundaryIdx = 0;
+    bot.manager.config = {
+        incrementPercent: 0.3,
+        targetSpreadPercent: 0.6,
+    };
+
+    // Simulate grid with 2 orders loaded from disk.
+    const persistedGrid = [
+        { id: 'slot-1', type: 'buy', price: 0.04, size: 200, orderId: '1.7.111' },
+        { id: 'slot-2', type: 'sell', price: 0.06, size: 100, orderId: '1.7.222' }
+    ];
+    // Chain has 2 matching orders PLUS one extra orphan.
+    const chainState = [
+        { id: '1.7.111', type: 'buy', price: 0.04, for_sale: 200 },
+        { id: '1.7.222', type: 'sell', price: 0.06, for_sale: 100 },
+        { id: '1.7.333', type: 'sell', price: 0.09, for_sale: 50 }
+    ];
+
+    bot.accountOrders = {
+        loadGrid: () => persistedGrid,
+        loadBoundaryIdx: () => 0,
+    };
+
+    chainOrders.readOpenOrders = async () => chainState;
+
+    // syncFromOpenOrders simulates finding the extra chain order as unmatched.
+    // It sets _lastUnmatchedChainOrders to simulate the sync engine's behavior.
+    bot.manager.syncFromOpenOrders = async (orders, options) => {
+        bot.manager._lastUnmatchedChainOrders = [
+            { chainOrderId: '1.7.333', type: 'sell', price: 0.09, size: 50, reason: 'duplicate-price-level' }
+        ];
+        bot.manager._lastUnmatchedChainOrdersAt = Date.now();
+        return {
+            filledOrders: [],
+            updatedOrders: [],
+            unmatchedChainOrders: [
+                { chainOrderId: '1.7.333', type: 'sell', price: 0.09, size: 50, reason: 'duplicate-price-level' }
+            ]
+        };
+    };
+    bot.manager.persistGrid = async () => ({ isValid: true });
+
+    try {
+        const result = await bot._recoverFromPersistedGrid();
+        // Must reject because persisted grid + sync did not resolve all unmatched.
+        assert.strictEqual(result.success, false,
+            'Recovery must reject when unmatched orders remain: success=' + result.success +
+            ' reason=' + (result.reason || 'none'));
+        assert(result.reason, 'should provide a reason');
+        assert(result.reason.includes('unmatched'),
+            `reason should mention unmatched, got: ${result.reason}`);
+    } finally {
+        chainOrders.readOpenOrders = origReadOpenOrders;
+        bot.manager.persistGrid = origPersist;
+    }
+    console.log('✓ UNC-016d passed');
 }
 
 // ── Boundary shift: all CREATEs discarded → boundary must NOT shift ─────

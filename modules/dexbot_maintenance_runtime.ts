@@ -868,6 +868,16 @@ function performGridResync(bot, options: {
                     self._warn(`[DUST] Post-resync dust cancel failed: ${_dustErr.message}`);
                 }
             }
+
+            // Clear unmatched chain orders after a successful rebuild.
+            // The recalculateGrid call above runs syncFromOpenOrders which
+            // sets _lastUnmatchedChainOrders from the chain perspective.
+            // Forcing a clean slate here ensures the COW guard does not
+            // hold stale unmatched entries from before the resync.
+            if (self.manager) {
+                self.manager._lastUnmatchedChainOrders = [];
+                self.manager._lastUnmatchedChainOrdersAt = 0;
+            }
         } catch (err: any) {
             self._log(`Error during triggered resync: ${err.message}`, 'error');
         } finally {
