@@ -150,6 +150,19 @@ tsx scripts/diagnose-pool-history.ts --pool 1.19.x --limit 100 --hours 48 --maxP
 tsx scripts/print_grid.ts
 ```
 
+### Grid Calculation Runner
+**File:** `runner.ts`
+**Purpose:** Standalone order grid calculation debugger — loads a bot config, initializes the grid, and simulates sync cycles.
+```bash
+# Default (first bot, 3 cycles)
+tsx scripts/runner.ts
+
+# Specific bot, 10 cycles with 1s delay
+LIVE_BOT_NAME=my-bot CALC_CYCLES=10 CALC_DELAY_MS=1000 tsx scripts/runner.ts
+```
+Useful for verifying config produces the expected grid, testing price derivation, and debugging fund allocation.
+Requires a live BitShares connection (asset metadata lookups and price derivation are on-chain).
+
 ---
 
 ## 🔍 GIT & DEVELOPMENT WORKFLOW

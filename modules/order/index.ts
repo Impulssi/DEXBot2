@@ -15,10 +15,6 @@
  * - constants - ORDER_TYPES, ORDER_STATES, defaults, and limits (../constants.ts)
  * - logger - Color-coded console output for debugging (logger.ts)
  *
- * LAZY-LOADED:
- * - runOrderManagerCalculation(...args) - Heavy I/O calculation runner (runner.js)
- *   Lazy-loaded to avoid loading during unit tests
- *
  * ===============================================================================
  *
  * FUND TRACKING MODEL (see manager.ts for details):
@@ -43,10 +39,9 @@
  * 7. async_lock.ts - AsyncLock class (race condition prevention)
  * 8. working_grid.ts - WorkingGrid class (copy-on-write grid state)
  * 9. export.ts - Trade history extraction and CSV export
- * 10. runner.ts - Heavy calculation and I/O operations
- * 11. grid_reconcile.ts - Grid reconciliation against chain (startup + maintenance)
- * 12. strategy.ts - Strategy configuration and parsing
- * 13. sync_engine.ts - Real-time blockchain synchronization
+ * 10. grid_reconcile.ts - Grid reconciliation against chain (startup + maintenance)
+ * 11. strategy.ts - Strategy configuration and parsing
+ * 12. sync_engine.ts - Real-time blockchain synchronization
  *
  * ===============================================================================
  */
@@ -69,8 +64,6 @@ function getLogger(): any {
 
 const _export: any = {
   OrderManager,
-  // Lazy-load the calculation runner so tests can require this module without triggering heavy I/O.
-  runOrderManagerCalculation: (...args: any[]) => require('./runner').runOrderManagerCalculation(...args),
   utils,
   constants,
   grid,

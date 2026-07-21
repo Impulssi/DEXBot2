@@ -266,6 +266,7 @@ class OrderManager {
     _pendingBroadcasts: Map<any, any>;
     _committedOrderIds: Set<string>;
     _gridDirtyAt: number | null;
+    _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
 
     _metrics: any;
@@ -372,6 +373,7 @@ class OrderManager {
         this._pendingBroadcasts = new Map();
         this._committedOrderIds = new Set();
         this._gridDirtyAt = null;
+        this._orphanFillsCreditedAt = null;
         this._pendingRecovery = null;
 
         this._metrics = {

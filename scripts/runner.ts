@@ -1,12 +1,15 @@
 /**
- * modules/order/runner.ts - Grid Calculation Runner
+ * scripts/runner.ts - Grid Calculation Runner
  *
  * Standalone order grid calculation utility for testing and debugging.
  * Provides command-line tools for grid verification without placing orders.
  *
+ * NOTE: Requires a live BitShares connection — initializeGrid() performs
+ * on-chain asset metadata lookups and price derivation. Not offline-capable.
+ *
  * Features:
  * - Load bot configuration from profiles/bots.json
- * - Derive market price from pool or market
+ * - Derive market price from pool or market (via initializeGrid)
  * - Create and display order grid
  * - Simulate multiple calculation cycles
  * - Validate grid structure and fund calculations
@@ -24,8 +27,8 @@
  *
  * 1. runOrderManagerCalculation() - Main calculation runner (async)
  *    Loads bot config, derives market price, initializes grid, runs calculation cycles
- *    Validates config, derives startPrice, initializes OrderManager and Grid
- *    Runs configurable cycles with optional delays
+ *    Validates config, initializes OrderManager and Grid (price derivation handled
+ *    internally by initializeGrid), runs configurable cycles with optional delays
  *    Displays grid status and metrics after each cycle
  *
  *    Environment variables:
@@ -37,13 +40,15 @@
  *
  * USAGE:
  * Command line:
- *   node -e "require('./runner').runOrderManagerCalculation()"
+ *   node -e "require('./scripts/runner').runOrderManagerCalculation()"
+ *   tsx scripts/runner.ts
  *
  * With env vars:
- *   CALC_CYCLES=5 CALC_DELAY_MS=1000 node -e "require('./runner').runOrderManagerCalculation()"
+ *   CALC_CYCLES=5 CALC_DELAY_MS=1000 node -e "require('./scripts/runner').runOrderManagerCalculation()"
+ *   CALC_CYCLES=5 CALC_DELAY_MS=1000 tsx scripts/runner.ts
  *
  * From code:
- *   const { runOrderManagerCalculation } = require('./runner');
+ *   const { runOrderManagerCalculation } = require('./scripts/runner');
  *   await runOrderManagerCalculation();
  *
  * ===============================================================================
@@ -57,24 +62,22 @@
  * ===============================================================================
  */
 
-const { path } = require('../path_api');
-const { OrderManager } = require('./manager');
-const { PATHS } = require('../paths');
-const { initializeGrid } = require('./grid');
-const { readBotsFileSync } = require('../bots_file_lock');
-const { Config } = require('../config');
-const { parseJsonWithComments, sleep } = require('./utils/system');
-const { derivePrice } = require('./utils/system');
-const { isNumeric } = require('./format');
+const { OrderManager } = require('../modules/order/manager');
+const { PATHS } = require('../modules/paths');
+const { initializeGrid } = require('../modules/order/grid');
+const { readBotsFileSync } = require('../modules/bots_file_lock');
+const { Config } = require('../modules/config');
+const { parseJsonWithComments, sleep } = require('../modules/order/utils/system');
 
 /**
  * Run a standalone order grid calculation for testing.
- * Loads bot config, derives market price, creates grid, and simulates cycles.
+ * Loads bot config, initializes grid, and simulates sync cycles.
+ * Price derivation is handled internally by initializeGrid.
  * @returns {Promise<void>}
- * @throws {Error} If config invalid or startPrice outside bounds
+ * @throws {Error} If config invalid, BitShares unavailable, or grid init fails
  */
 async function runOrderManagerCalculation() {
-        const cfgFile = PATHS.PROFILES.BOTS_JSON;
+    const cfgFile = PATHS.PROFILES.BOTS_JSON;
     let botConfig: any = {};
 
     try {
@@ -97,43 +100,20 @@ async function runOrderManagerCalculation() {
         throw err;
     }
 
-    const rawMarketPrice = botConfig.startPrice;
-
-    // Auto-derive price ONLY if not a fixed numeric value
-    if (!isNumeric(rawMarketPrice)) {
-        try {
-            const { BitShares } = require('../bitshares_client');
-            const mode = botConfig.priceMode || (rawMarketPrice === 'book' || rawMarketPrice === 'market' ? 'book' : (rawMarketPrice === 'pool' ? 'pool' : 'auto'));
-
-            console.log(`Deriving startPrice using mode: ${mode}...`);
-            const derived = await derivePrice(BitShares, botConfig.assetA, botConfig.assetB, mode);
-
-            if (derived) {
-                botConfig.startPrice = Number(derived);
-                console.log(`✓ Derived startPrice from on-chain: ${botConfig.startPrice}`);
-            } else {
-                throw new Error(`Failed to derive price using mode "${mode}" and no numeric fallback available.`);
-            }
-        } catch (err: any) {
-            console.error('Price derivation failed:', err.message);
-            throw err;
-        }
-    }
+    const manager = new OrderManager(botConfig);
 
     try {
-        const mp = Number(botConfig.startPrice);
-        if (!Number.isFinite(mp)) throw new Error('Invalid startPrice (not a number)');
-    } catch (err: any) { throw err; }
-
-    const manager = new OrderManager(botConfig);
-    await initializeGrid(manager);
+        await initializeGrid(manager);
+    } catch (err: any) {
+        console.error('Grid initialization failed — ensure BitShares nodes are reachable and asset symbols are valid:', err.message);
+        throw err;
+    }
 
     const cycles = Config.CALC_CYCLES;
     const delayMs = Config.CALC_DELAY_MS;
 
     for (let cycle = 1; cycle <= cycles; cycle++) {
         manager.logger.log(`\n----- Cycle ${cycle}/${cycles} -----`, 'info');
-        // Use syncFromOpenOrders([]) to simulate a sync check in the test runner
         await manager.syncFromOpenOrders([]);
         manager.logger && manager.logger.displayStatus && manager.logger.displayStatus(manager);
         if (cycle < cycles) await sleep(delayMs);

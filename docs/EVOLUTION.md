@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.2.1 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.2.2 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 1,743+ commits over ~7 active months
 - **Code Maturity**: Evolution from basic utilities to a ~58,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 200+ automated test files
-- **Releases**: 59 release entries (v0.1.0 to v1.2.1)
+- **Releases**: 59 release entries (v0.1.0 to v1.2.2)
 
 ---
 
@@ -108,7 +108,7 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.1.12 → v1.1.13 | 7 | COW recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload), fee cache persistence, node fallback, orphan-fill death spiral fix, duplicate order prevention, committed-order protection extension |
 | v1.1.13 → v1.1.14 | 5 | Node-failure blacklist sync, async-lock forceRelease safety, six gap regression fixes, browser-compat classification, bin path cleanup |
 | v1.1.14 → v1.2.0 | 11 | Credit-only mode, boundary shift recovery, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync, AsyncLock re-entrancy), parallel node connect, subscription re-entrancy guards, fund accounting stale-fetch guard, credit runtime TTL caching, transaction builder LRU fee cache, COW auto-cancel test coverage |
-| v1.2.0 → v1.2.1 | 5 | Adopt-boundary shift fix, stale accountTotals no-harden-abort, credential daemon memory leak, order correction reliability (dedup orphan cancels, retry on transient errors, skip redundant fallback), StateManager inline refactor, SyncResult type unification |
+| v1.2.0 → v1.2.2 | 10 | Adopt-boundary shift fix, stale accountTotals no-harden-abort, credential daemon memory leak, order correction reliability (dedup orphan cancels, retry on transient errors, skip redundant fallback), StateManager inline refactor, SyncResult type unification, code-review fixes (timer leaks, dead args, orphaned mutations, false recovery, side-effect impure getter), invariant sabotage vector prevention (ghost-order, TOCTOU, fee over-credit), skipAccounting/TOCTOU/isMaker regression hardening |
 
 ---
 
@@ -167,7 +167,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 20, 2026 (v1.2.1)
-**Total Commits**: 1,811
-**Date Range**: December 2, 2025 – July 20, 2026
+**Last Updated**: July 21, 2026 (v1.2.2)
+**Total Commits**: 1,814
+**Date Range**: December 2, 2025 – July 21, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

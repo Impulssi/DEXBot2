@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2] - 2026-07-21 - Invariant Sabotage Prevention, Regression Hardening, Code-Review Cleanup
+
+### 2026-07-21
+
+- **Fix**: prevent 3 invariant sabotage vectors in filled-order handling — (1) ghost-order virtualization defeats duplicate-CREATE guard: skip slots with `size===0` in `processFillsOnly`; (2) two-pass sync releases committed capital without fill proceeds: hardcode `skipAccounting=true` in pass-2; (3) fee-deduction failure silently over-credits `accountTotals`: escalate fee-fallback log from `warn` to `error` with explicit "fund tracking will over-credit" language. Also fix TOCTOU where `processFillAccounting` runs before order lock, and add `isMaker` default observability warning (`modules/order/accounting.ts`, `modules/order/strategy.ts`, `modules/order/sync_engine.ts`).
+- **Fix**: harden 3 regression vectors from accounting/lock/maker-default fixes — (1) `skipAccounting` variable leak in sync-engine pass-2: hardcode `true` instead of passing local variable; (2) TOCTOU in POST-RESET and BOOTSTRAP tracked-fill paths: wrap `processFillAccounting` calls in per-order lock acquire/release with try/finally; (3) `is_maker` silent default observability: add `_warn` in orphan-fill fallback key builder, fix log label consistency (`modules/dexbot_class.ts`, `modules/dexbot_fill_runtime.ts`, `modules/order/sync_engine.ts`).
+- **Fix**: orphan-fill tolerance widening disconnected — `_orphanFillsCreditedAt` declared on `DEXBot` but read from `OrderManager`; moved field + init to `OrderManager`, removed orphaned declaration/init from `DEXBot` (`modules/order/manager.ts`, `modules/dexbot_class.ts`).
+- **Fix**: `requiresOpenOrdersSync` flag lost for filtered-out fills — per-block-group reset overwrote the flag before filtered fills entered any block; captured pre-loop as `initialRequiresSync`, preserved post-loop, added fallback sync pass (`modules/dexbot_class.ts`).
+- **Fix**: remove dead code and misleading comment in fill-processing fallback block — `requiresOpenOrdersSync = false` reset was unused after fallback sync; replaced with accurate scope-exit comment (`modules/dexbot_class.ts`).
+- **Fix**: correct arithmetic comment in orphan-fill death spiral test — `// receives.amount=500000 at precision 5 → 5.0` (`tests/test_orphan_fill_death_spiral.ts`).
+- **Fix**: remove stale `(mgr as any)` casts on `_orphanFillsCreditedAt` — both `mgr` and `bot.manager` are already typed `any`; casts were redundant noise (`modules/order/accounting.ts`, `tests/test_orphan_fill_death_spiral.ts`).
+- **Fix**: remove stale `package.json` browser entry for `./dist/modules/order/runner.js` — source file deleted, build artifact no longer produced (`package.json`).
+- **Chore**: delete `modules/cli_whitelist_args.ts` + `tests/test_cli_whitelist_args.ts` (unused CLI arg builder).
+- **Chore**: delete `modules/order/runner.ts` (moved to `scripts/runner.ts` as standalone CLI grid calc debugger).
+- **Chore**: remove lazy-loaded `runOrderManagerCalculation` re-export from `modules/order/index.ts`.
+- **Refactor**: move `roundTo`, `fixedTo`, `roundToDecimals` from `modules/utils/math_utils.ts` to `modules/order/utils/math.ts` with re-export shim.
+- **Docs**: update `docs/COW_INVARIANTS.md`, `docs/developer_guide.md`, `docs/FUND_MOVEMENT_AND_ACCOUNTING.md` for `AsyncLock` re-entrancy — removed `fillLockAlreadyHeld` parameter references.
+- **Test**: add `tests/test_orphan_fill_death_spiral.ts` — regression coverage for orphan-fill tolerance widening and missing-history-ID fill handling.
+
 ## [1.2.1] - 2026-07-20 - Code-Review Fixes, Stale-Totals Safety, Correction Reliability, StateManager Inline
 
 ### 2026-07-20

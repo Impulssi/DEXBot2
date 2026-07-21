@@ -50,7 +50,6 @@ modules/
 ├── logger.ts                      structured logging
 ├── graceful_shutdown.ts           signal handling and cleanup
 ├── bots_file_lock.ts              profile write serialization
-├── cli_whitelist_args.ts          CLI whitelist arg parsing
 ├── account_bots.ts                bots.json read/write
 ├── chain_keys.ts                  blockchain key helpers
 ├── node_health_cache.ts           node health tracking
@@ -123,7 +122,7 @@ modules/
     ├── base58check.ts             Base58Check encoding
     ├── build_dir.ts               BUILD_DIR constant helper
     ├── fs_utils.ts                atomic JSON, read/write, mkdirp
-    └── math_utils.ts              clamp, precision rounding, integer math
+    └── math_utils.ts              re-exports roundTo, fixedTo, roundToDecimals from order/utils/math
 ```
 
 ## Key Relationships

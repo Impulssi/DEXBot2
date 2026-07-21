@@ -105,7 +105,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 - `INV-SYNC-006` syncFromOpenOrders acquires fill-processing lock
   - `syncFromOpenOrders` acquires `_fillProcessingLock` by default.
-  - Callers already inside the lock must pass `fillLockAlreadyHeld=true`.
+  - `AsyncLock` is re-entrant — callers already inside the lock rely on the intrinsic `isReentrant()` check instead of a `fillLockAlreadyHeld` parameter.
   - Direct call sites without the lock contract are prohibited.
 
 - `INV-SYNC-007` Authoritative sync preserves fetched free balances
@@ -260,12 +260,12 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - On `BroadcastUncertainError`, the bot must:
     - Retry once with a fresh deadline window (`_executeWithRetryOnUncertain`).
     - Skip retry when `err.partialOnChainState` is true (pair-mode grouped execution).
-    - After retry expiry, reconcile with `fillLockAlreadyHeld=true` to avoid AsyncLock deadlock.
+    - After retry expiry, reconcile — `AsyncLock` is re-entrant so no special `fillLockAlreadyHeld` parameter is needed.
   - Daemon broadcast retries are configurable via `CREDENTIAL_DAEMON_BROADCAST_RETRIES`.
 
 - `INV-BROADCAST-002` Deadlock-free reconcile after uncertain broadcast
-  - `_reconcileAfterUncertainBroadcast` must pass `fillLockAlreadyHeld=true` because `_fillProcessingLock` is already held by the fill-processing call chain.
-  - AsyncLock is not reentrant; a second `acquire()` would queue forever.
+  - `_reconcileAfterUncertainBroadcast` does not need a `fillLockAlreadyHeld` flag because `AsyncLock` is re-entrant — a second `acquire()` from within the same execution context runs the callback directly instead of queueing.
+  - The `gridLockAlreadyHeld` flag (a separate grid-level gate) is kept only for `syncFromOpenOrders` / `_applySync` caller-skip semantics and is not replaced by lock-level reentrancy.
 
 ## Change Policy
 

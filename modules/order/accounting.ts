@@ -514,7 +514,7 @@ class Accountant {
           // consumed by this check — the widened tolerance persists through the
           // entire fill cycle so that multiple recalculateFunds calls within
           // the same cycle all see consistent tolerance.
-          const orphanFillsAt = (mgr as any)._orphanFillsCreditedAt;
+          const orphanFillsAt = mgr._orphanFillsCreditedAt;
           const orphanToleranceMultiplier = (orphanFillsAt != null) ? 5 : 1;
          const effectivePercentTolerance = PERCENT_TOLERANCE * orphanToleranceMultiplier;
 
@@ -651,7 +651,7 @@ class Accountant {
         // After a fresh chain fetch, reset the orphan-fill credit
         // timestamp. The fetched values now incorporate on-chain fill
         // proceeds, so the temporary invariant tolerance is no longer needed.
-        (mgr as any)._orphanFillsCreditedAt = null;
+        mgr._orphanFillsCreditedAt = null;
 
         // 2. Sync from open orders
         const chainOrders = require('../chain_orders');

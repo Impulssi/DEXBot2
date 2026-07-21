@@ -26,7 +26,10 @@
  *   - normalizeInt(value, precision) - Normalize int within precision bounds
  *   - hasValidAccountTotals(accountTotals, checkFree) - Validate account totals structure
  *
- * SECTION 4: PRECISION UTILITIES (5 functions)
+ * SECTION 4: PRECISION & FORMATTING UTILITIES (8 functions)
+ *   - roundTo(value, factor) - Round to a factor
+ *   - fixedTo(value, decimals) - Format to fixed decimal string
+ *   - roundToDecimals(value, decimals) - Round to N decimal places
  *   - getPrecision(assets, orderType) - Get precision for order type
  *   - getPrecisionByOrderType(assets, orderType) - Alias for getPrecision
  *   - getPrecisionForSide(assets, side) - Get precision by side (buy/sell)
@@ -1205,8 +1208,44 @@ export = {
     calculateSwapInAmount,
     _setFeeCache,
     cloneWeightDistribution,
-    clamp
+    clamp,
+    roundTo,
+    fixedTo,
+    roundToDecimals
 };
+
+/**
+ * Round a value to a given factor.
+ * @param {number} value - Value to round
+ * @param {number} factor - Rounding factor (e.g. 100 for 2 decimals)
+ * @returns {number}
+ */
+function roundTo(value: number, factor: number): number {
+    if (!Number.isFinite(value)) return NaN;
+    return Math.round(value * factor) / factor;
+}
+
+/**
+ * Format a number to a fixed number of decimal places.
+ * @param {number|string} value - Value to format
+ * @param {number} decimals - Number of decimal places
+ * @returns {string}
+ */
+function fixedTo(value: number | string, decimals: number): string {
+    return Number(value).toFixed(decimals);
+}
+
+/**
+ * Round a value to a given number of decimal places.
+ * @param {number} value - Value to round
+ * @param {number} decimals - Number of decimal places
+ * @returns {number}
+ */
+function roundToDecimals(value: number, decimals: number): number {
+    if (!Number.isFinite(value)) return NaN;
+    const factor = Math.pow(10, decimals);
+    return Math.round(value * factor) / factor;
+}
 
 /**
  * Clamp a value between min and max bounds.

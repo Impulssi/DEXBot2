@@ -166,7 +166,6 @@ class DEXBot {
     _currentCycleId: number;
     _autoCancelOrphanCycleMarker: number | null;
     _autoCancelOrphanSubCount: number;
-    _orphanFillsCreditedAt: number | null;
     _consecutiveConsumeFailures: number;
     _consumeFailureFirstAt: number;
     _reconnectUnregister: any;
@@ -268,8 +267,6 @@ class DEXBot {
         this._currentCycleId = 0;
         this._autoCancelOrphanCycleMarker = null;
         this._autoCancelOrphanSubCount = 0;
-        this._orphanFillsCreditedAt = null;
-
         // Per-session guard: ghost order IDs successfully cancelled
         // (avoids spamming the chain with repeated cancel attempts for the same
         // orphan residual on every fill cycle).
@@ -1826,10 +1823,12 @@ class DEXBot {
                 // fill cycle. It is re-set when orphan fills are credited,
                 // and consumed (set to null) on the next fund-invariant check
                 // in accounting.ts, which widens tolerance by 5x while set.
+                // Written to this.manager (not this) because accounting.ts
+                // reads from the OrderManager reference (mgr).
                 // Also cleared by _performStateRecovery after a fresh chain
                 // fetch. The timestamp value itself is not compared against a
                 // window — it acts as a consume-on-read boolean.
-                this._orphanFillsCreditedAt = null;
+                this.manager._orphanFillsCreditedAt = null;
 
                 while (this._incomingFillQueue.length > 0) {
                     const batchStartTime = Date.now();
@@ -1910,9 +1909,9 @@ class DEXBot {
                                      requiresOpenOrdersSync = true;
                                  }
                                  // Record orphan fill credit timestamp for fund invariant
-                                 // tolerance widening. Accounting checks recency via
-                                 // _checkOrphanFillRecency() instead of a cross-module flag.
-                                 this._orphanFillsCreditedAt = Date.now();
+                                 // tolerance widening. Written to this.manager because
+                                 // accounting.ts reads from the OrderManager (mgr).
+                                 this.manager._orphanFillsCreditedAt = Date.now();
                                 // Don't add to validFills - we can't do rebalancing without a grid slot
                                 // But the funds are now credited, preventing fund invariant violation
                                 continue;
@@ -2033,6 +2032,12 @@ class DEXBot {
                         const sortedBlocks = [...fillsByBlock.keys()].sort((a, b) => a - b);
                         const accumulatedOrders = [];
                         let anyRequiresSync = false;
+                        // Capture whether any fill was skipped during validation
+                        // (e.g. missing history ID) and set the sync flag. The
+                        // per-block reset below would lose this state since those
+                        // fills were filtered out of validFills and never enter
+                        // any block group.
+                        const initialRequiresSync = requiresOpenOrdersSync;
                         for (const blockNum of sortedBlocks) {
                             // Reset requiresOpenOrdersSync per block group so one
                             // block's history-id gap doesn't force the next block
@@ -2046,7 +2051,9 @@ class DEXBot {
                             accumulatedOrders.push(...blockResult);
                             if (requiresOpenOrdersSync) anyRequiresSync = true;
                         }
-                        requiresOpenOrdersSync = anyRequiresSync;
+                        // Preserve both per-block sync flags and the initial flag
+                        // from filtered-out fills (missing history ID).
+                        requiresOpenOrdersSync = anyRequiresSync || initialRequiresSync;
                         if (fillsWithoutBlock.length > 0) {
                             this.manager.logger.log(
                                 `[FILL-BLOCK] Processing ${fillsWithoutBlock.length} fill(s) without block info`,
@@ -2054,6 +2061,19 @@ class DEXBot {
                             );
                             const noBlockResult = await processValidFills(fillsWithoutBlock);
                             accumulatedOrders.push(...noBlockResult);
+                        }
+                        // If a fill was filtered out during validation (e.g. missing
+                        // history ID) and no block group triggered the open-orders
+                        // sync, run it now so the grid state is reconciled.
+                        if (requiresOpenOrdersSync && !anyRequiresSync) {
+                            this.manager.logger.log(
+                                '[FILL-BLOCK] Running open-orders sync for fills with missing history identifiers',
+                                'warn'
+                            );
+                            const fallbackOrders = await processValidFills([]);
+                            accumulatedOrders.push(...fallbackOrders);
+                            // Flag consumed — variable goes out of scope on
+                            // next while iteration.
                         }
                         allFilledOrders = accumulatedOrders;
 

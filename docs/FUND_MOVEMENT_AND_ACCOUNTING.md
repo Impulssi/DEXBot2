@@ -801,9 +801,18 @@ A violation here means the grid has allocated more capital than actually exists 
 
 ### 6.3 Race Condition Protection (TOCTOU)
 To prevent "Time-of-Check to Time-of-Use" errors:
-1.  **Locking:** `AsyncLock` prevents concurrent updates to the same order.
+1.  **Locking:** `AsyncLock` (re-entrant) prevents concurrent updates to the same order. Nested `acquire()` from the same execution context runs the callback directly instead of queueing, eliminating the `fillLockAlreadyHeld` parameter that previously threaded through 25+ call sites.
 2.  **Atomic Deduct:** `tryDeductFromChainFree` checks *and* subtracts in a single synchronous step.
 3.  **Bootstrapping:** Fills arriving during startup (`isBootstrapping=true`) are queued until the grid is fully reconciled.
 
+### 6.4 Stale Accounting & Fee Over-Credit Guards (v1.2.1)
+Two additional accounting hardening measures added in v1.2.1:
+
+**Stale `accountTotals` no longer HARD-ABORTs COW commit.** Transient staleness (e.g., the periodic balance fetch overlaps with a COW commit) logs a `WARN` and schedules recovery instead of throwing `ACCOUNTING_COMMITMENT_FAILED`. Totals are also refreshed after bootstrap to prevent a spurious full recovery on the first maintenance cycle.
+
+**Fee-deduction failure escalates to `error`.** When `getAssetFees` throws during fill processing (e.g., network blip), `_deductFeesFromProceeds` previously returned raw proceeds without deduction and logged at `warn` level — silently inflating `accountTotals` over time. The log is now `error` with explicit "fund tracking will over-credit" language so operators can detect the drift source in production logs.
+
+**TOCTOU in `processFillAccounting`.** `_buildBtsDeferredRefundAdjustment` reads `btsFeeState` from `mgr.orders`, but the order lock was acquired after accounting ran. Fixed by acquiring the lock first, then running `processFillAccounting` under the lock. This fix was also ported to POST-RESET and BOOTSTRAP tracked-fill accounting paths.
+
 ---
-*Technical Reference for DEXBot2 v1.2.1 release*
+*Technical Reference for DEXBot2 v1.2.2 release*

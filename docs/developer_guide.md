@@ -915,18 +915,16 @@ async checkDivergence() {
 
 **Lock Scope in Startup**
 
-The startup sequence extends lock scope to ensure atomic operations:
+The startup sequence uses a re-entrant async lock to ensure atomic operations. `AsyncLock` is re-entrant, so nested `acquire()` from within the same execution context runs the callback directly instead of queueing:
 
 ```javascript
-async _runGridMaintenance(fillLockAlreadyHeld = false) {
-    const lockHeld = fillLockAlreadyHeld || await this._fillProcessingLock.acquire();
+async _runGridMaintenance() {
+    await this._fillProcessingLock.acquire();
     try {
         // All maintenance operations run atomically
         // Fills cannot arrive mid-startup
     } finally {
-        if (!fillLockAlreadyHeld) {
-            this._fillProcessingLock.release();
-        }
+        this._fillProcessingLock.release();
     }
 }
 ```

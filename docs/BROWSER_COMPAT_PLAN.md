@@ -254,7 +254,6 @@ From the audit, ~25 modules lack a browser-safe/node-only label. Add explicit cl
 | `modules/credit_runtime.ts` | node-only |
 | `modules/market_adapter_whitelist.ts` | ambiguous — review |
 | `modules/node_health_cache.ts` | node-only |
-| `modules/cli_whitelist_args.ts` | browser-safe |
 | `modules/order/format.ts` | browser-safe |
 | `modules/order/async_lock.ts` | browser-safe |
 | `modules/order/logger_state.ts` | browser-safe |
