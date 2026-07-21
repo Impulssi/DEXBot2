@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.4] - 2026-07-21 - Credential Daemon Memory — Signing Client Cache, Dispose(), Session Purge, Shallow Policy Copy
+
+### 2026-07-21
+
+- **Fix**: credential daemon memory — replace `JSON.parse(JSON.stringify(BUILTIN_DEFAULT_POLICY))` with shallow spread copy in `credential_policy.ts:667`, avoiding 50k+ deep-copy allocations daily (`credential_policy.ts`).
+- **Fix**: simplify `queueAuditLogWork` — remove redundant promise wrapper + microtask per audit entry (`credential-daemon.ts:214-216`).
+- **Fix**: hoist `wifToBuffer` to module scope with `_disposed` guard flag on `SigningClient` — `dispose()` now actually zeros WIF bytes; `newTx()`/`broadcast()` throw after dispose (`signing_client.ts`).
+- **Feat**: add `signingClientCache` in credential daemon — keyed by `accountName:keyFingerprint(wif)`, 30-min TTL pruning, cache-aware `broadcastWithRetry` skips client creation on hit, detects key rotation via fingerprint (`credential-daemon.ts`).
+- **Feat**: session lifecycle — `setInterval(purgeExpiredSessions, 300000)` replaces inline purge; `sessionPurgeInterval` cleared in shutdown (`credential-daemon.ts`).
+- **Feat**: shutdown iterates signing client cache, disposes every entry, clears map (`credential-daemon.ts:1126-1131`).
+- **Fix**: reconnect path disposes all cache entries before clear for heap-dump safety (`credential-daemon.ts`).
+
 ## [1.2.3] - 2026-07-21 - Uncertain-Broadcast Grid Corruption Fix, Unmatched-Order Adoption, Grid-Bloat Loop Fix
 
 ### 2026-07-21

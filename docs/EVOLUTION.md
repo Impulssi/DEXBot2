@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.2.3 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.2.4 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 1,743+ commits over ~7 active months
 - **Code Maturity**: Evolution from basic utilities to a ~58,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 200+ automated test files
-- **Releases**: 59 release entries (v0.1.0 to v1.2.2)
+- **Releases**: 61 release entries (v0.1.0 to v1.2.4)
 
 ---
 
@@ -53,7 +53,7 @@ The release introduced profile validation, on-chain authority resolution, a shar
 
 ### Phase 6: Production Hardening & Iterative Refinement (July 2026)
 
-Post-stable work focused on reliability. Subscription health watchdogs, broadcast deadlock recovery at both bot and daemon level, and comprehensive system invariants documentation were added. A series of rapid releases (v1.1.1–v1.2.0) delivered multi-round AMA refits, oversize credit deal splitting with per-operation caps, dust detection hardening, bootstrap lifecycle fixes, lock contention reduction, unique bot name enforcement, dust timer persistence, chart control overhauls, HTML order analysis exports, asymmetric bounds/dynamic-weight flag decoupling, improved CLI stats output, AMA config centralization for analysis tools, committed order protection during recovery, ghost order cleanup for rounding residuals, price correction queue processing on startup, COW broadcast recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload), centralized node-fallback for BROADCAST_DEADLINE, orphan-fill death spiral resolution with block-level batching, duplicate order prevention from ghost-fill cascade, fee cache persistence with per-asset retry, extended committed-order protection across 5 additional recovery sites, synchronized node-failure blacklisting across broadcast and health-check paths, stale async-lock callback safety after forceRelease, six gap regression fixes with centralized sanity-check logic, credit-only bot mode for MPA workflows, boundary shift recovery after uncertain broadcast discard, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync loop), parallel node connect with `Promise.any`, subscription re-entrancy guards, fund accounting stale-fetch guard, credit runtime TTL-gated staleness, transaction builder LRU fee cache, and AsyncLock re-entrancy with fillLockAlreadyHeld elimination.
+Post-stable work focused on reliability. Subscription health watchdogs, broadcast deadlock recovery at both bot and daemon level, and comprehensive system invariants documentation were added. A series of rapid releases (v1.1.1–v1.2.0) delivered multi-round AMA refits, oversize credit deal splitting with per-operation caps, dust detection hardening, bootstrap lifecycle fixes, lock contention reduction, unique bot name enforcement, dust timer persistence, chart control overhauls, HTML order analysis exports, asymmetric bounds/dynamic-weight flag decoupling, improved CLI stats output, AMA config centralization for analysis tools, committed order protection during recovery, ghost order cleanup for rounding residuals, price correction queue processing on startup, COW broadcast recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload), centralized node-fallback for BROADCAST_DEADLINE, orphan-fill death spiral resolution with block-level batching, duplicate order prevention from ghost-fill cascade, fee cache persistence with per-asset retry, extended committed-order protection across 5 additional recovery sites, synchronized node-failure blacklisting across broadcast and health-check paths, stale async-lock callback safety after forceRelease, six gap regression fixes with centralized sanity-check logic, credit-only bot mode for MPA workflows, boundary shift recovery after uncertain broadcast discard, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync loop), parallel node connect with `Promise.any`, subscription re-entrancy guards, fund accounting stale-fetch guard, credit runtime TTL-gated staleness, transaction builder LRU fee cache, AsyncLock re-entrancy with fillLockAlreadyHeld elimination, adopt-boundary shift fix, stale-account-totals safety, credential daemon memory leak, order correction reliability, StateManager inline refactor, invariant sabotage prevention, regression hardening, and credential daemon signing client cache with session purge.
 
 ---
 
@@ -63,7 +63,7 @@ DEXBot2's architecture progressed through distinct maturity stages:
 - **Phases 1–2**: Modular order/account management and basic grid trading.
 - **Phases 3–4**: Copy-on-Write grid with atomic modifications; Market Adapter decoupling signals from execution.
 - **Phase 5**: Multi-layered runtime — COW core, signal pipeline, credit/debt MPA runtime, browser compatibility core, portable abstractions, and pure-JS crypto.
-- **Phase 6**: Incremental production hardening — iterative AMA refits, oversize deal splitting, dust/cancel pipeline fixes, lock contention reduction, unique bot name enforcement, dust timer persistence, chart input control overhaul, HTML order analysis export, immediate dust cancel, duplicate price guard, stale-cleaned simplification, dedup/timer/lock cleanup, committed order protection, ghost order cleanup, price correction queue processing, AMA config centralization, COW broadcast recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload, orphan-fill death spiral fix), centralized node-fallback for BROADCAST_DEADLINE, fee cache persistence, node-failure blacklist sync, async-lock forceRelease safety, gap regression fixes, credit-only mode, boundary shift recovery, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync), parallel node connect, subscription re-entrancy guards, fund accounting stale-fetch guard, credit runtime TTL caching, transaction builder LRU fee cache, AsyncLock re-entrancy, adopt-boundary shift fix, credential daemon memory leak, order correction reliability, StateManager inline refactor.
+- **Phase 6**: Incremental production hardening — iterative AMA refits, oversize deal splitting, dust/cancel pipeline fixes, lock contention reduction, unique bot name enforcement, dust timer persistence, chart input control overhaul, HTML order analysis export, immediate dust cancel, duplicate price guard, stale-cleaned simplification, dedup/timer/lock cleanup, committed order protection, ghost order cleanup, price correction queue processing, AMA config centralization, COW broadcast recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload, orphan-fill death spiral fix), centralized node-fallback for BROADCAST_DEADLINE, fee cache persistence, node-failure blacklist sync, async-lock forceRelease safety, gap regression fixes, credit-only mode, boundary shift recovery, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync), parallel node connect, subscription re-entrancy guards, fund accounting stale-fetch guard, credit runtime TTL caching, transaction builder LRU fee cache, AsyncLock re-entrancy, adopt-boundary shift fix, credential daemon memory leak, order correction reliability, StateManager inline refactor, uncertain-broadcast grid corruption fix, unmatched-order adoption, grid-bloat loop fix, credential daemon signing client cache with session purge.
 
 ---
 
@@ -109,12 +109,14 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.1.13 → v1.1.14 | 5 | Node-failure blacklist sync, async-lock forceRelease safety, six gap regression fixes, browser-compat classification, bin path cleanup |
 | v1.1.14 → v1.2.0 | 11 | Credit-only mode, boundary shift recovery, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync, AsyncLock re-entrancy), parallel node connect, subscription re-entrancy guards, fund accounting stale-fetch guard, credit runtime TTL caching, transaction builder LRU fee cache, COW auto-cancel test coverage |
 | v1.2.0 → v1.2.2 | 10 | Adopt-boundary shift fix, stale accountTotals no-harden-abort, credential daemon memory leak, order correction reliability (dedup orphan cancels, retry on transient errors, skip redundant fallback), StateManager inline refactor, SyncResult type unification, code-review fixes (timer leaks, dead args, orphaned mutations, false recovery, side-effect impure getter), invariant sabotage vector prevention (ghost-order, TOCTOU, fee over-credit), skipAccounting/TOCTOU/isMaker regression hardening |
+| v1.2.2 → v1.2.3 | 5 | Uncertain-broadcast grid corruption fix (discarded CREATE slot recovery), unmatched-order adoption via `syncFromOpenOrders`, grid-bloat loop fix (full-rail false-positive, stale SPREAD type, empty-side correction, boundary-at-rail-edge), budget-dilution fix (virtual-slot exclusion), budget-cap regression fix, COW structural-resync safeguard, test updates |
+| v1.2.3 → v1.2.4 | 1 | Credential daemon memory — signing client cache (30-min TTL, fingerprint-based key rotation, dispose-then-delete contract), session purge interval, shallow policy copy, audit-log microtask reduction |
 
 ---
 
 ## Development Statistics
 
-The project has accumulated 200+ automated test files across 59 release entries. See the **Version History** above for a per-release commit breakdown.
+The project has accumulated 200+ automated test files across 61 release entries. See the **Version History** above for a per-release commit breakdown.
 
 ---
 
@@ -167,7 +169,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 21, 2026 (v1.2.3)
-**Total Commits**: 1,819
+**Last Updated**: July 21, 2026 (v1.2.4)
+**Total Commits**: 1,822
 **Date Range**: December 2, 2025 – July 21, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
