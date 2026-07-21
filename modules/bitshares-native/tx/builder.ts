@@ -5,6 +5,8 @@ const { TRANSACTION, CHAIN } = NATIVE_CLIENT;
 const { ops: serialOps } = require('../serial');
 const getEcc = require('../crypto/ecc_selector');
 const { sha256, sign } = getEcc();
+const Logger = require('../../logger');
+const builderLogger = new Logger('TxBuilder');
 const txCache = require('./tx_cache');
 
 const MAX_TX_SIZE: number = TRANSACTION.MAX_SIZE_BYTES;
@@ -59,6 +61,10 @@ interface SerialOps {
 
 interface ChainClientRef {
     getConfig?(): { chainId: string } | null;
+    transport?: {
+        getNodeUrl?(): string | undefined;
+    };
+    reportNodeFailure?(nodeUrl: string, errorMessage?: string, source?: string): void;
     db: {
         call(method: string, args: any[]): Promise<any>;
         get_objects(ids: string[]): Promise<any[]>;
@@ -132,6 +138,7 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
 
             const opList = this._getSerializedOps();
             const cacheKey = txCache.buildFeeCacheKey(opList, feeAssetId);
+
             const cachedFees = txCache.getFees(cacheKey);
             if (cachedFees && cachedFees.length === ops.length) {
                 for (let i = 0; i < ops.length; i++) {
@@ -139,6 +146,9 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
                 }
                 return;
             }
+
+            // Stale fallback — save before chain fetch in case it fails
+            const stale = txCache.peekFees(cacheKey);
 
             try {
                 const fees = await chainClient.db.call('get_required_fees', [opList, feeAssetId]);
@@ -149,6 +159,22 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
                     }
                 }
             } catch (err: any) {
+                if (stale && stale.length === ops.length) {
+                    builderLogger.info(
+                        `setRequiredFees: chain fetch failed (${err.message}), using stale cached fees`
+                    );
+                    // Report the failing node to NodeManager (3 strikes → blacklist)
+                    try {
+                        const nodeUrl = chainClient?.transport?.getNodeUrl?.();
+                        if (nodeUrl && typeof chainClient.reportNodeFailure === 'function') {
+                            chainClient.reportNodeFailure(nodeUrl, err.message, 'fee-cache');
+                        }
+                    } catch (_) { /* best-effort */ }
+                    for (let i = 0; i < ops.length; i++) {
+                        ops[i].params.fee = stale[i];
+                    }
+                    return;
+                }
                 throw new Error(`Failed to fetch required fees: ${err.message}`);
             }
         },

@@ -149,6 +149,11 @@ function ensureInitialized() {
         await _subscriptionManager.onReconnect();
         await notifyReconnectCallbacks();
     };
+    _nativeClient.reportNodeFailure = (nodeUrl: string, errorMessage?: string, source?: string) => {
+        if (nodeManager) {
+            nodeManager.reportNodeFailure(nodeUrl, errorMessage, source);
+        }
+    };
     _resolvers = createResolvers(_nativeClient);
 
     _nativeBitSharesProxy = {

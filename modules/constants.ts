@@ -747,6 +747,7 @@ let NODE_MANAGEMENT = {
     MAX_PING_MS: 3000,                  // Max acceptable latency
     BLACKLIST_THRESHOLD: 3,             // Failures before blacklist
     BLACKLIST_COOLDOWN_MS: 24 * 60 * 60 * 1000,  // 24 hours before retrying blacklisted nodes
+    FAILURE_REPORT_COOLDOWN_MS: 1000,   // Min ms between failure count increments (prevents rapid-fire blacklisting)
 
     // Expected chain ID (BitShares mainnet)
     EXPECTED_CHAIN_ID: '4018d7844c78f6a6c41c6a552b898022310fc5dec06da467ee7905a8dad512c8',

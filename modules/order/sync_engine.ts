@@ -657,7 +657,7 @@ class SyncEngine {
      */
     async _performSyncFromOpenOrders(mgr: any, assetAPrecision: number, assetBPrecision: number, parsedChainOrders: Map<string, any>, rawChainOrders: Map<string, any>,
         chainOrderIdsOnGrid: Set<string>, matchedGridOrderIds: Set<string>, filledOrders: any[], updatedOrders: any[], ordersNeedingCorrection: any[], unmatchedChainOrders: any[], options: Record<string, any>) {
-        const skipAccounting = Boolean(options?.skipAccounting);
+        const skipAccounting = options?.skipAccounting ?? true;
 
         const queueCorrection = (entry) => {
             ordersNeedingCorrection.push(entry);
@@ -755,10 +755,10 @@ class SyncEngine {
                         updatedOrder.state = (chainSizeInt < currentSizeInt)
                             ? ORDER_STATES.PARTIAL
                             : gridOrder.state;
-                        await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting: true, fee: 0 });
+                        await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting: skipAccounting, fee: 0 });
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', { skipAccounting: true, fee: 0 });
+                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', { skipAccounting: skipAccounting, fee: 0 });
                         filledOrders.push(spreadOrder);
                         updatedOrders.push(spreadOrder);
                     }
@@ -782,13 +782,32 @@ class SyncEngine {
                 // and should not be virtualized. An order removed from the old set was
                 // filled/virtualized, which the sync will detect independently via the
                 // chain snapshot. Superset behavior is safe for this guard.
+                //
+                // ESCAPE HATCH 1 — Ghost orders (PARTIAL + size=0): These preserve the
+                // original orderId only to block duplicate CREATEs after a full fill
+                // that the chain hasn't closed yet. The orderId is in _committedOrderIds
+                // because the original order was COW-placed, but the slot is already a
+                // known fill. Allow phantom detection to proceed so the ghost is cleaned
+                // up on the next sync cycle after the chain cancel succeeds.
+                //
+                // ESCAPE HATCH 2 — Time-based: If the most recent COW commit is older
+                // than SYNC_LOCK_TIMEOUT_MS, the committed-but-missing order is
+                // presumed genuinely filled. The chain should have confirmed or
+                // rejected the transaction within the sync timeout window (~7 blocks
+                // at 3s each). Prevents permanent stall when a fill event was missed
+                // (reconnect gap, lossy subscription) and the only detection path is
+                // this open-orders sync.
                 if (mgr._committedOrderIds?.has(gridOrder.orderId)) {
-                    continue;
+                    const commitAge = Date.now() - (mgr._committedOrderIdsBuiltAt || 0);
+                    const isGhost = gridOrder.size <= 0 && gridOrder.state === ORDER_STATES.PARTIAL;
+                    if (!isGhost && commitAge < TIMING.SYNC_LOCK_TIMEOUT_MS) {
+                        continue;
+                    }
                 }
                 const currentGridOrder = mgr.orders.get(gridOrder.id) || gridOrder;
                 const hadOrderId = Boolean(currentGridOrder?.orderId);
                 const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
-                await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', { skipAccounting: true, fee: 0 });
+                await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', { skipAccounting: skipAccounting, fee: 0 });
 
                 // Only genuine disappearances (had orderId) count as fills.
                 if (hadOrderId) {
@@ -918,7 +937,7 @@ class SyncEngine {
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(bestMatch);
                         filledOrders.push({ ...bestMatch });
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting: true, fee: 0 });
+                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting: skipAccounting, fee: 0 });
                         updatedOrders.push(spreadOrder);
                         chainOrderIdsOnGrid.add(chainOrderId);
                         continue;
@@ -926,7 +945,7 @@ class SyncEngine {
                 } else if (wasPartial) {
                     bestMatch.state = ORDER_STATES.PARTIAL;
                 }
-                await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting: true, fee: 0 });
+                await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting: skipAccounting, fee: 0 });
                 updatedOrders.push(bestMatch);
                 chainOrderIdsOnGrid.add(chainOrderId);
             } else if (match) {
@@ -999,7 +1018,7 @@ class SyncEngine {
                     };
                     matchedGridOrderIds.add(adoptedSlot.id);
                     chainOrderIdsOnGrid.add(chainOrderId);
-                    await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: true, fee: 0 });
+                    await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: skipAccounting, fee: 0 });
                     updatedOrders.push(adoptedOrder);
                     mgr.logger?.log?.(
                         `[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +

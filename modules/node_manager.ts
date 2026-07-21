@@ -97,6 +97,7 @@ class NodeManager {
     checkAllNodesPromise: any;
     expectedChainId: string;
     BLACKLIST_COOLDOWN_MS: number;
+    FAILURE_REPORT_COOLDOWN_MS: number;
 
     constructor(config: NodeManagerConfig = {}) {
         this.logger = new Logger('NodeManager');
@@ -137,8 +138,9 @@ class NodeManager {
         // Expected chain ID (BitShares mainnet)
         this.expectedChainId = require('./bitshares-native/serial/chain_constants').GRAPHENE_CHAIN_ID;
 
-        // Blacklist cooldown: retry blacklisted nodes after 7 days
+        // Blacklist cooldown: retry blacklisted nodes after 24 hours
         this.BLACKLIST_COOLDOWN_MS = NODE_MANAGEMENT.BLACKLIST_COOLDOWN_MS;
+        this.FAILURE_REPORT_COOLDOWN_MS = NODE_MANAGEMENT.FAILURE_REPORT_COOLDOWN_MS;
     }
 
     /**
@@ -576,6 +578,16 @@ class NodeManager {
             return;
         }
         const isHealthCheck = source === 'health-check';
+
+        // Rate-limit failure counting: don't increment if reported too recently.
+        // Prevents a burst of operations from instantly blacklisting the node.
+        const now = Date.now();
+        const lastReported = (stats as any).lastFailureReportedAt || 0;
+        if (now - lastReported < this.FAILURE_REPORT_COOLDOWN_MS) {
+            return;
+        }
+        (stats as any).lastFailureReportedAt = now;
+
         stats.failureCount++;
         stats.lastCheckTime = new Date().toISOString();
         if (errorMessage) stats.lastErrorMessage = errorMessage;

@@ -55,6 +55,17 @@ function setFees(cacheKey: string, fees: any[]): void {
     cache.set(cacheKey, fees);
 }
 
+/**
+ * Peek at cached fees without expiry-based deletion.
+ * Returns the fee array even if stale (expired), or undefined if absent.
+ * Useful as a fallback when a chain re-fetch fails.
+ */
+function peekFees(cacheKey: string): any[] | undefined {
+    const cache = _ensureFeeCache();
+    const stale = cache.getStale(cacheKey);
+    return stale ? stale.value : undefined;
+}
+
 function invalidateFees(): void {
     if (_feeCache) _feeCache.clear();
 }
@@ -63,5 +74,6 @@ export = {
     buildFeeCacheKey,
     getFees,
     setFees,
+    peekFees,
     invalidateFees,
 };

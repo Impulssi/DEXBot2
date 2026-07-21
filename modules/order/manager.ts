@@ -265,6 +265,7 @@ class OrderManager {
     _gridPersistenceSuspendedReason: any;
     _pendingBroadcasts: Map<any, any>;
     _committedOrderIds: Set<string>;
+    _committedOrderIdsBuiltAt: number;
     _gridDirtyAt: number | null;
     _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
@@ -372,6 +373,7 @@ class OrderManager {
         this._gridPersistenceSuspendedReason = null;
         this._pendingBroadcasts = new Map();
         this._committedOrderIds = new Set();
+        this._committedOrderIdsBuiltAt = 0;
         this._gridDirtyAt = null;
         this._orphanFillsCreditedAt = null;
         this._pendingRecovery = null;
@@ -1596,6 +1598,7 @@ class OrderManager {
                 if (order.orderId) newCommittedIds.add(order.orderId);
             }
             this._committedOrderIds = newCommittedIds;
+            this._committedOrderIdsBuiltAt = Date.now();
 
             const freshIndexes = workingGrid.getIndexes();
             this._ordersByState = {

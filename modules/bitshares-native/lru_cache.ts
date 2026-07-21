@@ -33,6 +33,18 @@ class LRUCache {
         return entry.value;
     }
 
+    /**
+     * Return the cached value even if expired (stale read).
+     * Does not delete or LRU-promote the entry — just peeks.
+     * Use as a fallback when a fresh fetch fails.
+     */
+    getStale(key: string): { value: any; expired: boolean } | undefined {
+        const entry = this.cache.get(key);
+        if (!entry) return undefined;
+        const expired = this.ttlMs ? Date.now() - entry.ts > this.ttlMs : false;
+        return { value: entry.value, expired };
+    }
+
     set(key: string, value: any): void {
         if (this.cache.has(key)) {
             this.cache.delete(key);
