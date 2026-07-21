@@ -852,7 +852,11 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
  * @returns {number} Excess steps (0 if in-spread, >0 if out-of-spread)
  */
 function shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, incrementPercent = 0.5) {
-    if (buyCount === 0 || sellCount === 0) return 0;
+    if (buyCount === 0 || sellCount === 0) {
+        const step = 1 + (incrementPercent / 100);
+        const gap = Math.ceil(Math.log(1 + (nominalSpread / 100)) / Math.log(step));
+        return Math.max(1, gap);
+    }
     const step = 1 + (incrementPercent / 100);
     const currentSteps = Math.log(1 + (currentSpread / 100)) / Math.log(step);
     const limitSteps = (Math.log(1 + (nominalSpread / 100)) / Math.log(step)) + toleranceSteps;
@@ -1168,7 +1172,7 @@ function adjustBudgetForBtsFees(allocated, isBtsSide, formulaBudget, minBtsValue
     const btsDeficit = Math.max(0, effectiveMin - btsFree);
     if (btsDeficit > 0) {
         const share = totalFree > 0 ? sideFree / totalFree : 0.5;
-        return Math.max(0, Math.min(allocated, sideFree - btsDeficit * share));
+        return Math.max(0, Math.min(allocated, allocated - btsDeficit * share));
     }
 
     return allocated;

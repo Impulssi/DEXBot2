@@ -1570,6 +1570,16 @@ export async function checkSpreadCondition(manager, BitShares, updateOrdersOnCha
 
         // FIX: Use optional chaining for lock - if no lock exists, execute synchronously
         let fundSnapshot = null;
+
+        // Detect empty-side condition: when one side has zero on-chain orders,
+        // the spread is technically infinite and shouldFlagOutOfSpread's old
+        // guard (return 0) prevented any correction from firing.  Now we
+        // propagate the out-of-spread flag, but an empty side at a rail edge
+        // (boundary clamped to 0 or allSlots.length-1) also needs a structural
+        // resync to re-center the grid — spread correction alone would keep
+        // activating SPREAD slots at suboptimal prices.
+        const oneSideEmpty = onChainBuys.length === 0 || onChainSells.length === 0;
+
         const executeSpreadCheck = async () => {
             const currentSpread = calculateCurrentSpread(manager);
 
@@ -1591,6 +1601,49 @@ export async function checkSpreadCondition(manager, BitShares, updateOrdersOnCha
 
             manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, manager.config.incrementPercent);
             if (manager.outOfSpread === 0) return false;
+
+            // Check whether the empty side is caused by boundary-at-rail-edge.
+            // When the boundary crawl has clamped to 0 or allSlots.length-1,
+            // fill pressure can wipe out one entire side.  Spread correction
+            // can activate SPREAD slots, but the underlying grid structure
+            // remains skewed — without a structural resync the gap will keep
+            // returning as fills re-push the boundary to the rail edge.
+            if (oneSideEmpty && manager.boundaryIdx !== null && typeof manager.boundaryIdx === 'number') {
+                const allSlots = Array.from(manager.orders.values())
+                    .filter((o: any) => o.price != null)
+                    .sort((a: any, b: any) => a.price - b.price);
+                const gapSlots = calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
+                const railLen = allSlots.length;
+                const buyEndIdx = manager.boundaryIdx;
+                const sellStartIdx = manager.boundaryIdx + gapSlots + 1;
+                const buySideCount = Math.max(0, Math.min(railLen, buyEndIdx + 1));
+                const sellSideCount = Math.max(0, railLen - sellStartIdx);
+
+                // Structural resync: both sides have room but one is empty.
+                // Fire a structural resync to re-center the grid around the
+                // current price, giving both sides a balanced foundation.
+                // The spread correction below provides immediate relief
+                // while the resync runs in the background.
+                if (buySideCount < 2 || sellSideCount < 2) {
+                    manager.logger?.log?.(
+                        `[SPREAD] Boundary at rail edge (boundaryIdx=${manager.boundaryIdx}, ` +
+                        `buySlots=${buySideCount}, sellSlots=${sellSideCount}). ` +
+                        `Requesting structural grid resync to re-center.`,
+                        'warn'
+                    );
+                    if (typeof manager.requestStructuralGridResync === 'function') {
+                        manager.requestStructuralGridResync(
+                            'boundary-at-rail-edge',
+                            { reason: `Boundary ${manager.boundaryIdx} leaves ${buySideCount} buy / ${sellSideCount} sell slots` }
+                        ).catch((err: any) => {
+                            manager.logger?.log?.(
+                                `[SPREAD] Structural resync request failed: ${err.message}`,
+                                'error'
+                            );
+                        });
+                    }
+                }
+            }
 
             // Limit spread = nominal + half increment tolerance (0.5 steps).
             const limitSpread = nominalSpread + (manager.config.incrementPercent * toleranceSteps);
@@ -1627,8 +1680,35 @@ export async function checkSpreadCondition(manager, BitShares, updateOrdersOnCha
                 || fundSnapshot.buyLocked !== currentFunds.buyLocked
                 || fundSnapshot.sellLocked !== currentFunds.sellLocked;
             if (fundChanged) {
-                manager.logger?.log?.(`Spread correction aborted: fund state changed between lock release and broadcast (pre-flight check)`, 'warn');
-                return { ordersPlaced: 0, partialsMoved: 0 };
+                // TOCTOU: fund state changed between lock release and broadcast.
+                // Instead of silently aborting, re-plan with fresh funds so the
+                // correction still applies on this cycle.  The pre-flight check
+                // still guards against placing orders based on stale fund snapshots.
+                const decision = determineOrderSideByFunds(manager, lastPrice);
+                if (decision.side) {
+                    correction = await prepareSpreadCorrectionOrders(manager, decision.side);
+                    if (correction && ((correction.ordersToPlace?.length || 0) + (correction.ordersToUpdate?.length || 0) > 0)) {
+                        fundSnapshot = currentFunds;
+                        manager.logger?.log?.(
+                            `[SPREAD] Fund state changed between lock release and broadcast — ` +
+                            `re-planned with updated funds: ${correction.ordersToPlace?.length || 0} creates, ` +
+                            `${correction.ordersToUpdate?.length || 0} updates`,
+                            'info'
+                        );
+                    } else {
+                        manager.logger?.log?.(
+                            `[SPREAD] Fund state changed; re-plan produced no viable orders. Skipping cycle.`,
+                            'warn'
+                        );
+                        return { ordersPlaced: 0, partialsMoved: 0 };
+                    }
+                } else {
+                    manager.logger?.log?.(
+                        `[SPREAD] Fund state changed; no side has sufficient funds for re-plan. Skipping cycle.`,
+                        'warn'
+                    );
+                    return { ordersPlaced: 0, partialsMoved: 0 };
+                }
             }
             try {
                 const batchResult = await updateOrdersOnChainBatch(correction);
@@ -1933,7 +2013,13 @@ export function determineOrderSideByFunds(manager, currentMarketPrice) {
      */
 export async function calculateGeometricSizeForSpreadCorrection(manager, targetType) {
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-        const slotsCount = (Array.from(manager.orders.values()) as Order[]).filter(o => o.type === targetType).length + 1;
+        // Count only on-chain orders (ACTIVE+PARTIAL) to avoid diluting the
+        // spread-correction order size across hundreds of virtual slots on a
+        // full-rail grid.  Virtual slots have their capital tracked separately
+        // in funds.virtual and should not compete for the free budget.
+        const slotsCount = (Array.from(manager.orders.values()) as Order[])
+            .filter(o => o.type === targetType && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
+            .length + 1;
 
         // Use centralized sizing context (respects botFunds % allocation)
         const ctx = await _getSizingContext(manager, side);

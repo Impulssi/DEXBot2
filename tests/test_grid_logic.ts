@@ -272,7 +272,7 @@ async function runTests() {
             };
             await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
 
-            await FreshinitializeGrid(manager);
+            await FreshGrid.initializeGrid(manager);
 
             assert(manager.orders.size > 0, 'initializeGrid should succeed even when configured startPrice is outside resolved bounds');
             assert(manager.config.minPrice > 400 && manager.config.minPrice < 600, 'minPrice should be resolved from AMA center in case-insensitive mode');
@@ -336,7 +336,7 @@ async function runTests() {
             };
             await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
 
-            await FreshinitializeGrid(manager);
+            await FreshGrid.initializeGrid(manager);
 
             assert(manager.orders.size > 0, 'initializeGrid should succeed with AMA gridPrice');
             assert.strictEqual(manager._lastGridPricingContext.gridPrice, 1100, 'debug pricing should expose the resolved grid price once');
@@ -413,7 +413,7 @@ async function runTests() {
             };
             await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
 
-            await FreshinitializeGrid(manager);
+            await FreshGrid.initializeGrid(manager);
 
             assert(manager.orders.size > 0, 'initializeGrid should succeed with an offset AMA snapshot');
             assert.strictEqual(manager._lastGridPricingContext.gridPriceOffsetPct, 0.8, 'debug pricing should expose the persisted spread offset');
@@ -486,7 +486,7 @@ async function runTests() {
             };
             await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
 
-            await FreshinitializeGrid(manager);
+            await FreshGrid.initializeGrid(manager);
 
             // With trend=UP and appliedAsymmetryFactor=0.08:
             //   center=1000, minP=1000/2=500, maxP=1000*2=2000
@@ -566,7 +566,7 @@ async function runTests() {
             };
             await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
 
-            await FreshinitializeGrid(manager);
+            await FreshGrid.initializeGrid(manager);
 
             assert(manager.orders.size > 0, 'initializeGrid should succeed with spread offset disabled');
             assert.strictEqual(manager._lastGridPricingContext.gridPriceOffsetPct, 0, 'debug pricing should hide ignored spread offset');
@@ -697,9 +697,9 @@ async function runTests() {
         result = shouldFlagOutOfSpread(2.5, targetSpread, toleranceSteps, buyCount, sellCount, increment);
         assert.strictEqual(result, 2, 'At 2.5%, should flag 2 slots');
 
-        // Edge case: empty side should return 0 (no correction possible)
+        // Edge case: empty side should return nominal gap slot count (not 0)
         result = shouldFlagOutOfSpread(2.0, targetSpread, toleranceSteps, 0, 5, increment);
-        assert.strictEqual(result, 0, 'With empty buy side, should return 0');
+        assert.strictEqual(result, 4, 'With empty buy side, should return nominal gap slot count');
     }
 
     console.log('✓ Grid logic tests passed!');
