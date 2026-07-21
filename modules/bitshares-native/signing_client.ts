@@ -6,12 +6,23 @@ const txCache = require('./tx/tx_cache');
 const Logger = require('../logger');
 const signingClientLogger = new Logger('SigningClient');
 
+function wifToBuffer(wif: any): any {
+    if (typeof wif !== 'string') return wif;
+    try {
+        const { wifDecode } = require('./crypto/ecc_selector')();
+        return wifDecode(wif).privateKey;
+    } catch (_: any) {
+        return Buffer.from(wif, 'hex');
+    }
+}
+
 function createSigningClient(chainClient: any, accountName: string, privateKey: any): any {
     if (!chainClient) throw new Error('chainClient is required');
     if (!accountName) throw new Error('accountName is required');
     if (!privateKey) throw new Error('privateKey is required');
 
     let _accountId: any = null;
+    let _disposed = false;
     let _initResolved = false;
     let _initPromise: any = null;
 
@@ -31,6 +42,7 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
     })();
 
     function newTx() {
+        if (_disposed) throw new Error('Signing client has been disposed');
         const tx = createTransactionBuilder(chainClient);
 
         const origSign = tx.sign.bind(tx);
@@ -41,16 +53,6 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
         };
 
         return wrapTxForBtsdexCompat(tx, chainClient, privateKey);
-    }
-
-    function wifToBuffer(wif: any): any {
-        if (typeof wif !== 'string') return wif;
-        try {
-            const { wifDecode } = require('./crypto/ecc_selector')();
-            return wifDecode(wif).privateKey;
-        } catch (_: any) {
-            return Buffer.from(wif, 'hex');
-        }
     }
 
     function wrapTxForBtsdexCompat(tx: any, client: any, key: any): any {
@@ -138,6 +140,7 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
     }
 
     async function broadcast(operation: any): Promise<any> {
+        if (_disposed) throw new Error('Signing client has been disposed');
         const tx = newTx();
         if (operation && operation.op_name && typeof (tx as any)[operation.op_name] === 'function') {
             (tx as any)[operation.op_name](operation.op_data);
@@ -161,7 +164,20 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
         broadcast,
         accountName,
         accountId(): any { return _accountId; },
+        /**
+         * Dispose the signing client: zeroes the WIF buffer (heap-dump safety) and
+         * marks the client as disposed.  After calling dispose(), any subsequent
+         * newTx() or broadcast() call throws.  The caller MUST delete the reference
+         * from the cache immediately after disposal — never use a disposed client.
+         */
+        dispose(): void {
+            _disposed = true;
+            if (Buffer.isBuffer(privateKey)) {
+                privateKey.fill(0);
+            }
+            privateKey = null;
+        },
     };
 }
 
-export = { createSigningClient };
+export = { createSigningClient, wifToBuffer };

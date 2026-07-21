@@ -69,7 +69,7 @@ const net = require('net');
 const fs = require('fs');
 const { path } = require('./modules/path_api');
 const os = require('os');
-const { randomBytes } = require('./modules/crypto/sync');
+const { randomBytes, createHmac } = require('./modules/crypto/sync');
 const chainKeys = require('./modules/chain_keys');
 const { TIMING, NODE_MANAGEMENT, DAEMON_ERRORS, DAEMON_CODES } = require('./modules/constants');
 const { readGeneralSettings } = require('./modules/general_settings');
@@ -146,6 +146,12 @@ let auditLogQueue: Promise<void> = Promise.resolve();
 // or fire a debounced reload after secrets have been zeroed).
 let policyWatcher: import('fs').FSWatcher | null = null;
 let policyWatchDebounce: ReturnType<typeof setTimeout> | null = null;
+let sessionPurgeInterval: ReturnType<typeof setInterval> | null = null;
+// Signing client cache: key = `${accountName}:${keyFingerprint(wif)}`, value = full signing client + createdAt.
+// Key rotation: loadDaemonPrivateKey re-reads from vault on every call. If the WIF changes the
+// fingerprint changes → cache miss → new signing client created with the current key. No staleness.
+// Cleared on transport reconnect (see broadcastWithRetry). TTL-pruned (30 min) in pruneStaleSigningClients.
+const signingClientCache = new Map<string, { signingClient: any; createdAt: number }>();
 
 function debugLog(message: string, err: any = null) {
     const suffix = err && err.message ? `: ${err.message}` : '';
@@ -199,8 +205,34 @@ function purgeExpiredSessions() {
     }
 }
 
+function keyFingerprint(key: string): string {
+    // Returns a stable-but-unique 16-hex-char fingerprint of the WIF.
+    // HMAC-SHA256 is timing-side-channel-resistant in the HMAC itself, but
+    // .slice(0,16) and the string comparison in the cache lookup are not
+    // constant-time.  This is acceptable because the cache lives in-process
+    // and the WIF is already in cleartext memory — this is not a security
+    // boundary, only a cache-consistency check for key rotation detection.
+    return createHmac('sha256', 'cred-daemon-key-fingerprint')
+        .update(key)
+        .digest('hex')
+        .slice(0, 16);
+}
+
+function pruneStaleSigningClients() {
+    const TTL_MS = 30 * 60 * 1000;
+    const now = Date.now();
+    for (const [cacheKey, entry] of signingClientCache) {
+        if (now - entry.createdAt > TTL_MS) {
+            if (typeof entry.signingClient.dispose === 'function') {
+                try { entry.signingClient.dispose(); } catch (_) {}
+            }
+            signingClientCache.delete(cacheKey);
+        }
+    }
+}
+
 function checkSessionValid(accountName: any, sessionId: any) {
-    purgeExpiredSessions();
+    // purgeExpiredSessions removed: handled by the 5-min interval timer in initialize()
     if (!sessionId) {
         return false;
     }
@@ -210,7 +242,7 @@ function checkSessionValid(accountName: any, sessionId: any) {
 
 function queueAuditLogWork(work: any) {
     auditLogQueue = auditLogQueue
-        .then(() => Promise.resolve().then(work))
+        .then(work)
         .catch((err) => {
             debugLog('Audit log operation failed', err);
         });
@@ -417,15 +449,52 @@ async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn
                 if (_nativeChainClient.getStatus() !== 'connected') {
                     _nativeChainClient.setNodes(effectiveNodeList);
                     await _nativeChainClient.connect();
+                    // Transport reconnected — dispose all stale signing clients (heap-dump safety)
+                    // then clear the cache so new clients use the fresh transport.
+                    for (const [, entry] of signingClientCache) {
+                        if (typeof entry.signingClient.dispose === 'function') {
+                            try { entry.signingClient.dispose(); } catch (_) {}
+                        }
+                    }
+                    signingClientCache.clear();
                 }
-                const { createSigningClient } = require('./modules/bitshares-native');
-                const signingClient = createSigningClient(_nativeChainClient, accountName, privateKey);
-                const client = signingClient.client;
+                const fp = keyFingerprint(String(privateKey));
+                const cacheKey = accountName + ':' + fp;
+                let cached = signingClientCache.get(cacheKey);
+                if (!cached) {
+                    // Proactively evict stale entries for the same account (different fingerprint)
+                    // so key rotation never leaves dead entries in the map.
+                    const stalePrefix = accountName + ':';
+                    for (const [k, v] of signingClientCache) {
+                        if (k !== cacheKey && k.startsWith(stalePrefix)) {
+                            if (typeof v.signingClient.dispose === 'function') {
+                                try { v.signingClient.dispose(); } catch (_) {}
+                            }
+                            signingClientCache.delete(k);
+                        }
+                    }
+                    pruneStaleSigningClients();
+                    // Pre-convert WIF string → Buffer so dispose() can actually zero the bytes.
+                    // The WIF string goes out of scope at function return and is GC'd (non-deterministic),
+                    // but the Buffer passed to createSigningClient is filled with 0 by dispose() on eviction/shutdown.
+                    const { createSigningClient, wifToBuffer } = require('./modules/bitshares-native');
+                    const keyBuffer = wifToBuffer(String(privateKey));
+                    const signingClient = createSigningClient(_nativeChainClient, accountName, keyBuffer);
+                    cached = { signingClient, createdAt: Date.now() };
+                    signingClientCache.set(cacheKey, cached);
+                }
+                const client = cached.signingClient.client;
                 await client.initPromise;
                 return await broadcastFn(client);
             } catch (err: any) {
                 if (attempt === maxRetries) throw err;
                 debugLog(`Broadcast failed (attempt ${attempt}), reconnecting: ${err.message}`);
+                const staleKey = accountName + ':' + keyFingerprint(String(privateKey));
+                const staleEntry = signingClientCache.get(staleKey);
+                if (staleEntry && typeof staleEntry.signingClient.dispose === 'function') {
+                    staleEntry.signingClient.dispose();
+                }
+                signingClientCache.delete(staleKey);
                 try { _nativeChainClient.disconnect(); } catch (_) {}
             }
         }
@@ -529,6 +598,14 @@ async function initialize() {
         const nodeRefreshInterval = setInterval(refreshNodeList, getCredentialDaemonNodeRefreshIntervalMs(settings));
         if (typeof nodeRefreshInterval.unref === 'function') {
             nodeRefreshInterval.unref();
+        }
+
+        // Periodic purge of expired sessions (every 5 min) to prevent stale
+        // session accumulation when bots probe but don't broadcast.
+        const SESSION_PURGE_INTERVAL_MS = 5 * 60 * 1000;
+        sessionPurgeInterval = setInterval(purgeExpiredSessions, SESSION_PURGE_INTERVAL_MS);
+        if (typeof sessionPurgeInterval.unref === 'function') {
+            sessionPurgeInterval.unref();
         }
 
         // Audit log prune on a timer (M5): replaces inline pruning on every
@@ -1049,6 +1126,12 @@ function shutdown(exitCode = 0, reason = 'shutdown') {
         }
         sessionAccountKeys.clear();
     }
+    for (const [, entry] of signingClientCache) {
+        if (typeof entry.signingClient.dispose === 'function') {
+            try { entry.signingClient.dispose(); } catch (_) {}
+        }
+    }
+    signingClientCache.clear();
 
     // Close server — don't wait for active connections, process.exit will
     // tear everything down.  A hanging server.close() would prevent PM2 from
@@ -1067,6 +1150,10 @@ function shutdown(exitCode = 0, reason = 'shutdown') {
     if (policyWatcher) {
         try { policyWatcher.close(); } catch (_) {}
         policyWatcher = null;
+    }
+    if (sessionPurgeInterval) {
+        clearInterval(sessionPurgeInterval);
+        sessionPurgeInterval = null;
     }
 
     daemonLogger.log?.('[credential-daemon] Server closed');

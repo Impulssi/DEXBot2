@@ -3,7 +3,7 @@
 const { createTransport, ConnectionError, AllNodesFailed, RpcError, RpcTimeoutError } = require('./transport');
 const { createChainClient, createReadOnlyClient, ChainConfigError } = require('./chain_client');
 const { createSubscriptionManager } = require('./subscriptions');
-const { createSigningClient } = require('./signing_client');
+const { createSigningClient, wifToBuffer } = require('./signing_client');
 const { createResolvers } = require('./resolvers');
 const serial = require('./serial');
 const getEcc = require('./crypto/ecc_selector');
@@ -17,6 +17,7 @@ export = {
     createReadOnlyClient,
     createSubscriptionManager,
     createSigningClient,
+    wifToBuffer,
     createResolvers,
 
     ConnectionError,

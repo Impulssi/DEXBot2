@@ -150,6 +150,7 @@ declare module 'bitshares-native' {
             accountId: string | null;
             accountName: string;
         };
+        dispose(): void;
     }
 
     export function createTransport(config?: object): any;

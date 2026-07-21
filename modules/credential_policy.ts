@@ -663,8 +663,8 @@ function deriveDebtPolicyConstraints(accountName: string): Record<string, any> {
  * builtin default → auto-derived debt constraints → config.default → config.accounts[accountName]
  */
 function resolveAccountPolicy(config: any, accountName: string): any {
-    // Start with builtin
-    let policy = JSON.parse(JSON.stringify(BUILTIN_DEFAULT_POLICY));
+    // Start with builtin (shallow copy — avoids JSON parse + stringify GC pressure)
+    let policy = { ...BUILTIN_DEFAULT_POLICY, allowedOps: { ...BUILTIN_DEFAULT_POLICY.allowedOps } };
 
     // Layer auto-derived debt constraints from bots.json
     const debtConstraints = deriveDebtPolicyConstraints(accountName);
