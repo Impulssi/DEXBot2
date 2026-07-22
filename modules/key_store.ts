@@ -22,62 +22,12 @@ export interface SigningResult {
 }
 
 export interface KeyStore {
-    authenticate(): Promise<any>;
-    unlockWithPassword(password: string, accountsData?: any): any;
-    isMasterPasswordFailure(err: any): boolean;
-    readonly MasterPasswordError: any;
-
-    getPrivateKey(accountName: string, vaultSecret: any): string;
-    resolvePrivateKey(accountName: string, vaultSecret: any, chainClient: any): Promise<string>;
-
-    isReady(): boolean;
-    isResponsive(): Promise<boolean>;
-    waitForReady(timeoutMs?: number): Promise<void>;
-
     resolveSigningKey(accountName: string, vaultSecret?: any, chainClient?: any): Promise<any>;
     isDaemonSigningKey(key: any): boolean;
     executeOperations(accountName: string, operations: any[], signingKey: any, extraOptions?: Record<string, any>): Promise<SigningResult>;
-
-    loadAccounts(): any;
-    saveAccounts(data: any): void;
-    checkSecurity(): void;
 }
 
 export class DaemonKeyStore implements KeyStore {
-    get MasterPasswordError(): any { return chainKeys.MasterPasswordError; }
-
-    authenticate(): Promise<any> {
-        return chainKeys.authenticate();
-    }
-
-    unlockWithPassword(password: string, accountsData?: any): any {
-        return chainKeys.unlockWithPassword(password, accountsData);
-    }
-
-    isMasterPasswordFailure(err: any): boolean {
-        return chainKeys.isMasterPasswordFailure(err);
-    }
-
-    getPrivateKey(accountName: string, vaultSecret: any): string {
-        return chainKeys.getPrivateKey(accountName, vaultSecret);
-    }
-
-    resolvePrivateKey(accountName: string, vaultSecret: any, chainClient: any): Promise<string> {
-        return chainKeys.resolvePrivateKey(accountName, vaultSecret, chainClient);
-    }
-
-    isReady(): boolean {
-        return chainKeys.isDaemonReady();
-    }
-
-    isResponsive(): Promise<boolean> {
-        return chainKeys.isDaemonResponsive();
-    }
-
-    waitForReady(timeoutMs: number = TIMING.DAEMON_STARTUP_TIMEOUT_MS): Promise<void> {
-        return chainKeys.waitForDaemon(timeoutMs);
-    }
-
     async resolveSigningKey(accountName: string, vaultSecret?: any, chainClient?: any): Promise<any> {
         if (vaultSecret) {
             return chainKeys.resolvePrivateKey(accountName, vaultSecret, chainClient);
@@ -181,49 +131,9 @@ export class DaemonKeyStore implements KeyStore {
         await tx.broadcast();
         return { success: true };
     }
-
-    loadAccounts(): any {
-        return chainKeys.loadAccounts();
-    }
-
-    saveAccounts(data: any): void {
-        chainKeys.saveAccounts(data);
-    }
-
-    checkSecurity(): void {
-        chainKeys.checkKeysFileSecurity();
-    }
 }
 
 export class DirectKeyStore implements KeyStore {
-    get MasterPasswordError(): any { return chainKeys.MasterPasswordError; }
-
-    authenticate(): Promise<any> {
-        return chainKeys.authenticate();
-    }
-
-    unlockWithPassword(password: string, accountsData?: any): any {
-        return chainKeys.unlockWithPassword(password, accountsData);
-    }
-
-    isMasterPasswordFailure(err: any): boolean {
-        return chainKeys.isMasterPasswordFailure(err);
-    }
-
-    getPrivateKey(accountName: string, vaultSecret: any): string {
-        return chainKeys.getPrivateKey(accountName, vaultSecret);
-    }
-
-    resolvePrivateKey(accountName: string, vaultSecret: any, chainClient: any): Promise<string> {
-        return chainKeys.resolvePrivateKey(accountName, vaultSecret, chainClient);
-    }
-
-    isReady(): boolean { return true; }
-
-    async isResponsive(): Promise<boolean> { return true; }
-
-    async waitForReady(_timeoutMs?: number): Promise<void> {}
-
     async resolveSigningKey(accountName: string, vaultSecret?: any, chainClient?: any): Promise<any> {
         if (vaultSecret) {
             return chainKeys.resolvePrivateKey(accountName, vaultSecret, chainClient);
@@ -249,18 +159,6 @@ export class DirectKeyStore implements KeyStore {
         }
         await tx.broadcast();
         return { success: true };
-    }
-
-    loadAccounts(): any {
-        return chainKeys.loadAccounts();
-    }
-
-    saveAccounts(data: any): void {
-        chainKeys.saveAccounts(data);
-    }
-
-    checkSecurity(): void {
-        chainKeys.checkKeysFileSecurity();
     }
 }
 

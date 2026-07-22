@@ -2513,14 +2513,14 @@ class DEXBot {
                 }
 
                 if (!privateKey) {
-                    const unlockSecret = await getKeyStore().authenticate();
-                    privateKey = await getKeyStore().resolvePrivateKey(this.config.preferredAccount, unlockSecret, BitShares);
+                    const unlockSecret = await chainKeys.authenticate();
+                    privateKey = await chainKeys.resolvePrivateKey(this.config.preferredAccount, unlockSecret, BitShares);
                 }
 
                 this.privateKey = privateKey;
                 await this._setupAccountContext(this.config.preferredAccount);
             } catch (err: any) {
-                if (getKeyStore().isMasterPasswordFailure(err)) {
+                if (chainKeys.isMasterPasswordFailure(err)) {
                     throw err;
                 }
                 this._warn(`Auto-selection of preferredAccount failed: ${err.message}`);
@@ -5591,6 +5591,9 @@ class DEXBot {
                 this._warn(`Credit watchdog error: ${err.message}`);
             }
         }, intervalMs);
+        if (typeof this._creditWatchdogInterval?.unref === 'function') {
+            this._creditWatchdogInterval.unref();
+        }
         this._log(`Credit deal watchdog started (${intervalMin}min interval)`);
     }
 
@@ -5780,6 +5783,9 @@ class DEXBot {
                 // Silently retry next interval
             }
         }, DUST_HEALTH_CHECK_INTERVAL_MS);
+        if (typeof this._dustHealthCheckTimer?.unref === 'function') {
+            this._dustHealthCheckTimer.unref();
+        }
     }
 
     /**

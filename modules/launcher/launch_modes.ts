@@ -69,7 +69,7 @@ function parseUnlockArgs(argv = process.argv) {
         };
     }
 
-    const resolvedBotName = findFirstPositionalArg(positionalArgs) || Config.BOT_NAME || null;
+    const resolvedBotName = clawOnly ? null : (findFirstPositionalArg(positionalArgs) || Config.BOT_NAME || null);
     return {
         botName: resolvedBotName,
         clawOnly,

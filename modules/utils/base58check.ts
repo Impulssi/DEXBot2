@@ -42,7 +42,7 @@ function base58Decode(value: string): Uint8Array {
     let decoded = 0n;
     for (const ch of value) {
         const digit = ALPHABET_MAP.get(ch);
-        if (digit === undefined) throw new Error(`Invalid Base58 character "${ch}"`);
+        if (digit === undefined) throw new Error(`Invalid base58 character "${ch}"`);
         decoded = decoded * 58n + BigInt(digit);
     }
 
@@ -117,6 +117,8 @@ async function decodeAsync(value: string): Promise<Uint8Array> {
 }
 
 export = {
+    base58Encode,
+    base58Decode,
     decode,
     encode,
     encodeAsync,

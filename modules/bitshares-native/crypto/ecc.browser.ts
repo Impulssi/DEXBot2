@@ -17,6 +17,7 @@
 import type { EcPoint } from '../../crypto/provider';
 
 const { getCrypto } = require('../../crypto');
+const { base58Encode: _base58Encode, base58Decode: _base58Decode } = require('../../utils/base58check');
 const pureSecp = require('../../crypto/pure_secp256k1');
 const secp256k1 = pureSecp.secp256k1;
 const pointFromPublicKey = pureSecp.pointFromPublicKey;
@@ -64,8 +65,6 @@ function equalsBuf(a: Uint8Array, b: Uint8Array): boolean {
 
 // ── Curve constants ─────────────────────────────────────────────────
 const SECP256K1_BASE_POINT: EcPoint = { x: secp256k1.Gx, y: secp256k1.Gy };
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-
 // ── Hashing (async, via CryptoProvider) ─────────────────────────────
 
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
@@ -294,31 +293,14 @@ async function verify(digest: Uint8Array, signature: Uint8Array, publicKey: Uint
     return mod(point.x, secp256k1.n) === rBig;
 }
 
-// ── Base58 (sync, pure math) ────────────────────────────────────────
+// ── Base58 (wrappers around shared utils) ───────────────────────────
 
 function base58Encode(buf: Uint8Array): string {
-    let num = bigIntFromBuffer(buf);
-    let encoded = '';
-    while (num > 0n) {
-        encoded = BASE58_ALPHABET[Number(num % 58n)] + encoded;
-        num /= 58n;
-    }
-    for (let i = 0; i < buf.length && buf[i] === 0; i++) encoded = '1' + encoded;
-    return encoded;
+    return _base58Encode(buf);
 }
 
 function base58Decode(str: string): Uint8Array {
-    let num = 0n;
-    for (let i = 0; i < str.length; i++) {
-        const idx = BASE58_ALPHABET.indexOf(str[i]);
-        if (idx === -1) throw new Error('Invalid base58 character: ' + str[i]);
-        num = num * 58n + BigInt(idx);
-    }
-    let hex = num.toString(16);
-    if (hex.length % 2) hex = '0' + hex;
-    let leadingZeros = 0;
-    for (let i = 0; i < str.length && str[i] === '1'; i++) leadingZeros++;
-    return hexToBuf('00'.repeat(leadingZeros) + hex);
+    return _base58Decode(str);
 }
 
 async function base58CheckEncode(payload: Uint8Array): Promise<string> {

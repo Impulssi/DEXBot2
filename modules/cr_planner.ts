@@ -3,7 +3,7 @@
 const { toFiniteNumber } = require('./order/format');
 const { resolveConfigValue } = require('./order/utils/math');
 const { DEFAULT_TARGET_CR } = require('./constants');
-const { roundToDecimals } = require('./utils/math_utils');
+const { roundToDecimals } = require('./order/utils/math');
 
 interface CrPolicy {
     minCollateralRatio?: number;

@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash, createHmac, randomBytes: cryptoRandomBytes, createECDH, createPrivateKey } = require('../../crypto/sync');
+const { base58Encode: _base58Encode, base58Decode: _base58Decode } = require('../../utils/base58check');
 
 interface EcPoint {
     x: bigint;
@@ -20,8 +21,6 @@ const secp256k1 = {
     a: BigInt(0),
     b: BigInt(7),
 };
-
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 const SEC1_DER_PREFIX = Buffer.from('302e0201010420', 'hex');
 const SEC1_DER_SUFFIX = Buffer.from('a00706052b8104000a', 'hex');
@@ -529,36 +528,11 @@ function wifDecode(wif: string): WifDecodeResult {
 }
 
 function base58Encode(buf: Buffer): string {
-    let num = BigInt('0x' + buf.toString('hex'));
-    let encoded = '';
-    while (num > 0n) {
-        const remainder = Number(num % 58n);
-        encoded = BASE58_ALPHABET[remainder] + encoded;
-        num = num / 58n;
-    }
-    for (let i = 0; i < buf.length && buf[i] === 0; i++) {
-        encoded = '1' + encoded;
-    }
-    return encoded;
+    return _base58Encode(buf);
 }
 
 function base58Decode(str: string): Buffer {
-    let num = 0n;
-    for (let i = 0; i < str.length; i++) {
-        const c = str[i];
-        const index = BASE58_ALPHABET.indexOf(c);
-        if (index === -1) throw new Error('Invalid base58 character: ' + c);
-        num = num * 58n + BigInt(index);
-    }
-    let hex = num.toString(16);
-    if (hex.length % 2) hex = '0' + hex;
-
-    let leadingZeros = 0;
-    for (let i = 0; i < str.length && str[i] === '1'; i++) {
-        leadingZeros++;
-    }
-
-    return Buffer.from('00'.repeat(leadingZeros) + hex, 'hex');
+    return Buffer.from(_base58Decode(str));
 }
 
 function base58CheckEncode(payload: Buffer): string {

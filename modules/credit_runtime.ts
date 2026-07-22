@@ -18,7 +18,7 @@ const {
     resolveTargetCollateralRatio,
 } = require('./cr_planner');
 const { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING } = require('./constants');
-const { roundToDecimals } = require('./utils/math_utils');
+const { roundToDecimals } = require('./order/utils/math');
 const { PATHS } = require('./paths');
 const { readJSON } = require('./utils/fs_utils');
 
