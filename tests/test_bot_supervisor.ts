@@ -98,6 +98,7 @@ async function testRestartControlsExcludeUpdaterJob() {
             }
             return child;
         },
+        updaterActive: true,
     });
 
     await supervisor.start();

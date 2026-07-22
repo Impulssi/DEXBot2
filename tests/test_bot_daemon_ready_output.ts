@@ -128,6 +128,9 @@ function installStubs() {
     });
 
     process.argv = ['node', botPath, 'XRP-BTS'];
+    const { Config } = require('../modules/config');
+    Config.ARGS = ['XRP-BTS'];
+    Config.BOT_NAME = 'XRP-BTS';
 
     console.log = (...args) => {
         const line = args.map((part) => String(part)).join(' ').trim();
@@ -185,7 +188,10 @@ require('../bot');
         process.exit(0);
     } catch (err) {
         restoreStubs();
-        console.error(err);
+        process.stderr.write(`TEST FAILURE: ${err && err.stack ? err.stack : err}\n`);
+        process.stderr.write(`LOGS: ${JSON.stringify(logs)}\n`);
+        process.stderr.write(`WARNS: ${JSON.stringify(warns)}\n`);
+        process.stderr.write(`ERRORS: ${JSON.stringify(errors)}\n`);
         process.exit(1);
     }
 })();

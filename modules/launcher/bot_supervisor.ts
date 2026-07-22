@@ -63,7 +63,7 @@ function loadActiveBots(explicitBots) {
     return normalizeBotEntries(raw).filter((b) => b.active !== false);
 }
 
-function buildSupervisedApps(bots) {
+function buildSupervisedApps(bots, updaterActive) {
     const apps = (bots || []).map((bot, index) => {
         const botName = bot.name || `bot-${index}`;
         return {
@@ -96,7 +96,7 @@ function buildSupervisedApps(bots) {
         });
     }
 
-    if (UPDATER.ACTIVE) {
+    if (updaterActive) {
         apps.push({
             kind: 'job',
             name: 'dexbot-update',
@@ -422,6 +422,7 @@ function createBotSupervisor({
     clearTimeoutFn = clearTimeout,
     nowFn = () => Date.now(),
     stopMarketAdapter = stopMarketAdapterFromLock,
+    updaterActive = UPDATER.ACTIVE,
 } = {}) {
     const botStates = new Map();
     let shuttingDown = false;
@@ -677,10 +678,7 @@ function createBotSupervisor({
 
             const remainingMs = Math.max(deadline - nowFn(), 0);
             await new Promise((resolve) => {
-                const timer = setTimeoutFn(resolve, Math.min(pollIntervalMs, remainingMs || pollIntervalMs));
-                if (timer && typeof timer.unref === 'function') {
-                    timer.unref();
-                }
+                setTimeoutFn(resolve, Math.min(pollIntervalMs, remainingMs || pollIntervalMs));
             });
         }
 
@@ -870,7 +868,7 @@ function createBotSupervisor({
 
     async function start() {
         const activeBots = loadActiveBots(bots);
-        const activeApps = buildSupervisedApps(activeBots);
+        const activeApps = buildSupervisedApps(activeBots, updaterActive);
 
         if (activeApps.length === 0) {
             log('No active apps configured.');

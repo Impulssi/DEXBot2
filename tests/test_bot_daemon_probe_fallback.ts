@@ -147,6 +147,9 @@ function installStubs() {
     });
 
     process.argv = ['node', botPath, 'XRP-BTS'];
+    const { Config } = require('../modules/config');
+    Config.ARGS = ['XRP-BTS'];
+    Config.BOT_NAME = 'XRP-BTS';
 
     console.log = (...args) => {
         const line = args.map((part) => String(part)).join(' ').trim();

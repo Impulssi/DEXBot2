@@ -2105,6 +2105,7 @@ class DEXBot {
                             );
                             const noBlockResult = await processValidFills(fillsWithoutBlock);
                             accumulatedOrders.push(...noBlockResult);
+                            if (requiresOpenOrdersSync) anyRequiresSync = true;
                         }
                         // If a fill was filtered out during validation (e.g. missing
                         // history ID) and no block group triggered the open-orders
