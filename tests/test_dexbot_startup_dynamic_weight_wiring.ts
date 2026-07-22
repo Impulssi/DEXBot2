@@ -33,15 +33,18 @@ setCachedModule(startupReconcilePath, {
     reconcileGridOrders: async () => ({ actions: [] }),
 });
 
+const gridModulePath = require.resolve('../modules/order/grid');
 const chainOrders = require('../modules/chain_orders');
-const { loadGrid, initializeGrid } = require('../modules/order/grid');
+const realGrid = require('../modules/order/grid');
+const gridStub = Object.assign({}, realGrid);
+setCachedModule(gridModulePath, gridStub);
 delete require.cache[dexbotClassPath];
 const DEXBot = require('../modules/dexbot_class');
 
 async function testPlaceInitialOrdersRefreshesAndFallsBack() {
     const botKey = 'test_startup_dynamic_weight_initial';
     const weightFiles = withDynamicWeightFiles(botKey);
-    const originalInitializeGrid = initializeGrid;
+    const originalInitializeGrid = gridStub.initializeGrid;
 
     try {
         const observedWeights = [];
@@ -50,7 +53,7 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
             effectiveWeights: { sell: 0.45, buy: 0.25 },
         });
 
-        initializeGrid = async (manager) => {
+        gridStub.initializeGrid = async (manager) => {
             observedWeights.push({ ...manager.config.weightDistribution });
         };
 
@@ -75,6 +78,8 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
                 persistCalls++;
                 return { isValid: true };
             },
+            startBootstrap: () => {},
+            finishBootstrap: () => {},
         };
 
         // Simulate the startup refresh that normally precedes initial order placement
@@ -112,7 +117,7 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
         );
         assert.strictEqual(persistCalls, 2, 'dry-run placement should persist grid each time');
     } finally {
-        initializeGrid = originalInitializeGrid;
+        gridStub.initializeGrid = originalInitializeGrid;
         weightFiles.cleanup();
     }
 }
@@ -122,7 +127,7 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
     const weightFiles = withDynamicWeightFiles(botKey);
     const originalListenForFills = chainOrders.listenForFills;
     const originalReadOpenOrders = chainOrders.readOpenOrders;
-    const originalLoadGrid = loadGrid;
+    const originalLoadGrid = gridStub.loadGrid;
 
     try {
         weightFiles.writeSnapshot({
@@ -136,7 +141,7 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
 
         chainOrders.listenForFills = async () => async () => {};
         chainOrders.readOpenOrders = async () => [];
-        loadGrid = async () => {
+        gridStub.loadGrid = async () => {
             loadGridCalls++;
         };
 
@@ -212,6 +217,8 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
                 }],
             }),
             synchronizeWithChain: async () => ({ filledOrders: [] }),
+            fetchAccountTotals: async () => {},
+            checkGridHealth: async () => ({ buyDustOrders: [], sellDustOrders: [] }),
         };
 
         await bot._finishStartupSequence({
@@ -226,7 +233,7 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
     } finally {
         chainOrders.listenForFills = originalListenForFills;
         chainOrders.readOpenOrders = originalReadOpenOrders;
-        loadGrid = originalLoadGrid;
+        gridStub.loadGrid = originalLoadGrid;
         weightFiles.cleanup();
     }
 }

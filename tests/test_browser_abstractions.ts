@@ -1088,33 +1088,21 @@ async function testKeyStore() {
     const store = ks.getKeyStore();
     assert.ok(store, 'getKeyStore returns something');
 
-    // Interface contract
-    assert.strictEqual(typeof store.authenticate, 'function');
-    assert.strictEqual(typeof store.unlockWithPassword, 'function');
-    assert.strictEqual(typeof store.isMasterPasswordFailure, 'function');
-    assert.strictEqual(typeof store.getPrivateKey, 'function');
-    assert.strictEqual(typeof store.resolvePrivateKey, 'function');
-    assert.strictEqual(typeof store.isReady, 'function');
-    assert.strictEqual(typeof store.isResponsive, 'function');
-    assert.strictEqual(typeof store.waitForReady, 'function');
+    // Interface contract (slim — only non-trivial methods remain)
     assert.strictEqual(typeof store.resolveSigningKey, 'function');
     assert.strictEqual(typeof store.isDaemonSigningKey, 'function');
     assert.strictEqual(typeof store.executeOperations, 'function');
-    assert.strictEqual(typeof store.loadAccounts, 'function');
-    assert.strictEqual(typeof store.saveAccounts, 'function');
-    assert.strictEqual(typeof store.checkSecurity, 'function');
-    assert.ok(store.MasterPasswordError);
 
     // DirectKeyStore
     const { DirectKeyStore } = ks;
     const direct = new DirectKeyStore();
-    assert.strictEqual(direct.isReady(), true);
+    assert.strictEqual(direct.isDaemonSigningKey({}), false);
 
     // setKeyStore / resetKeyStore
     let customCalled = false;
-    ks.setKeyStore({ isReady: () => { customCalled = true; return true; } } as any);
+    ks.setKeyStore({ isDaemonSigningKey: () => { customCalled = true; return true; } } as any);
     const custom = ks.getKeyStore();
-    custom.isReady();
+    custom.isDaemonSigningKey({});
     assert.ok(customCalled);
 
     ks.resetKeyStore();

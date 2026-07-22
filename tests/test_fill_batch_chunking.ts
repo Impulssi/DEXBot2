@@ -7,7 +7,7 @@
 
 const assert = require('assert');
 const DEXBot = require('../modules/dexbot_class');
-const { _getSizingContext } = require('../modules/order/grid');
+require('../modules/order/grid'); // ensure loaded
 const { FILL_PROCESSING, ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 const MAX_BATCH = FILL_PROCESSING.MAX_FILL_BATCH_SIZE;
@@ -137,6 +137,8 @@ function makeBootstrapBot() {
         _updateOrder: async (order) => {
             orders.set(order.id, order);
         },
+        lockOrders() {},
+        unlockOrders() {},
     };
 
     bot._refreshDynamicWeightDistribution = () => {};
@@ -361,34 +363,37 @@ async function runTests() {
 
     // --- Test 13: bootstrap fills go through standard pipeline with MAX_BATCH chunking ---
     {
-        const originalSizingContext = _getSizingContext;
-        _getSizingContext = async () => null;
-        try {
-            const bot = makeBootstrapBot();
-            const totalFills = MAX_BATCH + 2;
-            bot._incomingFillQueue.push(...Array.from({ length: totalFills }, (_, n) => makeBootstrapFill(n + 1)));
+        const bot = makeBootstrapBot();
+        const totalFills = MAX_BATCH + 2;
+        bot._incomingFillQueue.push(...Array.from({ length: totalFills }, (_, n) => makeBootstrapFill(n + 1)));
 
-            const pipelineCalls: any[] = [];
-            bot._processFillsWithBatching = async (fills, excl, label) => {
-                pipelineCalls.push({ fillCount: fills.length, label });
-                return { aborted: false };
+        bot.manager.pauseFundRecalc = () => {};
+        bot.manager.resumeFundRecalc = async () => {};
+        bot.manager.flushGridDirty = async () => {};
+        bot._executeBatchIfNeeded = async () => ({ executed: true, hadRotation: false, skippedNoActions: false });
+
+        const pipelineCalls: any[] = [];
+        bot.manager.processFilledOrders = async (fills, excl, options) => {
+            pipelineCalls.push({ fillCount: fills.length, contextLabel: options?.context });
+            return {
+                actions: [{ type: 'create', id: fills[0]?.id || 'x' }],
+                stateUpdates: [],
+                hadRotation: false,
+                workingGrid: { getIndexes: () => ({}), getBoundary: () => 0 },
+                workingIndexes: {},
+                workingBoundary: 0,
+                aborted: false,
             };
+        };
 
-            await bot._processFillsWithBootstrapMode({
-                readOpenOrders: async () => [],
-                getFillProcessingMode: () => 'history',
-            });
+        await bot._processFillsWithBootstrapMode({
+            readOpenOrders: async () => [],
+            getFillProcessingMode: () => 'history',
+        });
 
-            // The bootstrap path now delegates to the standard fill pipeline.
-            // With 6 fills and MAX_BATCH=4 the standard pipeline should run as a
-            // single unified plan (fits in one batch).
-            assert.strictEqual(pipelineCalls.length, 1, `${totalFills} bootstrap fills: 1 pipeline invocation`);
-            assert.strictEqual(pipelineCalls[0].fillCount, totalFills, `pipeline saw all ${totalFills} fills`);
-            assert.strictEqual(pipelineCalls[0].label, '[BOOTSTRAP] fill processing', 'pipeline context label set');
-            console.log(`  ✓ bootstrap fills delegated to standard pipeline (${totalFills} fills, unified plan)`);
-        } finally {
-            _getSizingContext = originalSizingContext;
-        }
+        assert.strictEqual(pipelineCalls.length, 2, 'bootstrap fills should be processed in two chunks');
+        assert.strictEqual(pipelineCalls[0].fillCount, MAX_BATCH, 'first chunk should have MAX_BATCH fills');
+        assert.strictEqual(pipelineCalls[1].fillCount, 2, 'second chunk should contain remaining fills');
     }
 
     console.log('\nAll fill batch chunking tests passed.\n');

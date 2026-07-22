@@ -1008,6 +1008,7 @@ async function testRmsDivergenceRunsFullGridResync() {
                 ['buy-0', { id: 'buy-0', type: 'buy', price: 1, size: 1 }],
             ]),
             recalculateFunds: async () => {},
+            _clearStaleBroadcastFlag: () => {},
             clearStalePipelineOperations: () => {},
             isPipelineEmpty: () => ({ isEmpty: true }),
             checkGridHealth: async () => ({ buyDustOrders: [], sellDustOrders: [] }),

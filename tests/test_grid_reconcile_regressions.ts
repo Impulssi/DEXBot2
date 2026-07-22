@@ -214,11 +214,13 @@ async function testSkipUpdateWhenSlotAlreadyMapped() {
 
 async function testAttemptResumeAwaitsStoreGrid() {
     const gridPath = require.resolve('../modules/order/grid');
-    const Grid = require(gridPath);
-    const originalLoadGrid = Grid.loadGrid;
+    const realGrid = require(gridPath);
+    const gridStub = Object.assign({}, realGrid);
+    const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+    setCachedModule(gridPath, gridStub);
 
     try {
-        Grid.loadGrid = async () => {};
+        gridStub.loadGrid = async () => {};
 
         const manager = {
             orders: new Map([
@@ -245,7 +247,7 @@ async function testAttemptResumeAwaitsStoreGrid() {
         assert.strictEqual(storeResolved, true, 'Resume should await async storeGrid completion');
         console.log('✅ Regression 3 passed: attemptResume waits for async storeGrid');
     } finally {
-        Grid.loadGrid = originalLoadGrid;
+        restoreCachedModule(gridPath, null);
     }
 }
 

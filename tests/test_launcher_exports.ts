@@ -17,7 +17,7 @@ const {
 
 assert.strictEqual(typeof unlock.main, 'function', 'unlock should export main');
 assert.strictEqual(typeof unlock.buildDexbotStartArgs, 'function', 'unlock should export buildDexbotStartArgs');
-const UNLOCK_BASE = { headless: false, passwordFile: null };
+const UNLOCK_BASE = { headless: false, passwordFile: null, creditOnly: false };
 
 assert.deepStrictEqual(
     parseUnlockArgs(['node', 'unlock', '--claw-only']),
@@ -77,17 +77,17 @@ Config.BOT_NAME = originalConfigBotName;
 // Headless mode tests
 assert.deepStrictEqual(
     parseUnlockArgs(['node', 'unlock', '--headless']),
-    { botName: null, clawOnly: false, isolated: false, dryrun: false, headless: true, passwordFile: null },
+    { botName: null, clawOnly: false, isolated: false, dryrun: false, headless: true, passwordFile: null, creditOnly: false },
     'unlock parser should recognize headless flag'
 );
 assert.deepStrictEqual(
     parseUnlockArgs(['node', 'unlock', '--headless', '--password-file', '/run/secrets/pw']),
-    { botName: null, clawOnly: false, isolated: false, dryrun: false, headless: true, passwordFile: '/run/secrets/pw' },
+    { botName: null, clawOnly: false, isolated: false, dryrun: false, headless: true, passwordFile: '/run/secrets/pw', creditOnly: false },
     'unlock parser should recognize headless with password-file'
 );
 assert.deepStrictEqual(
     parseUnlockArgs(['node', 'unlock', '--headless', '--password-file=/run/secrets/pw']),
-    { botName: null, clawOnly: false, isolated: false, dryrun: false, headless: true, passwordFile: '/run/secrets/pw' },
+    { botName: null, clawOnly: false, isolated: false, dryrun: false, headless: true, passwordFile: '/run/secrets/pw', creditOnly: false },
     'unlock parser should accept --password-file=value syntax'
 );
 assert.deepStrictEqual(
@@ -179,7 +179,7 @@ for (const entry of [
 ]) {
     const label = `unlock parser should handle ${entry.args.slice(2).join(' ')}`;
     const result = parseUnlockArgs(entry.args);
-    const expected = { botName: null, clawOnly: false, isolated: false, dryrun: false, headless: false, passwordFile: null, control: entry.expected };
+    const expected = { botName: null, clawOnly: false, isolated: false, dryrun: false, headless: false, passwordFile: null, creditOnly: false, control: entry.expected };
     assert.deepStrictEqual(result, expected, label);
 }
 

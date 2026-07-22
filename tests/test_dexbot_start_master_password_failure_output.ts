@@ -1,3 +1,4 @@
+process.env.DEXBOT_SKIP_PROFILE_VALIDATION = '1';
 const assert = require('assert');
 const fs = require('fs');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');

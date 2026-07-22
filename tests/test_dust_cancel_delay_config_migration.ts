@@ -78,11 +78,11 @@ function testLegacyMinuteIgnored() {
     });
 
     // Legacy DUST_CANCEL_DELAY_MIN is no longer migrated;
-    // DUST_CANCEL_DELAY_SEC should remain at its default
+    // DUST_CANCEL_DELAY_SEC should remain at its default (-1 = immediate cancel)
     assert.strictEqual(
         constants.GRID_LIMITS.DUST_CANCEL_DELAY_SEC,
-        30,
-        'Legacy DUST_CANCEL_DELAY_MIN should be ignored; default DUST_CANCEL_DELAY_SEC should remain'
+        -1,
+        'Legacy DUST_CANCEL_DELAY_MIN should be ignored; default DUST_CANCEL_DELAY_SEC should remain at -1'
     );
 }
 
