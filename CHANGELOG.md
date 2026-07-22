@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.5] - 2026-07-22 - Redundant Open-Orders Sync Fix, Supervisor Updater Override, Base58 Deduplication, KeyStore Cleanup
+
+### 2026-07-22
+
+- **Fix**: redundant open-orders sync in `_processFillsCore` — `fillsWithoutBlock` could set `requiresOpenOrdersSync=true` and run an inline sync, but the fallback guard at line 2112 triggered a second identical sync. Now sets `anyRequiresSync=true` after `processValidFills(fillsWithoutBlock)` when the flag is active (`modules/dexbot_class.ts`).
+- **Fix**: supervisor updater override — added `updaterActive` option to `createBotSupervisor` so callers can enable the updater job without mutating the frozen `UPDATER` constant. Threaded through `buildSupervisedApps` (`modules/launcher/bot_supervisor.ts`).
+- **Fix**: `waitForStableStartup` event-loop hang — removed `.unref()` from poll timer so it keeps the event loop alive when all other handles close (`modules/launcher/bot_supervisor.ts`).
+- **Fix**: unref credit/dust intervals — `.unref()` on `_creditWatchdogInterval` and `_dustHealthCheckTimer` so they don't prevent clean event-loop exit, matching existing `_credentialDaemonWatchdogInterval` pattern (`modules/dexbot_class.ts`).
+- **Fix**: deduplicate inline base58 encode/decode — delegate `ecc.ts` and `ecc.browser.ts` to shared `modules/utils/base58check.ts`; export `base58Encode`/`base58Decode` for shared use (`modules/bitshares-native/crypto/ecc.ts`, `ecc.browser.ts`, `modules/utils/base58check.ts`).
+- **Fix**: remove pure-delegation pass-through methods from `KeyStore` interface and both implementations — callers already use `chainKeys` directly (`modules/key_store.ts`).
+- **Fix**: set `resolvedBotName` to `null` when `clawOnly` is true — no bot to resolve in claw-only mode (`modules/launcher/launch_modes.ts`).
+- **Chore**: import `roundToDecimals` from `order/utils/math` directly instead of re-export shim in `cr_planner.ts` and `credit_runtime.ts`.
+- **Test**: align 9 test files with recent production changes and fix pre-existing hanging-test failures (`tests/test_browser_abstractions.ts`, `test_dexbot_maintenance_runtime_dynamic_weights.ts`, `test_dexbot_start_master_password_failure_output.ts`, `test_dexbot_startup_dynamic_weight_wiring.ts`, `test_dust_cancel_delay_config_migration.ts`, `test_fill_batch_chunking.ts`, `test_grid_reconcile_regressions.ts`, `test_launcher_exports.ts`, `test_main_loop_sync_fill_rebalance.ts`).
+
 ## [1.2.4] - 2026-07-21 - Credential Daemon Memory — Signing Client Cache, Dispose(), Session Purge, Shallow Policy Copy
 
 ### 2026-07-21
