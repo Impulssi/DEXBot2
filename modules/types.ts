@@ -641,6 +641,10 @@ export interface SyncResult {
   ghostOrderId?: string;
 }
 
+export interface BatchSyncResult extends SyncResult {
+  ghostOrderIds: string[];
+}
+
 export interface SynchronizeResult {
   newOrders: Order[];
   ordersNeedingCorrection: PriceCorrectionEntry[];
@@ -719,9 +723,9 @@ export interface ManagerStateSnapshot {
 
 export interface Metrics {
   fundRecalcCount: number;
-  invariantViolations: { buy: number; sell: number };
   lockAcquisitions: number;
   lockContentionSkips: number;
+  gridLockContention: number;
   spreadRoleConversionBlocked: number;
   lastSyncDurationMs: number;
   metricsStartTime: number;
@@ -946,6 +950,31 @@ export interface BotIncrementBoundsOverrides {
   maxFactor?: number;
 }
 
+export interface BotFillProcessingOverrides {
+  maxFillBatchSize?: number;
+  maxConsecutiveConsumerFailures?: number;
+  consumerBackoffInitialMs?: number;
+  consumerBackoffMaxMs?: number;
+}
+
+export interface BotPipelineTimingOverrides {
+  timeoutMs?: number;
+  recoveryRetryIntervalMs?: number;
+  maxRecoveryAttempts?: number;
+  recoveryDecayFallbackMs?: number;
+  retryMaxAttempts?: number;
+  retryBaseDelayMs?: number;
+  retryMaxDelayMs?: number;
+}
+
+export interface BotApiLimitsOverrides {
+  poolBatchSize?: number;
+  maxPoolScanBatches?: number;
+  orderbookDepth?: number;
+  limitOrdersBatch?: number;
+  lpApiMaxPage?: number;
+}
+
 export interface BotConfigEntry {
   name: string;
   active: boolean;
@@ -969,6 +998,9 @@ export interface BotConfigEntry {
   feeParams?: BotFeeParamsOverrides;
   timing?: BotTimingOverrides;
   incrementBounds?: BotIncrementBoundsOverrides;
+  fillProcessing?: BotFillProcessingOverrides;
+  pipelineTiming?: BotPipelineTimingOverrides;
+  apiLimits?: BotApiLimitsOverrides;
 }
 
 export interface DEXBotConfig extends BotConfigEntry {

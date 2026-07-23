@@ -3,7 +3,7 @@
  *
  * Background: in production we observed a "double graceful shutdown" log pattern
  * where cleanup-loop + internal _runStartupSequence shutdown both called the
- * method within milliseconds. The fix adds a `_shutdownStarted` guard at the
+ * method within milliseconds. The fix adds a `_shuttingDown` guard at the
  * top of shutdown() so the second call waits for the in-flight shutdown.
  *
  * This test calls DEXBot.prototype.shutdown() on a minimal stub twice and

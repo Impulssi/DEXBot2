@@ -1331,7 +1331,7 @@ function scheduleDeferredGridResync(ctx, options = {}) {
     const settleDelayMs = Number.isFinite(TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
         ? Math.max(0, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
         : 6_000;
-    const delayMs = Math.max(idleDelayMs + settleDelayMs, idleDelayMs);
+    const delayMs = idleDelayMs + settleDelayMs;
     if (!(delayMs > 0)) return;
 
     ctx._deferredGridResyncTimer = setTimeout(() => {

@@ -169,6 +169,7 @@ function emptyData() {
     assets: null,
     debugInputs: null,
     processedFills: {},
+    recentFillKeys: {},
     createdAt: timestamp,
     lastUpdated: timestamp
   };
@@ -398,8 +399,9 @@ class AccountOrders {
    * @param {number|null} boundaryIdx - Optional master boundary index for StrategyEngine
    * @param {Object|null} assets - Optional asset metadata { assetA, assetB }
    * @param {Object|null} debugInputs - Optional debug-only input snapshot
+   * @param {Object|null} recentFillKeys - Optional fill key dedup snapshot for crash recovery
    */
-  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null) {
+  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null) {
     // Use AsyncLock to serialize read-modify-write operations
     await this._persistenceLock.acquire(async () => {
       // Reload from disk before writing to prevent race conditions
@@ -436,6 +438,13 @@ class AccountOrders {
         this.data.processedFills = {};
       }
 
+      // Persist recent fill keys for crash-durable dedup window
+      if (recentFillKeys) {
+        this.data.recentFillKeys = recentFillKeys;
+      } else if (!this.data.recentFillKeys) {
+        this.data.recentFillKeys = {};
+      }
+
       const timestamp = nowIso();
       this.data.lastUpdated = timestamp;
       if (this.data.meta) this.data.meta.updatedAt = timestamp;
@@ -453,6 +462,21 @@ class AccountOrders {
       this.data = this._loadData() || emptyData();
     }
     return (this.data && Array.isArray(this.data.grid)) ? this.data.grid : null;
+  }
+
+  /**
+   * Load the recently queued fill keys for crash-durable dedup.
+   * @param {boolean} forceReload - If true, reload from disk
+   * @returns {Object|null} Recent fill keys map or null if not found
+   */
+  loadRecentFillKeys(forceReload: boolean = false) {
+    if (forceReload) {
+      this.data = this._loadData() || emptyData();
+    }
+    if (this.data && this.data.recentFillKeys) {
+      return this.data.recentFillKeys;
+    }
+    return null;
   }
 
   /**

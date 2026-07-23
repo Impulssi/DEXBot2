@@ -222,10 +222,8 @@ async function runTests() {
     console.log(' - Testing manager owns processed fill tracker before bot wiring...');
     {
         const manager = await createManager();
-        const tracker = manager.accountant._getProcessedFillTracker();
-
         assert.strictEqual(manager.processedFillTracker instanceof Map, true, 'OrderManager should own a shared processed fill tracker by default');
-        assert.strictEqual(tracker, manager.processedFillTracker, 'Accountant should use the manager-owned processed fill tracker');
+        assert.strictEqual(manager.accountant.manager.processedFillTracker, manager.processedFillTracker, 'Accountant should use the manager-owned processed fill tracker');
     }
 
     console.log(' - Testing keyed fill accounting deduplicates duplicate credits...');
@@ -267,10 +265,9 @@ async function runTests() {
             receives: { asset_id: '1.3.0', amount: 250000 }
         };
         const fillKey = '1.7.123:999:1.11.556';
-        const tracker = manager.accountant._getProcessedFillTracker();
 
         await manager.accountant.processFillAccounting(fillOp, fillKey);
-        tracker.set(fillKey, Date.now() - (TIMING.FILL_DEDUPE_WINDOW_MS + 1000));
+        manager.accountant.manager.processedFillTracker.set(fillKey, Date.now() - (TIMING.FILL_DEDUPE_WINDOW_MS + 1000));
         await manager.accountant.processFillAccounting(fillOp, fillKey);
 
         assert.strictEqual(
@@ -332,9 +329,8 @@ async function runTests() {
             /forced post-validation failure/,
             'Expected injected failure after fill validation'
         );
-        const tracker = manager.accountant._getProcessedFillTracker();
         assert.strictEqual(
-            tracker.has(retryFillKey),
+            manager.accountant.manager.processedFillTracker.has(retryFillKey),
             false,
             'Failed accounting attempt must not poison the fill key'
         );

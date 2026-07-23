@@ -27,7 +27,7 @@
  *   8. addToChainFree(orderType, size, operation) - Add amount back to optimistic chainFree balance
  *
  * BALANCE ADJUSTMENTS (4 methods)
- *   9. adjustTotalBalance(orderType, delta, operation, totalOnly) - Adjust total and free balances
+ *   9. adjustTotalBalance(orderType, delta, operation) - Adjust total and free balances
  *   10. _normalizeSideHint(sideHint) - Normalize side hint to standard key (internal)
  *   11. _resolveOrderSide(order, fallbackOrder, explicitSideHint) - Resolve order side (internal)
  *   12. updateOptimisticFreeBalance(oldOrder, newOrder, context, fee, skipAssetAccounting) - Update optimistic balance during transitions
@@ -133,20 +133,6 @@ class Accountant {
     }
 
     /**
-     * @returns {Map<string, number>|null}
-     */
-    _getProcessedFillTracker() {
-        return this.manager.processedFillTracker;
-    }
-
-    /**
-     * @returns {import('./processed_fill_store').ProcessedFillStore|null}
-     */
-    _getProcessedFillStore() {
-        return this.manager.processedFillStore;
-    }
-
-    /**
      * Apply a list of balance adjustments.
      * @param {Array<{orderType: string, delta: number, operation: string}>} balanceAdjustments
      * @returns {void}
@@ -154,22 +140,6 @@ class Accountant {
     _applyBalanceAdjustments(balanceAdjustments) {
         for (const adjustment of balanceAdjustments) {
             this.adjustTotalBalance(adjustment.orderType, adjustment.delta, adjustment.operation);
-        }
-    }
-
-    /**
-     * Roll back a list of balance adjustments in reverse order.
-     * @param {Array<{orderType: string, delta: number, operation: string}>} balanceAdjustments
-     * @returns {void}
-     */
-    _rollbackBalanceAdjustments(balanceAdjustments) {
-        for (let i = balanceAdjustments.length - 1; i >= 0; i--) {
-            const adjustment = balanceAdjustments[i];
-            this.adjustTotalBalance(
-                adjustment.orderType,
-                -adjustment.delta,
-                `${adjustment.operation}-rollback`
-            );
         }
     }
 
@@ -712,10 +682,11 @@ class Accountant {
               mgr._recoveryState = { attemptCount: 0, lastAttemptAt: 0, inFlight: false, lastFailureAt: 0, structuralResyncRequested: false };
           }
 
+          const pt = mgr.config?.pipelineTiming || PIPELINE_TIMING;
           const state = mgr._recoveryState;
           const now = Date.now();
-          const retryIntervalMs = Math.max(0, Number(PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS));
-          const maxAttemptsRaw = Number(PIPELINE_TIMING.MAX_RECOVERY_ATTEMPTS);
+          const retryIntervalMs = Math.max(0, Number(pt.RECOVERY_RETRY_INTERVAL_MS));
+          const maxAttemptsRaw = Number(pt.MAX_RECOVERY_ATTEMPTS);
           const hasAttemptLimit = Number.isFinite(maxAttemptsRaw) && maxAttemptsRaw > 0;
 
           if (state.inFlight) {
@@ -726,7 +697,7 @@ class Accountant {
           // Decay: if enough time has passed since the last failure, treat this
           // as a fresh violation cycle to prevent stale counts from a previous
           // cycle permanently exhausting the attempt budget.
-          const decayMs = retryIntervalMs > 0 ? retryIntervalMs * 3 : PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS;
+          const decayMs = retryIntervalMs > 0 ? retryIntervalMs * 3 : (pt.RECOVERY_DECAY_FALLBACK_MS ?? PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS);
           if (state.attemptCount > 0 && state.lastFailureAt > 0 && (now - state.lastFailureAt) > decayMs) {
               // Log at 'info' level so operators can monitor for repeated decay patterns
               // which may indicate a persistent issue that self-corrects just long enough
@@ -972,9 +943,8 @@ class Accountant {
      * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
      * @param {number} delta - Amount to adjust
      * @param {string} operation - Context for logging
-     * @param {boolean} totalOnly - If true, only adjust TOTAL balance, not FREE portion.
      */
-    adjustTotalBalance(orderType, delta, operation, totalOnly = false) {
+    adjustTotalBalance(orderType, delta, operation) {
         const mgr = this.manager;
         const isBuy = (orderType === ORDER_TYPES.BUY);
         const freeKey = isBuy ? 'buyFree' : 'sellFree';
@@ -982,13 +952,11 @@ class Accountant {
 
         if (!mgr.accountTotals) return;
 
-        if (!totalOnly) {
-            const oldFree = toFiniteNumber(mgr.accountTotals[freeKey]);
-            // IMPORTANT: No clamping to 0 here. Allowing temporary negative Free balance
-            // ensures the invariant Total = Free + Committed remains stable during
-            // the short race between Fill detection and Order state update.
-            mgr.accountTotals[freeKey] = oldFree + delta;
-        }
+        const oldFree = toFiniteNumber(mgr.accountTotals[freeKey]);
+        // IMPORTANT: No clamping to 0 here. Allowing temporary negative Free balance
+        // ensures the invariant Total = Free + Committed remains stable during
+        // the short race between Fill detection and Order state update.
+        mgr.accountTotals[freeKey] = oldFree + delta;
 
         if (mgr.accountTotals[totalKey] !== undefined && mgr.accountTotals[totalKey] !== null) {
             const oldTotal = toFiniteNumber(mgr.accountTotals[totalKey]);
@@ -996,8 +964,7 @@ class Accountant {
         }
 
         if (mgr.logger && mgr.logger.level === 'debug') {
-            const freeMsg = totalOnly ? `Free: (untouched)` : `Free: ${Format.formatAmount8(mgr.accountTotals[freeKey])}`;
-            mgr.logger.log(`[ACCOUNTING] ${totalKey} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> Total: ${Format.formatAmount8(mgr.accountTotals[totalKey])}, ${freeMsg}`, 'debug');
+            mgr.logger.log(`[ACCOUNTING] ${totalKey} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> Total: ${Format.formatAmount8(mgr.accountTotals[totalKey])}, Free: ${Format.formatAmount8(mgr.accountTotals[freeKey])}`, 'debug');
         }
     }
 
@@ -1403,7 +1370,7 @@ class Accountant {
          }
 
          let processedAt = null;
-         const tracker = fillKey ? this._getProcessedFillTracker() : null;
+          const tracker = fillKey ? this.manager.processedFillTracker : null;
          if (fillKey) {
              processedAt = Date.now();
              const lastProcessed = tracker.get(fillKey);
@@ -1416,7 +1383,7 @@ class Accountant {
              }
          }
 
-         const processedFillStore = this._getProcessedFillStore();
+          const processedFillStore = this.manager.processedFillStore;
 
          // Record/queue the dedup key before applying balance adjustments. In
          // immediate mode this is durable before funds move; batched/manual modes

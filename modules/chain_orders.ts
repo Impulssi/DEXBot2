@@ -507,6 +507,46 @@ async function readSingleOrder(orderId, timeoutMs = TIMING.CONNECTION_TIMEOUT_MS
 }
 
 /**
+ * Fetch multiple limit orders by id in a single get_objects RPC call.
+ *
+ * Deduplicates input IDs and returns a Map of orderId → raw order object
+ * (or null for absent IDs). Used by the sync engine to batch drift
+ * refetches across all fills in a block group, replacing N individual
+ * readSingleOrder calls with one RPC.
+ *
+ * Falls back to individual readSingleOrder calls on error.
+ *
+ * @param {string[]} orderIds - Array of BitShares limit order ids
+ * @param {number} [timeoutMs] - Connection timeout in milliseconds
+ * @returns {Promise<Map<string, Object|null>>} Map of orderId → raw order or null
+ */
+async function batchReadOrders(orderIds, timeoutMs = TIMING.CONNECTION_TIMEOUT_MS) {
+    if (!Array.isArray(orderIds) || orderIds.length === 0) return new Map();
+    const uniqueIds = [...new Set(orderIds.filter(id => id && typeof id === 'string'))];
+    if (uniqueIds.length === 0) return new Map();
+
+    await waitForConnected(timeoutMs);
+    if (!BitShares || !BitShares.db || typeof BitShares.db.get_objects !== 'function') {
+        throw new Error('batchReadOrders: BitShares.db.get_objects unavailable');
+    }
+
+    const results = await BitShares.db.get_objects(uniqueIds);
+    const resultMap = new Map();
+    if (Array.isArray(results)) {
+        for (let i = 0; i < uniqueIds.length; i++) {
+            const id = uniqueIds[i];
+            const order = results[i];
+            if (order && order.id === id) {
+                resultMap.set(id, order);
+            } else {
+                resultMap.set(id, null);
+            }
+        }
+    }
+    return resultMap;
+}
+
+/**
  * Fetch all open limit orders for an account from the blockchain.
  * Uses AsyncLock to safely access preferred accountId (fixes Issue #2).
  * @param {string|null} accountId - Account ID to query (uses preferred if null)
@@ -1279,6 +1319,7 @@ export = {
     resolveAccountName,
     readOpenOrders,
     readSingleOrder,
+    batchReadOrders,
     listenForFills,
     updateOrder,
     createOrder,

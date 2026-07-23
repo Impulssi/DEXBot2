@@ -805,23 +805,6 @@ let PIPELINE_TIMING = {
     //   - Set to 5: balanced (typical value; ~5 min of effort)
     MAX_RECOVERY_ATTEMPTS: 5,
 
-    // FEE_EVENT_DEDUP_TTL_MS: How long to remember settled fee events for deduplication.
-    // Prevents the same fill from being fee-settled multiple times when
-    // re-detected across sync cycles or reconnections.
-    // Default: 6 hours (21600000 ms).
-    FEE_EVENT_DEDUP_TTL_MS: 6 * 60 * 60 * 1000,
-
-    // MAX_FEE_EVENT_CACHE_SIZE: Maximum number of fee events to keep in deduplication cache.
-    // Prevents unbounded memory growth during extended operation with many fills.
-    // When exceeded, oldest entries are evicted to 75% capacity.
-    // Default: 10000 entries (~60MB worst case with long event IDs).
-    MAX_FEE_EVENT_CACHE_SIZE: 10000,
-
-    // CACHE_EVICTION_RETENTION_RATIO: Target ratio of entries to keep during cache eviction.
-    // When cache exceeds max size, evict down to (maxSize × ratio) entries.
-    // Default: 0.75 (75%) - evicts oldest 25% to get back to 75% capacity.
-    CACHE_EVICTION_RETENTION_RATIO: 0.75,
-
     // RECOVERY_DECAY_FALLBACK_MS: Default decay window for recovery attempt counter (milliseconds).
     // Used when RECOVERY_RETRY_INTERVAL_MS is not configured.
     // After this idle time, recovery attempt count resets to prevent permanent exhaustion.

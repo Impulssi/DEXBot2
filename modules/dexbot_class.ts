@@ -143,7 +143,6 @@ class DEXBot {
     _staleCleanupRetentionMs: number;
     _metrics: any;
     _shuttingDown: boolean;
-    _shutdownStarted: boolean;
     _shutdownPromise: Promise<void> | null;
     _blockchainFetchInterval: any;
     _blockchainFetchInFlight: boolean;
@@ -201,6 +200,8 @@ class DEXBot {
         this.config.feeParams = rs.feeParams;
         this.config.incrementBounds = rs.incrementBounds;
         this.config.timing = rs.timing;
+        this.config.fillProcessing = rs.fillProcessing;
+        this.config.pipelineTiming = rs.pipelineTiming;
         this.config.logging = rs.logging;
 
         this._fillDedupeWindowMs = this.config.timing.FILL_DEDUPE_WINDOW_MS;
@@ -240,7 +241,6 @@ class DEXBot {
 
         // Shutdown state
         this._shuttingDown = false;
-        this._shutdownStarted = false;
         this._shutdownPromise = null;
 
         // Runtime handles for graceful lifecycle management
@@ -375,6 +375,7 @@ class DEXBot {
      * @private
      */
     async _persistAndRecoverIfNeeded() {
+        this.manager._recentFillKeysSnapshot = this._getRecentFillKeysSnapshot();
         const validation = await this.manager.persistGrid();
         if (!validation.isValid) {
             this._warn(`Startup validation failed: ${validation.reason}. Triggering immediate recovery...`);
@@ -382,11 +383,44 @@ class DEXBot {
             const recoveryValidation = await this.manager.accountant._performStateRecovery(this.manager);
             if (recoveryValidation.isValid) {
                 this._log(`✓ Startup recovery successful. Persistent state restored.`);
+                this.manager._recentFillKeysSnapshot = this._getRecentFillKeysSnapshot();
                 await this.manager.persistGrid();
             } else {
                 this._warn(`Startup recovery failed: ${recoveryValidation.reason}. Bot proceeding with caution.`);
             }
         }
+    }
+
+    /**
+     * Snapshot the recently queued fill keys as a plain object for crash-durable persistence.
+     * Merges with any existing snapshot to avoid losing keys that were evicted from the
+     * in-memory map between persist cycles but remain within the dedup window.
+     * Only includes entries within the dedup window to avoid writing stale keys.
+     * @returns {Record<string, number>}
+     */
+    _getRecentFillKeysSnapshot() {
+        const snapshot = {};
+        const now = Date.now();
+        // 1. Collect live keys from the in-memory map
+        for (const [key, timestamp] of this._recentlyQueuedFills) {
+            if (now - Number(timestamp) < this._fillDedupeWindowMs) {
+                snapshot[key] = Number(timestamp);
+            }
+        }
+        // 2. Merge with the previous snapshot — carry forward any keys that
+        //    were present in a prior persist cycle, are still within the
+        //    dedup window, but have been evicted from _recentlyQueuedFills
+        //    (e.g. by TTL-based pruning between two persistGrid calls).
+        //    This prevents a crash + restart from losing keys that were
+        //    processed but not yet persisted.
+        if (this.manager?._recentFillKeysSnapshot) {
+            for (const [key, timestamp] of Object.entries(this.manager._recentFillKeysSnapshot)) {
+                if (!(key in snapshot) && now - Number(timestamp) < this._fillDedupeWindowMs) {
+                    snapshot[key] = Number(timestamp);
+                }
+            }
+        }
+        return snapshot;
     }
 
     /**
@@ -790,8 +824,6 @@ class DEXBot {
      * @returns {Promise<boolean>} True if all affected orders were repaired
      */
     async _targetedOrderRepair(orderIds) {
-        const { BitShares } = require('./bitshares_client');
-        const { virtualizeOrder } = require('./order/utils/order');
         try {
             const objects = await BitShares.db.get_objects(orderIds);
             if (!Array.isArray(objects) || objects.length !== orderIds.length) return false;
@@ -924,12 +956,14 @@ class DEXBot {
             const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed();
             const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx();
             const persistedBtsBalance = this.accountOrders.loadBtsBalance();
+            const persistedRecentFillKeys = this.accountOrders.loadRecentFillKeys();
 
             return {
                 persistedGrid: repairedGrid,
                 persistedBtsFeesOwed,
                 persistedBoundaryIdx,
                 persistedBtsBalance,
+                persistedRecentFillKeys,
             };
         } finally {
             this.manager.finishBootstrap();
@@ -1094,14 +1128,14 @@ class DEXBot {
      * @param {string} [options.context]
      * @param {Object} [options.logger]
      * @param {string} [options.replayMessage]
-     * @param {string} [options.persistenceMode='immediate']
+     * @param {string} [options.persistenceMode='batched']
      * @returns {Promise<import('./types').ReplaySafeFillResult>}
      */
     async _applyReplaySafeOrphanFillAccounting(fill, fillOp, {
         context,
         logger = this.manager?.logger,
         replayMessage,
-        persistenceMode = PROCESSED_FILL_PERSISTENCE_MODES.IMMEDIATE
+        persistenceMode = PROCESSED_FILL_PERSISTENCE_MODES.BATCHED
     }: {
         context?: string;
         logger?: any;
@@ -1137,6 +1171,7 @@ class DEXBot {
             persistedBtsFeesOwed,
             persistedBoundaryIdx,
             persistedBtsBalance,
+            persistedRecentFillKeys,
         } = startupState;
 
         try {
@@ -1177,6 +1212,7 @@ class DEXBot {
                                     await this._processFillsWithBatching(syncResult.filledOrders, new Set(), 'post-reconnect sync fill');
                                     if (this._shuttingDown) return;
                                 }
+                                this.manager._recentFillKeysSnapshot = this._getRecentFillKeysSnapshot();
                                 await this.manager.persistGrid();
 
                                 // Cancel any dust created by reconnect fills immediately.
@@ -1331,6 +1367,7 @@ class DEXBot {
 
                         await this._flushProcessedFillPersistence('post-reset-batch');
 
+                        this.manager._recentFillKeysSnapshot = this._getRecentFillKeysSnapshot();
                         await this.manager.persistGrid();
                     }
 
@@ -1408,6 +1445,16 @@ class DEXBot {
                         locked: persistedBtsBalance.locked || 0
                     };
                 }
+            }
+
+            // Restore recently queued fill keys for crash-durable dedup window.
+            // All persisted keys are restored; the in-memory TTL (_fillDedupeWindowMs)
+            // will naturally evict any that are already expired on the next fill cycle.
+            if (persistedRecentFillKeys && typeof persistedRecentFillKeys === 'object') {
+                for (const [fillKey, timestamp] of Object.entries(persistedRecentFillKeys)) {
+                    this._recentlyQueuedFills.set(fillKey, Number(timestamp));
+                }
+                this._log(`Restored ${Object.keys(persistedRecentFillKeys).length} recently queued fill key(s) from persisted snapshot`, 'debug');
             }
 
             if (!this.config.dryRun && !this.accountId) {
@@ -1669,7 +1716,7 @@ class DEXBot {
     }
 
     _maxConsecutiveFillConsumerFailures() {
-        return FILL_PROCESSING.MAX_CONSECUTIVE_CONSUMER_FAILURES;
+        return this.config.fillProcessing?.MAX_CONSECUTIVE_CONSUMER_FAILURES ?? FILL_PROCESSING.MAX_CONSECUTIVE_CONSUMER_FAILURES;
     }
 
     /**
@@ -1682,16 +1729,17 @@ class DEXBot {
      * @private
      */
     _computeFillConsumerBackoffMs(failures) {
-        const initial = FILL_PROCESSING.CONSUMER_BACKOFF_INITIAL_MS;
-        const max = FILL_PROCESSING.CONSUMER_BACKOFF_MAX_MS;
-        const stepAfterMax = Math.max(0, failures - FILL_PROCESSING.MAX_CONSECUTIVE_CONSUMER_FAILURES);
+        const fp = this.config.fillProcessing || FILL_PROCESSING;
+        const initial = fp.CONSUMER_BACKOFF_INITIAL_MS;
+        const max = fp.CONSUMER_BACKOFF_MAX_MS;
+        const stepAfterMax = Math.max(0, failures - this._maxConsecutiveFillConsumerFailures());
         // 0 -> initial, 1 -> 2*initial, 2 -> 4*initial, ... capped at max.
         return Math.min(max, initial * Math.pow(2, stepAfterMax));
     }
 
     _scheduleFillConsumerRestart(chainOrders) {
         const failures = this._consecutiveConsumeFailures;
-        if (failures >= FILL_PROCESSING.MAX_CONSECUTIVE_CONSUMER_FAILURES) {
+        if (failures >= this._maxConsecutiveFillConsumerFailures()) {
             // Past the failure budget: switch from tight setImmediate loop to
             // exponential backoff. The consumer continues to retry — a transient
             // outage (e.g., credential daemon recovery) will resume normal
@@ -2017,20 +2065,44 @@ class DEXBot {
                         let resolvedOrders = [];
                         if (fillMode === 'history') {
                             this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (history mode)`, 'info');
-                            for (const fill of fillsToSync) {
-                                const resultHistory = await this.manager.syncFromFillHistory(fill, {
-                                    persistenceMode: PROCESSED_FILL_PERSISTENCE_MODES.IMMEDIATE
+
+                            // Batch mode for 2+ fills: acquires _gridLock once, batches drift refetch
+                            if (fillsToSync.length >= 2) {
+                                const batchResult = await this.manager.syncFromFillHistoryBatch(fillsToSync, {
+                                    persistenceMode: PROCESSED_FILL_PERSISTENCE_MODES.BATCHED
                                 });
-                                const fillKey = buildFillKey({
-                                    orderId: fill?.op?.[1]?.order_id,
-                                    blockNum: fill?.block_num,
-                                    historyId: fill?.id
-                                });
-                                if (fillKey) pendingFillKeysForCurrentCycle.add(fillKey);
-                                // Dust is handled by post-fill detection below.
-                                if (resultHistory.filledOrders) resolvedOrders.push(...resultHistory.filledOrders);
-                                if (resultHistory.requiresOpenOrdersSync) requiresOpenOrdersSync = true;
-                                if (resultHistory.ghostOrderId) pendingGhostOrders.add(resultHistory.ghostOrderId);
+                                for (const fill of fillsToSync) {
+                                    const fillKey = buildFillKey({
+                                        orderId: fill?.op?.[1]?.order_id,
+                                        blockNum: fill?.block_num,
+                                        historyId: fill?.id
+                                    });
+                                    if (fillKey) pendingFillKeysForCurrentCycle.add(fillKey);
+                                }
+                                if (batchResult.filledOrders) resolvedOrders.push(...batchResult.filledOrders);
+                                if (batchResult.requiresOpenOrdersSync) requiresOpenOrdersSync = true;
+                                if (batchResult.ghostOrderIds?.length > 0) {
+                                    for (const id of batchResult.ghostOrderIds) {
+                                        pendingGhostOrders.add(id);
+                                    }
+                                }
+                            } else {
+                                // Single fill: use individual per-fill path
+                                for (const fill of fillsToSync) {
+                                    const resultHistory = await this.manager.syncFromFillHistory(fill, {
+                                        persistenceMode: PROCESSED_FILL_PERSISTENCE_MODES.BATCHED
+                                    });
+                                    const fillKey = buildFillKey({
+                                        orderId: fill?.op?.[1]?.order_id,
+                                        blockNum: fill?.block_num,
+                                        historyId: fill?.id
+                                    });
+                                    if (fillKey) pendingFillKeysForCurrentCycle.add(fillKey);
+                                    // Dust is handled by post-fill detection below.
+                                    if (resultHistory.filledOrders) resolvedOrders.push(...resultHistory.filledOrders);
+                                    if (resultHistory.requiresOpenOrdersSync) requiresOpenOrdersSync = true;
+                                    if (resultHistory.ghostOrderId) pendingGhostOrders.add(resultHistory.ghostOrderId);
+                                }
                             }
                         }
 
@@ -2137,24 +2209,90 @@ class DEXBot {
                         //     cancel tx to clean up the zombie order on chain.
                         //     Runs in the finally so it still fires even if processValidFills
                         //     throws after collecting ghost IDs into pendingGhostOrders.
-                        //     Each cancelOrder is individually try/caught so no per-order
-                        //     error can prevent resumeFundRecalc from running.
+                        //
+                        //     OPTIMIZATION: Batch all new ghost cancels into one executeBatch
+                        //     call with multiple cancelOrder ops, reducing per-order tx fees
+                        //     and broadcast overhead. Falls back to individual cancels on
+                        //     batch failure.
                         if (pendingGhostOrders.size > 0) {
                             if (!this._ghostOrderCancelAttempted) this._ghostOrderCancelAttempted = new Set<string>();
-                            for (const ghostOrderId of pendingGhostOrders) {
-                                if (this._ghostOrderCancelAttempted.has(ghostOrderId)) continue;
-                                try {
+                            const newGhostIds = [...pendingGhostOrders].filter(
+                                id => !this._ghostOrderCancelAttempted.has(id)
+                            );
+                            if (newGhostIds.length > 0) {
+                                const MAX_OPS_PER_TX = 200;
+                                let batchFailed = false;
+
+                                // Build cancel ops with per-ID error tolerance.
+                                // Index correlates 1:1 with newGhostIds (allSettled preserves order).
+                                const buildResults = await Promise.allSettled(
+                                    newGhostIds.map(id =>
+                                        chainOrders.buildCancelOrderOp(this.account, id)
+                                    )
+                                );
+                                const cancelOps: any[] = [];
+                                for (let i = 0; i < buildResults.length; i++) {
+                                    const result = buildResults[i];
+                                    const id = newGhostIds[i];
+                                    if (result.status === 'fulfilled') {
+                                        cancelOps.push(result.value);
+                                    } else {
+                                        this.manager.logger.log(
+                                            `[SYNC] Failed to build cancel op for ghost order ${id}: ${result.reason?.message || result.reason}`,
+                                            'warn'
+                                        );
+                                    }
+                                }
+
+                                // Chunk into batches respecting MAX_OPS_PER_TX
+                                for (let i = 0; i < cancelOps.length; i += MAX_OPS_PER_TX) {
+                                    const chunk = cancelOps.slice(i, i + MAX_OPS_PER_TX);
+                                    const batchIds = newGhostIds.slice(i, i + MAX_OPS_PER_TX);
+                                    try {
+                                        this.manager.logger.log(
+                                            `[SYNC] Batch-cancelling ${chunk.length} orphaned chain order(s) ` +
+                                            `(batch ${Math.floor(i / MAX_OPS_PER_TX) + 1}/${Math.ceil(cancelOps.length / MAX_OPS_PER_TX)})`,
+                                            'info'
+                                        );
+                                        await chainOrders.executeBatch(this.account, this.privateKey, chunk);
+                                        // Mark successfully cancelled IDs immediately
+                                        for (const id of batchIds) {
+                                            this._ghostOrderCancelAttempted.add(id);
+                                        }
+                                    } catch (batchErr: any) {
+                                        batchFailed = true;
+                                        this.manager.logger.log(
+                                            `[SYNC] Batch ghost cancel failed for chunk ${Math.floor(i / MAX_OPS_PER_TX) + 1} ` +
+                                            `(${chunk.length} orders): ${batchErr?.message || batchErr}`,
+                                            'warn'
+                                        );
+                                    }
+                                }
+
+                                // Log overall success if all chunks and all builds succeeded
+                                if (!batchFailed && cancelOps.length === newGhostIds.length) {
                                     this.manager.logger.log(
-                                        `[SYNC] Cancelling orphaned chain order ${ghostOrderId} (other-side full-fill residual)`,
+                                        `[SYNC] Successfully batch-cancelled ${newGhostIds.length} orphaned chain order(s)`,
                                         'info'
                                     );
-                                    await chainOrders.cancelOrder(this.account, this.privateKey, ghostOrderId);
-                                    this._ghostOrderCancelAttempted.add(ghostOrderId);
-                                } catch (err: any) {
-                                    this.manager.logger.log(
-                                        `[SYNC] Failed to cancel orphaned order ${ghostOrderId}: ${err?.message || err}`,
-                                        'warn'
-                                    );
+                                }
+
+                                // Fallback: individual cancels for IDs that were not marked successful
+                                for (const ghostOrderId of newGhostIds) {
+                                    if (this._ghostOrderCancelAttempted.has(ghostOrderId)) continue;
+                                    try {
+                                        this.manager.logger.log(
+                                            `[SYNC] Cancelling orphaned chain order ${ghostOrderId} (other-side full-fill residual)`,
+                                            'info'
+                                        );
+                                        await chainOrders.cancelOrder(this.account, this.privateKey, ghostOrderId);
+                                        this._ghostOrderCancelAttempted.add(ghostOrderId);
+                                    } catch (err: any) {
+                                        this.manager.logger.log(
+                                            `[SYNC] Failed to cancel orphaned order ${ghostOrderId}: ${err?.message || err}`,
+                                            'warn'
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -2239,6 +2377,7 @@ class DEXBot {
                         );
                     }
 
+                    this.manager._recentFillKeysSnapshot = this._getRecentFillKeysSnapshot();
                     await retryPersistenceIfNeeded(this.manager);
 
                     // Periodically clean up old fill records after processing N fills.
@@ -2617,7 +2756,7 @@ class DEXBot {
      * @returns {number} Positive maximum number of fill-driven rotations per broadcast cycle
      */
     _getMaxFillBatchSize() {
-        return Math.max(1, FILL_PROCESSING.MAX_FILL_BATCH_SIZE);
+        return Math.max(1, this.config.fillProcessing?.MAX_FILL_BATCH_SIZE ?? FILL_PROCESSING.MAX_FILL_BATCH_SIZE);
     }
 
     /**
@@ -3148,7 +3287,7 @@ class DEXBot {
         // BROADCAST_DEADLINE fires while the transaction may still be valid
         // and land in the next block. Wait for up to 3 blocks (~1 BitShares
         // block interval each) and re-check before permanently discarding.
-        const UNCERTAIN_RECHECK_MAX_ATTEMPTS = PIPELINE_TIMING.RETRY_MAX_ATTEMPTS; // 3
+        const UNCERTAIN_RECHECK_MAX_ATTEMPTS = this.config.pipelineTiming?.RETRY_MAX_ATTEMPTS ?? PIPELINE_TIMING.RETRY_MAX_ATTEMPTS; // 3
         const UNCERTAIN_RECHECK_INTERVAL_MS = TIMING.MILLISECONDS_PER_SECOND * 3; // 3s
         let recheckRound = 0;
         while (discarded.length > 0 && recheckRound < UNCERTAIN_RECHECK_MAX_ATTEMPTS) {
@@ -5824,11 +5963,11 @@ class DEXBot {
      * @returns {Promise<void>}
      */
     async shutdown() {
-        if (this._shutdownStarted) {
+        if (this._shuttingDown) {
             this._log('Shutdown already in progress; ignoring re-entrant call');
             return this._shutdownPromise || Promise.resolve();
         }
-        this._shutdownStarted = true;
+        this._shuttingDown = true;
         const shutdownImpl = typeof this._shutdownImpl === 'function'
             ? this._shutdownImpl
             : DEXBot.prototype._shutdownImpl;
@@ -5838,7 +5977,6 @@ class DEXBot {
 
     async _shutdownImpl() {
         this._log('Initiating graceful shutdown...');
-        this._shuttingDown = true;
         this._processedFillStore.setShuttingDown(true);
 
         // Stop accepting new work

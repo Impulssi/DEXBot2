@@ -102,7 +102,7 @@ function buildOrphanFillFallbackKey(bot, fill) {
  * @param {string} [options.missingKeyLevel='warn'] - Log level for missing key messages
  * @param {string} [options.fallbackKeyLevel='warn'] - Log level for fallback key messages
  * @param {string} [options.replayLevel='debug'] - Log level for replay messages
- * @param {string} [options.persistenceMode='immediate'] - Processed fill persistence mode
+ * @param {string} [options.persistenceMode='immediate'] - Processed fill persistence mode (wrappers default to 'batched')
  * @param {boolean} [options.allowOrphanFallbackKey=false] - Allow degraded orphan fallback key
  * @returns {Promise<import('./types').ReplaySafeFillResult>}
  */
@@ -209,14 +209,14 @@ async function applyReplaySafeTrackedFillAccounting(bot, fill, fillOp, {
  * @param {string} [options.context] - Context label for log messages
  * @param {Object} [options.logger] - Logger instance
  * @param {Function} [options.replayMessage] - Callback to generate log message on duplicate fill
- * @param {string} [options.persistenceMode='immediate'] - Processed fill persistence mode
+ * @param {string} [options.persistenceMode='batched'] - Processed fill persistence mode
  * @returns {Promise<import('./types').ReplaySafeFillResult>}
  */
 async function applyReplaySafeOrphanFillAccounting(bot, fill, fillOp, {
     context,
     logger = bot.manager?.logger,
     replayMessage,
-    persistenceMode = PROCESSED_FILL_PERSISTENCE_MODES.IMMEDIATE
+    persistenceMode = PROCESSED_FILL_PERSISTENCE_MODES.BATCHED
 }: {
     context?: string;
     logger?: any;

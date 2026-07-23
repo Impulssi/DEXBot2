@@ -87,12 +87,14 @@ interface QueueItem<T = unknown> {
 interface AsyncLockOptions {
     timeout?: number;
     level?: number;
+    onContention?: () => void;
 }
 
 interface AcquireOptions {
     timeout?: number;
     cancelToken?: { isCancelled: boolean };
     level?: number;
+    onContention?: () => void;
 }
 
 class AsyncLock {
@@ -102,6 +104,7 @@ class AsyncLock {
     private _generation: number;
     private _defaultTimeout: number | null;
     private _level: number;
+    private _onContention: (() => void) | null;
 
     constructor(options: AsyncLockOptions = {}) {
         this._queue = [];
@@ -110,6 +113,7 @@ class AsyncLock {
         this._generation = 0;
         this._defaultTimeout = options.timeout || null;
         this._level = options.level ?? 0;
+        this._onContention = options.onContention || null;
     }
 
     /**
@@ -165,6 +169,19 @@ class AsyncLock {
 
             this._queue.push(item);
             this._processQueue();
+            // After _processQueue returns, if the queue is non-empty, our
+            // item could not run immediately and is waiting — that is
+            // contention (the lock is held by another context, or there are
+            // other waiters ahead of us). Calls that take the re-entrant
+            // path (this._holding check at the top) never reach here.
+            // Note: the re-entrant path means this callback will miss the
+            // common nested-call pattern; the gridLockContention metric
+            // therefore only captures external contention (different async
+            // contexts competing for the same lock), not re-entrant usage.
+            if (this._queue.length > 0) {
+                const cb = options.onContention || this._onContention;
+                if (cb) cb();
+            }
         });
     }
 
@@ -209,6 +226,14 @@ class AsyncLock {
             if (generation === this._generation) {
                 this._locked = false;
                 this._processQueue();
+            }
+            // After a callback completes, if there are still queued items
+            // (but the previous _locked=false path already called
+            // _processQueue which started the next one), check whether
+            // items remain after _processQueue's shift. This catches
+            // contention in deeply nested re-entrant patterns.
+            if (this._queue.length > 0 && this._onContention) {
+                this._onContention();
             }
         }
     }

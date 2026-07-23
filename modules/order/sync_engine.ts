@@ -112,29 +112,6 @@ const {
 } = require('./processed_fill_store');
 const { lookupAsset } = require('./utils/system');
 
-/**
- * Compare two raw chain order objects for on-chain equivalence.
- * @param {Object|null} a - First chain order
- * @param {Object|null} b - Second chain order
- * @returns {boolean} True if orders are equivalent
- */
-function hasEquivalentRawOnChainOrder(a, b) {
-    if (!a && !b) return true;
-    if (!a || !b) return false;
-
-    const aBase = a.sell_price?.base || {};
-    const bBase = b.sell_price?.base || {};
-    const aQuote = a.sell_price?.quote || {};
-    const bQuote = b.sell_price?.quote || {};
-
-    return String(a.id ?? '') === String(b.id ?? '') &&
-        String(a.for_sale ?? '') === String(b.for_sale ?? '') &&
-        String(aBase.amount ?? '') === String(bBase.amount ?? '') &&
-        String(aBase.asset_id ?? '') === String(bBase.asset_id ?? '') &&
-        String(aQuote.amount ?? '') === String(bQuote.amount ?? '') &&
-        String(aQuote.asset_id ?? '') === String(bQuote.asset_id ?? '');
-}
-
 function describeNearestAdoptionCandidates(mgr, chainOrder, precision, calcTolerance, matchedGridOrderIds = null) {
     if (!mgr?.orders || !chainOrder || typeof precision !== 'number') return 'candidate diagnostics unavailable';
 
@@ -199,10 +176,6 @@ function describeNearestAdoptionCandidates(mgr, chainOrder, precision, calcToler
     }).join('; ');
 }
 
-function _getDriftToleranceMultiplier(mgr): number {
-    return mgr?.config?.gridLimits?.PRICE_DRIFT_TOLERANCE_MULTIPLIER;
-}
-
 /**
  * Find the closest same-side (or spread) candidate slot for a chain order and
  * return a "price-drift-orphan" tag if the slot's price diff is larger than the
@@ -246,7 +219,8 @@ function computeOutOfToleranceDriftTag(mgr, chainOrder, calcToleranceFn) {
         const effectiveSize = slot.size > 0 ? toFiniteNumber(slot.size) : chainSize;
         const tolerance = (calcToleranceFn ? (calcToleranceFn(slotPrice, effectiveSize, orderType) || 0) : 0);
         if (priceDiff <= tolerance) continue;
-        const driftBudget = tolerance * _getDriftToleranceMultiplier(mgr);
+        const driftMultiplier = mgr?.config?.gridLimits?.PRICE_DRIFT_TOLERANCE_MULTIPLIER;
+        const driftBudget = tolerance * driftMultiplier;
         if (driftBudget > 0 && priceDiff > driftBudget) continue;
         if (!bestDrift || priceDiff < bestDrift.priceDiff) {
             bestDrift = {
@@ -1371,6 +1345,362 @@ class SyncEngine {
              }
         } finally {
             mgr.unlockOrders([...orderIdsToLock]);
+        }
+    }
+
+    /**
+     * Process multiple fill-history events in a batch, acquiring _gridLock once.
+     *
+     * For each fill in the batch:
+     *   1. processFillAccounting (per-fill, sequential — orderType-specific fund
+     *      mutations prevent parallelization; replay-safe keys can't be batched)
+     *   2. Collect drift-refetch order IDs, deduplicate, fetch in one get_objects call
+     *   3. Compute state transition (full/partial/ghost) per fill
+     *   4. Apply all grid mutations in a single applyGridUpdateBatch call
+     *
+     * Locking: all order IDs locked once up-front; fund recalc paused once.
+     *
+     * @param {Array} fills - Array of fill history event objects (same block group)
+     * @param {Object} [options] - Persistence mode options
+     * @returns {Promise<import('./types').BatchSyncResult>}
+     */
+    async syncFromFillHistoryBatch(fills: any[], options: Record<string, any> = {}) {
+        const mgr = this.manager;
+        const persistenceMode = resolveProcessedFillPersistenceMode(options);
+        if (!Array.isArray(fills) || fills.length === 0) {
+            return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [] };
+        }
+
+        // Phase 1: Extract & validate fill data, run accounting, identify drift candidates
+        const fillEntries: any[] = [];
+        const orderIdsToRefetch = new Set<string>();
+        let anyRequiresSync = false;
+
+        for (const fill of fills) {
+            if (!fill || !fill.op || !fill.op[1]) continue;
+            const fillOp = fill.op[1];
+            const blockNum = fill.block_num;
+            const historyId = fill.id;
+            const orderId = fillOp.order_id;
+            if (fillOp.is_maker === undefined) {
+                mgr.logger.log(`[SYNC] is_maker flag missing from fill data for order ${orderId}; defaulting to maker`, 'warn');
+            }
+            const isMaker = fillOp.is_maker !== false;
+            const fillKey = buildFillKey({ orderId, blockNum, historyId });
+
+            if (!fillKey) {
+                mgr.logger.log(
+                    `[SYNC] Missing replay-safe fill key for order ${orderId} block ${blockNum}; deferring to open-orders sync`,
+                    'warn'
+                );
+                anyRequiresSync = true;
+                continue;
+            }
+
+            const paysAmountRaw = toFiniteNumber(fillOp.pays?.amount);
+            const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
+            const receivesAmountRaw = toFiniteNumber(fillOp.receives?.amount);
+            const receivesAssetId = fillOp.receives ? fillOp.receives.asset_id : null;
+
+            mgr.logger.log(`[SYNC] Processing fill ${historyId} at block ${blockNum} for order ${orderId} (maker=${isMaker}). Pays=${paysAmountRaw}@${paysAssetId}, Receives=${receivesAmountRaw}@${receivesAssetId}`, 'debug');
+
+            fillEntries.push({
+                fill, fillOp, blockNum, historyId, orderId, fillKey,
+                isMaker, paysAmountRaw, paysAssetId, receivesAmountRaw, receivesAssetId
+            });
+        }
+
+        if (fillEntries.length === 0) {
+            return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [], requiresOpenOrdersSync: anyRequiresSync };
+        }
+
+        // Phase 2: Lock all unique order IDs once
+        const allOrderIds = [...new Set(fillEntries.map(e => e.orderId))];
+        mgr.lockOrders(allOrderIds);
+
+        try {
+            mgr.pauseFundRecalc();
+            try {
+                // Phase 3: Process accounting for each fill
+                const validEntries: any[] = [];
+                for (const entry of fillEntries) {
+                    try {
+                        const appliedAccounting = await mgr.accountant.processFillAccounting(
+                            entry.fillOp, entry.fillKey, { persistenceMode }
+                        );
+                        if (!appliedAccounting) {
+                            mgr.logger.log(`[SYNC] Replay detected for fill ${entry.fillKey}; skipping duplicate order mutation`, 'debug');
+                            continue;
+                        }
+                        validEntries.push(entry);
+                    } catch (acctErr: any) {
+                        mgr.logger.log(`[SYNC] Accounting error for fill ${entry.fillKey}: ${acctErr.message}`, 'error');
+                        continue;
+                    }
+                }
+
+                if (validEntries.length === 0) {
+                    return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [], requiresOpenOrdersSync: anyRequiresSync };
+                }
+
+                // Phase 4: Build per-fill context (grid order lookup, precision, etc.)
+                const assetAPrecision = mgr.assets?.assetA?.precision;
+                const assetBPrecision = mgr.assets?.assetB?.precision;
+                if (assetAPrecision === undefined || assetBPrecision === undefined) {
+                    mgr.logger?.log?.('Error: manager.assets precision missing in syncFromFillHistoryBatch', 'error');
+                    return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [], requiresOpenOrdersSync: anyRequiresSync };
+                }
+
+                const entryContexts: any[] = [];
+                const driftOrderIds = new Set<string>();
+
+                for (const entry of validEntries) {
+                    const { orderId, fillOp, isMaker, paysAmountRaw, paysAssetId } = entry;
+
+                    let matchedGridOrder = null;
+                    for (const gridOrder of mgr.orders.values()) {
+                        if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
+                            matchedGridOrder = gridOrder;
+                            break;
+                        }
+                    }
+
+                    if (!matchedGridOrder) {
+                        mgr.logger.log(`[SYNC] Fill for order ${orderId} ignored: order not found in active grid.`, 'debug');
+                        anyRequiresSync = true;
+                        continue;
+                    }
+
+                    const orderType = matchedGridOrder.type;
+                    const currentSize = toFiniteNumber(matchedGridOrder.size);
+                    const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+
+                    let filledAmount = 0;
+                    if (orderType === ORDER_TYPES.SELL) {
+                        if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmountRaw, precision, true);
+                    } else {
+                        if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmountRaw, precision, true);
+                    }
+
+                    mgr.logger.log(`[SYNC] Order ${orderId} (${orderType}) currentSize=${currentSize}, filledAmount=${filledAmount}`, 'debug');
+
+                    const currentSizeIntFromGrid = floatToBlockchainInt(currentSize, precision);
+                    const rawForSaleInt = toFiniteNumber(matchedGridOrder?.rawOnChain?.for_sale, null);
+
+                    // Detect drift signal: cached for_sale < grid size
+                    const driftSignal = Number.isFinite(rawForSaleInt)
+                        && Math.round(rawForSaleInt) < currentSizeIntFromGrid;
+                    if (driftSignal) {
+                        driftOrderIds.add(orderId);
+                    }
+
+                    entryContexts.push({
+                        entry,
+                        matchedGridOrder, orderType, currentSize, precision,
+                        filledAmount, currentSizeIntFromGrid, rawForSaleInt,
+                        driftSignal
+                    });
+                }
+
+                // Phase 5: Batch drift refetch — one get_objects call for all order IDs
+                const refetchMap = new Map<string, { order: any | null, chainConfirmsEmpty: boolean, chainRefetched: boolean, effectiveRawForSale: number | null }>();
+
+                if (driftOrderIds.size > 0) {
+                    const { batchReadOrders } = require('../chain_orders');
+                    try {
+                        const batchResults = await batchReadOrders([...driftOrderIds], 3000);
+                        for (const [orderId, freshOrder] of batchResults) {
+                            if (freshOrder) {
+                                const freshForSale = toFiniteNumber(freshOrder.for_sale, null);
+                                if (Number.isFinite(freshForSale)) {
+                                    refetchMap.set(orderId, {
+                                        order: freshOrder,
+                                        chainConfirmsEmpty: Math.round(freshForSale) <= 0,
+                                        chainRefetched: true,
+                                        effectiveRawForSale: freshForSale
+                                    });
+                                } else {
+                                    refetchMap.set(orderId, {
+                                        order: freshOrder,
+                                        chainConfirmsEmpty: false,
+                                        chainRefetched: true,
+                                        effectiveRawForSale: null
+                                    });
+                                }
+                            } else {
+                                refetchMap.set(orderId, {
+                                    order: null,
+                                    chainConfirmsEmpty: true,
+                                    chainRefetched: true,
+                                    effectiveRawForSale: null
+                                });
+                            }
+                        }
+
+                        // Log results
+                        for (const [orderId, { chainRefetched, chainConfirmsEmpty, effectiveRawForSale }] of refetchMap) {
+                            if (chainRefetched && effectiveRawForSale != null) {
+                                mgr.logger.log(
+                                    `[SYNC] Drift detected for ${orderId}; batch-refetched for_sale=${effectiveRawForSale}`,
+                                    'warn'
+                                );
+                            } else if (chainConfirmsEmpty) {
+                                mgr.logger.log(
+                                    `[SYNC] Drift refetch for ${orderId} returned null; chain confirms empty`,
+                                    'info'
+                                );
+                            }
+                        }
+                    } catch (refetchErr: any) {
+                        mgr.logger.log(
+                            `[SYNC] Batch drift refetch failed for ${driftOrderIds.size} orders; falling back to cache: ${refetchErr?.message || refetchErr}`,
+                            'warn'
+                        );
+                        // Fallback: no refetch results — all entries proceed with cache
+                    }
+                }
+
+                // Phase 6: Compute state transitions and collect grid updates
+                const gridUpdates: any[] = [];
+                const filledOrders: any[] = [];
+                const updatedOrders: any[] = [];
+                const ghostOrderIds: string[] = [];
+                let anyPartialFill = false;
+
+                for (const ctx of entryContexts) {
+                    const { entry, matchedGridOrder, orderType, precision, filledAmount, currentSizeIntFromGrid, rawForSaleInt } = ctx;
+                    const { orderId, blockNum, historyId, isMaker } = entry;
+
+                    const refetchInfo = refetchMap.get(orderId);
+                    const chainRefetched = refetchInfo?.chainRefetched || false;
+                    const chainConfirmsEmpty = refetchInfo?.chainConfirmsEmpty || false;
+                    const effectiveRawForSale = refetchInfo?.effectiveRawForSale != null ? refetchInfo.effectiveRawForSale : rawForSaleInt;
+
+                    // Chain-confirmed-empty gate
+                    let resolvedChainConfirmsEmpty = chainConfirmsEmpty;
+                    if (chainRefetched
+                        && Number.isFinite(effectiveRawForSale)
+                        && Math.round(effectiveRawForSale) <= 0) {
+                        resolvedChainConfirmsEmpty = true;
+                    }
+
+                    const currentSizeInt = Number.isFinite(effectiveRawForSale)
+                        ? Math.max(0, Math.round(effectiveRawForSale))
+                        : currentSizeIntFromGrid;
+                    const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
+                    const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
+                    const newSize = blockchainToFloat(newSizeInt, precision, true);
+
+                    if (Number.isFinite(effectiveRawForSale) && currentSizeInt !== currentSizeIntFromGrid) {
+                        mgr.logger.log(
+                            `[SYNC] Using rawOnChain.for_sale baseline for ${orderId}: raw=${currentSizeInt}, grid=${currentSizeIntFromGrid}` +
+                            (chainRefetched ? ' (refetched)' : ''),
+                            'debug'
+                        );
+                    }
+
+                    const gridAlsoEmpty = currentSizeIntFromGrid <= 0;
+                    let isEffectivelyFull = resolvedChainConfirmsEmpty || gridAlsoEmpty;
+
+                    let ghostOrderId: string | undefined;
+
+                    if (!isEffectivelyFull) {
+                        const assetAPrecision = mgr.assets.assetA.precision;
+                        const assetBPrecision = mgr.assets.assetB.precision;
+                        const otherPrecision = (orderType === ORDER_TYPES.SELL) ? assetBPrecision : assetAPrecision;
+                        const price = matchedGridOrder.price;
+                        const otherSize = (orderType === ORDER_TYPES.SELL) ? newSize * price : newSize / price;
+
+                        if (floatToBlockchainInt(otherSize, otherPrecision) <= 0) {
+                            mgr.logger.log(`[SYNC] Order ${orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. Treating as full fill to trigger rotation.`, 'info');
+                            isEffectivelyFull = true;
+                            ghostOrderId = matchedGridOrder.orderId;
+                        }
+                    }
+
+                    const filledOrder = {
+                        ...matchedGridOrder,
+                        blockNum: blockNum,
+                        historyId: historyId,
+                        isMaker: isMaker
+                    };
+
+                    if (isEffectivelyFull) {
+                        if (ghostOrderId) {
+                            mgr.logger.log(
+                                `[SYNC] Ghost full fill for order ${orderId} (slot ${matchedGridOrder.id}): ` +
+                                `preserving orderId ${ghostOrderId} as PARTIAL to block duplicate CREATE.`,
+                                'info'
+                            );
+                            const ghostOrder = {
+                                ...matchedGridOrder,
+                                size: 0,
+                                state: ORDER_STATES.PARTIAL,
+                                orderId: ghostOrderId,
+                            };
+                            gridUpdates.push({ id: matchedGridOrder.id, ...ghostOrder, context: 'handle-fill-ghost' });
+                        } else {
+                            mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
+                            const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
+                            gridUpdates.push({ id: matchedGridOrder.id, ...spreadOrder, context: 'handle-fill-full' });
+                        }
+                        filledOrders.push(filledOrder);
+                        if (ghostOrderId) ghostOrderIds.push(ghostOrderId);
+                    } else {
+                        mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${newSize}`, 'info');
+                        const filledPortion = {
+                            ...matchedGridOrder,
+                            size: filledAmount,
+                            isPartial: true,
+                            blockNum: blockNum,
+                            historyId: historyId,
+                            isMaker: isMaker
+                        };
+                        const { btsFeeState, ...matchedWithoutDeferredFee } = matchedGridOrder;
+                        let updatedOrder: any = { ...matchedWithoutDeferredFee, state: ORDER_STATES.PARTIAL };
+
+                        if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
+                            const baselineForSale = (chainRefetched && Number.isFinite(effectiveRawForSale))
+                                ? effectiveRawForSale
+                                : toFiniteNumber(updatedOrder.rawOnChain.for_sale);
+                            const nextForSaleInt = Math.max(0, Math.round(baselineForSale) - filledAmountInt);
+                            updatedOrder.rawOnChain = {
+                                ...updatedOrder.rawOnChain,
+                                for_sale: String(nextForSaleInt),
+                                fetchedAt: Date.now()
+                            };
+                        }
+
+                        const nextOrder = await applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
+                        if (nextOrder) {
+                            updatedOrder = { ...updatedOrder, ...nextOrder };
+                        }
+
+                        gridUpdates.push({ id: matchedGridOrder.id, ...updatedOrder, context: 'handle-fill-partial' });
+                        updatedOrders.push(updatedOrder);
+                        filledOrders.push(filledPortion);
+                        anyPartialFill = true;
+                    }
+                }
+
+                // Phase 7: Single grid batch update — acquires _gridLock once
+                if (gridUpdates.length > 0) {
+                    const updateObjects = gridUpdates.map(u => {
+                        const { context, ...orderData } = u;
+                        return orderData;
+                    });
+                    const batchOk = await mgr.applyGridUpdateBatch(updateObjects, 'handle-fill-batch', { skipAccounting: false, fee: 0 });
+                    if (batchOk === false) {
+                        mgr.logger.log('[SYNC] Batch grid update failed for some fills', 'warn');
+                    }
+                }
+
+                return { filledOrders, updatedOrders, partialFill: anyPartialFill, ghostOrderIds, requiresOpenOrdersSync: anyRequiresSync };
+            } finally {
+                await mgr.resumeFundRecalc();
+            }
+        } finally {
+            mgr.unlockOrders(allOrderIds);
         }
     }
 

@@ -1215,8 +1215,8 @@ function getSideBudget(side, funds, config, totalTarget) {
         formulaBudget,
         config.min_BTS_value || 0,
         funds.btsBalance?.free || 0,
-        isBuy ? (funds.chainFreeBuy || 0) : (funds.chainFreeSell || 0),
-        (funds.chainFreeBuy || 0) + (funds.chainFreeSell || 0),
+        isBuy ? (funds.allocatedBuy || funds.chainFreeBuy || 0) : (funds.allocatedSell || funds.chainFreeSell || 0),
+        (funds.allocatedBuy || funds.chainFreeBuy || 0) + (funds.allocatedSell || funds.chainFreeSell || 0),
     );
 }
 

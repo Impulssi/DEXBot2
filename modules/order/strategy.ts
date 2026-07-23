@@ -28,15 +28,8 @@
  *   3. processFillsOnly(filledOrders, excludeOrderIds) - Process filled orders (async)
  *      Handles order fill events, fee accounting, and grid updates
  *      Consolidates partial fills, updates fund state. Does NOT trigger rebalancing.
-
- * FEE EVENT MANAGEMENT (2 methods - internal)
- *   4. _pruneSettledFeeEvents() - Evict expired fee event cache entries
- *   5. _buildFeeEventId(feeOp) - Build deduplication key for fee events
-
- * HEALTH CHECK (1 method)
- *   6. hasAnyDust(partials, side) - Check for dust (unhealthy) partial orders
- *      Detects partial orders below minimum size threshold
- *      Returns true if dust detected on side
+ *      Fill deduplication (replay safety, fee-event) is handled upstream by
+ *      the manager's processedFillTracker — this class is stateless w.r.t. dedup.
  *
  * ===============================================================================
  *
@@ -54,110 +47,25 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING } = require("../constants");
+const { ORDER_TYPES, ORDER_STATES } = require("../constants");
 const {
     virtualizeOrder,
     hasOnChainId,
     isOrderPlaced
 } = require("./utils/order");
-const { floatToBlockchainInt, getPrecisionByOrderType } = require('./utils/math');
-const { calculateGapSlots, hasAnyDust } = require('./grid');
+const { calculateGapSlots } = require('./grid');
 
 class StrategyEngine {
     manager: any;
-    _settledFeeEvents: Map<string, number>;
-    _feeEventTtlMs: number;
-    _pruneCallCount: number;
 
     /**
      * @param {Object} manager - OrderManager instance
      */
     constructor(manager: any) {
         this.manager = manager;
-        this._settledFeeEvents = new Map();
-        this._feeEventTtlMs = Number(PIPELINE_TIMING.FEE_EVENT_DEDUP_TTL_MS);
-        this._pruneCallCount = 0;
     }
 
-    /**
-     * Remove expired fee event cache entries by TTL.
-     * @param {number} now - Current timestamp in ms
-     * @returns {void}
-     */
-    _pruneSettledFeeEvents(now) {
-        // Remove expired entries by TTL
-        for (const [eventId, ts] of this._settledFeeEvents) {
-            if (now - ts > this._feeEventTtlMs) {
-                this._settledFeeEvents.delete(eventId);
-            }
-        }
 
-        // Sampling: Only check size limit every N calls to avoid O(n log n) sort on every fill batch.
-        // The expensive eviction (sort) is deferred until we're truly near the limit.
-        this._pruneCallCount = (this._pruneCallCount || 0) + 1;
-        const PRUNE_SAMPLE_INTERVAL = 10;
-        const maxEvents = Math.max(1, PIPELINE_TIMING.MAX_FEE_EVENT_CACHE_SIZE);
-
-        // Check every Nth call OR if we're already over the limit (to drain it down)
-        const shouldCheckSize = (this._pruneCallCount % PRUNE_SAMPLE_INTERVAL === 0) ||
-                                (this._settledFeeEvents.size > maxEvents);
-
-        if (shouldCheckSize && this._settledFeeEvents.size > maxEvents) {
-            // Convert to array sorted by timestamp (oldest first) - O(n log n)
-            const entries = Array.from(this._settledFeeEvents.entries())
-                .sort((a, b) => a[1] - b[1]);
-            // Evict oldest entries to get back to target retention ratio
-            const retentionRatio = Number.isFinite(PIPELINE_TIMING.CACHE_EVICTION_RETENTION_RATIO) && PIPELINE_TIMING.CACHE_EVICTION_RETENTION_RATIO > 0
-                ? PIPELINE_TIMING.CACHE_EVICTION_RETENTION_RATIO
-                : 0.75;
-            const evictCount = this._settledFeeEvents.size - Math.floor(maxEvents * retentionRatio);
-            for (let i = 0; i < evictCount && i < entries.length; i++) {
-                this._settledFeeEvents.delete(entries[i][0]);
-            }
-            this.manager?.logger?.log?.(
-                `[STRATEGY] Fee event cache exceeded ${maxEvents}, evicted ${evictCount} oldest entries`,
-                'warn'
-            );
-        }
-    }
-
-    /**
-     * Build a unique fee event ID from a filled order for deduplication.
-     * @param {Object} filledOrder - Filled order object
-     * @returns {string} Fee event deduplication key
-     */
-    _buildFeeEventId(filledOrder) {
-        // Use integer blockchain representation for size to avoid float imprecision.
-        // Precision is derived from order side and manager assets.
-        let precision;
-        try {
-            if (this.manager?.assets && filledOrder?.type) {
-                precision = getPrecisionByOrderType(this.manager.assets, filledOrder.type);
-            }
-        } catch (err: any) {
-            this.manager?.logger?.log?.(
-                `_buildFeeEventId: precision unavailable for ${filledOrder?.type}, falling back to size string: ${err.message}`,
-                'debug'
-            );
-        }
-
-        if (typeof precision !== 'number') {
-            return filledOrder.historyId || [
-                filledOrder.orderId || filledOrder.id,
-                filledOrder.blockNum || 'na',
-                String(filledOrder?.size || 0),
-                filledOrder.isMaker === false ? 'taker' : 'maker'
-            ].join(':');
-        }
-
-        const sizeInt = floatToBlockchainInt(Number(filledOrder?.size || 0), precision);
-        return filledOrder.historyId || [
-            filledOrder.orderId || filledOrder.id,
-            filledOrder.blockNum || 'na',
-            sizeInt,
-            filledOrder.isMaker === false ? 'taker' : 'maker'
-        ].join(':');
-    }
 
     /**
      * Process filled orders: handle fills and consolidate partials.
@@ -197,13 +105,6 @@ class StrategyEngine {
 
         mgr.logger.log(`[STRATEGY] Processing batch of ${filledOrders.length} filled orders...`, 'info');
 
-        const now = Date.now();
-        this._pruneSettledFeeEvents(now);
-
-        let fillsToSettle = 0;
-        let makerFillCount = 0;
-        let takerFillCount = 0;
-
         for (const filledOrder of filledOrders) {
             if (excludeOrderIds?.has?.(filledOrder.id)) {
                 mgr.logger.log(`[STRATEGY] Skipping excluded fill for order ${filledOrder.id}`, 'debug');
@@ -214,17 +115,6 @@ class StrategyEngine {
             mgr.logger.log(`[STRATEGY] Processing fill: id=${filledOrder.id}, type=${filledOrder.type}, price=${filledOrder.price}, size=${filledOrder.size}, partial=${isPartial}`, 'debug');
 
             if (!isPartial || filledOrder.isDelayedRotationTrigger) {
-                const feeEventId = this._buildFeeEventId(filledOrder);
-
-                if (!this._settledFeeEvents.has(feeEventId)) {
-                    this._settledFeeEvents.set(feeEventId, now);
-                    fillsToSettle++;
-                    if (filledOrder.isMaker !== false) makerFillCount++;
-                    else takerFillCount++;
-                } else {
-                    mgr.logger.log(`[STRATEGY] Skipping duplicate fee settlement event ${feeEventId}`, 'debug');
-                }
-
                 const currentSlot = mgr.orders.get(filledOrder.id);
                 const slotReused = currentSlot && hasOnChainId(currentSlot) && filledOrder.orderId && currentSlot.orderId !== filledOrder.orderId;
 
@@ -247,7 +137,6 @@ class StrategyEngine {
         // do not accrue/deduct additional fill-time BTS fees here.
 
         await mgr.recalculateFunds();
-        mgr.logger.log(`[STRATEGY] Batch fill processing complete. Fills settled: ${fillsToSettle}`, 'info');
         return true;
     }
 
@@ -442,35 +331,6 @@ class StrategyEngine {
             targetGrid: targetGrid,
             boundaryIdx: newBoundaryIdx 
         }; 
-    }
-
-    /**
-     * Check for dust (unhealthy) partial orders on a side.
-     *
-     * A "dust" order is a partial fill that has remaining size below the minimum
-     * viable order size for the asset. These orders are problematic because:
-     * - They cannot be rotated (new order would be below minimum)
-     * - They tie up small amounts of capital inefficiently
-     * - They may indicate grid misconfiguration
-     *
-     * DETECTION LOGIC:
-     * - Compares remaining size against asset-specific minimums
-     * - Uses doubled thresholds when side has doubled orders
-     * - Considers both absolute and relative minimums
-     *
-     * @param {Array<Object>} partials - Array of partial order objects
-     *   - id {string}: Order slot ID
-     *   - orderId {string}: Blockchain order ID
-     *   - type {string}: 'BUY' or 'SELL'
-     *   - price {number}: Order price
-     *   - size {number}: Current remaining size
-     *   - state {string}: Should be 'PARTIAL'
-     * @param {string} side - Side to check ('buy' or 'sell')
-     * @returns {boolean} True if any partial on the side is below minimum viable size
-     */
-    hasAnyDust(partials, side) {
-        const mgr = this.manager;
-        return hasAnyDust(mgr, partials, side);
     }
 
 }

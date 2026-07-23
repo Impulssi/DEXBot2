@@ -269,6 +269,7 @@ class OrderManager {
     _gridDirtyAt: number | null;
     _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
+    _recentFillKeysSnapshot: any;
 
     _metrics: any;
     _currentWorkingGrid: any;
@@ -355,7 +356,10 @@ class OrderManager {
         // Note: AsyncLock IS re-entrant (acquire detects nested calls via _holding).
         this._divergenceLock = new AsyncLock({ level: 0 });
         this._fillProcessingLock = new AsyncLock({ level: 1 });
-        this._gridLock = new AsyncLock({ level: 2 });
+        this._gridLock = new AsyncLock({
+            level: 2,
+            onContention: () => { this._metrics.gridLockContention++; }
+        });
         this._syncLock = new AsyncLock({ level: 3 });
         this._fundLock = new AsyncLock({ level: 4, timeout: 30000 });
 
@@ -377,12 +381,13 @@ class OrderManager {
         this._gridDirtyAt = null;
         this._orphanFillsCreditedAt = null;
         this._pendingRecovery = null;
+        this._recentFillKeysSnapshot = null;
 
         this._metrics = {
             fundRecalcCount: 0,
-            invariantViolations: { buy: 0, sell: 0 },
             lockAcquisitions: 0,
             lockContentionSkips: 0,
+            gridLockContention: 0,
             spreadRoleConversionBlocked: 0,
             lastSyncDurationMs: 0,
             metricsStartTime: Date.now()
@@ -807,6 +812,15 @@ class OrderManager {
     }
 
     /**
+     * @param {Array} fills - Array of fill event objects (same block group)
+     * @param {Object} [options]
+     * @returns {Promise<import('./types').BatchSyncResult>}
+     */
+    syncFromFillHistoryBatch(fills, options) {
+        return this.sync.syncFromFillHistoryBatch(fills, options);
+    }
+
+    /**
      * @param {Object} data - Chain data to synchronize
      * @param {string} src - Source identifier
      * @returns {Promise<import('./types').SyncResult>}
@@ -993,10 +1007,12 @@ class OrderManager {
     async applyGridUpdateBatch(updates, context = 'batch-update', options = {}) {
         const updateOptions = this._normalizeOrderUpdateOptions(options);
         return await this._gridLock.acquire(async () => {
+            let allOk = true;
             for (const update of updates) {
-                await this._applyOrderUpdate(update, context, updateOptions);
+                const ok = await this._applyOrderUpdate(update, context, updateOptions);
+                if (ok === false) allOk = false;
             }
-            return true;
+            return allOk;
         });
     }
 
@@ -1387,7 +1403,8 @@ class OrderManager {
     clearStalePipelineOperations() {
         if (!this._pipelineBlockedSince) return false;
         const age = Date.now() - this._pipelineBlockedSince;
-        if (age < PIPELINE_TIMING.TIMEOUT_MS) return false;
+        const timeoutMs = this.config?.pipelineTiming?.TIMEOUT_MS ?? PIPELINE_TIMING.TIMEOUT_MS;
+        if (age < timeoutMs) return false;
 
         this.ordersNeedingPriceCorrection = [];
         this._pipelineBlockedSince = null;
@@ -1401,11 +1418,12 @@ class OrderManager {
         const blockedDuration = this._pipelineBlockedSince
             ? Date.now() - this._pipelineBlockedSince
             : 0;
+        const timeoutMs = this.config?.pipelineTiming?.TIMEOUT_MS ?? PIPELINE_TIMING.TIMEOUT_MS;
 
         return {
             isBlocked: this._pipelineBlockedSince !== null,
             blockedDurationMs: blockedDuration,
-            hasStalled: blockedDuration > PIPELINE_TIMING.TIMEOUT_MS,
+            hasStalled: blockedDuration > timeoutMs,
             recoveryAttempted: this._recoveryAttempted,
             correctionsPending: this.ordersNeedingPriceCorrection.length,
             gridSidesUpdated: this._gridSidesUpdated?.size || 0
@@ -1700,7 +1718,7 @@ class OrderManager {
      *   swapping the live map and exposing it to concurrent readers.
      * @returns {Promise<import('./types').PersistenceValidationResult>}
      */
-    async persistGrid(snapshotOrders) {
+    async persistGrid(snapshotOrders, recentFillKeys?) {
         if (this._gridPersistenceSuspendedReason) {
             this.logger.log(
                 `[PERSISTENCE-GATE] Skipping grid persistence while suspended: ${this._gridPersistenceSuspendedReason}`,
@@ -1718,7 +1736,7 @@ class OrderManager {
             return validation;
         }
 
-        await persistGridSnapshot(this, this.accountOrders, snapshotOrders);
+        await persistGridSnapshot(this, this.accountOrders, snapshotOrders, recentFillKeys);
 
         // On a successful live-grid persist (the default — no explicit
         // snapshotOrders was passed in), clear the dirty flag so that

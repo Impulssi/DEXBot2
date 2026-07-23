@@ -417,10 +417,15 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
         const btsFree = toFiniteNumber(funds?.btsBalance?.free, 0);
         const btsDeficit = Math.max(0, effectiveMin - btsFree);
         if (btsDeficit > 0) {
-            const totalFree = toFiniteNumber(accountTotals?.buyFree, 0)
-                            + toFiniteNumber(accountTotals?.sellFree, 0);
+            const allocatedBuy = toFiniteNumber(funds?.allocated?.buy, 0);
+            const allocatedSell = toFiniteNumber(funds?.allocated?.sell, 0);
+            const totalFree = allocatedBuy + allocatedSell > 0
+                ? allocatedBuy + allocatedSell
+                : toFiniteNumber(accountTotals?.buyFree, 0) + toFiniteNumber(accountTotals?.sellFree, 0);
             if (totalFree > 0) {
-                const sideFree = toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree, 0);
+                const sideFree = allocatedBuy + allocatedSell > 0
+                    ? (side === 'buy' ? allocatedBuy : allocatedSell)
+                    : toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree, 0);
                 const share = sideFree / totalFree;
                 return Math.max(0, chainFree - virtualReservation - btsDeficit * share);
             }

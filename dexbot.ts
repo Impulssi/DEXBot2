@@ -587,7 +587,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                     unregisterCleanup(botCleanupHandler);
                 }
                 // Attempt graceful cleanup before continuing. Idempotent via the
-                // _shutdownStarted guard, so a redundant call is a no-op.
+                // _shuttingDown guard, so a redundant call is a no-op.
                 if (bot) {
                     try {
                         await bot.shutdown();

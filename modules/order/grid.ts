@@ -309,9 +309,9 @@ export async function _getSizingContext(manager: any, side: any, { skipRecalc = 
                 formulaBudget,
                 manager.config.min_BTS_value || 0,
                 Format.toFiniteNumber(manager.funds?.btsBalance?.free, 0),
-                Format.toFiniteNumber(isBuy ? manager.accountTotals?.buyFree : manager.accountTotals?.sellFree, 0),
-                Format.toFiniteNumber(manager.accountTotals?.buyFree, 0)
-                    + Format.toFiniteNumber(manager.accountTotals?.sellFree, 0),
+                Format.toFiniteNumber(isBuy ? (snap.allocatedBuy || 0) : (snap.allocatedSell || 0)),
+                Format.toFiniteNumber(snap.allocatedBuy || 0)
+                    + Format.toFiniteNumber(snap.allocatedSell || 0),
             );
         }
 
