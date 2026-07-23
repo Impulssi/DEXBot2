@@ -269,7 +269,7 @@ class OrderManager {
     _gridDirtyAt: number | null;
     _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
-    _recentFillKeysSnapshot: any;
+    _recentFillKeysSnapshot: Record<string, number> | null;
 
     _metrics: any;
     _currentWorkingGrid: any;

@@ -39,25 +39,30 @@
  *      Pass 1: Match grid orders to chain (known grid → chain, includes orphan cleanup)
  *      Pass 2: Add missing chain orders (unknown chain → grid)
  *
- * FILL PROCESSING (1 method)
- *   5. syncFromFillHistory(fill) - Process fill event synchronously
+ * FILL PROCESSING (2 methods)
+ *   5. syncFromFillHistory(fill) - Process single fill event synchronously
  *      Updates grid order state based on fill data
  *      Updates fund state and accounting
  *      Handles both maker and taker fills
  *
+ *   6. syncFromFillHistoryBatch(fills) - Process multiple fill events in batch
+ *      Acquires _gridLock once for all fills in block group
+ *      Batches drift refetch into one get_objects RPC call
+ *      Applies all grid mutations in a single applyGridUpdateBatch
+ *
  * FULL SYNCHRONIZATION (1 method - async)
- *   6. synchronizeWithChain(chainData, source) - Full sync (fetch + sync) (async)
+ *   7. synchronizeWithChain(chainData, source) - Full sync (fetch + sync) (async)
  *      Fetches fresh account balances
  *      Calls syncFromOpenOrders() with chain data
  *      Source: event type that triggered sync (fill, poll, broadcast, etc.)
  *
  * ACCOUNT STATE (2 methods - async)
- *   7. fetchAccountBalancesAndSetTotals(accountId) - Fetch account totals (async)
+ *   8. fetchAccountBalancesAndSetTotals(accountId) - Fetch account totals (async)
  *      Retrieves BUY/SELL totals and free balances from blockchain
  *      Sets manager.accountTotals
  *      Triggers fund recalculation
  *
- *   8. initializeAssets() - Initialize asset metadata (async)
+ *   9. initializeAssets() - Initialize asset metadata (async)
  *      Fetches asset precision and other metadata
  *      Sets manager.assets
  *      Called once at bot startup
@@ -111,6 +116,7 @@ const {
     resolveProcessedFillPersistenceMode
 } = require('./processed_fill_store');
 const { lookupAsset } = require('./utils/system');
+const chainOrders = require('../chain_orders');
 
 function describeNearestAdoptionCandidates(mgr, chainOrder, precision, calcTolerance, matchedGridOrderIds = null) {
     if (!mgr?.orders || !chainOrder || typeof precision !== 'number') return 'candidate diagnostics unavailable';
@@ -1161,8 +1167,7 @@ class SyncEngine {
 
                 if (driftSignal) {
                     try {
-                        const { readSingleOrder } = require('../chain_orders');
-                        const fresh = await readSingleOrder(orderId, 3000);
+                        const fresh = await chainOrders.readSingleOrder(orderId, 3000);
                         if (fresh) {
                             const freshForSale = toFiniteNumber(fresh.for_sale, null);
                             if (Number.isFinite(freshForSale)) {
@@ -1506,9 +1511,8 @@ class SyncEngine {
                 const refetchMap = new Map<string, { order: any | null, chainConfirmsEmpty: boolean, chainRefetched: boolean, effectiveRawForSale: number | null }>();
 
                 if (driftOrderIds.size > 0) {
-                    const { batchReadOrders } = require('../chain_orders');
                     try {
-                        const batchResults = await batchReadOrders([...driftOrderIds], 3000);
+                        const batchResults = await chainOrders.batchReadOrders([...driftOrderIds], 3000);
                         for (const [orderId, freshOrder] of batchResults) {
                             if (freshOrder) {
                                 const freshForSale = toFiniteNumber(freshOrder.for_sale, null);
@@ -1689,9 +1693,13 @@ class SyncEngine {
                         const { context, ...orderData } = u;
                         return orderData;
                     });
+                    // Intentionally lenient: a single stale slot shouldn't block the
+                    // entire block-group's fills. applyGridUpdateBatch applies all
+                    // updates and returns false if any single _applyOrderUpdate failed.
+                    // The next sync cycle will catch and reconcile the missed slot.
                     const batchOk = await mgr.applyGridUpdateBatch(updateObjects, 'handle-fill-batch', { skipAccounting: false, fee: 0 });
                     if (batchOk === false) {
-                        mgr.logger.log('[SYNC] Batch grid update failed for some fills', 'warn');
+                        mgr.logger.log('[SYNC] Batch grid update failed for some fills; next sync cycle will reconcile', 'warn');
                     }
                 }
 
@@ -1983,7 +1991,6 @@ class SyncEngine {
             const assetBId = mgr.assets?.assetB?.id;
             if (!assetAId || !assetBId) return;
 
-            const { getOnChainAssetBalances } = require('../chain_orders');
             const { NATIVE_CLIENT } = require('../constants');
             const assetList = [assetAId, assetBId];
 
@@ -1992,7 +1999,7 @@ class SyncEngine {
                 assetList.push(NATIVE_CLIENT.CHAIN.CORE_ASSET_ID);
             }
 
-            const lookup = await getOnChainAssetBalances(accountIdOrName, assetList);
+            const lookup = await chainOrders.getOnChainAssetBalances(accountIdOrName, assetList);
             const aInfo = lookup?.[assetAId] || lookup?.[mgr.config.assetA];
             const bInfo = lookup?.[assetBId] || lookup?.[mgr.config.assetB];
 

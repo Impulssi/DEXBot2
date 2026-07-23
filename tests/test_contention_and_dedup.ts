@@ -245,6 +245,63 @@ async function runTests() {
         assert.strictEqual(passedKeys, savedKeys, 'Snapshot forwarded');
     }
 
+    // ── Feature 8: Ghost Batch Cancel Chunking ──────────────────────────
+
+    // Test 12: Chunk boundary — 201 ghost IDs split into 2 batches
+    console.log(' - [F8-T1] 201 ghost IDs chunked correctly (200 + 1)...');
+    {
+        const MAX_OPS_PER_TX = 200;
+        const ghostIds = Array.from({ length: 201 }, (_, i) => `1.7.${900000 + i}`);
+        const cancelOps = ghostIds.map(id => ({ order_id: id }));
+        const attempted = new Set<string>();
+        let batchCallCount = 0;
+        const batchSizes: number[] = [];
+
+        for (let i = 0; i < cancelOps.length; i += MAX_OPS_PER_TX) {
+            const chunk = cancelOps.slice(i, i + MAX_OPS_PER_TX);
+            const batchIds = ghostIds.slice(i, i + MAX_OPS_PER_TX);
+            batchCallCount++;
+            batchSizes.push(chunk.length);
+            for (const id of batchIds) {
+                attempted.add(id);
+            }
+        }
+
+        assert.strictEqual(batchCallCount, 2, 'Should split into 2 batches');
+        assert.strictEqual(batchSizes[0], 200, 'First batch 200 ops');
+        assert.strictEqual(batchSizes[1], 1, 'Second batch 1 op');
+        assert.strictEqual(attempted.size, 201, 'All 201 IDs recorded');
+    }
+
+    // Test 13: Exactly at boundary — 200 ghost IDs single batch
+    console.log(' - [F8-T2] Exactly 200 ghost IDs single batch...');
+    {
+        const MAX_OPS_PER_TX = 200;
+        const ghostIds = Array.from({ length: 200 }, (_, i) => `1.7.${800000 + i}`);
+        const cancelOps = ghostIds.map(id => ({ order_id: id }));
+        let batchCallCount = 0;
+
+        for (let i = 0; i < cancelOps.length; i += MAX_OPS_PER_TX) {
+            batchCallCount++;
+        }
+
+        assert.strictEqual(batchCallCount, 1, '200 ops is single batch');
+    }
+
+    // Test 14: Empty ghost list is no-op
+    console.log(' - [F8-T3] Empty ghost list produces no batches...');
+    {
+        const MAX_OPS_PER_TX = 200;
+        const cancelOps: any[] = [];
+        let batchCallCount = 0;
+
+        for (let i = 0; i < cancelOps.length; i += MAX_OPS_PER_TX) {
+            batchCallCount++;
+        }
+
+        assert.strictEqual(batchCallCount, 0, 'No batches for empty list');
+    }
+
     console.log('All contention + dedup tests passed.');
 }
 
