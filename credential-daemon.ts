@@ -55,7 +55,7 @@
  *
  * Via PM2 (recommended):
  *   npm run unlock
- *   or: node unlock
+ *   or: dexbot unlock
  *
  * Bot processes then access keys automatically via socket connection.
  *
@@ -328,7 +328,7 @@ async function resolveVaultSecret() {
             if (!process.stdin || !process.stdin.isTTY) {
                 daemonLogger.log?.(
                     '[credential-daemon] Credential daemon is locked — no bootstrap path file and no TTY. ' +
-                    'Run \'node pm2\' to unlock.'
+                    'Run \'dexbot pm2\' to unlock.'
                 );
                 // delete on process.env directly (not Config) — see note above
                 delete process.env.DEXBOT_CRED_BOOTSTRAP_PATH_FILE;

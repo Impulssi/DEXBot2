@@ -13,8 +13,8 @@ Use this reference for DEXBot2 startup and PM2 orchestration work.
 ## Rules
 
 - Keep `claw-only` free of bot config and BitShares connectivity checks.
-- Keep parsing in `modules/launcher/launch_modes.ts`.
-- Keep daemon lifecycle in `modules/launcher/credential_daemon.ts`.
+- Keep parsing in the repo-root `modules/launcher/launch_modes.ts`.
+- Keep daemon lifecycle in the repo-root `modules/launcher/credential_daemon.ts`.
 
 ## Validation
 

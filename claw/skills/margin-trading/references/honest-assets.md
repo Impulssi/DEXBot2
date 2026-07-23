@@ -23,7 +23,7 @@ The collateral ratio is:
 CR = collateral_amount / (debt_amount × feed_price)
 ```
 
-Collateral ratio zones are defined in `references/position-management.md`. Green zone starts at CR 2.0.
+Collateral ratio zones are defined in `references/position-management.md`. Green zone runs from CR 1.7 to 3.0.
 
 ## Feed Price
 

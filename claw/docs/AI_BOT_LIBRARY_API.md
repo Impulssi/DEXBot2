@@ -185,7 +185,7 @@ mcp_servers:
     args: ["/absolute/path/to/claw/scripts/claw_mcp_server.js", "--profile-root", "/path/to/DEXBot2"]
 ```
 
-> In development you may substitute `tsx` + `claw_mcp_server.ts`; the generated skill file emits the `node` + `.js` form so it works against the compiled build without `tsx` installed.
+> In development you may substitute `tsx` + `claw_mcp_server.ts`; the generated skill file emits the `node` + `.js` form so it works against the compiled build (`npm run build`) without `tsx` installed.
 
 ### OpenClaw Compatibility
 

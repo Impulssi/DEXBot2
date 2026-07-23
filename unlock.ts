@@ -10,20 +10,22 @@
  * Use --foreground to run in terminal (no auto-restart).
  *
  * Usage:
- *   node unlock                         Background + auto-restart (default)
- *   node unlock --foreground            Terminal mode (no auto-restart)
- *   node unlock claw-only
- *   node unlock --claw-only
- *   node unlock --isolated
- *   node unlock --isolated <botName>
- *   node unlock --dryrun
- *   node unlock --dryrun <botName>
- *   node unlock --headless              Non-interactive (requires env var or --password-file)
- *   node unlock --headless --password-file <path>
- *   node unlock status, stat
- *   node unlock stop
- *   node unlock restart
- *   node unlock delete
+ *   dexbot unlock                         Background + auto-restart (default)
+ *   dexbot unlock --foreground            Terminal mode (no auto-restart)
+ *   dexbot unlock claw-only
+ *   dexbot unlock --claw-only
+ *   dexbot unlock --isolated
+ *   dexbot unlock --isolated <botName>
+ *   dexbot unlock --dryrun
+ *   dexbot unlock --dryrun <botName>
+ *   dexbot unlock --headless              Non-interactive (requires env var or --password-file)
+ *   dexbot unlock --headless --password-file <path>
+ *   dexbot unlock status, stat
+ *   dexbot unlock stop
+ *   dexbot unlock restart
+ *   dexbot unlock delete
+ *
+ * Repo-root users can run `node unlock` or `./scripts/unlock` instead.
  *
  * Environment:
  *   BOT_NAME                     Fallback bot name when none is given as positional arg
@@ -140,14 +142,14 @@ function printLauncherSuccess({ botName = null, clawOnly = false, isolated = fal
     console.log('='.repeat(50));
     if (clawOnly) {
         console.log(statusSuccess('DEXBot2 credential daemon started successfully!'));
-        console.log('If the daemon stops, rerun `node unlock --claw-only` to unlock it again.');
+        console.log('If the daemon stops, rerun `dexbot unlock --claw-only` to unlock it again.');
     } else if (botName) {
         console.log(statusSuccess('DEXBot2 started successfully!'));
-        const cmd = isolated ? `node unlock --isolated ${botName}` : `node unlock ${botName}`;
+        const cmd = isolated ? `dexbot unlock --isolated ${botName}` : `dexbot unlock ${botName}`;
         console.log(`If the bot stops, rerun \`${cmd}\` to unlock it again.`);
     } else {
         console.log(statusSuccess('DEXBot2 started successfully!'));
-        const cmd = isolated ? 'node unlock --isolated' : 'node unlock';
+        const cmd = isolated ? 'dexbot unlock --isolated' : 'dexbot unlock';
         console.log(`If the bot stops, rerun \`${cmd}\` to unlock it again.`);
     }
     console.log('='.repeat(50));
@@ -463,7 +465,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
         if (pid > 0) {
             printLauncherHeader({ botName: effectiveBotName || botName, clawOnly, creditOnly, isolated, dryrun, headless });
             console.log(`DEXBot2 already running in background (PID ${pid}).`);
-            console.log('Use `node unlock stat` to inspect it, or `node unlock restart` to restart it.');
+            console.log('Use `dexbot unlock stat` to inspect it, or `dexbot unlock restart` to restart it.');
             process.exitCode = 0;
             return;
         }
@@ -514,7 +516,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             const { pid } = readLiveMonolithicPid();
             if (pid > 0) {
                 console.log(`DEXBot2 already running in background (PID ${pid}).`);
-                console.log('Use `node unlock stat` to inspect it, or `node unlock restart` to restart it.');
+                console.log('Use `dexbot unlock stat` to inspect it, or `dexbot unlock restart` to restart it.');
                 process.exitCode = 0;
                 return;
             }
@@ -816,7 +818,7 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                 if (credForeign) {
                     console.log(
                         `    ${colorStatus(
-                            'Rerun `node unlock` to detach the foreign daemon and unlock with a fresh master password.',
+                            'Rerun `dexbot unlock` to detach the foreign daemon and unlock with a fresh master password.',
                             STATUS_COLORS.warn
                         )}`
                     );

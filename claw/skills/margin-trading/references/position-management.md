@@ -22,7 +22,7 @@ The goal is to maximize the BTS that is actively working — either as collatera
 
 BTS sitting idle in a wallet earns nothing. BTS locked as excess collateral beyond what the green zone requires is also underutilized. The balance:
 
-- Enough collateral to stay green (CR >= 1.7, with 2.0+ as a prudent operating target)
+- Enough collateral to stay green (CR >= 1.7, with 1.7–3.0 as the green zone)
 - Remaining BTS deployed as order book liquidity or available for new positions
 
 ## Maximizing Volume
@@ -176,7 +176,7 @@ The lever is utilization: BTS that is working — on the book or backing a posit
 ```
 Total BTS
 ├── Collateral (locked in debt positions)
-│   └── Target: CR in green zone (2.0 – 2.5)
+│   └── Target: CR in green zone (1.7 – 3.0)
 ├── On book (resting limit orders)
 │   └── Target: as much as possible
 ├── Pending (proceeds from fills, not yet redeployed)
@@ -196,7 +196,7 @@ discover → trend → assess → recommend
 ```
 
 1. **Discover** (`position_discovery.ts`) — scan account's on-chain call orders to find all open debt positions
-2. **Trend** (`feed_price_source.ts`) — fetch feed price and market mid-price per market, update the trend detector (KAMA-based, internal to the price source module)
+2. **Trend** (`decision_loop.ts`) — fetch feed price and market mid-price per market, update the Kalman-filter-based trend detector
 3. **Assess** (`position_health.ts`) — classify each position into a CR zone, check trend alignment, generate prioritized actions
 4. **Recommend** (`decision_loop.ts`) — sort actions by priority (immediate → soon → evaluate → fallback), return structured assessment
 

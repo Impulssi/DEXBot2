@@ -136,7 +136,7 @@ function restartMonolithicRuntime(monolithic) {
 }
 
 /**
- * Start the monolithic daemon by invoking `node unlock`.
+ * Start the monolithic daemon by invoking `dexbot unlock`.
  *
  * Returns true only when the unlock command exited successfully. In
  * non-interactive (non-TTY) mode the function prints a manual-start hint
@@ -154,13 +154,13 @@ function startMonolithicRuntime() {
             '\n⚠️  Monolithic daemon was running before update but cannot be auto-started\n' +
             '   in non-interactive mode (no TTY).\n' +
             '   To start it manually:\n' +
-            '     node unlock\n' +
+            '     dexbot unlock\n' +
             '   (or with --headless --password-file <path> for automation)\n',
             UPDATE_COLORS.warn,
         ));
         return false;
     }
-    log('Starting monolithic daemon (node unlock)...');
+    log('Starting monolithic daemon (dexbot unlock)...');
     try {
         execSync(`node "${unlockPath}"`, {
             cwd: PATHS.PROJECT_ROOT,
@@ -169,7 +169,7 @@ function startMonolithicRuntime() {
         logSuccess('Monolithic daemon started.');
         return true;
     } catch (err) {
-        log(`Warning: Could not auto-start monolithic daemon (${err.message}). Start manually with: node unlock`);
+        log(`Warning: Could not auto-start monolithic daemon (${err.message}). Start manually with: dexbot unlock`);
         return false;
     }
 }
@@ -656,10 +656,10 @@ try {
         console.log(colorUpdateOutput(
             '\n⚠️  No active runtime was restarted.\n' +
             '   If the daemon was running before, start it manually from a terminal:\n' +
-            '     node unlock\n' +
+            '     dexbot unlock\n' +
             '   (will prompt for master password; add --foreground for interactive mode)\n' +
             '   For non-interactive automation:\n' +
-            '     node unlock --headless --password-file <path>\n',
+            '     dexbot unlock --headless --password-file <path>\n',
             UPDATE_COLORS.warn,
         ));
     }

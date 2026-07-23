@@ -466,7 +466,7 @@ npm run example:honest-ecosystem -- HONEST.MONEY/BTS
 
 ## Position Health
 
-The position health subsystem discovers on-chain debt positions, classifies collateral ratios into a 5-zone model, checks trend alignment, and recommends actions. See [docs/POSITION_HEALTH.md](docs/POSITION_HEALTH.md) for the full reference.
+The position health subsystem discovers on-chain debt positions, classifies collateral ratios into a 3-zone model, checks trend alignment, and recommends actions. See [docs/POSITION_HEALTH.md](docs/POSITION_HEALTH.md) for the full reference.
 
 Inspect one on-chain MPA position:
 

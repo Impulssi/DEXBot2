@@ -211,7 +211,7 @@ const { main } = require('../pm2');
         assert.ok(logs.includes('Number active bots: 3'), 'launcher should still report the active bot count');
         assert.ok(logs.includes('Starting PM2 with all services...'), 'launcher should still report PM2 startup');
         assert.ok(logsIncludePlain('DEXBot2 started successfully!'), 'launcher should still print the final success banner');
-        assert.ok(logs.includes('If dexbot-cred stops, rerun `node pm2` to unlock it again.'), 'launcher should still print the final advisory');
+        assert.ok(logs.includes('If dexbot-cred stops, rerun `dexbot pm2` to unlock it again.'), 'launcher should still print the final advisory');
         assert.ok(!logs.some((line) => line.includes('Connecting to BitShares...')), 'launcher should not print a separate connection banner');
         assert.ok(!logs.some((line) => line.includes('Authenticating master password...')), 'launcher should not print an auth banner');
         assert.ok(!logs.some((line) => line.includes('Ecosystem configuration generated')), 'launcher should not announce ecosystem config generation');

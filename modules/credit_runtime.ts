@@ -641,6 +641,15 @@ class CreditRuntime {
         return null;
     }
 
+    /**
+     * Resolve the MPA feed price for a given debt/collateral pair.
+     * Uses cached value if fresh, otherwise fetches from the blockchain.
+     * @param {string} debtAssetId - The debt asset ID
+     * @param {string} collateralAssetId - The collateral asset ID
+     * @param {Object} [options] - Optional settings
+     * @param {boolean} [options.includeSource] - When true, returns { price, source } object
+     * @returns {number|Object|null} Price number, { price, source } object, or null
+     */
     async _resolveMpaFeedPrice(debtAssetId, collateralAssetId, options: { includeSource?: boolean } = {}) {
         if (!debtAssetId || !collateralAssetId) return null;
 
@@ -678,6 +687,16 @@ class CreditRuntime {
         return cachedIsFresh ? cached : null;
     }
 
+    /**
+     * Resolve the credit conversion rate for a given lending item.
+     * Uses cached value if fresh, otherwise derives from credit deals.
+     * @param {Object} lendingItem - The lending item config
+     * @param {string} debtAssetId - The debt asset ID
+     * @param {string} collateralAssetId - The collateral asset ID
+     * @param {Object} [options] - Optional settings
+     * @param {boolean} [options.includeSource] - When true, returns { price, source } object
+     * @returns {number|Object|null} Rate number, { price, source } object, or null
+     */
     async _resolveCreditConversionRate(lendingItem, debtAssetId, collateralAssetId, options: { includeSource?: boolean } = {}) {
         if (!debtAssetId || !collateralAssetId) return null;
 

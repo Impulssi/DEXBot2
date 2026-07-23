@@ -54,8 +54,10 @@ tsx unlock.ts --headless --password-file /run/secrets/bot-password
 The same flags work with PM2:
 
 ```bash
-DEXBOT_MASTER_PASSWORD=<password> node pm2 --headless
-node pm2 --headless --password-file /run/secrets/bot-password
+DEXBOT_MASTER_PASSWORD=<password> dexbot pm2 --headless
+dexbot pm2 --headless --password-file /run/secrets/bot-password
+
+# Repo-root: use `node pm2` or `./scripts/pm2` instead
 ```
 
 > **⚠️ Security note:** Environment variables are visible via `/proc/<pid>/environ`
@@ -72,7 +74,7 @@ tsx unlock.ts --claw-only
 For PM2-managed credential-daemon-only startup:
 
 ```bash
-node pm2 claw-only
+dexbot pm2 claw-only
 ```
 
 ## Run with Docker Compose

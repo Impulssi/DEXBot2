@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-07-23 - CLI Migration Completion, Market Adapter Cleanup, Doc Refresh
+
+### 2026-07-23
+
+- **Feat**: version bump 1.2.7 → 1.3.0 across all manifests (`package.json`, `package-lock.json`, `analysis/ama_fitting/package.json`, `claw/package.json`, `claw/runtimes/openclaw-plugin/*.json`, `claw/tests/test_claw_mcp_transport.ts`, `docs/DEXBOT_COMPARISON.md`, `docs/EVOLUTION.md`, `docs/MPA_CREDIT_USAGE.md`, `docs/FUND_MOVEMENT_AND_ACCOUNTING.md`, `docs/WORKFLOW.md`, `docs/README.md`, `docs/architecture.md`).
+- **Fix**: migrate all remaining `node unlock`/`node pm2` user-facing references to `dexbot unlock`/`dexbot pm2` across 22 source files — error messages, help text, doc comments, success banners, runtime command strings, ecosystem regeneration comments, and test assertions. Includes repo-root alternative notes (`node pm2`/`node unlock`/`./scripts/pm2`/`./scripts/unlock`) preserved in CLI entry points (`pm2.ts`, `unlock.ts`, `dexbot.ts`, `credential-daemon.ts`, `scripts/update.ts`, `modules/dexbot_class.ts`, `modules/launcher/*.ts`, `modules/constants.ts`, `claw/modules/claw_launcher.ts`, 4 test files).
+- **Fix**: remove browser-safe `typeof __filename` guard in `market_adapter.ts` — always available at runtime, no browser path (`market_adapter/market_adapter.ts`).
+- **Fix**: update `claw/package.json` test script from compiled `.js` paths to `npx tsx` for `.ts` source files (all 16 test targets).
+- **Docs**: update 17 documentation files — `README.md`, `docs/`, `claw/docs/`, `claw/skills/`, `claw/README.md`, `analysis/README.md` — with CLI invocation fixes, `dexbot unlock`/`dexbot pm2` as primary commands, repo-root alternative notes, version references updated to 1.3.0, position-health zone model correction (5-zone → 3-zone), green zone CR range fix (2.0 → 1.7–3.0), trend detector source correction, tradingview path correction, and module path clarifications.
+- **Docs**: add JSDoc blocks to `_resolveMpaFeedPrice` and `_resolveCreditConversionRate` in `modules/credit_runtime.ts`. Refresh inline doc-comment exports listings in `modules/account_bots.ts`, `modules/chain_orders.ts`, `modules/bitshares_client.ts`, `modules/chain_keys.ts`, `modules/account_orders.ts`, `modules/order/format.ts`, `modules/order/utils/order.ts`. Fix stale comment in `analysis/analyze_kalman.ts`. Fix comment paths in `market_adapter/inputs/fetch_lp_data.ts`, `market_adapter/lp_chart_runner.ts`, `claw/modules/position_discovery.ts`.
+
 ## [1.2.7] - 2026-07-23 - CLI Invocation Fix, ALS Re-Entrancy Test Fix
 
 ### 2026-07-23

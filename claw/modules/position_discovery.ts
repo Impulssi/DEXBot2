@@ -53,7 +53,7 @@ function computeBtsPerMpa(settlementPrice: any, mpaAsset: any, backingAsset: any
 
 /**
  * Normalize a raw call order into a position object compatible with
- * assessPosition() from position_health.js.
+ * assessPosition() from position_health.ts.
  *
  * @param {Object} callOrder    – Raw call_order from get_full_accounts
  * @param {Object} mpaAsset     – Resolved MPA asset object

@@ -28,7 +28,7 @@ Each discovered position includes:
 
 ## 3-Zone CR Model
 
-The health assessor classifies collateral ratios into three zones using the thresholds from `CR_ZONES` in `modules/constants.ts`:
+The health assessor classifies collateral ratios into three zones using the thresholds from `CR_ZONES` in the repo-root `modules/constants.ts`:
 
 | Zone | CR range | Status | Meaning |
 |---|---|---|---|

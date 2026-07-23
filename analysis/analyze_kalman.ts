@@ -22,7 +22,7 @@ const { calculateAMA } = require('../market_adapter/core/strategies/ama');
 const { computeATR, getCandleClose } = require('./math_utils');
 const { writeChartFile } = require('./chart_utils');
 
-// Mirror ama_slope_model.ts defaults for a fair comparison
+// Standalone analysis defaults (reuses calculateAMA from production but constants are independent)
 const AMA_ER_PERIOD   = 10;
 const AMA_FAST        = 2;
 const AMA_SLOW        = 30;

@@ -5,26 +5,49 @@
  * Manages multi-bot configuration and metadata.
  *
  * ===============================================================================
- * EXPORTS (5 functions)
+ * EXPORTS
  * ===============================================================================
  *
  * MAIN ENTRY POINT:
- *   1. main() - Interactive CLI for bot configuration management
- *      Lists bots, allows add/edit/delete/activate operations
- *      Loads and saves profiles/bots.json
+ *   main() - Interactive CLI for bot configuration management
+ *     Lists bots, allows add/edit/delete/activate operations
+ *     Loads and saves profiles/bots.json
  *
- *   2. normalizeBotDraft(draft) - Normalize a bot configuration draft
- *      Applies defaults and validation to raw bot config entries
+ *   normalizeBotDraft(draft) - Normalize a bot configuration draft
+ *     Applies defaults and validation to raw bot config entries
+ *
+ * INTERACTIVE PROMPTS:
+ *   askString(prompt, opts) - Prompt for a string value
+ *   askNumber(prompt, opts) - Prompt for a number
+ *   askBoolean(prompt) - Prompt for yes/no
+ *   askAsset(prompt, opts) - Prompt for asset selection
+ *   askAssetB(prompt, opts) - Prompt for quote asset
+ *   askStartPrice(prompt) - Prompt for start price
+ *   askGridPriceMode(prompt) - Prompt for grid price source
+ *   askTargetSpreadPercent(prompt) - Prompt for target spread
+ *   askNumberWithBounds(prompt, opts) - Prompt for bounded number
+ *   askIntegerInRange(prompt, min, max) - Prompt for integer in range
+ *   askNumberOrMultiplier(prompt) - Prompt for number or multiplier (e.g. "2x")
+ *   askMaxPrice(prompt) - Prompt for max price
+ *   askNumberOrPercentage(prompt) - Prompt for value or percentage
+ *   askWeightDistribution(prompt, legend) - Prompt for weight distribution
+ *   askWeightDistributionNoLegend(prompt) - Weight distribution without legend
+ *   askLogLevel(prompt) - Prompt for log level
+ *   askUpdaterBranch(prompt) - Prompt for updater branch
+ *   askCronSchedule(prompt) - Prompt for cron schedule
  *
  * UTILITIES:
- *   3. parseJsonWithComments(raw) - Parse JSON with comment stripping
- *      Removes / * / and // style comments before JSON parsing
- *
- *   4. parseCronToDelta(cronString) - Parse cron expression to delta (minutes)
- *      Converts cron schedule to rotation frequency
- *
- *   5. deltaToCron(deltaMinutes) - Convert delta (minutes) to cron expression
- *      Converts rotation frequency to cron schedule
+ *   parseJsonWithComments(raw) - Parse JSON with comment stripping
+ *   isMultiplierString(val) - Check if value is a multiplier (e.g. "2x")
+ *   isValidCron(cron) - Validate cron expression
+ *   loadBotsConfig() - Load bots config from profiles/bots.json
+ *   saveBotsConfig(data) - Save bots config
+ *   listBots() - List all configured bots
+ *   selectBotIndex(prompt) - Select a bot by index
+ *   parseCronToDelta(cronString) - Parse cron expression to delta (minutes)
+ *   deltaToCron(deltaMinutes) - Convert delta (minutes) to cron expression
+ *   loadGeneralSettings() - Load general settings
+ *   saveGeneralSettings(data) - Save general settings
  *
  * ===============================================================================
  *

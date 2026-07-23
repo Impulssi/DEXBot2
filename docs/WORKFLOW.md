@@ -184,7 +184,7 @@ git pull origin test
 
 ## Recommended Runtime: `unlock`
 
-DEXBot2 runs as a **monolithic daemon** (`node unlock`). This is the production-
+DEXBot2 runs as a **monolithic daemon** (`dexbot unlock`). This is the production-
 recommended mode:
 
 - **Single process** — no PM2, no separate credential daemon management
@@ -197,16 +197,16 @@ Legacy PM2 mode (`npm run pm2:unlock`) is de-emphasized but still available.
 
 ```bash
 # Start as background daemon (default)
-node unlock
+dexbot unlock
 
 # Start in foreground (interactive)
-node unlock --foreground
+dexbot unlock --foreground
 
 # Start with claw automation
-node unlock --claw-only
+dexbot unlock --claw-only
 
 # Start credit-only worker (no grid trading, just credit runtime)
-node unlock credit
+dexbot unlock credit
 ```
 
 ### Overview of CLI Commands

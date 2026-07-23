@@ -17,13 +17,13 @@
  * converted to blockchain integers internally using asset precision.
  *
  * ===============================================================================
- * EXPORTS (18 functions + 2 constants)
+ * EXPORTS (21 functions + 1 constant)
  * ===============================================================================
  *
- * ACCOUNT MANAGEMENT (3 functions - async)
+ * ACCOUNT MANAGEMENT (4 functions - async)
  *   1. selectAccount(nameOrId) - Select/authenticate account by name or ID
  *      Prompts for password if needed, caches selection
- *      Returns { accountId, accountName, authority }
+ *      Returns { accountName, privateKey, id }
  *
  *   2. setPreferredAccount(accountId, accountName) - Set preferred account
  *      Used by selectAccount() if no account specified
@@ -31,45 +31,58 @@
  *   3. resolveAccountId(nameOrId) - Resolve account name to ID (async, cached)
  *   4. resolveAccountName(id) - Resolve account ID to name (async, cached)
  *
- * ORDER OPERATIONS (5 functions - async)
+ * ORDER OPERATIONS (7 functions - async)
  *   5. readOpenOrders(accountId) - Read all open orders for account
  *      Returns array of { id, seller, sells, receives, ...blockchain fields }
  *
- *   6. createOrder(accountId, orderParams, broadcastFn) - Create limit order
+ *   6. readSingleOrder(orderId) - Fetch a single limit order by id
+ *      Returns raw order object, null if absent, throws on error
+ *
+ *   7. batchReadOrders(orderIds) - Fetch multiple orders by id
+ *      Returns array of order objects (null for missing ids)
+ *
+ *   8. createOrder(accountId, orderParams, broadcastFn) - Create limit order
  *      orderParams: { sellSymbol, sellAmount, buySymbol, buyAmount, fillOrKill, ... }
  *      Returns { tx_id, operation_results } or throws
  *
- *   7. updateOrder(accountId, orderId, newAmount, broadcastFn) - Update existing order
+ *   9. updateOrder(accountId, orderId, newAmount, broadcastFn) - Update existing order
  *      Changes order amount, preserves price
  *      Returns transaction result
  *
- *   8. cancelOrder(accountId, orderId, broadcastFn) - Cancel order
- *      Removes order from blockchain
- *      Returns transaction result
+ *   10. cancelOrder(accountId, orderId, broadcastFn) - Cancel order
+ *       Removes order from blockchain
+ *       Returns transaction result
  *
- *   9. executeBatch(operations, broadcastFn) - Execute batch of operations
- *      Executes multiple operations (create/update/cancel) in one transaction
- *      Returns transaction result
+ *   11. executeBatch(operations, broadcastFn) - Execute batch of operations
+ *       Executes multiple operations (create/update/cancel) in one transaction
+ *       Returns transaction result
  *
  * FILL EVENT HANDLING (1 function - async)
- *   10. listenForFills(accountId, fillCallback) - Subscribe to fill events
- *      Invokes fillCallback({ id, orderId, side, amount, price, proceeds, ... })
- *      Returns unsubscribe function
+ *   12. listenForFills(accountId, fillCallback) - Subscribe to fill events
+ *       Invokes fillCallback({ id, orderId, side, amount, price, proceeds, ... })
+ *       Returns unsubscribe function
+ *
+ * FILL DEDUPLICATION (2 functions)
+ *   13. wasRecentlyOwnCancelled(orderId) - Check if order was recently self-cancelled
+ *   14. recordOwnCancel(orderId) - Record a self-cancelled order
  *
  * ACCOUNT STATE (1 function - async)
- *   11. getOnChainAssetBalances(accountId) - Fetch account asset balances
- *      Returns { BTS: amount, USD: amount, ... } (human-readable floats)
+ *   15. getOnChainAssetBalances(accountId) - Fetch account asset balances
+ *       Returns { BTS: amount, USD: amount, ... } (human-readable floats)
  *
- * OPERATION BUILDERS (3 functions)
- *   12. buildCreateOrderOp(accountId, orderParams) - Build create order operation
- *   13. buildUpdateOrderOp(accountId, orderId, newAmount) - Build update order operation
- *   14. buildCancelOrderOp(accountId, orderId) - Build cancel order operation
+ * OPERATION BUILDERS (4 functions)
+ *   16. buildCreateOrderOp(accountId, orderParams) - Build create order operation
+ *   17. buildUpdateOrderOp(accountId, orderId, newAmount) - Build update order operation
+ *   18. buildCancelOrderOp(accountId, orderId) - Build cancel order operation
+ *   19. buildLiquidityPoolExchangeOp(accountId, params) - Build LP exchange operation
  *
- * CONFIGURATION (2 functions/constants)
- *   15. getFillProcessingMode() - Get current fill processing mode
+ * CONFIGURATION:
+ *   20. getFillProcessingMode() - Get current fill processing mode
  *       Returns 'history' (use fill event data) or 'open' (fetch open orders)
+ *   21. FILL_PROCESSING_MODE - Constant: current fill processing mode
  *
- *   14. FILL_PROCESSING_MODE - Constant: current fill processing mode
+ * ERROR HANDLING:
+ *   22. BroadcastUncertainError - Error class for uncertain broadcast results
  *
  * ===============================================================================
  *

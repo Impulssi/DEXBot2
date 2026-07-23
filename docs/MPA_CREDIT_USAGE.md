@@ -142,8 +142,8 @@ Set `creditOnly: true` on a bot entry to run only the credit runtime — no grid
 No trading fields (`assetA`, `assetB`, `startPrice`, `incrementPercent`, `activeOrders`, `botFunds`) are needed.
 
 ```bash
-node unlock credit          # Integrated — credential daemon + supervisor
-node unlock <bot-name>      # Start a named bot directly
+dexbot unlock credit          # Integrated — credential daemon + supervisor
+dexbot unlock <bot-name>      # Start a named bot directly
 ```
 
 ### Collateral Increase Thresholds

@@ -373,7 +373,7 @@ class AccountOrders {
    * @param {Object} bot - The bot configuration.
    * @param {string} key - The bot key.
    * @param {number} index - The bot index.
-   * @param {Object} [existing={}] - Existing metadata for preserving createdAt.
+   * @param {Object|null} [existing=null] - Existing metadata for preserving createdAt.
    * @returns {Object} The new meta object.
    * @private
    */

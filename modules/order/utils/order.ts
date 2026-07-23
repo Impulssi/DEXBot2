@@ -5,7 +5,7 @@
  * Includes grid indexing, order comparison, delta building, and strategy calculations.
  *
  * ===============================================================================
- * TABLE OF CONTENTS (37 exported functions)
+ * TABLE OF CONTENTS (36 exported functions)
  * ===============================================================================
  *
  * SECTION 1: CHAIN ORDER MATCHING & RECONCILIATION (5 functions)

@@ -35,7 +35,7 @@
  *   10. formatPercent(value, decimals) - Format with custom decimal places
  *
  * SECTION 4: RATIO/METRIC FORMATTING (3 functions)
- *   12. formatRatio(value, decimals) - Format ratios with custom decimals (default 5)
+ *   11. formatRatio(value, decimals) - Format ratios with custom decimals (default 5)
  *   13. formatMetric2(value) - Format to 2 decimals (timing, performance)
  *   14. formatMetric5(value) - Format to 5 decimals (detailed metrics)
  *

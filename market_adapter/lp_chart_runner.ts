@@ -4,7 +4,7 @@
  * LP CHART RUNNER — Shared LP chart orchestration
  *
  * Owns the reusable chart workflow used by:
- * - scripts/generate_lp_chart.js
+ * - scripts/generate_lp_chart.ts
  * - package.json `lp:chart`
  *
  * Responsibilities:

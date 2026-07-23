@@ -229,7 +229,7 @@ function printCLIUsage() {
     console.log('  update            Update DEXBot2 from the repository and restart active bots.');
     console.log('  order             Analyze persisted order grids in profiles/orders/ (spread, increment, funds). Use --export for HTML.');
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
-    console.log('  unlock            Run credential daemon + bot (equivalent to `node unlock`).');
+    console.log('  unlock            Run credential daemon + bot (repo-root: `node unlock`).');
     console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune) are forwarded.');
     console.log('  clear             Remove all log files from profiles/logs/ (runs scripts/clear-logs.sh).');
     console.log('  clear-orders      Remove all persisted order files from profiles/orders/.');
@@ -373,9 +373,9 @@ function printStartLauncherSuccess({ botName = null, dryRun = false } = {}) {
     console.log('='.repeat(50));
     console.log(startupSuccess('DEXBot2 started successfully!'));
     if (botName) {
-        console.log(`If the bot stops, rerun \`node unlock${dryrunFlag} ${botName}\`.`);
+        console.log(`If the bot stops, rerun \`dexbot unlock${dryrunFlag} ${botName}\`.`);
     } else {
-        console.log(`If the bots stop, rerun \`node unlock${dryrunFlag}\`.`);
+        console.log(`If the bots stop, rerun \`dexbot unlock${dryrunFlag}\`.`);
     }
     console.log('='.repeat(50));
     console.log();
@@ -698,7 +698,7 @@ async function disableBotByName(botName: string | null | undefined) {
     }
     match.active = false;
     saveSettingsFile(config, filePath);
-    console.log(`Marked '${botName}' inactive in ${path.basename(filePath)}. Stop the PM2 process using 'node pm2 stop ${botName}'.`);
+    console.log(`Marked '${botName}' inactive in ${path.basename(filePath)}. Stop the PM2 process using 'dexbot pm2 stop ${botName}'.`);
 }
 
 /**

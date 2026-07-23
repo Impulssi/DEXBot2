@@ -1,7 +1,7 @@
 /**
  * FETCH LP PRICE DATA FROM KIBANA — Pool-centric
  *
- * Reads profiles/server-profiles/bots.json for asset pairs, connects to
+ * Reads profiles/bots.json for asset pairs, connects to
  * the BitShares blockchain to resolve asset precisions and the pool ID
  * (using the same logic as derivePoolPrice in modules/order/utils/system.ts),
  * then fetches all swap history from Kibana and exports OHLCV candles to JSON.

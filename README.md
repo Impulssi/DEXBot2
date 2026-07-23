@@ -155,7 +155,7 @@ market volatility instead of using an unnecessarily wide range.
    live writes and range scaling. Use `dexbot white --dynamic-weight` for
    newly generated dynamic-weight entries; existing entries are preserved.
 
-6. Start DEXBot2 with `node unlock` (or `node pm2` for PM2).
+6. Start DEXBot2 with `dexbot unlock` (or `dexbot pm2` for PM2).
 7. Then tune `minPrice` / `maxPrice` for the market's volatility range.
 
 ### Bot Options Reference
@@ -204,19 +204,19 @@ Defaults in [`modules/constants.ts`](modules/constants.ts) are overridable at gl
 
 ## 🎯 Zero-Dependency Process Management
 
-`node unlock` is the recommended production runtime. It runs the selected bot set as one monolithic bot process, with the credential daemon and market adapter in separate helper processes. Monolithic start/stop/restart controls apply to the whole runtime, not to individual bots.
+`dexbot unlock` is the recommended production runtime (global install). Repo-root users can run `node unlock` or `./scripts/unlock` instead. It runs the selected bot set as one monolithic bot process, with the credential daemon and market adapter in separate helper processes. Monolithic start/stop/restart controls apply to the whole runtime, not to individual bots.
 
 ```bash
-node unlock              # Start all active bots
-node unlock --dryrun     # Dry-run (no transactions broadcast)
-node unlock credit       # Credit-only worker
-node unlock stat         # Runtime status
-node unlock stop         # Stop the monolithic runtime
-node unlock restart      # Restart the monolithic runtime
-node unlock delete       # Shut down and clean up
+dexbot unlock              # Start all active bots
+dexbot unlock --dryrun     # Dry-run (no transactions broadcast)
+dexbot unlock credit       # Credit-only worker
+dexbot unlock stat         # Runtime status
+dexbot unlock stop         # Stop the monolithic runtime
+dexbot unlock restart      # Restart the monolithic runtime
+dexbot unlock delete       # Shut down and clean up
 ```
 
-For independent per-bot process control, start isolated mode with `node unlock --isolated` or use PM2 instead of the default monolithic runtime.
+For independent per-bot process control, start isolated mode with `dexbot unlock --isolated` or use PM2 instead of the default monolithic runtime.
 
 ## 🛠️ Bot Management
 
@@ -240,17 +240,19 @@ dexbot default             # Reset settings to defaults
 
 ## 🎯 PM2 Process Management
 
-PM2 is optional — `node unlock` is the native solution.
+PM2 is optional — `dexbot unlock` is the native solution.
 
 ```bash
-node pm2 [<bot-name>]                    # Start with PM2
-node pm2 restart {all|<bot>|dexbot-cred} # Safe restart
-node pm2 stop {all|<bot>}                # Stop (via wrapper)
-node pm2 delete {all|<bot>}              # Delete (via wrapper)
-pm2 logs [<bot-name>]                    # Real-time logs
+dexbot pm2 [<bot-name>]                    # Start with PM2
+dexbot pm2 restart {all|<bot>|dexbot-cred} # Safe restart
+dexbot pm2 stop {all|<bot>}                # Stop (via wrapper)
+dexbot pm2 delete {all|<bot>}              # Delete (via wrapper)
+pm2 logs [<bot-name>]                       # Real-time logs
 ```
 
-Always use `node pm2 restart` instead of raw `pm2 restart all` — the wrapper safely handles the credential daemon. If the credential daemon stops, rerun `node pm2`.
+Always use `dexbot pm2 restart` instead of raw `pm2 restart all` — the wrapper safely handles the credential daemon. If the credential daemon stops, rerun `dexbot pm2`.
+
+> Repo-root users can use `node pm2` or `./scripts/pm2` instead of `dexbot pm2`.
 
 Logs are written to `profiles/logs/<bot-name>.log` (errors to `<bot-name>-error.log`) in all modes.
 

@@ -231,7 +231,7 @@ async function launcherPm2Start(botName: string | null, options: Record<string, 
   // Then check if daemon is ready
   if (!(await getChainKeys().isDaemonResponsive())) {
     throw new Error(
-      'Credential daemon is not running. Start it first with: node pm2 or node unlock'
+      'Credential daemon is not running. Start it first with: dexbot pm2 or dexbot unlock'
     );
   }
 
@@ -406,7 +406,7 @@ async function launcherClawOnly(options: Record<string, any> = {}) {
     mode: 'claw-only',
     message: 'Credential daemon started in background (PM2 managed)',
     pid: child.pid,
-    command: 'node pm2 claw-only'
+    command: 'dexbot pm2 claw-only (repo-root: node pm2)'
   };
 }
 
@@ -438,7 +438,7 @@ async function launcherUnlockStart(botName: string | null, options: Record<strin
     mode: 'unlock',
     botName: botName || 'default',
     pid: child.pid,
-    command: `node unlock ${botName || '(default)'}`,
+    command: `dexbot unlock ${botName || '(default)'} (repo-root: node unlock)`,
     message: 'Bots started via unlock (single password prompt, no PM2)'
   };
 }
