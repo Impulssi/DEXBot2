@@ -4184,8 +4184,7 @@ class DEXBot {
                     this._runCredentialRecoveryAfterDaemonRestored().catch(err => {
                         this.manager?.logger?.log?.(`[CREDENTIAL] Deferred recovery failed: ${err.message}`, 'error');
                         if (this.manager) {
-                            this.manager._recoveryState = this.manager._recoveryState || {};
-                            this.manager._recoveryState.lastFailureAt = Date.now();
+                            this.manager._recoveryState = { ...this.manager._recoveryState, lastFailureAt: Date.now() };
                         }
                     });
                 }, 1000);
@@ -4622,7 +4621,7 @@ class DEXBot {
                     'error'
                 );
                 if (typeof this.manager.requestStructuralGridResync === 'function') {
-                    if (this.manager._recoveryState) this.manager._recoveryState.structuralResyncRequested = true;
+                    if (this.manager._recoveryState) this.manager._recoveryState = { ...this.manager._recoveryState, structuralResyncRequested: true };
                     await this.manager.requestStructuralGridResync(
                         'pending broadcasts before COW create',
                         { pendingBroadcasts: pendingBroadcasts.map(p => p.slotId) }
@@ -4736,7 +4735,7 @@ class DEXBot {
             // Working grid is stale after master grid mutation from sync.
             // Request structural resync to rebuild the grid on the next cycle.
             if (typeof this.manager.requestStructuralGridResync === 'function') {
-                if (this.manager._recoveryState) this.manager._recoveryState.structuralResyncRequested = true;
+                if (this.manager._recoveryState) this.manager._recoveryState = { ...this.manager._recoveryState, structuralResyncRequested: true };
                 await this.manager.requestStructuralGridResync(
                     'unmatched chain orders before COW create',
                     { unmatchedChainOrders: unmatchedChainOrders }
@@ -5142,8 +5141,7 @@ class DEXBot {
                                 'error'
                             );
                             if (typeof this.manager.requestStructuralGridResync === 'function') {
-                                this.manager._recoveryState = this.manager._recoveryState || {};
-                                this.manager._recoveryState.structuralResyncRequested = true;
+                                this.manager._recoveryState = { ...this.manager._recoveryState, structuralResyncRequested: true };
                                 await this.manager.requestStructuralGridResync(
                                     'persistence guard triggered after COW batch',
                                     { persistReason: retryResult.reason || 'unknown' }
@@ -5796,9 +5794,7 @@ class DEXBot {
                     const persistedResult = await this._recoverFromPersistedGrid();
                     if (persistedResult.success) {
                         if (this.manager?._recoveryState) {
-                            this.manager._recoveryState.attemptCount = 0;
-                            this.manager._recoveryState.lastAttemptAt = 0;
-                            this.manager._recoveryState.lastFailureAt = 0;
+                            this.manager._recoveryState = { ...this.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
                         }
                         return;
                     }
@@ -5809,16 +5805,14 @@ class DEXBot {
                         refreshCenterPrice: true,
                     });
                     if (resetResult && this.manager?._recoveryState) {
-                        this.manager._recoveryState.attemptCount = 0;
-                        this.manager._recoveryState.lastAttemptAt = 0;
-                        this.manager._recoveryState.lastFailureAt = 0;
+                        this.manager._recoveryState = { ...this.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
                     }
                 } catch (err: any) {
                     this._warn(`[RECOVERY] Structural full grid resync failed: ${err.message}`);
                 } finally {
                     this._structuralGridResyncRunning = false;
                     if (this.manager?._recoveryState) {
-                        this.manager._recoveryState.structuralResyncRequested = false;
+                        this.manager._recoveryState = { ...this.manager._recoveryState, structuralResyncRequested: false };
                     }
                 }
             }, 0);

@@ -957,8 +957,7 @@ async function setupTriggerFileDetection(bot) {
                                 }
                             }).catch(err => {
                                 bot._warn(`Trigger reset lock error: ${err.message}`);
-                                bot.manager._recoveryState = bot.manager._recoveryState || {};
-                                bot.manager._recoveryState.lastFailureAt = Date.now();
+                                bot.manager._recoveryState = { ...bot.manager._recoveryState, lastFailureAt: Date.now() };
                             });
                         }, 200);
                     }
@@ -1304,8 +1303,7 @@ function scheduleMaintenanceAfterIdle(ctx, context, options = {}) {
             .catch(err => {
                 ctx._warn(`Deferred ${context} grid maintenance failed: ${err.message}`);
                 if (ctx.manager) {
-                    ctx.manager._recoveryState = ctx.manager._recoveryState || {};
-                    ctx.manager._recoveryState.lastFailureAt = Date.now();
+                    ctx.manager._recoveryState = { ...ctx.manager._recoveryState, lastFailureAt: Date.now() };
                 }
             });
     }, delayMs);
@@ -1351,8 +1349,7 @@ function scheduleDeferredGridResync(ctx, options = {}) {
         }).catch(err => {
             ctx._warn(`Deferred trigger reset lock error: ${err.message}`);
             if (ctx.manager) {
-                ctx.manager._recoveryState = ctx.manager._recoveryState || {};
-                ctx.manager._recoveryState.lastFailureAt = Date.now();
+                ctx.manager._recoveryState = { ...ctx.manager._recoveryState, lastFailureAt: Date.now() };
             }
         });
     }, delayMs);

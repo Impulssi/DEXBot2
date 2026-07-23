@@ -386,6 +386,12 @@ class NodeManager {
             return false;
         }
         this._lastBlacklistWarnMs.set(warnKey, nowMs);
+        if (this._lastBlacklistWarnMs.size > 64) {
+            const staleThreshold = nowMs - 3_600_000 * 2;
+            for (const [key, ts] of this._lastBlacklistWarnMs) {
+                if (ts < staleThreshold) this._lastBlacklistWarnMs.delete(key);
+            }
+        }
         return true;
     }
 

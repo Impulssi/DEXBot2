@@ -107,7 +107,7 @@ class Accountant {
     manager: any;
     _isVerifyingInvariants: boolean;
     _pendingInvariantSnapshot: { chainFreeBuy: number; chainFreeSell: number; chainBuy: number; chainSell: number } | null;
-    _logThrottleState: Map<string, { lastAt: number; suppressed: number; lastMessage: string | null }>;
+    _logThrottleState: Map<string, { lastAt: number; suppressed: number }>;
 
     constructor(manager) {
         this.manager = manager;
@@ -118,17 +118,17 @@ class Accountant {
 
     _logThrottled(key, message, level = 'warn', intervalMs = TIMING.LOG_THROTTLE_INTERVAL_MS) {
         const now = Date.now();
-        const state = this._logThrottleState.get(key) || { lastAt: 0, suppressed: 0, lastMessage: null };
+        let state = this._logThrottleState.get(key);
 
-        if (!state.lastAt || (now - state.lastAt) >= intervalMs) {
-            const suffix = state.suppressed > 0 ? ` (suppressed ${state.suppressed} repeated log(s))` : '';
+        if (!state || (now - state.lastAt) >= intervalMs) {
+            const suffix = state && state.suppressed > 0 ? ` (suppressed ${state.suppressed} repeated log(s))` : '';
             this.manager?.logger?.log?.(`${message}${suffix}`, level);
-            this._logThrottleState.set(key, { lastAt: now, suppressed: 0, lastMessage: message });
+            this._logThrottleState.set(key, { lastAt: now, suppressed: 0 });
             return true;
         }
 
         state.suppressed += 1;
-        this._logThrottleState.set(key, state);
+        if (state.suppressed > 1_000_000) state.suppressed = 1_000_000;
         return false;
     }
 
@@ -586,8 +586,7 @@ class Accountant {
                     await this._attemptFundRecovery(mgr, 'Fund invariant violation');
                 } catch (err: any) {
                     mgr.logger?.log?.(`[RECOVERY] Deferred recovery failed: ${err.message}`, 'error');
-                    mgr._recoveryState = mgr._recoveryState || {};
-                    mgr._recoveryState.lastFailureAt = Date.now();
+                    mgr._recoveryState = { ...mgr._recoveryState, lastFailureAt: Date.now() };
                 }
             };
             if (mgr._gridLock?.isLocked?.()) {
@@ -1102,8 +1101,7 @@ class Accountant {
                         mgr._pendingRecovery = this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure')
                             .catch(err => {
                                 mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
-                                mgr._recoveryState = mgr._recoveryState || {};
-                                mgr._recoveryState.lastFailureAt = Date.now();
+                                mgr._recoveryState = { ...mgr._recoveryState, lastFailureAt: Date.now() };
                             })
                             .finally(() => {
                                 mgr._pendingRecovery = null;

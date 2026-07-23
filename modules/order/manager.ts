@@ -923,11 +923,10 @@ class OrderManager {
             const fatalError = validation.errors.find(e => e.isFatal || e.code === 'ILLEGAL_SPREAD_STATE');
             if (fatalError) {
                 this.logger.log(fatalError.message, 'error');
-                this._illegalStateSignal = {
+                this._lastIllegalState = {
                     id: order.id,
                     context,
                     message: fatalError.message,
-                    at: Date.now()
                 };
                 if (this._throwOnIllegalState) {
                     const err: any = new Error(fatalError.message);
@@ -1661,10 +1660,7 @@ class OrderManager {
             }
         } catch (recalcErr: any) {
             this.logger.log(`[COW] Fund recalculation failed post-commit: ${recalcErr.message}`, 'error');
-            if (!this._recoveryStateValue) {
-                this._recoveryStateValue = { phase: 'idle', attemptCount: 0, lastAttemptAt: 0, inFlight: false, lastFailureAt: 0 };
-            }
-            this._recoveryStateValue.lastFailureAt = Date.now();
+            this._recoveryState = { ...this._recoveryState, lastFailureAt: Date.now() };
         } finally {
             this._clearWorkingGridRef();
         }

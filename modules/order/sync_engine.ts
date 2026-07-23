@@ -1049,6 +1049,137 @@ class SyncEngine {
         return { filledOrders, updatedOrders, ordersNeedingCorrection, unmatchedChainOrders };
     }
 
+    // ------------------------------------------------------------------
+    // Shared fill-processing helpers (used by syncFromFillHistory and
+    // syncFromFillHistoryBatch)
+    // ------------------------------------------------------------------
+
+    _findMatchingGridOrder(mgr, orderId) {
+        for (const gridOrder of mgr.orders.values()) {
+            if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
+                return gridOrder;
+            }
+        }
+        return null;
+    }
+
+    _computeFillContext(mgr, matchedGridOrder, paysAssetId, paysAmountRaw) {
+        const orderType = matchedGridOrder.type;
+        const currentSize = toFiniteNumber(matchedGridOrder.size);
+        const precision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetA.precision : mgr.assets.assetB.precision;
+
+        let filledAmount = 0;
+        if (orderType === ORDER_TYPES.SELL) {
+            if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmountRaw, precision, true);
+        } else {
+            if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmountRaw, precision, true);
+        }
+
+        const currentSizeIntFromGrid = floatToBlockchainInt(currentSize, precision);
+        const rawForSaleInt = toFiniteNumber(matchedGridOrder?.rawOnChain?.for_sale, null);
+        const driftSignal = Number.isFinite(rawForSaleInt) && Math.round(rawForSaleInt) < currentSizeIntFromGrid;
+
+        return { orderType, currentSize, precision, filledAmount, currentSizeIntFromGrid, rawForSaleInt, driftSignal };
+    }
+
+    async _computeFillTransitionResult(mgr, params) {
+        const { matchedGridOrder, orderType, precision, filledAmount, filledAmountInt, currentSizeIntFromGrid, rawForSaleInt, chainRefetched, chainConfirmsEmpty, effectiveRawForSale, blockNum, historyId, isMaker } = params;
+
+        let resolvedChainConfirmsEmpty = chainConfirmsEmpty;
+        if (chainRefetched && Number.isFinite(effectiveRawForSale) && Math.round(effectiveRawForSale) <= 0) {
+            resolvedChainConfirmsEmpty = true;
+        }
+
+        const currentSizeInt = Number.isFinite(effectiveRawForSale)
+            ? Math.max(0, Math.round(effectiveRawForSale))
+            : currentSizeIntFromGrid;
+        const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
+        const newSize = blockchainToFloat(newSizeInt, precision, true);
+
+        if (Number.isFinite(effectiveRawForSale) && currentSizeInt !== currentSizeIntFromGrid) {
+            mgr.logger.log(
+                `[SYNC] Using rawOnChain.for_sale baseline for ${matchedGridOrder.orderId}: raw=${currentSizeInt}, grid=${currentSizeIntFromGrid}` +
+                (chainRefetched ? ' (refetched)' : ''),
+                'debug'
+            );
+        }
+
+        const gridAlsoEmpty = currentSizeIntFromGrid <= 0;
+        let isEffectivelyFull = resolvedChainConfirmsEmpty || gridAlsoEmpty;
+        let ghostOrderId;
+
+        if (!isEffectivelyFull) {
+            const otherPrecision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetB.precision : mgr.assets.assetA.precision;
+            const price = matchedGridOrder.price;
+            const otherSize = (orderType === ORDER_TYPES.SELL) ? newSize * price : newSize / price;
+
+            if (floatToBlockchainInt(otherSize, otherPrecision) <= 0) {
+                mgr.logger.log(`[SYNC] Order ${matchedGridOrder.orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. Treating as full fill to trigger rotation.`, 'info');
+                isEffectivelyFull = true;
+                ghostOrderId = matchedGridOrder.orderId;
+            }
+        }
+
+        let fullUpdate;
+        let ghostUpdate;
+        let partialUpdate;
+        let filledOrderResult;
+
+        if (isEffectivelyFull) {
+            if (ghostOrderId) {
+                ghostUpdate = {
+                    ...matchedGridOrder,
+                    size: 0,
+                    state: ORDER_STATES.PARTIAL,
+                    orderId: ghostOrderId,
+                };
+            } else {
+                fullUpdate = convertToSpreadPlaceholder(matchedGridOrder);
+            }
+            filledOrderResult = { ...matchedGridOrder, blockNum, historyId, isMaker };
+        } else {
+            filledOrderResult = {
+                ...matchedGridOrder,
+                size: filledAmount,
+                isPartial: true,
+                blockNum,
+                historyId,
+                isMaker
+            };
+            const { btsFeeState, ...matchedWithoutDeferredFee } = matchedGridOrder;
+            let updatedOrder = { ...matchedWithoutDeferredFee, state: ORDER_STATES.PARTIAL };
+
+            if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
+                const baselineForSale = (chainRefetched && Number.isFinite(effectiveRawForSale))
+                    ? effectiveRawForSale
+                    : toFiniteNumber(updatedOrder.rawOnChain.for_sale);
+                const nextForSaleInt = Math.max(0, Math.round(baselineForSale) - filledAmountInt);
+                updatedOrder.rawOnChain = {
+                    ...updatedOrder.rawOnChain,
+                    for_sale: String(nextForSaleInt),
+                    fetchedAt: Date.now()
+                };
+            }
+
+            const nextOrder = await applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
+            if (nextOrder) {
+                updatedOrder = { ...updatedOrder, ...nextOrder };
+            }
+            partialUpdate = updatedOrder;
+        }
+
+        return {
+            isFull: isEffectivelyFull,
+            isGhost: !!ghostOrderId,
+            ghostOrderId,
+            filledOrder: filledOrderResult,
+            fullUpdate,
+            ghostUpdate,
+            partialUpdate,
+            newSize
+        };
+    }
+
     /**
      * Process one incremental fill-history event.
      * @param {Object} fill - Fill history event object
@@ -1067,7 +1198,7 @@ class SyncEngine {
         if (fillOp.is_maker === undefined) {
             mgr.logger.log(`[SYNC] is_maker flag missing from fill data for order ${orderId}; defaulting to maker`, 'warn');
         }
-        const isMaker = fillOp.is_maker !== false;  // Default missing flag to maker for consistency with accounting
+        const isMaker = fillOp.is_maker !== false;
         const fillKey = buildFillKey({ orderId, blockNum, historyId });
 
         const paysAmountRaw = toFiniteNumber(fillOp.pays?.amount);
@@ -1077,95 +1208,44 @@ class SyncEngine {
 
         mgr.logger.log(`[SYNC] Processing fill ${historyId} at block ${blockNum} for order ${orderId} (maker=${isMaker}). Pays=${paysAmountRaw}@${paysAssetId}, Receives=${receivesAmountRaw}@${receivesAssetId}`, 'debug');
 
-         if (!fillKey) {
-             mgr.logger.log(
-                 `[SYNC] Missing replay-safe fill key for order ${orderId} block ${blockNum}; deferring to open-orders sync`,
-                 'warn'
-             );
-             return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: true };
-         }
+        if (!fillKey) {
+            mgr.logger.log(`[SYNC] Missing replay-safe fill key for order ${orderId} block ${blockNum}; deferring to open-orders sync`, 'warn');
+            return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: true };
+        }
 
-         // Lock the order to prevent concurrent modifications from createOrder/cancelOrder/sync
-         // TOCTOU: lock before processFillAccounting so _buildBtsDeferredRefundAdjustment
-         // reads order state (btsFeeState) under the same lock as the state update below.
-         const orderIdsToLock = new Set([orderId]);
-         mgr.lockOrders([...orderIdsToLock]);
+        const orderIdsToLock = new Set([orderId]);
+        mgr.lockOrders([...orderIdsToLock]);
 
         try {
             mgr.pauseFundRecalc();
             try {
-                // Optimistically update account totals to reflect the fill.
-                // Under lock — btsFeeState on mgr.orders is stable for _buildBtsDeferredRefundAdjustment.
                 const appliedAccounting = await mgr.accountant.processFillAccounting(fillOp, fillKey, { persistenceMode });
                 if (!appliedAccounting) {
                     mgr.logger.log(`[SYNC] Replay detected for fill ${fillKey}; skipping duplicate order mutation`, 'debug');
                     return { filledOrders: [], updatedOrders: [], partialFill: false };
                 }
-                const paysAmount = paysAmountRaw;
 
                 const assetAPrecision = mgr.assets?.assetA?.precision;
                 const assetBPrecision = mgr.assets?.assetB?.precision;
-
                 if (assetAPrecision === undefined || assetBPrecision === undefined) {
                     mgr.logger?.log?.('Error: manager.assets precision missing in syncFromFillHistory', 'error');
                     return { filledOrders: [], updatedOrders: [], partialFill: false };
                 }
 
-                let matchedGridOrder = null;
-                for (const gridOrder of mgr.orders.values()) {
-                    if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
-                        matchedGridOrder = gridOrder;
-                        break;
-                    }
-                }
-
+                const matchedGridOrder = this._findMatchingGridOrder(mgr, orderId);
                 if (!matchedGridOrder) {
                     mgr.logger.log(`[SYNC] Fill for order ${orderId} ignored: order not found in active grid.`, 'debug');
                     return { filledOrders: [], updatedOrders: [], partialFill: false };
                 }
 
-                const orderType = matchedGridOrder.type;
-                const currentSize = toFiniteNumber(matchedGridOrder.size);
-                
-                // CRITICAL: Sells are sized in AssetA, Buys are sized in AssetB
-                const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                
-                let filledAmount = 0;
-                if (orderType === ORDER_TYPES.SELL) {
-                    if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmount, precision, true);
-                } else {
-                    if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmount, precision, true);
-                }
+                const ctx = this._computeFillContext(mgr, matchedGridOrder, paysAssetId, paysAmountRaw);
+                mgr.logger.log(`[SYNC] Order ${orderId} (${ctx.orderType}) currentSize=${ctx.currentSize}, filledAmount=${ctx.filledAmount}`, 'debug');
 
-                mgr.logger.log(`[SYNC] Order ${orderId} (${orderType}) currentSize=${currentSize}, filledAmount=${filledAmount}`, 'debug');
-
-                const currentSizeIntFromGrid = floatToBlockchainInt(currentSize, precision);
-                const rawForSaleInt = toFiniteNumber(matchedGridOrder?.rawOnChain?.for_sale, null);
-                let effectiveRawForSale = rawForSaleInt;
+                let effectiveRawForSale = ctx.rawForSaleInt;
                 let chainConfirmsEmpty = false;
                 let chainRefetched = false;
 
-                // -----------------------------------------------------------------
-                // Drift-only refetch: the cache is self-correcting across
-                // sequential websocket fills, but if a fill was ever missed
-                // (reconnect, restart, reorg, external activity), the cache and
-                // the grid can disagree.
-                // The only signal we can detect from the in-memory state is a
-                // consistent drift: cached for_sale < grid size. Chain `for_sale`
-                // can only decrease, so a smaller cached value is an obvious
-                // inconsistency that warrants a targeted refetch.
-                //
-                // We do NOT refetch on a time-based TTL. A stale-but-consistent
-                // cache is still correct; a fresh-but-wrong cache is the actual
-                // bug we're guarding against, and the drift signal catches that.
-                // The refetch is best-effort: a network error falls back to the
-                // cache with a warning, and the open-orders sync is the ultimate
-                // recovery channel.
-                // -----------------------------------------------------------------
-                const driftSignal = Number.isFinite(rawForSaleInt)
-                    && Math.round(rawForSaleInt) < currentSizeIntFromGrid;
-
-                if (driftSignal) {
+                if (ctx.driftSignal) {
                     try {
                         const fresh = await chainOrders.readSingleOrder(orderId, 3000);
                         if (fresh) {
@@ -1174,180 +1254,69 @@ class SyncEngine {
                                 effectiveRawForSale = freshForSale;
                                 chainRefetched = true;
                                 mgr.logger.log(
-                                    `[SYNC] Drift detected for ${orderId} (cached=${rawForSaleInt} < grid=${currentSizeIntFromGrid}); ` +
+                                    `[SYNC] Drift detected for ${orderId} (cached=${ctx.rawForSaleInt} < grid=${ctx.currentSizeIntFromGrid}); ` +
                                     `refetched for_sale=${freshForSale}`,
                                     'warn'
                                 );
                             }
                         } else {
-                            // Chain returned null — the order is genuinely absent.
-                            // This is the authoritative "chain confirms empty"
-                            // signal (vs. an RPC failure which would have thrown).
                             chainConfirmsEmpty = true;
-                            mgr.logger.log(
-                                `[SYNC] Drift refetch for ${orderId} returned null; chain confirms empty`,
-                                'info'
-                            );
+                            mgr.logger.log(`[SYNC] Drift refetch for ${orderId} returned null; chain confirms empty`, 'info');
                         }
                     } catch (refetchErr: any) {
-                        mgr.logger.log(
-                            `[SYNC] Drift refetch for ${orderId} failed; falling back to cache: ` +
-                            `${refetchErr?.message || refetchErr}`,
-                            'warn'
-                        );
+                        mgr.logger.log(`[SYNC] Drift refetch for ${orderId} failed; falling back to cache: ${refetchErr?.message || refetchErr}`, 'warn');
                     }
                 }
 
-                // Chain-confirmed-empty gate: only true when the drift refetch
-                // returned null (i.e., the chain is definitively saying the order
-                // is gone). We deliberately do not trust a cached 0 from a
-                // never-refetched source — that would misclassify a 0.003 XRP
-                // residual as a full fill.
-                if (chainRefetched
-                    && Number.isFinite(effectiveRawForSale)
-                    && Math.round(effectiveRawForSale) <= 0) {
-                    chainConfirmsEmpty = true;
-                }
+                const result = await this._computeFillTransitionResult(mgr, {
+                    matchedGridOrder,
+                    orderType: ctx.orderType,
+                    precision: ctx.precision,
+                    filledAmount: ctx.filledAmount,
+                    filledAmountInt: floatToBlockchainInt(ctx.filledAmount, ctx.precision),
+                    currentSizeIntFromGrid: ctx.currentSizeIntFromGrid,
+                    rawForSaleInt: ctx.rawForSaleInt,
+                    chainRefetched,
+                    chainConfirmsEmpty,
+                    effectiveRawForSale,
+                    blockNum,
+                    historyId,
+                    isMaker
+                });
 
-                const currentSizeInt = Number.isFinite(effectiveRawForSale)
-                    ? Math.max(0, Math.round(effectiveRawForSale))
-                    : currentSizeIntFromGrid;
-                const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
-                const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
-                const newSize = blockchainToFloat(newSizeInt, precision, true); // needed for partial fills
+                const filledOrders: any[] = [];
+                const updatedOrders: any[] = [];
 
-                if (Number.isFinite(effectiveRawForSale) && currentSizeInt !== currentSizeIntFromGrid) {
-                    mgr.logger.log(
-                        `[SYNC] Using rawOnChain.for_sale baseline for ${orderId}: raw=${currentSizeInt}, grid=${currentSizeIntFromGrid}` +
-                        (chainRefetched ? ' (refetched)' : ''),
-                        'debug'
-                    );
-                }
-
-                // CRITICAL (v0.5.1 Robustness + chain-confirmed-empty gate):
-                // An order is "effectively" full if EITHER:
-                //   1. The chain has confirmed the order is gone (the drift
-                //      refetch above returned null), OR
-                //   2. The grid itself is at 0 (no drift between grid and chain), OR
-                //   3. The OTHER side rounds to 0 (the chain will close the order
-                //      regardless of the residual on the size side — see
-                //      test_ghost_order_fix.ts for the intended behaviour).
-                //
-                // We deliberately do NOT use `newSizeInt <= 0` as a fast-path
-                // full-fill signal: with a stale cached rawOnChain, that arithmetic
-                // can be wrong and misclassify a partial fill as full. The
-                // 30-satoshi residual that triggered the bot-stale incident is the
-                // motivating case.
-                const gridAlsoEmpty = currentSizeIntFromGrid <= 0;
-                let isEffectivelyFull = chainConfirmsEmpty || gridAlsoEmpty;
-
-                let ghostOrderId: string | undefined;
-
-                if (!isEffectivelyFull) {
-                    // Check the "other" side's precision. If the remaining amount to receive/pay
-                    // rounds to 0 on the blockchain, the order will be closed regardless of newSizeInt.
-                    const otherPrecision = (orderType === ORDER_TYPES.SELL) ? assetBPrecision : assetAPrecision;
-                    const price = matchedGridOrder.price;
-                    const otherSize = (orderType === ORDER_TYPES.SELL) ? newSize * price : newSize / price;
-
-                    if (floatToBlockchainInt(otherSize, otherPrecision) <= 0) {
-                        mgr.logger.log(`[SYNC] Order ${orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. Treating as full fill to trigger rotation.`, 'info');
-                        isEffectivelyFull = true;
-                        ghostOrderId = matchedGridOrder.orderId;
-                    }
-                }
-
-                const filledOrders = [];
-                const updatedOrders = [];
-                if (isEffectivelyFull) {
-                    const filledOrder = {
-                        ...matchedGridOrder,
-                        blockNum: blockNum,
-                        historyId: historyId,
-                        isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
-                    };
-
-                    if (ghostOrderId) {
-                        // Ghost order: the chain order still exists (other-side
-                        // rounding to 0) but the chain hasn't closed it yet.  Keep
-                        // the slot PARTIAL with its orderId so guards
-                        // (validateCreateTargetSlots, reconcileGrid) see the slot
-                        // as occupied and will NOT generate a duplicate CREATE.
-                        // The best-effort cancel in dexbot_class cleans up the
-                        // chain order; the next sync cycle virtualizes the
-                        // confirmed-free slot.
-                        mgr.logger.log(
-                            `[SYNC] Ghost full fill for order ${orderId} (slot ${matchedGridOrder.id}): ` +
-                            `preserving orderId ${ghostOrderId} as PARTIAL to block duplicate CREATE.`,
-                            'info'
-                        );
-                        const ghostOrder = {
-                            ...matchedGridOrder,
-                            size: 0,
-                            state: ORDER_STATES.PARTIAL,
-                            orderId: ghostOrderId,
-                        };
-                        const ghostOk = await mgr._updateOrder(ghostOrder, 'handle-fill-ghost', { skipAccounting: false, fee: 0 });
+                if (result.isFull) {
+                    if (result.isGhost) {
+                        mgr.logger.log(`[SYNC] Ghost full fill for order ${orderId} (slot ${matchedGridOrder.id}): preserving orderId ${result.ghostOrderId} as PARTIAL to block duplicate CREATE.`, 'info');
+                        const ghostOk = await mgr._updateOrder(result.ghostUpdate, 'handle-fill-ghost', { skipAccounting: false, fee: 0 });
                         if (ghostOk === false) {
                             mgr.logger.log(`[SYNC] Failed to apply ghost fill state for order ${orderId}`, 'warn');
                         }
-                        filledOrders.push(filledOrder);
-                        return { filledOrders, updatedOrders, partialFill: false, ghostOrderId };
+                        filledOrders.push(result.filledOrder);
+                        return { filledOrders, updatedOrders, partialFill: false, ghostOrderId: result.ghostOrderId };
                     }
-
                     mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
-                    const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
-                    const fullOk = await mgr._updateOrder(spreadOrder, 'handle-fill-full', { skipAccounting: false, fee: 0 });
+                    const fullOk = await mgr._updateOrder(result.fullUpdate, 'handle-fill-full', { skipAccounting: false, fee: 0 });
                     if (fullOk === false) {
                         mgr.logger.log(`[SYNC] Failed to convert filled order ${orderId} to spread placeholder`, 'warn');
                     }
-                    filledOrders.push(filledOrder);
+                    filledOrders.push(result.filledOrder);
                     return { filledOrders, updatedOrders, partialFill: false };
                 } else {
-                    mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${newSize}`, 'info');
-                    const filledPortion = {
-                        ...matchedGridOrder,
-                        size: filledAmount,
-                        isPartial: true,
-                        blockNum: blockNum,
-                        historyId: historyId,
-                        isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
-                    };
-                    const { btsFeeState, ...matchedWithoutDeferredFee } = matchedGridOrder;
-                    let updatedOrder = { ...matchedWithoutDeferredFee, state: ORDER_STATES.PARTIAL };
-
-                    // Update cached raw order integer instead of deleting it.
-                    // If the drift refetch above pulled a fresh chain value, use
-                    // it as the new baseline (subtracting this fill) and stamp
-                    // fetchedAt so the cache is consistent for the next fill.
-                    if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
-                        const baselineForSale = (chainRefetched && Number.isFinite(effectiveRawForSale))
-                            ? effectiveRawForSale
-                            : toFiniteNumber(updatedOrder.rawOnChain.for_sale);
-                        const nextForSaleInt = Math.max(0, Math.round(baselineForSale) - filledAmountInt);
-                        updatedOrder.rawOnChain = {
-                            ...updatedOrder.rawOnChain,
-                            for_sale: String(nextForSaleInt),
-                            fetchedAt: Date.now()
-                        };
-                    }
-
-                    const nextOrder = await applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
-                    if (nextOrder) {
-                        updatedOrder = { ...updatedOrder, ...nextOrder };
-                    }
-
-                    const partialOk = await mgr._updateOrder(updatedOrder, 'handle-fill-partial', { skipAccounting: false, fee: 0 });
+                    mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${result.newSize}`, 'info');
+                    const partialOk = await mgr._updateOrder(result.partialUpdate, 'handle-fill-partial', { skipAccounting: false, fee: 0 });
                     if (partialOk === false) {
                         mgr.logger.log(`[SYNC] Failed to update partially filled order ${orderId}`, 'warn');
                     }
-                    updatedOrders.push(updatedOrder);
-                    filledOrders.push(filledPortion);
+                    updatedOrders.push(result.partialUpdate);
+                    filledOrders.push(result.filledOrder);
                     return { filledOrders, updatedOrders, partialFill: true };
-                 }
-             } finally {
-                 await mgr.resumeFundRecalc();
-             }
+                }
+            } finally {
+                await mgr.resumeFundRecalc();
+            }
         } finally {
             mgr.unlockOrders([...orderIdsToLock]);
         }
@@ -1355,13 +1324,6 @@ class SyncEngine {
 
     /**
      * Process multiple fill-history events in a batch, acquiring _gridLock once.
-     *
-     * For each fill in the batch:
-     *   1. processFillAccounting (per-fill, sequential — orderType-specific fund
-     *      mutations prevent parallelization; replay-safe keys can't be batched)
-     *   2. Collect drift-refetch order IDs, deduplicate, fetch in one get_objects call
-     *   3. Compute state transition (full/partial/ghost) per fill
-     *   4. Apply all grid mutations in a single applyGridUpdateBatch call
      *
      * Locking: all order IDs locked once up-front; fund recalc paused once.
      *
@@ -1376,9 +1338,8 @@ class SyncEngine {
             return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [] };
         }
 
-        // Phase 1: Extract & validate fill data, run accounting, identify drift candidates
+        // Phase 1: Extract & validate fill data
         const fillEntries: any[] = [];
-        const orderIdsToRefetch = new Set<string>();
         let anyRequiresSync = false;
 
         for (const fill of fills) {
@@ -1394,10 +1355,7 @@ class SyncEngine {
             const fillKey = buildFillKey({ orderId, blockNum, historyId });
 
             if (!fillKey) {
-                mgr.logger.log(
-                    `[SYNC] Missing replay-safe fill key for order ${orderId} block ${blockNum}; deferring to open-orders sync`,
-                    'warn'
-                );
+                mgr.logger.log(`[SYNC] Missing replay-safe fill key for order ${orderId} block ${blockNum}; deferring to open-orders sync`, 'warn');
                 anyRequiresSync = true;
                 continue;
             }
@@ -1448,7 +1406,10 @@ class SyncEngine {
                     return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [], requiresOpenOrdersSync: anyRequiresSync };
                 }
 
-                // Phase 4: Build per-fill context (grid order lookup, precision, etc.)
+                // Phase 4: Build per-fill context + identify drift candidates
+                const entryContexts: any[] = [];
+                const driftOrderIds = new Set<string>();
+
                 const assetAPrecision = mgr.assets?.assetA?.precision;
                 const assetBPrecision = mgr.assets?.assetB?.precision;
                 if (assetAPrecision === undefined || assetBPrecision === undefined) {
@@ -1456,59 +1417,36 @@ class SyncEngine {
                     return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [], requiresOpenOrdersSync: anyRequiresSync };
                 }
 
-                const entryContexts: any[] = [];
-                const driftOrderIds = new Set<string>();
-
                 for (const entry of validEntries) {
-                    const { orderId, fillOp, isMaker, paysAmountRaw, paysAssetId } = entry;
+                    const { orderId, paysAmountRaw, paysAssetId } = entry;
 
-                    let matchedGridOrder = null;
-                    for (const gridOrder of mgr.orders.values()) {
-                        if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
-                            matchedGridOrder = gridOrder;
-                            break;
-                        }
-                    }
-
+                    const matchedGridOrder = this._findMatchingGridOrder(mgr, orderId);
                     if (!matchedGridOrder) {
                         mgr.logger.log(`[SYNC] Fill for order ${orderId} ignored: order not found in active grid.`, 'debug');
                         anyRequiresSync = true;
                         continue;
                     }
 
-                    const orderType = matchedGridOrder.type;
-                    const currentSize = toFiniteNumber(matchedGridOrder.size);
-                    const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                    const ctx = this._computeFillContext(mgr, matchedGridOrder, paysAssetId, paysAmountRaw);
+                    mgr.logger.log(`[SYNC] Order ${orderId} (${ctx.orderType}) currentSize=${ctx.currentSize}, filledAmount=${ctx.filledAmount}`, 'debug');
 
-                    let filledAmount = 0;
-                    if (orderType === ORDER_TYPES.SELL) {
-                        if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmountRaw, precision, true);
-                    } else {
-                        if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmountRaw, precision, true);
-                    }
-
-                    mgr.logger.log(`[SYNC] Order ${orderId} (${orderType}) currentSize=${currentSize}, filledAmount=${filledAmount}`, 'debug');
-
-                    const currentSizeIntFromGrid = floatToBlockchainInt(currentSize, precision);
-                    const rawForSaleInt = toFiniteNumber(matchedGridOrder?.rawOnChain?.for_sale, null);
-
-                    // Detect drift signal: cached for_sale < grid size
-                    const driftSignal = Number.isFinite(rawForSaleInt)
-                        && Math.round(rawForSaleInt) < currentSizeIntFromGrid;
-                    if (driftSignal) {
+                    if (ctx.driftSignal) {
                         driftOrderIds.add(orderId);
                     }
 
                     entryContexts.push({
-                        entry,
-                        matchedGridOrder, orderType, currentSize, precision,
-                        filledAmount, currentSizeIntFromGrid, rawForSaleInt,
-                        driftSignal
+                        entry, matchedGridOrder,
+                        orderType: ctx.orderType,
+                        precision: ctx.precision,
+                        filledAmount: ctx.filledAmount,
+                        filledAmountInt: floatToBlockchainInt(ctx.filledAmount, ctx.precision),
+                        currentSizeIntFromGrid: ctx.currentSizeIntFromGrid,
+                        rawForSaleInt: ctx.rawForSaleInt
                     });
                 }
 
                 // Phase 5: Batch drift refetch — one get_objects call for all order IDs
-                const refetchMap = new Map<string, { order: any | null, chainConfirmsEmpty: boolean, chainRefetched: boolean, effectiveRawForSale: number | null }>();
+                const refetchMap = new Map<string, { chainConfirmsEmpty: boolean; chainRefetched: boolean; effectiveRawForSale: number | null }>();
 
                 if (driftOrderIds.size > 0) {
                     try {
@@ -1518,14 +1456,12 @@ class SyncEngine {
                                 const freshForSale = toFiniteNumber(freshOrder.for_sale, null);
                                 if (Number.isFinite(freshForSale)) {
                                     refetchMap.set(orderId, {
-                                        order: freshOrder,
                                         chainConfirmsEmpty: Math.round(freshForSale) <= 0,
                                         chainRefetched: true,
                                         effectiveRawForSale: freshForSale
                                     });
                                 } else {
                                     refetchMap.set(orderId, {
-                                        order: freshOrder,
                                         chainConfirmsEmpty: false,
                                         chainRefetched: true,
                                         effectiveRawForSale: null
@@ -1533,7 +1469,6 @@ class SyncEngine {
                                 }
                             } else {
                                 refetchMap.set(orderId, {
-                                    order: null,
                                     chainConfirmsEmpty: true,
                                     chainRefetched: true,
                                     effectiveRawForSale: null
@@ -1541,26 +1476,15 @@ class SyncEngine {
                             }
                         }
 
-                        // Log results
                         for (const [orderId, { chainRefetched, chainConfirmsEmpty, effectiveRawForSale }] of refetchMap) {
                             if (chainRefetched && effectiveRawForSale != null) {
-                                mgr.logger.log(
-                                    `[SYNC] Drift detected for ${orderId}; batch-refetched for_sale=${effectiveRawForSale}`,
-                                    'warn'
-                                );
+                                mgr.logger.log(`[SYNC] Drift detected for ${orderId}; batch-refetched for_sale=${effectiveRawForSale}`, 'warn');
                             } else if (chainConfirmsEmpty) {
-                                mgr.logger.log(
-                                    `[SYNC] Drift refetch for ${orderId} returned null; chain confirms empty`,
-                                    'info'
-                                );
+                                mgr.logger.log(`[SYNC] Drift refetch for ${orderId} returned null; chain confirms empty`, 'info');
                             }
                         }
                     } catch (refetchErr: any) {
-                        mgr.logger.log(
-                            `[SYNC] Batch drift refetch failed for ${driftOrderIds.size} orders; falling back to cache: ${refetchErr?.message || refetchErr}`,
-                            'warn'
-                        );
-                        // Fallback: no refetch results — all entries proceed with cache
+                        mgr.logger.log(`[SYNC] Batch drift refetch failed for ${driftOrderIds.size} orders; falling back to cache: ${refetchErr?.message || refetchErr}`, 'warn');
                     }
                 }
 
@@ -1572,7 +1496,7 @@ class SyncEngine {
                 let anyPartialFill = false;
 
                 for (const ctx of entryContexts) {
-                    const { entry, matchedGridOrder, orderType, precision, filledAmount, currentSizeIntFromGrid, rawForSaleInt } = ctx;
+                    const { entry, matchedGridOrder, orderType, precision, filledAmount, filledAmountInt, currentSizeIntFromGrid, rawForSaleInt } = ctx;
                     const { orderId, blockNum, historyId, isMaker } = entry;
 
                     const refetchInfo = refetchMap.get(orderId);
@@ -1580,109 +1504,41 @@ class SyncEngine {
                     const chainConfirmsEmpty = refetchInfo?.chainConfirmsEmpty || false;
                     const effectiveRawForSale = refetchInfo?.effectiveRawForSale != null ? refetchInfo.effectiveRawForSale : rawForSaleInt;
 
-                    // Chain-confirmed-empty gate
-                    let resolvedChainConfirmsEmpty = chainConfirmsEmpty;
-                    if (chainRefetched
-                        && Number.isFinite(effectiveRawForSale)
-                        && Math.round(effectiveRawForSale) <= 0) {
-                        resolvedChainConfirmsEmpty = true;
-                    }
+                    const result = await this._computeFillTransitionResult(mgr, {
+                        matchedGridOrder,
+                        orderType,
+                        precision,
+                        filledAmount,
+                        filledAmountInt,
+                        currentSizeIntFromGrid,
+                        rawForSaleInt,
+                        chainRefetched,
+                        chainConfirmsEmpty,
+                        effectiveRawForSale,
+                        blockNum,
+                        historyId,
+                        isMaker
+                    });
 
-                    const currentSizeInt = Number.isFinite(effectiveRawForSale)
-                        ? Math.max(0, Math.round(effectiveRawForSale))
-                        : currentSizeIntFromGrid;
-                    const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
-                    const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
-                    const newSize = blockchainToFloat(newSizeInt, precision, true);
-
-                    if (Number.isFinite(effectiveRawForSale) && currentSizeInt !== currentSizeIntFromGrid) {
-                        mgr.logger.log(
-                            `[SYNC] Using rawOnChain.for_sale baseline for ${orderId}: raw=${currentSizeInt}, grid=${currentSizeIntFromGrid}` +
-                            (chainRefetched ? ' (refetched)' : ''),
-                            'debug'
-                        );
-                    }
-
-                    const gridAlsoEmpty = currentSizeIntFromGrid <= 0;
-                    let isEffectivelyFull = resolvedChainConfirmsEmpty || gridAlsoEmpty;
-
-                    let ghostOrderId: string | undefined;
-
-                    if (!isEffectivelyFull) {
-                        const assetAPrecision = mgr.assets.assetA.precision;
-                        const assetBPrecision = mgr.assets.assetB.precision;
-                        const otherPrecision = (orderType === ORDER_TYPES.SELL) ? assetBPrecision : assetAPrecision;
-                        const price = matchedGridOrder.price;
-                        const otherSize = (orderType === ORDER_TYPES.SELL) ? newSize * price : newSize / price;
-
-                        if (floatToBlockchainInt(otherSize, otherPrecision) <= 0) {
-                            mgr.logger.log(`[SYNC] Order ${orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. Treating as full fill to trigger rotation.`, 'info');
-                            isEffectivelyFull = true;
-                            ghostOrderId = matchedGridOrder.orderId;
-                        }
-                    }
-
-                    const filledOrder = {
-                        ...matchedGridOrder,
-                        blockNum: blockNum,
-                        historyId: historyId,
-                        isMaker: isMaker
-                    };
-
-                    if (isEffectivelyFull) {
-                        if (ghostOrderId) {
+                    if (result.isFull) {
+                        if (result.isGhost) {
                             mgr.logger.log(
                                 `[SYNC] Ghost full fill for order ${orderId} (slot ${matchedGridOrder.id}): ` +
-                                `preserving orderId ${ghostOrderId} as PARTIAL to block duplicate CREATE.`,
+                                `preserving orderId ${result.ghostOrderId} as PARTIAL to block duplicate CREATE.`,
                                 'info'
                             );
-                            const ghostOrder = {
-                                ...matchedGridOrder,
-                                size: 0,
-                                state: ORDER_STATES.PARTIAL,
-                                orderId: ghostOrderId,
-                            };
-                            gridUpdates.push({ id: matchedGridOrder.id, ...ghostOrder, context: 'handle-fill-ghost' });
+                            gridUpdates.push({ id: matchedGridOrder.id, ...result.ghostUpdate, context: 'handle-fill-ghost' });
+                            ghostOrderIds.push(result.ghostOrderId);
                         } else {
                             mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
-                            const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
-                            gridUpdates.push({ id: matchedGridOrder.id, ...spreadOrder, context: 'handle-fill-full' });
+                            gridUpdates.push({ id: matchedGridOrder.id, ...result.fullUpdate, context: 'handle-fill-full' });
                         }
-                        filledOrders.push(filledOrder);
-                        if (ghostOrderId) ghostOrderIds.push(ghostOrderId);
+                        filledOrders.push(result.filledOrder);
                     } else {
-                        mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${newSize}`, 'info');
-                        const filledPortion = {
-                            ...matchedGridOrder,
-                            size: filledAmount,
-                            isPartial: true,
-                            blockNum: blockNum,
-                            historyId: historyId,
-                            isMaker: isMaker
-                        };
-                        const { btsFeeState, ...matchedWithoutDeferredFee } = matchedGridOrder;
-                        let updatedOrder: any = { ...matchedWithoutDeferredFee, state: ORDER_STATES.PARTIAL };
-
-                        if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
-                            const baselineForSale = (chainRefetched && Number.isFinite(effectiveRawForSale))
-                                ? effectiveRawForSale
-                                : toFiniteNumber(updatedOrder.rawOnChain.for_sale);
-                            const nextForSaleInt = Math.max(0, Math.round(baselineForSale) - filledAmountInt);
-                            updatedOrder.rawOnChain = {
-                                ...updatedOrder.rawOnChain,
-                                for_sale: String(nextForSaleInt),
-                                fetchedAt: Date.now()
-                            };
-                        }
-
-                        const nextOrder = await applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
-                        if (nextOrder) {
-                            updatedOrder = { ...updatedOrder, ...nextOrder };
-                        }
-
-                        gridUpdates.push({ id: matchedGridOrder.id, ...updatedOrder, context: 'handle-fill-partial' });
-                        updatedOrders.push(updatedOrder);
-                        filledOrders.push(filledPortion);
+                        mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${result.newSize}`, 'info');
+                        gridUpdates.push({ id: matchedGridOrder.id, ...result.partialUpdate, context: 'handle-fill-partial' });
+                        updatedOrders.push(result.partialUpdate);
+                        filledOrders.push(result.filledOrder);
                         anyPartialFill = true;
                     }
                 }
@@ -1693,10 +1549,6 @@ class SyncEngine {
                         const { context, ...orderData } = u;
                         return orderData;
                     });
-                    // Intentionally lenient: a single stale slot shouldn't block the
-                    // entire block-group's fills. applyGridUpdateBatch applies all
-                    // updates and returns false if any single _applyOrderUpdate failed.
-                    // The next sync cycle will catch and reconcile the missed slot.
                     const batchOk = await mgr.applyGridUpdateBatch(updateObjects, 'handle-fill-batch', { skipAccounting: false, fee: 0 });
                     if (batchOk === false) {
                         mgr.logger.log('[SYNC] Batch grid update failed for some fills; next sync cycle will reconcile', 'warn');
