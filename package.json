@@ -59,7 +59,7 @@
     "test": "node --import tsx scripts/run-tests.ts",
     "test:live": "RUN_LIVE_BITSHARES_TESTS=1 node --import tsx scripts/run-tests.ts",
     "clean": "node scripts/clean-dist.js",
-    "build": "npm run clean && tsc",
+    "build": "npm run clean && tsc && chmod +x dist/dexbot.js dist/bot.js dist/unlock.js dist/pm2.js dist/credential-daemon.js",
     "typecheck": "tsc --noEmit || true",
     "build:watch": "tsc --watch",
     "version": "npm run version:sync && npm run build",

@@ -49,7 +49,6 @@ dashboard/target/
 .dexbot-aliases
 .codex
 .npmrc
-dexbot
 
 # Market adapter runtime/user-specific artifacts
 market_adapter/data/

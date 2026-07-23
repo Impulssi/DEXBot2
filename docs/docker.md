@@ -57,7 +57,7 @@ The same flags work with PM2:
 DEXBOT_MASTER_PASSWORD=<password> dexbot pm2 --headless
 dexbot pm2 --headless --password-file /run/secrets/bot-password
 
-# Repo-root: use `node pm2` or `./scripts/pm2` instead
+# Repo-root: use `./pm2` instead
 ```
 
 > **⚠️ Security note:** Environment variables are visible via `/proc/<pid>/environ`

@@ -30,30 +30,26 @@ DEXBot2 is the first open source trading bot with zero runtime dependencies and 
 ## 🔥 Quick Start
 
 ```bash
-# Option A — Install globally via npm
+# Option A — Global install (bare `dexbot` works everywhere)
 npm i -g dexbot
+dexbot keys                # Set up master password and import keys
+dexbot bots                # Create and manage bot configurations
+dexbot unlock              # Start DEXBot2
 
-# Option B — Clone and install from source
+# Option B — Clone + npm link (bare `dexbot` works)
+git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install && npm link
+dexbot keys                # Set up master password and import keys
+dexbot bots                # Create and manage bot configurations
+dexbot unlock              # Start DEXBot2
+
+# Option C — Clone + local wrappers (no global install)
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
+./dexbot keys              # or: npx dexbot keys
+./dexbot bots              # or: npx dexbot bots
+./unlock                   # or: npx dexbot unlock
 ```
 
-Then set up your master password, keys and add bots:
-
-```bash
-dexbot key
-dexbot bot
-```
-
-And start DEXBot2:
-
-```bash
-dexbot unlock
-```
-
-> `dexbot` is available globally after `npm i -g dexbot`. Repo-root users can
-> run `./scripts/dexbot` instead.
-
-For detailed setup, see [Installation](#installation) section below.
+Detailed setup: [Installation](#installation).
 
 ### Disclaimer — Use At Your Own Risk
 
@@ -204,7 +200,7 @@ Defaults in [`modules/constants.ts`](modules/constants.ts) are overridable at gl
 
 ## 🎯 Zero-Dependency Process Management
 
-`dexbot unlock` is the recommended production runtime (global install). Repo-root users can run `node unlock` or `./scripts/unlock` instead. It runs the selected bot set as one monolithic bot process, with the credential daemon and market adapter in separate helper processes. Monolithic start/stop/restart controls apply to the whole runtime, not to individual bots.
+`dexbot unlock` is the recommended production runtime (global install). Repo-root users can run `./unlock` instead. It runs the selected bot set as one monolithic bot process, with the credential daemon and market adapter in separate helper processes. Monolithic start/stop/restart controls apply to the whole runtime, not to individual bots.
 
 ```bash
 dexbot unlock              # Start all active bots
@@ -252,7 +248,7 @@ pm2 logs [<bot-name>]                       # Real-time logs
 
 Always use `dexbot pm2 restart` instead of raw `pm2 restart all` — the wrapper safely handles the credential daemon. If the credential daemon stops, rerun `dexbot pm2`.
 
-> Repo-root users can use `node pm2` or `./scripts/pm2` instead of `dexbot pm2`.
+> Repo-root users can use `./pm2` instead of `dexbot pm2`.
 
 Logs are written to `profiles/logs/<bot-name>.log` (errors to `<bot-name>-error.log`) in all modes.
 

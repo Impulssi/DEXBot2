@@ -25,7 +25,7 @@
  *   dexbot unlock restart
  *   dexbot unlock delete
  *
- * Repo-root users can run `node unlock` or `./scripts/unlock` instead.
+ * Repo-root users can run `./unlock` instead.
  *
  * Environment:
  *   BOT_NAME                     Fallback bot name when none is given as positional arg

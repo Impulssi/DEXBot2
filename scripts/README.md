@@ -24,6 +24,7 @@ dexbot update
 **Purpose:** Delete all bot `.log` files, including `profiles/logs/market_adapter.log`.
 ```bash
 # IRREVERSIBLE: Deletes all files in profiles/logs/*.log, including market_adapter.log
+# Prompts for confirmation before deleting.
 bash scripts/clear-logs.sh
 ```
 
@@ -32,6 +33,7 @@ bash scripts/clear-logs.sh
 **Purpose:** Delete all persistent order state files.
 ```bash
 # IRREVERSIBLE: Deletes all files in profiles/orders/*
+# Prompts for confirmation before deleting.
 bash scripts/clear-orders.sh
 ```
 
@@ -40,6 +42,7 @@ bash scripts/clear-orders.sh
 **Purpose:** Delete market adapter state and log files, including `dexbot-adapter` logs and `market_adapter_centers.json`.
 ```bash
 # IRREVERSIBLE: Removes market adapter state files and adapter-specific logs
+# Prompts for confirmation before deleting.
 bash scripts/clear-market-adapter.sh
 ```
 
@@ -48,6 +51,7 @@ bash scripts/clear-market-adapter.sh
 **Purpose:** Delete order state files and `.log` files in one confirmed operation (includes market adapter cleanup).
 ```bash
 # IRREVERSIBLE: Deletes profiles/orders/* and profiles/logs/*.log, including market_adapter.log
+# Prompts for confirmation before deleting.
 bash scripts/clear-all.sh
 ```
 
@@ -57,6 +61,7 @@ bash scripts/clear-all.sh
 ```bash
 # IRREVERSIBLE: Deletes profiles/general.settings.json, profiles/market_profiles.json,
 # and profiles/market_adapter_settings.json
+# Prompts for confirmation before deleting.
 bash scripts/reset-settings.sh
 ```
 
@@ -114,16 +119,6 @@ and, when fresh (`2 × MARKET_ADAPTER.RUNTIME_DEFAULTS.pollSeconds`, default 2h)
 shows live weights with color: higher = red (losing), lower = green (winning),
 static = grey. Stale snapshot appends a red `(adapter offline)` alert to the
 static weights.
-
-**File:** `sync-version.ts`
-**Purpose:** Keep DEXBot2-owned package and plugin manifests aligned to the root `package.json` version.
-```bash
-# Check that package-lock.json and Claw manifests match root package.json
-npm run version:check
-
-# Rewrite aligned manifests from root package.json
-npm run version:sync
-```
 
 ### Kibana Candle Diagnostics
 **File:** `diagnose-kibana-candles.ts`
@@ -185,13 +180,13 @@ bash scripts/git-viewer.sh
 
 **Usage**:
 ```bash
-# Press 'u' to toggle uncommitted changes
-# Press 'c' to toggle committed changes
-# Press 'p' to toggle pushed status
-# Press 's' to search with fzf
-# Press 'f' to toggle full file view
+# Press '1' to view all changes
+# Press '2' to search uncommitted files (with fzf)
+# Press '3' to search unpushed commits (with fzf)
+# Press '4' to search pushed commits (with fzf)
 # Press 'q' to quit
 ```
+Inside file viewer: `f` full file, `d` diff view, `q` back to search, `b` main menu.
 
 ---
 
@@ -219,6 +214,17 @@ npm run test:credit-renewal
 **Purpose:** Verify that the browser-safe surface actually bundles for the web (source-level and dist-level checks).
 ```bash
 npm run verify:browser-bundle
+```
+
+### Version Sync
+**File:** `sync-version.ts`
+**Purpose:** Keep DEXBot2-owned package and plugin manifests aligned to the root `package.json` version.
+```bash
+# Check that package-lock.json and Claw manifests match root package.json
+npm run version:check
+
+# Rewrite aligned manifests from root package.json
+npm run version:sync
 ```
 ---
 
@@ -264,9 +270,9 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 |:---|:---|:---|
 | `scripts/bots` | `dexbot bots` | `./scripts/bots` |
 | `scripts/keys` | `dexbot keys` | `./scripts/keys` |
-| `scripts/dexbot` | `dexbot` | `./scripts/dexbot <cmd>` |
-| `scripts/unlock` | `node unlock` | `./scripts/unlock <cmd>` |
-| `scripts/pm2` | `node pm2` | `./scripts/pm2` |
+| `scripts/dexbot` | `dexbot` | `./dexbot <cmd>` |
+| `scripts/unlock` | `./unlock` | `./unlock` |
+| `scripts/pm2` | `./pm2` | `./pm2` |
 
 ---
 
@@ -308,6 +314,7 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 ```bash
 # Generate the default LP chart flow
 npm run lp:chart -- --data <lp-export.json>
+# --file is an alias for --data
 ```
 
 ### Local LP Comparison Chart

@@ -229,7 +229,7 @@ function printCLIUsage() {
     console.log('  update            Update DEXBot2 from the repository and restart active bots.');
     console.log('  order             Analyze persisted order grids in profiles/orders/ (spread, increment, funds). Use --export for HTML.');
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
-    console.log('  unlock            Run credential daemon + bot (repo-root: `node unlock`).');
+    console.log('  unlock            Run credential daemon + bot (repo-root: `./unlock`).');
     console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune) are forwarded.');
     console.log('  clear             Remove all log files from profiles/logs/ (runs scripts/clear-logs.sh).');
     console.log('  clear-orders      Remove all persisted order files from profiles/orders/.');

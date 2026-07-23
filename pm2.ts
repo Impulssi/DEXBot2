@@ -27,7 +27,7 @@
  *                                - Non-interactive unlock with password file
  * dexbot pm2 help                  - Show help message
  *
- * Repo-root users can run `node pm2` or `./scripts/pm2` instead.
+ * Repo-root users can run `./pm2` instead.
  *
  * ===============================================================================
  * SETUP SEQUENCE
@@ -969,7 +969,7 @@ Examples:
 
   dexbot pm2 help                 # Show help
 
-Repo-root users can run `node pm2` or `./scripts/pm2` instead.
+Repo-root users can run \`./pm2\` instead.
     `);
 }
 
