@@ -211,27 +211,27 @@ node unlock credit
 
 ### Overview of CLI Commands
 
-The `node dexbot <subcommand>` family provides runtime management. Run
-`node dexbot --help` for the full canonical list. Aliases are accepted but
+The `dexbot <subcommand>` family provides runtime management. Run
+`dexbot --help` for the full canonical list. Aliases are accepted but
 the canonical name is preferred in scripts and docs.
 
 | Command (canonical) | Aliases | Purpose |
 |---------|---------|---------|
-| `node dexbot test <bot>` | `start` | Test-run a single bot (one-shot, live trading) |
-| `node dexbot drystart <bot>` | — | Same as `test` but forces dry-run execution |
-| `node dexbot reset <bot>` | — | Trigger a grid reset (applies live or on next start) |
-| `node dexbot default` | `defaults` | Reset settings to defaults (deletes generated settings files) |
-| `node dexbot disable <bot>` | — | Mark a bot inactive in config (`disable all` for all) |
-| `node dexbot keys` | `key` | Launch the chain key helper (`modules/chain_keys.ts`) |
-| `node dexbot bots` | `bot` | Launch the interactive bot configurator |
-| `node dexbot pm2` | — | Start all active bots via PM2 |
-| `node dexbot update` | — | Update DEXBot2 from the repository and restart active bots |
-| `node dexbot export <bot>` | — | Export bot trades/settings for QTradeX backtesting |
-| `node dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds) |
-| `node dexbot status` | `stat` | Unified runtime health — daemon, adapter, bots |
-| `node dexbot unlock` | — | Run credential daemon + bot (equivalent to `node unlock`) |
-| `node dexbot whitelist` | `white` | Generate market adapter whitelist from AMA bot configs |
-| `node dexbot clear` | — | Remove all log files from `profiles/logs/` |
+| `dexbot test <bot>` | `start` | Test-run a single bot (one-shot, live trading) |
+| `dexbot drystart <bot>` | — | Same as `test` but forces dry-run execution |
+| `dexbot reset <bot>` | — | Trigger a grid reset (applies live or on next start) |
+| `dexbot default` | `defaults` | Reset settings to defaults (deletes generated settings files) |
+| `dexbot disable <bot>` | — | Mark a bot inactive in config (`disable all` for all) |
+| `dexbot keys` | `key` | Launch the chain key helper (`modules/chain_keys.ts`) |
+| `dexbot bots` | `bot` | Launch the interactive bot configurator |
+| `dexbot pm2` | — | Start all active bots via PM2 |
+| `dexbot update` | — | Update DEXBot2 from the repository and restart active bots |
+| `dexbot export <bot>` | — | Export bot trades/settings for QTradeX backtesting |
+| `dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds) |
+| `dexbot status` | `stat` | Unified runtime health — daemon, adapter, bots |
+| `dexbot unlock` | — | Run credential daemon + bot (equivalent to `node unlock`) |
+| `dexbot whitelist` | `white` | Generate market adapter whitelist from AMA bot configs |
+| `dexbot clear` | — | Remove all log files from `profiles/logs/` |
 
 ## NPM Scripts for Branch Synchronization
 

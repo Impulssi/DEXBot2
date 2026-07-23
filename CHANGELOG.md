@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.7] - 2026-07-23 - CLI Invocation Fix, ALS Re-Entrancy Test Fix
+
+### 2026-07-23
+
+- **Fix**: correct two AsyncLock tests for ALS-based re-entrant detection — Test 4 in `test_async_lock_force_release.ts` now calls nested `acquire()` from inside the lock's callback (same ALS context) and verifies concurrent callers queue; F6-T3 in `test_contention_and_dedup.ts` now expects contention detection from a different async context (`tests/test_async_lock_force_release.ts`, `tests/test_contention_and_dedup.ts`).
+- **Docs**: replace `node dexbot` with `dexbot` across all user-facing documentation and help text — the `node dexbot` pattern does not work for globally installed npm packages since Node resolves arguments as file paths, not PATH binaries. Updated `README.md`, `docs/WORKFLOW.md`, `docs/GRID_RECALCULATION.md`, `market_adapter/README.md`, `scripts/README.md`, `scripts/reset-settings.sh`, `dexbot.ts`, `claw/modules/claw_launcher.ts`, `claw/modules/launcher_mode_detector.ts`.
+- **Docs**: clarify `npm i -g dexbot` (was `npm i dexbot`) as required for global install; add note about repo-root users using `./scripts/dexbot` instead (`README.md`).
+
 ## [1.2.6] - 2026-07-23 - Batch Fill Sync, Crash-Durable Dedup, Ghost Batch Cancel, Config Overrides
 
 ### 2026-07-23

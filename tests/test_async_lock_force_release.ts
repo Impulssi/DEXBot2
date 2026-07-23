@@ -86,33 +86,48 @@ async function runTests() {
     }
 
     // Test 4: re-entrant acquire executes directly (no queue)
+    // Requires calling acquire() from inside the lock's callback (same ALS context).
+    // Concurrent callers from a different async context should queue.
     console.log(' - Re-entrant acquire executes directly...');
     {
         const lock = new AsyncLock();
         const gate = deferred();
+        const nestedDone = deferred();
+
+        let qExecuted = false;
 
         const pA = lock.acquire(async () => {
+            // Inside the lock's ALS context — this IS re-entrant
+            await lock.acquire(async () => {
+                qExecuted = true;
+            });
+            nestedDone.resolve();
             await gate.promise;
         });
 
-        // Wait for A to acquire
-        await new Promise(r => setTimeout(r, 10));
-        assert.strictEqual(lock.isLocked(), true);
-
-        // With re-entrant lock, nested acquire runs the callback directly
-        let qExecuted = false;
-        const pQ = lock.acquire(async () => {
-            qExecuted = true;
-        });
-
+        // Wait for nested acquire to complete
+        await nestedDone.promise;
         assert.strictEqual(qExecuted, true, 'Re-entrant acquire must execute callback directly');
         assert.strictEqual(lock.getQueueLength(), 0, 'Queue must be empty (re-entrant)');
         assert.strictEqual(lock.isLocked(), true, 'Lock must still be held by A');
+
+        // A concurrent caller from a different async context must queue
+        let outsideExecuted = false;
+        const pOutside = lock.acquire(async () => {
+            outsideExecuted = true;
+        });
+        assert.strictEqual(outsideExecuted, false, 'Outside acquire must queue');
+        assert.strictEqual(lock.getQueueLength(), 1, 'Queue must have 1 waiter');
 
         // Let A finish naturally
         gate.resolve();
         await pA;
         assert.strictEqual(lock.isLocked(), false, 'Lock must be free after A resolves');
+
+        // Outside waiter should now have executed
+        await pOutside;
+        assert.strictEqual(outsideExecuted, true, 'Outside acquire must execute after A finishes');
+        assert.strictEqual(lock.isLocked(), false, 'Lock must be free after outside completes');
     }
 
     // Test 5: Multiple forceRelease calls in sequence

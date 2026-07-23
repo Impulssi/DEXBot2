@@ -11,7 +11,7 @@ This guide provides a terminal-focused reference for the maintenance and diagnos
 **Purpose:** Perform a safe, production-ready update.
 ```bash
 # Pull latest code, install deps, and restart PM2
-node dexbot update
+dexbot update
 ```
 *Note: Protects your `profiles/` directory during the update process.*
 
@@ -81,13 +81,13 @@ tsx scripts/validate_bots.ts
 dexbot white
 
 # Add missing AMA bots with dynamicWeight enabled for newly generated entries
-node dexbot white --dynamic-weight
+dexbot white --dynamic-weight
 
 # Add missing AMA bots with asymmetricBounds disabled for newly generated entries
-node dexbot white --no-asymmetric-bounds
+dexbot white --no-asymmetric-bounds
 
 # Remove whitelist entries for bots no longer in profiles/bots.json
-node dexbot white --prune
+dexbot white --prune
 
 ```
 
@@ -262,9 +262,9 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 
 | Wrapper | Target Command | Usage |
 |:---|:---|:---|
-| `scripts/bots` | `node dexbot bots` | `./scripts/bots` |
-| `scripts/keys` | `node dexbot keys` | `./scripts/keys` |
-| `scripts/dexbot` | `node dexbot` | `./scripts/dexbot <cmd>` |
+| `scripts/bots` | `dexbot bots` | `./scripts/bots` |
+| `scripts/keys` | `dexbot keys` | `./scripts/keys` |
+| `scripts/dexbot` | `dexbot` | `./scripts/dexbot <cmd>` |
 | `scripts/unlock` | `node unlock` | `./scripts/unlock <cmd>` |
 | `scripts/pm2` | `node pm2` | `./scripts/pm2` |
 
@@ -344,7 +344,7 @@ Boost your workflow by adding these aliases to your `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 # DEXBot2 Shortcuts
-alias dbu='node dexbot update'
+alias dbu='dexbot update'
 alias dbc='bash scripts/clear-logs.sh'
 alias dbr='bash scripts/clear-orders.sh'
 alias dba='bash scripts/clear-all.sh'
@@ -365,5 +365,5 @@ tail -f profiles/logs/update.log
 **Run a specific bot dry-run from the CLI:**
 ```bash
 # Force a clean start for 'my-bot'
-bash scripts/clear-orders.sh && BOT_NAME=my-bot node dexbot test
+bash scripts/clear-orders.sh && BOT_NAME=my-bot dexbot test
 ```

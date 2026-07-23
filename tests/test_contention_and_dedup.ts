@@ -33,11 +33,9 @@ async function runTests() {
         assert.strictEqual(count, 0, 'No callback when lock is free');
     }
 
-    // Test 3: Contention callback fires via queue-length check.
-    // NOTE: AsyncLock's re-entrant check (AsyncLocalStorage or _holding
-    // fallback) prevents queueing when a callback is actively running, so we
-    // simulate contention by force-releasing, then acquiring twice
-    // concurrently — the second queues.
+    // Test 3: Contention callback fires when items queue.
+    // With AsyncLocalStorage, a concurrent caller from a different async
+    // context is correctly recognized as contention and queued.
     console.log(' - [F6-T3] Contention fires when items queue...');
     {
         const lock = new AsyncLock();
@@ -60,21 +58,17 @@ async function runTests() {
         await new Promise(r => setTimeout(r, 10));
         assert.strictEqual(lock.isLocked(), true, 'p2 holds lock');
 
-        // Second acquire while p2 holds it — the re-entrant check fires
-        // (same async context with AsyncLocalStorage, or _holding fallback)
-        // so contention won't be detected via queue. This is a known
-        // limitation of the re-entrant design. Accept the result and move on.
+        // Second acquire while p2 holds it — different async context
+        // (main test), so ALS re-entrant check does NOT fire. The call
+        // gets queued and contention is detected via queue buildup.
         const p3 = lock.acquire(async () => {}, {
             onContention: () => { contentionCount++; }
         });
 
         await new Promise(r => setTimeout(r, 10));
-        // contentionCount is 0 because re-entrant check fires first
-        // This is expected behavior given the lock's re-entrant design.
-        // The queue-length path exists for edge cases (forceRelease
-        // scenarios where the re-entrant guard was cleared while a callback runs).
-        assert.strictEqual(contentionCount, 0,
-            'Re-entrant path prevents queueing (expected with current design)');
+        // contentionCount is 1 because the call was queued (contention detected)
+        assert.strictEqual(contentionCount, 1,
+            'Contention detected via queue buildup (different async context)');
 
         gate.resolve();
         gate2.resolve();

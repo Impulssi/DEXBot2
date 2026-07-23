@@ -144,7 +144,7 @@ For a narrower override, set `deltaThresholdPercent` in
 **Parameters:**
 - `AMA_DELTA_THRESHOLD_PERCENT`: Percentage change in AMA center that triggers grid reset
   - Default: `1%` (in `modules/constants.ts`)
-  - Range: `0.1` to `50.0` (configurable via CLI and `node dexbot bots` general settings)
+  - Range: `0.1` to `50.0` (configurable via CLI and `dexbot bots` general settings)
   - Example: If set to `1`, the bot fully resyncs when AMA center moves ±1% from the last accepted center
 
 ### CLI Override
@@ -248,7 +248,7 @@ need a reset to move to the new asymmetric range and offset placement price.
 Range scaling is enabled by whitelist:
 
 ```bash
-node dexbot white
+dexbot white
 ```
 
 This writes `profiles/market_adapter_whitelist.json`. The default generation
@@ -258,7 +258,7 @@ dynamic weights disabled.
 To leave range scaling disabled while allowing AMA pricing:
 
 ```bash
-node dexbot white --no-asymmetric-bounds
+dexbot white --no-asymmetric-bounds
 ```
 
 The snapshot fields involved are:
@@ -605,6 +605,6 @@ Removed trigger file.
 - `modules/dexbot_class.ts` — `_performGridResync()`, `requestGridReset()`, and COW-guard structural recovery wiring
 - `modules/order/grid.ts` — RMS divergence check and grid comparison
 - `modules/order/manager.ts` — Available-funds resize threshold logic
-- `modules/market_adapter_whitelist.ts` / `scripts/generate_market_adapter_whitelist.ts` — Whitelist generation backing `node dexbot white`
+- `modules/market_adapter_whitelist.ts` / `scripts/generate_market_adapter_whitelist.ts` — Whitelist generation backing `dexbot white`
 - `profiles/general.settings.json` — User-editable configuration
 - `profiles/bots.json` — Per-bot configuration including AMA

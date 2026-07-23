@@ -81,7 +81,7 @@ async function launcherStart(botName: string | null, options: Record<string, any
     started: true,
     botName: botName || 'default',
     pid: child.pid,
-    command: `node dexbot test ${botName || '(default)'}`,
+    command: `dexbot test ${botName || '(default)'}`,
   };
 }
 
@@ -112,7 +112,7 @@ async function launcherDrystart(botName: string | null, options: Record<string, 
     started: true,
     botName: botName || 'default',
     pid: child.pid,
-    command: `node dexbot drystart ${botName || '(default)'}`,
+    command: `dexbot drystart ${botName || '(default)'}`,
     dryRun: true,
   };
 }

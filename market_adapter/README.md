@@ -21,13 +21,13 @@ The live signal layer for AMA-priced bots. It reads candles, computes the AMA ce
 
 | If you want to… | Read this | Key command |
 |-----------------|-----------|-------------|
-| Enable AMA pricing for a bot | [Quick Start](#quick-start) | `node dexbot white` |
+| Enable AMA pricing for a bot | [Quick Start](#quick-start) | `dexbot white` |
 | Change how often the grid rebuilds | [Trigger Threshold](#trigger-threshold) | edit `AMA_DELTA_THRESHOLD_PERCENT` |
 | Tune buy/sell weight bias | [Asymmetric Weight Shift](#asymmetric-weight-shift) | whitelist `dynamicWeight: true` |
 | Widen/tighten grid bounds by trend | [Grid Range Scaling](#grid-range-scaling) | whitelist `asymmetricBounds: true` |
 | Override settings for one pair or bot | [Settings and Overrides](#settings-and-overrides) | edit `profiles/market_adapter_settings.json` |
 | Run the adapter standalone or test dry-run | [Live Writes and Dry-Run](#live-writes-and-dry-run) | `tsx market_adapter/market_adapter.ts --dryRun` |
-| Debug a bot not being processed | [Troubleshooting](#troubleshooting) | `node dexbot white` |
+| Debug a bot not being processed | [Troubleshooting](#troubleshooting) | `dexbot white` |
 | Understand the signal pipeline or module layout | [Technical Reference](#technical-reference) | — |
 
 ## Big Picture
@@ -71,7 +71,7 @@ adapter still computes state, but live grid snapshots and recalc triggers stay
 in dry-run mode.
 
 ```bash
-node dexbot white
+dexbot white
 ```
 
 This writes `profiles/market_adapter_whitelist.json`, where each bot's AMA,
@@ -82,19 +82,19 @@ but keep dynamic weights disabled. To opt newly generated entries into dynamic
 weights:
 
 ```bash
-node dexbot white --dynamic-weight
+dexbot white --dynamic-weight
 ```
 
 To keep asymmetric bounds disabled:
 
 ```bash
-node dexbot white --no-asymmetric-bounds
+dexbot white --no-asymmetric-bounds
 ```
 
 Remove stale whitelist entries (bots no longer in `bots.json`):
 
 ```bash
-node dexbot white --prune
+dexbot white --prune
 ```
 
 ### 3. Start DEXBot2
@@ -296,10 +296,10 @@ Dry-run log lines include `[DRY RUN]` or `[suppressed, dry-run]`.
 
 | Task | Command |
 |------|---------|
-| Generate whitelist | `node dexbot white` |
-| Opt new whitelist entries into dynamic weights | `node dexbot white --dynamic-weight` |
-| Generate AMA-only entries without range scaling | `node dexbot white --no-asymmetric-bounds` |
-| Prune stale whitelist entries (bots removed from bots.json) | `node dexbot white --prune` |
+| Generate whitelist | `dexbot white` |
+| Opt new whitelist entries into dynamic weights | `dexbot white --dynamic-weight` |
+| Generate AMA-only entries without range scaling | `dexbot white --no-asymmetric-bounds` |
+| Prune stale whitelist entries (bots removed from bots.json) | `dexbot white --prune` |
 | Probe public CEX availability | `tsx market_adapter/inputs/fetch_cex_synthetic_data.ts --exchange auto --check-only` |
 | Seed synthetic cross candles | `tsx market_adapter/inputs/fetch_cex_synthetic_data.ts --exchange auto --bot-key <bot-key>` |
 | Run one adapter cycle | `tsx market_adapter/market_adapter.ts --once` |
@@ -329,7 +329,7 @@ match the bot's eventual `botKey`.
 ### Bot is not processed
 
 - Confirm `gridPrice` is `ama`, `ama1`, `ama2`, `ama3`, or `ama4`.
-- Regenerate the whitelist with `node dexbot white`.
+- Regenerate the whitelist with `dexbot white`.
 - Confirm the expected `botKey` exists in `profiles/market_adapter_whitelist.json`.
 - If `startPrice` is numeric, the adapter will not fetch pool/book candles for that bot. Use `startPrice` only for a fixed anchor in that case; `gridPrice` remains a separate grid setting.
 

@@ -23,7 +23,7 @@ function normalizeMode(mode: string | null | undefined) {
  *
  * Modes:
  *   - claw-only: Credential daemon only (no bots configured)
- *   - dexbot-direct: node dexbot test (testing/debugging)
+ *   - dexbot-direct: dexbot test (testing/debugging)
  *   - pm2: PM2 production service (monitored, auto-restart)
  *   - unlock: Single-prompt startup (no PM2)
  */

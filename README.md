@@ -30,8 +30,8 @@ DEXBot2 is the first open source trading bot with zero runtime dependencies and 
 ## 🔥 Quick Start
 
 ```bash
-# Option A — Install via npm
-npm i dexbot
+# Option A — Install globally via npm
+npm i -g dexbot
 
 # Option B — Clone and install from source
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
@@ -40,15 +40,18 @@ git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
 Then set up your master password, keys and add bots:
 
 ```bash
-node dexbot key
-node dexbot bot
+dexbot key
+dexbot bot
 ```
 
 And start DEXBot2:
 
 ```bash
-node dexbot unlock
+dexbot unlock
 ```
+
+> `dexbot` is available globally after `npm i -g dexbot`. Repo-root users can
+> run `./scripts/dexbot` instead.
 
 For detailed setup, see [Installation](#installation) section below.
 
@@ -100,8 +103,8 @@ sudo dnf install nodejs npm git
 ### Install
 
 ```bash
-# Option A — Install via npm
-npm i dexbot
+# Option A — Install globally via npm
+npm i -g dexbot
 
 # Option B — Clone and install from source
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
@@ -110,8 +113,8 @@ git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
 Then set up your master password, keys and add bots:
 
 ```bash
-node dexbot key
-node dexbot bot
+dexbot key
+dexbot bot
 ```
 
 ## 🔧 Configuration
@@ -138,18 +141,18 @@ market volatility instead of using an unnecessarily wide range.
 
 ### Simple AMA Workflow
 
-1. Create the bot with `node dexbot bot`.
+1. Create the bot with `dexbot bot`.
 2. Leave defaults unchanged.
 3. Tune `targetSpreadPercent` and `incrementPercent`.
 4. Set `gridPrice` to `ama`.
 5. Generate the market-adapter whitelist:
 
    ```bash
-   node dexbot white
+   dexbot white
    ```
 
    This writes `profiles/market_adapter_whitelist.json`. New AMA bots get AMA
-   live writes and range scaling. Use `node dexbot white --dynamic-weight` for
+   live writes and range scaling. Use `dexbot white --dynamic-weight` for
    newly generated dynamic-weight entries; existing entries are preserved.
 
 6. Start DEXBot2 with `node unlock` (or `node pm2` for PM2).
@@ -157,7 +160,7 @@ market volatility instead of using an unnecessarily wide range.
 
 ### Bot Options Reference
 
-Configuration options from `node dexbot bot`, stored in `profiles/bots.json`:
+Configuration options from `dexbot bot`, stored in `profiles/bots.json`:
 
 <details><summary>Full parameter reference (click to expand)</summary>
 
@@ -183,7 +186,7 @@ Configuration options from `node dexbot bot`, stored in `profiles/bots.json`:
 
 ### General Options (Global)
 
-Global settings via `node dexbot bot`, stored in `profiles/general.settings.json`:
+Global settings via `dexbot bot`, stored in `profiles/general.settings.json`:
 
 <details><summary>Global settings reference (click to expand)</summary>
 
@@ -218,21 +221,21 @@ For independent per-bot process control, start isolated mode with `node unlock -
 ## 🛠️ Bot Management
 
 ```bash
-node dexbot key                 # Master password/keyring
-node dexbot bot                 # Interactive bot configurator
-node dexbot white               # Market adapter whitelist, dynamic weights off by default
+dexbot key                 # Master password/keyring
+dexbot bot                 # Interactive bot configurator
+dexbot white               # Market adapter whitelist, dynamic weights off by default
 
-node dexbot unlock              # Standard live runtime
-node dexbot reset {all|<bot>}   # Regenerate grid
-node dexbot disable {all|<bot>} # Disable bot in config
+dexbot unlock              # Standard live runtime
+dexbot reset {all|<bot>}   # Regenerate grid
+dexbot disable {all|<bot>} # Disable bot in config
 
-node dexbot stat                # Runtime status (unlock or PM2)
-node dexbot order               # Analyze order grids
-node dexbot order --export      # Export as HTML to root folder
+dexbot stat                # Runtime status (unlock or PM2)
+dexbot order               # Analyze order grids
+dexbot order --export      # Export as HTML to root folder
 
-node dexbot update              # Update DEXBot2
-node dexbot clear               # Clear log files
-node dexbot default             # Reset settings to defaults
+dexbot update              # Update DEXBot2
+dexbot clear               # Clear log files
+dexbot default             # Reset settings to defaults
 ```
 
 ## 🎯 PM2 Process Management

@@ -36,38 +36,38 @@
  * ===============================================================================
  *
  * TRADING OPERATIONS:
- *   node dexbot test <bot-name>      - Test-run single bot (live trading)
- *   node dexbot drystart <bot-name>  - Start bot in dry-run mode (no transactions)
+ *   dexbot test <bot-name>      - Test-run single bot (live trading)
+ *   dexbot drystart <bot-name>  - Start bot in dry-run mode (no transactions)
  *
  * 🛠️ BOT MANAGEMENT:
- *   node dexbot reset all            - Reset all active bot grids (full regeneration)
- *   node dexbot reset <bot-name>     - Reset bot grid (full regeneration)
- *   node dexbot default              - Reset settings to defaults (deletes general.settings.json, market_profiles.json, market_adapter_settings.json)
- *   node dexbot disable all          - Mark all bots inactive in config
- *   node dexbot disable <bot-name>   - Mark bot inactive in config
- *   node dexbot clear                - Clear all log files in profiles/logs/
+ *   dexbot reset all            - Reset all active bot grids (full regeneration)
+ *   dexbot reset <bot-name>     - Reset bot grid (full regeneration)
+ *   dexbot default              - Reset settings to defaults (deletes general.settings.json, market_profiles.json, market_adapter_settings.json)
+ *   dexbot disable all          - Mark all bots inactive in config
+ *   dexbot disable <bot-name>   - Mark bot inactive in config
+ *   dexbot clear                - Clear all log files in profiles/logs/
  *
  * CONFIGURATION:
- *   node dexbot keys                 - Set up master password and keyring
- *   node dexbot bots                 - Interactive editor for bot definitions
+ *   dexbot keys                 - Set up master password and keyring
+ *   dexbot bots                 - Interactive editor for bot definitions
  *
  * PM2 ORCHESTRATION:
- *   node dexbot pm2                  - Start all bots via PM2 with daemon
-  *   node dexbot pm2 stop all         - Stop all PM2 bot processes
-  *   node dexbot pm2 stop <bot-name>  - Stop specific bot
-  *   node dexbot pm2 delete all       - Delete all bots from PM2
-  *   node dexbot pm2 delete <bot-name>- Delete specific bot from PM2
- *   node dexbot pm2 help             - Show PM2 command help
+ *   dexbot pm2                  - Start all bots via PM2 with daemon
+  *   dexbot pm2 stop all         - Stop all PM2 bot processes
+  *   dexbot pm2 stop <bot-name>  - Stop specific bot
+  *   dexbot pm2 delete all       - Delete all bots from PM2
+  *   dexbot pm2 delete <bot-name>- Delete specific bot from PM2
+ *   dexbot pm2 help             - Show PM2 command help
  *
  * STATUS:
- *   node dexbot status               - Show bot runtime status (unlock monolithic/isolated or PM2)
+ *   dexbot status               - Show bot runtime status (unlock monolithic/isolated or PM2)
  *
  * MAINTENANCE:
- *   node dexbot update               - Update to latest version (pull + install + restart)
- *   node dexbot export <bot-name>    - Export trading history to CSV/JSON for QTradeX
- *   node dexbot order                - Analyze persisted order grids in profiles/orders/
- *   node dexbot order --export       - Export order analysis as standalone HTML report
- *   node dexbot help                 - Show this help message
+ *   dexbot update               - Update to latest version (pull + install + restart)
+ *   dexbot export <bot-name>    - Export trading history to CSV/JSON for QTradeX
+ *   dexbot order                - Analyze persisted order grids in profiles/orders/
+ *   dexbot order --export       - Export order analysis as standalone HTML report
+ *   dexbot help                 - Show this help message
  *
  * NPM SCRIPTS (alternative invocation):
  *   npm run pm2:start                - Start bots (requires ecosystem.config.js pre-generated)
@@ -176,7 +176,7 @@ const CLI_EXAMPLES = [
     { title: 'Manage keys', command: 'dexbot key', notes: 'Runs modules/chain_keys.ts to add or update master passwords.' },
     { title: 'Edit bot definitions', command: 'dexbot bot', notes: 'Launches the interactive modules/account_bots.ts helper for the JSON config.' },
     { title: 'Start bots with PM2', command: 'dexbot pm2', notes: 'Generates ecosystem config, authenticates, and starts PM2.' },
-    { title: 'Update DEXBot2', command: 'node dexbot update', notes: 'Fetches latest code, updates dependencies, and restarts PM2.' },
+    { title: 'Update DEXBot2', command: 'dexbot update', notes: 'Fetches latest code, updates dependencies, and restarts PM2.' },
     { title: 'Export bot trades for QTradeX', command: 'dexbot export bot-name', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' },
     { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across profiles/orders/ and prints spread/increment/funds/distribution metrics. Add --export for an HTML report.' },
     { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from profiles/logs/.' },
@@ -1221,13 +1221,13 @@ const { writeJSON } = require('./modules/utils/fs_utils');
             await chainKeys.main();
             console.log();
             console.log(startupSuccess('Master password configured! Now you can:'));
-            console.log('  node dexbot bots   - Create and manage bots');
-            console.log('  node dexbot        - Run your configured bots');
+            console.log('  dexbot bots   - Create and manage bots');
+            console.log('  dexbot        - Run your configured bots');
             console.log();
         } else {
             console.log();
             console.log('You can set up your master password later by running:');
-            console.log('  node dexbot keys');
+            console.log('  dexbot keys');
             console.log();
         }
         return;
@@ -1241,10 +1241,10 @@ const { writeJSON } = require('./modules/utils/fs_utils');
         console.log('No bot configuration found.');
         console.log();
         console.log('First, set up your master password:');
-        console.log('  node dexbot keys');
+        console.log('  dexbot keys');
         console.log();
         console.log('Then, create your first bot:');
-        console.log('  node dexbot bots');
+        console.log('  dexbot bots');
         console.log();
         process.exit(0);
     }
