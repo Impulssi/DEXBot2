@@ -257,8 +257,8 @@ Logs are written to `profiles/logs/<bot-name>.log` (errors to `<bot-name>-error.
 
 - **[Market Adapter](market_adapter/README.md)** - AMA pricing, grid triggers, dynamic weights, and collateral advisory signals
 - **[MPA and Credit Usage](docs/MPA_CREDIT_USAGE.md)** - Bot-scoped debt policy, MPA borrowing, and credit offer workflows
-- **[Claw](claw/README.md)** - Bridge setup, launcher commands, short MPA workflow, and example commands
 - **[Analysis](analysis/README.md)** - Research runners, chart generators, and tuning helpers for AMA fitting, trend detection, bot fitting, and TradingView exports
+- **[Claw](claw/README.md)** - Bridge setup, launcher commands, short MPA workflow, and example commands
 
 ### Operational & Security
 

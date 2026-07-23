@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.6] - 2026-07-23 - Batch Fill Sync, Crash-Durable Dedup, Ghost Batch Cancel, Config Overrides
+
+### 2026-07-23
+
+- **Feat**: batch fill history sync (`syncFromFillHistoryBatch`) — processes multiple fill-history events acquiring `_gridLock` once, batches drift refetch into single `get_objects` RPC via `batchReadOrders`, acquires all order locks once up-front, pauses fund recalc once. Replaces per-fill loop in `dexbot_class.ts` for 2+ fills in a block (`modules/order/sync_engine.ts`, `modules/chain_orders.ts`).
+- **Feat**: crash-durable fill dedup window — persists recently-queued fill keys alongside master grid snapshot via new `_getRecentFillKeysSnapshot()`, restores at startup into `_recentlyQueuedFills`, merges with previous snapshot to avoid eviction loss between persist cycles (`modules/account_orders.ts`, `modules/order/utils/system.ts`, `modules/order/manager.ts`).
+- **Feat**: ghost order batch cancellation — builds all cancel ops with `Promise.allSettled` for per-ID error tolerance, executes in chunks of `MAX_OPS_PER_TX`, marks successfully cancelled IDs per-chunk to avoid redundant re-attempts, falls back to individual `cancelOrder` on batch failure (`modules/order/sync_engine.ts`).
+- **Feat**: grid lock contention telemetry — `AsyncLock onContention` callback fires on queue build-up and in `_processQueue` after callback completion, replaces removed `invariantViolations` metric (`modules/order/manager.ts`).
+- **Feat**: fund sizing from allocated balances — `_getSizingContext`, `calculateAvailableFundsValue`, `getSideBudget` prefer `funds.allocated.{buy,sell}` over `accountTotals.{buyFree,sellFree}` (`modules/order/grid.ts`, `modules/order/utils/math.ts`, `modules/order/utils/order.ts`).
+- **Feat**: runtime-config overrides — `resolveBotRuntimeSettings` includes `fillProcessing`, `pipelineTiming`, `apiLimits` with full override cascade (globals/market/pair/bot); `PIPELINE_TIMING` and `FILL_PROCESSING` lookups go through config with fallback to constants; new TS interfaces (`BotFillProcessingOverrides`, `BotPipelineTimingOverrides`, `BotApiLimitsOverrides`) (`modules/dexbot_fill_runtime.ts`).
+- **Fix**: deduplicate `syncFromFillHistory` vs `syncFromFillHistoryBatch` — extracted three shared helpers (`_findMatchingGridOrder`, `_computeFillContext`, `_computeFillTransitionResult`) eliminating ~300 lines of nearly-identical drift-detection, ghost-detection, and state-transition logic (`modules/order/sync_engine.ts`).
+- **Fix**: `_logThrottled` unbounded suppressed counter — capped at 1M to prevent pathological overflow; removed throwaway object on cache miss; removed redundant `Map.set()` on suppression path; removed dead `lastMessage` field (`modules/order/accounting.ts`).
+- **Fix**: route all `_recoveryState` writes through setter — replaced `x._recoveryState = x._recoveryState || {}; x._recoveryState.Y = Z` and direct field mutations with `x._recoveryState = { ...x._recoveryState, Y: Z }` across 13 sites (`modules/dexbot_class.ts`, `dexbot_maintenance_runtime.ts`, `modules/order/accounting.ts`, `modules/order/manager.ts`).
+- **Fix**: `_illegalStateSignal` direct write routed through `_lastIllegalState` setter (`modules/order/manager.ts:926`).
+- **Fix**: stale-entry pruning in `_lastBlacklistWarnMs` when Map exceeds 64 entries (`modules/node_manager.ts:388`).
+- **Fix**: removed `StrategyEngine` fee-event dedup subsystem (`_settledFeeEvents` map, `_pruneSettledFeeEvents`, `_buildFeeEventId`) — dedup now handled by `manager.processedFillTracker` upstream (`modules/order/strategy.ts`).
+- **Fix**: removed `hasEquivalentRawOnChainOrder` (unused), `_getDriftToleranceMultiplier` (inlined), `_rollbackBalanceAdjustments` (dead code), `totalOnly` param from `adjustTotalBalance` (`modules/order/sync_engine.ts`, `modules/order/manager.ts`, `modules/order/accounting.ts`).
+- **Fix**: consolidated `_shutdownStarted` → `_shuttingDown` (single guard flag) (`modules/dexbot_class.ts`).
+- **Chore**: hoist dynamic `require('../chain_orders')` calls — replaced 3 lazy requires inside method bodies with single top-level const, uses module namespace object (not destructuring) so test monkey-patching continues to work (`modules/order/sync_engine.ts`).
+- **Chore**: add `_recentFillKeysSnapshot` type — `any` → `Record<string, number> | null` (`modules/order/manager.ts:272`).
+- **Chore**: update TABLE OF CONTENTS in `sync_engine.ts` to list `syncFromFillHistoryBatch` as method #6.
+- **Test**: new `test_contention_and_dedup.ts` — AsyncLock contention callback, crash-durable fill key snapshot/restore.
+- **Test**: new `test_sync_fill_history_batch.ts` — 9 coverage cases for batch sync.
+- **Test**: chunk-boundary tests (F8-T1: 201 IDs → 2 batches, F8-T2: 200 IDs → single batch, F8-T3: empty → 0 batches).
+- **Test**: updated `test_accounting_logic.ts` for inlined tracker access.
+- **Test**: updated assertion for `requiresOpenOrdersSync` behavior.
+- **Fix**: refresh dynamic weight distribution before all fill-rebalance paths — added `_refreshDynamicWeightDistribution` calls to three sites that previously relied on periodic refresh alone: `_consumeFillQueue` (live fill subscription), post-reconnect safety-net sync, and `_syncOpenOrdersAndProcessFills`. Weights can become stale between periodic refresh cycles, causing rebalances to use outdated weight distributions (`modules/dexbot_class.ts`).
+- **Fix**: periodic blockchain fetch now refreshes dynamic weight distribution before processing fills — added `refreshDynamicWeightDistribution` call inside the fill-processing lock in `setupBlockchainFetchInterval` (`modules/dexbot_maintenance_runtime.ts`).
+- **Test**: fix `test_periodic_sync_fill_rebalance.ts` — the test mock of `syncMarketAdapterOnPeriodicConfigCheck` via module-export assignment had no effect on the internal closure reference in the same file; added weight refresh before fill processing makes the flow consistent.
+- **Test**: fix `test_market_adapter_service.ts` — three restart-backfill AMA3 test cases used `oldRawCount = 1836`, but the v1.1.3 AMA refit reduced warmup bars from 1927 to 1758, making `missingCount` negative. Updated `oldRawCount` to `1700` (`tests/test_market_adapter_service.ts`).
+- **Docs**: fix stale numbers in `EVOLUTION.md` (commit count 1,743 → 1,827, LoC ~58,000 → ~54,000, release entries 62 → 70).
+
 ## [1.2.5] - 2026-07-22 - Redundant Open-Orders Sync Fix, Supervisor Updater Override, Base58 Deduplication, KeyStore Cleanup
 
 ### 2026-07-22

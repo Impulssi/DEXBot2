@@ -37,6 +37,7 @@ function makeChainOrdersStub(overrides = {}) {
     readOpenOrders: async () => [],
     wasRecentlyOwnCancelled: () => false,
     cancelOrder: async () => {},
+    buildCancelOrderOp: async () => ({}),
     ...overrides,
   };
 }

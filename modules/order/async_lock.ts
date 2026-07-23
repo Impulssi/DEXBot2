@@ -65,6 +65,12 @@
  * queueing. This eliminates the need for callers to track whether they
  * already hold the lock via external flags.
  *
+ * Re-entrancy detection uses AsyncLocalStorage (Node.js) to distinguish
+ * truly nested calls (same async context) from separate concurrent
+ * callers. If AsyncLocalStorage is unavailable in the current runtime
+ * (e.g. a browser bundle shim), the lock falls back to a simpler
+ * _holding flag that treats any concurrent call as re-entrant.
+ *
  * CRITICAL INVARIANTS:
  * - _locked = true ONLY if callback is currently executing
  * - At most one callback in "await callback()" at any time
@@ -75,6 +81,8 @@
  *
  * @class
  */
+
+const { getNodeRequire } = require('../env');
 
 interface QueueItem<T = unknown> {
     callback: () => Promise<T>;
@@ -97,6 +105,19 @@ interface AcquireOptions {
     onContention?: () => void;
 }
 
+let _AsyncLocalStorage: any;
+const _nodeRequire = getNodeRequire();
+if (_nodeRequire) {
+    try {
+        _AsyncLocalStorage = _nodeRequire('node:async_hooks')?.AsyncLocalStorage;
+    } catch {
+        _AsyncLocalStorage = null;
+    }
+} else {
+    _AsyncLocalStorage = null;
+}
+const _lockCtx = _AsyncLocalStorage ? new _AsyncLocalStorage() : null;
+
 class AsyncLock {
     private _queue: QueueItem<any>[];
     private _locked: boolean;
@@ -105,6 +126,7 @@ class AsyncLock {
     private _defaultTimeout: number | null;
     private _level: number;
     private _onContention: (() => void) | null;
+    private readonly _lockId: symbol;
 
     constructor(options: AsyncLockOptions = {}) {
         this._queue = [];
@@ -114,6 +136,7 @@ class AsyncLock {
         this._defaultTimeout = options.timeout || null;
         this._level = options.level ?? 0;
         this._onContention = options.onContention || null;
+        this._lockId = Symbol('AsyncLock');
     }
 
     /**
@@ -125,21 +148,27 @@ class AsyncLock {
      * @returns {Promise} Result of callback execution
      */
     async acquire<T>(callback: () => Promise<T>, options: AcquireOptions = {}): Promise<T> {
-        // Re-entrant: if we are already inside this lock's execution context,
-        // run the callback directly. This avoids deadlock when callers deep
-        // in the call chain need to acquire the same lock.
-        if (this._holding) {
+        // Re-entrant detection: if we are already inside this lock's execution
+        // context, run the callback directly. Uses AsyncLocalStorage (Node.js)
+        // to distinguish truly nested calls from separate concurrent callers.
+        // Falls back to _holding flag in environments without AsyncLocalStorage.
+        const contextId = _lockCtx ? _lockCtx.getStore() : undefined;
+        if (contextId === this._lockId || (!_lockCtx && this._holding)) {
             return callback();
         }
 
         const timeout = options.timeout || this._defaultTimeout;
         const cancelToken = options.cancelToken;
 
+        const wrappedCallback = _lockCtx
+            ? () => _lockCtx.run(this._lockId, callback)
+            : callback;
+
         return new Promise((resolve, reject) => {
             let timer: ReturnType<typeof setTimeout> | undefined;
 
             const item = {
-                callback,
+                callback: wrappedCallback,
                 cancelToken,
                 resolve: (val: T) => {
                     if (timer) {
@@ -173,7 +202,7 @@ class AsyncLock {
             // item could not run immediately and is waiting — that is
             // contention (the lock is held by another context, or there are
             // other waiters ahead of us). Calls that take the re-entrant
-            // path (this._holding check at the top) never reach here.
+            // path (re-entrant check at the top) never reach here.
             // Note: the re-entrant path means this callback will miss the
             // common nested-call pattern; the gridLockContention metric
             // therefore only captures external contention (different async
@@ -252,6 +281,9 @@ class AsyncLock {
      * would execute immediately via the re-entrant path anyway.
      */
     isReentrant(): boolean {
+        if (_lockCtx) {
+            return _lockCtx.getStore() === this._lockId;
+        }
         return this._holding;
     }
 

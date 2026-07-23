@@ -170,6 +170,7 @@ async function testPipelineInFlightDefersMaintenance() {
             return { buyDust: false, sellDust: false };
         },
         isBroadcastingActive: () => true,
+        _clearStaleBroadcastFlag: () => {},
         shadowOrderIds: new Set(['lock-1']),
         logger: { log: () => {} }
     };
@@ -209,6 +210,7 @@ async function testIllegalStateAbortResyncAndCooldown() {
 
     bot.manager = {
         recalculateFunds: () => {},
+        _clearStaleBroadcastFlag: () => {},
         clearStalePipelineOperations: () => {},
         isPipelineEmpty: () => ({ isEmpty: true, reasons: [] }),
         checkSpreadCondition: async () => {

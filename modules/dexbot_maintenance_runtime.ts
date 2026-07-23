@@ -7,7 +7,8 @@ const { BitShares, getNodeManager } = require('./bitshares_client');
 const chainOrders = require('./chain_orders');
 const { BroadcastUncertainError } = require('./dexbot_credential_client');
 const { Config, hasOpenOrdersSyncLoopMsSet, getOpenOrdersSyncLoopMs } = require('./config');
-const { isGridBloated, isGridBloatGraceActive, clearGridBloatFlag, loadGrid, recalculateGrid, monitorDivergence } = require('./order/grid');
+const grid = require('./order/grid');
+const { isGridBloated, isGridBloatGraceActive, clearGridBloatFlag, loadGrid, recalculateGrid } = grid;
 const { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } = require('./constants');
 const { PATHS } = require('./paths');
 const { buildRuntimeScriptPath, isDistCodeRoot } = require('./launcher/runtime_entry');
@@ -1147,6 +1148,7 @@ function setupBlockchainFetchInterval(bot) {
                     } else {
                         bot.manager._recoveryAttempted = false;
                     }
+                    refreshDynamicWeightDistribution(bot, 'periodic blockchain fetch');
                     bot._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
                     await bot.manager.fetchAccountTotals(bot.accountId);
 
@@ -1514,7 +1516,7 @@ async function executeMaintenanceLogic(bot, context) {
             const persistedGridData = bot.accountOrders.loadGrid(true) || [];
             const calculatedGrid = Array.from(bot.manager.orders.values());
 
-            const divergence = await monitorDivergence(bot.manager, calculatedGrid, persistedGridData);
+            const divergence = await grid.monitorDivergence(bot.manager, calculatedGrid, persistedGridData);
 
             if (divergence.needsUpdate) {
                 const hasRmsDivergence = !!(divergence.buy.rms || divergence.sell.rms);

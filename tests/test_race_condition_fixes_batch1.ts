@@ -293,7 +293,7 @@ async function testPersistGridSnapshotDoesNotSwapManagerOrders() {
     // persisted, since persistGrid -> persistGridSnapshot -> accountOrders.
     let capturedSnapshotIds = null;
     manager.accountOrders = {
-        storeMasterGrid: async (botKey, orders) => {
+        storeMasterGrid: async (orders, btsFeesOwed) => {
             capturedSnapshotIds = Array.isArray(orders) ? orders.map((o) => o.id) : null;
             return true;
         },

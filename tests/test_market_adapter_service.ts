@@ -1174,7 +1174,7 @@ async function testRestartBackfillsOldAma3WindowBeforeWaitingForNextClosedCandle
         ama3.fastPeriod
     ) + 1;
     const rawKeepCount = analysisKeepCount + 1;
-    const oldRawCount = 1836;
+    const oldRawCount = 1700;
     const missingCount = rawKeepCount - oldRawCount;
     const oldCandles = buildRestartCandles(oldRawCount, nowMs, 100, intervalSeconds);
     const latestClosedTs = oldCandles[oldCandles.length - 2][0];
@@ -1289,7 +1289,7 @@ async function testRestartBackfillsOldAma3WindowEvenWhenGapRepairWasAttempted() 
         ama3.fastPeriod
     ) + 1;
     const rawKeepCount = analysisKeepCount + 1;
-    const oldRawCount = 1836;
+    const oldRawCount = 1700;
     const missingCount = rawKeepCount - oldRawCount;
     const oldCandles = buildRestartCandles(oldRawCount, nowMs, 100, intervalSeconds);
     const latestClosedTs = oldCandles[oldCandles.length - 2][0];
@@ -1398,7 +1398,7 @@ async function testRestartBackfillsOldAma3WindowAndTriggersWhenDeltaThresholdIsE
         ama3.fastPeriod
     ) + 1;
     const rawKeepCount = analysisKeepCount + 1;
-    const oldRawCount = 1836;
+    const oldRawCount = 1700;
     const missingCount = rawKeepCount - oldRawCount;
     const oldCandles = buildRestartCandles(oldRawCount, nowMs, 100, intervalSeconds);
     const latestClosedTs = oldCandles[oldCandles.length - 2][0];

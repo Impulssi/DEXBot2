@@ -365,13 +365,13 @@ async function runTests() {
         assert.strictEqual(second, false, 'Second immediate attempt should be blocked by cooldown');
         assert.strictEqual(manager._recoveryState.attemptCount, 1, 'Cooldown-blocked attempt must not increment attempt count');
 
-        manager._recoveryState.lastAttemptAt = Date.now() - 61000;
+        manager._recoveryState = { ...manager._recoveryState, lastAttemptAt: Date.now() - 61000 };
         await manager.accountant._attemptFundRecovery(manager, 'unit-test');
         assert.strictEqual(manager._recoveryState.attemptCount, 2, 'Attempt count should increment after cooldown expires');
         assert.strictEqual(attempts >= 2, true, 'Recovery should have executed at least twice after cooldown expiry');
 
         manager.accountant._performStateRecovery = async () => ({ isValid: true, reason: null });
-        manager._recoveryState.lastAttemptAt = Date.now() - 61000;
+        manager._recoveryState = { ...manager._recoveryState, lastAttemptAt: Date.now() - 61000 };
         const success = await manager.accountant._attemptFundRecovery(manager, 'unit-test');
         assert.strictEqual(success, true, 'Successful recovery should return true');
         // NOTE: Successful recovery does NOT reset attempt count immediately.

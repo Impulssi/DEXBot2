@@ -79,13 +79,13 @@ async function runTests() {
 
         bot._batchInFlight = true;
         bot._incomingFillQueue.push(fill);
-        await bot._consumeFillQueue({ getFillProcessingMode: () => 'history' });
+        await bot._consumeFillQueue({ getFillProcessingMode: () => 'history', buildCancelOrderOp: async () => ({}) });
 
         assert.strictEqual(bot._incomingFillQueue.length, 1, 'Active batch must leave queued fills untouched');
         assert.strictEqual(bot.manager.accountTotals.sell, sellBefore, 'Deferred fill must not credit proceeds yet');
 
         bot._batchInFlight = false;
-        await bot._consumeFillQueue({ getFillProcessingMode: () => 'history' });
+        await bot._consumeFillQueue({ getFillProcessingMode: () => 'history', buildCancelOrderOp: async () => ({}) });
 
         assert.strictEqual(bot._incomingFillQueue.length, 0, 'Queued fill should drain after batch clears');
         assert.strictEqual(bot.manager.accountTotals.sell, sellBefore + 2.5, 'Deferred fill should credit proceeds after batch clears');
@@ -124,7 +124,7 @@ async function runTests() {
 
         bot._recentlyProcessedFills.set(fillKey, Date.now() - (TIMING.FILL_DEDUPE_WINDOW_MS + 1000));
         bot._incomingFillQueue.push(fill);
-        await bot._consumeFillQueue({ getFillProcessingMode: () => 'history' });
+        await bot._consumeFillQueue({ getFillProcessingMode: () => 'history', buildCancelOrderOp: async () => ({}) });
 
         assert.strictEqual(bot.manager.accountTotals.sell, sellBefore, 'Replay from persisted tracker must not credit proceeds again');
         assert.strictEqual(persistedFills.length, 0, 'Persisted replay skip should not write another processed-fill record');
@@ -142,6 +142,7 @@ async function runTests() {
         bot._incomingFillQueue.push(malformedFill);
         await bot._consumeFillQueue({
             getFillProcessingMode: () => 'history',
+            buildCancelOrderOp: async () => ({}),
             readOpenOrders: async () => {
                 openOrdersSyncCalled = true;
                 return [];
@@ -155,6 +156,7 @@ async function runTests() {
         bot._incomingFillQueue.push(malformedFill);
         await bot._consumeFillQueue({
             getFillProcessingMode: () => 'history',
+            buildCancelOrderOp: async () => ({}),
             readOpenOrders: async () => {
                 openOrdersSyncCalled = true;
                 return [];
@@ -173,6 +175,7 @@ async function runTests() {
         bot._incomingFillQueue.push(fill);
         await bot._consumeFillQueue({
             getFillProcessingMode: () => 'history',
+            buildCancelOrderOp: async () => ({}),
             wasRecentlyOwnCancelled: () => true
         });
 
@@ -190,6 +193,7 @@ async function runTests() {
         bot._incomingFillQueue.push(artifact);
         await bot._consumeFillQueue({
             getFillProcessingMode: () => 'history',
+            buildCancelOrderOp: async () => ({}),
             wasRecentlyOwnCancelled: () => true
         });
 
@@ -343,7 +347,8 @@ async function runTests() {
 
         bot._incomingFillQueue.push(fill);
         await bot._consumeFillQueue({
-            getFillProcessingMode: () => 'history'
+            getFillProcessingMode: () => 'history',
+            buildCancelOrderOp: async () => ({})
         });
 
         assert.strictEqual(persistedFills.length, 1, 'Generic fill-cycle errors should durably record verified processed fills');
@@ -401,7 +406,8 @@ async function runTests() {
 
         bot._incomingFillQueue.push(fill);
         await bot._consumeFillQueue({
-            getFillProcessingMode: () => 'history'
+            getFillProcessingMode: () => 'history',
+            buildCancelOrderOp: async () => ({})
         });
 
         assert.strictEqual(processFilledOrdersCalls, 1, 'Fill should be planned before credential preflight failure');

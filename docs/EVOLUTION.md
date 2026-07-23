@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.2.5 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.2.6 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 1,827+ commits over ~7 active months
+- **Growth Phase**: 1,831+ commits over ~7 active months
 - **Code Maturity**: Evolution from basic utilities to a ~54,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 200+ automated test files
-- **Releases**: 70 release entries (v0.1.0 to v1.2.5)
+- **Releases**: 71 release entries (v0.1.0 to v1.2.6)
 
 ---
 
@@ -113,6 +113,7 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.2.2 → v1.2.3 | 5 | Uncertain-broadcast grid corruption fix (discarded CREATE slot recovery), unmatched-order adoption via `syncFromOpenOrders`, grid-bloat loop fix (full-rail false-positive, stale SPREAD type, empty-side correction, boundary-at-rail-edge), budget-dilution fix (virtual-slot exclusion), budget-cap regression fix, COW structural-resync safeguard, test updates |
 | v1.2.3 → v1.2.4 | 1 | Credential daemon memory — signing client cache (30-min TTL, fingerprint-based key rotation, dispose-then-delete contract), session purge interval, shallow policy copy, audit-log microtask reduction |
 | v1.2.4 → v1.2.5 | 3 | Redundant open-orders sync fix, supervisor updater override, waitForStableStartup event-loop hang fix, unref credit/dust intervals, base58 deduplication, key_store delegation cleanup, launch_modes clawOnly fix, test alignment |
+| v1.2.5 → v1.2.6 | 4 | Batch fill sync, crash-durable dedup, ghost batch cancel, config overrides, code-review fixes, EVOLUTION.md doc fix |
 
 ---
 
@@ -171,7 +172,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 22, 2026 (v1.2.5)
-**Total Commits**: 1,827
-**Date Range**: December 2, 2025 – July 22, 2026
+**Last Updated**: July 23, 2026 (v1.2.6)
+**Total Commits**: 1,831
+**Date Range**: December 2, 2025 – July 23, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

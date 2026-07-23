@@ -1208,6 +1208,7 @@ class DEXBot {
                                 const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
                                 if (this._shuttingDown) return;
                                 if (syncResult?.filledOrders?.length > 0) {
+                                    this._refreshDynamicWeightDistribution('post-reconnect sync fill');
                                     this._log(`Post-reconnect sync: ${syncResult.filledOrders.length} grid order(s) found filled.`, 'info');
                                     await this._processFillsWithBatching(syncResult.filledOrders, new Set(), 'post-reconnect sync fill');
                                     if (this._shuttingDown) return;
@@ -1694,6 +1695,7 @@ class DEXBot {
             );
             let aborted = false;
             if (syncResult?.filledOrders?.length > 0) {
+                this._refreshDynamicWeightDistribution(`${tag} sync-fill`);
                 this._log(`[SYNC-CHAIN] ${syncResult.filledOrders.length} filled order(s) found during ${tag}`, 'info');
                 const batchResult = await this._processFillsWithBatching(
                     syncResult.filledOrders,
@@ -2298,6 +2300,12 @@ class DEXBot {
                         }
                         await this.manager.resumeFundRecalc();
                     }
+
+                    // Refresh dynamic weight distribution before processing fills
+                    // so the rebalance uses the latest market adapter weights, not
+                    // stale values from the last periodic refresh cycle.
+                    // Lightweight: reads local JSON snapshot file.
+                    this._refreshDynamicWeightDistribution('fill queue');
 
                     // 5. Fixed-Cap Fill Rebalance
                     // - 1..MAX_FILL_BATCH_SIZE fills: unified full-set planning

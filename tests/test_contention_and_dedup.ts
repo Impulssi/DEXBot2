@@ -34,9 +34,10 @@ async function runTests() {
     }
 
     // Test 3: Contention callback fires via queue-length check.
-    // NOTE: AsyncLock's re-entrant check (_holding) prevents queueing when a
-    // callback is actively running, so we simulate contention by force-
-    // releasing, then acquiring twice concurrently — the second queues.
+    // NOTE: AsyncLock's re-entrant check (AsyncLocalStorage or _holding
+    // fallback) prevents queueing when a callback is actively running, so we
+    // simulate contention by force-releasing, then acquiring twice
+    // concurrently — the second queues.
     console.log(' - [F6-T3] Contention fires when items queue...');
     {
         const lock = new AsyncLock();
@@ -60,9 +61,9 @@ async function runTests() {
         assert.strictEqual(lock.isLocked(), true, 'p2 holds lock');
 
         // Second acquire while p2 holds it — the re-entrant check fires
-        // because _holding is true from p2's callback. So contention
-        // won't be detected via queue. This is a known limitation of
-        // the re-entrant design. Accept the result and move on.
+        // (same async context with AsyncLocalStorage, or _holding fallback)
+        // so contention won't be detected via queue. This is a known
+        // limitation of the re-entrant design. Accept the result and move on.
         const p3 = lock.acquire(async () => {}, {
             onContention: () => { contentionCount++; }
         });
@@ -71,7 +72,7 @@ async function runTests() {
         // contentionCount is 0 because re-entrant check fires first
         // This is expected behavior given the lock's re-entrant design.
         // The queue-length path exists for edge cases (forceRelease
-        // scenarios where _holding was cleared while a callback runs).
+        // scenarios where the re-entrant guard was cleared while a callback runs).
         assert.strictEqual(contentionCount, 0,
             'Re-entrant path prevents queueing (expected with current design)');
 
