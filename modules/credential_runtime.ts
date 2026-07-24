@@ -45,7 +45,7 @@ function getResolveProjectRoot() {
 }
 
 function getDexbotRoot() {
-    const MODULE_DIR = typeof __dirname !== 'undefined' ? path.dirname(__dirname) : '';
+    const MODULE_DIR = path.dirname(__dirname);
     return getResolveProjectRoot()(MODULE_DIR);
 }
 

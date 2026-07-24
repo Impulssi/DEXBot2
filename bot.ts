@@ -111,7 +111,7 @@ if (!botName) {
  */
 function loadBotConfig(name: string) {
     if (!storage.exists(PROFILES_BOTS_FILE)) {
-        launcherLogger.error('profiles/bots.json not found. Run: dexbot bots');
+        launcherLogger.error('profiles/bots.json not found. Run: dexbot bot');
         runtime.exit(1);
     }
 

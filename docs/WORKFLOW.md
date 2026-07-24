@@ -222,8 +222,8 @@ the canonical name is preferred in scripts and docs.
 | `dexbot reset <bot>` | — | Trigger a grid reset (applies live or on next start) |
 | `dexbot default` | `defaults` | Reset settings to defaults (deletes generated settings files) |
 | `dexbot disable <bot>` | — | Mark a bot inactive in config (`disable all` for all) |
-| `dexbot keys` | `key` | Launch the chain key helper (`modules/chain_keys.ts`) |
-| `dexbot bots` | `bot` | Launch the interactive bot configurator |
+| `dexbot key` | `key` | Launch the chain key helper (`modules/chain_keys.ts`) |
+| `dexbot bot` | `bot` | Launch the interactive bot configurator |
 | `dexbot pm2` | — | Start all active bots via PM2 |
 | `dexbot update` | — | Update DEXBot2 from the repository and restart active bots |
 | `dexbot export <bot>` | — | Export bot trades/settings for QTradeX backtesting |

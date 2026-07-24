@@ -311,7 +311,7 @@ module.exports = { apps: ${JSON.stringify(appsClaw, null, 2)} };
         }
 
         if (!storage.exists(BOTS_JSON)) {
-            fail('profiles/bots.json not found. Run: dexbot bots');
+            fail('profiles/bots.json not found. Run: dexbot bot');
         }
 
         const { config } = loadSettingsFile(BOTS_JSON, { exitOnError });

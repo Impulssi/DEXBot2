@@ -10,7 +10,7 @@ const { writeJSON } = require('./utils/fs_utils');
 function loadSettingsFile(filePath: string, { silent = false, exitOnError = true }: { silent?: boolean; exitOnError?: boolean } = {}): { config: any; filePath: string } {
     if (!storage.exists(filePath)) {
         if (!silent) {
-            console.error(`${filePath} not found. Run: dexbot bots`);
+            console.error(`${filePath} not found. Run: dexbot bot`);
         }
         return { config: {}, filePath };
     }

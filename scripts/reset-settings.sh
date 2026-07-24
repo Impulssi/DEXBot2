@@ -107,7 +107,7 @@ if [ "$REMAINING" -eq 0 ]; then
     log_info "Total deleted: ${#FOUND_FILES[@]}"
     log_info ""
     log_info "Next steps:"
-    log_info "- Re-run \`dexbot bots\` to recreate general settings if needed"
+    log_info "- Re-run \`dexbot bot\` to recreate general settings if needed"
     log_info "- Re-run \`npm run market-adapter:whitelist\` if your AMA bot set changed"
     log_info "- Re-fit market profiles only if you want custom AMA presets again"
 else

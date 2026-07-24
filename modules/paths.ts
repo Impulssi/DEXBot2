@@ -1,10 +1,9 @@
 const { path } = require('./path_api');
 const { Config } = require('./config');
-const { hasProcess } = require('./env');
 const { isDistRuntime } = require('./utils/build_dir');
 
-const MODULE_DIR = hasProcess() ? path.dirname(__dirname) : '';
-const PROJECT_ROOT = (hasProcess() && isDistRuntime(MODULE_DIR))
+const MODULE_DIR = path.dirname(__dirname);
+const PROJECT_ROOT = isDistRuntime(MODULE_DIR)
     ? path.dirname(MODULE_DIR)
     : MODULE_DIR;
 

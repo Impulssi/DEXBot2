@@ -21,9 +21,9 @@ dexbot update
 
 ### Wipe Logs
 **File:** `clear-logs.sh`
-**Purpose:** Delete all bot `.log` files, including `profiles/logs/market_adapter.log`.
+**Purpose:** Delete all bot `.log` and `.jsonl` files, including `profiles/logs/market_adapter.log`.
 ```bash
-# IRREVERSIBLE: Deletes all files in profiles/logs/*.log, including market_adapter.log
+# IRREVERSIBLE: Deletes all files in profiles/logs/*.log and *.jsonl, including market_adapter.log
 # Prompts for confirmation before deleting.
 bash scripts/clear-logs.sh
 ```
@@ -39,18 +39,18 @@ bash scripts/clear-orders.sh
 
 ### Clear Market Adapter State
 **File:** `clear-market-adapter.sh`
-**Purpose:** Delete market adapter state and log files, including `dexbot-adapter` logs and `market_adapter_centers.json`.
+**Purpose:** Delete all market adapter candle data, state files, and runtime logs.
 ```bash
-# IRREVERSIBLE: Removes market adapter state files and adapter-specific logs
+# IRREVERSIBLE: Removes market_adapter/data/, market_adapter/state/, and profiles/logs/{market_adapter,dexbot-adapter,dexbot-adapter-error}.log
 # Prompts for confirmation before deleting.
 bash scripts/clear-market-adapter.sh
 ```
 
-### Wipe Orders + Logs
+### Wipe Orders + Logs + Market Adapter
 **File:** `clear-all.sh`
-**Purpose:** Delete order state files and `.log` files in one confirmed operation (includes market adapter cleanup).
+**Purpose:** Delete order state files, log files, and market adapter data/state in one confirmed operation.
 ```bash
-# IRREVERSIBLE: Deletes profiles/orders/* and profiles/logs/*.log, including market_adapter.log
+# IRREVERSIBLE: Deletes profiles/orders/*, profiles/logs/*.{log,jsonl}, market_adapter/data/*, and market_adapter/state/*
 # Prompts for confirmation before deleting.
 bash scripts/clear-all.sh
 ```
@@ -216,6 +216,14 @@ npm run test:credit-renewal
 npm run verify:browser-bundle
 ```
 
+### Create PM2 Bot Symlinks
+**File:** `create-bot-symlinks.sh`
+**Purpose:** Create `profiles/<bot-name>.config.js` symlinks pointing to `profiles/ecosystem.config.js` so you can run `pm2 start <bot-name>` directly.
+```bash
+bash scripts/create-bot-symlinks.sh
+```
+Auto-runs on `npm postinstall` for global installs.
+
 ### Version Sync
 **File:** `sync-version.ts`
 **Purpose:** Keep DEXBot2-owned package and plugin manifests aligned to the root `package.json` version.
@@ -268,8 +276,8 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 
 | Wrapper | Target Command | Usage |
 |:---|:---|:---|
-| `scripts/bots` | `dexbot bots` | `./scripts/bots` |
-| `scripts/keys` | `dexbot keys` | `./scripts/keys` |
+| `scripts/bots` | `dexbot bot` | `./scripts/bots` |
+| `scripts/keys` | `dexbot key` | `./scripts/keys` |
 | `scripts/dexbot` | `dexbot` | `./dexbot <cmd>` |
 | `scripts/unlock` | `./unlock` | `./unlock` |
 | `scripts/pm2` | `./pm2` | `./pm2` |

@@ -48,8 +48,8 @@
  *   dexbot clear                - Clear all log files in profiles/logs/
  *
  * CONFIGURATION:
- *   dexbot keys                 - Set up master password and keyring
- *   dexbot bots                 - Interactive editor for bot definitions
+ *   dexbot key                 - Set up master password and keyring
+ *   dexbot bot                 - Interactive editor for bot definitions
  *
  * PM2 ORCHESTRATION:
  *   dexbot pm2                  - Start all bots via PM2 with daemon
@@ -163,8 +163,8 @@ const PROFILES_DIR = PATHS.PROFILES_DIR;
 
 
 const BUILD_DIR = 'dist';
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'drystart', 'keys', 'bots', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'help'];
-const COMMAND_ALIASES: Record<string, string> = { orders: 'order', key: 'keys', bot: 'bots', white: 'whitelist', stat: 'status', stats: 'status', start: 'test', defaults: 'default' };
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'help'];
+const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'test', defaults: 'default' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
@@ -796,7 +796,7 @@ async function exportBotTrades(botName: string | undefined) {
 
 /**
  * Parse and execute CLI commands.
- * Supported commands: test, drystart, reset, default, disable, keys, bots, pm2, update, export, order, clear, status, whitelist, unlock, help
+ * Supported commands: test, drystart, reset, default, disable, key, bot, pm2, update, export, order, clear, status, whitelist, unlock, help
  * @returns {Promise<boolean>} True if a command was handled, false otherwise
  */
 async function handleCLICommands() {
@@ -845,10 +845,10 @@ async function handleCLICommands() {
             }
             await disableBotByName(target === 'all' ? null : target);
             process.exit(0);
-        case 'keys':
+        case 'key':
             await runAccountManager({ exitAfter: true });
             return true;
-         case 'bots':
+         case 'bot':
              setSuppressConnectionLog(true);
              try {
                  await accountBots.main();
@@ -1221,13 +1221,13 @@ const { writeJSON } = require('./modules/utils/fs_utils');
             await chainKeys.main();
             console.log();
             console.log(startupSuccess('Master password configured! Now you can:'));
-            console.log('  dexbot bots   - Create and manage bots');
+            console.log('  dexbot bot   - Create and manage bots');
             console.log('  dexbot        - Run your configured bots');
             console.log();
         } else {
             console.log();
             console.log('You can set up your master password later by running:');
-            console.log('  dexbot keys');
+            console.log('  dexbot key');
             console.log();
         }
         return;
@@ -1241,10 +1241,10 @@ const { writeJSON } = require('./modules/utils/fs_utils');
         console.log('No bot configuration found.');
         console.log();
         console.log('First, set up your master password:');
-        console.log('  dexbot keys');
+        console.log('  dexbot key');
         console.log();
         console.log('Then, create your first bot:');
-        console.log('  dexbot bots');
+        console.log('  dexbot bot');
         console.log();
         process.exit(0);
     }
