@@ -1878,6 +1878,224 @@ async function acquireBts(bot, deficit) {
     bot._log(`[BTS-ACQ] Acquired ~${Format.formatAmount8(best.expectedReceive)} BTS: sold ${Format.formatAmount8(best.sellAmount)} ${best.asset.symbol} via pool ${best.poolId}`, 'info');
 }
 
+/**
+ * Run a single dust health check cycle.
+ * @param {import('./dexbot_class').DEXBot} bot
+ */
+async function runDustHealthCheck(bot) {
+    if (bot._shuttingDown || !bot.manager) return;
+    try {
+        const health = await bot.manager.checkGridHealth(
+            bot.updateOrdersOnChainPlan?.bind(bot)
+        );
+        const buyDust = health.buyDustOrders || [];
+        const sellDust = health.sellDustOrders || [];
+        const totalDust = buyDust.length + sellDust.length;
+        if (totalDust > 0) {
+            bot._log(`[DUST] Health check: ${totalDust} dust order(s) (buy=${buyDust.length}, sell=${sellDust.length})`);
+            const lock = bot.manager._fillProcessingLock;
+            if (lock && typeof lock.acquire === 'function') {
+                await lock.acquire(async () => {
+                    await bot._cancelDustOrders({
+                        buy: health.buyDustOrders,
+                        sell: health.sellDustOrders,
+                    });
+                }, { timeout: TIMING.DUST_CANCEL_TIMEOUT_MS });
+            } else {
+                bot._warn('[DUST] Fill lock unavailable — cancelling dust without lock (potential race)');
+                await bot._cancelDustOrders({
+                    buy: health.buyDustOrders,
+                    sell: health.sellDustOrders,
+                });
+            }
+        }
+    } catch (err) {
+        if (err?.message?.includes('Lock acquisition timeout')) {
+            bot._warn('[DUST] Lock busy, skipping dust cancel this cycle (retry in 5 min)');
+        } else {
+            bot._warn(`[DUST] Health check error (retry in 5 min): ${err?.message || err}`);
+        }
+    }
+}
+
+/**
+ * Set up the periodic dust health check interval.
+ * @param {import('./dexbot_class').DEXBot} bot
+ */
+function setupDustHealthCheckInterval(bot) {
+    bot._dustHealthCheckTimer = setInterval(() => {
+        runDustHealthCheck(bot);
+    }, TIMING.DUST_HEALTH_CHECK_INTERVAL_MS);
+    if (typeof bot._dustHealthCheckTimer?.unref === 'function') {
+        bot._dustHealthCheckTimer.unref();
+    }
+}
+
+/**
+ * Request a full grid reset from fresh on-chain state.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {string} [reason='structural change']
+ * @param {{refreshCenterPrice?: boolean}} [options={}]
+ * @returns {Promise<Object>}
+ */
+async function requestGridReset(bot, reason = 'structural change', options: { refreshCenterPrice?: boolean } = {}) {
+    if (!bot.manager || typeof bot._performGridResync !== 'function') {
+        return { skipped: true, reason: 'grid resync unavailable' };
+    }
+
+    const message = reason ? `[CR-RESET] ${reason}` : '[CR-RESET] grid reset requested';
+    bot._log(`${message}; rebuilding grid from fresh on-chain state`, 'info');
+    const resetOptions = {
+        ...options,
+        refreshCenterPrice: options.refreshCenterPrice !== false,
+    };
+
+    if (!bot.manager._fillProcessingLock || bot.manager._fillProcessingLock.isReentrant()) {
+        return performGridResync(bot, resetOptions);
+    }
+
+    return bot.manager._fillProcessingLock.acquire(async () => performGridResync(bot, resetOptions));
+}
+
+/**
+ * Wire the structural grid resync request handler on the manager.
+ * @param {import('./dexbot_class').DEXBot} bot
+ */
+function wireStructuralGridResyncRequest(bot) {
+    if (!bot.manager || bot.manager.requestStructuralGridResync) return;
+
+    bot.manager.requestStructuralGridResync = async (reason = 'structural recovery', details: { unmatchedChainOrders?: any[]; [key: string]: any } = {}) => {
+        if (bot._shuttingDown) {
+            return { skipped: true, reason: 'shutting down' };
+        }
+
+        if (bot._structuralGridResyncRunning || bot._structuralGridResyncTimer) {
+            return { skipped: true, reason: 'structural grid resync already scheduled' };
+        }
+
+        const unmatchedCount = Array.isArray(details?.unmatchedChainOrders)
+            ? details.unmatchedChainOrders.length
+            : 0;
+        bot._structuralGridResyncTimer = setTimeout(async () => {
+            bot._structuralGridResyncTimer = null;
+            if (bot._shuttingDown) return;
+
+            bot._structuralGridResyncRunning = true;
+            try {
+                const persistedResult = await bot._recoverFromPersistedGrid();
+                if (persistedResult.success) {
+                    if (bot.manager?._recoveryState) {
+                        bot.manager._recoveryState = { ...bot.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
+                    }
+                    return;
+                }
+
+                const suffix = unmatchedCount > 0 ? ` (${unmatchedCount} unmatched chain order(s))` : '';
+                    bot._warn(`[RECOVERY] Running structural full grid resync for ${reason}${suffix}`);
+                    const resetResult = await bot.requestGridReset('rms_structural_grid_resync', {
+                        refreshCenterPrice: true,
+                    });
+                if (resetResult && bot.manager?._recoveryState) {
+                    bot.manager._recoveryState = { ...bot.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
+                }
+            } catch (err: any) {
+                bot._warn(`[RECOVERY] Structural full grid resync failed: ${err.message}`);
+            } finally {
+                bot._structuralGridResyncRunning = false;
+                if (bot.manager?._recoveryState) {
+                    bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: false };
+                }
+            }
+        }, 0);
+
+        return { scheduled: true };
+    };
+}
+
+/**
+ * Get current pipeline signal state for congestion checks.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @returns {Object}
+ */
+function getPipelineSignals(bot) {
+    bot.manager?._cleanExpiredLocks?.();
+    return {
+        incomingFillQueueLength: bot._incomingFillQueue.length,
+        shadowLocks: bot.manager?.shadowOrderIds?.size || 0,
+        batchInFlight: bot._batchInFlight,
+        recoveryInFlight: bot._recoverySyncInFlight,
+        broadcasting: bot.manager?.isBroadcastingActive?.() || false
+    };
+}
+
+/**
+ * Mark that grid activity occurred (updates idle timer).
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {string} [reason='activity']
+ */
+function markGridActivity(bot, reason = 'activity') {
+    bot._lastGridActivityAt = Date.now();
+    bot.manager?.logger?.log?.(`[MAINT-IDLE] Activity observed: ${reason}`, 'debug');
+}
+
+/**
+ * Get current metrics for monitoring and debugging.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @returns {Object}
+ */
+function getMetrics(bot) {
+    bot.manager?._cleanExpiredLocks?.();
+    return {
+        ...bot._metrics,
+        queueDepth: bot._incomingFillQueue.length,
+        fillProcessingLockActive: bot.manager?._fillProcessingLock?.isLocked() || false,
+        divergenceLockActive: bot.manager?._divergenceLock?.isLocked() || false,
+        shadowLocksActive: bot.manager?.shadowOrderIds?.size || 0,
+        recoveryExhaustedAt: bot.manager?._recoveryExhaustedAt || null,
+        recentFillsTracked: bot._recentlyProcessedFills.size
+    };
+}
+
+/**
+ * Read open orders from chain, sync with local state, and process any fills found.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {string} tag - Context label for logging
+ * @returns {Promise<Object>}
+ */
+async function syncOpenOrdersAndProcessFills(bot, tag) {
+    if (!bot.accountId || bot.config?.dryRun) {
+        return { syncResult: null, aborted: false, hasUnmatched: 0, openOrders: null };
+    }
+    try {
+        let openOrders = await chainOrders.readOpenOrders(bot.accountId);
+        const syncResult = await bot.manager.synchronizeWithChain(
+            openOrders,
+            'readOpenOrders'
+        );
+        let aborted = false;
+        if (syncResult?.filledOrders?.length > 0) {
+            bot._refreshDynamicWeightDistribution(`${tag} sync-fill`);
+            bot._log(`[SYNC-CHAIN] ${syncResult.filledOrders.length} filled order(s) found during ${tag}`, 'info');
+            const batchResult = await bot._processFillsWithBatching(
+                syncResult.filledOrders,
+                new Set(),
+                `${tag} sync-fill`
+            );
+            if (!batchResult?.aborted) {
+                openOrders = await chainOrders.readOpenOrders(bot.accountId);
+                await bot.manager.synchronizeWithChain(openOrders, 'readOpenOrders');
+            } else {
+                aborted = true;
+            }
+        }
+        const hasUnmatched = syncResult?.unmatchedChainOrders?.length || 0;
+        return { syncResult, aborted, hasUnmatched, openOrders };
+    } catch (err) {
+        bot._warn(`[SYNC-CHAIN] Open-orders sync failed during ${tag}: ${err.message}`);
+        return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
+    }
+}
+
 export = {
     loadBotsConfigSnapshot,
     refreshDynamicWeightDistribution,
@@ -1903,4 +2121,12 @@ export = {
     usesAmaGridPrice,
     checkBtsBalanceAndAcquire,
     acquireBts,
+    runDustHealthCheck,
+    setupDustHealthCheckInterval,
+    requestGridReset,
+    wireStructuralGridResyncRequest,
+    getPipelineSignals,
+    markGridActivity,
+    getMetrics,
+    syncOpenOrdersAndProcessFills,
 };

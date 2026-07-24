@@ -81,6 +81,8 @@ const {
 } = require('./order/processed_fill_store');
 const DexbotFillRuntime = require('./dexbot_fill_runtime');
 const DexbotMaintenanceRuntime = require('./dexbot_maintenance_runtime');
+const DexbotStateRecovery = require('./dexbot_state_recovery');
+const DexbotStartupRuntime = require('./dexbot_startup_runtime');
 const CreditRuntime = require('./credit_runtime');
 const {
     ORDER_STATES,
@@ -368,20 +370,7 @@ class DEXBot {
      * @private
      */
     async _persistAndRecoverIfNeeded() {
-        this.manager._recentFillKeysSnapshot = this._getRecentFillKeysSnapshot();
-        const validation = await this.manager.persistGrid();
-        if (!validation.isValid) {
-            this._warn(`Startup validation failed: ${validation.reason}. Triggering immediate recovery...`);
-            // Trigger centralized recovery (Hard Reset)
-            const recoveryValidation = await this.manager.accountant._performStateRecovery(this.manager);
-            if (recoveryValidation.isValid) {
-                this._log(`✓ Startup recovery successful. Persistent state restored.`);
-                this.manager._recentFillKeysSnapshot = this._getRecentFillKeysSnapshot();
-                await this.manager.persistGrid();
-            } else {
-                this._warn(`Startup recovery failed: ${recoveryValidation.reason}. Bot proceeding with caution.`);
-            }
-        }
+        return DexbotStateRecovery.persistAndRecoverIfNeeded(this);
     }
 
     /**
@@ -392,28 +381,7 @@ class DEXBot {
      * @returns {Record<string, number>}
      */
     _getRecentFillKeysSnapshot() {
-        const snapshot = {};
-        const now = Date.now();
-        // 1. Collect live keys from the in-memory map
-        for (const [key, timestamp] of this._recentlyQueuedFills) {
-            if (now - Number(timestamp) < this._fillDedupeWindowMs) {
-                snapshot[key] = Number(timestamp);
-            }
-        }
-        // 2. Merge with the previous snapshot — carry forward any keys that
-        //    were present in a prior persist cycle, are still within the
-        //    dedup window, but have been evicted from _recentlyQueuedFills
-        //    (e.g. by TTL-based pruning between two persistGrid calls).
-        //    This prevents a crash + restart from losing keys that were
-        //    processed but not yet persisted.
-        if (this.manager?._recentFillKeysSnapshot) {
-            for (const [key, timestamp] of Object.entries(this.manager._recentFillKeysSnapshot)) {
-                if (!(key in snapshot) && now - Number(timestamp) < this._fillDedupeWindowMs) {
-                    snapshot[key] = Number(timestamp);
-                }
-            }
-        }
-        return snapshot;
+        return DexbotStateRecovery.getRecentFillKeysSnapshot(this);
     }
 
     /**
@@ -421,14 +389,7 @@ class DEXBot {
      * @returns {{incomingFillQueueLength: number, shadowLocks: number, batchInFlight: boolean, recoveryInFlight: boolean, broadcasting: boolean}}
      */
     _getPipelineSignals() {
-        this.manager?._cleanExpiredLocks?.();
-        return {
-            incomingFillQueueLength: this._incomingFillQueue.length,
-            shadowLocks: this.manager?.shadowOrderIds?.size || 0,
-            batchInFlight: this._batchInFlight,
-            recoveryInFlight: this._recoverySyncInFlight,
-            broadcasting: this.manager?.isBroadcastingActive?.() || false
-        };
+        return DexbotMaintenanceRuntime.getPipelineSignals(this);
     }
 
     /**
@@ -437,8 +398,7 @@ class DEXBot {
      * @returns {void}
      */
     _markGridActivity(reason = 'activity') {
-        this._lastGridActivityAt = Date.now();
-        this.manager?.logger?.log?.(`[MAINT-IDLE] Activity observed: ${reason}`, 'debug');
+        return DexbotMaintenanceRuntime.markGridActivity(this, reason);
     }
 
     /**
@@ -447,25 +407,7 @@ class DEXBot {
      * @returns {Promise<void>}
      */
     async _triggerStateRecoverySync(reason = 'state recovery sync') {
-        if (!this.manager) return;
-
-        if (this._recoverySyncInFlight) {
-            this.manager.logger.log(`[RECOVERY] Skipping duplicate recovery request: ${reason}`, 'warn');
-            return;
-        }
-
-        this._recoverySyncInFlight = true;
-        try {
-            this.manager.logger.log(`Triggering state recovery sync (${reason})...`, 'info');
-            await this.manager.fetchAccountTotals(this.accountId);
-            const openOrders = await chainOrders.readOpenOrders(this.accountId);
-            await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
-            if (typeof this.manager.persistGrid === 'function') {
-                await this.manager.persistGrid();
-            }
-        } finally {
-            this._recoverySyncInFlight = false;
-        }
+        return DexbotStateRecovery.triggerStateRecoverySync(this, reason);
     }
 
     /**
@@ -474,18 +416,7 @@ class DEXBot {
      * @returns {Promise<boolean>} True if flow was aborted
      */
     async _abortFlowIfIllegalState(flowContext) {
-        const illegalSignal = this.manager?.consumeIllegalStateSignal?.();
-        if (!illegalSignal) {
-            return false;
-        }
-
-        this.manager.logger.log(
-            `[HARD-ABORT] ${flowContext} aborted due to illegal state (${illegalSignal.context}): ${illegalSignal.message}`,
-            'error'
-        );
-        await this._triggerStateRecoverySync(`hard-abort ${flowContext}`);
-        this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
-        return true;
+        return DexbotStateRecovery.abortFlowIfIllegalState(this, flowContext);
     }
 
     /**
@@ -496,27 +427,7 @@ class DEXBot {
      * @returns {Promise<Object>} Abort result object
      */
     async _handleBatchHardAbort(err, phase = 'batch processing', opsCount = 0) {
-        const baseResult = { executed: false, hadRotation: false };
-        const opsInfo = opsCount > 0 ? ` with ${opsCount} ops` : '';
-
-        if (err?.code === 'ILLEGAL_ORDER_STATE') {
-            const illegalSignal = this.manager.consumeIllegalStateSignal?.();
-            await this._triggerStateRecoverySync(illegalSignal?.message || `illegal order state during ${phase}${opsInfo}`);
-            this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
-            return { ...baseResult, abortedForIllegalState: true };
-        }
-
-        if (err?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
-            const accountingSignal = this.manager.consumeAccountingFailureSignal?.();
-            const reason = accountingSignal
-                ? `accounting lock failure (${accountingSignal.side} ${Format.formatAmount8(accountingSignal.amount)}) during ${accountingSignal.context}`
-                : `accounting commitment lock failure during ${phase}${opsInfo}`;
-            await this._triggerStateRecoverySync(reason);
-            this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
-            return { ...baseResult, abortedForAccountingFailure: true };
-        }
-
-        return null;
+        return DexbotStateRecovery.handleBatchHardAbort(this, err, phase, opsCount);
     }
 
     /**
@@ -526,31 +437,7 @@ class DEXBot {
      * @returns {Promise<number>} Number of updates applied
      */
     async _applyRecoverableGridUpdates(updates, context = 'recoverable-grid-update') {
-        if (!this.manager || !Array.isArray(updates) || updates.length === 0) {
-            return 0;
-        }
-
-        let applied;
-        if (typeof this.manager.applyGridUpdateBatch === 'function') {
-            await this.manager.applyGridUpdateBatch(updates, context);
-            applied = updates.length;
-        } else {
-            applied = 0;
-            for (const update of updates) {
-                if (typeof this.manager._updateOrder !== 'function') break;
-                await this.manager._updateOrder(update, context);
-                applied++;
-            }
-        }
-
-        // Persist master grid mutations applied outside COW (stale-order
-        // virtualization, size-drift corrections). These run in the COW catch
-        // handler where the success-path persistGrid is never reached.
-        if (applied > 0 && typeof this.manager.persistGrid === 'function') {
-            await this.manager.persistGrid();
-        }
-
-        return applied;
+        return DexbotStateRecovery.applyRecoverableGridUpdates(this, updates, context);
     }
 
     /**
@@ -560,46 +447,7 @@ class DEXBot {
      * @returns {Promise<{executed: boolean, hadRotation: boolean, stale: boolean, recoveredByVirtualization?: boolean}>}
      */
     async _recoverExplicitStaleOrders(staleOrderIds, reason = 'stale order cleanup') {
-        const staleIds = Array.from(staleOrderIds || []).filter(Boolean) as string[];
-        if (staleIds.length === 0) {
-            return { executed: false, hadRotation: false, stale: false };
-        }
-
-        this.manager.logger.log(
-            `[COW] Stale order(s) detected: ${staleIds.join(', ')}. Applying targeted cleanup.`,
-            'warn'
-        );
-
-        const updates = [];
-
-        for (const [, gridOrder] of this.manager.orders.entries()) {
-            if (!gridOrder?.orderId || !staleOrderIds.has(gridOrder.orderId)) continue;
-            this._staleCleanedOrderIds.set(gridOrder.orderId, Date.now());
-            updates.push({ ...virtualizeOrder(gridOrder), size: 0 });
-        }
-
-        // Register any stale IDs that had no matching grid slot
-        for (const orderId of staleIds) {
-            if (!this._staleCleanedOrderIds.has(orderId)) {
-                this._staleCleanedOrderIds.set(orderId, Date.now());
-            }
-        }
-
-        if (updates.length > 0) {
-            await this._applyRecoverableGridUpdates(updates, reason);
-        } else {
-            this.manager.logger.log(
-                `[COW] No local grid slot matched stale order cleanup request (${staleIds.join(', ')}).`,
-                'debug'
-            );
-        }
-
-        return {
-            executed: false,
-            hadRotation: false,
-            stale: true,
-            recoveredByVirtualization: updates.length > 0
-        };
+        return DexbotStateRecovery.recoverExplicitStaleOrders(this, staleOrderIds, reason);
     }
 
     /**
@@ -608,42 +456,7 @@ class DEXBot {
      * @returns {Promise<{executed: boolean, hadRotation: boolean, recoveredBySync: boolean, reason: string}>}
      */
     async _recoverBatchSizeDrift(err, opContexts = []) {
-        // Try a targeted fix first: extract the affected order IDs from the
-        // operation contexts and correct them directly from chain.  This
-        // avoids a full state recovery sync in the common single-order case.
-        const affectedOrderIds = this._extractSizeDriftOrderIds(opContexts);
-        if (affectedOrderIds.length > 0) {
-            this.manager.logger.log(
-                `[COW] Targeted size-drift repair for ${affectedOrderIds.length} order(s): ${affectedOrderIds.join(', ')}`,
-                'debug'
-            );
-            const repaired = await this._targetedOrderRepair(affectedOrderIds);
-            if (repaired) {
-                return {
-                    executed: false,
-                    hadRotation: false,
-                    recoveredBySync: true,
-                    reason: 'ORDER_SIZE_DRIFT_TARGETED'
-                };
-            }
-            this.manager.logger.log(
-                '[COW] Targeted repair failed, falling back to full state recovery sync.',
-                'warn'
-            );
-        }
-
-        const reason = `recoverable size drift during COW batch: ${err.message}`;
-        this.manager.logger.log(
-            `[COW] Recovering from on-chain size drift via recovery sync: ${err.message}`,
-            'warn'
-        );
-        await this._triggerStateRecoverySync(reason);
-        return {
-            executed: false,
-            hadRotation: false,
-            recoveredBySync: true,
-            reason: 'ORDER_SIZE_DRIFT'
-        };
+        return DexbotStateRecovery.recoverBatchSizeDrift(this, err, opContexts);
     }
 
     /**
@@ -653,16 +466,7 @@ class DEXBot {
      * @returns {string[]} Unique chain order IDs
      */
     _extractSizeDriftOrderIds(opContexts) {
-        if (!Array.isArray(opContexts)) return [];
-        const ids = new Set();
-        for (const ctx of opContexts) {
-            if (ctx?.kind === 'size-update' && ctx?.updateInfo?.partialOrder?.orderId) {
-                ids.add(ctx.updateInfo.partialOrder.orderId);
-            } else if (ctx?.kind === 'rotation' && ctx?.rotation?.oldOrder?.orderId) {
-                ids.add(ctx.rotation.oldOrder.orderId);
-            }
-        }
-        return Array.from(ids);
+        return DexbotStateRecovery.extractSizeDriftOrderIds(opContexts);
     }
 
     /**
@@ -676,111 +480,7 @@ class DEXBot {
      * @returns {Promise<{success: boolean, reason?: string}>}
      */
     async _recoverFromPersistedGrid() {
-        if (!this.accountOrders || !this.manager) {
-            return { success: false, reason: 'accountOrders or manager unavailable' };
-        }
-
-        const accountRef = this.accountId || this.account?.id || this.account;
-        if (!accountRef) {
-            return { success: false, reason: 'no account reference' };
-        }
-
-        this.manager.logger.log('[RECOVERY] Attempting full grid reload from persisted snapshot...', 'warn');
-
-        try {
-            // 1. Force reload from disk
-            const persistedGrid = this.accountOrders.loadGrid(true);
-            if (!persistedGrid || persistedGrid.length === 0) {
-                return { success: false, reason: 'no persisted grid on disk' };
-            }
-
-            const boundaryIdx = this.accountOrders.loadBoundaryIdx(true);
-
-            // 2. Load into manager (same path as startup at line 1340)
-            await Grid.loadGrid(this.manager, persistedGrid, boundaryIdx);
-
-            // Gap 1: Grid snapshot sanity check — shared logic with startup path.
-            if (await this._rejectCorruptedGridSnapshot('recovery')) {
-                return { success: false, reason: 'corrupted grid snapshot rejected (fund drift)' };
-            }
-
-            // 3. Read current chain state
-            const chainOpenOrders = await chainOrders.readOpenOrders(accountRef);
-
-            // 4. Reconcile
-            if (chainOpenOrders.length > 0 && this.manager?.syncFromOpenOrders) {
-                    await this.manager.syncFromOpenOrders(chainOpenOrders, {
-                        skipAccounting: true,
-                    });
-            }
-
-            // 5. Persist the reconciled state
-            if (typeof this.manager.persistGrid === 'function') {
-                await this.manager.persistGrid();
-            }
-
-            const assets = this.manager?.assets;
-            const matchedCount = assets
-                ? chainOpenOrders.filter(o => parseChainOrder(o, assets) !== null).length
-                : chainOpenOrders.length;
-            this.manager.logger.log(
-                `[RECOVERY] Grid reloaded from persisted snapshot: ${this.manager.orders.size} orders, ` +
-                `${matchedCount} on-chain orders synced`,
-                'info'
-            );
-
-            // Gap 2: Check for unmatched chain orders after reload + sync.
-            // If the sync resolved all unmatched entries, _lastUnmatchedChainOrders
-            // was cleared by the sync engine. If any remain, the persisted snapshot
-            // produced an inconsistent grid — reject so the structural resync
-            // falls through to requestGridReset (full rebuild from chain).
-            const remainingUnmatched = Array.isArray(this.manager?._lastUnmatchedChainOrders)
-                ? this.manager._lastUnmatchedChainOrders
-                : [];
-            if (remainingUnmatched.length > 0) {
-                const sample = remainingUnmatched.slice(0, 3)
-                    .map(o => this._formatUnmatchedChainOrderForLog(o))
-                    .join(' | ');
-                this.manager.logger.log(
-                    `[RECOVERY] Persisted grid reloaded but ${remainingUnmatched.length} unmatched chain order(s) ` +
-                    `remain${sample ? ` (${sample})` : ''}. Rejecting — full grid reset required.`,
-                    'warn'
-                );
-                return { success: false, reason: `grid inconsistent after reload: ${remainingUnmatched.length} unmatched remain` };
-            }
-
-            // If the reloaded grid is still bloated, reject recovery so the
-            // caller falls through to a full grid reset (requestGridReset).
-            // Without this check, a bloated snapshot gets accepted as "success"
-            // and the structural-resync loop loads the same broken state forever.
-            //
-            // NOTE: loadGrid() already fires requestStructuralGridResync when it
-            // detects bloat internally, so the inner async resync may be in flight
-            // by the time this outer check runs. That's fine — the structural-resync
-            // gate (_structuralGridResyncRunning / _structuralGridResyncTimer) dedup's
-            // concurrent requests. This outer check exists so the synchronous return
-            // value is honest about the state; the inner resync is a safety net.
-            const { isGridBloated } = require('./order/grid');
-            const ordersArr = Array.from(this.manager.orders.values());
-            const bloatPostRecovery = isGridBloated(this.manager, ordersArr);
-            if (bloatPostRecovery.bloated) {
-                const d = bloatPostRecovery.details;
-                this.manager.logger.log(
-                    `[RECOVERY] Persisted grid reloaded but still bloated ` +
-                    `(${d.gridSize} slots, max ${d.maxAllowed}). Rejecting — full grid reset required.`,
-                    'warn'
-                );
-                return { success: false, reason: 'grid still bloated after reload' };
-            }
-
-            return { success: true };
-        } catch (err: any) {
-            this.manager.logger.log(
-                `[RECOVERY] Full grid reload from persisted snapshot failed: ${err.message}`,
-                'error'
-            );
-            return { success: false, reason: err.message };
-        }
+        return DexbotStateRecovery.recoverFromPersistedGrid(this);
     }
 
     /**
@@ -792,25 +492,7 @@ class DEXBot {
      * @returns {Promise<boolean>} True if the snapshot was rejected (cleared).
      */
     async _rejectCorruptedGridSnapshot(context) {
-        if (!this.manager?.checkFundDriftAfterFills) return false;
-        const driftCheck = this.manager.checkFundDriftAfterFills();
-        if (driftCheck.isValid) return false;
-
-        const tag = context === 'recovery' ? '[RECOVERY][SNAPSHOT-REJECT]' : '[SNAPSHOT-REJECT]';
-        this._warn(
-            `${tag} Corrupted grid snapshot detected: ` +
-            `drift sell=${driftCheck.driftSell.toFixed(2)} buy=${driftCheck.driftBuy.toFixed(2)}. ` +
-            `Deleting corrupted snapshot.`
-        );
-        if (this.accountOrders && typeof this.accountOrders.clearGrid === 'function') {
-            try {
-                await this.accountOrders.clearGrid();
-                this._warn(`${tag} Corrupted grid snapshot deleted.`);
-            } catch (clearErr) {
-                this._warn(`${tag} Failed to delete corrupted snapshot: ${clearErr.message}`);
-            }
-        }
-        return true;
+        return DexbotStateRecovery.rejectCorruptedGridSnapshot(this, context);
     }
 
     /**
@@ -821,50 +503,7 @@ class DEXBot {
      * @returns {Promise<boolean>} True if all affected orders were repaired
      */
     async _targetedOrderRepair(orderIds) {
-        try {
-            const objects = await BitShares.db.get_objects(orderIds);
-            if (!Array.isArray(objects) || objects.length !== orderIds.length) return false;
-
-            const updates = [];
-            for (let i = 0; i < orderIds.length; i++) {
-                const chainOrder = objects[i];
-                const gridOrder = (Array.from(this.manager.orders.values()) as any[])
-                    .find((o: any) => o.orderId === orderIds[i]);
-                if (!gridOrder) continue;
-
-                if (!chainOrder || typeof chainOrder.for_sale === 'undefined') {
-                    // Order no longer exists on chain -> fully filled or cancelled.
-                    updates.push({ ...virtualizeOrder(gridOrder), size: 0 });
-                } else {
-                    const chainUnits = Number(chainOrder.for_sale);
-                    if (Number.isFinite(chainUnits)) {
-                        const { blockchainToFloat } = require('./order/utils/math');
-                        const prec = gridOrder.type === ORDER_TYPES.SELL
-                            ? this.manager.assets.assetA.precision
-                            : this.manager.assets.assetB.precision;
-                        const floatSize = blockchainToFloat(chainUnits, prec);
-                        if (floatSize !== gridOrder.size) {
-                            updates.push({
-                                id: gridOrder.id,
-                                size: floatSize,
-                                rawOnChain: chainOrder,
-                            });
-                        }
-                    }
-                }
-            }
-
-            if (updates.length > 0) {
-                await this._applyRecoverableGridUpdates(updates, 'targeted-size-drift-repair');
-            }
-            return true;
-        } catch (err) {
-            this.manager.logger.log(
-                `[COW] Targeted order repair failed: ${err.message}`,
-                'debug'
-            );
-            return false;
-        }
+        return DexbotStateRecovery.targetedOrderRepair(this, orderIds);
     }
 
     /**
@@ -874,97 +513,7 @@ class DEXBot {
      * @private
      */
     async _initializeStartupState() {
-        // Create AccountOrders with bot-specific file (one file per bot)
-        this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
-        this._processedFillStore.configure({
-            accountOrders: this.accountOrders
-        });
-
-        // Load persisted processed fills to prevent reprocessing after restart
-        const loadedPersistedFills = this._processedFillStore.loadPersisted({
-            minTimestamp: Date.now() - this._fillRecordRetentionMs
-        });
-        if (loadedPersistedFills > 0) {
-            this._log(`Loaded ${loadedPersistedFills} persisted fill records to prevent reprocessing`);
-        }
-
-        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
-        const raw = storage.readFile(PROFILES_BOTS_FILE);
-        const allBotsConfig = parseJsonWithComments(raw).bots || [];
-        const myBotConfig = allBotsConfig
-            .map((b, originalIdx) => b.active !== false ? normalizeBotEntry(b, originalIdx) : null)
-            .find(b => b && b.botKey === this.config.botKey);
-
-        if (myBotConfig) {
-            await this.accountOrders.syncMeta(myBotConfig);
-        }
-
-        if (!this.manager) {
-            const mgrLogFile = this.config?.name ? path.join(PATHS.LOGS_DIR, `${this.config.name}.log`) : undefined;
-            this.manager = new OrderManager({ ...this.config, logFile: mgrLogFile });
-            this.manager.account = this.account;
-            this.manager.accountId = this.accountId;
-            this.manager.accountOrders = this.accountOrders;
-        }
-        this._wireStructuralGridResyncRequest();
-        this._wireProcessedFillTracking();
-        this.manager.startBootstrap();
-        try {
-            // Fetch account totals from blockchain at startup to initialize funds
-            try {
-                if (this.accountId && this.config.assetA && this.config.assetB) {
-                    await this.manager._initializeAssets();
-                    await this.manager.fetchAccountTotals(this.accountId);
-                    this._log('Fetched blockchain account balances at startup');
-                }
-            } catch (err: any) {
-                this._log(`Startup balance fetch FAILED: ${err.message}. Order sizing may be incorrect until next successful sync.`, 'error');
-            }
-
-            // Ensure fee cache is initialized before any fill processing that calls getAssetFees().
-            try {
-                await initializeFeeCache([this.config || {}], BitShares);
-            } catch (err: any) {
-                this._log(`Fee cache initialization FAILED: ${err.message}. Fee calculations will use defaults until cache is refreshed.`, 'error');
-            }
-
-            const persistedGrid = this.accountOrders.loadGrid();
-
-            // CRITICAL REPAIR: Strip fake orderIds where orderId === id (e.g. "slot-0")
-            let repairedGrid = persistedGrid;
-            if (persistedGrid && persistedGrid.length > 0) {
-                let repairCount = 0;
-                repairedGrid = persistedGrid.map(order => {
-                    if (order && order.orderId && order.orderId === order.id) {
-                        repairCount++;
-                        const repairedOrder = { ...order, orderId: '' };
-                        if (repairedOrder.state === ORDER_STATES.ACTIVE || repairedOrder.state === ORDER_STATES.PARTIAL) {
-                            repairedOrder.state = ORDER_STATES.VIRTUAL;
-                        }
-                        return repairedOrder;
-                    }
-                    return order;
-                });
-                if (repairCount > 0) {
-                    this._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
-                }
-            }
-
-            const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed();
-            const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx();
-            const persistedBtsBalance = this.accountOrders.loadBtsBalance();
-            const persistedRecentFillKeys = this.accountOrders.loadRecentFillKeys();
-
-            return {
-                persistedGrid: repairedGrid,
-                persistedBtsFeesOwed,
-                persistedBoundaryIdx,
-                persistedBtsBalance,
-                persistedRecentFillKeys,
-            };
-        } finally {
-            this.manager.finishBootstrap();
-        }
+        return DexbotStartupRuntime.initializeStartupState(this);
     }
 
     /**
@@ -1163,519 +712,7 @@ class DEXBot {
      * @private
      */
     async _finishStartupSequence(startupState) {
-        let {
-            persistedGrid,
-            persistedBtsFeesOwed,
-            persistedBoundaryIdx,
-            persistedBtsBalance,
-            persistedRecentFillKeys,
-        } = startupState;
-
-        try {
-            // CRITICAL: Activate fill listener EARLY - before ANY operations that place orders
-            // This ensures fills during trigger reset and grid initialization are captured
-            if (typeof this._fillsUnsubscribe === 'function') {
-                await this._fillsUnsubscribe().catch(() => { });
-            }
-            this._fillsUnsubscribe = await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
-            if (typeof this._fillsUnsubscribe !== 'function') {
-                this._warn('Fill listener did not provide an unsubscribe handler. Shutdown cleanup may be incomplete.');
-                this._fillsUnsubscribe = null;
-            }
-            this._log('Fill listener activated (ready to process fills during startup)');
-
-            // Register reconnection callback for safety-net sync after websocket reconnect
-            if (!this._reconnectUnregister) {
-                this._reconnectUnregister = registerReconnectHook(() => {
-                    this._log('Blockchain connection re-established; scheduling safety-net sync');
-                    const runSafetyNetSync = async () => {
-                        if (this.manager && this.accountId && !this._shuttingDown && !this.config.dryRun) {
-                            // Cap the entire safety-net sync at TIMING.SAFETY_NET_SYNC_TIMEOUT_MS so it can
-                            // never hold _fillProcessingLock longer than the
-                            // 20s shutdown lock timeout. readOpenOrders +
-                            // synchronizeWithChain + batch + persist can be
-                            // ~45s worst case without a cap, which would
-                            // stall shutdown until the 20s timeout fires.
-                            const safetyNetTimeoutMs = this.config.timing?.SAFETY_NET_SYNC_TIMEOUT_MS;
-                            let safetyNetTimer;
-                            const workPromise = this.manager._fillProcessingLock.acquire(async () => {
-                                if (this._shuttingDown) return;
-                                const chainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
-                                if (this._shuttingDown) return;
-                                const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-                                if (this._shuttingDown) return;
-                                if (syncResult?.filledOrders?.length > 0) {
-                                    this._refreshDynamicWeightDistribution('post-reconnect sync fill');
-                                    this._log(`Post-reconnect sync: ${syncResult.filledOrders.length} grid order(s) found filled.`, 'info');
-                                    await this._processFillsWithBatching(syncResult.filledOrders, new Set(), 'post-reconnect sync fill');
-                                    if (this._shuttingDown) return;
-                                }
-                                this.manager._recentFillKeysSnapshot = this._getRecentFillKeysSnapshot();
-                                await this.manager.persistGrid();
-
-                                // Cancel any dust created by reconnect fills immediately.
-                                if (!this._shuttingDown) {
-                                    try {
-                                        const reconnectHealth = await this.manager.checkGridHealth(
-                                            this.updateOrdersOnChainPlan.bind(this)
-                                        );
-                                        await this._cancelDustOrders({
-                                            buy: reconnectHealth.buyDustOrders,
-                                            sell: reconnectHealth.sellDustOrders,
-                                        });
-                                    } catch (_dustErr: any) {
-                                        this._warn(`[RECONNECT] Dust cancel failed: ${_dustErr.message}`);
-                                    }
-                                }
-                            });
-                            try {
-                                await Promise.race([
-                                    workPromise,
-                                    new Promise((_, reject) => {
-                                        safetyNetTimer = setTimeout(
-                                            () => reject(new Error(`Safety-net sync exceeded ${safetyNetTimeoutMs}ms cap`)),
-                                            safetyNetTimeoutMs
-                                        );
-                                    })
-                                ]);
-                            } catch (capErr: any) {
-                                const fallback = await Promise.race([
-                                    workPromise.then(() => ({ ok: true as const })),
-                                    new Promise<{ ok: false }>(resolve => setTimeout(() => resolve({ ok: false }), 0))
-                                ]);
-                                if (fallback.ok) {
-                                    this._log(`Safety-net sync completed despite timeout — ignoring spurious error.`, 'info');
-                                } else {
-                                    this._warn(`Post-reconnect safety-net sync aborted: ${capErr?.message || capErr}`);
-                                }
-                            } finally {
-                                if (safetyNetTimer) clearTimeout(safetyNetTimer);
-                            }
-                        }
-                    };
-                    // The setImmediate callback returns a Promise; we MUST attach
-                    // a .catch so a rejection here does not propagate to
-                    // process.on('unhandledRejection') and tear down the bot.
-                    setImmediate(() => {
-                        runSafetyNetSync().catch(err => {
-                            try {
-                                this._warn('Post-reconnect safety-net sync failed: ' + (err?.message || err));
-                            } catch (_warnErr: any) {
-                                // _warn itself inaccessible — last line of defense.
-                            }
-                        });
-                    });
-                });
-            }
-
-            // CRITICAL: Handle any pending trigger file reset FIRST before any other startup operations
-            const hadTriggerReset = await this._handlePendingTriggerReset();
-
-            // CRITICAL: After trigger reset, skip normal startup - grid is already fully initialized
-            // The trigger reset already did: grid init, order placement, sync, and persistence
-            if (hadTriggerReset) {
-                this._log('Trigger reset completed. Skipping normal startup grid initialization.');
-
-                // Post-bootstrap validation and fill processing
-                await this.manager._fillProcessingLock.acquire(async () => {
-                    // STEP 1: Check for fills that occurred during trigger reset
-                    // These are orders that got filled while Grid.recalculateGrid() was running.
-                    // The filled slots need new orders placed on them.
-                    if (this._incomingFillQueue.length > 0) {
-                        this._log(`[POST-RESET] ${this._incomingFillQueue.length} fill(s) detected during trigger reset. Processing...`);
-
-                        // Process fills - this will place new orders on the filled slots
-                        // Use normal fill processing since bootstrap is complete
-                        const fills = this._incomingFillQueue.splice(0);
-                        const processedFillKeys = new Set();
-                        let requiresOpenOrdersSync = false;
-
-                        for (const fill of fills) {
-                            if (!fill || fill.op?.[0] !== 4) continue;
-
-                            const fillOp = fill.op[1];
-                            const gridOrder = this.manager.orders.get(fillOp.order_id) ||
-                                (Array.from(this.manager.orders.values()) as any[]).find((o: any) => o.orderId === fillOp.order_id);
-
-                            if (!gridOrder) {
-                                // CRITICAL FIX: Even if order not in grid, we must still credit the fill proceeds
-                                // This can happen when fills arrive after an order was marked VIRTUAL during sequential processing
-
-                                let orphanFillKey = buildFillKey(fill);
-                                if (!orphanFillKey) {
-                                    orphanFillKey = this._buildOrphanFillFallbackKey(fill);
-                                }
-                                if (orphanFillKey && !this._isNewFillKey(orphanFillKey, processedFillKeys, '[POST-RESET]', fillOp.order_id)) {
-                                    continue;
-                                }
-
-                                 this._log(`[POST-RESET] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
-                                 const accountingResult = await this._applyReplaySafeOrphanFillAccounting(fill, fillOp, {
-                                     context: 'POST-RESET',
-                                     logger: { log: this._log.bind(this) },
-                                     replayMessage: (op) => `[POST-RESET] Replay detected for orphan fill ${op.order_id}; skipping duplicate credit`
-                                 });
-                                 if (accountingResult.status === 'missing_key') {
-                                     requiresOpenOrdersSync = true;
-                                 }
-                                continue;
-                            }
-
-                            this._log(`[POST-RESET] Processing fill for ${gridOrder.type} order ${gridOrder.id} at price ${gridOrder.price}`);
-
-                            const trackedFillKey = buildFillKey(fill);
-                            if (trackedFillKey && !this._isNewFillKey(trackedFillKey, processedFillKeys, '[POST-RESET]', fillOp.order_id)) {
-                                continue;
-                            }
-
-                            this.manager.lockOrders([gridOrder.id]);
-                            try {
-                             const accountingResult = await this._applyReplaySafeTrackedFillAccounting(fill, fillOp, {
-                                 context: 'POST-RESET',
-                                 logger: { log: this._log.bind(this) },
-                                 replayMessage: (op) => `[POST-RESET] Replay detected for ${op.order_id}; skipping duplicate rebalance`
-                             });
-                             if (accountingResult.status === 'missing_key') {
-                                 requiresOpenOrdersSync = true;
-                                 continue;
-                             }
-                             if (accountingResult.status !== 'applied') {
-                                 continue;
-                             }
-                            // Process this fill through the full rebalance pipeline
-                            // This will shift the boundary and place a new order on the filled slot
-                            const result = await this._processFillsWithBatching([gridOrder], new Set(), `[POST-RESET] fill ${gridOrder.id}`);
-                            if (result.aborted) {
-                                this._warn('[POST-RESET] Aborted batch due to illegal state; skipping grid persistence this cycle');
-                                continue;
-                            }
-                            } finally {
-                                this.manager.unlockOrders([gridOrder.id]);
-                            }
-                        }
-
-                        if (requiresOpenOrdersSync) {
-                            this._log('[POST-RESET] Falling back to open-orders sync for fill(s) missing replay-safe history identifiers', 'warn');
-                            const postResetChainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
-                            const syncResult = await this.manager.syncFromOpenOrders(postResetChainOpenOrders);
-                            if (syncResult.filledOrders?.length > 0) {
-                                await this._processFillsWithBatching(syncResult.filledOrders, new Set(), '[POST-RESET] open-orders fallback');
-                            }
-                        }
-
-                        await this._flushProcessedFillPersistence('post-reset-batch');
-
-                        this.manager._recentFillKeysSnapshot = this._getRecentFillKeysSnapshot();
-                        await this.manager.persistGrid();
-                    }
-
-                    // STEP 2: Refresh chain truth before spread correction. Trigger
-                    // reset can create/cancel orders and fills can arrive while the
-                    // reset is running; spread decisions must not use stale local grid.
-                    const { aborted: postResetAborted, hasUnmatched: postResetUnmatched } =
-                        await this._syncOpenOrdersAndProcessFills('[POST-RESET] pre-spread');
-
-                    if (postResetUnmatched) {
-                        this._warn(`[POST-RESET] Skipping spread correction: ${postResetUnmatched} unmatched chain order(s) require maintenance reconciliation`);
-                    }
-
-                    // STEP 3: Spread check AFTER fills are processed and chain truth refreshed
-                    await this.manager.recalculateFunds();
-                    if (!postResetAborted && !postResetUnmatched) {
-                        const spreadResult = await this.manager.checkSpreadCondition(
-                            BitShares,
-                            this.updateOrdersOnChainPlan.bind(this)
-                        );
-                        if (spreadResult && spreadResult.ordersPlaced > 0) {
-                            this._log(`✓ Spread correction after trigger reset: ${spreadResult.ordersPlaced} order(s) placed`);
-                            await this._persistAndRecoverIfNeeded();
-                        }
-
-                    }
-
-                    // Cancel any dust created by post-reset fills immediately.
-                    if (!this._shuttingDown) {
-                        try {
-                            const postResetHealth = await this.manager.checkGridHealth(
-                                this.updateOrdersOnChainPlan.bind(this)
-                            );
-                            await this._cancelDustOrders({
-                                buy: postResetHealth.buyDustOrders,
-                                sell: postResetHealth.sellDustOrders,
-                            });
-                        } catch (_dustErr: any) {
-                            this._warn(`[POST-RESET] Dust cancel failed: ${_dustErr.message}`);
-                        }
-                    }
-                    this._log('Bootstrap phase complete - fill processing resumed', 'info');
-                });
-
-                await this._setupTriggerFileDetection();
-                await this._setupCreditRuntime();
-                await this._refreshAndSyncCreditRuntime();
-                this._setupBlockchainFetchInterval();
-                this._setupCreditWatchdogInterval();
-                this._setupCredentialDaemonWatchdogInterval();
-                this._setupDustHealthCheckInterval();
-                await this._runDustHealthCheck();
-                this._log('[DUST] Startup health check complete');
-
-                if (this._isOpenOrdersSyncLoopEnabled()) {
-                    this._startOpenOrdersSyncLoop();
-                } else {
-                    this._log('Open-orders sync loop disabled by configuration (TIMING.OPEN_ORDERS_SYNC_LOOP_ENABLED=false)');
-                }
-                this._log(`DEXBot started. OrderManager running (dryRun=${!!this.config.dryRun})`);
-                return; // Skip normal startup path
-            }
-
-            // Restore persisted BTS fee
-            // SAFE: Done at startup before orders are created, and within fill lock when needed
-            this.manager.resetFunds();
-            // CRITICAL FIX: Restore BTS fees owed from persistence
-            if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
-                this.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
-            }
-            // Restore BTS balance for non-BTS pairs
-            if (this.config.assetA !== 'BTS' && this.config.assetB !== 'BTS') {
-                if (persistedBtsBalance && typeof persistedBtsBalance === 'object') {
-                    this.manager.btsBalance = {
-                        free: persistedBtsBalance.free || 0,
-                        total: persistedBtsBalance.total || 0,
-                        locked: persistedBtsBalance.locked || 0
-                    };
-                }
-            }
-
-            // Restore recently queued fill keys for crash-durable dedup window.
-            // All persisted keys are restored; the in-memory TTL (_fillDedupeWindowMs)
-            // will naturally evict any that are already expired on the next fill cycle.
-            if (persistedRecentFillKeys && typeof persistedRecentFillKeys === 'object') {
-                for (const [fillKey, timestamp] of Object.entries(persistedRecentFillKeys)) {
-                    this._recentlyQueuedFills.set(fillKey, Number(timestamp));
-                }
-                this._log(`Restored ${Object.keys(persistedRecentFillKeys).length} recently queued fill key(s) from persisted snapshot`, 'debug');
-            }
-
-            if (!this.config.dryRun && !this.accountId) {
-                throw new Error('Cannot start bot without a resolved account ID');
-            }
-
-            // Use this.accountId which was set during initialize()
-            const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
-
-            let shouldRegenerate = false;
-            if (!persistedGrid || persistedGrid.length === 0) {
-                shouldRegenerate = true;
-                this._log('No persisted grid found. Generating new grid.');
-            } else {
-                await this.manager._initializeAssets();
-                const decision = await decideStartupGridAction({
-                    persistedGrid,
-                    chainOpenOrders,
-                    manager: this.manager,
-                    logger: { log: (msg) => this._log(msg) },
-                    storeGrid: async (orders) => {
-                        // Pass the snapshot directly to persistGrid so the live
-                        // `manager.orders` map is not briefly swapped (which would
-                        // leave the _ordersByState/_ordersByType indexes inconsistent
-                        // with the map for the duration of the persist call).
-                        await this.manager.persistGrid(orders);
-                    },
-                    attemptResumeFn: attemptResumePersistedGridByPriceMatch,
-                });
-                shouldRegenerate = decision.shouldRegenerate;
-
-                if (shouldRegenerate && chainOpenOrders.length === 0) {
-                    this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
-                }
-
-                // Also log when regeneration is needed but other pairs' orders
-                // suppress the "no matching orders" message above.
-                if (shouldRegenerate && chainOpenOrders.length > 0 && this.manager?.assets) {
-                    const orderCount = chainOpenOrders.filter(
-                        o => parseChainOrder(o, this.manager.assets) !== null
-                    ).length;
-                    if (orderCount === 0) {
-                        this._log(`Persisted grid found with no matching orders (${chainOpenOrders.length} other-pair order(s) on account). Generating new grid.`);
-                    }
-                }
-            }
-
-            // Restore BTS fees owed ONLY if we're NOT regenerating the grid
-            if (!shouldRegenerate) {
-                // CRITICAL: Restore BTS fees owed from blockchain operations
-                if (persistedBtsFeesOwed > 0) {
-                    this.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
-                    this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
-                }
-            } else {
-                this._log(`ℹ Grid regenerating - resetting BTS fees to clean state`);
-                this.manager.funds.btsFeesOwed = 0;
-            }
-
-            // CRITICAL: Use fill lock during ENTIRE startup synchronization to prevent races.
-            // This includes grid init, finishBootstrap, and maintenance - all in one atomic block.
-            // Lock order: _fillProcessingLock → _divergenceLock (canonical order, same as _consumeFillQueue)
-            await this.manager._fillProcessingLock.acquire(async () => {
-                try {
-
-                    this._refreshDynamicWeightDistribution('startup');
-                    if (shouldRegenerate) {
-                        await this.manager._initializeAssets();
-
-                        if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
-                            this._log('Generating new grid and syncing with existing on-chain orders...');
-                            await Grid.initializeGrid(this.manager);
-                            await this.manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true });
-                            const rebalanceResult = await reconcileGridOrders({
-                                manager: this.manager,
-                                config: this.config,
-                                account: this.account,
-                                privateKey: this.privateKey,
-                                chainOrders,
-                                chainOpenOrders,
-                            });
-
-                            await this._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (regenerated grid)');
-                        } else {
-                            this._log('Generating new grid and placing initial orders on-chain...');
-                            await this.placeInitialOrders();
-                        }
-                        await this._persistAndRecoverIfNeeded();
-                    } else {
-                        this._log('Found active session. Loading and syncing existing grid.');
-                        await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
-                        let startupChainOpenOrders = chainOpenOrders;
-                        const syncResult = await this.manager.syncFromOpenOrders(startupChainOpenOrders, { skipAccounting: true });
-
-                        // Process price corrections queued during startup sync.
-                        // These are not picked up by _consumeFillQueue until a fill
-                        // arrives, which may never come for an idle market.
-                        if (syncResult.ordersNeedingCorrection?.length > 0) {
-                            await correctAllPriceMismatches(
-                                this.manager, this.account, this.privateKey, chainOrders
-                            );
-                        }
-
-                        if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
-                            this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
-                            const batchResult = await this._processFillsWithBatching(
-                                syncResult.filledOrders, new Set(), 'startup sync fill rebalance',
-                                { skipAccountTotalsUpdate: true }
-                            );
-
-                            if (!batchResult?.aborted) {
-                                // Refresh open orders so startup reconcile works with post-batch chain reality
-                                // and avoids reconciling against a stale pre-batch snapshot.
-                                startupChainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
-                                await this.manager.synchronizeWithChain(startupChainOpenOrders, 'readOpenOrders');
-                            }
-                        }
-
-                        const rebalanceResult = await reconcileGridOrders({
-                            manager: this.manager,
-                            config: this.config,
-                            account: this.account,
-                            privateKey: this.privateKey,
-                            chainOrders,
-                            chainOpenOrders: startupChainOpenOrders,
-                        });
-
-                        await this._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (loaded grid)');
-
-                        // Dust state is no longer persisted — cancelled immediately on detection.
-
-                        await this._persistAndRecoverIfNeeded();
-
-                        // Gap 1: Grid snapshot sanity check — shared logic with recovery path.
-                        await this._rejectCorruptedGridSnapshot('startup');
-                    }
-
-                    // Drain any fills that arrived during startup while still in bootstrap
-                    // mode. Safe to call directly since we already hold _fillProcessingLock
-                    // and _processFillsWithBootstrapMode does NOT re-acquire it.
-                    if (this._incomingFillQueue.length > 0) {
-                        this._log(`[STARTUP] Processing ${this._incomingFillQueue.length} queued fill(s) before bootstrap ends`);
-                        await this._processFillsWithBootstrapMode(chainOrders);
-                    }
-
-                    this.manager.finishBootstrap();
-
-                    // Refresh account totals after bootstrap to eliminate the timing
-                    // gap between the initial balance fetch and grid operations (sync,
-                    // reconcile, fills). Without this, the first maintenance cycle sees
-                    // a fund drift (expected at bootstrap) and triggers an unnecessary
-                    // invariant violation + full recovery cycle.
-                    // Bound by a timeout to avoid blocking _fillProcessingLock on a
-                    // flaky node. If the fetch times out, continue with cached values;
-                    // the next periodic maintenance cycle will retry.
-                    const FETCH_TIMEOUT_MS = 30000;
-                    let _fetchTimeoutHandle: NodeJS.Timeout;
-                    try {
-                        await Promise.race([
-                            this.manager.fetchAccountTotals(),
-                            new Promise((_, reject) => {
-                                _fetchTimeoutHandle = setTimeout(() => reject(new Error('timeout')), FETCH_TIMEOUT_MS);
-                            })
-                        ]);
-                    } catch (fetchErr: any) {
-                        this._log(
-                            `[STARTUP] [${this.config?.botKey || 'unknown'}] fetchAccountTotals ${fetchErr.message === 'timeout' ? 'timed out' : 'failed'} (${fetchErr.message}). Continuing with cached account totals.`,
-                            'warn'
-                        );
-                    } finally {
-                        clearTimeout(_fetchTimeoutHandle!);
-                    }
-
-                    // Perform initial grid maintenance (thresholds, divergence, spread, health)
-                    // Consolidated into shared logic to ensure consistent behavior at boot and runtime.
-                    // CRITICAL: Pass lockAlreadyHeld since we're inside _fillProcessingLock.acquire()
-                    await this._runGridMaintenance('startup');
-
-                    // Cancel any dust from a previous bot lifetime immediately.
-                    const startupHealth = await this.manager.checkGridHealth(
-                        this.updateOrdersOnChainPlan.bind(this)
-                    );
-                    await this._cancelDustOrders({
-                        buy: startupHealth.buyDustOrders,
-                        sell: startupHealth.sellDustOrders,
-                    });
-
-                    this._log('Bootstrap phase complete - fill processing resumed', 'info');
-                } finally {
-                    // CRITICAL: Always clear bootstrap flag, even on error
-                    this.manager.finishBootstrap();
-                }
-            });
-
-            await this._setupTriggerFileDetection();
-            await this._setupCreditRuntime();
-            await this._refreshAndSyncCreditRuntime();
-            await this._runCreditRuntimeMaintenance('startup');
-            this._setupBlockchainFetchInterval();
-            this._setupCreditWatchdogInterval();
-            this._setupCredentialDaemonWatchdogInterval();
-
-            // Periodic dust health check — catches partials that fell below threshold
-            // without triggering the post-fill pipeline. Cancels immediately inside the
-            // fill-processing lock to avoid racing with fill batches or sync operations.
-            this._setupDustHealthCheckInterval();
-            await this._runDustHealthCheck();
-            this._log('[DUST] Startup health check complete');
-
-            if (this._isOpenOrdersSyncLoopEnabled()) {
-                this._startOpenOrdersSyncLoop();
-            } else {
-                this._log('Open-orders sync loop disabled by configuration (TIMING.OPEN_ORDERS_SYNC_LOOP_ENABLED=false)');
-            }
-            this._log(`DEXBot started. OrderManager running (dryRun=${!!this.config.dryRun})`);
-
-        } catch (err: any) {
-            this._warn(`Error during grid initialization: ${err.message}`);
-            await this.shutdown();
-            throw err;
-        }
+        return DexbotStartupRuntime.finishStartupSequence(this, startupState);
     }
 
     /**
@@ -1696,37 +733,7 @@ class DEXBot {
      * @returns {Promise<{syncResult: Object|null, aborted: boolean, hasUnmatched: number, openOrders: Array|null}>}
      */
     async _syncOpenOrdersAndProcessFills(tag) {
-        if (!this.accountId || this.config?.dryRun) {
-            return { syncResult: null, aborted: false, hasUnmatched: 0, openOrders: null };
-        }
-        try {
-            let openOrders = await chainOrders.readOpenOrders(this.accountId);
-            const syncResult = await this.manager.synchronizeWithChain(
-                openOrders,
-                'readOpenOrders'
-            );
-            let aborted = false;
-            if (syncResult?.filledOrders?.length > 0) {
-                this._refreshDynamicWeightDistribution(`${tag} sync-fill`);
-                this._log(`[SYNC-CHAIN] ${syncResult.filledOrders.length} filled order(s) found during ${tag}`, 'info');
-                const batchResult = await this._processFillsWithBatching(
-                    syncResult.filledOrders,
-                    new Set(),
-                    `${tag} sync-fill`
-                );
-                if (!batchResult?.aborted) {
-                    openOrders = await chainOrders.readOpenOrders(this.accountId);
-                    await this.manager.synchronizeWithChain(openOrders, 'readOpenOrders');
-                } else {
-                    aborted = true;
-                }
-            }
-            const hasUnmatched = syncResult?.unmatchedChainOrders?.length || 0;
-            return { syncResult, aborted, hasUnmatched, openOrders };
-        } catch (err) {
-            this._warn(`[SYNC-CHAIN] Open-orders sync failed during ${tag}: ${err.message}`);
-            return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
-        }
+        return DexbotMaintenanceRuntime.syncOpenOrdersAndProcessFills(this, tag);
     }
 
     _maxConsecutiveFillConsumerFailures() {
@@ -1864,47 +871,7 @@ class DEXBot {
      * @returns {Promise<void>}
      */
     async placeInitialOrders() {
-        if (!this.manager) {
-            const mgrLogFile = this.config?.name ? path.join(PATHS.LOGS_DIR, `${this.config.name}.log`) : undefined;
-            this.manager = new OrderManager({ ...this.config, logFile: mgrLogFile });
-            this.manager.accountOrders = this.accountOrders;
-        }
-        this._wireStructuralGridResyncRequest();
-        this.manager.startBootstrap();
-        try {
-            try {
-                const botFunds = this.config && this.config.botFunds ? this.config.botFunds : {};
-                const needsPercent = (v) => typeof v === 'string' && v.includes('%');
-                if ((needsPercent(botFunds.buy) || needsPercent(botFunds.sell)) && (this.accountId || this.account)) {
-                    if (typeof this.manager._fetchAccountBalancesAndSetTotals === 'function') {
-                        await this.manager._fetchAccountBalancesAndSetTotals();
-                    }
-                }
-            } catch (errFetch: any) {
-                this._warn(`Could not fetch account totals before initializing grid: ${errFetch && errFetch.message ? errFetch.message : errFetch}`);
-            }
-
-            await Grid.initializeGrid(this.manager);
-
-            if (this.config.dryRun) {
-                this.manager.logger.log('Dry run enabled, skipping on-chain order placement.', 'info');
-                await this.manager.persistGrid();
-                return;
-            }
-
-            this.manager.logger.log('Placing initial orders on-chain...', 'info');
-            const ordersToActivate = this.manager.getInitialOrdersToActivate();
-
-            const orderGroups = this._buildOutsideInPairGroupsForOrders(ordersToActivate);
-
-            for (const group of orderGroups) {
-                await this.updateOrdersOnChainPlan({ ordersToPlace: group });
-            }
-
-            await this.manager.persistGrid();
-        } finally {
-            this.manager.finishBootstrap();
-        }
+        return DexbotStartupRuntime.placeInitialOrdersImpl(this);
     }
 
     /**
@@ -2896,79 +1863,11 @@ class DEXBot {
     }
 
     async requestGridReset(reason = 'structural change', options: { refreshCenterPrice?: boolean; [key: string]: any } = {}) {
-        if (!this.manager || typeof this._performGridResync !== 'function') {
-            return { skipped: true, reason: 'grid resync unavailable' };
-        }
-
-        const message = reason ? `[CR-RESET] ${reason}` : '[CR-RESET] grid reset requested';
-        this._log(`${message}; rebuilding grid from fresh on-chain state`, 'info');
-        const resetOptions = {
-            ...options,
-            refreshCenterPrice: options.refreshCenterPrice !== false,
-        };
-
-        // Skip acquire if no lock exists (no fill processing to serialize against)
-        // or if the caller already holds the lock (re-entrant). In the latter case
-        // the lock's isReentrant() check prevents queueing and runs inline.
-        // Otherwise, wait on the queue — this is the intended path for callers
-        // outside the fill-processing context that need exclusive access.
-        if (!this.manager._fillProcessingLock || this.manager._fillProcessingLock.isReentrant()) {
-            return this._performGridResync(resetOptions);
-        }
-
-        return this.manager._fillProcessingLock.acquire(async () => this._performGridResync(resetOptions));
+        return DexbotMaintenanceRuntime.requestGridReset(this, reason, options);
     }
 
     _wireStructuralGridResyncRequest() {
-        if (!this.manager || this.manager.requestStructuralGridResync) return;
-
-        this.manager.requestStructuralGridResync = async (reason = 'structural recovery', details: { unmatchedChainOrders?: any[]; [key: string]: any } = {}) => {
-            if (this._shuttingDown) {
-                return { skipped: true, reason: 'shutting down' };
-            }
-
-            if (this._structuralGridResyncRunning || this._structuralGridResyncTimer) {
-                return { skipped: true, reason: 'structural grid resync already scheduled' };
-            }
-
-            const unmatchedCount = Array.isArray(details?.unmatchedChainOrders)
-                ? details.unmatchedChainOrders.length
-                : 0;
-            this._structuralGridResyncTimer = setTimeout(async () => {
-                this._structuralGridResyncTimer = null;
-                if (this._shuttingDown) return;
-
-                this._structuralGridResyncRunning = true;
-                try {
-                    // Try the lighter persisted-grid reload before full reset.
-                    const persistedResult = await this._recoverFromPersistedGrid();
-                    if (persistedResult.success) {
-                        if (this.manager?._recoveryState) {
-                            this.manager._recoveryState = { ...this.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
-                        }
-                        return;
-                    }
-
-                    const suffix = unmatchedCount > 0 ? ` (${unmatchedCount} unmatched chain order(s))` : '';
-                    this._warn(`[RECOVERY] Running structural full grid resync for ${reason}${suffix}`);
-                    const resetResult = await this.requestGridReset('rms_structural_grid_resync', {
-                        refreshCenterPrice: true,
-                    });
-                    if (resetResult && this.manager?._recoveryState) {
-                        this.manager._recoveryState = { ...this.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
-                    }
-                } catch (err: any) {
-                    this._warn(`[RECOVERY] Structural full grid resync failed: ${err.message}`);
-                } finally {
-                    this._structuralGridResyncRunning = false;
-                    if (this.manager?._recoveryState) {
-                        this.manager._recoveryState = { ...this.manager._recoveryState, structuralResyncRequested: false };
-                    }
-                }
-            }, 0);
-
-            return { scheduled: true };
-        };
+        return DexbotMaintenanceRuntime.wireStructuralGridResyncRequest(this);
     }
 
     /**
@@ -2976,16 +1875,7 @@ class DEXBot {
      * @returns {Object} Metrics snapshot
      */
     getMetrics() {
-        this.manager?._cleanExpiredLocks?.();
-        return {
-            ...this._metrics,
-            queueDepth: this._incomingFillQueue.length,
-            fillProcessingLockActive: this.manager?._fillProcessingLock?.isLocked() || false,
-            divergenceLockActive: this.manager?._divergenceLock?.isLocked() || false,
-            shadowLocksActive: this.manager?.shadowOrderIds?.size || 0,
-            recoveryExhaustedAt: this.manager?._recoveryExhaustedAt || null,
-            recentFillsTracked: this._recentlyProcessedFills.size
-        };
+        return DexbotMaintenanceRuntime.getMetrics(this);
     }
 
     /**
@@ -3043,39 +1933,7 @@ class DEXBot {
      * @private
      */
     async _runDustHealthCheck() {
-        if (this._shuttingDown || !this.manager) return;
-        try {
-            const health = await this.manager.checkGridHealth(
-                this.updateOrdersOnChainPlan?.bind(this)
-            );
-            const buyDust = health.buyDustOrders || [];
-            const sellDust = health.sellDustOrders || [];
-            const totalDust = buyDust.length + sellDust.length;
-            if (totalDust > 0) {
-                this._log(`[DUST] Health check: ${totalDust} dust order(s) (buy=${buyDust.length}, sell=${sellDust.length})`);
-                const lock = this.manager._fillProcessingLock;
-                if (lock && typeof lock.acquire === 'function') {
-                    await lock.acquire(async () => {
-                        await this._cancelDustOrders({
-                            buy: health.buyDustOrders,
-                            sell: health.sellDustOrders,
-                        });
-                    }, { timeout: TIMING.DUST_CANCEL_TIMEOUT_MS });
-                } else {
-                    this._warn('[DUST] Fill lock unavailable — cancelling dust without lock (potential race)');
-                    await this._cancelDustOrders({
-                        buy: health.buyDustOrders,
-                        sell: health.sellDustOrders,
-                    });
-                }
-            }
-        } catch (err) {
-            if (err?.message?.includes('Lock acquisition timeout')) {
-                this._warn('[DUST] Lock busy, skipping dust cancel this cycle (retry in 5 min)');
-            } else {
-                this._warn(`[DUST] Health check error (retry in 5 min): ${err?.message || err}`);
-            }
-        }
+        return DexbotMaintenanceRuntime.runDustHealthCheck(this);
     }
 
     /**
@@ -3086,12 +1944,7 @@ class DEXBot {
      * @private
      */
     _setupDustHealthCheckInterval() {
-        this._dustHealthCheckTimer = setInterval(() => {
-            this._runDustHealthCheck();
-        }, TIMING.DUST_HEALTH_CHECK_INTERVAL_MS);
-        if (typeof this._dustHealthCheckTimer?.unref === 'function') {
-            this._dustHealthCheckTimer.unref();
-        }
+        return DexbotMaintenanceRuntime.setupDustHealthCheckInterval(this);
     }
 
     /**
