@@ -102,8 +102,8 @@ sudo dnf install nodejs npm git
 # Option A — Install globally via npm
 npm i -g dexbot
 
-# Option B — Clone and install from source
-git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
+# Option B — Clone + npm link (bare `dexbot` works)
+git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install && npm link
 ```
 
 Then set up your master password, keys and add bots:
