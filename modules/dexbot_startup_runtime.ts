@@ -340,7 +340,7 @@ async function finishStartupSequence(bot, startupState) {
             if (bot._isOpenOrdersSyncLoopEnabled()) {
                 bot._startOpenOrdersSyncLoop();
             } else {
-                bot._log('Open-orders sync loop disabled by configuration (TIMING.OPEN_ORDERS_SYNC_LOOP_ENABLED=false)');
+                bot._log('Open-orders sync loop disabled by configuration');
             }
             bot._log(`DEXBot started. OrderManager running (dryRun=${!!bot.config.dryRun})`);
             return;
@@ -537,7 +537,7 @@ async function finishStartupSequence(bot, startupState) {
         if (bot._isOpenOrdersSyncLoopEnabled()) {
             bot._startOpenOrdersSyncLoop();
         } else {
-            bot._log('Open-orders sync loop disabled by configuration (TIMING.OPEN_ORDERS_SYNC_LOOP_ENABLED=false)');
+            bot._log('Open-orders sync loop disabled by configuration');
         }
         bot._log(`DEXBot started. OrderManager running (dryRun=${!!bot.config.dryRun})`);
 

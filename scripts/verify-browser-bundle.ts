@@ -39,7 +39,7 @@ if (NODE_BUILTINS.length === 0) {
   );
 }
 
-const EXTERNAL_ARGS = NODE_BUILTINS.flatMap(m => ['--external:' + m]);
+const EXTERNAL_ARGS = NODE_BUILTINS.flatMap(m => ['--external:' + m, '--external:node:' + m]);
 
 interface BundleTest {
   label: string;
@@ -274,6 +274,30 @@ const TESTS: BundleTest[] = [
   {
     label: 'market_adapter/lp_chart_runner.ts (node-only)',
     entry: 'market_adapter/lp_chart_runner.ts',
+    expectFail: true,
+    externalizeNodeBuiltins: false,
+  },
+  {
+    label: 'modules/dexbot_fill_runtime.ts (node-only)',
+    entry: 'modules/dexbot_fill_runtime.ts',
+    expectFail: true,
+    externalizeNodeBuiltins: false,
+  },
+  {
+    label: 'modules/dexbot_cow_runtime.ts (node-only)',
+    entry: 'modules/dexbot_cow_runtime.ts',
+    expectFail: true,
+    externalizeNodeBuiltins: false,
+  },
+  {
+    label: 'modules/dexbot_state_recovery.ts (node-only)',
+    entry: 'modules/dexbot_state_recovery.ts',
+    expectFail: true,
+    externalizeNodeBuiltins: false,
+  },
+  {
+    label: 'modules/dexbot_startup_runtime.ts (node-only)',
+    entry: 'modules/dexbot_startup_runtime.ts',
     expectFail: true,
     externalizeNodeBuiltins: false,
   },
