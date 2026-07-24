@@ -80,7 +80,8 @@ const {
     buildOutsideInPairGroups,
     extractBatchOperationResults,
     buildFillKey,
-    formatUnmatchedChainOrder
+    formatUnmatchedChainOrder,
+    parseChainOrder
 } = require('./order/utils/order');
 const { validateOrderSize } = require('./order/utils/math');
 const {
@@ -728,9 +729,13 @@ class DEXBot {
                 await this.manager.persistGrid();
             }
 
+            const assets = this.manager?.assets;
+            const matchedCount = assets
+                ? chainOpenOrders.filter(o => parseChainOrder(o, assets) !== null).length
+                : chainOpenOrders.length;
             this.manager.logger.log(
                 `[RECOVERY] Grid reloaded from persisted snapshot: ${this.manager.orders.size} orders, ` +
-                `${chainOpenOrders.length} on-chain orders synced`,
+                `${matchedCount} on-chain orders synced`,
                 'info'
             );
 
@@ -1422,6 +1427,8 @@ class DEXBot {
                 this._setupCreditWatchdogInterval();
                 this._setupCredentialDaemonWatchdogInterval();
                 this._setupDustHealthCheckInterval();
+                await this._runDustHealthCheck();
+                this._log('[DUST] Startup health check complete');
 
                 if (this._isOpenOrdersSyncLoopEnabled()) {
                     this._startOpenOrdersSyncLoop();
@@ -1491,6 +1498,17 @@ class DEXBot {
 
                 if (shouldRegenerate && chainOpenOrders.length === 0) {
                     this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
+                }
+
+                // Also log when regeneration is needed but other pairs' orders
+                // suppress the "no matching orders" message above.
+                if (shouldRegenerate && chainOpenOrders.length > 0 && this.manager?.assets) {
+                    const orderCount = chainOpenOrders.filter(
+                        o => parseChainOrder(o, this.manager.assets) !== null
+                    ).length;
+                    if (orderCount === 0) {
+                        this._log(`Persisted grid found with no matching orders (${chainOpenOrders.length} other-pair order(s) on account). Generating new grid.`);
+                    }
                 }
             }
 
@@ -1653,6 +1671,8 @@ class DEXBot {
             // without triggering the post-fill pipeline. Cancels immediately inside the
             // fill-processing lock to avoid racing with fill batches or sync operations.
             this._setupDustHealthCheckInterval();
+            await this._runDustHealthCheck();
+            this._log('[DUST] Startup health check complete');
 
             if (this._isOpenOrdersSyncLoopEnabled()) {
                 this._startOpenOrdersSyncLoop();
@@ -5896,55 +5916,58 @@ class DEXBot {
     }
 
     /**
-     * Set up the periodic dust health check interval.
-     * Catches partials below the dust threshold that were missed by the post-fill
-     * pipeline (e.g. from a prior bot lifetime after crash/restart).
-     * Cancels dust immediately inside the fill-processing lock.
+     * Run a single dust health check cycle: inspect grid for partials below the
+     * configured dust threshold and cancel them immediately inside the fill-
+     * processing lock (with timeout).  Safe to call from the periodic timer or
+     * once at startup.
      * @private
      */
-    _setupDustHealthCheckInterval() {
-        this._dustHealthCheckTimer = setInterval(async () => {
-            if (this._shuttingDown || !this.manager) return;
-            try {
-                const health = await this.manager.checkGridHealth(
-                    this.updateOrdersOnChainPlan?.bind(this)
-                );
-                const allDust = [
-                    ...(health.buyDustOrders || []),
-                    ...(health.sellDustOrders || []),
-                ];
-                if (allDust.length > 0) {
-                    const lock = this.manager._fillProcessingLock;
-                    if (lock && typeof lock.acquire === 'function') {
-                        await lock.acquire(async () => {
-                            await this._cancelDustOrders({
-                                buy: health.buyDustOrders,
-                                sell: health.sellDustOrders,
-                            });
-                        }, { timeout: TIMING.DUST_CANCEL_TIMEOUT_MS });
-                    } else {
-                        // Lock unavailable — cancel without mutual exclusion.
-                        // This trades a small race window (concurrent cancel with another
-                        // fill cycle) against leaving dust orders on the book for 5+ min.
-                        // On the next cycle the lock will likely be free and the usual
-                        // path applies.
-                        this._warn('[DUST] Fill lock unavailable — cancelling dust without lock (potential race)');
+    async _runDustHealthCheck() {
+        if (this._shuttingDown || !this.manager) return;
+        try {
+            const health = await this.manager.checkGridHealth(
+                this.updateOrdersOnChainPlan?.bind(this)
+            );
+            const buyDust = health.buyDustOrders || [];
+            const sellDust = health.sellDustOrders || [];
+            const totalDust = buyDust.length + sellDust.length;
+            if (totalDust > 0) {
+                this._log(`[DUST] Health check: ${totalDust} dust order(s) (buy=${buyDust.length}, sell=${sellDust.length})`);
+                const lock = this.manager._fillProcessingLock;
+                if (lock && typeof lock.acquire === 'function') {
+                    await lock.acquire(async () => {
                         await this._cancelDustOrders({
                             buy: health.buyDustOrders,
                             sell: health.sellDustOrders,
                         });
-                    }
-                }
-            } catch (err) {
-                // TODO: Replace string-match with a typed error class
-                // (LockTimeoutError) so the lock-busy branch survives error
-                // message changes in async_lock.ts.
-                if (err?.message?.includes('Lock acquisition timeout')) {
-                    this._warn('[DUST] Lock busy, skipping dust cancel this cycle (retry in 5 min)');
+                    }, { timeout: TIMING.DUST_CANCEL_TIMEOUT_MS });
                 } else {
-                    this._warn(`[DUST] Health check error (retry in 5 min): ${err?.message || err}`);
+                    this._warn('[DUST] Fill lock unavailable — cancelling dust without lock (potential race)');
+                    await this._cancelDustOrders({
+                        buy: health.buyDustOrders,
+                        sell: health.sellDustOrders,
+                    });
                 }
             }
+        } catch (err) {
+            if (err?.message?.includes('Lock acquisition timeout')) {
+                this._warn('[DUST] Lock busy, skipping dust cancel this cycle (retry in 5 min)');
+            } else {
+                this._warn(`[DUST] Health check error (retry in 5 min): ${err?.message || err}`);
+            }
+        }
+    }
+
+    /**
+     * Set up the periodic dust health check interval.
+     * Catches partials below the dust threshold that were missed by the post-fill
+     * pipeline (e.g. from a prior bot lifetime after crash/restart).
+     * Calls _runDustHealthCheck on each tick.
+     * @private
+     */
+    _setupDustHealthCheckInterval() {
+        this._dustHealthCheckTimer = setInterval(() => {
+            this._runDustHealthCheck();
         }, TIMING.DUST_HEALTH_CHECK_INTERVAL_MS);
         if (typeof this._dustHealthCheckTimer?.unref === 'function') {
             this._dustHealthCheckTimer.unref();

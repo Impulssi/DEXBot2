@@ -24,7 +24,7 @@ const { parseJsonWithComments } = require('./order/utils/system');
 const { cloneWeightDistribution, calculateOrderCreationFees, calculateSwapInAmount, floatToBlockchainInt, blockchainToFloat } = require('./order/utils/math');
 const { updateDynamicGridSnapshotSync } = require('../market_adapter/utils/dynamic_grid_snapshot');
 const { reconcileGridOrders } = require('./order/grid_reconcile');
-const { formatUnmatchedChainOrder, getSideBudget, correctAllPriceMismatches, isOrderOnChain } = require('./order/utils/order');
+const { formatUnmatchedChainOrder, getSideBudget, correctAllPriceMismatches, isOrderOnChain, parseChainOrder } = require('./order/utils/order');
 const { getStorage } = require('./storage');
 const storage = getStorage();
 const { ensureDir, safeUnlink } = require('./utils/fs_utils');
@@ -1447,7 +1447,12 @@ async function executeMaintenanceLogic(bot, context) {
         bot._lightweightSyncCheckAt = Date.now();
         try {
             const chainOpenOrdersResult = await chainOrders.readOpenOrders(bot.accountId);
-            const chainOrdersCount = chainOpenOrdersResult.length;
+            const assets = bot.manager?.assets;
+            if (!assets) {
+                bot._log('[LIGHTWEIGHT-SYNC] Skipped: manager assets not available', 'debug');
+                return;
+            }
+            const chainOrdersCount = chainOpenOrdersResult.filter(o => parseChainOrder(o, assets) !== null).length;
             const gridActive = Array.from(bot.manager.orders.values()).filter(
                 (o: any) => isOrderOnChain(o)
             ).length;
@@ -1647,12 +1652,12 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
                 bot._warn(`[DUST] Cancel succeeded but refetch failed for ${order.id} (${order.orderId}): ${refetchErr.message}`);
             }
             syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
-            bot._log(`[DUST] Cancelled ${order.id} (${order.orderId}) size=${order.size}`, 'info');
+            bot._log(`[DUST] Cancelled ${order.id} (${order.orderId}) size=${order.size}`, 'debug');
         } catch (err) {
             const errMsg = err?.message || '';
             if (isOrderDoesNotExistError(errMsg, order.orderId)) {
                 syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
-                bot._log(`[DUST] Order ${order.id} (${order.orderId}) already gone from chain`, 'info');
+                bot._log(`[DUST] Order ${order.id} (${order.orderId}) already gone from chain`, 'debug');
             } else {
                 bot._warn(`[DUST] Failed to cancel ${order.id} (${order.orderId}): ${errMsg}`);
             }
