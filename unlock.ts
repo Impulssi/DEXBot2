@@ -465,7 +465,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
         if (pid > 0) {
             printLauncherHeader({ botName: effectiveBotName || botName, clawOnly, creditOnly, isolated, dryrun, headless });
             console.log(`DEXBot2 already running in background (PID ${pid}).`);
-            console.log('Use `dexbot unlock stat` to inspect it, or `dexbot unlock restart` to restart it.');
+            console.log('Use `dexbot stat` to inspect it, or `dexbot unlock restart` to restart it.');
             process.exitCode = 0;
             return;
         }
@@ -516,7 +516,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             const { pid } = readLiveMonolithicPid();
             if (pid > 0) {
                 console.log(`DEXBot2 already running in background (PID ${pid}).`);
-                console.log('Use `dexbot unlock stat` to inspect it, or `dexbot unlock restart` to restart it.');
+                console.log('Use `dexbot stat` to inspect it, or `dexbot unlock restart` to restart it.');
                 process.exitCode = 0;
                 return;
             }
