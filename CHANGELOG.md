@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2] - 2026-07-24 - Dust Health Check, Lightweight Sync Fixes, Doc Updates
+
+### 2026-07-24
+
+- **Feat**: startup dust health check — run a single dust health check immediately at startup (not only after the 5-minute delay). Extracted cycle body into `_runDustHealthCheck()` for reuse between startup call and periodic timer (`modules/dexbot_class.ts`).
+- **Fix**: remove early return in lightweight sync that skipped RMS divergence resync — `if (!assets) { ... return; }` exited `executeMaintenanceLogic` entirely, preventing the RMS divergence code from ever executing. Replaced with `if/else` so execution always falls through (`modules/dexbot_maintenance_runtime.ts`).
+- **Fix**: lightweight sync pair-filter — counted ALL open orders on account via `readOpenOrders().length`, causing false-positive "chain=107 grid=40 (diff=67)" warnings when other pairs had orders. Filter chain count through `parseChainOrder()` to match only the bot's assetA/assetB (`modules/dexbot_maintenance_runtime.ts`).
+- **Fix**: dust-handling improvements — lock-safe cancel (acquires `_fillProcessingLock` with 5s timeout, fallback to lock-less cancel if busy), deferred dust logging (logs when pipeline is non-empty), no-budget robustness (computes `idealSizes = []` instead of early-return on `budget <= 0`) (`modules/dexbot_class.ts`, `modules/dexbot_maintenance_runtime.ts`, `modules/order/grid.ts`).
+- **Fix**: correct `dexbot stat` suggestion in unlock.ts messages — both console messages suggested `dexbot unlock stat` but the shorter `dexbot stat` works identically (`unlock.ts`).
+- **Docs**: align README installation options and fix wording consistency — Option B comment "works everywhere", add missing Option C (local wrappers) to Installation section (`README.md`).
+- **Docs**: document capital allocation pipeline (`funds.allocated` vs `chainFree`) — new Allocated row in Fund Components table, new Capital Allocation Pipeline section with pipeline diagram, renumber subsections, update Global Side Capping reference (`docs/FUND_MOVEMENT_AND_ACCOUNTING.md`).
+- **Test**: new `test_lightweight_sync_chain_filter.ts` validates `parseChainOrder` correctly filters matching orders and classifies SELL/BUY types (`tests/test_lightweight_sync_chain_filter.ts`).
+- **Test**: new `testNoBudgetReturnsEmptyDust` in `test_dust_rebalance_logic.ts` pins the no-budget branch (`tests/test_dust_rebalance_logic.ts`).
+
 ## [1.3.1] - 2026-07-24 - CLI Canonical Naming, Browser Exclusion Completeness, Doc Polish
 
 ### 2026-07-24
