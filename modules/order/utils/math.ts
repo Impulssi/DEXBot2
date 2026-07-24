@@ -70,7 +70,7 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, FEE_PARAMETERS, DEFAULT_CONFIG, BTS_PRECISION, GRID_LIMITS } = require('../../constants');
+const { ORDER_TYPES, FEE_PARAMETERS, DEFAULT_CONFIG, GRID_LIMITS } = require('../../constants');
 const Format = require('../format');
 const { isValidNumber, toFiniteNumber, isNumeric } = Format;
 const Logger = require('../../logger');

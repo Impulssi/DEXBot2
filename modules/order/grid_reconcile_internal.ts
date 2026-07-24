@@ -6,8 +6,8 @@
  */
 
 const { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } = require('../constants');
-const { getMinAbsoluteOrderSize, getAssetFees, blockchainToFloat, calculatePriceTolerance } = require('./utils/math');
-const { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, isOrderOnChain, buildOutsideInPairGroups, extractBatchOperationResults } = require('./utils/order');
+const { getMinAbsoluteOrderSize, getAssetFees, blockchainToFloat } = require('./utils/math');
+const { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults } = require('./utils/order');
 const { resolveAccountRef } = require('./utils/system');
 const Format = require('./format');
 

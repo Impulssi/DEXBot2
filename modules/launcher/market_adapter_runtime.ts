@@ -1,6 +1,5 @@
 'use strict';
 
-const { path } = require('../path_api');
 const { getStorage } = require('../storage');
 const storage = getStorage();
 const { spawn } = require('child_process');

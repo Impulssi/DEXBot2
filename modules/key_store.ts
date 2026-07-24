@@ -7,8 +7,7 @@ const {
     executeOperationsViaCredentialDaemon,
     BroadcastUncertainError,
 } = require('./dexbot_credential_client');
-const { TIMING, DAEMON_ERRORS } = require('./constants');
-const { path } = require('./path_api');
+const { DAEMON_ERRORS } = require('./constants');
 const { PATHS } = require('./paths');
 const { getStorage } = require('./storage');
 const storage = getStorage();

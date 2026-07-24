@@ -1,7 +1,6 @@
 'use strict';
 
 const fs = require('fs');
-const { path } = require('../path_api');
 const { spawn } = require('child_process');
 const { MARKET_ADAPTER } = require('../constants');
 const { buildRuntimeScriptArgs, SCRIPTS_ROOT: DEFAULT_CODE_ROOT } = require('./runtime_entry');
@@ -10,7 +9,7 @@ const { PATHS } = require('../paths');
 const { isLikelyMarketAdapterProcess, isLockStale } = require('./market_adapter_runtime');
 const { readJSON, safeUnlink } = require('../utils/fs_utils');
 const { readProcMemMB, readProcUptime } = require('./status_reporting');
-const { listConfiguredBots, getActiveAmaBotFingerprint } = require('./monolithic_runtime');
+const { getActiveAmaBotFingerprint } = require('./monolithic_runtime');
 
 function createMarketAdapterWatchdog({
     codeRoot = DEFAULT_CODE_ROOT,

@@ -118,7 +118,7 @@ const {
 const Logger = require('./logger');
 const { getStorage } = require('./storage');
 const storage = getStorage();
-const { ensureDir, safeUnlink } = require('./utils/fs_utils');
+const { ensureDir } = require('./utils/fs_utils');
 const { resolvePrivateKey: resolveAuthKey } = require('./authority_resolver');
 
 const chainKeysLogger = new Logger('chain-keys');

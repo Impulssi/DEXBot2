@@ -5,7 +5,6 @@
  * Provides read/write operations with fallback handling.
  */
 
-const { path } = require('./path_api');
 const { getStorage } = require('./storage');
 const storage = getStorage();
 const { PATHS } = require('./paths');

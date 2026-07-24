@@ -3,32 +3,49 @@ const { createHash } = require('./crypto/sync');
 const fs = require('fs');
 const { path } = require('./path_api');
 const { spawn } = require('child_process');
-const { BitShares, getNodeManager } = require('./bitshares_client');
 const chainOrders = require('./chain_orders');
-const { BroadcastUncertainError } = require('./dexbot_credential_client');
-const { Config, hasOpenOrdersSyncLoopMsSet, getOpenOrdersSyncLoopMs } = require('./config');
 const grid = require('./order/grid');
-const { isGridBloated, isGridBloatGraceActive, clearGridBloatFlag, loadGrid, recalculateGrid } = grid;
 const { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } = require('./constants');
 const { PATHS } = require('./paths');
-const { buildRuntimeScriptPath, isDistCodeRoot } = require('./launcher/runtime_entry');
-const { applyGridDivergenceCorrections, loadAmaCenterSnapshot, sleep } = require('./order/utils/system');
-const { isPm2Runtime } = require('./order/logger');
-const { getSharedMarketAdapterRuntime } = require('./launcher/market_adapter_runtime');
-const {
-    resetMarketAdapterWhitelistCache,
-    isBotDynamicWeightWhitelisted,
-} = require('./market_adapter_whitelist');
 const Format = require('./order/format');
-const { parseJsonWithComments } = require('./order/utils/system');
-const { cloneWeightDistribution, calculateOrderCreationFees, calculateSwapInAmount, floatToBlockchainInt, blockchainToFloat } = require('./order/utils/math');
-const { updateDynamicGridSnapshotSync } = require('../market_adapter/utils/dynamic_grid_snapshot');
-const { reconcileGridOrders } = require('./order/grid_reconcile');
-const { formatUnmatchedChainOrder, getSideBudget, correctAllPriceMismatches, isOrderOnChain, parseChainOrder } = require('./order/utils/order');
 const { getStorage } = require('./storage');
 const storage = getStorage();
-const { ensureDir, safeUnlink } = require('./utils/fs_utils');
 const fundRegistry = require('./fund_registry');
+
+const { BitShares } = require('./bitshares_client');
+const { BroadcastUncertainError } = require('./dexbot_credential_client');
+const { Config } = require('./config');
+function getNodeManager(...args) { return require('./bitshares_client').getNodeManager(...args); }
+function hasOpenOrdersSyncLoopMsSet(...args) { return require('./config').hasOpenOrdersSyncLoopMsSet(...args); }
+function getOpenOrdersSyncLoopMs(...args) { return require('./config').getOpenOrdersSyncLoopMs(...args); }
+function isGridBloated(...args) { return grid.isGridBloated(...args); }
+function isGridBloatGraceActive(...args) { return grid.isGridBloatGraceActive(...args); }
+function clearGridBloatFlag(...args) { return grid.clearGridBloatFlag(...args); }
+function loadGrid(...args) { return grid.loadGrid(...args); }
+function recalculateGrid(...args) { return grid.recalculateGrid(...args); }
+function buildRuntimeScriptPath(...args) { return require('./launcher/runtime_entry').buildRuntimeScriptPath(...args); }
+function isDistCodeRoot(...args) { return require('./launcher/runtime_entry').isDistCodeRoot(...args); }
+function applyGridDivergenceCorrections(...args) { return require('./order/utils/system').applyGridDivergenceCorrections(...args); }
+function loadAmaCenterSnapshot(...args) { return require('./order/utils/system').loadAmaCenterSnapshot(...args); }
+function sleep(...args) { return require('./order/utils/system').sleep(...args); }
+function parseJsonWithComments(...args) { return require('./order/utils/system').parseJsonWithComments(...args); }
+function isPm2Runtime(...args) { return require('./order/logger').isPm2Runtime(...args); }
+function getSharedMarketAdapterRuntime(...args) { return require('./launcher/market_adapter_runtime').getSharedMarketAdapterRuntime(...args); }
+function resetMarketAdapterWhitelistCache(...args) { return require('./market_adapter_whitelist').resetMarketAdapterWhitelistCache(...args); }
+function isBotDynamicWeightWhitelisted(...args) { return require('./market_adapter_whitelist').isBotDynamicWeightWhitelisted(...args); }
+function cloneWeightDistribution(...args) { return require('./order/utils/math').cloneWeightDistribution(...args); }
+function calculateOrderCreationFees(...args) { return require('./order/utils/math').calculateOrderCreationFees(...args); }
+function calculateSwapInAmount(...args) { return require('./order/utils/math').calculateSwapInAmount(...args); }
+function floatToBlockchainInt(...args) { return require('./order/utils/math').floatToBlockchainInt(...args); }
+function blockchainToFloat(...args) { return require('./order/utils/math').blockchainToFloat(...args); }
+function updateDynamicGridSnapshotSync(...args) { return require('../market_adapter/utils/dynamic_grid_snapshot').updateDynamicGridSnapshotSync(...args); }
+function reconcileGridOrders(...args) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
+function formatUnmatchedChainOrder(...args) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
+function getSideBudget(...args) { return require('./order/utils/order').getSideBudget(...args); }
+function correctAllPriceMismatches(...args) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
+function isOrderOnChain(...args) { return require('./order/utils/order').isOrderOnChain(...args); }
+function parseChainOrder(...args) { return require('./order/utils/order').parseChainOrder(...args); }
+const { ensureDir, safeUnlink } = require('./utils/fs_utils');
 
 const CODE_ROOT = path.join(__dirname, '..');
 const PROFILES_DIR = PATHS.PROFILES_DIR;

@@ -53,14 +53,10 @@
  * ===============================================================================
  */
 
-const { BitShares, waitForConnected } = require('./bitshares_client');
+const { BitShares } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
-const { getKeyStore } = require('./key_store');
 const chainOrders = require('./chain_orders');
 const fundRegistry = require('./fund_registry');
-const {
-    hasExecutableActions,
-} = require('./order/utils/validate');
 const {
     ProcessedFillStore,
     PROCESSED_FILL_PERSISTENCE_MODES
@@ -75,12 +71,16 @@ const {
     FILL_PROCESSING,
     DAEMON_CODES,
 } = require('./constants');
-const { PATHS, getRecalculateTriggerFile } = require('./paths');
-const { cloneWeightDistribution } = require('./order/utils/math');
+const { PATHS } = require('./paths');
 const Format = require('./order/format');
-const { resolveBotRuntimeSettings } = require('./runtime_settings');
-
 const cowRuntime = require('./dexbot_cow_runtime');
+
+function waitForConnected(...args) { return require('./bitshares_client').waitForConnected(...args); }
+function getKeyStore(...args) { return require('./key_store').getKeyStore(...args); }
+function hasExecutableActions(...args) { return require('./order/utils/validate').hasExecutableActions(...args); }
+function getRecalculateTriggerFile(...args) { return require('./paths').getRecalculateTriggerFile(...args); }
+function cloneWeightDistribution(...args) { return require('./order/utils/math').cloneWeightDistribution(...args); }
+function resolveBotRuntimeSettings(...args) { return require('./runtime_settings').resolveBotRuntimeSettings(...args); }
 
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;

@@ -1,7 +1,8 @@
 /** Fill processing runtime - handles order fill events and replay-safe accounting */
-const { buildFillKey, correctAllPriceMismatches } = require('./order/utils/order');
 const { PROCESSED_FILL_PERSISTENCE_MODES } = require('./order/processed_fill_store');
-const { retryPersistenceIfNeeded } = require('./order/utils/system');
+function buildFillKey(...args) { return require('./order/utils/order').buildFillKey(...args); }
+function correctAllPriceMismatches(...args) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
+function retryPersistenceIfNeeded(...args) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
 const { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } = require('./constants');
 
 /**

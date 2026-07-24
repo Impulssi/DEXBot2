@@ -1,8 +1,9 @@
 /** State recovery runtime - grid persistence, recovery sync, size-drift repair */
 const { BitShares } = require('./bitshares_client');
 const chainOrders = require('./chain_orders');
-const { virtualizeOrder, parseChainOrder } = require('./order/utils/order');
-const { blockchainToFloat } = require('./order/utils/math');
+function virtualizeOrder(...args) { return require('./order/utils/order').virtualizeOrder(...args); }
+function parseChainOrder(...args) { return require('./order/utils/order').parseChainOrder(...args); }
+function blockchainToFloat(...args) { return require('./order/utils/math').blockchainToFloat(...args); }
 const { ORDER_TYPES } = require('./constants');
 const Format = require('./order/format');
 const grid = require('./order/grid');

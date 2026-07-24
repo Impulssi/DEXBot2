@@ -20,7 +20,7 @@ const Logger = require('./logger');
 const { getStorage } = require('./storage');
 const storage = getStorage();
 const { runtime } = require('./runtime');
-const { ensureDir, readJSON, safeUnlink, writeJSON } = require('./utils/fs_utils');
+const { ensureDir, readJSON, writeJSON } = require('./utils/fs_utils');
 
 // Module-scope logger for library-style helpers that don't own a process
 // logger.  The class honours PM2 auto-quiet and routes to a log file when one

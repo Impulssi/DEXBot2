@@ -3,15 +3,20 @@ const { path } = require('./path_api');
 const { BitShares, onReconnect: registerReconnectHook } = require('./bitshares_client');
 const chainOrders = require('./chain_orders');
 const { OrderManager, grid: Grid } = require('./order');
-const { initializeFeeCache, parseJsonWithComments } = require('./order/utils/system');
-const { buildFillKey, correctAllPriceMismatches, parseChainOrder } = require('./order/utils/order');
-const { ORDER_STATES, TIMING } = require('./constants');
+function initializeFeeCache(...args) { return require('./order/utils/system').initializeFeeCache(...args); }
+function parseJsonWithComments(...args) { return require('./order/utils/system').parseJsonWithComments(...args); }
+function buildFillKey(...args) { return require('./order/utils/order').buildFillKey(...args); }
+function correctAllPriceMismatches(...args) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
+function parseChainOrder(...args) { return require('./order/utils/order').parseChainOrder(...args); }
+const { ORDER_STATES } = require('./constants');
 const { PATHS } = require('./paths');
 const { getStorage } = require('./storage');
 const storage = getStorage();
 const { normalizeBotEntry } = require('./bot_settings');
 const Format = require('./order/format');
-const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileGridOrders } = require('./order/grid_reconcile');
+function attemptResumePersistedGridByPriceMatch(...args) { return require('./order/grid_reconcile').attemptResumePersistedGridByPriceMatch(...args); }
+function decideStartupGridAction(...args) { return require('./order/grid_reconcile').decideStartupGridAction(...args); }
+function reconcileGridOrders(...args) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
 const { AccountOrders } = require('./account_orders');
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 

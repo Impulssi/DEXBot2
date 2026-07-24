@@ -12,7 +12,7 @@ const Buffer = new Proxy({} as any, {
 
 const CC = require('./chain_constants');
 
-const { BufferWriter, BufferReader } = require('./serializer');
+const { BufferWriter } = require('./serializer');
 
 interface BufWriter {
     buf: Buffer;

@@ -17,7 +17,6 @@ const {
     isOrderPlaced, parseChainOrder, isOrderOnChain, buildCreateOrderArgs,
     buildOutsideInPairGroups, extractBatchOperationResults
 } = require('./utils/order');
-const { resolveAccountRef } = require('./utils/system');
 const Format = require('./format');
 const SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5;
 
