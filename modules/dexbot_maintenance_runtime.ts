@@ -1450,28 +1450,28 @@ async function executeMaintenanceLogic(bot, context) {
             const assets = bot.manager?.assets;
             if (!assets) {
                 bot._log('[LIGHTWEIGHT-SYNC] Skipped: manager assets not available', 'debug');
-                return;
-            }
-            const chainOrdersCount = chainOpenOrdersResult.filter(o => parseChainOrder(o, assets) !== null).length;
-            const gridActive = Array.from(bot.manager.orders.values()).filter(
-                (o: any) => isOrderOnChain(o)
-            ).length;
-            const diff = Math.abs(chainOrdersCount - gridActive);
-            if (diff > 2) {
-                bot._log(
-                    `[LIGHTWEIGHT-SYNC] Order count mismatch: chain=${chainOrdersCount}, grid=${gridActive} ` +
-                    `(diff=${diff}). Triggering targeted sync to reconcile.`,
-                    'warn'
-                );
-                if (bot.manager?.synchronizeWithChain) {
-                    await bot.manager.synchronizeWithChain(chainOpenOrdersResult, 'readOpenOrders');
+            } else {
+                const chainOrdersCount = chainOpenOrdersResult.filter(o => parseChainOrder(o, assets) !== null).length;
+                const gridActive = Array.from(bot.manager.orders.values()).filter(
+                    (o: any) => isOrderOnChain(o)
+                ).length;
+                const diff = Math.abs(chainOrdersCount - gridActive);
+                if (diff > 2) {
+                    bot._log(
+                        `[LIGHTWEIGHT-SYNC] Order count mismatch: chain=${chainOrdersCount}, grid=${gridActive} ` +
+                        `(diff=${diff}). Triggering targeted sync to reconcile.`,
+                        'warn'
+                    );
+                    if (bot.manager?.synchronizeWithChain) {
+                        await bot.manager.synchronizeWithChain(chainOpenOrdersResult, 'readOpenOrders');
+                    }
+                } else if (diff > 0) {
+                    bot._log(
+                        `[LIGHTWEIGHT-SYNC] Order count mismatch: chain=${chainOrdersCount}, grid=${gridActive} ` +
+                        `(diff=${diff}). Minor divergence — expected during normal operation.`,
+                        'debug'
+                    );
                 }
-            } else if (diff > 0) {
-                bot._log(
-                    `[LIGHTWEIGHT-SYNC] Order count mismatch: chain=${chainOrdersCount}, grid=${gridActive} ` +
-                    `(diff=${diff}). Minor divergence — expected during normal operation.`,
-                    'debug'
-                );
             }
         } catch (e: any) {
             bot._log(`[LIGHTWEIGHT-SYNC] Check failed: ${e.message}`, 'debug');
