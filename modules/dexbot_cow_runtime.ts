@@ -19,7 +19,9 @@ const {
     buildOutsideInPairGroups,
 } = require('./order/utils/order');
 const { validateCreateTargetSlots } = require('./order/utils/validate');
-const { validateOrderSize, getAssetFees } = require('./order/utils/math');
+const { validateOrderSize } = require('./order/utils/math');
+// Lazy accessor so test mocks on the math module export take effect at call time.
+function getAssetFees(...args) { return require('./order/utils/math').getAssetFees(...args); }
 const {
     COW_ACTIONS,
     ORDER_STATES,

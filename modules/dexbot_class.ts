@@ -53,28 +53,14 @@
  * ===============================================================================
  */
 
-const { path } = require('./path_api');
-const { BitShares, waitForConnected, onReconnect: registerReconnectHook } = require('./bitshares_client');
-const { getStorage } = require('./storage');
-const storage = getStorage();
+const { BitShares, waitForConnected } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
 const { getKeyStore } = require('./key_store');
 const chainOrders = require('./chain_orders');
 const fundRegistry = require('./fund_registry');
-const { OrderManager, grid: Grid } = require('./order');
-const {
-    retryPersistenceIfNeeded,
-    initializeFeeCache,
-} = require('./order/utils/system');
 const {
     hasExecutableActions,
 } = require('./order/utils/validate');
-const {
-    virtualizeOrder,
-    correctAllPriceMismatches,
-    buildFillKey,
-    parseChainOrder
-} = require('./order/utils/order');
 const {
     ProcessedFillStore,
     PROCESSED_FILL_PERSISTENCE_MODES
@@ -85,20 +71,12 @@ const DexbotStateRecovery = require('./dexbot_state_recovery');
 const DexbotStartupRuntime = require('./dexbot_startup_runtime');
 const CreditRuntime = require('./credit_runtime');
 const {
-    ORDER_STATES,
-    ORDER_TYPES,
     TIMING,
-    GRID_LIMITS,
-    MAINTENANCE,
     FILL_PROCESSING,
     DAEMON_CODES,
 } = require('./constants');
 const { PATHS, getRecalculateTriggerFile } = require('./paths');
-const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileGridOrders } = require('./order/grid_reconcile');
-const { AccountOrders } = require('./account_orders');
-const { parseJsonWithComments } = require('./order/utils/system');
 const { cloneWeightDistribution } = require('./order/utils/math');
-const { normalizeBotEntry } = require('./bot_settings');
 const Format = require('./order/format');
 const { resolveBotRuntimeSettings } = require('./runtime_settings');
 
@@ -166,9 +144,9 @@ class DEXBot {
     _structuralGridResyncRunning: boolean;
     _ghostOrderCancelAttempted: Set<string> | null;
     _dustHealthCheckTimer: any;
-    _lastBroadcastHeartbeatAt: number;
+    _lastBroadcastHeartbeatAt: number | undefined;
     _lastDeferredDustCount: number;
-    _currentBatchId: any;
+    _currentBatchId: string | number | null | undefined;
 
     /**
      * Create a new DEXBot instance
@@ -509,7 +487,7 @@ class DEXBot {
     /**
      * Initialize bot state from storage and blockchain.
      * Consolidates common initialization logic for start() and startWithPrivateKey().
-     * @returns {{persistedGrid: Object, persistedBtsFeesOwed: number, persistedBoundaryIdx: number, persistedBtsBalance: number}}
+     * @returns {{persistedGrid: Object, persistedBtsFeesOwed: number, persistedBoundaryIdx: number, persistedBtsBalance: number, persistedRecentFillKeys: Object}}
      * @private
      */
     async _initializeStartupState() {
