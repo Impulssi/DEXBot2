@@ -77,7 +77,7 @@ All notable changes to this project will be documented in this file.
 - **Chore**: import `roundToDecimals` from `order/utils/math` directly instead of re-export shim in `cr_planner.ts` and `credit_runtime.ts`.
 - **Test**: align 9 test files with recent production changes and fix pre-existing hanging-test failures (`tests/test_browser_abstractions.ts`, `test_dexbot_maintenance_runtime_dynamic_weights.ts`, `test_dexbot_start_master_password_failure_output.ts`, `test_dexbot_startup_dynamic_weight_wiring.ts`, `test_dust_cancel_delay_config_migration.ts`, `test_fill_batch_chunking.ts`, `test_grid_reconcile_regressions.ts`, `test_launcher_exports.ts`, `test_main_loop_sync_fill_rebalance.ts`).
 
-## [1.2.4] - 2026-07-21 - Credential Daemon Memory — Signing Client Cache, Dispose(), Session Purge, Shallow Policy Copy
+## [1.2.4] - 2026-07-21 - Credential Daemon Memory - Signing Client Cache, Dispose(), Session Purge, Shallow Policy Copy
 
 ### 2026-07-21
 

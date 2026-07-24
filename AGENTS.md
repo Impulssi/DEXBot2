@@ -193,7 +193,8 @@ When bumping the version for a release:
    release** (review `git log <last-tag>..HEAD`), update `docs/EVOLUTION.md`,
    and refresh the EVOLUTION.md footer (commit count, last updated
    version/date).
-4. Commit the version bump + docs.
+4. Create GitHub release with title format `vX.Y.Z - Description` (use ` - ` regular dash, not `—` em dash).
+5. Commit the version bump + docs.
 
 ```bash
 # Check what would change (dry-run)
