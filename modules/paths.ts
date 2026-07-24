@@ -1,3 +1,4 @@
+const fs = require('fs');
 const { path } = require('./path_api');
 const { Config } = require('./config');
 const { isDistRuntime } = require('./utils/build_dir');
@@ -14,7 +15,17 @@ function resolveProfilesDir(): string {
     if (Config.DEXBOT2_ROOT) {
         return path.join(Config.DEXBOT2_ROOT, 'profiles');
     }
-    return path.join(PROJECT_ROOT, 'profiles');
+    const defaultDir = path.join(PROJECT_ROOT, 'profiles');
+    const cwdProfiles = path.join(process.cwd(), 'profiles');
+    if (defaultDir !== cwdProfiles) {
+        const defaultBots = path.join(defaultDir, 'bots.json');
+        const cwdBots = path.join(cwdProfiles, 'bots.json');
+        if (!fs.existsSync(defaultBots) && fs.existsSync(cwdBots)) {
+            console.warn(`[paths] Install profiles not found at ${defaultDir}, falling back to cwd: ${cwdProfiles}`);
+            return cwdProfiles;
+        }
+    }
+    return defaultDir;
 }
 
 const PROFILES_DIR = resolveProfilesDir();
@@ -91,4 +102,4 @@ function getRecalculateTriggerFile(botKey: string): string {
   return path.join(PATHS.PROFILES_DIR, `recalculate.${botKey}.trigger`);
 }
 
-export = { PATHS, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile };
+export = { PATHS, resolveProfilesDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile };
