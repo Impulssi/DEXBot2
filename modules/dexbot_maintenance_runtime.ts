@@ -1565,6 +1565,12 @@ async function executeMaintenanceLogic(bot, context) {
             bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
             await bot._persistAndRecoverIfNeeded();
         }
+    } else {
+        const totalDust = (healthResult.buyDustOrders?.length || 0) + (healthResult.sellDustOrders?.length || 0);
+        if (totalDust > 0 && bot._lastDeferredDustCount !== totalDust) {
+            bot._log(`[MAINT] ${totalDust} dust order(s) deferred — pipeline non-empty (${pipelineStatus.reasons?.join(', ') ?? '(unknown)'})`);
+            bot._lastDeferredDustCount = totalDust;
+        }
     }
 }
 

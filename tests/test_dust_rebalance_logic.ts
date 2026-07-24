@@ -803,6 +803,79 @@ async function testInteriorDustAdjacentGridLevelNotEligible() {
     console.log('  ✓ Interior partial at adjacent grid level (within tolerance) is not eligible');
 }
 
+async function testNoBudgetReturnsEmptyDust() {
+    console.log('Testing No-Budget Path Returns Empty Dust...');
+
+    _setFeeCache({
+        BTS: {
+            limitOrderCreate: { bts: 0.1 },
+            limitOrderCancel: { bts: 0 },
+            limitOrderUpdate: { bts: 0.001 }
+        }
+    });
+
+    const manager = new OrderManager({
+        assetA: 'TESTA',
+        assetB: 'TESTB',
+        startPrice: 1.0,
+        botFunds: { buy: 0, sell: 0 },
+        activeOrders: { buy: 5, sell: 5 },
+        incrementPercent: 1,
+        weightDistribution: { buy: 1, sell: 1 }
+    });
+
+    manager.assets = {
+        assetA: { id: '1.3.1', symbol: 'TESTA', precision: 5 },
+        assetB: { id: '1.3.2', symbol: 'TESTB', precision: 5 }
+    };
+
+    await manager.setAccountTotals({
+        buy: 0,
+        sell: 0,
+        buyFree: 0,
+        sellFree: 0
+    });
+
+    manager.logger = {
+        log: () => {},
+        logFundsStatus: () => {}
+    };
+
+    // Pin the no-budget condition directly: force allocated to 0 and
+    // disable recalculateFunds so no later code path overwrites it.
+    manager.funds.allocated = { buy: 0, sell: 0 };
+    const origRecalc = manager.recalculateFunds.bind(manager);
+    manager.recalculateFunds = async () => {};
+
+    // Add a tiny partial — would be dust if budget existed
+    await manager._updateOrder({
+        id: 'no-budget-sell',
+        type: ORDER_TYPES.SELL,
+        state: ORDER_STATES.PARTIAL,
+        size: 0.00001,
+        price: 1.02,
+        orderId: '1.7.960'
+    });
+
+    await manager._updateOrder({
+        id: 'top-no-budget-sell',
+        type: ORDER_TYPES.SELL,
+        state: ORDER_STATES.ACTIVE,
+        size: 10,
+        price: 1.01,
+        orderId: '1.7.961'
+    });
+
+    const dustOrders = await getDustOrders(manager, [manager.orders.get('no-budget-sell')], 'sell');
+    // This test pins the no-budget branch in _getDustOrders: when ctx.budget
+    // is 0, idealSizes is [] and every threshold collapses to 0, so no order
+    // qualifies as dust. If that branch is ever refactored, this assertion
+    // documents the expected zero-budget outcome.
+    assert.strictEqual(dustOrders.length, 0, 'No dust should be detected when budget is zero');
+    manager.recalculateFunds = origRecalc;
+    console.log('  ✓ No dust returned when budget is zero');
+}
+
 Promise.resolve()
     .then(() => testDustTrigger())
     .then(() => testDustCancelSyntheticRotation())
@@ -814,6 +887,7 @@ Promise.resolve()
     .then(() => testInteriorDustWithDuplicatePriceLevel())
     .then(() => testInteriorDustAdjacentGridLevelNotEligible())
     .then(() => testGridMaintenanceWaitsForQuietPeriod())
+    .then(() => testNoBudgetReturnsEmptyDust())
     .finally(() => {
         Module._load = originalModuleLoad;
     })

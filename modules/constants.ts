@@ -237,6 +237,16 @@ let TIMING = {
     OPEN_ORDERS_SYNC_LOOP_ENABLED: false,   // Preferred flag: continuous open-order watchdog sync loop (default false — react to fills only)
     CHECK_INTERVAL_MS: 100,  // 100 milliseconds - polling interval for connection/daemon readiness checks
 
+    // Dust health check interval: periodic detection of partials below the dust
+    // threshold that were missed by the post-fill pipeline (e.g. from prior
+    // bot lifetime after crash/restart).
+    DUST_HEALTH_CHECK_INTERVAL_MS: 5 * 60 * 1000,  // 5 minutes
+    // DUST_CANCEL_TIMEOUT_MS: Max time to wait for the fill-processing lock
+    // before skipping a dust-cancel cycle.  Must be short enough to not starve
+    // the timer (5 min / 5 s = 60 slots per interval), but long enough to
+    // survive moderate fill-processing bursts.
+    DUST_CANCEL_TIMEOUT_MS: 5 * 1000,  // 5 seconds
+
     // Blockchain settle delay before follow-up structural work after a scheduled maintenance action.
     // Gives maintenance-triggered cancels/rebalances time to acquire locks, broadcast, and settle
     // before a deferred grid resync attempts more on-chain changes.

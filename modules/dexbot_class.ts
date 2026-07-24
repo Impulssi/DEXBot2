@@ -174,6 +174,7 @@ class DEXBot {
     _ghostOrderCancelAttempted: Set<string> | null;
     _dustHealthCheckTimer: any;
     _lastBroadcastHeartbeatAt: number;
+    _lastDeferredDustCount: number;
     _currentBatchId: any;
 
     /**
@@ -264,6 +265,7 @@ class DEXBot {
         this._targetedDriftSyncCooldownMs = this.config.timing.TARGETED_DRIFT_SYNC_COOLDOWN_MS;
         this._maintenanceCooldownCycles = 0;
         this._lastGridActivityAt = 0;
+        this._lastDeferredDustCount = 0;
         this._currentCycleId = 0;
         this._autoCancelOrphanCycleMarker = null;
         this._autoCancelOrphanSubCount = 0;
@@ -5901,7 +5903,6 @@ class DEXBot {
      * @private
      */
     _setupDustHealthCheckInterval() {
-        const DUST_HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
         this._dustHealthCheckTimer = setInterval(async () => {
             if (this._shuttingDown || !this.manager) return;
             try {
@@ -5913,17 +5914,38 @@ class DEXBot {
                     ...(health.sellDustOrders || []),
                 ];
                 if (allDust.length > 0) {
-                    await this.manager._fillProcessingLock.acquire(async () => {
+                    const lock = this.manager._fillProcessingLock;
+                    if (lock && typeof lock.acquire === 'function') {
+                        await lock.acquire(async () => {
+                            await this._cancelDustOrders({
+                                buy: health.buyDustOrders,
+                                sell: health.sellDustOrders,
+                            });
+                        }, { timeout: TIMING.DUST_CANCEL_TIMEOUT_MS });
+                    } else {
+                        // Lock unavailable — cancel without mutual exclusion.
+                        // This trades a small race window (concurrent cancel with another
+                        // fill cycle) against leaving dust orders on the book for 5+ min.
+                        // On the next cycle the lock will likely be free and the usual
+                        // path applies.
+                        this._warn('[DUST] Fill lock unavailable — cancelling dust without lock (potential race)');
                         await this._cancelDustOrders({
                             buy: health.buyDustOrders,
                             sell: health.sellDustOrders,
                         });
-                    });
+                    }
                 }
-            } catch {
-                // Silently retry next interval
+            } catch (err) {
+                // TODO: Replace string-match with a typed error class
+                // (LockTimeoutError) so the lock-busy branch survives error
+                // message changes in async_lock.ts.
+                if (err?.message?.includes('Lock acquisition timeout')) {
+                    this._warn('[DUST] Lock busy, skipping dust cancel this cycle (retry in 5 min)');
+                } else {
+                    this._warn(`[DUST] Health check error (retry in 5 min): ${err?.message || err}`);
+                }
             }
-        }, DUST_HEALTH_CHECK_INTERVAL_MS);
+        }, TIMING.DUST_HEALTH_CHECK_INTERVAL_MS);
         if (typeof this._dustHealthCheckTimer?.unref === 'function') {
             this._dustHealthCheckTimer.unref();
         }

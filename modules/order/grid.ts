@@ -1852,7 +1852,7 @@ async function _getDustOrders(manager, partials, type) {
 
         const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const ctx = await _getSizingContext(manager, side);
-        if (!ctx || ctx.budget <= 0) return [];
+        const dustThresholdPercent = manager.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE;
 
         const sideSlots = (Array.from(manager.orders.values()) as Order[])
             .filter(o => o.type === type)
@@ -1860,23 +1860,30 @@ async function _getDustOrders(manager, partials, type) {
 
         if (sideSlots.length === 0) return [];
 
-        const idealSizes = allocateFundsByWeights(
-            ctx.budget,
-            sideSlots.length,
-            manager.config.weightDistribution[side],
-            manager.config.incrementPercent / 100,
-            type === ORDER_TYPES.BUY,
-            0,
-            ctx.precision
-        );
+        const idealSizes = ctx && ctx.budget > 0
+            ? allocateFundsByWeights(
+                ctx.budget,
+                sideSlots.length,
+                manager.config.weightDistribution[side],
+                manager.config.incrementPercent / 100,
+                type === ORDER_TYPES.BUY,
+                0,
+                ctx.precision
+            )
+            : [];
 
+        // When no budget is available, idealSizes becomes [] so every
+        // partial's threshold collapses to 0 — no order qualifies as dust.
+        // We still run the filter for uniformity so the threshold logic
+        // stays consistent regardless of budget state.
         return partials.filter(p => {
             const idx = sideSlots.findIndex(s => s.id === p.id);
             if (idx === -1) return false;
-            const threshold = getSingleDustThreshold(
-                idealSizes[idx],
-                manager.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE
-            );
+
+            const threshold = idealSizes.length > idx && idealSizes[idx] > 0
+                ? getSingleDustThreshold(idealSizes[idx], dustThresholdPercent)
+                : 0;
+
             return p.size < threshold;
         });
     }
