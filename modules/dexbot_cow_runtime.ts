@@ -19,7 +19,7 @@ const {
     buildOutsideInPairGroups,
 } = require('./order/utils/order');
 const { validateCreateTargetSlots } = require('./order/utils/validate');
-const { validateOrderSize } = require('./order/utils/math');
+const { validateOrderSize, getAssetFees } = require('./order/utils/math');
 const {
     COW_ACTIONS,
     ORDER_STATES,
@@ -32,11 +32,10 @@ const { WorkingGrid } = require('./order/working_grid');
 
 /**
  * Group orders into outside-in pairs for atomic create execution.
- * @param {import('./dexbot_class').DEXBot} bot
  * @param {Array} orders
  * @returns {Array<Array>}
  */
-function buildOutsideInPairGroupsForOrders(bot, orders) {
+function buildOutsideInPairGroupsForOrders(orders) {
     return buildOutsideInPairGroups(orders, {
         isValid: Boolean,
         getType: o => o.type,
@@ -46,11 +45,10 @@ function buildOutsideInPairGroupsForOrders(bot, orders) {
 
 /**
  * Build outside-in pair groups for create entry contexts.
- * @param {import('./dexbot_class').DEXBot} bot
  * @param {Array} createEntries
  * @returns {Array<Array>}
  */
-function buildOutsideInPairGroupsForCreateEntries(bot, createEntries) {
+function buildOutsideInPairGroupsForCreateEntries(createEntries) {
     return buildOutsideInPairGroups(createEntries, {
         isValid: e => Boolean(e?.context?.order),
         getType: e => e.context.order.type,
@@ -60,24 +58,24 @@ function buildOutsideInPairGroupsForCreateEntries(bot, createEntries) {
 
 /**
  * Extract operation results from a batch transaction result.
- * @param {import('./dexbot_class').DEXBot} bot
  * @param {Object|Array|null} result
  * @param {string} [warnContext='']
+ * @param {Function} [logFn] - Optional logger function, called with (msg, level) on unrecognized shape
  * @returns {Array}
  */
-function extractOperationResults(bot, result, warnContext = '') {
+function extractOperationResults(result, warnContext = '', logFn = null) {
     const extracted = extractBatchOperationResults(result);
 
     if (Array.isArray(extracted)) return extracted;
 
-    if (result) {
+    if (result && logFn) {
         const resultType = Array.isArray(result) ? 'array' : typeof result;
         const keySummary = (resultType === 'object' && !Array.isArray(result))
             ? Object.keys(result).slice(0, 8).join(',')
             : '';
         const contextSuffix = warnContext ? ` (${warnContext})` : '';
         const keysSuffix = keySummary ? `; keys=[${keySummary}]` : '';
-        bot.manager?.logger?.log(
+        logFn(
             `[COW] Unrecognized operation_results shape${contextSuffix}; defaulting to empty results. resultType=${resultType}${keysSuffix}`,
             'warn'
         );
@@ -88,12 +86,11 @@ function extractOperationResults(bot, result, warnContext = '') {
 
 /**
  * Find CREATE operation contexts whose broadcast result did not include a chain order id.
- * @param {import('./dexbot_class').DEXBot} bot
  * @param {Array} operationResults
  * @param {Array} opContexts
  * @returns {Array<{index:number, ctx:Object}>}
  */
-function findMissingCreateResultContexts(bot, operationResults, opContexts) {
+function findMissingCreateResultContexts(operationResults, opContexts) {
     const missing = [];
     if (!Array.isArray(opContexts)) return missing;
 
@@ -238,11 +235,10 @@ function markMissingCreateResultsAsStructuralBlocker(bot, missingCreateResults) 
 
 /**
  * Format an unmatched chain order for COW logs.
- * @param {import('./dexbot_class').DEXBot} bot
  * @param {Object} order
  * @returns {string}
  */
-function formatUnmatchedChainOrderForLog(bot, order) {
+function formatUnmatchedChainOrderForLog(order) {
     return formatUnmatchedChainOrder(order);
 }
 
@@ -287,11 +283,11 @@ function recordPendingBroadcast(bot, entry) {
 
 /**
  * Clear the pending-broadcast cache.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Map} pendingBroadcasts
  */
-function clearPendingBroadcasts(bot) {
-    if (bot.manager && bot.manager._pendingBroadcasts instanceof Map) {
-        bot.manager._pendingBroadcasts.clear();
+function clearPendingBroadcasts(pendingBroadcasts) {
+    if (pendingBroadcasts instanceof Map) {
+        pendingBroadcasts.clear();
     }
 }
 
@@ -473,7 +469,7 @@ async function reconcileAfterUncertainBroadcastImpl(bot, err, opContexts, option
                 { batchId: err?.batchId || null }
             );
         }
-        clearPendingBroadcasts(bot);
+        clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
         return { executed: false, hadRotation: false, uncertain: true };
     }
 
@@ -494,7 +490,7 @@ async function reconcileAfterUncertainBroadcastImpl(bot, err, opContexts, option
                 { batchId: err?.batchId || null, error: readErr?.message || String(readErr) }
             );
         }
-        clearPendingBroadcasts(bot);
+        clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
         return { executed: false, hadRotation: false, uncertain: true };
     }
 
@@ -554,10 +550,7 @@ async function reconcileAfterUncertainBroadcastImpl(bot, err, opContexts, option
             const expectedType = plannedOpCtx.order?.type || entry.orderType;
 
             try {
-                const btsFeeData = (() => {
-                    const { getAssetFees } = require('./order/utils/math');
-                    return getAssetFees('BTS');
-                })();
+                const btsFeeData = getAssetFees('BTS');
                 await bot.manager.synchronizeWithChain({
                     gridOrderId: plannedOpCtx.order?.id || entry.slotId,
                     chainOrderId,
@@ -746,7 +739,7 @@ async function autoCancelOneUnmatchedOrphan(bot) {
         bot._autoCancelOrphanSubCount++;
         bot.manager.logger.log(
             `[COW] Auto-cancelled ${bot._autoCancelOrphanSubCount}/${unmatched.length} unmatched chain order ` +
-            `(${formatUnmatchedChainOrderForLog(bot, target)}) — per-cycle cap=${cycleCap}.`,
+            `(${formatUnmatchedChainOrderForLog(target)}) — per-cycle cap=${cycleCap}.`,
             'warn'
         );
         return { cancelled: true, orderId };
@@ -845,7 +838,7 @@ async function executeOperationsWithStrategy(bot, operations, opContexts) {
         });
     }
 
-    const groups = buildOutsideInPairGroupsForCreateEntries(bot, createEntries);
+    const groups = buildOutsideInPairGroupsForCreateEntries(createEntries);
     const mergedOperationResults = [];
     const mergedRawResults = [];
     const mergedContexts = [];
@@ -875,7 +868,7 @@ async function executeOperationsWithStrategy(bot, operations, opContexts) {
             err.broadcastedOperationCount = broadcastedOperationCount;
             throw err;
         }
-        const groupOpResults = extractOperationResults(bot, groupResult);
+        const groupOpResults = extractOperationResults(groupResult, '', bot.manager?.logger?.log?.bind(bot.manager?.logger));
 
         mergedOperationResults.push(...groupOpResults);
         mergedRawResults.push(groupResult?.raw || null);
@@ -1364,7 +1357,7 @@ async function updateOrdersOnChainBatchCOW(bot, cowResult) {
 
         const unmatchedSample = unmatchedChainOrders
             .slice(0, 3)
-            .map(o => formatUnmatchedChainOrderForLog(bot, o))
+            .map(o => formatUnmatchedChainOrderForLog(o))
             .join(' | ');
         bot.manager.logger.log(
             `[COW] ${unmatchedChainOrders.length} unmatched chain order(s) blocking CREATES ` +
@@ -1747,8 +1740,8 @@ async function updateOrdersOnChainBatchCOW(bot, cowResult) {
             bot.manager._throwOnIllegalState = true;
             
             if (result.success) {
-                const preCommitResults = extractOperationResults(bot, result, 'pre-commit-integrity');
-                const missingCreateResults = findMissingCreateResultContexts(bot, preCommitResults, executedContexts);
+                const preCommitResults = extractOperationResults(result, 'pre-commit-integrity', bot.manager?.logger?.log?.bind(bot.manager?.logger));
+                const missingCreateResults = findMissingCreateResultContexts(preCommitResults, executedContexts);
                 if (missingCreateResults.length > 0) {
                     const missingSlots = missingCreateResults
                         .map(item => item.ctx?.order?.id || item.ctx?.id || `op-${item.index}`)
@@ -1816,13 +1809,13 @@ async function updateOrdersOnChainBatchCOW(bot, cowResult) {
 
                 bot._metrics.batchesExecuted++;
                 bot.manager._clearWorkingGridRef();
-                clearPendingBroadcasts(bot);
+                clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
 
                 return { executed: true, hadRotation: true, ...batchResult };
             } else {
                 bot.manager.logger.log('[COW] Blockchain failed - working grid discarded, master unchanged', 'warn');
                 bot.manager._clearWorkingGridRef();
-                clearPendingBroadcasts(bot);
+                clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
                 return { executed: false, hadRotation: false, ...result };
             }
         } finally {
@@ -1894,8 +1887,7 @@ async function updateOrdersOnChainBatchCOW(bot, cowResult) {
  * @returns {Object} Result with { executed: boolean, hadRotation: boolean }
  */
 async function processBatchResults(bot, result, opContexts) {
-    const results = extractOperationResults(bot, result, 'processBatchResults');
-    const { getAssetFees } = require('./order/utils/math');
+    const results = extractOperationResults(result, 'processBatchResults', bot.manager?.logger?.log?.bind(bot.manager?.logger));
     const btsFeeData = getAssetFees('BTS');
     let hadRotation = false;
     let updateOperationCount = 0;

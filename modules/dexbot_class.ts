@@ -880,7 +880,7 @@ class DEXBot {
      * @returns {Array<Array<Object>>} Grouped order arrays
      */
     _buildOutsideInPairGroupsForOrders(orders) {
-        return cowRuntime.buildOutsideInPairGroupsForOrders(this, orders);
+        return cowRuntime.buildOutsideInPairGroupsForOrders(orders);
     }
 
     /**
@@ -889,7 +889,7 @@ class DEXBot {
      * @returns {Array<Array<Object>>} Grouped entry arrays
      */
     _buildOutsideInPairGroupsForCreateEntries(createEntries) {
-        return cowRuntime.buildOutsideInPairGroupsForCreateEntries(this, createEntries);
+        return cowRuntime.buildOutsideInPairGroupsForCreateEntries(createEntries);
     }
 
     /**
@@ -907,7 +907,7 @@ class DEXBot {
      * @returns {Array} Array of operation result entries
      */
     _extractOperationResults(result, warnContext = '') {
-        return cowRuntime.extractOperationResults(this, result, warnContext);
+        return cowRuntime.extractOperationResults(result, warnContext, this.manager?.logger?.log?.bind(this.manager?.logger));
     }
 
     /**
@@ -918,7 +918,7 @@ class DEXBot {
      * @returns {Array<{index:number, ctx:Object}>} Missing create result contexts.
      */
     _findMissingCreateResultContexts(operationResults, opContexts) {
-        return cowRuntime.findMissingCreateResultContexts(this, operationResults, opContexts);
+        return cowRuntime.findMissingCreateResultContexts(operationResults, opContexts);
     }
 
     /**
@@ -969,7 +969,7 @@ class DEXBot {
      * @returns {string} Compact human-readable diagnostic.
      */
     _formatUnmatchedChainOrderForLog(order) {
-        return cowRuntime.formatUnmatchedChainOrderForLog(this, order);
+        return cowRuntime.formatUnmatchedChainOrderForLog(order);
     }
 
     /**
@@ -1005,7 +1005,7 @@ class DEXBot {
      * _reconcileAfterUncertainBroadcast before calling this).
      */
     _clearPendingBroadcasts() {
-        return cowRuntime.clearPendingBroadcasts(this);
+        return cowRuntime.clearPendingBroadcasts(this.manager?._pendingBroadcasts);
     }
 
     /**
