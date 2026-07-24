@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.3.0 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.3.1 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 1,833+ commits over ~7 active months
+- **Growth Phase**: 1,839+ commits over ~7 active months
 - **Code Maturity**: Evolution from basic utilities to a ~54,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 200+ automated test files
-- **Releases**: 72 release entries (v0.1.0 to v1.3.0)
+- **Releases**: 73 release entries (v0.1.0 to v1.3.1)
 
 ---
 
@@ -114,6 +114,9 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.2.3 → v1.2.4 | 1 | Credential daemon memory — signing client cache (30-min TTL, fingerprint-based key rotation, dispose-then-delete contract), session purge interval, shallow policy copy, audit-log microtask reduction |
 | v1.2.4 → v1.2.5 | 3 | Redundant open-orders sync fix, supervisor updater override, waitForStableStartup event-loop hang fix, unref credit/dust intervals, base58 deduplication, key_store delegation cleanup, launch_modes clawOnly fix, test alignment |
 | v1.2.5 → v1.2.6 | 4 | Batch fill sync, crash-durable dedup, ghost batch cancel, config overrides, code-review fixes, EVOLUTION.md doc fix |
+| v1.2.6 → v1.2.7 | 1 | `node dexbot` → `dexbot` across all docs/CLI text, `npm i -g dexbot`, ALS re-entrancy test fix |
+| v1.2.7 → v1.3.0 | 1 | `dexbot unlock`/`dexbot pm2` rebranding, docstring sweep across 53 files, browser-field `market_adapter.js` exclusion, stale `typeof __filename` guard removal |
+| v1.3.0 → v1.3.1 | 6 | Repo-root symlinks (`./dexbot`/`./pm2`/`./unlock`), CLI canonical naming `keys`/`bots`→`key`/`bot`, browser exclusion completeness (logger, paths, system), README `npm link` fix + Quick Start dedup |
 
 ---
 
@@ -172,7 +175,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 23, 2026 (v1.3.0)
-**Total Commits**: 1,833
-**Date Range**: December 2, 2025 – July 23, 2026
+**Last Updated**: July 24, 2026 (v1.3.1)
+**Total Commits**: 1,839
+**Date Range**: December 2, 2025 – July 24, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

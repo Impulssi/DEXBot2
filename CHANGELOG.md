@@ -2,13 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.3.0] - 2026-07-23 - CLI Migration Completion, Market Adapter Cleanup, Doc Refresh
+## [1.3.1] - 2026-07-24 - CLI Canonical Naming, Browser Exclusion Completeness, Doc Polish
 
 ### 2026-07-24
 
 - **Feat**: add repo-root symlinks `dexbot`→`scripts/dexbot`, `pm2`→`scripts/pm2`, `unlock`→`scripts/unlock` so `./dexbot`, `./pm2`, `./unlock` work immediately after `npm install` with no global install. Wrappers try compiled `dist/` first, fall back to `tsx/cjs` for source.
+- **Fix**: rename canonical CLI commands `keys`/`bots` → `key`/`bot` in `dexbot.ts` registry. Plural forms continue to work via alias map. Updated all switch cases, JSDoc, and user-facing strings (`dexbot.ts`, `bot.ts`, `pm2.ts`, `modules/account_bots.ts`, `modules/bot_settings.ts`, `scripts/README.md`, `scripts/reset-settings.sh`, `scripts/postinstall.js`, `docs/GRID_RECALCULATION.md`, `docs/WORKFLOW.md`, `AGENTS.md`, `README.md`).
+- **Fix**: add missing browser exclusion entries for `modules/logger.js` and `modules/paths.js` to `package.json` browser false map (regression from 1.3.0 guard removal). Two entries: `./dist/modules/logger.js` and `./dist/modules/paths.js`.
+- **Fix**: add missing browser exclusion for `modules/order/utils/system.js` — transitively imports `../../logger` and `../../paths` (both browser-false, resolve to `{}` stub) and instantiates `new Logger('System')` at module load time (`package.json`, `AGENTS.md`).
+- **Fix**: add missing `npm link` to install-from-source command in Option B of README Quick Start (`README.md`).
+- **Docs**: de-duplicate Quick Start setup commands, drop redundant `'bare'` from git clone instructions (`README.md`, `AGENTS.md`, `CHANGELOG.md`).
 
-### 2026-07-23
+### 2026-07-23 (v1.3.0) - CLI Migration Completion, Market Adapter Cleanup, Doc Refresh
 
 - **Feat**: version bump 1.2.7 → 1.3.0 across all manifests (`package.json`, `package-lock.json`, `analysis/ama_fitting/package.json`, `claw/package.json`, `claw/runtimes/openclaw-plugin/*.json`, `claw/tests/test_claw_mcp_transport.ts`, `docs/DEXBOT_COMPARISON.md`, `docs/EVOLUTION.md`, `docs/MPA_CREDIT_USAGE.md`, `docs/FUND_MOVEMENT_AND_ACCOUNTING.md`, `docs/WORKFLOW.md`, `docs/README.md`, `docs/architecture.md`).
 - **Fix**: migrate all remaining `node unlock`/`node pm2` user-facing references to `dexbot unlock`/`dexbot pm2` across 22 source files — error messages, help text, doc comments, success banners, runtime command strings, ecosystem regeneration comments, and test assertions. Includes repo-root alternative notes (`./pm2`/`./unlock`) preserved in CLI entry points (`pm2.ts`, `unlock.ts`, `dexbot.ts`, `credential-daemon.ts`, `scripts/update.ts`, `modules/dexbot_class.ts`, `modules/launcher/*.ts`, `modules/constants.ts`, `claw/modules/claw_launcher.ts`, 4 test files).
