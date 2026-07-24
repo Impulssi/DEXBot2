@@ -33,7 +33,7 @@ DEXBot2 is the first open source trading bot with zero runtime dependencies and 
 # Option A — Global install (`dexbot` works everywhere)
 npm i -g dexbot
 
-# Option B — Clone + npm link (`dexbot` works)
+# Option B — Clone + npm link (`dexbot` works everywhere)
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install && npm link
 
 dexbot key                 # Set up master password and import keys
@@ -100,8 +100,13 @@ sudo dnf install nodejs npm git
 # Option A — Install globally via npm
 npm i -g dexbot
 
-# Option B — Clone + npm link (bare `dexbot` works)
+# Option B — Clone + npm link (`dexbot` works everywhere)
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install && npm link
+
+# Option C — Clone + local wrappers (no global install)
+git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
+./dexbot               # or: npx dexbot
+./unlock               # or: npx dexbot unlock
 ```
 
 Then set up your master password, keys and add bots:
