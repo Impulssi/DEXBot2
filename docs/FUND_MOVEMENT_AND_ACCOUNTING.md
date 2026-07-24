@@ -14,6 +14,7 @@ The accounting system is designed around a **Single Source of Truth** principle 
 | **Virtual** | `funds.virtual` | **Planned Capital**. Sum of sizes for orders in `VIRTUAL` state. <br> *Purpose:* Prevents `ChainFree` from being re-spent on overlapping grid layers. |
 | **Committed (Chain)** | `funds.committed.chain` | **Locked Capital**. Sum of sizes for `ACTIVE` + `PARTIAL` orders (including those without `orderId` yet). <br> *Source:* Real-time grid state + on-chain orders. |
 | **Committed (Grid)** | `funds.committed.grid` | **Strategy Capital**. Alias for `committed.chain` in the current engine. |
+| **Allocated** | `funds.allocated.{buy,sell}` | **Capital Budget**. The bot's configured share of total capital per side. <br> *Source:* `applyBotFundsAllocation()` applies `botFunds` config (percentage or absolute) against `chainTotal` (free + committed). <br> *Purpose:* All order sizing (`getSideBudget`, `_getSizingContext`) reads from `Allocated`, not raw `ChainFree`, ensuring the bot never exceeds its configured capital share. |
 | **FeesOwed** | `funds.btsFeesOwed` | **Liability**. Accumulated blockchain fees (BTS) that must be settled. |
 | **FeesReservation** | `btsFeesReservation` | **Safety Buffer**. Reserved BTS to ensure future grid operations (creation/cancellation) don't fail. |
 
@@ -28,9 +29,34 @@ $$Available = \max(0, \text{ChainFree} - \text{Virtual} - \text{FeesOwed} - \tex
 2.  **Available Funds = True Spending Power.** This formula is the single source of truth for how much capital can be deployed immediately.
 3.  **Non-BTS pair reservation.** When neither asset is BTS, the formula adds an extra proportional deduction: any BTS fee-budget deficit (formula budget minus `funds.btsBalance.free`) is split across `buyFree` + `sellFree` proportional to each side's free balance, and the side's share is subtracted from `Available`. See `calculateAvailableFundsValue()` in `modules/order/utils/math.ts` (lines 407–425).
 
+### 1.3 Capital Allocation Pipeline
+
+The raw `Available` from §1.2 is the bot's immediate spending power, but **order sizing does not use it directly**. A separate allocation pipeline applies the `botFunds` cap to produce `funds.allocated`, which is the budget source for all grid operations.
+
+**Pipeline:**
+
+```
+accountTotals.buyFree / sellFree           (raw chain free)
+        + funds.committed.chain             (+ what's locked in orders)
+        → computeChainFundTotals()
+          → chainTotalBuy / chainTotalSell  (total capital per side)
+
+chainTotal × botFunds%                      (apply botFunds cap)
+        → resolveConfigValueWithRegistry()
+          → funds.allocated.{buy,sell}      (bot's capital budget)
+
+funds.allocated → getSideBudget()           (budget for target grid sizing)
+funds.allocated → _getSizingContext()       (budget for spread correction)
+```
+
+**Key points:**
+- `botFunds` percentage applies to **total** capital (free + locked in orders), not just free. A bot at `"50%"` gets half of everything, not half of what's currently idle.
+- `funds.allocated` is the ceiling for each side. Existing orders already consume part of it; the remaining free portion is available for new placements.
+- The downstream `applyBotFundsAllocation()` (`manager.ts:654`) also caps `funds.available` to `<= allocated` as a safety net, but the primary budget chokepoint is `getSideBudget` / `_getSizingContext` reading `allocated` directly (v1.2.6).
+
 ---
 
-### 1.3 Mixed Order Fund Validation
+### 1.4 Mixed Order Fund Validation
 
 **Problem Fixed**: Early batch builders ran a single fund check keyed off the first order's side, so a mixed BUY/SELL batch could trip a false "insufficient funds" warning even when each side had ample capital — the BUY check was applied to SELL orders (or vice versa).
 
@@ -84,7 +110,7 @@ See [developer_guide.md#order-state-helper-functions](developer_guide.md#order-s
 
 ---
 
-### 1.4 Fill Batch Processing & Timeline
+### 1.5 Fill Batch Processing & Timeline
 
 #### Problem Solved
 
@@ -190,7 +216,7 @@ When a batch fails because an on-chain order no longer exists, the cleanup relea
 
 ---
 
-### 1.5 Remainder Accuracy During Capped Resize
+### 1.6 Remainder Accuracy During Capped Resize
 
 #### Problem Fixed
 
@@ -288,11 +314,11 @@ When a fill occurs, the boundary shifts to "follow" the price.
 
 ### 3.2 Global Side Capping
 
-Budgets are dynamic. The bot calculates `TotalSideBudget` based on `ChainFree` + `Committed`.
+Budgets are dynamic. The bot calculates `TotalSideBudget` from `funds.allocated.{buy,sell}` (the `botFunds`-capped capital per side — see §1.3). This ensures the bot never attempts to deploy more than its configured share of account capital, even when the account holds additional free balance for other bots or manual trading.
 
 **Safety Check:**
-If the calculated ideal grid requires more capital than is available, the *increase* is capped.
-$$Increase_{capped} = \min(Ideal - Current, Available)$$
+If the calculated ideal grid requires more capital than available in the allocation, the *increase* is capped.
+$$Increase_{capped} = \min(Ideal - Current, AllocatedRemaining)$$
 
 #### Batch Sizing Impact
 
