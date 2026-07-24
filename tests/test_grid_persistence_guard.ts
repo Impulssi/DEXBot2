@@ -114,11 +114,15 @@ const WHITELIST_FUNCTIONS = new Set([
     // dexbot_class.ts that all have explicit persistGrid sites.
     '_clearWorkingGridRef',
 
-    // DEXBot internal: applies applyGridUpdateBatch to commit COW
-    // outcomes. The CALLER (COW success path at dexbot_class.ts:4238)
+    // DEXBot internal (dexbot_class.ts): applies applyGridUpdateBatch to commit COW
+    // outcomes. The CALLER (COW success path in updateOrdersOnChainBatchCOW)
     // owns the persistGrid() call immediately after, so this helper
     // itself does not need its own persistGrid().
-    '_processBatchResults'
+    '_processBatchResults',
+
+    // COW runtime (dexbot_cow_runtime.ts): called from updateOrdersOnChainBatchCOW
+    // which owns the persistGrid() call immediately after processBatchResults.
+    'processBatchResults'
 ]);
 
 // Files where the invariant is enforced elsewhere (e.g. by the dirty-flag

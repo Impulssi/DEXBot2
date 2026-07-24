@@ -77,8 +77,6 @@ async function runTests() {
         bot.manager = manager;
         bot.account = 'test-account';
         bot.privateKey = 'test-private-key';
-        bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
-        bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
 
         const requestGridResetCalls = [];
         bot.requestGridReset = async (reason, options) => {
@@ -87,21 +85,10 @@ async function runTests() {
         };
 
         let executeCalls = 0;
-        bot._executeOperationsWithStrategy = async () => {
-            executeCalls += 1;
-            return {
-                result: { success: true, operation_results: [[1, '1.7.12345']] },
-                opContexts: []
-            };
-        };
 
         bot._wireStructuralGridResyncRequest();
 
         // Monkeypatch chainOrders.cancelOrder to avoid real blockchain calls.
-        // The auto-cancel path in _updateOrdersOnChainBatchCOW attempts to cancel
-        // unmatched chain orders before blocking the CREATE batch. The test
-        // verifies the guard path, so we make cancelOrder throw to simulate a
-        // failed cancellation attempt.
         const chainOrdersModule = require('../modules/chain_orders');
         const originalCancelOrder = chainOrdersModule.cancelOrder;
         chainOrdersModule.cancelOrder = async () => {
@@ -213,8 +200,6 @@ async function runTests() {
         bot.manager = manager;
         bot.account = 'test-account';
         bot.privateKey = 'test-private-key';
-        bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
-        bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
 
         const requestGridResetCalls = [];
         bot.requestGridReset = async (reason) => {
@@ -222,11 +207,6 @@ async function runTests() {
             await new Promise((resolve) => setTimeout(resolve, 50));
             return { success: true };
         };
-
-        bot._executeOperationsWithStrategy = async () => ({
-            result: { success: true, operation_results: [] },
-            opContexts: []
-        });
 
         bot._wireStructuralGridResyncRequest();
 
@@ -376,20 +356,8 @@ async function runTests() {
         bot.manager = manager;
         bot.account = 'test-account';
         bot.privateKey = 'test-private-key';
-        bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
-        bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
 
         let executeCalls = 0;
-        bot._executeOperationsWithStrategy = async (ops, ctxs) => {
-            executeCalls += 1;
-            return {
-                result: {
-                    success: true,
-                    operation_results: ctxs.map((ctx, i) => [0, `1.7.${90000000 + i}`])
-                },
-                opContexts: ctxs
-            };
-        };
 
         bot._wireStructuralGridResyncRequest();
 
@@ -443,7 +411,7 @@ async function runTests() {
             // _lastUnmatchedChainOrders must NOT be cleared (no sync adoption happened,
             // structural resync will handle it).
             assert.ok(
-                manager._lastUnmatchedChainOrders.length > 0,
+                (manager as any)._lastUnmatchedChainOrders.length > 0,
                 '_lastUnmatchedChainOrders must be preserved for structural resync'
             );
 
@@ -507,17 +475,8 @@ async function runTests() {
         bot.manager = manager;
         bot.account = 'test-account';
         bot.privateKey = 'test-private-key';
-        bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
-        bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
 
         let executeCalls = 0;
-        bot._executeOperationsWithStrategy = async () => {
-            executeCalls += 1;
-            return {
-                result: { success: true, operation_results: [[1, '1.7.12345']] },
-                opContexts: []
-            };
-        };
 
         const requestGridResetCalls = [];
         bot.requestGridReset = async (reason, options) => {

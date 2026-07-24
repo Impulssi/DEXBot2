@@ -16,6 +16,9 @@ process.on('unhandledRejection', (reason) => {
     process.exit(1);
 });
 
+const { ensureFeeCache } = require('./helpers/fee_cache_init');
+ensureFeeCache();
+
 function makeBot() {
     const bot = new DEXBot({
         botKey: 'test_cow_orchestration_fixes',
@@ -51,13 +54,17 @@ function makeBot() {
         _persistenceWarning: undefined,
         _recoveryState: { attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0, structuralResyncRequested: false },
         _pendingBroadcasts: new Map(),
-        persistGrid: async () => ({ isValid: true, skipped: false })
+        persistGrid: async () => ({ isValid: true, skipped: false }),
+        getChainFundsSnapshot: () => ({ chainFreeSell: 1e9, chainFreeBuy: 1e9 }),
+        synchronizeWithChain: async () => {},
+        accountant: {
+            updateOptimisticFreeBalance: async () => {}
+        },
+        applyGridUpdateBatch: async () => {},
     };
     bot.manager = manager;
     bot.account = 'test-account';
     bot.privateKey = 'test-private-key';
-    bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
-    bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
     return { bot, manager, logEntries };
 }
 
@@ -90,9 +97,10 @@ async function testPreBroadcastPriceFreshnessRebuildsOp() {
             finalInts: { sell: amountToSell, receive: minToReceive, sellAssetId, receiveAssetId }
         };
     };
-    bot._executeOperationsWithStrategy = async (operations, opContexts) => {
-        return { result: { success: true, operation_results: [[1, '1.7.572399999']] }, opContexts };
-    };
+    const originalExecuteBatch = chainOrders.executeBatch;
+    chainOrders.executeBatch = async () => ({
+        success: true, operation_results: [[1, '1.7.572399999']]
+    });
 
     try {
         const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 0 });
@@ -112,6 +120,7 @@ async function testPreBroadcastPriceFreshnessRebuildsOp() {
         assert.ok(driftLog.msg.includes('to live=103.25'), 'Drift log should show live=103.25');
     } finally {
         chainOrders.buildCreateOrderOp = originalBuildCreate;
+        chainOrders.executeBatch = originalExecuteBatch;
     }
     console.log('\u2713 COW-FRESH-001 passed');
 }
@@ -138,9 +147,9 @@ async function testPreBroadcastNoDriftNoRebuild() {
             finalInts: { sell: amountToSell, receive: minToReceive, sellAssetId, receiveAssetId }
         };
     };
-    bot._executeOperationsWithStrategy = async (operations, opContexts) => ({
-        result: { success: true, operation_results: [[1, '1.7.572399999']] },
-        opContexts
+    const originalExecuteBatch = chainOrders.executeBatch;
+    chainOrders.executeBatch = async () => ({
+        success: true, operation_results: [[1, '1.7.572399999']]
     });
 
     try {
@@ -157,6 +166,7 @@ async function testPreBroadcastNoDriftNoRebuild() {
         assert.ok(!driftLog, 'No drift log expected when prices match');
     } finally {
         chainOrders.buildCreateOrderOp = originalBuildCreate;
+        chainOrders.executeBatch = originalExecuteBatch;
     }
     console.log('\u2713 COW-FRESH-002 passed');
 }
@@ -178,9 +188,9 @@ async function testPersistenceCommitGuardRetriesOnSkipped() {
         op: { op_name: 'limit_order_create', op_data: {} },
         finalInts: { sell: amountToSell, receive: minToReceive, sellAssetId, receiveAssetId }
     });
-    bot._executeOperationsWithStrategy = async (operations, opContexts) => ({
-        result: { success: true, operation_results: [[1, '1.7.572399999']] },
-        opContexts
+    const originalExecuteBatch = chainOrders.executeBatch;
+    chainOrders.executeBatch = async () => ({
+        success: true, operation_results: [[1, '1.7.572399999']]
     });
 
     const plannedOrder = {
@@ -206,6 +216,7 @@ async function testPersistenceCommitGuardRetriesOnSkipped() {
         assert.strictEqual(manager._persistenceWarning, undefined, 'Warning should be cleared on successful retry');
     } finally {
         chainOrders.buildCreateOrderOp = originalBuildCreate;
+        chainOrders.executeBatch = originalExecuteBatch;
     }
     console.log('\u2713 COW-PERSIST-001 passed');
 }
@@ -226,9 +237,9 @@ async function testPersistenceCommitGuardRequestsResyncOnRepeatedFailure() {
         op: { op_name: 'limit_order_create', op_data: {} },
         finalInts: { sell: amountToSell, receive: minToReceive, sellAssetId, receiveAssetId }
     });
-    bot._executeOperationsWithStrategy = async (operations, opContexts) => ({
-        result: { success: true, operation_results: [[1, '1.7.572399999']] },
-        opContexts
+    const originalExecuteBatch = chainOrders.executeBatch;
+    chainOrders.executeBatch = async () => ({
+        success: true, operation_results: [[1, '1.7.572399999']]
     });
 
     const plannedOrder = {
@@ -254,6 +265,7 @@ async function testPersistenceCommitGuardRequestsResyncOnRepeatedFailure() {
         assert.strictEqual(resyncCalls[0].reason, 'persistence guard triggered after COW batch', 'Resync reason should mention the persistence guard');
     } finally {
         chainOrders.buildCreateOrderOp = originalBuildCreate;
+        chainOrders.executeBatch = originalExecuteBatch;
     }
     console.log('\u2713 COW-PERSIST-002 passed');
 }

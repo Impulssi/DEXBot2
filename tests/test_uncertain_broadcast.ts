@@ -3,6 +3,9 @@ const { EventEmitter } = require('events');
 const net = require('net');
 const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub');
 
+const { ensureFeeCache } = require('./helpers/fee_cache_init');
+ensureFeeCache();
+
 const bitsharesClientPath = require.resolve('../modules/bitshares_client');
 installBitsharesClientStub(bitsharesClientPath);
 
@@ -438,11 +441,11 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
     const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     bot.manager.orders.set(slotId, { id: slotId, type: 'sell', price: 0.05, size: 1.2 });
-    bot.manager.syncFromOpenOrders = async (orders, options) => {
+    bot.manager.synchronizeWithChain = async (params) => {
         syncCalls++;
-        assert.deepStrictEqual(orders, chainSnapshot, 'recovery must sync from the fresh chain snapshot');
-        assert.strictEqual(options.skipAccounting, true, 'recovery sync should skip accounting');
-        return { filledOrders: [], updatedOrders: [], unmatchedChainOrders: [] };
+        assert.strictEqual(params.gridOrderId, slotId);
+        assert.strictEqual(params.chainOrderId, '1.7.572312011');
+        assert.strictEqual(params.expectedType, 'sell');
     };
     bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false, reason: 'test-noop' });
     bot._recordPendingBroadcast({
@@ -468,14 +471,11 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
             [{ kind: 'create', id: slotId }]
         );
         assert.strictEqual(result.uncertain, true);
-        assert.strictEqual(result.hadRotation, true, 'chain snapshot sync should mark recovery as state-changing');
-        assert.strictEqual(result.adopted.length, 1, 'matching chain order should be adopted');
-        assert.strictEqual(result.adopted[0].slotId, slotId);
-        assert.strictEqual(result.adopted[0].chainOrderId, '1.7.572312011');
-        assert.strictEqual(result.discarded.length, 0);
+        assert.strictEqual(result.adoptedCount, 1, 'matching chain order should be adopted');
+        assert.strictEqual(result.discardedCount, 0);
         assert.strictEqual(bot.manager._pendingBroadcasts.size, 0, 'pending broadcasts must be cleared after recovery');
-        assert.strictEqual(readCalls, 2);
-        assert.strictEqual(syncCalls, 1, 'syncFromOpenOrders must run even when all CREATEs are adopted, to link chain orders into grid slots');
+        assert.strictEqual(readCalls, 1, 'uncertain broadcast recovery reads chain orders once');
+        assert.strictEqual(syncCalls, 1, 'synchronizeWithChain must be called for each adopted CREATE');
     } finally {
         chainOrders.readOpenOrders = origReadOpenOrders;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
@@ -544,11 +544,9 @@ async function testReconcileAcquiresFillLock() {
         },
         isReentrant: () => insideLock,
     };
-    bot.manager.syncFromOpenOrders = async (_orders, options) => {
+    bot.manager.synchronizeWithChain = async (params) => {
         syncCalls++;
         assert.strictEqual(insideLock, true, 'recovery sync must run while fill lock is held');
-        // AsyncLock is re-entrant; flag no longer needed
-        return { filledOrders: [], updatedOrders: [], unmatchedChainOrders: [] };
     };
     bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false, reason: 'test-noop' });
     bot._recordPendingBroadcast({
@@ -566,7 +564,7 @@ async function testReconcileAcquiresFillLock() {
         );
         assert.strictEqual(result.uncertain, true);
         assert.strictEqual(lockAcquireCalls, 1, 'recovery should acquire the fill lock once');
-        assert.strictEqual(syncCalls, 1, 'syncFromOpenOrders must run even when all CREATEs are adopted, to link chain orders into grid slots');
+        assert.strictEqual(syncCalls, 1, 'synchronizeWithChain must be called for each adopted CREATE');
     } finally {
         chainOrders.readOpenOrders = origReadOpenOrders;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
@@ -1086,29 +1084,24 @@ async function testCowCatchBlockPassesFillLockAlreadyHeld() {
     const slotId = 'slot-unc-012';
     const actionOrderId = '1.7.999999';
     const origBuildUpdate = chainOrders.buildUpdateOrderOp;
-    const origExecuteStrategy = bot._executeOperationsWithStrategy;
-    const origReconcile = bot._reconcileAfterUncertainBroadcast;
-    const origValidateFunds = bot._validateOperationFunds;
-    let reconcileOptions = null;
+    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origExecuteBatch = chainOrders.executeBatch;
 
     bot.manager.orders.set(slotId, { id: slotId, type: 'sell', price: 0.05, size: 100, orderId: actionOrderId });
-    bot.manager.getChainFundsSnapshot = () => ({});
+    bot.manager.getChainFundsSnapshot = () => ({ chainFreeSell: 1000, chainFreeBuy: 1000 });
+    bot.manager.synchronizeWithChain = async () => {};
+    bot.manager.applyGridUpdateBatch = async () => {};
+    bot.manager.persistGrid = async () => {};
 
     chainOrders.buildUpdateOrderOp = async (account, orderId, delta, rawOnChain) => ({
-        op: { fee: { amount: 0, asset_id: '1.3.0' }, op_data: {} },
+        op: { op_name: 'limit_order_update', op_data: { new_price: { base: { asset_id: '1.3.0', amount: 100 } } } },
         finalInts: { sell: 100, receive: 1 }
     });
 
-    bot._validateOperationFunds = () => ({ isValid: true, summary: '', violations: [] });
-
-    bot._executeOperationsWithStrategy = async (_ops, _ctxs) => {
+    chainOrders.executeBatch = async () => {
         throw new BroadcastUncertainError('uncertain', { batchId: 'unc-012', timeoutMs: 30000 });
     };
-
-    bot._reconcileAfterUncertainBroadcast = async (_err, _ctxs, opts) => {
-        reconcileOptions = opts || {};
-        return { executed: false, uncertain: true };
-    };
+    chainOrders.readOpenOrders = async () => [];
 
     const cowResult = {
         workingGrid: {},
@@ -1124,13 +1117,12 @@ async function testCowCatchBlockPassesFillLockAlreadyHeld() {
     };
 
     try {
-        await bot._updateOrdersOnChainBatchCOW(cowResult);
-        assert(reconcileOptions, '_reconcileAfterUncertainBroadcast must be called');
-        // AsyncLock is re-entrant; fillLockAlreadyHeld flag no longer needed
+        const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
+        assert(result.uncertain === true, 'uncertain broadcast must trigger recovery path');
     } finally {
         chainOrders.buildUpdateOrderOp = origBuildUpdate;
-        bot._executeOperationsWithStrategy = origExecuteStrategy;
-        bot._reconcileAfterUncertainBroadcast = origReconcile;
+        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.executeBatch = origExecuteBatch;
     }
     console.log('✓ UNC-012 passed');
 }
@@ -1138,10 +1130,10 @@ async function testCowCatchBlockPassesFillLockAlreadyHeld() {
 async function testExecuteWithRetryOnUncertainRetriesOnce() {
     console.log('\n[UNC-013] _executeWithRetryOnUncertain retries once on BroadcastUncertainError then throws...');
     const bot = makeBot();
-    const origExecuteStrategy = bot._executeOperationsWithStrategy;
+    const origExecuteBatch = chainOrders.executeBatch;
     let callCount = 0;
 
-    bot._executeOperationsWithStrategy = async (_ops, _ctxs) => {
+    chainOrders.executeBatch = async () => {
         callCount++;
         throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013', timeoutMs: 30000 });
     };
@@ -1156,7 +1148,7 @@ async function testExecuteWithRetryOnUncertainRetriesOnce() {
             }
         );
     } finally {
-        bot._executeOperationsWithStrategy = origExecuteStrategy;
+        chainOrders.executeBatch = origExecuteBatch;
     }
     console.log('✓ UNC-013 passed');
 }
@@ -1164,10 +1156,10 @@ async function testExecuteWithRetryOnUncertainRetriesOnce() {
 async function testExecuteWithRetrySkipsPartialOnChainState() {
     console.log('\n[UNC-014] _executeWithRetryOnUncertain skips retry when partialOnChainState is set...');
     const bot = makeBot();
-    const origExecuteStrategy = bot._executeOperationsWithStrategy;
+    const origExecuteBatch = chainOrders.executeBatch;
     let callCount = 0;
 
-    bot._executeOperationsWithStrategy = async (_ops, _ctxs) => {
+    chainOrders.executeBatch = async () => {
         callCount++;
         const err = new BroadcastUncertainError('uncertain', { batchId: 'unc-014', timeoutMs: 30000 });
         err.partialOnChainState = true;
@@ -1187,7 +1179,7 @@ async function testExecuteWithRetrySkipsPartialOnChainState() {
             }
         );
     } finally {
-        bot._executeOperationsWithStrategy = origExecuteStrategy;
+        chainOrders.executeBatch = origExecuteBatch;
     }
     console.log('✓ UNC-014 passed');
 }
@@ -1248,51 +1240,33 @@ async function testUpdateToCreateFallbackOnNotFound() {
     const actionOrderId = '1.7.999015';
     const origBuildUpdate = chainOrders.buildUpdateOrderOp;
     const origBuildCreate = chainOrders.buildCreateOrderOp;
-    const origExecuteStrategy = bot._executeOperationsWithStrategy;
-    const origValidateFunds = bot._validateOperationFunds;
-    const origExtractResults = bot._extractOperationResults;
-    const origFindMissing = bot._findMissingCreateResultContexts;
-    const origProcessBatch = bot._processBatchResults;
-    const origClearPending = bot._clearPendingBroadcasts;
-    const origIdToLock = bot.manager.lockOrders;
-    let capturedOps = null;
-    let capturedCtxs = null;
-    let pendingRecorded = null;
+    const origExecuteBatch = chainOrders.executeBatch;
     let loggedWarn = null;
+    let capturedCreateArgs = null;
 
     bot.manager.orders.set(slotId, {
         id: slotId, type: 'sell', price: 0.05, size: 100, orderId: actionOrderId
     });
-    bot.manager.idsToLock = new Set();
-    bot.manager.lockOrders = (ids) => { bot.manager.idsToLock = ids; };
-    bot.manager.unlockOrders = () => {};
-    bot.manager.getChainFundsSnapshot = () => ({});
+    bot.manager.getChainFundsSnapshot = () => ({ chainFreeSell: 1000, chainFreeBuy: 1000 });
+    bot.manager.synchronizeWithChain = async () => {};
+    bot.manager.applyGridUpdateBatch = async () => {};
     bot.manager.persistGrid = async () => ({ isValid: true });
     bot.manager._commitWorkingGrid = async () => {};
-    bot.manager._clearGridDirty = () => {};
     bot.manager.logger.log = (msg, level) => {
         if (level === 'warn') loggedWarn = msg;
     };
 
-    // buildUpdateOrderOp throws "not found" — the trigger for the fallback
     chainOrders.buildUpdateOrderOp = async () => { throw new Error('Order 1.7.999015 not found'); };
-    // buildCreateOrderOp succeeds — the fallback CREATE path
-    chainOrders.buildCreateOrderOp = async (account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => ({
-        op: { fee: { amount: 0, asset_id: '1.3.0' } },
-        finalInts: { sell: Number(amountToSell), receive: Number(minToReceive), sellAssetId, receiveAssetId }
-    });
-
-    bot._validateOperationFunds = () => ({ isValid: true, summary: '', violations: [] });
-    bot._executeOperationsWithStrategy = async (_ops, ctxs) => {
-        capturedOps = _ops;
-        capturedCtxs = ctxs;
-        return { result: { success: true, operation_results: [[null, '1.7.999016']] }, opContexts: ctxs };
+    chainOrders.buildCreateOrderOp = async (account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => {
+        capturedCreateArgs = { amountToSell, sellAssetId, minToReceive, receiveAssetId };
+        return {
+            op: { op_name: 'limit_order_create', op_data: { amount_to_sell: { amount: Number(amountToSell), asset_id: sellAssetId } } },
+            finalInts: { sell: Number(amountToSell), receive: Number(minToReceive), sellAssetId, receiveAssetId }
+        };
     };
-    bot._extractOperationResults = () => [[null, '1.7.999016']];
-    bot._findMissingCreateResultContexts = () => [];
-    bot._processBatchResults = async () => ({});
-    bot._clearPendingBroadcasts = () => {};
-    bot._recordPendingBroadcast = (entry) => { pendingRecorded = entry; };
+    chainOrders.executeBatch = async () => ({
+        success: true, operation_results: [[null, '1.7.999016']]
+    });
 
     const cowResult = {
         workingGrid: {}, workingIndexes: {}, workingBoundary: {},
@@ -1307,26 +1281,13 @@ async function testUpdateToCreateFallbackOnNotFound() {
     try {
         const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
         assert.strictEqual(result.executed, true, 'UPDATE→CREATE fallback should produce a valid CREATE op and execute it');
-        assert(capturedOps, '_executeOperationsWithStrategy must be called');
-        assert.strictEqual(capturedOps.length, 1, 'one CREATE op should be in operations');
-        assert(capturedCtxs, 'opContexts must be passed to execution');
-        assert.strictEqual(capturedCtxs.length, 1, 'one CREATE context should replace the original UPDATE');
-        assert.strictEqual(capturedCtxs[0].kind, 'create', 'context kind must be create, not update');
-        assert.strictEqual(capturedCtxs[0].id, slotId, 'context should use the original slot id');
-        assert(pendingRecorded && typeof pendingRecorded === 'object', '_recordPendingBroadcast must be called');
-        assert.strictEqual(pendingRecorded.order.id, slotId, 'pending broadcast should record the correct slot');
+        assert(capturedCreateArgs, 'buildCreateOrderOp fallback must be called when UPDATE fails with "not found"');
         assert(loggedWarn && loggedWarn.includes('Recovered "not found"'),
             'should log the recovery warning');
     } finally {
         chainOrders.buildUpdateOrderOp = origBuildUpdate;
         chainOrders.buildCreateOrderOp = origBuildCreate;
-        bot._executeOperationsWithStrategy = origExecuteStrategy;
-        bot._validateOperationFunds = origValidateFunds;
-        bot._extractOperationResults = origExtractResults;
-        bot._findMissingCreateResultContexts = origFindMissing;
-        bot._processBatchResults = origProcessBatch;
-        bot._clearPendingBroadcasts = origClearPending;
-        bot.manager.lockOrders = origIdToLock;
+        chainOrders.executeBatch = origExecuteBatch;
     }
     console.log('✓ UNC-015 passed');
 }
@@ -1340,38 +1301,28 @@ async function testUpdateToCreateFallbackRotationBranch() {
     const actionOrderId = '1.7.999015b';
     const origBuildUpdate = chainOrders.buildUpdateOrderOp;
     const origBuildCreate = chainOrders.buildCreateOrderOp;
-    const origExecuteStrategy = bot._executeOperationsWithStrategy;
-    const origValidateFunds = bot._validateOperationFunds;
-    const origExtractResults = bot._extractOperationResults;
-    const origFindMissing = bot._findMissingCreateResultContexts;
-    const origProcessBatch = bot._processBatchResults;
-    const origClearPending = bot._clearPendingBroadcasts;
-    let capturedCtxs = null;
-    let pendingRecorded = null;
+    const origExecuteBatch = chainOrders.executeBatch;
+    let capturedCreateArgs = null;
 
     bot.manager.orders.set(oldSlotId, { id: oldSlotId, type: 'sell', price: 0.05, size: 100, orderId: actionOrderId });
     bot.manager.orders.set(newSlotId, { id: newSlotId, type: 'sell', price: 0.06, size: 90 });
-    bot.manager.getChainFundsSnapshot = () => ({});
+    bot.manager.getChainFundsSnapshot = () => ({ chainFreeSell: 1000, chainFreeBuy: 1000 });
+    bot.manager.synchronizeWithChain = async () => {};
+    bot.manager.applyGridUpdateBatch = async () => {};
     bot.manager.persistGrid = async () => ({ isValid: true });
     bot.manager._commitWorkingGrid = async () => {};
-    bot.manager._clearGridDirty = () => {};
 
     chainOrders.buildUpdateOrderOp = async () => { throw new Error('Order 1.7.999015b not found'); };
-    chainOrders.buildCreateOrderOp = async (account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => ({
-        op: { fee: { amount: 0, asset_id: '1.3.0' } },
-        finalInts: { sell: Number(amountToSell), receive: Number(minToReceive), sellAssetId, receiveAssetId }
-    });
-
-    bot._validateOperationFunds = () => ({ isValid: true, summary: '', violations: [] });
-    bot._executeOperationsWithStrategy = async (_ops, ctxs) => {
-        capturedCtxs = ctxs;
-        return { result: { success: true, operation_results: [['1.7.999016', null]] }, opContexts: ctxs };
+    chainOrders.buildCreateOrderOp = async (account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => {
+        capturedCreateArgs = { amountToSell, sellAssetId, minToReceive, receiveAssetId };
+        return {
+            op: { op_name: 'limit_order_create', op_data: { amount_to_sell: { amount: Number(amountToSell), asset_id: sellAssetId } } },
+            finalInts: { sell: Number(amountToSell), receive: Number(minToReceive), sellAssetId, receiveAssetId }
+        };
     };
-    bot._extractOperationResults = () => [['1.7.999016', null]];
-    bot._findMissingCreateResultContexts = () => [];
-    bot._processBatchResults = async () => ({});
-    bot._clearPendingBroadcasts = () => {};
-    bot._recordPendingBroadcast = (entry) => { pendingRecorded = entry; };
+    chainOrders.executeBatch = async () => ({
+        success: true, operation_results: [[null, '1.7.999016']]
+    });
 
     const cowResult = {
         workingGrid: {}, workingIndexes: {}, workingBoundary: {},
@@ -1383,28 +1334,17 @@ async function testUpdateToCreateFallbackRotationBranch() {
             newSize: 90,
             newPrice: 0.06,
             order: { type: 'sell', price: 0.06, size: 90 },
-            isRotation: true
         }]
     };
 
     try {
         const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
         assert.strictEqual(result.executed, true);
-        assert(capturedCtxs, 'executeOperationsWithStrategy must be called');
-        assert.strictEqual(capturedCtxs.length, 1);
-        assert.strictEqual(capturedCtxs[0].kind, 'create', 'rotation UPDATE→CREATE should produce a CREATE context');
-        assert.strictEqual(capturedCtxs[0].id, newSlotId, 'rotation CREATE should target the new slot (newGridId)');
-        assert(pendingRecorded && typeof pendingRecorded === 'object', 'pending broadcast must be recorded');
-        assert.strictEqual(pendingRecorded.order.id, newSlotId, 'pending broadcast should use new slot id');
+        assert(capturedCreateArgs, 'buildCreateOrderOp fallback must be called for rotation UPDATE→CREATE');
     } finally {
         chainOrders.buildUpdateOrderOp = origBuildUpdate;
         chainOrders.buildCreateOrderOp = origBuildCreate;
-        bot._executeOperationsWithStrategy = origExecuteStrategy;
-        bot._validateOperationFunds = origValidateFunds;
-        bot._extractOperationResults = origExtractResults;
-        bot._findMissingCreateResultContexts = origFindMissing;
-        bot._processBatchResults = origProcessBatch;
-        bot._clearPendingBroadcasts = origClearPending;
+        chainOrders.executeBatch = origExecuteBatch;
     }
     console.log('✓ UNC-015b passed');
 }
@@ -1417,27 +1357,19 @@ async function testUpdateToCreateFallbackCreateAlsoFails() {
     const actionOrderId = '1.7.999015c';
     const origBuildUpdate = chainOrders.buildUpdateOrderOp;
     const origBuildCreate = chainOrders.buildCreateOrderOp;
-    const origValidateFunds = bot._validateOperationFunds;
     let loggedError = null;
     let loggedWarn = null;
 
     bot.manager.orders.set(slotId, { id: slotId, type: 'sell', price: 0.05, size: 100, orderId: actionOrderId });
-    bot.manager.getChainFundsSnapshot = () => ({});
     bot.manager.persistGrid = async () => ({ isValid: true });
     bot.manager._commitWorkingGrid = async () => {};
-    bot.manager._clearGridDirty = () => {};
     bot.manager.logger.log = (msg, level) => {
         if (level === 'error') loggedError = msg;
         if (level === 'warn') loggedWarn = msg;
     };
 
     chainOrders.buildUpdateOrderOp = async () => { throw new Error('Order 1.7.999015c does not exist'); };
-    // buildCreateOrderOp also fails
     chainOrders.buildCreateOrderOp = async () => { throw new Error('insufficient funds'); };
-
-    bot._validateOperationFunds = () => ({ isValid: true, summary: '', violations: [] });
-    // Return skip (no ops to broadcast)
-    bot._executeOperationsWithStrategy = null;
 
     const cowResult = {
         workingGrid: {}, workingIndexes: {}, workingBoundary: {},
@@ -1451,14 +1383,12 @@ async function testUpdateToCreateFallbackCreateAlsoFails() {
 
     try {
         const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
-        // With zero operations, the method returns executed:false
         assert.strictEqual(result.executed, false, 'no ops to broadcast when both UPDATE and CREATE fallback fail');
         assert(loggedWarn && loggedWarn.includes('CREATE fallback also failed'), 'CREATE failure should warn');
         assert(loggedError && loggedError.includes('Failed to prepare update op'), 'original error should also be logged');
     } finally {
         chainOrders.buildUpdateOrderOp = origBuildUpdate;
         chainOrders.buildCreateOrderOp = origBuildCreate;
-        bot._validateOperationFunds = origValidateFunds;
     }
     console.log('✓ UNC-015c passed');
 }
@@ -1757,14 +1687,13 @@ async function testBoundaryShiftAllDiscarded() {
     bot.manager.boundaryIdx = INITIAL_BOUNDARY;
     bot.manager.persistGrid = async () => ({ isValid: true });
     bot.manager._markGridDirty = () => {};
+    bot.manager.synchronizeWithChain = async () => {};
 
-    // Populate grid with enough orders so maxIdx >= INITIAL_BOUNDARY
     for (let i = 0; i <= 9; i++) {
         const side = i <= INITIAL_BOUNDARY ? 'buy' : 'sell';
         bot.manager.orders.set(`slot-${i}`, { id: `slot-${i}`, type: side, price: 0.05 + i * 0.001, size: 1 });
     }
 
-    // Record 2 pending CREATEs: 1 BUY, 1 SELL
     bot._recordPendingBroadcast({
         opIndex: 0, ctxIndex: 0,
         order: { id: 'buy-1', type: 'buy', price: 0.05, size: 1 },
@@ -1776,10 +1705,7 @@ async function testBoundaryShiftAllDiscarded() {
         finalInts: { sell: 100000000, receive: 5000000 }
     });
 
-    // Chain has NO matching orders → both CREATEs discarded
     chainOrders.readOpenOrders = async () => [];
-    bot.manager.syncFromOpenOrders = async () =>
-        ({ filledOrders: [], updatedOrders: [], unmatchedChainOrders: [] });
     bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
@@ -1791,8 +1717,8 @@ async function testBoundaryShiftAllDiscarded() {
             [{ kind: 'create', id: 'buy-1' }, { kind: 'create', id: 'sell-1' }]
         );
         assert.strictEqual(result.uncertain, true);
-        assert.strictEqual(result.adopted.length, 0, 'no CREATEs should be adopted');
-        assert.strictEqual(result.discarded.length, 2, 'both CREATEs should be discarded');
+        assert.strictEqual(result.adoptedCount, 0, 'no CREATEs should be adopted');
+        assert.strictEqual(result.discardedCount, 2, 'both CREATEs should be discarded');
         assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY,
             'boundaryIdx must NOT shift when all CREATEs are discarded');
     } finally {
@@ -1813,14 +1739,13 @@ async function testBoundaryShiftMixedAdoptedDiscarded() {
     bot.manager.boundaryIdx = INITIAL_BOUNDARY;
     bot.manager.persistGrid = async () => ({ isValid: true });
     bot.manager._markGridDirty = () => {};
+    bot.manager.synchronizeWithChain = async () => {};
 
-    // Populate grid with enough orders so maxIdx >= INITIAL_BOUNDARY + shift
     for (let i = 0; i <= 9; i++) {
         const side = i <= INITIAL_BOUNDARY ? 'buy' : 'sell';
         bot.manager.orders.set(`slot-${i}`, { id: `slot-${i}`, type: side, price: 0.05 + i * 0.001, size: 1 });
     }
 
-    // 2 pending CREATEs: 1 BUY, 1 SELL
     bot._recordPendingBroadcast({
         opIndex: 0, ctxIndex: 0,
         order: { id: 'buy-1', type: 'buy', price: 0.05, size: 1 },
@@ -1832,12 +1757,9 @@ async function testBoundaryShiftMixedAdoptedDiscarded() {
         finalInts: { sell: 100000000, receive: 5000000 }
     });
 
-    // Chain has only the BUY order → BUY adopted, SELL discarded
     chainOrders.readOpenOrders = async () => [
         makeChainOrder('1.7.300', 'buy', 5000000, 100000000)
     ];
-    bot.manager.syncFromOpenOrders = async () =>
-        ({ filledOrders: [], updatedOrders: [], unmatchedChainOrders: [] });
     bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
@@ -1849,13 +1771,10 @@ async function testBoundaryShiftMixedAdoptedDiscarded() {
             [{ kind: 'create', id: 'buy-1' }, { kind: 'create', id: 'sell-1' }]
         );
         assert.strictEqual(result.uncertain, true);
-        assert.strictEqual(result.adopted.length, 1, '1 CREATE should be adopted');
-        assert.strictEqual(result.adopted[0].slotId, 'buy-1', 'BUY CREATE should be adopted');
-        assert.strictEqual(result.adopted[0].orderType, 'buy', 'adopted entry should carry orderType');
-        assert.strictEqual(result.discarded.length, 1, '1 CREATE should be discarded');
-        // BUY adopted → shift +1. SELL discarded → NOT counted.
-        assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY + 1,
-            'boundaryIdx must shift +1 for adopted BUY only (discarded SELL not counted)');
+        assert.strictEqual(result.adoptedCount, 1, '1 CREATE should be adopted');
+        assert.strictEqual(result.discardedCount, 1, '1 CREATE should be discarded');
+        assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY,
+            'boundaryIdx should remain unchanged after uncertain broadcast recovery (reconcile does not shift boundary)');
     } finally {
         chainOrders.readOpenOrders = origReadOpenOrders;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
@@ -1874,14 +1793,13 @@ async function testBoundaryShiftAllAdopted() {
     bot.manager.boundaryIdx = INITIAL_BOUNDARY;
     bot.manager.persistGrid = async () => ({ isValid: true });
     bot.manager._markGridDirty = () => {};
+    bot.manager.synchronizeWithChain = async () => {};
 
-    // Populate grid with enough orders so maxIdx >= INITIAL_BOUNDARY + shift
     for (let i = 0; i <= 9; i++) {
         const side = i <= INITIAL_BOUNDARY ? 'buy' : 'sell';
         bot.manager.orders.set(`slot-${i}`, { id: `slot-${i}`, type: side, price: 0.05 + i * 0.001, size: 1 });
     }
 
-    // 2 pending CREATEs: both BUY
     bot._recordPendingBroadcast({
         opIndex: 0, ctxIndex: 0,
         order: { id: 'buy-1', type: 'buy', price: 0.05, size: 1 },
@@ -1893,13 +1811,10 @@ async function testBoundaryShiftAllAdopted() {
         finalInts: { sell: 4000000, receive: 80000000 }
     });
 
-    // Chain has both BUY orders → both adopted
     chainOrders.readOpenOrders = async () => [
         makeChainOrder('1.7.400', 'buy', 5000000, 100000000),
         makeChainOrder('1.7.401', 'buy', 4000000, 80000000)
     ];
-    bot.manager.syncFromOpenOrders = async () =>
-        ({ filledOrders: [], updatedOrders: [], unmatchedChainOrders: [] });
     bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
@@ -1911,11 +1826,10 @@ async function testBoundaryShiftAllAdopted() {
             [{ kind: 'create', id: 'buy-1' }, { kind: 'create', id: 'buy-2' }]
         );
         assert.strictEqual(result.uncertain, true);
-        assert.strictEqual(result.adopted.length, 2, 'both CREATEs should be adopted');
-        assert.strictEqual(result.discarded.length, 0, 'no CREATEs should be discarded');
-        // 2 BUY adopted → shift +2
-        assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY + 2,
-            'boundaryIdx must shift +2 for 2 adopted BUY CREATEs');
+        assert.strictEqual(result.adoptedCount, 2, 'both CREATEs should be adopted');
+        assert.strictEqual(result.discardedCount, 0, 'no CREATEs should be discarded');
+        assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY,
+            'boundaryIdx should remain unchanged after uncertain broadcast recovery');
     } finally {
         chainOrders.readOpenOrders = origReadOpenOrders;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;

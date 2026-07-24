@@ -61,7 +61,6 @@ const chainKeys = require('./chain_keys');
 const { getKeyStore } = require('./key_store');
 const chainOrders = require('./chain_orders');
 const fundRegistry = require('./fund_registry');
-const { BroadcastUncertainError } = require('./dexbot_credential_client');
 const { OrderManager, grid: Grid } = require('./order');
 const {
     retryPersistenceIfNeeded,
@@ -69,21 +68,13 @@ const {
 } = require('./order/utils/system');
 const {
     hasExecutableActions,
-    validateCreateTargetSlots
 } = require('./order/utils/validate');
 const {
-    buildCreateOrderArgs,
-    buildCreateOpFingerprint,
     virtualizeOrder,
     correctAllPriceMismatches,
-    convertToSpreadPlaceholder,
-    buildOutsideInPairGroups,
-    extractBatchOperationResults,
     buildFillKey,
-    formatUnmatchedChainOrder,
     parseChainOrder
 } = require('./order/utils/order');
-const { validateOrderSize } = require('./order/utils/math');
 const {
     ProcessedFillStore,
     PROCESSED_FILL_PERSISTENCE_MODES
@@ -94,10 +85,7 @@ const CreditRuntime = require('./credit_runtime');
 const {
     ORDER_STATES,
     ORDER_TYPES,
-    REBALANCE_STATES,
-    COW_ACTIONS,
     TIMING,
-    PIPELINE_TIMING,
     GRID_LIMITS,
     MAINTENANCE,
     FILL_PROCESSING,
@@ -111,6 +99,8 @@ const { cloneWeightDistribution } = require('./order/utils/math');
 const { normalizeBotEntry } = require('./bot_settings');
 const Format = require('./order/format');
 const { resolveBotRuntimeSettings } = require('./runtime_settings');
+
+const cowRuntime = require('./dexbot_cow_runtime');
 
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
@@ -2761,11 +2751,7 @@ class DEXBot {
      * @returns {Array<Array<Object>>} Grouped order arrays
      */
     _buildOutsideInPairGroupsForOrders(orders) {
-        return buildOutsideInPairGroups(orders, {
-            isValid: Boolean,
-            getType: o => o.type,
-            getPrice: o => o.price,
-        });
+        return cowRuntime.buildOutsideInPairGroupsForOrders(this, orders);
     }
 
     /**
@@ -2774,11 +2760,7 @@ class DEXBot {
      * @returns {Array<Array<Object>>} Grouped entry arrays
      */
     _buildOutsideInPairGroupsForCreateEntries(createEntries) {
-        return buildOutsideInPairGroups(createEntries, {
-            isValid: e => Boolean(e?.context?.order),
-            getType: e => e.context.order.type,
-            getPrice: e => e.context.order.price,
-        });
+        return cowRuntime.buildOutsideInPairGroupsForCreateEntries(this, createEntries);
     }
 
     /**
@@ -2796,24 +2778,7 @@ class DEXBot {
      * @returns {Array} Array of operation result entries
      */
     _extractOperationResults(result, warnContext = '') {
-        const extracted = extractBatchOperationResults(result);
-
-        if (Array.isArray(extracted)) return extracted;
-
-        if (result) {
-            const resultType = Array.isArray(result) ? 'array' : typeof result;
-            const keySummary = (resultType === 'object' && !Array.isArray(result))
-                ? Object.keys(result).slice(0, 8).join(',')
-                : '';
-            const contextSuffix = warnContext ? ` (${warnContext})` : '';
-            const keysSuffix = keySummary ? `; keys=[${keySummary}]` : '';
-            this.manager?.logger?.log(
-                `[COW] Unrecognized operation_results shape${contextSuffix}; defaulting to empty results. resultType=${resultType}${keysSuffix}`,
-                'warn'
-            );
-        }
-
-        return [];
+        return cowRuntime.extractOperationResults(this, result, warnContext);
     }
 
     /**
@@ -2824,19 +2789,7 @@ class DEXBot {
      * @returns {Array<{index:number, ctx:Object}>} Missing create result contexts.
      */
     _findMissingCreateResultContexts(operationResults, opContexts) {
-        const missing = [];
-        if (!Array.isArray(opContexts)) return missing;
-
-        for (let i = 0; i < opContexts.length; i++) {
-            const ctx = opContexts[i];
-            if (ctx?.kind !== 'create') continue;
-            const chainOrderId = operationResults?.[i]?.[1];
-            if (!chainOrderId || !/^1\.7\.\d+$/.test(String(chainOrderId))) {
-                missing.push({ index: i, ctx });
-            }
-        }
-
-        return missing;
+        return cowRuntime.findMissingCreateResultContexts(this, operationResults, opContexts);
     }
 
     /**
@@ -2851,43 +2804,7 @@ class DEXBot {
      * @returns {Promise<void>}
      */
     async _recoverAfterMissingCreateResults(reason = 'missing create operation results') {
-        try {
-            const accountRef = this.accountId || this.account?.id || this.account;
-            if (!accountRef || !this.manager || !chainOrders?.readOpenOrders) {
-                this.manager?.logger?.log?.(`[COW] Recovery sync unavailable after ${reason}`, 'warn');
-                return;
-            }
-            const preRecoveryMissingCreateBlockers = Array.isArray(this.manager._lastUnmatchedChainOrders)
-                ? this.manager._lastUnmatchedChainOrders
-                    .filter(order => order?.reason === 'missing-create-result')
-                    .map(order => ({ ...order }))
-                : [];
-            const openOrders = await chainOrders.readOpenOrders(accountRef);
-            const recoveryResult = await this.manager.syncFromOpenOrders(openOrders, {
-                skipAccounting: false,
-            });
-            this._preserveMissingCreateBlockersAfterRecovery(preRecoveryMissingCreateBlockers, recoveryResult);
-            // Persist any master grid mutations from the recovery sync. The
-            // caller returned from the COW catch handler before reaching the
-            // success-path persistGrid.
-            if (typeof this.manager.persistGrid === 'function') {
-                await this.manager.persistGrid();
-            }
-        } catch (err: any) {
-            this.manager?.logger?.log?.(`[COW] CRITICAL: Recovery sync failed after ${reason}: ${err.message}`, 'error');
-            if (typeof this.manager?.requestStructuralGridResync === 'function') {
-                try {
-                    await this.manager.requestStructuralGridResync(`recovery sync failed after ${reason}`, {
-                        error: err.message
-                    });
-                } catch (scheduleErr: any) {
-                    this.manager?.logger?.log?.(
-                        `[COW] CRITICAL: Failed to schedule structural resync after recovery failure: ${scheduleErr.message}`,
-                        'error'
-                    );
-                }
-            }
-        }
+        return cowRuntime.recoverAfterMissingCreateResults(this, reason);
     }
 
     /**
@@ -2898,36 +2815,7 @@ class DEXBot {
      * @returns {void}
      */
     _preserveMissingCreateBlockersAfterRecovery(blockers, recoveryResult) {
-        if (!Array.isArray(blockers) || blockers.length === 0 || !this.manager) return;
-
-        const adoptedSlotIds = new Set(
-            (Array.isArray(recoveryResult?.updatedOrders) ? recoveryResult.updatedOrders : [])
-                .filter(order => order?.id && order?.orderId)
-                .map(order => order.id)
-        );
-        const unresolvedBlockers = blockers.filter(blocker => !blocker.slotId || !adoptedSlotIds.has(blocker.slotId));
-        if (unresolvedBlockers.length === 0) return;
-
-        const currentUnmatched = Array.isArray(this.manager._lastUnmatchedChainOrders)
-            ? this.manager._lastUnmatchedChainOrders
-            : [];
-        const currentKeys = new Set(currentUnmatched.map(order => `${order.reason || ''}:${order.slotId || ''}:${order.operationIndex ?? ''}`));
-        const restored = [...currentUnmatched];
-
-        for (const blocker of unresolvedBlockers) {
-            const key = `${blocker.reason || ''}:${blocker.slotId || ''}:${blocker.operationIndex ?? ''}`;
-            if (!currentKeys.has(key)) restored.push({ ...blocker });
-        }
-
-        if (restored.length !== currentUnmatched.length) {
-            this.manager._lastUnmatchedChainOrders = restored;
-            this.manager._lastUnmatchedChainOrdersAt = Date.now();
-            this.manager.logger?.log?.(
-                `[COW] Preserving ${restored.length - currentUnmatched.length} missing-create blocker(s) after recovery sync; ` +
-                `chain snapshot did not account for the affected slot(s).`,
-                'warn'
-            );
-        }
+        return cowRuntime.preserveMissingCreateBlockersAfterRecovery(this, blockers, recoveryResult);
     }
 
     /**
@@ -2942,43 +2830,7 @@ class DEXBot {
      * @returns {void}
      */
     _markMissingCreateResultsAsStructuralBlocker(missingCreateResults) {
-        const blockers = Array.isArray(missingCreateResults)
-            ? missingCreateResults.map(item => {
-                const order = item.ctx?.order || {};
-                const fingerprint = [
-                    `type=${order.type || 'unknown'}`,
-                    `price=${Format.formatPrice6(order.price)}`,
-                    `size=${Format.formatAmount(order.size)}`
-                ].join(',');
-                return {
-                    chainOrderId: 'unknown',
-                    type: order.type || null,
-                    price: order.price,
-                    size: order.size,
-                    slotId: order.id || item.ctx?.id || null,
-                    reason: 'missing-create-result',
-                    operationIndex: item.index,
-                    fingerprint,
-                };
-            })
-            : [];
-
-        if (this.manager && blockers.length > 0) {
-            const existing = Array.isArray(this.manager._lastUnmatchedChainOrders)
-                ? this.manager._lastUnmatchedChainOrders
-                : [];
-            const keys = new Set(existing.map(order => `${order.reason || ''}:${order.slotId || ''}:${order.operationIndex ?? ''}`));
-            const merged = [...existing];
-            for (const blocker of blockers) {
-                const key = `${blocker.reason || ''}:${blocker.slotId || ''}:${blocker.operationIndex ?? ''}`;
-                if (!keys.has(key)) {
-                    merged.push(blocker);
-                    keys.add(key);
-                }
-            }
-            this.manager._lastUnmatchedChainOrders = merged;
-            this.manager._lastUnmatchedChainOrdersAt = Date.now();
-        }
+        return cowRuntime.markMissingCreateResultsAsStructuralBlocker(this, missingCreateResults);
     }
 
     /**
@@ -2988,7 +2840,7 @@ class DEXBot {
      * @returns {string} Compact human-readable diagnostic.
      */
     _formatUnmatchedChainOrderForLog(order) {
-        return formatUnmatchedChainOrder(order);
+        return cowRuntime.formatUnmatchedChainOrderForLog(this, order);
     }
 
     /**
@@ -3012,37 +2864,7 @@ class DEXBot {
      * @returns {void}
      */
     _recordPendingBroadcast(entry) {
-        if (!this.manager || !entry || !entry.order) return;
-        if (!this.manager._pendingBroadcasts || !(this.manager._pendingBroadcasts instanceof Map)) {
-            this.manager._pendingBroadcasts = new Map();
-        }
-        const fingerprint = buildCreateOpFingerprint({
-            side: entry.order.type,
-            assetA: this.manager?.assets?.assetA?.id,
-            assetB: this.manager?.assets?.assetB?.id,
-            sellInt: entry.finalInts?.sell,
-            receiveInt: entry.finalInts?.receive,
-            slotId: entry.order.id
-        });
-        if (!fingerprint) {
-            this.manager.logger.log?.(
-                `[COW] Skipped pending-broadcast record: could not build fingerprint for ${entry.order?.id || 'unknown'}`,
-                'warn'
-            );
-            return;
-        }
-        this.manager._pendingBroadcasts.set(fingerprint, {
-            fingerprint,
-            opIndex: entry.opIndex,
-            ctxIndex: entry.ctxIndex,
-            slotId: entry.order.id,
-            orderId: entry.order.id,
-            orderType: entry.order.type,
-            order: entry.order,
-            finalInts: entry.finalInts,
-            batchId: this._currentBatchId || null,
-            recordedAt: Date.now()
-        });
+        return cowRuntime.recordPendingBroadcast(this, entry);
     }
 
     /**
@@ -3054,9 +2876,7 @@ class DEXBot {
      * _reconcileAfterUncertainBroadcast before calling this).
      */
     _clearPendingBroadcasts() {
-        if (this.manager && this.manager._pendingBroadcasts instanceof Map) {
-            this.manager._pendingBroadcasts.clear();
-        }
+        return cowRuntime.clearPendingBroadcasts(this);
     }
 
     /**
@@ -3068,17 +2888,7 @@ class DEXBot {
      * @returns {string|null} Fingerprint or null on bad input
      */
     _buildChainOrderFingerprint(chainOrder, slotId) {
-        if (!chainOrder || !slotId) return null;
-        const normalized = this._normalizeChainOrderForPendingMatch(chainOrder);
-        if (!normalized) return null;
-        return buildCreateOpFingerprint({
-            side: normalized.side,
-            assetA: normalized.assetA,
-            assetB: normalized.assetB,
-            sellInt: normalized.sellInt,
-            receiveInt: normalized.receiveInt,
-            slotId
-        });
+        return cowRuntime.buildChainOrderFingerprint(this, chainOrder, slotId);
     }
 
     /**
@@ -3093,40 +2903,7 @@ class DEXBot {
      * @returns {{side: string, assetA: string, assetB: string, sellInt: number, receiveInt: number}|null}
      */
     _normalizeChainOrderForPendingMatch(chainOrder) {
-        if (!chainOrder) return null;
-        const assetA = this.manager?.assets?.assetA?.id;
-        const assetB = this.manager?.assets?.assetB?.id;
-        if (!assetA || !assetB) return null;
-
-        const explicitSide = (chainOrder.type === 'buy' || chainOrder.type === 'sell')
-            ? chainOrder.type
-            : null;
-        const explicitSell = chainOrder.sellInt ?? chainOrder.sell;
-        const explicitReceive = chainOrder.receiveInt ?? chainOrder.receive;
-        if (explicitSide && Number.isFinite(Number(explicitSell)) && Number.isFinite(Number(explicitReceive))) {
-            return {
-                side: explicitSide,
-                assetA,
-                assetB,
-                sellInt: Number(explicitSell),
-                receiveInt: Number(explicitReceive)
-            };
-        }
-
-        const base = chainOrder.sell_price?.base;
-        const quote = chainOrder.sell_price?.quote;
-        if (!base || !quote || !base.asset_id || !quote.asset_id) return null;
-        const baseAmount = Number(base.amount);
-        const quoteAmount = Number(quote.amount);
-        if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount)) return null;
-
-        if (base.asset_id === assetA && quote.asset_id === assetB) {
-            return { side: 'sell', assetA, assetB, sellInt: baseAmount, receiveInt: quoteAmount };
-        }
-        if (base.asset_id === assetB && quote.asset_id === assetA) {
-            return { side: 'buy', assetA, assetB, sellInt: baseAmount, receiveInt: quoteAmount };
-        }
-        return null;
+        return cowRuntime.normalizeChainOrderForPendingMatch(this, chainOrder);
     }
 
     /**
@@ -3145,51 +2922,7 @@ class DEXBot {
      * @returns {Object|null} Matching chain order, or null
      */
     _findChainOrderForSlot(chainOrders, slotId, planned) {
-        if (!Array.isArray(chainOrders) || !slotId) return null;
-        const assetA = this.manager?.assets?.assetA?.id;
-        const assetB = this.manager?.assets?.assetB?.id;
-        if (!assetA || !assetB) return null;
-
-        // 1. Exact fingerprint match.
-        for (const o of chainOrders) {
-            const fp = this._buildChainOrderFingerprint(o, slotId);
-            if (fp && this.manager._pendingBroadcasts?.has(fp)) {
-                return o;
-            }
-        }
-        if (!planned || !Number.isFinite(Number(planned.sell)) || !Number.isFinite(Number(planned.receive))) {
-            return null;
-        }
-        // 2. Near match: same side, sell int within 1, receive int within 1% or 2 units.
-        const targetSell = Number(planned.sell);
-        const targetReceive = Number(planned.receive);
-        const plannedSide = planned.orderType ||
-            planned.side ||
-            this.manager._pendingBroadcasts?.get?.(planned.fingerprint)?.orderType ||
-            this.manager.orders.get(slotId)?.type;
-        if (plannedSide !== 'buy' && plannedSide !== 'sell') {
-            return null;
-        }
-        let best = null;
-        let bestDistance = Infinity;
-        for (const o of chainOrders) {
-            const normalized = this._normalizeChainOrderForPendingMatch(o);
-            if (!normalized) continue;
-            if (normalized.side !== plannedSide) continue;
-            const sell = Number(normalized.sellInt);
-            const receive = Number(normalized.receiveInt);
-            if (!Number.isFinite(sell) || !Number.isFinite(receive)) continue;
-            const sellDelta = Math.abs(sell - targetSell);
-            const receiveDelta = Math.abs(receive - targetReceive);
-            const receiveTol = Math.max(2, Math.floor(targetReceive * 0.01));
-            if (sellDelta > 1 || receiveDelta > receiveTol) continue;
-            const distance = sellDelta * 1000 + receiveDelta;
-            if (distance < bestDistance) {
-                best = o;
-                bestDistance = distance;
-            }
-        }
-        return best;
+        return cowRuntime.findChainOrderForSlot(this, chainOrders, slotId, planned);
     }
 
     /**
@@ -3219,366 +2952,12 @@ class DEXBot {
      * @returns {Promise<Object>} Result object compatible with batch return shape
      */
     async _reconcileAfterUncertainBroadcast(err, opContexts, options: Record<string, any> = {}) {
-        if (
-            this.manager?._fillProcessingLock &&
-            typeof this.manager._fillProcessingLock.acquire === 'function' &&
-            !this.manager._fillProcessingLock.isReentrant()
-        ) {
-            return this.manager._fillProcessingLock.acquire(() =>
-                this._reconcileAfterUncertainBroadcast(err, opContexts, options)
-            );
-        }
-        return this._reconcileAfterUncertainBroadcastImpl(err, opContexts, options);
+        return cowRuntime.reconcileAfterUncertainBroadcast(this, err, opContexts, options);
     }
 
     async _reconcileAfterUncertainBroadcastImpl(err, opContexts, options) {
-        const startedAt = Date.now();
-        const pending: any[] = (this.manager && this.manager._pendingBroadcasts instanceof Map)
-            ? Array.from(this.manager._pendingBroadcasts.values()) as any[]
-            : [];
-        const createContextCount = opContexts.filter(c => c && c.kind === 'create').length;
-        const nonCreateContextCount = opContexts.length - createContextCount;
-
-        this.manager.logger.log(
-            `[COW][UNCERTAIN] batchId=${err?.batchId || 'n/a'} ops=${opContexts.length} ` +
-            `creates=${createContextCount} nonCreates=${nonCreateContextCount} ` +
-            `staleSinceMs=${err?.timeoutMs || 'n/a'}. Entering reconcile-then-decide.`,
-            'warn'
-        );
-
-        if (!chainOrders?.readOpenOrders) {
-            this.manager.logger.log(
-                '[COW][UNCERTAIN] readOpenOrders unavailable; falling back to structural resync only.',
-                'error'
-            );
-            if (typeof this.manager.requestStructuralGridResync === 'function') {
-                await this.manager.requestStructuralGridResync(
-                    'broadcast uncertain — readOpenOrders unavailable',
-                    { batchId: err?.batchId || null }
-                );
-            }
-            this._clearPendingBroadcasts();
-            return { executed: false, hadRotation: false, uncertain: true };
-        }
-
-        // 1. Read the chain
-        const accountRef = this.accountId || this.account?.id || this.account;
-        let chainSnapshot = [];
-        try {
-            chainSnapshot = await chainOrders.readOpenOrders(accountRef);
-        } catch (readErr) {
-            this.manager.logger.log(
-                `[COW][UNCERTAIN] readOpenOrders failed: ${readErr?.message || readErr}. ` +
-                `Falling back to structural resync.`,
-                'error'
-            );
-            if (typeof this.manager.requestStructuralGridResync === 'function') {
-                await this.manager.requestStructuralGridResync(
-                    'broadcast uncertain — readOpenOrders failed',
-                    { batchId: err?.batchId || null, error: readErr?.message || String(readErr) }
-                );
-            }
-            this._clearPendingBroadcasts();
-            return { executed: false, hadRotation: false, uncertain: true };
-        }
-
-        const adopted = [];
-        let discarded = [];
-
-        // 2. For each pending broadcast, look for a chain match.
-        for (const entry of pending) {
-            const match = this._findChainOrderForSlot(
-                chainSnapshot,
-                entry.slotId,
-                {
-                    sell: entry.finalInts?.sell,
-                    receive: entry.finalInts?.receive,
-                    orderType: entry.orderType || entry.order?.type,
-                    fingerprint: entry.fingerprint
-                }
-            );
-            if (match) {
-                adopted.push({
-                    slotId: entry.slotId,
-                    chainOrderId: match.id,
-                    orderType: entry.orderType || entry.order?.type,
-                });
-                this.manager._pendingBroadcasts.delete(entry.fingerprint);
-            } else {
-                // Preserve full entry context so the recheck below can use
-                // both the fingerprint match path (against _pendingBroadcasts)
-                // and the near-match path (via finalInts/orderType), not just
-                // slotId alone.
-                discarded.push(entry);
-            }
-        }
-
-        // ---- RACE MITIGATION: block-delay recheck before discarding creates ----
-        // BROADCAST_DEADLINE fires while the transaction may still be valid
-        // and land in the next block. Wait for up to 3 blocks (~1 BitShares
-        // block interval each) and re-check before permanently discarding.
-        const UNCERTAIN_RECHECK_MAX_ATTEMPTS = this.config.pipelineTiming?.RETRY_MAX_ATTEMPTS ?? PIPELINE_TIMING.RETRY_MAX_ATTEMPTS; // 3
-        const UNCERTAIN_RECHECK_INTERVAL_MS = TIMING.MILLISECONDS_PER_SECOND * 3; // 3s
-        let recheckRound = 0;
-        while (discarded.length > 0 && recheckRound < UNCERTAIN_RECHECK_MAX_ATTEMPTS) {
-            recheckRound++;
-            await new Promise(r => setTimeout(r, UNCERTAIN_RECHECK_INTERVAL_MS));
-            let freshSnapshot;
-            try {
-                freshSnapshot = await chainOrders.readOpenOrders(accountRef);
-            } catch {
-                break;
-            }
-            const stillDiscarded = [];
-            for (const entry of discarded) {
-                const match = this._findChainOrderForSlot(
-                    freshSnapshot,
-                    entry.slotId,
-                    {
-                        sell: entry.finalInts?.sell,
-                        receive: entry.finalInts?.receive,
-                        orderType: entry.orderType || entry.order?.type,
-                        fingerprint: entry.fingerprint
-                    }
-                );
-                if (match) {
-                    adopted.push({
-                        slotId: entry.slotId,
-                        chainOrderId: match.id,
-                        orderType: entry.orderType || entry.order?.type,
-                    });
-                    this.manager.logger.log(
-                        `[COW][UNCERTAIN] CREATE re-adopted after ${recheckRound} block(s): ` +
-                        `${entry.slotId}->${match.id}`,
-                        'info'
-                    );
-                } else {
-                    stillDiscarded.push(entry);
-                }
-            }
-            discarded = stillDiscarded;
-        }
-
-        // 3. Re-read chain with latest state. The initial snapshot may be
-        // stale for non-CREATE ops (updates/cancels) not tracked in
-        // _pendingBroadcasts — the seed cause of the slot-115 cascade.
-        let latestSnapshot;
-        try {
-            latestSnapshot = await chainOrders.readOpenOrders(accountRef);
-        } catch {
-            latestSnapshot = chainSnapshot;
-        }
-
-        // Always sync to link adopted chain orders into grid slots.
-        // Otherwise an adopted slot stays VIRTUAL and the next COW cycle
-        // places a duplicate order at the same price.
-        let hadRotation = false;
-        if (latestSnapshot && latestSnapshot.length > 0 && this.manager?.syncFromOpenOrders) {
-            try {
-                await this.manager.syncFromOpenOrders(latestSnapshot, {
-                    skipAccounting: true,
-                });
-                hadRotation = true;
-            } catch (syncErr) {
-                this.manager.logger.log(
-                    `[COW][UNCERTAIN] syncFromOpenOrders failed during recovery: ${syncErr?.message || syncErr}`,
-                    'error'
-                );
-                // Fallback: reload from persisted snapshot + re-sync.
-                this.manager.logger.log(
-                    '[COW][UNCERTAIN] syncFromOpenOrders failed; falling back to full grid reload from persisted snapshot',
-                    'warn'
-                );
-                const fallbackResult = await this._recoverFromPersistedGrid();
-                if (fallbackResult.success) {
-                    hadRotation = true;
-                } else {
-                    this.manager.logger.log(
-                        `[COW][UNCERTAIN] Persisted grid reload failed: ${fallbackResult.reason}. ` +
-                        `Escalating to structural resync.`,
-                        'warn'
-                    );
-                    if (typeof this.manager.requestStructuralGridResync === 'function') {
-                        this.manager.requestStructuralGridResync(
-                            'cow-uncertain-recovery-failed',
-                            { reason: fallbackResult.reason }
-                        ).catch((escalateErr: any) => {
-                            this.manager.logger.log(
-                                `[COW][UNCERTAIN] Escalation to structural resync failed: ${escalateErr.message}`,
-                                'error'
-                            );
-                        });
-                    }
-                }
-            }
-        }
-
-        // 4. Log structured summary.
-        const elapsedMs = Date.now() - startedAt;
-        const heartbeatAgeMs = this._lastBroadcastHeartbeatAt
-            ? Date.now() - this._lastBroadcastHeartbeatAt
-            : null;
-        this.manager.logger.log(
-            `[COW][UNCERTAIN] batchId=${err?.batchId || 'n/a'} ops=${opContexts.length} ` +
-            `staleSinceMs=${err?.timeoutMs || 'n/a'} heartbeatAgeMs=${heartbeatAgeMs ?? 'n/a'} ` +
-            `adopted=${adopted.length} discarded=${discarded.length} recheckRounds=${recheckRound} elapsedMs=${elapsedMs}`,
-            adopted.length > 0 ? 'info' : 'warn'
-        );
-        if (adopted.length > 0) {
-            this.manager.logger.log(
-                `[COW][UNCERTAIN] Adopted chain orders: ${adopted
-                    .map(a => `${a.slotId}->${a.chainOrderId}`)
-                    .join(', ')}`,
-                'info'
-            );
-        }
-        if (discarded.length > 0) {
-            this.manager.logger.log(
-                `[COW][UNCERTAIN] Discarded planned CREATEs (no chain match after ${recheckRound} recheck(s)): ${discarded
-                    .map(d => d.slotId)
-                    .join(', ')}`,
-                'warn'
-            );
-
-            // Restore target grid sizes for discarded CREATEs so the slots are
-            // not left as virtual/0 after recovery. Without this, the slot stays
-            // at size 0 (set by the fill handler) and is never reactivated until
-            // a fresh fill cycle triggers another rebalance that happens to succeed.
-            // entry.order is the pending-broadcast target order (captured at broadcast
-            // time); its .id matches entry.slotId — the lookup below keys on slotId.
-            for (const entry of discarded) {
-                if (entry.order && entry.slotId) {
-                    const current = this.manager.orders.get(entry.slotId);
-                    if (current && current.state === ORDER_STATES.VIRTUAL && !current.orderId) {
-                        try {
-                            await this.manager._applyOrderUpdate(
-                                { ...entry.order, state: ORDER_STATES.VIRTUAL, orderId: null },
-                                'uncertain-recovery-restore-size',
-                                { skipAccounting: true, fee: 0 }
-                            );
-                            this.manager.logger.log(
-                                `[COW][UNCERTAIN] Restored target size for discarded CREATE slot ${entry.slotId} (size: ${entry.order.size})`,
-                                'info'
-                            );
-                        } catch (restoreErr) {
-                            this.manager.logger.log(
-                                `[COW][UNCERTAIN] Failed to restore size for slot ${entry.slotId}: ${restoreErr?.message || restoreErr}`,
-                                'warn'
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // ---- Structural resync safeguard after skipAccounting restore ----
-        // The discarded CREATE restore above used skipAccounting: true to avoid
-        // double-counting when the structural resync recalculates accounting
-        // from scratch. Ensure one is scheduled — if already in-flight (timer
-        // or running), the existing resync will handle the accounting fix.
-        if (discarded.length > 0 && typeof this.manager?.requestStructuralGridResync === 'function') {
-            const alreadyScheduled = this._structuralGridResyncRunning || this._structuralGridResyncTimer;
-            if (!alreadyScheduled) {
-                this.manager.logger.log(
-                    `[COW][UNCERTAIN] Scheduling structural resync after discarded CREATE restore ` +
-                    `(skipAccounting used — resync needed for fund recalculation)`,
-                    'info'
-                );
-                this.manager.requestStructuralGridResync(
-                    'cow-uncertain-accounting-repair',
-                    { discardedCount: discarded.length }
-                ).catch((err: any) => {
-                    this.manager.logger.log(
-                        `[COW][UNCERTAIN] Failed to schedule accounting repair resync: ${err.message}`,
-                        'error'
-                    );
-                });
-            } else {
-                this.manager.logger.log(
-                    `[COW][UNCERTAIN] Structural resync already ${this._structuralGridResyncRunning ? 'running' : 'scheduled'}; ` +
-                    `it will repair accounting after discarded CREATE restore`,
-                    'debug'
-                );
-            }
-        }
-
-        this._clearPendingBroadcasts();
-
-        // Post-recovery safety net: if there are still unmatched chain
-        // orders after reconcile-then-decide, cancel ONE per cycle. The cap
-        // is enforced inside the helper via _autoCancelOrphanCycleMarker.
-        try {
-            const autoCancelResult = await this._autoCancelOneUnmatchedOrphan();
-            if (autoCancelResult.cancelled) {
-                this.manager.logger.log(
-                    `[COW][UNCERTAIN] Auto-cancelled orphan ${autoCancelResult.orderId} ` +
-                    `after recovery (cap=1/cycle).`,
-                    'info'
-                );
-            }
-        } catch (orphanErr) {
-            this.manager.logger.log(
-                `[COW][UNCERTAIN] Auto-cancel pass failed: ${orphanErr?.message || orphanErr}`,
-                'warn'
-            );
-        }
-
-        // Boundary shift recovery: the COW batch that should have committed the
-        // boundary shift from this fill cycle failed before commit. Only COUNT
-        // ADOPTED CREATEs — orders that actually landed on-chain. Discarded
-        // CREATEs represent orders that never existed, so the grid must NOT
-        // shift the boundary for them. The next fill cycle's
-        // calculateTargetGrid → deriveTargetBoundary will recompute the correct
-        // boundary from scratch for any discarded slots.
-        //
-        // NOTE: Direct mutation of manager.boundaryIdx outside a COW commit
-        // violates the invariant stated in grid.ts:1217-1220 (boundary must only
-        // be updated atomically inside _commitWorkingGrid). This is intentional
-        // here because the COW commit already failed — the invariant was already
-        // broken by the broadcast uncertainty, and the adjustment only restores
-        // the state to what the successful commit would have produced for
-        // orders that are confirmed on-chain.
-        if (hadRotation && this.manager && adopted.length > 0) {
-            let boundaryShift = 0;
-            for (const entry of adopted) {
-                if (entry.orderType === ORDER_TYPES.SELL) {
-                    boundaryShift--; // SELL CREATE → fill was BUY → boundary LEFT
-                } else if (entry.orderType === ORDER_TYPES.BUY) {
-                    boundaryShift++; // BUY CREATE → fill was SELL → boundary RIGHT
-                }
-            }
-            if (boundaryShift !== 0) {
-                const oldIdx = this.manager.boundaryIdx;
-                if (typeof oldIdx === 'number') {
-                    const maxIdx = Math.max(0, (this.manager.orders?.size || 1) - 1);
-                    const newIdx = Math.max(0, Math.min(maxIdx, oldIdx + boundaryShift));
-                    if (newIdx !== oldIdx) {
-                        this.manager.boundaryIdx = newIdx;
-                        this.manager.logger.log(
-                            `[COW][UNCERTAIN] Boundary adjusted by ${boundaryShift} ` +
-                            `(${adopted.length} adopted CREATE(s), ${discarded.length} discarded): ` +
-                            `${oldIdx} → ${newIdx}. Next COW cycle will generate replacement opposite-side orders.`,
-                            'warn'
-                        );
-                        if (typeof this.manager._markGridDirty === 'function') {
-                            this.manager._markGridDirty();
-                        }
-                    }
-                }
-            }
-        }
-
-        // Persist master grid mutations from the reconciliation sync and any
-        // orphan auto-cancellation that ran above. These apply outside the COW
-        // broadcast path and would otherwise be in-memory only. The boundary
-        // adjustment above is also persisted here.
-        if (typeof this.manager?.persistGrid === 'function') {
-            await this.manager.persistGrid();
-        }
-
-        return { executed: false, hadRotation, uncertain: true, adopted, discarded };
+        return cowRuntime.reconcileAfterUncertainBroadcastImpl(this, err, opContexts, options);
     }
-
     /**
      * Auto-cancel a price-drift orphan from the unmatched-order snapshot.
      *
@@ -3605,78 +2984,7 @@ class DEXBot {
      * @returns {Promise<{cancelled: boolean, orderId?: string, reason?: string}>}
      */
     async _autoCancelOneUnmatchedOrphan() {
-        const cycleId = this._currentCycleId || 0;
-        // FIX 4: Higher cap during recovery mode so orphan backlog clears faster.
-        const recoveryActive = this.manager?._recoveryState?.structuralResyncRequested === true;
-        const cycleCap = recoveryActive ? 5 : 1;
-
-        if (this._autoCancelOrphanCycleMarker === cycleId) {
-            if (this._autoCancelOrphanSubCount >= cycleCap) {
-                return { cancelled: false, reason: 'cap-reached-this-cycle', subCount: this._autoCancelOrphanSubCount };
-            }
-        } else {
-            // Reset sub-count on first call this cycle
-            this._autoCancelOrphanCycleMarker = cycleId;
-            this._autoCancelOrphanSubCount = 0;
-        }
-        const pending = (this.manager && this.manager._pendingBroadcasts instanceof Map)
-            ? this.manager._pendingBroadcasts.size
-            : 0;
-        if (pending > 0) {
-            return { cancelled: false, reason: 'pending-broadcasts-active' };
-        }
-        const unmatched = Array.isArray(this.manager?._lastUnmatchedChainOrders)
-            ? this.manager._lastUnmatchedChainOrders
-            : [];
-        if (unmatched.length === 0) {
-            return { cancelled: false, reason: 'no-unmatched' };
-        }
-        // Check for fingerprinted entries first — these came from a pending
-        // broadcast (missing-create-result) and must be handled by the recovery
-        // path, not by auto-cancel. The first fingerprinted entry is checked
-        // regardless of its reason field.
-        const fingerprinted = unmatched.find(u => u && u.fingerprint);
-        if (fingerprinted) {
-            return { cancelled: false, reason: 'fingerprinted-handle-via-recovery' };
-        }
-
-        // Only cancel price-drift orphans — these are surplus orders that
-        // drifted away from their assigned slot price and have no adoptable
-        // grid slot. All other unmatched orders (duplicate-price-level,
-        // already-matched-slot, etc.) are adoptable positions that the structural
-        // resync will integrate into the grid — cancelling them destroys capital.
-        const target = unmatched.find(u => u && u.reason === 'price-drift-orphan');
-        if (!target) {
-            return { cancelled: false, reason: 'no-price-drift-orphan', message: 'no price-drift orphan to cancel; other unmatched orders are adoptable' };
-        }
-        const orderId = target.id || target.orderId || target.chainOrderId;
-        if (!orderId) {
-            return { cancelled: false, reason: 'no-orderId' };
-        }
-        if (!chainOrders?.cancelOrder) {
-            return { cancelled: false, reason: 'cancelOrder-unavailable' };
-        }
-        try {
-            await chainOrders.cancelOrder(this.account, this.privateKey, orderId);
-            if (typeof chainOrders.recordOwnCancel === 'function') {
-                chainOrders.recordOwnCancel(orderId);
-            }
-            // Increment sub-count only after a confirmed successful cancel.
-            // Failed cancels do not consume the per-cycle cap budget.
-            this._autoCancelOrphanSubCount++;
-            this.manager.logger.log(
-                `[COW] Auto-cancelled ${this._autoCancelOrphanSubCount}/${unmatched.length} unmatched chain order ` +
-                `(${this._formatUnmatchedChainOrderForLog(target)}) — per-cycle cap=${cycleCap}.`,
-                'warn'
-            );
-            return { cancelled: true, orderId };
-        } catch (err) {
-            this.manager.logger.log(
-                `[COW] Auto-cancel of unmatched chain order ${orderId} failed: ${err?.message || err}`,
-                'error'
-            );
-            return { cancelled: false, reason: 'cancel-failed', error: err?.message || String(err) };
-        }
+        return cowRuntime.autoCancelOneUnmatchedOrphan(this);
     }
 
     // Pair mode applies only when create contexts include both BUY and SELL.
@@ -3687,17 +2995,7 @@ class DEXBot {
      * @returns {boolean} True if pair mode should be used
      */
     _shouldExecuteCreatePairMode(opContexts) {
-        if (!Array.isArray(opContexts) || opContexts.length < 2) return false;
-        if (!opContexts.every(ctx => ctx?.kind === 'create' && ctx?.order)) return false;
-
-        let hasBuy = false;
-        let hasSell = false;
-        for (const ctx of opContexts) {
-            if (ctx.order.type === ORDER_TYPES.BUY) hasBuy = true;
-            if (ctx.order.type === ORDER_TYPES.SELL) hasSell = true;
-            if (hasBuy && hasSell) return true;
-        }
-        return false;
+        return cowRuntime.shouldExecuteCreatePairMode(this, opContexts);
     }
 
     /**
@@ -3710,42 +3008,7 @@ class DEXBot {
      * the full operations array would duplicate those creates on chain.
      */
     async _executeWithRetryOnUncertain(operations, opContexts) {
-        const MAX_RETRIES = 1;
-        for (let attempt = 1; ; attempt++) {
-            try {
-                return await this._executeOperationsWithStrategy(operations, opContexts);
-            } catch (err) {
-                const isRetriable = err instanceof BroadcastUncertainError
-                    && !err.partialOnChainState
-                    && attempt <= MAX_RETRIES;
-                if (isRetriable) {
-                    this.manager.logger.log(
-                        `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}), retrying...`,
-                        'warn'
-                    );
-                    await this._ensureCredentialDaemonWritable('COW batch retry');
-
-                    // Reconcile before retry — stale ops would fail "not found".
-                    try {
-                        const accountRef = this.accountId || this.account?.id || this.account;
-                        const freshChain = await chainOrders.readOpenOrders(accountRef);
-                        if (freshChain.length > 0 && this.manager?.syncFromOpenOrders) {
-                            await this.manager.syncFromOpenOrders(freshChain, {
-                                skipAccounting: true,
-                            });
-                        }
-                    } catch (syncErr) {
-                        this.manager.logger.log(
-                            `[COW] Pre-retry sync failed (non-fatal): ${syncErr?.message || syncErr}`,
-                            'warn'
-                        );
-                    }
-
-                    continue;
-                }
-                throw err;
-            }
-        }
+        return cowRuntime.executeWithRetryOnUncertain(this, operations, opContexts);
     }
 
     /**
@@ -3755,74 +3018,7 @@ class DEXBot {
      * @returns {Promise<{result: Object, opContexts: Array}>} Execution result with contexts
      */
     async _executeOperationsWithStrategy(operations, opContexts) {
-        if (!this._shouldExecuteCreatePairMode(opContexts)) {
-            const result = await chainOrders.executeBatch(this.account, this.privateKey, operations);
-            return { result, opContexts };
-        }
-
-        const createEntries = [];
-        for (let i = 0; i < operations.length; i++) {
-            createEntries.push({
-                operation: operations[i],
-                context: opContexts[i],
-            });
-        }
-
-        const groups = this._buildOutsideInPairGroupsForCreateEntries(createEntries);
-        const mergedOperationResults = [];
-        const mergedRawResults = [];
-        const mergedContexts = [];
-
-        // Grouped execution is fail-fast, but NOT atomic across groups.
-        // Each group is a separate on-chain transaction; if a later group fails,
-        // earlier groups may already be confirmed on-chain.
-
-        for (let idx = 0; idx < groups.length; idx++) {
-            const group = groups[idx];
-            const groupOps = group.map(e => e.operation);
-            const groupContexts = group.map(e => e.context);
-            this.manager.logger.log(
-                `[COW] Broadcasting create pair group ${idx + 1}/${groups.length} (${groupOps.length} op${groupOps.length > 1 ? 's' : ''}, outside->center)`,
-                'info'
-            );
-            let groupResult;
-            try {
-                groupResult = await chainOrders.executeBatch(this.account, this.privateKey, groupOps);
-            } catch (err: any) {
-                const groupsBroadcast = idx;
-                const groupsTotal = groups.length;
-                const broadcastedOperationCount = mergedContexts.length;
-                this.manager.logger.log(
-                    `[COW] Grouped create execution failed at group ${idx + 1}/${groupsTotal}; ${groupsBroadcast} group(s) already broadcast (${broadcastedOperationCount} op context(s)). Partial on-chain state is possible.`,
-                    'error'
-                );
-                err.partialOnChainState = groupsBroadcast > 0;
-                err.groupsBroadcast = groupsBroadcast;
-                err.groupsTotal = groupsTotal;
-                err.broadcastedOperationCount = broadcastedOperationCount;
-                throw err;
-            }
-            const groupOpResults = this._extractOperationResults(groupResult);
-
-            mergedOperationResults.push(...groupOpResults);
-            mergedRawResults.push(groupResult?.raw || null);
-            mergedContexts.push(...groupContexts);
-        }
-
-        return {
-            result: {
-                success: true,
-                raw: {
-                    grouped: true,
-                    groupsExecuted: groups.length,
-                    groupResults: mergedRawResults,
-                },
-                operation_results: mergedOperationResults,
-                grouped: true,
-                groupsExecuted: groups.length
-            },
-            opContexts: mergedContexts
-        };
+        return cowRuntime.executeOperationsWithStrategy(this, operations, opContexts);
     }
 
     /**
@@ -3835,115 +3031,7 @@ class DEXBot {
      * @private
      */
     _validateOperationFunds(operations, assetA, assetB) {
-        if (!operations || operations.length === 0) {
-            return { isValid: true, summary: 'No operations to validate' };
-        }
-
-        const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = require('./order/utils/math');
-        const snap = this.manager.getChainFundsSnapshot();
-        const netRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
-        const runningRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
-        const peakRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
-
-        // Sum amounts and check individual order sizes
-        for (const op of operations) {
-            if (!op?.op_data) continue;
-
-            let sellAssetId = null;
-            let sellAmountInt = 0;
-
-            if (op.op_name === 'limit_order_create') {
-                sellAssetId = op.op_data.amount_to_sell?.asset_id;
-                sellAmountInt = op.op_data.amount_to_sell?.amount;
-            } else if (op.op_name === 'limit_order_update') {
-                // In limit_order_update, new_price.base is the amount to sell
-                sellAssetId = op.op_data.new_price?.base?.asset_id;
-                sellAmountInt = op.op_data.new_price?.base?.amount;
-            }
-
-            if (sellAssetId && (sellAmountInt !== undefined && sellAmountInt !== null)) {
-                const precision = (sellAssetId === assetA.id) ? assetA.precision : assetB.precision;
-                const assetSymbol = (sellAssetId === assetA.id) ? assetA.symbol : assetB.symbol;
-
-                // CRITICAL SAFETY CHECK: Ensure amount is greater than zero
-                if (Number(sellAmountInt) <= 0) {
-                    return {
-                        isValid: false,
-                        summary: `[VALIDATION] CRITICAL: Zero amount order detected for ${assetSymbol} (assetId=${sellAssetId})`,
-                        violations: [{ asset: assetSymbol, sizeInt: sellAmountInt, reason: 'Zero amount' }]
-                    };
-                }
-
-                // Track signed per-op deltas in operation order.
-                // CREATE consumes full amount; UPDATE consumes/releases delta.
-                let signedDelta = 0;
-                if (op.op_name === 'limit_order_update') {
-                    const deltaAssetId = op.op_data.delta_amount_to_sell?.asset_id;
-                    const deltaSellInt = op.op_data.delta_amount_to_sell?.amount;
-                    if (deltaAssetId === sellAssetId && Number.isFinite(Number(deltaSellInt))) {
-                        signedDelta = blockchainToFloat(deltaSellInt, precision);
-                    }
-                } else {
-                    signedDelta = blockchainToFloat(sellAmountInt, precision);
-                }
-
-                netRequiredFunds[sellAssetId] = quantizeFloat(
-                    (netRequiredFunds[sellAssetId] || 0) + signedDelta,
-                    precision
-                );
-
-                runningRequiredFunds[sellAssetId] = quantizeFloat(
-                    (runningRequiredFunds[sellAssetId] || 0) + signedDelta,
-                    precision
-                );
-
-                const nextPeak = Math.max(
-                    Number(peakRequiredFunds[sellAssetId] || 0),
-                    Number(runningRequiredFunds[sellAssetId] || 0)
-                );
-                peakRequiredFunds[sellAssetId] = quantizeFloat(nextPeak, precision);
-            }
-        }
-
-        // Calculate available funds - CRITICAL FIX: Check against FREE balance, not free+required
-        // Bug: Previous logic added requiredFunds to available, making validation meaningless
-        // Correct logic: available = chainFree (current free balance)
-        // If required > available, batch will fail on execution
-        const availableFunds = {
-            [assetA.id]: quantizeFloat(snap.chainFreeSell || 0, assetA.precision),
-            [assetB.id]: quantizeFloat(snap.chainFreeBuy || 0, assetB.precision)
-        };
-
-        // Check for fund violations using quantized comparison
-        const fundViolations = [];
-        for (const assetId in peakRequiredFunds) {
-            const required = peakRequiredFunds[assetId];
-            const netRequired = netRequiredFunds[assetId] || 0;
-            const available = availableFunds[assetId] || 0;
-
-            // Use precision-aware comparison
-            const prec = (assetId === assetA.id) ? assetA.precision : assetB.precision;
-            if (floatToBlockchainInt(required, prec) > floatToBlockchainInt(available, prec)) {
-                fundViolations.push({
-                    asset: assetId === assetA.id ? assetA.symbol : assetB.symbol,
-                    required,
-                    netRequired,
-                    available,
-                    deficit: quantizeFloat(required - available, prec)
-                });
-            }
-        }
-
-        if (fundViolations.length > 0) {
-            let summary = `[VALIDATION] Fund validation FAILED:\n`;
-            for (const v of fundViolations) {
-                summary += `  ${v.asset}: peakRequired=${Format.formatAmount8(v.required)}, netRequired=${Format.formatAmount8(v.netRequired)}, available=${Format.formatAmount8(v.available)}, deficit=${Format.formatAmount8(v.deficit)}\n`;
-            }
-            return { isValid: false, summary: summary.trim(), violations: fundViolations };
-        }
-
-        const summary = `[VALIDATION] PASSED: ${operations.length} operations`;
-        return { isValid: true, summary };
+        return cowRuntime.validateOperationFunds(this, operations, assetA, assetB);
     }
 
     /**
@@ -3953,22 +3041,7 @@ class DEXBot {
      * @returns {number|null} Resolved size or null
      */
     _resolveIdealSizeForValidation(orderLike, fallbackSize = null) {
-        const candidates = [
-            orderLike?.idealSize,
-            orderLike?.order?.idealSize,
-            orderLike?.size,
-            orderLike?.order?.size,
-            fallbackSize
-        ];
-
-        for (const candidate of candidates) {
-            const numeric = Number(candidate);
-            if (Number.isFinite(numeric) && numeric > 0) {
-                return numeric;
-            }
-        }
-
-        return null;
+        return cowRuntime.resolveIdealSizeForValidation(this, orderLike, fallbackSize);
     }
 
     /**
@@ -3980,14 +3053,7 @@ class DEXBot {
      * @returns {import('./types').OrderValidationResult}
      */
     _validateOrderSizeForExecution(size, type, orderLike = null, fallbackSize = null) {
-        return validateOrderSize(
-            size,
-            type,
-            this.manager.assets,
-            this.config.gridLimits?.MIN_ORDER_SIZE_FACTOR,
-            this._resolveIdealSizeForValidation(orderLike, fallbackSize),
-            this.config.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE
-        );
+        return cowRuntime.validateOrderSizeForExecution(this, size, type, orderLike, fallbackSize);
     }
 
     /**
@@ -4376,90 +3442,7 @@ class DEXBot {
      * @returns {Array<{type: string, id: string, order?: Object, orderId?: string, newSize?: number, newPrice?: number, newGridId?: string}>}
      */
     _buildActionsFromPlan(plan) {
-        const normalizedPlan = Array.isArray(plan)
-            ? { ordersToPlace: plan }
-            : (plan || {});
-
-        const {
-            ordersToPlace = [],
-            ordersToRotate = [],
-            ordersToUpdate = [],
-            ordersToCancel = []
-        } = normalizedPlan;
-
-        const actions = [];
-
-        for (const o of ordersToCancel) {
-            if (o?.orderId) {
-                actions.push({ type: COW_ACTIONS.CANCEL, id: o.id, orderId: o.orderId });
-            }
-        }
-
-        for (const r of ordersToRotate) {
-            const oldOrder = r?.oldOrder || r;
-            const id = oldOrder?.id || r?.id;
-            const orderId = oldOrder?.orderId || r?.orderId;
-            const newGridId = r?.newGridId || id;
-            const newSize = Number.isFinite(Number(r?.newSize))
-                ? Number(r.newSize)
-                : Number(r?.size || oldOrder?.size || 0);
-            const newPrice = Number.isFinite(Number(r?.newPrice))
-                ? Number(r.newPrice)
-                : Number(r?.price || oldOrder?.price);
-            const orderType = r?.type || oldOrder?.type;
-
-            if (!id || !orderId || !newGridId || !orderType || !Number.isFinite(newPrice) || !(newSize > 0)) continue;
-
-            actions.push({
-                type: COW_ACTIONS.UPDATE,
-                id,
-                orderId,
-                newGridId,
-                newSize,
-                newPrice,
-                order: {
-                    id: newGridId,
-                    type: orderType,
-                    price: newPrice,
-                    size: newSize
-                }
-            });
-        }
-
-        for (const o of ordersToUpdate) {
-            const partialOrder = o?.partialOrder || o;
-            const id = o?.id || partialOrder?.id;
-            const orderId = o?.orderId || partialOrder?.orderId;
-            const orderType = o?.type || partialOrder?.type;
-            const newSize = Number.isFinite(Number(o?.newSize))
-                ? Number(o.newSize)
-                : Number(partialOrder?.size || 0);
-
-            if (!id || !orderId) continue;
-
-            actions.push({
-                type: COW_ACTIONS.UPDATE,
-                id,
-                orderId,
-                newSize,
-                order: {
-                    ...(partialOrder || {}),
-                    id,
-                    orderId,
-                    type: orderType,
-                    size: newSize
-                }
-            });
-        }
-
-        // Run CREATE actions after UPDATE actions so same-batch downsizes can
-        // release balance before placements consume it.
-        for (const o of ordersToPlace) {
-            if (!o?.id) continue;
-            actions.push({ type: COW_ACTIONS.CREATE, id: o.id, order: o });
-        }
-
-        return actions;
+        return cowRuntime.buildActionsFromPlan(this, plan);
     }
 
     /**
@@ -4468,78 +3451,7 @@ class DEXBot {
      * @returns {{workingGrid: import('./types').WorkingGrid, workingIndexes: Object, workingBoundary: number, actions: Array}}
      */
     _buildCowResultFromPlan(plan) {
-        const { WorkingGrid } = require('./order/working_grid');
-        const workingGrid = new WorkingGrid(this.manager.orders, {
-            baseVersion: Number.isFinite(Number(this.manager._gridVersion)) ? this.manager._gridVersion : 0
-        });
-        const workingBoundary = this.manager.boundaryIdx;
-        const actions = this._buildActionsFromPlan(plan);
-
-        // Project planned actions into working grid so COW commit carries intended transitions.
-        for (const action of actions) {
-            if (action.type === COW_ACTIONS.CANCEL) {
-                const current = workingGrid.get(action.id);
-                if (!current) continue;
-                workingGrid.set(action.id, convertToSpreadPlaceholder(current));
-            } else if (action.type === COW_ACTIONS.CREATE) {
-                if (!action.id || !action.order) continue;
-                const current = workingGrid.get(action.id) || { id: action.id };
-                workingGrid.set(action.id, {
-                    ...current,
-                    ...action.order,
-                    id: action.id,
-                    state: ORDER_STATES.VIRTUAL,
-                    orderId: null
-                });
-            } else if (action.type === COW_ACTIONS.UPDATE) {
-                if (action.newGridId && action.newGridId !== action.id) {
-                    const current = workingGrid.get(action.id);
-                    if (current) {
-                        workingGrid.set(action.id, convertToSpreadPlaceholder(current));
-                    }
-
-                    const targetId = action.newGridId;
-                    const targetCurrent = workingGrid.get(targetId) || { id: targetId };
-                    const rotatedSize = Number.isFinite(Number(action.newSize))
-                        ? Number(action.newSize)
-                        : Number(targetCurrent.size || 0);
-                    const rotatedPrice = Number.isFinite(Number(action.newPrice))
-                        ? Number(action.newPrice)
-                        : Number(action.order?.price ?? targetCurrent.price);
-
-                    workingGrid.set(targetId, {
-                        ...targetCurrent,
-                        ...(action.order || {}),
-                        id: targetId,
-                        size: rotatedSize,
-                        price: rotatedPrice,
-                        state: ORDER_STATES.VIRTUAL,
-                        orderId: null
-                    });
-                    continue;
-                }
-
-                const current = workingGrid.get(action.id);
-                if (!current) continue;
-                const newSize = Number.isFinite(Number(action.newSize))
-                    ? Number(action.newSize)
-                    : Number(current.size || 0);
-                workingGrid.set(action.id, {
-                    ...current,
-                    ...(action.order || {}),
-                    id: action.id,
-                    orderId: action.orderId || current.orderId,
-                    size: newSize
-                });
-            }
-        }
-
-        return {
-            workingGrid,
-            workingIndexes: workingGrid.getIndexes(),
-            workingBoundary,
-            actions
-        };
+        return cowRuntime.buildCowResultFromPlan(this, plan);
     }
 
     /**
@@ -4550,22 +3462,7 @@ class DEXBot {
      * @returns {void}
      */
     _restoreSkippedUpdateSlotsInWorkingGrid(workingGrid, skippedSlotIds, skippedCount = 0) {
-        if (!workingGrid || !skippedSlotIds || skippedSlotIds.size === 0) {
-            return;
-        }
-
-        const masterVersion = Number.isFinite(Number(this.manager?._gridVersion))
-            ? Number(this.manager._gridVersion)
-            : undefined;
-
-        for (const slotId of skippedSlotIds) {
-            workingGrid.syncFromMaster(this.manager.orders, slotId, masterVersion);
-        }
-
-        this.manager.logger.log(
-            `[COW] Restored ${skippedSlotIds.size} slot(s) after ${skippedCount} skipped update action(s).`,
-            'debug'
-        );
+        return cowRuntime.restoreSkippedUpdateSlotsInWorkingGrid(this, workingGrid, skippedSlotIds, skippedCount);
     }
 
     /**
@@ -4576,951 +3473,12 @@ class DEXBot {
      * @private
      */
     async _updateOrdersOnChainBatchCOW(cowResult) {
-        this._currentCycleId = (Number.isFinite(Number(this._currentCycleId)) ? Number(this._currentCycleId) : 0) + 1;
-        const { workingGrid, workingIndexes, workingBoundary, actions } = cowResult;
-
-        if (this.config.dryRun) {
-            const cancelCount = actions.filter(a => a.type === COW_ACTIONS.CANCEL).length;
-            const createCount = actions.filter(a => a.type === COW_ACTIONS.CREATE).length;
-            const updateCount = actions.filter(a => a.type === COW_ACTIONS.UPDATE).length;
-            if (cancelCount > 0) this.manager.logger.log(`Dry run: would cancel ${cancelCount} orders`, 'info');
-            if (createCount > 0) this.manager.logger.log(`Dry run: would place ${createCount} new orders`, 'info');
-            if (updateCount > 0) this.manager.logger.log(`Dry run: would update ${updateCount} orders`, 'info');
-            return { executed: true, hadRotation: false };
-        }
-
-        const createSlotValidation = validateCreateTargetSlots(actions, this.manager?.orders);
-        if (!createSlotValidation.isValid) {
-            for (const violation of createSlotValidation.violations) {
-                this.manager.logger.log(
-                    `[COW] Rejecting CREATE for occupied slot ${violation.targetId}: ` +
-                    `existing orderId=${violation.currentOrderId}, type=${violation.currentType}, state=${violation.currentState}`,
-                    'error'
-                );
-            }
-
-            return {
-                executed: false,
-                aborted: true,
-                reason: 'CREATE_SLOT_OCCUPIED',
-                violations: createSlotValidation.violations,
-                hadRotation: false
-            };
-        }
-
-        const hasCreateActions = actions.some(action => action.type === COW_ACTIONS.CREATE);
-
-        // Gap 5: Recovery exhausted — block all CREATES. The bot has exhausted
-        // its recovery attempt budget and needs a fill or sync cycle to reset.
-        // Existing orders remain active and are monitored, but no new orders
-        // are placed until recovery resets.
-        if (hasCreateActions && this.manager?._recoveryExhaustedAt) {
-            const exhaustedAge = Date.now() - this.manager._recoveryExhaustedAt;
-            this.manager.logger.log?.(
-                `[RECOVERY-EXHAUSTED] Blocking ${actions.filter(a => a.type === COW_ACTIONS.CREATE).length} CREATE(s) ` +
-                `(exhausted ${(exhaustedAge / 1000).toFixed(0)}s ago). ` +
-                `Waiting for next fill or sync cycle to reset recovery state.`,
-                'warn'
-            );
-            return {
-                executed: false,
-                aborted: true,
-                reason: 'RECOVERY_EXHAUSTED',
-                hadRotation: false
-            };
-        }
-
-        const unmatchedChainOrders = Array.isArray(this.manager?._lastUnmatchedChainOrders)
-            ? this.manager._lastUnmatchedChainOrders
-            : [];
-        // PENDING_BROADCASTS: an earlier batch timed out at the credential
-        // daemon and the chain status of its CREATEs is still unknown. The
-        // recovery path (_reconcileAfterUncertainBroadcast) is responsible
-        // for resolving it. We refuse to publish a fresh CREATE batch until
-        // recovery runs, otherwise we risk double-publishing or stacking
-        // orphan orders on top of potentially-orphaned ones.
-        const pendingBroadcasts: any[] = (this.manager && this.manager._pendingBroadcasts instanceof Map)
-            ? Array.from(this.manager._pendingBroadcasts.values()) as any[]
-            : [];
-        if (hasCreateActions && (unmatchedChainOrders.length > 0 || pendingBroadcasts.length > 0)) {
-            // ---- Handle pending broadcasts first ----
-            if (pendingBroadcasts.length > 0) {
-                this.manager.logger.log(
-                    `[COW] Rejecting CREATE batch: ${pendingBroadcasts.length} pending broadcast(s) from a prior uncertain ` +
-                    `broadcast. Running recovery before placing replacement orders.`,
-                    'error'
-                );
-                if (typeof this.manager.requestStructuralGridResync === 'function') {
-                    if (this.manager._recoveryState) this.manager._recoveryState = { ...this.manager._recoveryState, structuralResyncRequested: true };
-                    await this.manager.requestStructuralGridResync(
-                        'pending broadcasts before COW create',
-                        { pendingBroadcasts: pendingBroadcasts.map(p => p.slotId) }
-                    );
-                }
-                try {
-                    await this._reconcileAfterUncertainBroadcast(
-                        new BroadcastUncertainError(
-                            'rejected CREATE batch had pending broadcasts',
-                            {
-                                operations: pendingBroadcasts.map(p => p.order),
-                                accountName: this.account,
-                                batchId: this._currentBatchId || null,
-                                payload: null,
-                                timeoutMs: null
-                            }
-                        ),
-                        []
-                    );
-                } catch (recoverErr) {
-                    this.manager.logger.log(
-                        `[COW] Recovery from pending broadcasts failed: ${recoverErr?.message || recoverErr}`,
-                        'error'
-                    );
-                }
-                return {
-                    executed: false,
-                    aborted: true,
-                    reason: 'PENDING_BROADCASTS',
-                    hadRotation: false
-                };
-            }
-
-            // ---- Unmatched orders: adopt instead of cancel ----
-            // Unmatched orders are legitimate on-chain positions the grid
-            // hasn't adopted yet. Cancelling them destroys capital and
-            // creates gaps in the order book. Instead, re-sync to adopt
-            // them into the grid, then reject (the sync invalidated the
-            // working grid, so the existing COW plan is stale).
-            // NOTE: syncFromOpenOrders may be a partial no-op under certain
-            // lock conditions (e.g. _fillProcessingLock + !isReentrant).
-            // Structural resync scheduled below handles adoption regardless.
-            const unmatchedSample = unmatchedChainOrders
-                .slice(0, 3)
-                .map(o => this._formatUnmatchedChainOrderForLog(o))
-                .join(' | ');
-            this.manager.logger.log(
-                `[COW] ${unmatchedChainOrders.length} unmatched chain order(s) blocking CREATES ` +
-                (unmatchedSample ? `(${unmatchedSample})` : '') +
-                ` — adopting via sync instead of cancelling`,
-                'info'
-            );
-            try {
-                const accountRef = this.account;
-                const freshSnapshot = await chainOrders.readOpenOrders(accountRef);
-                if (freshSnapshot && freshSnapshot.length > 0) {
-                    const syncResult = await this.manager.syncFromOpenOrders(freshSnapshot, {
-                        skipAccounting: true,
-                    });
-                    // Only overwrite _lastUnmatchedChainOrders when sync actually
-                    // processed orders (filled + updated + corrected > 0).
-                    // Force-release and lock-contention early-exit paths return
-                    // empty arrays without touching _lastUnmatchedChainOrders —
-                    // overwriting with [] would drop stale unmatched entries.
-                    if (syncResult && Array.isArray(syncResult.unmatchedChainOrders)) {
-                        const processed = (syncResult.filledOrders?.length || 0) +
-                                          (syncResult.updatedOrders?.length || 0) +
-                                          (syncResult.ordersNeedingCorrection?.length || 0);
-                        if (processed > 0) {
-                            this.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders;
-                            this.manager.logger.log(
-                                `[COW] Adopted chain order(s) via sync: ${processed} processed, ` +
-                                `${syncResult.unmatchedChainOrders.length} still unmatched`,
-                                'info'
-                            );
-                        } else {
-                            // processed === 0 with unmatched still present means the
-                            // sync could not adopt the unmatched chain orders. This is
-                            // normal when called re-entrantly (inside _fillProcessingLock):
-                            // the sync engine runs inline and either timed out (unlikely
-                            // for a re-entrant call) or all chain orders were already
-                            // matched — leaving only stale unmatched entries.
-                            const syncUnmatchedCount = syncResult.unmatchedChainOrders.length;
-                            this.manager.logger.log(
-                                `[COW] Sync returned without processing (processed=0, ` +
-                                `unmatched=${syncUnmatchedCount} in result, ` +
-                                `_lastUnmatchedChainOrders=${unmatchedChainOrders.length}). ` +
-                                `Structural resync will handle adoption.`,
-                                syncUnmatchedCount > 0 ? 'warn' : 'debug'
-                            );
-                            // If the sync result itself has unmatched entries that
-                            // differ from _lastUnmatchedChainOrders, adopt them now
-                            // so the stale tracker is more accurate for the resync.
-                            if (syncUnmatchedCount > 0 && syncUnmatchedCount !== unmatchedChainOrders.length) {
-                                this.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders.map((o: any) => ({ ...o }));
-                                this.manager.logger.log(
-                                    `[COW] Updated _lastUnmatchedChainOrders from sync result: ` +
-                                    `${unmatchedChainOrders.length} → ${syncUnmatchedCount}`,
-                                    'debug'
-                                );
-                            }
-                        }
-                    }
-                }
-            } catch (syncErr) {
-                this.manager.logger.log(
-                    `[COW] Failed to sync/unmatched orders: ${syncErr?.message || syncErr}`,
-                    'warn'
-                );
-            }
-            // Working grid is stale after master grid mutation from sync.
-            // Request structural resync to rebuild the grid on the next cycle.
-            if (typeof this.manager.requestStructuralGridResync === 'function') {
-                if (this.manager._recoveryState) this.manager._recoveryState = { ...this.manager._recoveryState, structuralResyncRequested: true };
-                await this.manager.requestStructuralGridResync(
-                    'unmatched chain orders before COW create',
-                    { unmatchedChainOrders: unmatchedChainOrders }
-                );
-            }
-            this.manager.logger.log(
-                `[COW] Rejecting CREATE batch after sync: working grid invalidated by master mutation`,
-                'info'
-            );
-            return {
-                executed: false,
-                aborted: true,
-                reason: 'UNMATCHED_CHAIN_ORDERS',
-                hadRotation: false
-            };
-        }
-
-        const { assetA, assetB } = this.manager.assets;
-        const operations = [];
-        const opContexts = [];
-        const skippedUpdateSlotIds = new Set();
-        let skippedUpdateCount = 0;
-
-        // Collect IDs to lock from actions
-        const idsToLock = new Set();
-        for (const action of actions) {
-            if (action.type === COW_ACTIONS.CANCEL && action.orderId) {
-                idsToLock.add(action.orderId);
-                if (action.id) idsToLock.add(action.id);
-            } else if (action.type === COW_ACTIONS.CREATE && action.id) {
-                idsToLock.add(action.id);
-            } else if (action.type === COW_ACTIONS.UPDATE && action.orderId) {
-                idsToLock.add(action.orderId);
-                if (action.id) idsToLock.add(action.id);
-            }
-        }
-
-        // Apply shadow locks
-        this.manager.lockOrders(idsToLock);
-
-        try {
-            this._batchInFlight = true;
-            this._markGridActivity('batch start');
-            this.manager._setRebalanceState(REBALANCE_STATES.BROADCASTING);
-            this.manager.startBroadcasting();
-
-            // Build operations from actions
-            for (const action of actions) {
-                if (action.type === COW_ACTIONS.CANCEL) {
-                    try {
-                        const op = await chainOrders.buildCancelOrderOp(this.account, action.orderId);
-                        operations.push(op);
-                        const order = this.manager.orders.get(action.id) || { id: action.id, orderId: action.orderId };
-                        opContexts.push({ kind: 'cancel', order });
-                    } catch (err: any) {
-                        const orderNotFound = /\bnot found\b/i.test(err.message) || /\bdoes not exist\b/i.test(err.message);
-                        if (orderNotFound) {
-                            this.manager.logger.log(
-                                `[COW] Cancel skipped for ${action.id} (${action.orderId}): order already removed from chain`,
-                                'debug'
-                            );
-                        } else {
-                            this.manager.logger.log(`Failed to prepare cancel op for ${action.id}: ${err.message}`, 'error');
-                        }
-                    }
-                } else if (action.type === COW_ACTIONS.CREATE) {
-                    try {
-                        const order = action.order;
-                        const sizeValidation = this._validateOrderSizeForExecution(
-                            order.size,
-                            order.type,
-                            order,
-                            order.size
-                        );
-                        if (!sizeValidation.isValid) {
-                            this.manager.logger.log(
-                                `Skipping create op for ${action.id}: ${sizeValidation.reason}`,
-                                'warn'
-                            );
-                            continue;
-                        }
-                        const liveSlot = this.manager.orders.get(order.id);
-                        const plannedPrice = Number(order.price);
-                        const livePrice = liveSlot ? Number(liveSlot.price) : NaN;
-                        const priceDrift = Number.isFinite(plannedPrice) && Number.isFinite(livePrice)
-                            ? Math.abs(livePrice - plannedPrice)
-                            : 0;
-                        const effectiveOrder = (priceDrift > 0)
-                            ? { ...order, price: livePrice, size: order.size, type: order.type }
-                            : order;
-                        if (priceDrift > 0) {
-                            this.manager.logger.log(
-                                `[COW] Pre-broadcast price freshness: slot ${order.id} ` +
-                                `drifted from planned=${plannedPrice} to live=${livePrice} ` +
-                                `(diff=${priceDrift}); rebuilding CREATE op with live price.`,
-                                'debug'
-                            );
-                        }
-                        const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
-                        const buildResult = await chainOrders.buildCreateOrderOp(
-                            this.account,
-                            args.amountToSell,
-                            args.sellAssetId,
-                            args.minToReceive,
-                            args.receiveAssetId,
-                            null
-                        );
-                        if (!buildResult) {
-                            this.manager.logger.log(
-                                `Skipping create op for ${action.id}: amounts would round to 0 on blockchain`,
-                                'warn'
-                            );
-                            continue;
-                        }
-                        operations.push(buildResult.op);
-                        opContexts.push({ kind: 'create', id: order.id, order: effectiveOrder, args, finalInts: buildResult.finalInts });
-                        this._recordPendingBroadcast({
-                            opIndex: operations.length - 1,
-                            ctxIndex: opContexts.length - 1,
-                            order: effectiveOrder,
-                            finalInts: buildResult.finalInts
-                        });
-                    } catch (err: any) {
-                        this.manager.logger.log(`Failed to prepare create op for ${action.id}: ${err.message}`, 'error');
-                    }
-                } else if (action.type === COW_ACTIONS.UPDATE) {
-                    try {
-                        // Rotation update: move existing on-chain order to a new slot/price.
-                        if (action.newGridId && action.newGridId !== action.id) {
-                            const masterOrder = this.manager.orders.get(action.id);
-                            const orderType = action.order?.type || masterOrder?.type;
-                            const newPrice = Number.isFinite(Number(action.newPrice))
-                                ? Number(action.newPrice)
-                                : Number(action.order?.price);
-                            const newSize = Number.isFinite(Number(action.newSize))
-                                ? Number(action.newSize)
-                                : Number(action.order?.size || 0);
-
-                            if (!masterOrder || !action.orderId || !orderType || !Number.isFinite(newPrice) || newSize <= 0) {
-                                continue;
-                            }
-
-                            const rotationSizeValidation = this._validateOrderSizeForExecution(
-                                newSize,
-                                orderType,
-                                action.order,
-                                newSize
-                            );
-                            if (!rotationSizeValidation.isValid) {
-                                this.manager.logger.log(
-                                    `Skipping rotation update ${action.id} -> ${action.newGridId}: ${rotationSizeValidation.reason}`,
-                                    'warn'
-                                );
-                                continue;
-                            }
-
-                            const { amountToSell, minToReceive } = buildCreateOrderArgs(
-                                { type: orderType, size: newSize, price: newPrice },
-                                assetA,
-                                assetB
-                            );
-
-                            const buildResult = await chainOrders.buildUpdateOrderOp(
-                                this.account,
-                                action.orderId,
-                                { amountToSell, minToReceive, newPrice, orderType },
-                                masterOrder.rawOnChain || null
-                            );
-                            if (!buildResult) {
-                                skippedUpdateCount++;
-                                if (action.id) skippedUpdateSlotIds.add(action.id);
-                                if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
-                                this.manager.logger.log(
-                                    `[COW] Skipping rotation update ${action.id} -> ${action.newGridId}: no blockchain delta`,
-                                    'debug'
-                                );
-                                continue;
-                            }
-
-                            operations.push(buildResult.op);
-                            opContexts.push({
-                                kind: 'rotation',
-                                rotation: {
-                                    oldOrder: { ...masterOrder },
-                                    newGridId: action.newGridId,
-                                    newPrice,
-                                    newSize,
-                                    type: orderType
-                                },
-                                finalInts: buildResult.finalInts
-                            });
-                            continue;
-                        }
-
-                        const newSize = Number.isFinite(Number(action.newSize))
-                            ? Number(action.newSize)
-                            : Number(action.order?.size || 0);
-
-                        const masterOrder = this.manager.orders.get(action.id);
-                        const orderType = action.order?.type || masterOrder?.type;
-                        const cachedRawOnChain = masterOrder?.rawOnChain || action.order?.rawOnChain || null;
-
-                        const op = await chainOrders.buildUpdateOrderOp(
-                            this.account,
-                            action.orderId,
-                            { amountToSell: newSize, orderType },
-                            cachedRawOnChain
-                        );
-                        if (!op) {
-                            skippedUpdateCount++;
-                            if (action.id) skippedUpdateSlotIds.add(action.id);
-                            if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
-                            this.manager.logger.log(
-                                `[COW] Skipping size update ${action.id} (${action.orderId}): no blockchain delta`,
-                                'debug'
-                            );
-                            continue;
-                        }
-                        operations.push(op.op);
-                        const partialOrder = masterOrder || {
-                            id: action.id,
-                            orderId: action.orderId,
-                            type: orderType
-                        };
-                        opContexts.push({ kind: 'size-update', updateInfo: { partialOrder, newSize }, finalInts: op.finalInts });
-                    // Catch for both rotation-update and size-update branches.
-                    } catch (err: any) {
-                        const orderNotFound = /\bnot found\b/i.test(err.message) || /\bdoes not exist\b/i.test(err.message);
-                        if (orderNotFound) {
-                            try {
-                                const fbOrder = action.order || this.manager.orders.get(action.id);
-                                const fbType = fbOrder?.type;
-                                const fbSize = action.newSize || fbOrder?.size || 0;
-                                // Live price from TARGET slot (same pattern as CREATE path).
-                                const targetSlotId = action.newGridId || action.id;
-                                const plannedPrice = action.newPrice || action.order?.price || 0;
-                                const liveSlotForPrice = this.manager.orders.get(targetSlotId);
-                                const livePrice = liveSlotForPrice ? Number(liveSlotForPrice.price) : NaN;
-                                const priceDrift = Number.isFinite(plannedPrice) && Number.isFinite(livePrice)
-                                    ? Math.abs(livePrice - plannedPrice)
-                                    : 0;
-                                const fbPrice = (priceDrift > 0) ? livePrice : plannedPrice;
-                                if (priceDrift > 0) {
-                                    this.manager.logger.log(
-                                        `[COW] CREATE fallback price drift for ${action.id} -> ${targetSlotId}: ` +
-                                        `planned=${plannedPrice} live=${livePrice} (diff=${priceDrift})`,
-                                        'debug'
-                                    );
-                                }
-                                // Same size gate as regular CREATE path.
-                                const sizeCheck = this._validateOrderSizeForExecution(fbSize, fbType, fbOrder, fbSize);
-                                if (!sizeCheck.isValid) {
-                                    this.manager.logger.log(
-                                        `[COW] CREATE fallback for ${action.id} rejected by size validation: ${sizeCheck.reason}`,
-                                        'warn'
-                                    );
-                                } else if (fbType && fbSize > 0 && fbPrice > 0) {
-                                    const fbArgs = buildCreateOrderArgs(
-                                        { type: fbType, size: fbSize, price: fbPrice },
-                                        assetA, assetB
-                                    );
-                                    const fbResult = await chainOrders.buildCreateOrderOp(
-                                        this.account,
-                                        fbArgs.amountToSell,
-                                        fbArgs.sellAssetId,
-                                        fbArgs.minToReceive,
-                                        fbArgs.receiveAssetId,
-                                        null
-                                    );
-                                    if (fbResult) {
-                                        operations.push(fbResult.op);
-                                        opContexts.push({
-                                            kind: 'create',
-                                            id: targetSlotId,
-                                            order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize },
-                                            args: { amountToSell: fbArgs.amountToSell, minToReceive: fbArgs.minToReceive },
-                                            finalInts: fbResult.finalInts
-                                        });
-                                        this._recordPendingBroadcast({
-                                            opIndex: operations.length - 1,
-                                            ctxIndex: opContexts.length - 1,
-                                            order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize },
-                                            finalInts: fbResult.finalInts
-                                        });
-                                        this.manager.logger.log(
-                                            `[COW] Recovered "not found" for ${action.id}: converted UPDATE to CREATE for slot ${targetSlotId}`,
-                                            'warn'
-                                        );
-                                        continue;
-                                    }
-                                }
-                            } catch (fbErr) {
-                                this.manager.logger.log(
-                                    `[COW] CREATE fallback also failed for ${action.id}: ${fbErr.message}`,
-                                    'warn'
-                                );
-                            }
-                        }
-                        this.manager.logger.log(`Failed to prepare update op for ${action.id}: ${err.message}`, 'error');
-                    }
-                }
-            }
-
-            if (skippedUpdateCount > 0) {
-                this._restoreSkippedUpdateSlotsInWorkingGrid(workingGrid, skippedUpdateSlotIds, skippedUpdateCount);
-            }
-
-            if (operations.length === 0) {
-                this.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
-                return { executed: false, hadRotation: false };
-            }
-
-            // Validate funds before broadcasting
-            const validation = this._validateOperationFunds(operations, assetA, assetB);
-            this.manager.logger.log(validation.summary, validation.isValid ? 'info' : 'warn');
-
-            if (!validation.isValid) {
-                this.manager.logger.log(`Skipping batch broadcast: ${validation.violations.length} fund violation(s) detected`, 'warn');
-                this.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
-                return { executed: false, hadRotation: false };
-            }
-
-            await this._ensureCredentialDaemonWritable('COW batch broadcast');
-
-            // Execute batch
-            this.manager.logger.log(`[COW] Broadcasting batch with ${operations.length} operations...`, 'info');
-            this._lastBroadcastHeartbeatAt = Date.now();
-            const execution = await this._executeWithRetryOnUncertain(operations, opContexts);
-            const result = execution.result;
-            const executedContexts = execution.opContexts;
-
-            // Process results and commit on success
-            this.manager.pauseFundRecalc();
-            try {
-                this.manager._throwOnIllegalState = true;
-                
-                if (result.success) {
-                    // Pre-commit integrity: only CREATE ops require returned chainOrderIds.
-                    // Cancel/update operation results may be empty depending on the broadcaster.
-                    const preCommitResults = this._extractOperationResults(result, 'pre-commit-integrity');
-                    const missingCreateResults = this._findMissingCreateResultContexts(preCommitResults, executedContexts);
-                    if (missingCreateResults.length > 0) {
-                        const missingSlots = missingCreateResults
-                            .map(item => item.ctx?.order?.id || item.ctx?.id || `op-${item.index}`)
-                            .join(', ');
-                        this.manager.logger.log(
-                            `[COW] Refusing to commit working grid: ${missingCreateResults.length} CREATE op(s) ` +
-                            `returned no chainOrderId (${missingSlots}). Discarding working grid and syncing from chain.`,
-                            'error'
-                        );
-                        this.manager._clearWorkingGridRef();
-                        this.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
-                        this._markMissingCreateResultsAsStructuralBlocker(missingCreateResults);
-                        await this._recoverAfterMissingCreateResults('missing create operation results');
-                        return {
-                            executed: false,
-                            hadRotation: false,
-                            missingCreateResults: missingCreateResults.map(item => ({
-                                index: item.index,
-                                slotId: item.ctx?.order?.id || item.ctx?.id || null
-                            }))
-                        };
-                    }
-
-                    // SUCCESS: Commit working grid to master (atomic swap)
-                    this.manager.logger.log('[COW] Blockchain success - committing working grid to master', 'info');
-                    // RC-FIX: skipRecalc prevents invariant violation before optimistic accounting
-                    await this.manager._commitWorkingGrid(
-                        workingGrid,
-                        workingIndexes,
-                        workingBoundary,
-                        { skipRecalc: true }
-                    );
-                    
-                    // Commitment accounting is handled in real-time by
-                    // updateOptimisticFreeBalance when capital is committed to orders.
-                    // The old post-batch deduction path was removed to avoid double-counting.
-
-                    // Process batch results for logging/metrics
-                    const batchResult = await this._processBatchResults(result, executedContexts);
-
-                    // Persist to disk. CRITICAL: working grid was already committed
-                    // to master above; if persistence is skipped or validation fails
-                    // here, the on-disk snapshot will be older than the in-memory
-                    // master. Retry once and surface the failure explicitly so the
-                    // next cycle / shutdown can recover.
-                    const persistResult = await this.manager.persistGrid();
-                    if (persistResult && (persistResult.skipped || persistResult.isValid === false)) {
-                        this.manager.logger.log(
-                            `[COW][PERSIST-GUARD] First persist attempt was ` +
-                            `${persistResult.skipped ? 'skipped' : 'invalid'} ` +
-                            `(${persistResult.reason || 'no reason'}); retrying once before ` +
-                            `clearing working grid reference.`,
-                            'warn'
-                        );
-                        this.manager._persistenceWarning = persistResult;
-                        const retryResult = await this.manager.persistGrid();
-                        if (retryResult && (retryResult.skipped || retryResult.isValid === false)) {
-                            this.manager.logger.log(
-                                `[COW][PERSIST-GUARD] Retry also skipped/invalid ` +
-                                `(${retryResult.reason || 'no reason'}). Master grid in memory ` +
-                                `is ahead of disk snapshot; structural resync requested.`,
-                                'error'
-                            );
-                            if (typeof this.manager.requestStructuralGridResync === 'function') {
-                                this.manager._recoveryState = { ...this.manager._recoveryState, structuralResyncRequested: true };
-                                await this.manager.requestStructuralGridResync(
-                                    'persistence guard triggered after COW batch',
-                                    { persistReason: retryResult.reason || 'unknown' }
-                                );
-                            }
-                        } else {
-                            delete this.manager._persistenceWarning;
-                        }
-                    } else if (this.manager._persistenceWarning) {
-                        delete this.manager._persistenceWarning;
-                    }
-
-                    this._metrics.batchesExecuted++;
-                    this.manager._clearWorkingGridRef();
-                    this._clearPendingBroadcasts();
-
-                    return { executed: true, hadRotation: true, ...batchResult };
-                } else {
-                    // FAILURE: Working grid discarded, master unchanged
-                    this.manager.logger.log('[COW] Blockchain failed - working grid discarded, master unchanged', 'warn');
-                    this.manager._clearWorkingGridRef();
-                    this._clearPendingBroadcasts();
-                    return { executed: false, hadRotation: false, ...result };
-                }
-            } finally {
-                this.manager._throwOnIllegalState = false;
-                // Keep broadcasting true during resumeFundRecalc to skip invariant checks
-                // that would fail due to stale accountTotals (not yet refreshed from blockchain)
-                await this.manager.resumeFundRecalc();
-                this.manager.stopBroadcasting();
-                const createCount = actions.filter(a => a.type === COW_ACTIONS.CREATE).length;
-                const cancelCount = actions.filter(a => a.type === COW_ACTIONS.CANCEL).length;
-                this.manager.logger.logFundsStatus(this.manager, `AFTER COW batch (created=${createCount}, cancelled=${cancelCount})`);
-            }
-
-        } catch (err: any) {
-            this.manager.logger.log(`[COW] Batch transaction failed: ${err.message}`, 'error');
-            if (err?.partialOnChainState) {
-                this.manager.logger.log(
-                    `[COW] Non-atomic grouped execution detected (${err.groupsBroadcast}/${err.groupsTotal} groups broadcast). Local rollback cannot undo confirmed on-chain operations; next sync/reconcile will converge state.`,
-                    'warn'
-                );
-            }
-            this.manager.stopBroadcasting();
-            this.manager._clearWorkingGridRef();
-
-            // BROADCAST_UNCERTAIN: the credential daemon timed out (or hit its
-            // inner deadline) and the chain status of the planned CREATEs is
-            // unknown. Run the reconcile-then-decide recovery path: read the
-            // chain, match each pending broadcast by fingerprint, adopt any
-            // chain-side matches, and discard the rest. We MUST NOT throw —
-            // throwing would re-enter the catch loop on the next attempt and
-            // potentially double-publish.
-            if (err instanceof BroadcastUncertainError) {
-                return await this._reconcileAfterUncertainBroadcast(err, opContexts);
-            }
-
-            // Handle hard abort
-            const hardAbortResult = await this._handleBatchHardAbort(err, 'COW batch processing', operations.length);
-            if (hardAbortResult) return hardAbortResult;
-
-            // Check for stale orders — filled in the ~1.5s broadcast window after our plan was built.
-            const staleOrderIds = new Set();
-            const patterns = [
-                /Limit order (1\.7\.\d+) does not exist/g,
-                /Unable to find Object (1\.7\.\d+)/g,
-                /object (1\.7\.\d+) (?:does not exist|not found)/gi
-            ];
-            for (const pattern of patterns) {
-                let m;
-                while ((m = pattern.exec(err.message)) !== null) {
-                    staleOrderIds.add(m[1]);
-                }
-            }
-
-            // "Cannot deduct all or more from order than order contains" means the order still
-            // exists, but its on-chain size shrank during the broadcast window. That is not an
-            // explicit stale/missing-order signal, so reconcile from chain instead of virtualizing.
-            if (/Cannot deduct all or more from order than order contains/.test(err.message)) {
-                return await this._recoverBatchSizeDrift(err, opContexts);
-            }
-
-            if (staleOrderIds.size > 0) {
-                // Recover explicit missing-order failures without aborting the entire fill cycle.
-                // Use the manager update path so indexes, working-grid sync, accounting, and
-                // persistence stay coherent.
-                return await this._recoverExplicitStaleOrders(staleOrderIds, 'cow-stale-order-cleanup');
-            }
-
-            throw err;
-        } finally {
-            this._batchInFlight = false;
-            this._markGridActivity('batch end');
-            this.manager.unlockOrders(idsToLock);
-
-            if (!this._shuttingDown && this._incomingFillQueue.length > 0) {
-                this._scheduleFillConsumerRestart(chainOrders);
-            }
-        }
+        return cowRuntime.updateOrdersOnChainBatchCOW(this, cowResult);
     }
 
-    /**
-     * Process results from batch transaction execution.
-     * Updates order state, synchronizes with chain, and deducts BTS fees.
-     * @param {Object} result - Transaction result from executeBatch
-     * @param {Array} opContexts - Operation context array with operation metadata (must be 1:1 with result.operation_results)
-     * @returns {Object} Result with { executed: boolean, hadRotation: boolean }
-     * @private
-     */
     async _processBatchResults(result, opContexts) {
-        const results = this._extractOperationResults(result, '_processBatchResults');
-        const { getAssetFees } = require('./order/utils/math');
-        // IMPORTANT: Call without amount to get fee schedule fields
-        // ({ createFee, updateFee, ... }), not proceeds projection fields.
-        const btsFeeData = getAssetFees('BTS');
-        let hadRotation = false;
-        let updateOperationCount = 0;
-
-        const updatesToApply = [];
-
-        for (let i = 0; i < opContexts.length; i++) {
-            const ctx = opContexts[i];
-            const res = results[i];
-
-            if (ctx.kind === 'cancel') {
-                this.manager.logger.log(`Cancelled surplus order ${ctx.order.id} (${ctx.order.orderId})`, 'info');
-                const oldOrder = ctx.order;
-                const committedOrder = oldOrder?.id ? this.manager.orders.get(oldOrder.id) : null;
-
-                // The COW commit already updated manager.orders. Apply ONLY the optimistic
-                // accounting transition using pre-commit -> committed order states.
-                if (oldOrder && committedOrder && this.manager.accountant) {
-                    await this.manager.accountant.updateOptimisticFreeBalance(
-                        oldOrder,
-                        committedOrder,
-                        'fill-cancel',
-                        btsFeeData?.cancelFee || 0,
-                        false
-                    );
-                }
-            }
-            else if (ctx.kind === 'size-update') {
-                const oldOrder = ctx.updateInfo.partialOrder;
-                const ord = this.manager.orders.get(oldOrder.id);
-
-                // Apply optimistic accounting from pre-commit -> committed state,
-                // including blockchain update fee deduction.
-                if (oldOrder && ord && this.manager.accountant) {
-                    await this.manager.accountant.updateOptimisticFreeBalance(
-                        oldOrder,
-                        ord,
-                        'order-update',
-                        btsFeeData.updateFee,
-                        false
-                    );
-                }
-
-                if (ord) {
-                    const updatedSlot = { ...ord, size: ctx.updateInfo.newSize };
-                    // Update rawOnChain cache with new integers
-                    if (ctx.finalInts) {
-                        updatedSlot.rawOnChain = {
-                            id: ord.orderId,
-                            for_sale: String(ctx.finalInts.sell),
-                            sell_price: {
-                                base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
-                                quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
-                            }
-                        };
-                    }
-                    updatesToApply.push({ order: updatedSlot, context: 'post-update-metadata' });
-                }
-                this.manager.logger.log(`Size update complete: ${ctx.updateInfo.partialOrder.orderId}`, 'info');
-                updateOperationCount++;
-            }
-            else if (ctx.kind === 'create') {
-                const chainOrderId = res && res[1];
-                if (chainOrderId) {
-                    // synchronizeWithChain handles the full VIRTUAL -> ACTIVE transition
-                    // including orderId assignment and fee deduction.
-                    await this.manager.synchronizeWithChain({
-                        gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData.createFee
-                    }, 'createOrder');
-
-                    // After sync, apply rawOnChain metadata if available
-                    if (ctx.finalInts) {
-                        const syncedOrder = this.manager.orders.get(ctx.order.id);
-                        if (syncedOrder) {
-                            updatesToApply.push({
-                                order: {
-                                    ...syncedOrder,
-                                    rawOnChain: {
-                                        id: chainOrderId,
-                                        for_sale: String(ctx.finalInts.sell),
-                                        sell_price: {
-                                            base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
-                                            quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
-                                        }
-                                    }
-                                },
-                                context: 'post-placement-metadata'
-                            });
-                        }
-                    }
-                    this.manager.logger.log(`Placed ${ctx.order.type} order ${ctx.order.id} -> ${chainOrderId}`, 'info');
-                } else {
-                    const fingerprint = [
-                        `type=${ctx.order.type || 'unknown'}`,
-                        `price=${Format.formatPrice6(ctx.order.price)}`,
-                        `size=${Format.formatAmount(ctx.order.size)}`
-                    ].join(',');
-                    this.manager.logger.log(
-                        `[COW] CRITICAL: Create op for slot ${ctx.order.id} (type=${ctx.order.type}) ` +
-                        `returned no chainOrderId. Identify any orphaned on-chain order by local fingerprint ` +
-                        `${fingerprint} before cancelling.`,
-                        'error'
-                    );
-                }
-            }
-            else if (ctx.kind === 'rotation') {
-                hadRotation = true;
-                const { rotation } = ctx;
-                const { oldOrder, newPrice, newGridId, newSize, type } = rotation;
-
-                if (!newGridId) {
-                    // Size correction only
-                    const ord = this.manager.orders.get(oldOrder.id || rotation.id);
-
-                    // Apply optimistic accounting from pre-commit -> committed state,
-                    // including blockchain update fee deduction.
-                    if (oldOrder && ord && this.manager.accountant) {
-                        await this.manager.accountant.updateOptimisticFreeBalance(
-                            oldOrder,
-                            ord,
-                            'order-update',
-                            btsFeeData.updateFee,
-                            false
-                        );
-                    }
-
-                    if (ord) {
-                        const updatedSlot = { ...ord, size: newSize };
-                        // Update rawOnChain cache with new integers
-                        if (ctx.finalInts) {
-                            updatedSlot.rawOnChain = {
-                                id: ord.orderId,
-                                for_sale: String(ctx.finalInts.sell),
-                                sell_price: {
-                                    base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
-                                    quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
-                                }
-                            };
-                        }
-                        updatesToApply.push({ order: updatedSlot, context: 'post-update-metadata' });
-                    }
-                    updateOperationCount++;
-                    continue;
-                }
-
-                // Full rotation: old slot was virtualized in the committed working grid.
-                // Activate the destination slot with the existing on-chain orderId.
-                const slot = this.manager.orders.get(newGridId);
-                if (!slot) {
-                    this.manager.logger.log(
-                        `[ROTATION] Destination slot ${newGridId} missing from master grid after COW commit - skipping activation, sync will reconcile`,
-                        'error'
-                    );
-                    // Still clear source orderId to prevent a stale chain reference persisting
-                    if (oldOrder?.id && oldOrder.id !== newGridId) {
-                        const staleSource = this.manager.orders.get(oldOrder.id);
-                        if (staleSource?.orderId) {
-                            updatesToApply.push({
-                                order: { ...staleSource, state: ORDER_STATES.VIRTUAL, orderId: null, rawOnChain: null },
-                                context: 'post-rotation-source-clear'
-                            });
-                        }
-                    }
-                    continue;
-                }
-                const updatedSlot = {
-                    ...slot,
-                    id: newGridId,
-                    type,
-                    size: newSize,
-                    price: newPrice,
-                    state: ORDER_STATES.ACTIVE,
-                    orderId: oldOrder?.orderId || slot.orderId || null
-                };
-
-                if (ctx.finalInts) {
-                    updatedSlot.rawOnChain = {
-                        id: updatedSlot.orderId,
-                        for_sale: String(ctx.finalInts.sell),
-                        sell_price: {
-                            base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
-                            quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
-                        }
-                    };
-                }
-
-                if (oldOrder && updatedSlot && this.manager.accountant) {
-                    await this.manager.accountant.updateOptimisticFreeBalance(
-                        oldOrder,
-                        updatedSlot,
-                        'order-update',
-                        btsFeeData.updateFee,
-                        false
-                    );
-                }
-
-                // Ensure rotation source slot is cleared in master state.
-                // COW projection may keep source slots ACTIVE when target keeps a non-zero
-                // virtual size, but after a successful on-chain rotation the source orderId
-                // must no longer remain attached to the old slot.
-                if (oldOrder?.id && oldOrder.id !== newGridId) {
-                    const currentSource = this.manager.orders.get(oldOrder.id);
-                    if (currentSource && currentSource.orderId) {
-                        updatesToApply.push({
-                            order: {
-                                ...currentSource,
-                                state: ORDER_STATES.VIRTUAL,
-                                orderId: null,
-                                rawOnChain: null
-                            },
-                            context: 'post-rotation-source-clear'
-                        });
-                    }
-                }
-
-                updatesToApply.push({ order: updatedSlot, context: 'post-rotation-metadata' });
-            }
-        }
-
-        // Apply all collected updates in a single batch
-        if (updatesToApply.length > 0) {
-            await this.manager.applyGridUpdateBatch(
-                updatesToApply.map(u => u.order), 
-                'batch-results-process',
-                { skipAccounting: true }
-            );
-        }
-
-        return {
-            executed: true,
-            hadRotation,
-            updateOperationCount
-        };
+        return cowRuntime.processBatchResults(this, result, opContexts);
     }
-
     /**
      * Perform grid recalculation triggered by trigger file.
      * Reloads config from disk, recalculates grid, resets funds, and removes trigger file.

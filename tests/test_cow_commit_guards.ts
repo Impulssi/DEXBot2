@@ -100,6 +100,9 @@ function createManagerFixture() {
     };
 }
 
+const { ensureFeeCache } = require('./helpers/fee_cache_init');
+ensureFeeCache();
+
 function createCowExecutionFixture(masterOrders = new Map()) {
     const bot = new DEXBot({
         botKey: 'test_cow_cache_deduction',
@@ -130,14 +133,17 @@ function createCowExecutionFixture(masterOrders = new Map()) {
         resumeFundRecalc: async () => {},
         _commitWorkingGrid: async () => {},
         persistGrid: async () => {},
-        _clearWorkingGridRef: () => {}
+        _clearWorkingGridRef: () => {},
+        getChainFundsSnapshot: () => ({ chainFreeSell: 1e9, chainFreeBuy: 1e9 }),
+        accountant: {
+            updateOptimisticFreeBalance: async () => {}
+        },
+        applyGridUpdateBatch: async () => {},
     };
 
     bot.manager = manager;
     bot.account = 'test-account';
     bot.privateKey = 'test-private-key';
-    bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
-    bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
 
     return { bot, manager, postBatchAdjustments };
 }
@@ -320,10 +326,6 @@ async function testRejectsCreatesWhenUnmatchedChainOrdersExist() {
         structuralResyncRequests += 1;
         return { scheduled: true };
     };
-    bot._executeOperationsWithStrategy = async () => {
-        executeCalls += 1;
-        return { result: { success: true, operation_results: [[1, '1.7.999']] }, opContexts: [] };
-    };
 
     const result = await bot._updateOrdersOnChainBatchCOW({
         workingGrid,
@@ -439,11 +441,6 @@ async function testNoPostBatchCacheDeductionForCreates() {
         }
     });
 
-    bot._executeOperationsWithStrategy = async (operations, opContexts) => ({
-        result: { success: true, operation_results: [] },
-        opContexts
-    });
-
     let recoverySyncCalls = 0;
     (manager as any).syncFromOpenOrders = async () => {
         recoverySyncCalls += 1;
@@ -453,6 +450,8 @@ async function testNoPostBatchCacheDeductionForCreates() {
     };
     const originalReadOpenOrders = chainOrders.readOpenOrders;
     chainOrders.readOpenOrders = async () => [];
+    const originalExecuteBatch = chainOrders.executeBatch;
+    chainOrders.executeBatch = async () => ({ success: true, operation_results: [] });
 
     let result;
     try {
@@ -467,6 +466,7 @@ async function testNoPostBatchCacheDeductionForCreates() {
         chainOrders.buildCancelOrderOp = originalBuildCancel;
         chainOrders.buildUpdateOrderOp = originalBuildUpdate;
         chainOrders.readOpenOrders = originalReadOpenOrders;
+        chainOrders.executeBatch = originalExecuteBatch;
     }
 
     assert.strictEqual(result.executed, false, 'Missing create result must abort local commit');
@@ -557,11 +557,6 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
         };
     };
 
-    bot._executeOperationsWithStrategy = async (operations, opContexts) => ({
-        result: { success: true, operation_results: [] },
-        opContexts: opContexts.filter(ctx => ctx?.kind === 'create' && ctx?.order?.type === ORDER_TYPES.SELL)
-    });
-
     let recoverySyncCalls = 0;
     (manager as any).syncFromOpenOrders = async () => {
         recoverySyncCalls += 1;
@@ -571,7 +566,8 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
     };
     const originalReadOpenOrders = chainOrders.readOpenOrders;
     chainOrders.readOpenOrders = async () => [];
-
+    const originalExecuteBatch = chainOrders.executeBatch;
+    chainOrders.executeBatch = async () => ({ success: true, operation_results: [[1, '1.7.999']] });
     let result;
     try {
         result = await bot._updateOrdersOnChainBatchCOW({
@@ -585,6 +581,7 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
         chainOrders.buildCancelOrderOp = originalBuildCancel;
         chainOrders.buildUpdateOrderOp = originalBuildUpdate;
         chainOrders.readOpenOrders = originalReadOpenOrders;
+        chainOrders.executeBatch = originalExecuteBatch;
     }
 
     assert.strictEqual(result.executed, false, 'Missing mixed create result must abort local commit');
@@ -658,15 +655,12 @@ async function testNoPostBatchCacheDeductionForSizeUpdates() {
         }
     });
 
-    bot._executeOperationsWithStrategy = async (operations, opContexts) => ({
-        result: { success: true, operation_results: [] },
-        opContexts
-    });
-
     let commitCalls = 0;
     manager._commitWorkingGrid = async () => {
         commitCalls += 1;
     };
+    const originalExecuteBatch = chainOrders.executeBatch;
+    chainOrders.executeBatch = async () => ({ success: true, operation_results: [] });
     let result;
     try {
         result = await bot._updateOrdersOnChainBatchCOW({
@@ -679,6 +673,7 @@ async function testNoPostBatchCacheDeductionForSizeUpdates() {
         chainOrders.buildCreateOrderOp = originalBuildCreate;
         chainOrders.buildCancelOrderOp = originalBuildCancel;
         chainOrders.buildUpdateOrderOp = originalBuildUpdate;
+        chainOrders.executeBatch = originalExecuteBatch;
     }
 
     assert.strictEqual(result.executed, true, 'Update-only batch with empty operation_results should still commit');
@@ -729,10 +724,6 @@ async function testCredentialDaemonPreflightBlocksBroadcast() {
     });
     chainKeys.probeAccountInDaemon = async () => {
         throw new Error('Daemon connection failed: ENOENT');
-    };
-    bot._executeOperationsWithStrategy = async () => {
-        executeCalls += 1;
-        return { result: { success: true, operation_results: [] }, opContexts: [] };
     };
 
     try {

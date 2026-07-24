@@ -363,8 +363,6 @@ async function testIllegalBatchAbortArmsMaintenanceCooldown() {
         consumeIllegalStateSignal: () => ({ message: 'simulated illegal state from test' })
     });
 
-    bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok' });
-
     const originalExecuteBatch = chainOrders.executeBatch;
     const originalBuildCreateOrderOp = chainOrders.buildCreateOrderOp;
     try {
@@ -434,8 +432,6 @@ async function testSingleStaleCancelBatchUsesStaleOnlyFastPath() {
     }, 'seed-stale', { skipAccounting: true, fee: 0 });
     await bot.manager.resumeFundRecalc();
 
-    bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok' });
-
     const originalExecuteBatch = chainOrders.executeBatch;
     const originalBuildCancelOrderOp = chainOrders.buildCancelOrderOp;
     try {
@@ -498,8 +494,6 @@ async function testCannotDeductTriggersRecoverySyncInsteadOfVirtualizing() {
         rawOnChain: { id: '1.7.555', for_sale: '500000000' }
     }, 'seed-partial', { skipAccounting: true, fee: 0 });
     await bot.manager.resumeFundRecalc();
-
-    bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok' });
 
     const originalExecuteBatch = chainOrders.executeBatch;
     const originalBuildUpdateOrderOp = chainOrders.buildUpdateOrderOp;

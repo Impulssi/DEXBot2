@@ -1,0 +1,2142 @@
+/**
+ * modules/dexbot_cow_runtime.ts - COW (Copy-on-Write) Batch Execution Runtime
+ *
+ * Handles on-chain order execution with Copy-on-Write working grid semantics,
+ * broadcast uncertainty recovery, and result processing.
+ *
+ * Each function takes the DEXBot instance as its first parameter, following
+ * the same pattern as dexbot_fill_runtime.ts.
+ */
+
+const chainOrders = require('./chain_orders');
+const { BroadcastUncertainError } = require('./dexbot_credential_client');
+const {
+    buildCreateOrderArgs,
+    buildCreateOpFingerprint,
+    extractBatchOperationResults,
+    formatUnmatchedChainOrder,
+    convertToSpreadPlaceholder,
+    buildOutsideInPairGroups,
+} = require('./order/utils/order');
+const { validateCreateTargetSlots } = require('./order/utils/validate');
+const { validateOrderSize } = require('./order/utils/math');
+const {
+    COW_ACTIONS,
+    ORDER_STATES,
+    ORDER_TYPES,
+    REBALANCE_STATES,
+    FILL_PROCESSING,
+} = require('./constants');
+const Format = require('./order/format');
+const { WorkingGrid } = require('./order/working_grid');
+
+/**
+ * Group orders into outside-in pairs for atomic create execution.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} orders
+ * @returns {Array<Array>}
+ */
+function buildOutsideInPairGroupsForOrders(bot, orders) {
+    return buildOutsideInPairGroups(orders, {
+        isValid: Boolean,
+        getType: o => o.type,
+        getPrice: o => o.price,
+    });
+}
+
+/**
+ * Build outside-in pair groups for create entry contexts.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} createEntries
+ * @returns {Array<Array>}
+ */
+function buildOutsideInPairGroupsForCreateEntries(bot, createEntries) {
+    return buildOutsideInPairGroups(createEntries, {
+        isValid: e => Boolean(e?.context?.order),
+        getType: e => e.context.order.type,
+        getPrice: e => e.context.order.price,
+    });
+}
+
+/**
+ * Extract operation results from a batch transaction result.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object|Array|null} result
+ * @param {string} [warnContext='']
+ * @returns {Array}
+ */
+function extractOperationResults(bot, result, warnContext = '') {
+    const extracted = extractBatchOperationResults(result);
+
+    if (Array.isArray(extracted)) return extracted;
+
+    if (result) {
+        const resultType = Array.isArray(result) ? 'array' : typeof result;
+        const keySummary = (resultType === 'object' && !Array.isArray(result))
+            ? Object.keys(result).slice(0, 8).join(',')
+            : '';
+        const contextSuffix = warnContext ? ` (${warnContext})` : '';
+        const keysSuffix = keySummary ? `; keys=[${keySummary}]` : '';
+        bot.manager?.logger?.log(
+            `[COW] Unrecognized operation_results shape${contextSuffix}; defaulting to empty results. resultType=${resultType}${keysSuffix}`,
+            'warn'
+        );
+    }
+
+    return [];
+}
+
+/**
+ * Find CREATE operation contexts whose broadcast result did not include a chain order id.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} operationResults
+ * @param {Array} opContexts
+ * @returns {Array<{index:number, ctx:Object}>}
+ */
+function findMissingCreateResultContexts(bot, operationResults, opContexts) {
+    const missing = [];
+    if (!Array.isArray(opContexts)) return missing;
+
+    for (let i = 0; i < opContexts.length; i++) {
+        const ctx = opContexts[i];
+        if (ctx?.kind !== 'create') continue;
+        const chainOrderId = operationResults?.[i]?.[1];
+        if (!chainOrderId || !/^1\.7\.\d+$/.test(String(chainOrderId))) {
+            missing.push({ index: i, ctx });
+        }
+    }
+
+    return missing;
+}
+
+/**
+ * Run an immediate chain sync after a successful CREATE broadcast returned incomplete ids.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {string} [reason]
+ * @returns {Promise<void>}
+ */
+async function recoverAfterMissingCreateResults(bot, reason = 'missing create operation results') {
+    try {
+        const accountRef = bot.accountId || bot.account?.id || bot.account;
+        if (!accountRef || !bot.manager || !chainOrders?.readOpenOrders) {
+            bot.manager?.logger?.log?.(`[COW] Recovery sync unavailable after ${reason}`, 'warn');
+            return;
+        }
+        const preRecoveryMissingCreateBlockers = Array.isArray(bot.manager._lastUnmatchedChainOrders)
+            ? bot.manager._lastUnmatchedChainOrders
+                .filter(order => order?.reason === 'missing-create-result')
+                .map(order => ({ ...order }))
+            : [];
+        const openOrders = await chainOrders.readOpenOrders(accountRef);
+        const recoveryResult = await bot.manager.syncFromOpenOrders(openOrders, {
+            skipAccounting: false,
+        });
+        preserveMissingCreateBlockersAfterRecovery(bot, preRecoveryMissingCreateBlockers, recoveryResult);
+        if (typeof bot.manager.persistGrid === 'function') {
+            await bot.manager.persistGrid();
+        }
+    } catch (err: any) {
+        bot.manager?.logger?.log?.(`[COW] CRITICAL: Recovery sync failed after ${reason}: ${err.message}`, 'error');
+        if (typeof bot.manager?.requestStructuralGridResync === 'function') {
+            try {
+                await bot.manager.requestStructuralGridResync(`recovery sync failed after ${reason}`, {
+                    error: err.message
+                });
+            } catch (scheduleErr: any) {
+                bot.manager?.logger?.log?.(
+                    `[COW] CRITICAL: Failed to schedule structural resync after recovery failure: ${scheduleErr.message}`,
+                    'error'
+                );
+            }
+        }
+    }
+}
+
+/**
+ * Restore unresolved missing-create blockers after recovery if sync did not adopt them.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} blockers
+ * @param {Object} recoveryResult
+ */
+function preserveMissingCreateBlockersAfterRecovery(bot, blockers, recoveryResult) {
+    if (!Array.isArray(blockers) || blockers.length === 0 || !bot.manager) return;
+
+    const adoptedSlotIds = new Set(
+        (Array.isArray(recoveryResult?.updatedOrders) ? recoveryResult.updatedOrders : [])
+            .filter(order => order?.id && order?.orderId)
+            .map(order => order.id)
+    );
+    const unresolvedBlockers = blockers.filter(blocker => !blocker.slotId || !adoptedSlotIds.has(blocker.slotId));
+    if (unresolvedBlockers.length === 0) return;
+
+    const currentUnmatched = Array.isArray(bot.manager._lastUnmatchedChainOrders)
+        ? bot.manager._lastUnmatchedChainOrders
+        : [];
+    const currentKeys = new Set(currentUnmatched.map(order => `${order.reason || ''}:${order.slotId || ''}:${order.operationIndex ?? ''}`));
+    const restored = [...currentUnmatched];
+
+    for (const blocker of unresolvedBlockers) {
+        const key = `${blocker.reason || ''}:${blocker.slotId || ''}:${blocker.operationIndex ?? ''}`;
+        if (!currentKeys.has(key)) restored.push({ ...blocker });
+    }
+
+    if (restored.length !== currentUnmatched.length) {
+        bot.manager._lastUnmatchedChainOrders = restored;
+        bot.manager._lastUnmatchedChainOrdersAt = Date.now();
+        bot.manager.logger?.log?.(
+            `[COW] Preserving ${restored.length - currentUnmatched.length} missing-create blocker(s) after recovery sync; ` +
+            `chain snapshot did not account for the affected slot(s).`,
+            'warn'
+        );
+    }
+}
+
+/**
+ * Merge missing CREATE result contexts into manager._lastUnmatchedChainOrders.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array<{index:number, ctx:Object}>} missingCreateResults
+ */
+function markMissingCreateResultsAsStructuralBlocker(bot, missingCreateResults) {
+    const blockers = Array.isArray(missingCreateResults)
+        ? missingCreateResults.map(item => {
+            const order = item.ctx?.order || {};
+            const fingerprint = [
+                `type=${order.type || 'unknown'}`,
+                `price=${Format.formatPrice6(order.price)}`,
+                `size=${Format.formatAmount(order.size)}`
+            ].join(',');
+            return {
+                chainOrderId: 'unknown',
+                type: order.type || null,
+                price: order.price,
+                size: order.size,
+                slotId: order.id || item.ctx?.id || null,
+                reason: 'missing-create-result',
+                operationIndex: item.index,
+                fingerprint,
+            };
+        })
+        : [];
+
+    if (bot.manager && blockers.length > 0) {
+        const existing = Array.isArray(bot.manager._lastUnmatchedChainOrders)
+            ? bot.manager._lastUnmatchedChainOrders
+            : [];
+        const keys = new Set(existing.map(order => `${order.reason || ''}:${order.slotId || ''}:${order.operationIndex ?? ''}`));
+        const merged = [...existing];
+        for (const blocker of blockers) {
+            const key = `${blocker.reason || ''}:${blocker.slotId || ''}:${blocker.operationIndex ?? ''}`;
+            if (!keys.has(key)) {
+                merged.push(blocker);
+                keys.add(key);
+            }
+        }
+        bot.manager._lastUnmatchedChainOrders = merged;
+        bot.manager._lastUnmatchedChainOrdersAt = Date.now();
+    }
+}
+
+/**
+ * Format an unmatched chain order for COW logs.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object} order
+ * @returns {string}
+ */
+function formatUnmatchedChainOrderForLog(bot, order) {
+    return formatUnmatchedChainOrder(order);
+}
+
+/**
+ * Record a pending CREATE broadcast on the manager.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object} entry
+ */
+function recordPendingBroadcast(bot, entry) {
+    if (!bot.manager || !entry || !entry.order) return;
+    if (!bot.manager._pendingBroadcasts || !(bot.manager._pendingBroadcasts instanceof Map)) {
+        bot.manager._pendingBroadcasts = new Map();
+    }
+    const fingerprint = buildCreateOpFingerprint({
+        side: entry.order.type,
+        assetA: bot.manager?.assets?.assetA?.id,
+        assetB: bot.manager?.assets?.assetB?.id,
+        sellInt: entry.finalInts?.sell,
+        receiveInt: entry.finalInts?.receive,
+        slotId: entry.order.id
+    });
+    if (!fingerprint) {
+        bot.manager.logger.log?.(
+            `[COW] Skipped pending-broadcast record: could not build fingerprint for ${entry.order?.id || 'unknown'}`,
+            'warn'
+        );
+        return;
+    }
+    bot.manager._pendingBroadcasts.set(fingerprint, {
+        fingerprint,
+        opIndex: entry.opIndex,
+        ctxIndex: entry.ctxIndex,
+        slotId: entry.order.id,
+        orderId: entry.order.id,
+        orderType: entry.order.type,
+        order: entry.order,
+        finalInts: entry.finalInts,
+        batchId: bot._currentBatchId || null,
+        recordedAt: Date.now()
+    });
+}
+
+/**
+ * Clear the pending-broadcast cache.
+ * @param {import('./dexbot_class').DEXBot} bot
+ */
+function clearPendingBroadcasts(bot) {
+    if (bot.manager && bot.manager._pendingBroadcasts instanceof Map) {
+        bot.manager._pendingBroadcasts.clear();
+    }
+}
+
+/**
+ * Build a fingerprint for an on-chain order so it can be matched against
+ * the pending-broadcast cache.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object} chainOrder
+ * @param {string} slotId
+ * @returns {string|null}
+ */
+function buildChainOrderFingerprint(bot, chainOrder, slotId) {
+    if (!chainOrder || !slotId) return null;
+    const normalized = normalizeChainOrderForPendingMatch(bot, chainOrder);
+    if (!normalized) return null;
+    return buildCreateOpFingerprint({
+        side: normalized.side,
+        assetA: normalized.assetA,
+        assetB: normalized.assetB,
+        sellInt: normalized.sellInt,
+        receiveInt: normalized.receiveInt,
+        slotId
+    });
+}
+
+/**
+ * Normalize raw BitShares limit_order_object data into the integer tuple
+ * used by pending-broadcast recovery.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object} chainOrder
+ * @returns {{side: string, assetA: string, assetB: string, sellInt: number, receiveInt: number}|null}
+ */
+function normalizeChainOrderForPendingMatch(bot, chainOrder) {
+    if (!chainOrder) return null;
+    const assetA = bot.manager?.assets?.assetA?.id;
+    const assetB = bot.manager?.assets?.assetB?.id;
+    if (!assetA || !assetB) return null;
+
+    const explicitSide = (chainOrder.type === 'buy' || chainOrder.type === 'sell')
+        ? chainOrder.type
+        : null;
+    const explicitSell = chainOrder.sellInt ?? chainOrder.sell;
+    const explicitReceive = chainOrder.receiveInt ?? chainOrder.receive;
+    if (explicitSide && Number.isFinite(Number(explicitSell)) && Number.isFinite(Number(explicitReceive))) {
+        return {
+            side: explicitSide,
+            assetA,
+            assetB,
+            sellInt: Number(explicitSell),
+            receiveInt: Number(explicitReceive)
+        };
+    }
+
+    const base = chainOrder.sell_price?.base;
+    const quote = chainOrder.sell_price?.quote;
+    if (!base || !quote || !base.asset_id || !quote.asset_id) return null;
+    const baseAmount = Number(base.amount);
+    const quoteAmount = Number(quote.amount);
+    if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount)) return null;
+
+    if (base.asset_id === assetA && quote.asset_id === assetB) {
+        return { side: 'sell', assetA, assetB, sellInt: baseAmount, receiveInt: quoteAmount };
+    }
+    if (base.asset_id === assetB && quote.asset_id === assetA) {
+        return { side: 'buy', assetA, assetB, sellInt: baseAmount, receiveInt: quoteAmount };
+    }
+    return null;
+}
+
+/**
+ * Find a chain order that matches a planned slot using price+size proximity.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} chainOrders - Open chain orders for the account
+ * @param {string} slotId - Planned grid slot id
+ * @param {Object} planned - { sell, receive, orderType } integers from the planned op
+ * @returns {Object|null} Matching chain order, or null
+ */
+function findChainOrderForSlot(bot, chainOrders, slotId, planned) {
+    if (!Array.isArray(chainOrders) || !slotId) return null;
+    const assetA = bot.manager?.assets?.assetA?.id;
+    const assetB = bot.manager?.assets?.assetB?.id;
+    if (!assetA || !assetB) return null;
+
+    // 1. Exact fingerprint match.
+    for (const o of chainOrders) {
+        const fp = buildChainOrderFingerprint(bot, o, slotId);
+        if (fp && bot.manager._pendingBroadcasts?.has(fp)) {
+            return o;
+        }
+    }
+    if (!planned || !Number.isFinite(Number(planned.sell)) || !Number.isFinite(Number(planned.receive))) {
+        return null;
+    }
+    // 2. Near match: same side, sell int within 1, receive int within 1% or 2 units.
+    const targetSell = Number(planned.sell);
+    const targetReceive = Number(planned.receive);
+    const plannedSide = planned.orderType ||
+        planned.side ||
+        bot.manager._pendingBroadcasts?.get?.(planned.fingerprint)?.orderType ||
+        bot.manager.orders.get(slotId)?.type;
+    if (plannedSide !== 'buy' && plannedSide !== 'sell') {
+        return null;
+    }
+    let best = null;
+    let bestDistance = Infinity;
+    for (const o of chainOrders) {
+        const normalized = normalizeChainOrderForPendingMatch(bot, o);
+        if (!normalized) continue;
+        if (normalized.side !== plannedSide) continue;
+        const sell = Number(normalized.sellInt);
+        const receive = Number(normalized.receiveInt);
+        if (!Number.isFinite(sell) || !Number.isFinite(receive)) continue;
+        const sellDelta = Math.abs(sell - targetSell);
+        const receiveDelta = Math.abs(receive - targetReceive);
+        const receiveTol = Math.max(2, Math.floor(targetReceive * 0.01));
+        if (sellDelta > 1 || receiveDelta > receiveTol) continue;
+        const distance = sellDelta * 1000 + receiveDelta;
+        if (distance < bestDistance) {
+            best = o;
+            bestDistance = distance;
+        }
+    }
+    return best;
+}
+
+/**
+ * Reconcile a broadcast whose chain state is unknown.
+ * Thin wrapper that optionally acquires _fillProcessingLock before delegating.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {BroadcastUncertainError} err
+ * @param {Array<Object>} opContexts
+ * @param {Object} [options]
+ * @returns {Promise<Object>}
+ */
+async function reconcileAfterUncertainBroadcast(bot, err, opContexts, options: Record<string, any> = {}) {
+    if (
+        bot.manager?._fillProcessingLock &&
+        typeof bot.manager._fillProcessingLock.acquire === 'function' &&
+        !bot.manager._fillProcessingLock.isReentrant()
+    ) {
+        return bot.manager._fillProcessingLock.acquire(() =>
+            reconcileAfterUncertainBroadcast(bot, err, opContexts, options)
+        );
+    }
+    return reconcileAfterUncertainBroadcastImpl(bot, err, opContexts, options);
+}
+
+/**
+ * Reconcile a broadcast whose chain state is unknown (implementation).
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {BroadcastUncertainError} err
+ * @param {Array<Object>} opContexts
+ * @param {Object} options
+ * @returns {Promise<Object>}
+ */
+async function reconcileAfterUncertainBroadcastImpl(bot, err, opContexts, options) {
+    const startedAt = Date.now();
+    const pending: any[] = (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
+        ? Array.from(bot.manager._pendingBroadcasts.values()) as any[]
+        : [];
+    const createContextCount = opContexts.filter(c => c && c.kind === 'create').length;
+    const nonCreateContextCount = opContexts.length - createContextCount;
+
+    bot.manager.logger.log(
+        `[COW][UNCERTAIN] batchId=${err?.batchId || 'n/a'} ops=${opContexts.length} ` +
+        `creates=${createContextCount} nonCreates=${nonCreateContextCount} ` +
+        `staleSinceMs=${err?.timeoutMs || 'n/a'}. Entering reconcile-then-decide.`,
+        'warn'
+    );
+
+    if (!chainOrders?.readOpenOrders) {
+        bot.manager.logger.log(
+            '[COW][UNCERTAIN] readOpenOrders unavailable; falling back to structural resync only.',
+            'error'
+        );
+        if (typeof bot.manager.requestStructuralGridResync === 'function') {
+            await bot.manager.requestStructuralGridResync(
+                'broadcast uncertain — readOpenOrders unavailable',
+                { batchId: err?.batchId || null }
+            );
+        }
+        clearPendingBroadcasts(bot);
+        return { executed: false, hadRotation: false, uncertain: true };
+    }
+
+    // 1. Read the chain
+    const accountRef = bot.accountId || bot.account?.id || bot.account;
+    let chainSnapshot = [];
+    try {
+        chainSnapshot = await chainOrders.readOpenOrders(accountRef);
+    } catch (readErr) {
+        bot.manager.logger.log(
+            `[COW][UNCERTAIN] readOpenOrders failed: ${readErr?.message || readErr}. ` +
+            `Falling back to structural resync.`,
+            'error'
+        );
+        if (typeof bot.manager.requestStructuralGridResync === 'function') {
+            await bot.manager.requestStructuralGridResync(
+                'broadcast uncertain — readOpenOrders failed',
+                { batchId: err?.batchId || null, error: readErr?.message || String(readErr) }
+            );
+        }
+        clearPendingBroadcasts(bot);
+        return { executed: false, hadRotation: false, uncertain: true };
+    }
+
+    const adopted = [];
+    let discarded = [];
+
+    // 2. For each pending broadcast, look for a chain match.
+    for (const entry of pending) {
+        const match = findChainOrderForSlot(
+            bot,
+            chainSnapshot,
+            entry.slotId,
+            {
+                sell: entry.finalInts?.sell,
+                receive: entry.finalInts?.receive,
+                orderType: entry.orderType,
+                fingerprint: entry.fingerprint,
+            }
+        );
+        if (match) {
+            adopted.push({ entry, match });
+        } else {
+            discarded.push(entry);
+        }
+    }
+
+    // 2b. Second pass: search for any unmatched chain orders by fingerprint
+    // across all known pending slots.
+    if (adopted.length < pending.length) {
+        const adoptedSlotIds = new Set(adopted.map(a => a.entry.slotId));
+        for (const o of chainSnapshot) {
+            if (adopted.some(a => a.match.id === o.id)) continue;
+            for (const entry of pending) {
+                if (adoptedSlotIds.has(entry.slotId)) continue;
+                const fp = buildChainOrderFingerprint(bot, o, entry.slotId);
+                if (fp && bot.manager._pendingBroadcasts?.has(fp)) {
+                    adopted.push({ entry, match: o });
+                    adoptedSlotIds.add(entry.slotId);
+                    break;
+                }
+            }
+        }
+        // Rebuild discarded list to remove newly adopted entries.
+        const newlyAdoptedSlotIds = new Set(adopted.map(a => a.entry.slotId));
+        discarded = pending.filter(e => !newlyAdoptedSlotIds.has(e.slotId));
+    }
+
+    // 3. Apply decisions
+    let adoptedCount = 0;
+    let discardedCount = 0;
+
+    for (const { entry, match } of adopted) {
+        adoptedCount++;
+        const plannedOpCtx = opContexts[entry.ctxIndex];
+        if (plannedOpCtx && plannedOpCtx.kind === 'create') {
+            const chainOrderId = match.id;
+            const expectedType = plannedOpCtx.order?.type || entry.orderType;
+
+            try {
+                const btsFeeData = (() => {
+                    const { getAssetFees } = require('./order/utils/math');
+                    return getAssetFees('BTS');
+                })();
+                await bot.manager.synchronizeWithChain({
+                    gridOrderId: plannedOpCtx.order?.id || entry.slotId,
+                    chainOrderId,
+                    expectedType,
+                    fee: btsFeeData.createFee,
+                }, 'createOrder');
+            } catch (syncErr) {
+                bot.manager.logger.log(
+                    `[COW][UNCERTAIN] Failed to adopt matched order ${chainOrderId} for slot ${entry.slotId}: ${syncErr?.message || syncErr}`,
+                    'error'
+                );
+            }
+        }
+
+        // Remove from pending broadcasts — matched entries are resolved.
+        if (entry.fingerprint && bot.manager._pendingBroadcasts?.has(entry.fingerprint)) {
+            bot.manager._pendingBroadcasts.delete(entry.fingerprint);
+        }
+    }
+
+    for (const entry of discarded) {
+        discardedCount++;
+        const plannedOpCtx = opContexts[entry.ctxIndex];
+        if (plannedOpCtx && plannedOpCtx.kind === 'create') {
+            try {
+                // Restore target grid sizes for discarded CREATEs so the slots are
+                // immediately available for the next cycle without waiting for a
+                // structural resync. entry.order is the pending-broadcast target
+                // order (captured at broadcast time, before the working grid was
+                // committed or discarded).
+                if (entry.order?.id && entry.order?.size && entry.order?.type) {
+                    const slot = bot.manager.orders.get(entry.order.id);
+                    if (slot) {
+                        bot.manager.logger.log(
+                            `[COW][UNCERTAIN] Restored target size for discarded CREATE slot ${entry.slotId} (size: ${entry.order.size})`,
+                            'debug'
+                        );
+                        const updates = [{
+                            ...slot,
+                            size: entry.order.size,
+                            price: entry.order.price,
+                        }];
+                        if (typeof bot.manager.applyGridUpdateBatch === 'function') {
+                            await bot.manager.applyGridUpdateBatch(updates, 'uncertain-broadcast-discard-restore');
+                        }
+                    }
+                }
+            } catch (restoreErr) {
+                bot.manager.logger.log(
+                    `[COW][UNCERTAIN] Failed to restore slot ${entry.slotId} after discard: ${restoreErr?.message || restoreErr}`,
+                    'error'
+                );
+            }
+        }
+        // Remove from pending broadcasts.
+        if (entry.fingerprint && bot.manager._pendingBroadcasts?.has(entry.fingerprint)) {
+            bot.manager._pendingBroadcasts.delete(entry.fingerprint);
+        }
+    }
+
+    // 4. If some entries remain unresolved (broadcasts that point to opContext
+    // indices beyond the array — shouldn't happen, but guard defensively),
+    // treat them as discarded.
+    const remainingAfterDecide = bot.manager._pendingBroadcasts instanceof Map
+        ? bot.manager._pendingBroadcasts.size
+        : 0;
+    if (remainingAfterDecide > 0) {
+        const remainingEntries = Array.from(bot.manager._pendingBroadcasts.values()) as any[];
+        for (const entry of remainingEntries) {
+            discardedCount++;
+            bot.manager.logger.log(
+                `[COW][UNCERTAIN] Cleaning residual pending broadcast for slot ${entry.slotId} (opIndex=${entry.opIndex})`,
+                'debug'
+            );
+        }
+        bot.manager._pendingBroadcasts.clear();
+    }
+
+    // 5. Log structured summary
+    const elapsed = Date.now() - startedAt;
+    bot.manager.logger.log(
+        `[COW][UNCERTAIN] Reconciled: ${adoptedCount} adopted, ${discardedCount} discarded ` +
+        `(opContexts=${opContexts.length}, pending=${pending.length}, ` +
+        `chainOrders=${chainSnapshot.length}) in ${elapsed}ms.`,
+        'info'
+    );
+
+    // 6. Persist master grid changes from the reconciliation.
+    if (adoptedCount > 0 || discardedCount > 0) {
+        if (typeof bot.manager.persistGrid === 'function') {
+            try {
+                await bot.manager.persistGrid();
+            } catch (persistErr) {
+                bot.manager.logger.log(
+                    `[COW][UNCERTAIN] Persist after reconcile failed: ${persistErr?.message || persistErr}`,
+                    'error'
+                );
+            }
+        }
+    }
+
+    // 7. Request structural resync if any chain orders remain unaccounted for
+    // after the reconciliation, ensuring the next cycle re-plans from a clean
+    // chain snapshot.
+    const alreadyScheduled = bot._structuralGridResyncRunning || bot._structuralGridResyncTimer;
+    if (!alreadyScheduled && chainSnapshot.length > 0) {
+        const reconciledOrderIds = new Set(adopted.map(a => a.match?.id).filter(Boolean));
+        const unreconciledCount = chainSnapshot.filter(o => !reconciledOrderIds.has(o.id)).length;
+        if (unreconciledCount > 0) {
+            bot.manager.logger.log(
+                `[COW][UNCERTAIN] ${unreconciledCount} chain order(s) remain unreconciled after uncertain broadcast recovery. ` +
+                `These may be legitimate pre-existing orders or leftovers from a prior cycle. Requesting structural resync.`,
+                'warn'
+            );
+            if (typeof bot.manager.requestStructuralGridResync === 'function') {
+                await bot.manager.requestStructuralGridResync(
+                    'unreconciled orders after uncertain broadcast',
+                    {
+                        batchId: err?.batchId || null,
+                        pendingCount: pending.length,
+                        adoptedCount,
+                        discardedCount,
+                        unreconciledCount
+                    }
+                );
+            } else {
+                bot._warn?.('[COW][UNCERTAIN] requestStructuralGridResync unavailable; cannot schedule structural resync.');
+            }
+        }
+    }
+
+    return { executed: false, hadRotation: false, uncertain: true, adoptedCount, discardedCount };
+}
+
+/**
+ * Auto-cancel one unmatched orphan (price-drift orphan) per cycle.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @returns {Promise<{cancelled: boolean, reason?: string, orderId?: string}>}
+ */
+async function autoCancelOneUnmatchedOrphan(bot) {
+    const cycleId = bot._currentCycleId || 0;
+    const recoveryActive = bot.manager?._recoveryState?.structuralResyncRequested === true;
+    const cycleCap = recoveryActive ? 5 : 1;
+
+    if (bot._autoCancelOrphanCycleMarker === cycleId) {
+        if (bot._autoCancelOrphanSubCount >= cycleCap) {
+            return { cancelled: false, reason: 'cap-reached-this-cycle', subCount: bot._autoCancelOrphanSubCount };
+        }
+    } else {
+        bot._autoCancelOrphanCycleMarker = cycleId;
+        bot._autoCancelOrphanSubCount = 0;
+    }
+    const pending = (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
+        ? bot.manager._pendingBroadcasts.size
+        : 0;
+    if (pending > 0) {
+        return { cancelled: false, reason: 'pending-broadcasts-active' };
+    }
+    const unmatched = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
+        ? bot.manager._lastUnmatchedChainOrders
+        : [];
+    if (unmatched.length === 0) {
+        return { cancelled: false, reason: 'no-unmatched' };
+    }
+    const fingerprinted = unmatched.find(u => u && u.fingerprint);
+    if (fingerprinted) {
+        return { cancelled: false, reason: 'fingerprinted-handle-via-recovery' };
+    }
+
+    const target = unmatched.find(u => u && u.reason === 'price-drift-orphan');
+    if (!target) {
+        return { cancelled: false, reason: 'no-price-drift-orphan', message: 'no price-drift orphan to cancel; other unmatched orders are adoptable' };
+    }
+    const orderId = target.id || target.orderId || target.chainOrderId;
+    if (!orderId) {
+        return { cancelled: false, reason: 'no-orderId' };
+    }
+    if (!chainOrders?.cancelOrder) {
+        return { cancelled: false, reason: 'cancelOrder-unavailable' };
+    }
+    try {
+        await chainOrders.cancelOrder(bot.account, bot.privateKey, orderId);
+        if (typeof chainOrders.recordOwnCancel === 'function') {
+            chainOrders.recordOwnCancel(orderId);
+        }
+        bot._autoCancelOrphanSubCount++;
+        bot.manager.logger.log(
+            `[COW] Auto-cancelled ${bot._autoCancelOrphanSubCount}/${unmatched.length} unmatched chain order ` +
+            `(${formatUnmatchedChainOrderForLog(bot, target)}) — per-cycle cap=${cycleCap}.`,
+            'warn'
+        );
+        return { cancelled: true, orderId };
+    } catch (err) {
+        bot.manager.logger.log(
+            `[COW] Auto-cancel of unmatched chain order ${orderId} failed: ${err?.message || err}`,
+            'error'
+        );
+        return { cancelled: false, reason: 'cancel-failed', error: err?.message || String(err) };
+    }
+}
+
+/**
+ * Check whether to execute creates in outside-in pair mode.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} opContexts
+ * @returns {boolean}
+ */
+function shouldExecuteCreatePairMode(bot, opContexts) {
+    if (!Array.isArray(opContexts) || opContexts.length < 2) return false;
+    if (!opContexts.every(ctx => ctx?.kind === 'create' && ctx?.order)) return false;
+
+    let hasBuy = false;
+    let hasSell = false;
+    for (const ctx of opContexts) {
+        if (ctx.order.type === ORDER_TYPES.BUY) hasBuy = true;
+        if (ctx.order.type === ORDER_TYPES.SELL) hasSell = true;
+        if (hasBuy && hasSell) return true;
+    }
+    return false;
+}
+
+/**
+ * Execute operations with retry on BroadcastUncertainError.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} operations
+ * @param {Array} opContexts
+ * @returns {Promise<{result: Object, opContexts: Array}>}
+ */
+async function executeWithRetryOnUncertain(bot, operations, opContexts) {
+    const MAX_RETRIES = 1;
+    for (let attempt = 1; ; attempt++) {
+        try {
+            return await executeOperationsWithStrategy(bot, operations, opContexts);
+        } catch (err) {
+            const isRetriable = err instanceof BroadcastUncertainError
+                && !err.partialOnChainState
+                && attempt <= MAX_RETRIES;
+            if (isRetriable) {
+                bot.manager.logger.log(
+                    `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}), retrying...`,
+                    'warn'
+                );
+                await bot._ensureCredentialDaemonWritable('COW batch retry');
+
+                try {
+                    const accountRef = bot.accountId || bot.account?.id || bot.account;
+                    const freshChain = await chainOrders.readOpenOrders(accountRef);
+                    if (freshChain.length > 0 && bot.manager?.syncFromOpenOrders) {
+                        await bot.manager.syncFromOpenOrders(freshChain, {
+                            skipAccounting: true,
+                        });
+                    }
+                } catch (syncErr) {
+                    bot.manager.logger.log(
+                        `[COW] Pre-retry sync failed (non-fatal): ${syncErr?.message || syncErr}`,
+                        'warn'
+                    );
+                }
+
+                continue;
+            }
+            throw err;
+        }
+    }
+}
+
+/**
+ * Execute blockchain operations with appropriate strategy (single batch or pair mode).
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} operations
+ * @param {Array} opContexts
+ * @returns {Promise<{result: Object, opContexts: Array}>}
+ */
+async function executeOperationsWithStrategy(bot, operations, opContexts) {
+    if (!shouldExecuteCreatePairMode(bot, opContexts)) {
+        const result = await chainOrders.executeBatch(bot.account, bot.privateKey, operations);
+        return { result, opContexts };
+    }
+
+    const createEntries = [];
+    for (let i = 0; i < operations.length; i++) {
+        createEntries.push({
+            operation: operations[i],
+            context: opContexts[i],
+        });
+    }
+
+    const groups = buildOutsideInPairGroupsForCreateEntries(bot, createEntries);
+    const mergedOperationResults = [];
+    const mergedRawResults = [];
+    const mergedContexts = [];
+
+    for (let idx = 0; idx < groups.length; idx++) {
+        const group = groups[idx];
+        const groupOps = group.map(e => e.operation);
+        const groupContexts = group.map(e => e.context);
+        bot.manager.logger.log(
+            `[COW] Broadcasting create pair group ${idx + 1}/${groups.length} (${groupOps.length} op${groupOps.length > 1 ? 's' : ''}, outside->center)`,
+            'info'
+        );
+        let groupResult;
+        try {
+            groupResult = await chainOrders.executeBatch(bot.account, bot.privateKey, groupOps);
+        } catch (err: any) {
+            const groupsBroadcast = idx;
+            const groupsTotal = groups.length;
+            const broadcastedOperationCount = mergedContexts.length;
+            bot.manager.logger.log(
+                `[COW] Grouped create execution failed at group ${idx + 1}/${groupsTotal}; ${groupsBroadcast} group(s) already broadcast (${broadcastedOperationCount} op context(s)). Partial on-chain state is possible.`,
+                'error'
+            );
+            err.partialOnChainState = groupsBroadcast > 0;
+            err.groupsBroadcast = groupsBroadcast;
+            err.groupsTotal = groupsTotal;
+            err.broadcastedOperationCount = broadcastedOperationCount;
+            throw err;
+        }
+        const groupOpResults = extractOperationResults(bot, groupResult);
+
+        mergedOperationResults.push(...groupOpResults);
+        mergedRawResults.push(groupResult?.raw || null);
+        mergedContexts.push(...groupContexts);
+    }
+
+    return {
+        result: {
+            success: true,
+            raw: {
+                grouped: true,
+                groupsExecuted: groups.length,
+                groupResults: mergedRawResults,
+            },
+            operation_results: mergedOperationResults,
+            grouped: true,
+            groupsExecuted: groups.length
+        },
+        opContexts: mergedContexts
+    };
+}
+
+/**
+ * Validate that operations can be executed with available funds before broadcasting.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} operations
+ * @param {Object} assetA
+ * @param {Object} assetB
+ * @returns {Object} { isValid: boolean, summary: string }
+ */
+function validateOperationFunds(bot, operations, assetA, assetB) {
+    if (!operations || operations.length === 0) {
+        return { isValid: true, summary: 'No operations to validate' };
+    }
+
+    const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = require('./order/utils/math');
+    let snap = bot.manager?.getChainFundsSnapshot?.();
+    if (!snap) {
+        snap = { chainFreeSell: 0, chainFreeBuy: 0 };
+        bot.manager?.logger?.log?.(
+            '[COW][VALIDATION] getChainFundsSnapshot unavailable — fund validation skipped (assuming no balance)',
+            'warn'
+        );
+    }
+    const netRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
+    const runningRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
+    const peakRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
+
+    for (const op of operations) {
+        if (!op?.op_data) continue;
+
+        let sellAssetId = null;
+        let sellAmountInt = 0;
+
+        if (op.op_name === 'limit_order_create') {
+            sellAssetId = op.op_data.amount_to_sell?.asset_id;
+            sellAmountInt = op.op_data.amount_to_sell?.amount;
+        } else if (op.op_name === 'limit_order_update') {
+            sellAssetId = op.op_data.new_price?.base?.asset_id;
+            sellAmountInt = op.op_data.new_price?.base?.amount;
+        }
+
+        if (sellAssetId && (sellAmountInt !== undefined && sellAmountInt !== null)) {
+            const precision = (sellAssetId === assetA.id) ? assetA.precision : assetB.precision;
+            const assetSymbol = (sellAssetId === assetA.id) ? assetA.symbol : assetB.symbol;
+
+            if (Number(sellAmountInt) <= 0) {
+                return {
+                    isValid: false,
+                    summary: `[VALIDATION] CRITICAL: Zero amount order detected for ${assetSymbol} (assetId=${sellAssetId})`,
+                    violations: [{ asset: assetSymbol, sizeInt: sellAmountInt, reason: 'Zero amount' }]
+                };
+            }
+
+            let signedDelta = 0;
+            if (op.op_name === 'limit_order_update') {
+                const deltaAssetId = op.op_data.delta_amount_to_sell?.asset_id;
+                const deltaSellInt = op.op_data.delta_amount_to_sell?.amount;
+                if (deltaAssetId === sellAssetId && Number.isFinite(Number(deltaSellInt))) {
+                    signedDelta = blockchainToFloat(deltaSellInt, precision);
+                }
+            } else {
+                signedDelta = blockchainToFloat(sellAmountInt, precision);
+            }
+
+            netRequiredFunds[sellAssetId] = quantizeFloat(
+                (netRequiredFunds[sellAssetId] || 0) + signedDelta,
+                precision
+            );
+
+            runningRequiredFunds[sellAssetId] = quantizeFloat(
+                (runningRequiredFunds[sellAssetId] || 0) + signedDelta,
+                precision
+            );
+
+            const nextPeak = Math.max(
+                Number(peakRequiredFunds[sellAssetId] || 0),
+                Number(runningRequiredFunds[sellAssetId] || 0)
+            );
+            peakRequiredFunds[sellAssetId] = quantizeFloat(nextPeak, precision);
+        }
+    }
+
+    const availableFunds = {
+        [assetA.id]: quantizeFloat(snap.chainFreeSell || 0, assetA.precision),
+        [assetB.id]: quantizeFloat(snap.chainFreeBuy || 0, assetB.precision)
+    };
+
+    const fundViolations = [];
+    for (const assetId in peakRequiredFunds) {
+        const required = peakRequiredFunds[assetId];
+        const netRequired = netRequiredFunds[assetId] || 0;
+        const available = availableFunds[assetId] || 0;
+
+        const prec = (assetId === assetA.id) ? assetA.precision : assetB.precision;
+        if (floatToBlockchainInt(required, prec) > floatToBlockchainInt(available, prec)) {
+            fundViolations.push({
+                asset: assetId === assetA.id ? assetA.symbol : assetB.symbol,
+                required,
+                netRequired,
+                available,
+                deficit: quantizeFloat(required - available, prec)
+            });
+        }
+    }
+
+    if (fundViolations.length > 0) {
+        let summary = `[VALIDATION] Fund validation FAILED:\n`;
+        for (const v of fundViolations) {
+            summary += `  ${v.asset}: peakRequired=${Format.formatAmount8(v.required)}, netRequired=${Format.formatAmount8(v.netRequired)}, available=${Format.formatAmount8(v.available)}, deficit=${Format.formatAmount8(v.deficit)}\n`;
+        }
+        return { isValid: false, summary: summary.trim(), violations: fundViolations };
+    }
+
+    const summary = `[VALIDATION] PASSED: ${operations.length} operations`;
+    return { isValid: true, summary };
+}
+
+/**
+ * Resolve the ideal size from an order-like object with fallback.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object|null} orderLike
+ * @param {number|null} [fallbackSize=null]
+ * @returns {number|null}
+ */
+function resolveIdealSizeForValidation(bot, orderLike, fallbackSize = null) {
+    const candidates = [
+        orderLike?.idealSize,
+        orderLike?.order?.idealSize,
+        orderLike?.size,
+        orderLike?.order?.size,
+        fallbackSize
+    ];
+
+    for (const candidate of candidates) {
+        const numeric = Number(candidate);
+        if (Number.isFinite(numeric) && numeric > 0) {
+            return numeric;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Validate that an order size is safe to execute.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {number} size
+ * @param {string} type
+ * @param {Object|null} [orderLike=null]
+ * @param {number|null} [fallbackSize=null]
+ * @returns {import('./types').OrderValidationResult}
+ */
+function validateOrderSizeForExecution(bot, size, type, orderLike = null, fallbackSize = null) {
+    return validateOrderSize(
+        size,
+        type,
+        bot.manager.assets,
+        bot.config.gridLimits?.MIN_ORDER_SIZE_FACTOR,
+        resolveIdealSizeForValidation(bot, orderLike, fallbackSize),
+        bot.config.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE
+    );
+}
+
+/**
+ * Build COW actions array from a simple plan object.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object|Array} plan
+ * @returns {Array}
+ */
+function buildActionsFromPlan(bot, plan) {
+    const normalizedPlan = Array.isArray(plan)
+        ? { ordersToPlace: plan }
+        : (plan || {});
+
+    const {
+        ordersToPlace = [],
+        ordersToRotate = [],
+        ordersToUpdate = [],
+        ordersToCancel = []
+    } = normalizedPlan;
+
+    const actions = [];
+
+    for (const o of ordersToCancel) {
+        if (o?.orderId) {
+            actions.push({ type: COW_ACTIONS.CANCEL, id: o.id, orderId: o.orderId });
+        }
+    }
+
+    for (const r of ordersToRotate) {
+        const oldOrder = r?.oldOrder || r;
+        const id = oldOrder?.id || r?.id;
+        const orderId = oldOrder?.orderId || r?.orderId;
+        const newGridId = r?.newGridId || id;
+        const newSize = Number.isFinite(Number(r?.newSize))
+            ? Number(r.newSize)
+            : Number(r?.size || oldOrder?.size || 0);
+        const newPrice = Number.isFinite(Number(r?.newPrice))
+            ? Number(r.newPrice)
+            : Number(r?.price || oldOrder?.price);
+        const orderType = r?.type || oldOrder?.type;
+
+        if (!id || !orderId || !newGridId || !orderType || !Number.isFinite(newPrice) || !(newSize > 0)) continue;
+
+        actions.push({
+            type: COW_ACTIONS.UPDATE,
+            id,
+            orderId,
+            newGridId,
+            newSize,
+            newPrice,
+            order: {
+                id: newGridId,
+                type: orderType,
+                price: newPrice,
+                size: newSize
+            }
+        });
+    }
+
+    for (const o of ordersToUpdate) {
+        const partialOrder = o?.partialOrder || o;
+        const id = o?.id || partialOrder?.id;
+        const orderId = o?.orderId || partialOrder?.orderId;
+        const orderType = o?.type || partialOrder?.type;
+        const newSize = Number.isFinite(Number(o?.newSize))
+            ? Number(o.newSize)
+            : Number(partialOrder?.size || 0);
+
+        if (!id || !orderId) continue;
+
+        actions.push({
+            type: COW_ACTIONS.UPDATE,
+            id,
+            orderId,
+            newSize,
+            order: {
+                ...(partialOrder || {}),
+                id,
+                orderId,
+                type: orderType,
+                size: newSize
+            }
+        });
+    }
+
+    for (const o of ordersToPlace) {
+        if (!o?.id) continue;
+        actions.push({ type: COW_ACTIONS.CREATE, id: o.id, order: o });
+    }
+
+    return actions;
+}
+
+/**
+ * Build a COW result object (workingGrid + actions) from a simple plan.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object|Array} plan
+ * @returns {{workingGrid: import('./types').WorkingGrid, workingIndexes: Object, workingBoundary: number, actions: Array}}
+ */
+function buildCowResultFromPlan(bot, plan) {
+    const workingGrid = new WorkingGrid(bot.manager.orders, {
+        baseVersion: Number.isFinite(Number(bot.manager._gridVersion)) ? bot.manager._gridVersion : 0
+    });
+    const workingBoundary = bot.manager.boundaryIdx;
+    const actions = buildActionsFromPlan(bot, plan);
+
+    for (const action of actions) {
+        if (action.type === COW_ACTIONS.CANCEL) {
+            const current = workingGrid.get(action.id);
+            if (!current) continue;
+            workingGrid.set(action.id, convertToSpreadPlaceholder(current));
+        } else if (action.type === COW_ACTIONS.CREATE) {
+            if (!action.id || !action.order) continue;
+            const current = workingGrid.get(action.id) || { id: action.id };
+            workingGrid.set(action.id, {
+                ...current,
+                ...action.order,
+                id: action.id,
+                state: ORDER_STATES.VIRTUAL,
+                orderId: null
+            });
+        } else if (action.type === COW_ACTIONS.UPDATE) {
+            if (action.newGridId && action.newGridId !== action.id) {
+                const current = workingGrid.get(action.id);
+                if (current) {
+                    workingGrid.set(action.id, convertToSpreadPlaceholder(current));
+                }
+
+                const targetId = action.newGridId;
+                const targetCurrent = workingGrid.get(targetId) || { id: targetId };
+                const rotatedSize = Number.isFinite(Number(action.newSize))
+                    ? Number(action.newSize)
+                    : Number(targetCurrent.size || 0);
+                const rotatedPrice = Number.isFinite(Number(action.newPrice))
+                    ? Number(action.newPrice)
+                    : Number(action.order?.price ?? targetCurrent.price);
+
+                workingGrid.set(targetId, {
+                    ...targetCurrent,
+                    ...(action.order || {}),
+                    id: targetId,
+                    size: rotatedSize,
+                    price: rotatedPrice,
+                    state: ORDER_STATES.VIRTUAL,
+                    orderId: null
+                });
+                continue;
+            }
+
+            const current = workingGrid.get(action.id);
+            if (!current) continue;
+            const newSize = Number.isFinite(Number(action.newSize))
+                ? Number(action.newSize)
+                : Number(current.size || 0);
+            workingGrid.set(action.id, {
+                ...current,
+                ...(action.order || {}),
+                id: action.id,
+                orderId: action.orderId || current.orderId,
+                size: newSize
+            });
+        }
+    }
+
+    return {
+        workingGrid,
+        workingIndexes: workingGrid.getIndexes(),
+        workingBoundary,
+        actions
+    };
+}
+
+/**
+ * Restore skipped update slots in the working grid to master state.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./types').WorkingGrid} workingGrid
+ * @param {Set<string>} skippedSlotIds
+ * @param {number} [skippedCount=0]
+ */
+function restoreSkippedUpdateSlotsInWorkingGrid(bot, workingGrid, skippedSlotIds, skippedCount = 0) {
+    if (!workingGrid || !skippedSlotIds || skippedSlotIds.size === 0) {
+        return;
+    }
+
+    const masterVersion = Number.isFinite(Number(bot.manager?._gridVersion))
+        ? Number(bot.manager._gridVersion)
+        : undefined;
+
+    for (const slotId of skippedSlotIds) {
+        workingGrid.syncFromMaster(bot.manager.orders, slotId, masterVersion);
+    }
+
+    bot.manager.logger.log(
+        `[COW] Restored ${skippedSlotIds.size} slot(s) after ${skippedCount} skipped update action(s).`,
+        'debug'
+    );
+}
+
+/**
+ * COW broadcast: Execute blockchain operations and commit working grid on success.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object} cowResult
+ * @returns {Promise<Object>}
+ */
+async function updateOrdersOnChainBatchCOW(bot, cowResult) {
+    bot._currentCycleId = (Number.isFinite(Number(bot._currentCycleId)) ? Number(bot._currentCycleId) : 0) + 1;
+    const { workingGrid, workingIndexes, workingBoundary, actions } = cowResult;
+
+    if (bot.config.dryRun) {
+        const cancelCount = actions.filter(a => a.type === COW_ACTIONS.CANCEL).length;
+        const createCount = actions.filter(a => a.type === COW_ACTIONS.CREATE).length;
+        const updateCount = actions.filter(a => a.type === COW_ACTIONS.UPDATE).length;
+        if (cancelCount > 0) bot.manager.logger.log(`Dry run: would cancel ${cancelCount} orders`, 'info');
+        if (createCount > 0) bot.manager.logger.log(`Dry run: would place ${createCount} new orders`, 'info');
+        if (updateCount > 0) bot.manager.logger.log(`Dry run: would update ${updateCount} orders`, 'info');
+        return { executed: true, hadRotation: false };
+    }
+
+    const createSlotValidation = validateCreateTargetSlots(actions, bot.manager?.orders);
+    if (!createSlotValidation.isValid) {
+        for (const violation of createSlotValidation.violations) {
+            bot.manager.logger.log(
+                `[COW] Rejecting CREATE for occupied slot ${violation.targetId}: ` +
+                `existing orderId=${violation.currentOrderId}, type=${violation.currentType}, state=${violation.currentState}`,
+                'error'
+            );
+        }
+
+        return {
+            executed: false,
+            aborted: true,
+            reason: 'CREATE_SLOT_OCCUPIED',
+            violations: createSlotValidation.violations,
+            hadRotation: false
+        };
+    }
+
+    const hasCreateActions = actions.some(action => action.type === COW_ACTIONS.CREATE);
+
+    if (hasCreateActions && bot.manager?._recoveryExhaustedAt) {
+        const exhaustedAge = Date.now() - bot.manager._recoveryExhaustedAt;
+        bot.manager.logger.log?.(
+            `[RECOVERY-EXHAUSTED] Blocking ${actions.filter(a => a.type === COW_ACTIONS.CREATE).length} CREATE(s) ` +
+            `(exhausted ${(exhaustedAge / 1000).toFixed(0)}s ago). ` +
+            `Waiting for next fill or sync cycle to reset recovery state.`,
+            'warn'
+        );
+        return {
+            executed: false,
+            aborted: true,
+            reason: 'RECOVERY_EXHAUSTED',
+            hadRotation: false
+        };
+    }
+
+    const unmatchedChainOrders = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
+        ? bot.manager._lastUnmatchedChainOrders
+        : [];
+    const pendingBroadcasts: any[] = (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
+        ? Array.from(bot.manager._pendingBroadcasts.values()) as any[]
+        : [];
+    if (hasCreateActions && (unmatchedChainOrders.length > 0 || pendingBroadcasts.length > 0)) {
+        if (pendingBroadcasts.length > 0) {
+            bot.manager.logger.log(
+                `[COW] Rejecting CREATE batch: ${pendingBroadcasts.length} pending broadcast(s) from a prior uncertain ` +
+                `broadcast. Running recovery before placing replacement orders.`,
+                'error'
+            );
+            if (typeof bot.manager.requestStructuralGridResync === 'function') {
+                if (bot.manager._recoveryState) bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: true };
+                await bot.manager.requestStructuralGridResync(
+                    'pending broadcasts before COW create',
+                    { pendingBroadcasts: pendingBroadcasts.map(p => p.slotId) }
+                );
+            }
+            try {
+                await reconcileAfterUncertainBroadcast(
+                    bot,
+                    new BroadcastUncertainError(
+                        'rejected CREATE batch had pending broadcasts',
+                        {
+                            operations: pendingBroadcasts.map(p => p.order),
+                            accountName: bot.account,
+                            batchId: bot._currentBatchId || null,
+                            payload: null,
+                            timeoutMs: null
+                        }
+                    ),
+                    []
+                );
+            } catch (recoverErr) {
+                bot.manager.logger.log(
+                    `[COW] Recovery from pending broadcasts failed: ${recoverErr?.message || recoverErr}`,
+                    'error'
+                );
+            }
+            return {
+                executed: false,
+                aborted: true,
+                reason: 'PENDING_BROADCASTS',
+                hadRotation: false
+            };
+        }
+
+        const unmatchedSample = unmatchedChainOrders
+            .slice(0, 3)
+            .map(o => formatUnmatchedChainOrderForLog(bot, o))
+            .join(' | ');
+        bot.manager.logger.log(
+            `[COW] ${unmatchedChainOrders.length} unmatched chain order(s) blocking CREATES ` +
+            (unmatchedSample ? `(${unmatchedSample})` : '') +
+            ` — adopting via sync instead of cancelling`,
+            'info'
+        );
+        try {
+            const accountRef = bot.account;
+            const freshSnapshot = await chainOrders.readOpenOrders(accountRef);
+            if (freshSnapshot && freshSnapshot.length > 0) {
+                const syncResult = await bot.manager.syncFromOpenOrders(freshSnapshot, {
+                    skipAccounting: true,
+                });
+                if (syncResult && Array.isArray(syncResult.unmatchedChainOrders)) {
+                    const processed = (syncResult.filledOrders?.length || 0) +
+                                      (syncResult.updatedOrders?.length || 0) +
+                                      (syncResult.ordersNeedingCorrection?.length || 0);
+                    if (processed > 0) {
+                        bot.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders;
+                        bot.manager.logger.log(
+                            `[COW] Adopted chain order(s) via sync: ${processed} processed, ` +
+                            `${syncResult.unmatchedChainOrders.length} still unmatched`,
+                            'info'
+                        );
+                    } else {
+                        const syncUnmatchedCount = syncResult.unmatchedChainOrders.length;
+                        bot.manager.logger.log(
+                            `[COW] Sync returned without processing (processed=0, ` +
+                            `unmatched=${syncUnmatchedCount} in result, ` +
+                            `_lastUnmatchedChainOrders=${unmatchedChainOrders.length}). ` +
+                            `Structural resync will handle adoption.`,
+                            syncUnmatchedCount > 0 ? 'warn' : 'debug'
+                        );
+                        if (syncUnmatchedCount > 0 && syncUnmatchedCount !== unmatchedChainOrders.length) {
+                            bot.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders.map((o: any) => ({ ...o }));
+                            bot.manager.logger.log(
+                                `[COW] Updated _lastUnmatchedChainOrders from sync result: ` +
+                                `${unmatchedChainOrders.length} → ${syncUnmatchedCount}`,
+                                'debug'
+                            );
+                        }
+                    }
+                }
+            }
+        } catch (syncErr) {
+            bot.manager.logger.log(
+                `[COW] Failed to sync/unmatched orders: ${syncErr?.message || syncErr}`,
+                'warn'
+            );
+        }
+        if (typeof bot.manager.requestStructuralGridResync === 'function') {
+            if (bot.manager._recoveryState) bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: true };
+            await bot.manager.requestStructuralGridResync(
+                'unmatched chain orders before COW create',
+                { unmatchedChainOrders: unmatchedChainOrders }
+            );
+        }
+        bot.manager.logger.log(
+            `[COW] Rejecting CREATE batch after sync: working grid invalidated by master mutation`,
+            'info'
+        );
+        return {
+            executed: false,
+            aborted: true,
+            reason: 'UNMATCHED_CHAIN_ORDERS',
+            hadRotation: false
+        };
+    }
+
+    const { assetA, assetB } = bot.manager.assets;
+    const operations = [];
+    const opContexts = [];
+    const skippedUpdateSlotIds = new Set();
+    let skippedUpdateCount = 0;
+
+    const idsToLock = new Set();
+    for (const action of actions) {
+        if (action.type === COW_ACTIONS.CANCEL && action.orderId) {
+            idsToLock.add(action.orderId);
+            if (action.id) idsToLock.add(action.id);
+        } else if (action.type === COW_ACTIONS.CREATE && action.id) {
+            idsToLock.add(action.id);
+        } else if (action.type === COW_ACTIONS.UPDATE && action.orderId) {
+            idsToLock.add(action.orderId);
+            if (action.id) idsToLock.add(action.id);
+        }
+    }
+
+    bot.manager.lockOrders(idsToLock);
+
+    try {
+        bot._batchInFlight = true;
+        bot._markGridActivity('batch start');
+        bot.manager._setRebalanceState(REBALANCE_STATES.BROADCASTING);
+        bot.manager.startBroadcasting();
+
+        for (const action of actions) {
+            if (action.type === COW_ACTIONS.CANCEL) {
+                try {
+                    const op = await chainOrders.buildCancelOrderOp(bot.account, action.orderId);
+                    operations.push(op);
+                    const order = bot.manager.orders.get(action.id) || { id: action.id, orderId: action.orderId };
+                    opContexts.push({ kind: 'cancel', order });
+                } catch (err: any) {
+                    const orderNotFound = /\bnot found\b/i.test(err.message) || /\bdoes not exist\b/i.test(err.message);
+                    if (orderNotFound) {
+                        bot.manager.logger.log(
+                            `[COW] Cancel skipped for ${action.id} (${action.orderId}): order already removed from chain`,
+                            'debug'
+                        );
+                    } else {
+                        bot.manager.logger.log(`Failed to prepare cancel op for ${action.id}: ${err.message}`, 'error');
+                    }
+                }
+            } else if (action.type === COW_ACTIONS.CREATE) {
+                try {
+                    const order = action.order;
+                    const sizeValidation = validateOrderSizeForExecution(
+                        bot,
+                        order.size,
+                        order.type,
+                        order,
+                        order.size
+                    );
+                    if (!sizeValidation.isValid) {
+                        bot.manager.logger.log(
+                            `Skipping create op for ${action.id}: ${sizeValidation.reason}`,
+                            'warn'
+                        );
+                        continue;
+                    }
+                    const liveSlot = bot.manager.orders.get(order.id);
+                    const plannedPrice = Number(order.price);
+                    const livePrice = liveSlot ? Number(liveSlot.price) : NaN;
+                    const priceDrift = Number.isFinite(plannedPrice) && Number.isFinite(livePrice)
+                        ? Math.abs(livePrice - plannedPrice)
+                        : 0;
+                    const effectiveOrder = (priceDrift > 0)
+                        ? { ...order, price: livePrice, size: order.size, type: order.type }
+                        : order;
+                    if (priceDrift > 0) {
+                        bot.manager.logger.log(
+                            `[COW] Pre-broadcast price freshness: slot ${order.id} ` +
+                            `drifted from planned=${plannedPrice} to live=${livePrice} ` +
+                            `(diff=${priceDrift}); rebuilding CREATE op with live price.`,
+                            'debug'
+                        );
+                    }
+                    const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
+                    const buildResult = await chainOrders.buildCreateOrderOp(
+                        bot.account,
+                        args.amountToSell,
+                        args.sellAssetId,
+                        args.minToReceive,
+                        args.receiveAssetId,
+                        null
+                    );
+                    if (!buildResult) {
+                        bot.manager.logger.log(
+                            `Skipping create op for ${action.id}: amounts would round to 0 on blockchain`,
+                            'warn'
+                        );
+                        continue;
+                    }
+                    operations.push(buildResult.op);
+                    opContexts.push({ kind: 'create', id: order.id, order: effectiveOrder, args, finalInts: buildResult.finalInts });
+                    recordPendingBroadcast(bot, {
+                        opIndex: operations.length - 1,
+                        ctxIndex: opContexts.length - 1,
+                        order: effectiveOrder,
+                        finalInts: buildResult.finalInts
+                    });
+                } catch (err: any) {
+                    bot.manager.logger.log(`Failed to prepare create op for ${action.id}: ${err.message}`, 'error');
+                }
+            } else if (action.type === COW_ACTIONS.UPDATE) {
+                try {
+                    if (action.newGridId && action.newGridId !== action.id) {
+                        const masterOrder = bot.manager.orders.get(action.id);
+                        const orderType = action.order?.type || masterOrder?.type;
+                        const newPrice = Number.isFinite(Number(action.newPrice))
+                            ? Number(action.newPrice)
+                            : Number(action.order?.price);
+                        const newSize = Number.isFinite(Number(action.newSize))
+                            ? Number(action.newSize)
+                            : Number(action.order?.size || 0);
+
+                        if (!masterOrder || !action.orderId || !orderType || !Number.isFinite(newPrice) || newSize <= 0) {
+                            continue;
+                        }
+
+                        const rotationSizeValidation = validateOrderSizeForExecution(
+                            bot,
+                            newSize,
+                            orderType,
+                            action.order,
+                            newSize
+                        );
+                        if (!rotationSizeValidation.isValid) {
+                            bot.manager.logger.log(
+                                `Skipping rotation update ${action.id} -> ${action.newGridId}: ${rotationSizeValidation.reason}`,
+                                'warn'
+                            );
+                            continue;
+                        }
+
+                        const { amountToSell, minToReceive } = buildCreateOrderArgs(
+                            { type: orderType, size: newSize, price: newPrice },
+                            assetA,
+                            assetB
+                        );
+
+                        const buildResult = await chainOrders.buildUpdateOrderOp(
+                            bot.account,
+                            action.orderId,
+                            { amountToSell, minToReceive, newPrice, orderType },
+                            masterOrder.rawOnChain || null
+                        );
+                        if (!buildResult) {
+                            skippedUpdateCount++;
+                            if (action.id) skippedUpdateSlotIds.add(action.id);
+                            if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                            bot.manager.logger.log(
+                                `[COW] Skipping rotation update ${action.id} -> ${action.newGridId}: no blockchain delta`,
+                                'debug'
+                            );
+                            continue;
+                        }
+
+                        operations.push(buildResult.op);
+                        opContexts.push({
+                            kind: 'rotation',
+                            rotation: {
+                                oldOrder: { ...masterOrder },
+                                newGridId: action.newGridId,
+                                newPrice,
+                                newSize,
+                                type: orderType
+                            },
+                            finalInts: buildResult.finalInts
+                        });
+                        continue;
+                    }
+
+                    const newSize = Number.isFinite(Number(action.newSize))
+                        ? Number(action.newSize)
+                        : Number(action.order?.size || 0);
+
+                    const masterOrder = bot.manager.orders.get(action.id);
+                    const orderType = action.order?.type || masterOrder?.type;
+                    const cachedRawOnChain = masterOrder?.rawOnChain || action.order?.rawOnChain || null;
+
+                    const op = await chainOrders.buildUpdateOrderOp(
+                        bot.account,
+                        action.orderId,
+                        { amountToSell: newSize, orderType },
+                        cachedRawOnChain
+                    );
+                    if (!op) {
+                        skippedUpdateCount++;
+                        if (action.id) skippedUpdateSlotIds.add(action.id);
+                        if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                        bot.manager.logger.log(
+                            `[COW] Skipping size update ${action.id} (${action.orderId}): no blockchain delta`,
+                            'debug'
+                        );
+                        continue;
+                    }
+                    operations.push(op.op);
+                    const partialOrder = masterOrder || {
+                        id: action.id,
+                        orderId: action.orderId,
+                        type: orderType
+                    };
+                    opContexts.push({ kind: 'size-update', updateInfo: { partialOrder, newSize }, finalInts: op.finalInts });
+                } catch (err: any) {
+                    const orderNotFound = /\bnot found\b/i.test(err.message) || /\bdoes not exist\b/i.test(err.message);
+                    if (orderNotFound) {
+                        try {
+                            const fbOrder = action.order || bot.manager.orders.get(action.id);
+                            const fbType = fbOrder?.type;
+                            const fbSize = action.newSize || fbOrder?.size || 0;
+                            const targetSlotId = action.newGridId || action.id;
+                            const plannedPrice = action.newPrice || action.order?.price || 0;
+                            const liveSlotForPrice = bot.manager.orders.get(targetSlotId);
+                            const livePrice = liveSlotForPrice ? Number(liveSlotForPrice.price) : NaN;
+                            const priceDrift = Number.isFinite(plannedPrice) && Number.isFinite(livePrice)
+                                ? Math.abs(livePrice - plannedPrice)
+                                : 0;
+                            const fbPrice = (priceDrift > 0) ? livePrice : plannedPrice;
+                            if (priceDrift > 0) {
+                                bot.manager.logger.log(
+                                    `[COW] CREATE fallback price drift for ${action.id} -> ${targetSlotId}: ` +
+                                    `planned=${plannedPrice} live=${livePrice} (diff=${priceDrift})`,
+                                    'debug'
+                                );
+                            }
+                            const sizeCheck = validateOrderSizeForExecution(bot, fbSize, fbType, fbOrder, fbSize);
+                            if (!sizeCheck.isValid) {
+                                bot.manager.logger.log(
+                                    `[COW] CREATE fallback for ${action.id} rejected by size validation: ${sizeCheck.reason}`,
+                                    'warn'
+                                );
+                            } else if (fbType && fbSize > 0 && fbPrice > 0) {
+                                const fbArgs = buildCreateOrderArgs(
+                                    { type: fbType, size: fbSize, price: fbPrice },
+                                    assetA, assetB
+                                );
+                                const fbResult = await chainOrders.buildCreateOrderOp(
+                                    bot.account,
+                                    fbArgs.amountToSell,
+                                    fbArgs.sellAssetId,
+                                    fbArgs.minToReceive,
+                                    fbArgs.receiveAssetId,
+                                    null
+                                );
+                                if (fbResult) {
+                                    operations.push(fbResult.op);
+                                    opContexts.push({
+                                        kind: 'create',
+                                        id: targetSlotId,
+                                        order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize },
+                                        args: { amountToSell: fbArgs.amountToSell, minToReceive: fbArgs.minToReceive },
+                                        finalInts: fbResult.finalInts
+                                    });
+                                    recordPendingBroadcast(bot, {
+                                        opIndex: operations.length - 1,
+                                        ctxIndex: opContexts.length - 1,
+                                        order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize },
+                                        finalInts: fbResult.finalInts
+                                    });
+                                    bot.manager.logger.log(
+                                        `[COW] Recovered "not found" for ${action.id}: converted UPDATE to CREATE for slot ${targetSlotId}`,
+                                        'warn'
+                                    );
+                                    continue;
+                                }
+                            }
+                        } catch (fbErr) {
+                            bot.manager.logger.log(
+                                `[COW] CREATE fallback also failed for ${action.id}: ${fbErr.message}`,
+                                'warn'
+                            );
+                        }
+                    }
+                    bot.manager.logger.log(`Failed to prepare update op for ${action.id}: ${err.message}`, 'error');
+                }
+            }
+        }
+
+        if (skippedUpdateCount > 0) {
+            restoreSkippedUpdateSlotsInWorkingGrid(bot, workingGrid, skippedUpdateSlotIds, skippedUpdateCount);
+        }
+
+        if (operations.length === 0) {
+            bot.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
+            return { executed: false, hadRotation: false };
+        }
+
+        const validation = validateOperationFunds(bot, operations, assetA, assetB);
+        bot.manager.logger.log(validation.summary, validation.isValid ? 'info' : 'warn');
+
+        if (!validation.isValid) {
+            bot.manager.logger.log(`Skipping batch broadcast: ${validation.violations.length} fund violation(s) detected`, 'warn');
+            bot.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
+            return { executed: false, hadRotation: false };
+        }
+
+        await bot._ensureCredentialDaemonWritable('COW batch broadcast');
+
+        bot.manager.logger.log(`[COW] Broadcasting batch with ${operations.length} operations...`, 'info');
+        bot._lastBroadcastHeartbeatAt = Date.now();
+        const execution = await executeWithRetryOnUncertain(bot, operations, opContexts);
+        const result = execution.result;
+        const executedContexts = execution.opContexts;
+
+        bot.manager.pauseFundRecalc();
+        try {
+            bot.manager._throwOnIllegalState = true;
+            
+            if (result.success) {
+                const preCommitResults = extractOperationResults(bot, result, 'pre-commit-integrity');
+                const missingCreateResults = findMissingCreateResultContexts(bot, preCommitResults, executedContexts);
+                if (missingCreateResults.length > 0) {
+                    const missingSlots = missingCreateResults
+                        .map(item => item.ctx?.order?.id || item.ctx?.id || `op-${item.index}`)
+                        .join(', ');
+                    bot.manager.logger.log(
+                        `[COW] Refusing to commit working grid: ${missingCreateResults.length} CREATE op(s) ` +
+                        `returned no chainOrderId (${missingSlots}). Discarding working grid and syncing from chain.`,
+                        'error'
+                    );
+                    bot.manager._clearWorkingGridRef();
+                    bot.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
+                    markMissingCreateResultsAsStructuralBlocker(bot, missingCreateResults);
+                    await recoverAfterMissingCreateResults(bot, 'missing create operation results');
+                    return {
+                        executed: false,
+                        hadRotation: false,
+                        missingCreateResults: missingCreateResults.map(item => ({
+                            index: item.index,
+                            slotId: item.ctx?.order?.id || item.ctx?.id || null
+                        }))
+                    };
+                }
+
+                bot.manager.logger.log('[COW] Blockchain success - committing working grid to master', 'info');
+                await bot.manager._commitWorkingGrid(
+                    workingGrid,
+                    workingIndexes,
+                    workingBoundary,
+                    { skipRecalc: true }
+                );
+                
+                const batchResult = await processBatchResults(bot, result, executedContexts);
+
+                const persistResult = await bot.manager.persistGrid();
+                if (persistResult && (persistResult.skipped || persistResult.isValid === false)) {
+                    bot.manager.logger.log(
+                        `[COW][PERSIST-GUARD] First persist attempt was ` +
+                        `${persistResult.skipped ? 'skipped' : 'invalid'} ` +
+                        `(${persistResult.reason || 'no reason'}); retrying once before ` +
+                        `clearing working grid reference.`,
+                        'warn'
+                    );
+                    bot.manager._persistenceWarning = persistResult;
+                    const retryResult = await bot.manager.persistGrid();
+                    if (retryResult && (retryResult.skipped || retryResult.isValid === false)) {
+                        bot.manager.logger.log(
+                            `[COW][PERSIST-GUARD] Retry also skipped/invalid ` +
+                            `(${retryResult.reason || 'no reason'}). Master grid in memory ` +
+                            `is ahead of disk snapshot; structural resync requested.`,
+                            'error'
+                        );
+                        if (typeof bot.manager.requestStructuralGridResync === 'function') {
+                            bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: true };
+                            await bot.manager.requestStructuralGridResync(
+                                'persistence guard triggered after COW batch',
+                                { persistReason: retryResult.reason || 'unknown' }
+                            );
+                        }
+                    } else {
+                        delete bot.manager._persistenceWarning;
+                    }
+                } else if (bot.manager._persistenceWarning) {
+                    delete bot.manager._persistenceWarning;
+                }
+
+                bot._metrics.batchesExecuted++;
+                bot.manager._clearWorkingGridRef();
+                clearPendingBroadcasts(bot);
+
+                return { executed: true, hadRotation: true, ...batchResult };
+            } else {
+                bot.manager.logger.log('[COW] Blockchain failed - working grid discarded, master unchanged', 'warn');
+                bot.manager._clearWorkingGridRef();
+                clearPendingBroadcasts(bot);
+                return { executed: false, hadRotation: false, ...result };
+            }
+        } finally {
+            bot.manager._throwOnIllegalState = false;
+            await bot.manager.resumeFundRecalc();
+            bot.manager.stopBroadcasting();
+            const createCount = actions.filter(a => a.type === COW_ACTIONS.CREATE).length;
+            const cancelCount = actions.filter(a => a.type === COW_ACTIONS.CANCEL).length;
+            bot.manager.logger.logFundsStatus(bot.manager, `AFTER COW batch (created=${createCount}, cancelled=${cancelCount})`);
+        }
+
+    } catch (err: any) {
+        bot.manager.logger.log(`[COW] Batch transaction failed: ${err.message}`, 'error');
+        if (err?.partialOnChainState) {
+            bot.manager.logger.log(
+                `[COW] Non-atomic grouped execution detected (${err.groupsBroadcast}/${err.groupsTotal} groups broadcast). Local rollback cannot undo confirmed on-chain operations; next sync/reconcile will converge state.`,
+                'warn'
+            );
+        }
+        bot.manager.stopBroadcasting();
+        bot.manager._clearWorkingGridRef();
+
+        if (err instanceof BroadcastUncertainError) {
+            return await reconcileAfterUncertainBroadcast(bot, err, opContexts);
+        }
+
+        const hardAbortResult = await bot._handleBatchHardAbort(err, 'COW batch processing', operations.length);
+        if (hardAbortResult) return hardAbortResult;
+
+        const staleOrderIds = new Set();
+        const patterns = [
+            /Limit order (1\.7\.\d+) does not exist/g,
+            /Unable to find Object (1\.7\.\d+)/g,
+            /object (1\.7\.\d+) (?:does not exist|not found)/gi
+        ];
+        for (const pattern of patterns) {
+            let m;
+            while ((m = pattern.exec(err.message)) !== null) {
+                staleOrderIds.add(m[1]);
+            }
+        }
+
+        if (/Cannot deduct all or more from order than order contains/.test(err.message)) {
+            return await bot._recoverBatchSizeDrift(err, opContexts);
+        }
+
+        if (staleOrderIds.size > 0) {
+            return await bot._recoverExplicitStaleOrders(staleOrderIds, 'cow-stale-order-cleanup');
+        }
+
+        throw err;
+    } finally {
+        bot._batchInFlight = false;
+        bot._markGridActivity('batch end');
+        bot.manager.unlockOrders(idsToLock);
+
+        if (!bot._shuttingDown && bot._incomingFillQueue.length > 0) {
+            bot._scheduleFillConsumerRestart(chainOrders);
+        }
+    }
+}
+
+/**
+ * Process results from batch transaction execution.
+ * Updates order state, synchronizes with chain, and deducts BTS fees.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object} result
+ * @param {Array} opContexts
+ * @returns {Object} Result with { executed: boolean, hadRotation: boolean }
+ */
+async function processBatchResults(bot, result, opContexts) {
+    const results = extractOperationResults(bot, result, 'processBatchResults');
+    const { getAssetFees } = require('./order/utils/math');
+    const btsFeeData = getAssetFees('BTS');
+    let hadRotation = false;
+    let updateOperationCount = 0;
+
+    const updatesToApply = [];
+
+    for (let i = 0; i < opContexts.length; i++) {
+        const ctx = opContexts[i];
+        const res = results[i];
+
+        if (ctx.kind === 'cancel') {
+            bot.manager.logger.log(`Cancelled surplus order ${ctx.order.id} (${ctx.order.orderId})`, 'info');
+            const oldOrder = ctx.order;
+            const committedOrder = oldOrder?.id ? bot.manager.orders.get(oldOrder.id) : null;
+
+            if (oldOrder && committedOrder && bot.manager.accountant) {
+                await bot.manager.accountant.updateOptimisticFreeBalance(
+                    oldOrder,
+                    committedOrder,
+                    'fill-cancel',
+                    btsFeeData?.cancelFee || 0,
+                    false
+                );
+            }
+        }
+        else if (ctx.kind === 'size-update') {
+            const oldOrder = ctx.updateInfo.partialOrder;
+            const ord = bot.manager.orders.get(oldOrder.id);
+
+            if (oldOrder && ord && bot.manager.accountant) {
+                await bot.manager.accountant.updateOptimisticFreeBalance(
+                    oldOrder,
+                    ord,
+                    'order-update',
+                    btsFeeData.updateFee,
+                    false
+                );
+            }
+
+            if (ord) {
+                const updatedSlot = { ...ord, size: ctx.updateInfo.newSize };
+                if (ctx.finalInts) {
+                    updatedSlot.rawOnChain = {
+                        id: ord.orderId,
+                        for_sale: String(ctx.finalInts.sell),
+                        sell_price: {
+                            base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
+                            quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
+                        }
+                    };
+                }
+                updatesToApply.push({ order: updatedSlot, context: 'post-update-metadata' });
+            }
+            bot.manager.logger.log(`Size update complete: ${ctx.updateInfo.partialOrder.orderId}`, 'info');
+            updateOperationCount++;
+        }
+        else if (ctx.kind === 'create') {
+            const chainOrderId = res && res[1];
+            if (chainOrderId) {
+                await bot.manager.synchronizeWithChain({
+                    gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData.createFee
+                }, 'createOrder');
+
+                if (ctx.finalInts) {
+                    const syncedOrder = bot.manager.orders.get(ctx.order.id);
+                    if (syncedOrder) {
+                        updatesToApply.push({
+                            order: {
+                                ...syncedOrder,
+                                rawOnChain: {
+                                    id: chainOrderId,
+                                    for_sale: String(ctx.finalInts.sell),
+                                    sell_price: {
+                                        base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
+                                        quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
+                                    }
+                                }
+                            },
+                            context: 'post-placement-metadata'
+                        });
+                    }
+                }
+                bot.manager.logger.log(`Placed ${ctx.order.type} order ${ctx.order.id} -> ${chainOrderId}`, 'info');
+            } else {
+                const fingerprint = [
+                    `type=${ctx.order.type || 'unknown'}`,
+                    `price=${Format.formatPrice6(ctx.order.price)}`,
+                    `size=${Format.formatAmount(ctx.order.size)}`
+                ].join(',');
+                bot.manager.logger.log(
+                    `[COW] CRITICAL: Create op for slot ${ctx.order.id} (type=${ctx.order.type}) ` +
+                    `returned no chainOrderId. Identify any orphaned on-chain order by local fingerprint ` +
+                    `${fingerprint} before cancelling.`,
+                    'error'
+                );
+            }
+        }
+        else if (ctx.kind === 'rotation') {
+            hadRotation = true;
+            const { rotation } = ctx;
+            const { oldOrder, newPrice, newGridId, newSize, type } = rotation;
+
+            if (!newGridId) {
+                const ord = bot.manager.orders.get(oldOrder.id || rotation.id);
+
+                if (oldOrder && ord && bot.manager.accountant) {
+                    await bot.manager.accountant.updateOptimisticFreeBalance(
+                        oldOrder,
+                        ord,
+                        'order-update',
+                        btsFeeData.updateFee,
+                        false
+                    );
+                }
+
+                if (ord) {
+                    const updatedSlot = { ...ord, size: newSize };
+                    if (ctx.finalInts) {
+                        updatedSlot.rawOnChain = {
+                            id: ord.orderId,
+                            for_sale: String(ctx.finalInts.sell),
+                            sell_price: {
+                                base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
+                                quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
+                            }
+                        };
+                    }
+                    updatesToApply.push({ order: updatedSlot, context: 'post-update-metadata' });
+                }
+                updateOperationCount++;
+                continue;
+            }
+
+            const slot = bot.manager.orders.get(newGridId);
+            if (!slot) {
+                bot.manager.logger.log(
+                    `[ROTATION] Destination slot ${newGridId} missing from master grid after COW commit - skipping activation, sync will reconcile`,
+                    'error'
+                );
+                if (oldOrder?.id && oldOrder.id !== newGridId) {
+                    const staleSource = bot.manager.orders.get(oldOrder.id);
+                    if (staleSource?.orderId) {
+                        updatesToApply.push({
+                            order: { ...staleSource, state: ORDER_STATES.VIRTUAL, orderId: null, rawOnChain: null },
+                            context: 'post-rotation-source-clear'
+                        });
+                    }
+                }
+                continue;
+            }
+            const updatedSlot = {
+                ...slot,
+                id: newGridId,
+                type,
+                size: newSize,
+                price: newPrice,
+                state: ORDER_STATES.ACTIVE,
+                orderId: oldOrder?.orderId || slot.orderId || null
+            };
+
+            if (ctx.finalInts) {
+                updatedSlot.rawOnChain = {
+                    id: updatedSlot.orderId,
+                    for_sale: String(ctx.finalInts.sell),
+                    sell_price: {
+                        base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
+                        quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
+                    }
+                };
+            }
+
+            if (oldOrder && updatedSlot && bot.manager.accountant) {
+                await bot.manager.accountant.updateOptimisticFreeBalance(
+                    oldOrder,
+                    updatedSlot,
+                    'order-update',
+                    btsFeeData.updateFee,
+                    false
+                );
+            }
+
+            if (oldOrder?.id && oldOrder.id !== newGridId) {
+                const currentSource = bot.manager.orders.get(oldOrder.id);
+                if (currentSource && currentSource.orderId) {
+                    updatesToApply.push({
+                        order: {
+                            ...currentSource,
+                            state: ORDER_STATES.VIRTUAL,
+                            orderId: null,
+                            rawOnChain: null
+                        },
+                        context: 'post-rotation-source-clear'
+                    });
+                }
+            }
+
+            updatesToApply.push({ order: updatedSlot, context: 'post-rotation-metadata' });
+        }
+    }
+
+    if (updatesToApply.length > 0) {
+        await bot.manager.applyGridUpdateBatch(
+            updatesToApply.map(u => u.order), 
+            'batch-results-process',
+            { skipAccounting: true }
+        );
+    }
+
+    return {
+        executed: true,
+        hadRotation,
+        updateOperationCount
+    };
+}
+
+export = {
+    buildOutsideInPairGroupsForOrders,
+    buildOutsideInPairGroupsForCreateEntries,
+    extractOperationResults,
+    findMissingCreateResultContexts,
+    recoverAfterMissingCreateResults,
+    preserveMissingCreateBlockersAfterRecovery,
+    markMissingCreateResultsAsStructuralBlocker,
+    formatUnmatchedChainOrderForLog,
+    recordPendingBroadcast,
+    clearPendingBroadcasts,
+    buildChainOrderFingerprint,
+    normalizeChainOrderForPendingMatch,
+    findChainOrderForSlot,
+    reconcileAfterUncertainBroadcast,
+    reconcileAfterUncertainBroadcastImpl,
+    autoCancelOneUnmatchedOrphan,
+    shouldExecuteCreatePairMode,
+    executeWithRetryOnUncertain,
+    executeOperationsWithStrategy,
+    validateOperationFunds,
+    resolveIdealSizeForValidation,
+    validateOrderSizeForExecution,
+    buildActionsFromPlan,
+    buildCowResultFromPlan,
+    restoreSkippedUpdateSlotsInWorkingGrid,
+    updateOrdersOnChainBatchCOW,
+    processBatchResults,
+};
