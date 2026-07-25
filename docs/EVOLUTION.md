@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.3.2 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.3.3 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 1,857+ commits over ~7 active months
 - **Code Maturity**: Evolution from basic utilities to a ~67,600+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 224 automated test files
-- **Releases**: 75 release entries (v0.1.0 to v1.3.2)
+- **Releases**: 76 release entries (v0.1.0 to v1.3.3)
 
 ---
 
@@ -68,7 +68,7 @@ DEXBot2's architecture progressed through distinct maturity stages:
 
 ## Development Statistics
 
-The project has accumulated 224 automated test files across 75 release entries. See the **Version History** below for a per-release commit breakdown.
+The project has accumulated 224 automated test files across 76 release entries. See the **Version History** below for a per-release commit breakdown.
 
 ---
 
@@ -171,11 +171,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.2.7 → v1.3.0 | 1 | `dexbot unlock`/`dexbot pm2` rebranding, docstring sweep across 53 files, browser-field `market_adapter.js` exclusion, stale `typeof __filename` guard removal |
 | v1.3.0 → v1.3.1 | 6 | Repo-root symlinks (`./dexbot`/`./pm2`/`./unlock`), CLI canonical naming `keys`/`bots`→`key`/`bot`, browser exclusion completeness (logger, paths, system), README `npm link` fix + Quick Start dedup |
 | v1.3.1 → v1.3.2 | 6 | Startup dust health check, lightweight sync RMS/chain-filter fixes, dust-handling lock-safe cancel, `dexbot stat` CLI fix, capital allocation docs, README polish |
+| v1.3.2 → v1.3.3 | 10 | Runtime extraction (COW, fill, state recovery), dead-import cleanup, profile resolution fix, pretest hook, EVOLUTION.md refresh |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 25, 2026 (v1.3.2)
-**Total Commits**: 1,857
+**Last Updated**: July 25, 2026 (v1.3.3)
+**Total Commits**: 1,858
 **Date Range**: December 2, 2025 – July 24, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

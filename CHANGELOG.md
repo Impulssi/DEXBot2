@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.3] - 2026-07-25 - Runtime Extraction, Code Cleanup, Profile Resolution Fix
+
+### 2026-07-25
+
+- **Feat**: extract COW batch execution runtime from `dexbot_class.ts` into new `dexbot_cow_runtime.ts` — moves `_cowBatchExecute`, `_executeCowTransaction`, `_processCowResult`, `_processCowFailure`, `_processCowConcurrent`, and `_cleanupCowTailTrap` into dedicated runtime module (`modules/dexbot_cow_runtime.ts`, `modules/dexbot_class.ts`).
+- **Refactor**: extract fill queue methods into `dexbot_fill_runtime.ts` — moves `_processFillQueue`, `_processFillStage`, `_completeFill`, `_abortFill`, `_getFillSyncAccounts`, and helpers out of `dexbot_class.ts` (`modules/dexbot_fill_runtime.ts`, `modules/dexbot_class.ts`).
+- **Refactor**: extract state recovery and startup runtime from `dexbot_class.ts` into new `dexbot_state_recovery.ts` and `dexbot_startup_runtime.ts` — isolates `_doStateRecovery`, `_adoptUnmatchedOrders`, `_rebroadcastPendingOrders`, startup lifecycle, and bootstrap guards (`modules/dexbot_state_recovery.ts`, `modules/dexbot_startup_runtime.ts`).
+- **Refactor**: drop unused bot params from COW runtime wrappers — removes dead `assetA`/`assetB`/`marketId`/`profileName` parameters from `commitGrid`, `updateCommitmentSlack`, and `commitBatch` (`modules/dexbot_fill_runtime.ts`, `modules/order/grid.ts`).
+- **Fix**: add `cwd` fallback for profile resolution in `paths.ts` — when `__dirname` is undefined (e.g. esm-shim context), fall back to `process.cwd()` to prevent profile-load failures (`modules/paths.ts`).
+- **Fix**: remove dead imports and fix mock-breaking destructured imports across `modules/` — `crypto.js`, `utils.js`, `OrderError`, `system.ts` imports removed; `State`/`GridOrderState` imports converted to namespace access to preserve test monkey-patching (`modules/order/grid_reconcile.ts`, `modules/order/grid_reconcile_internal.ts`, `modules/order/utils/*.ts`, `modules/fund_registry.ts`, `modules/general_settings.ts`, `modules/launcher/*.ts`, `modules/chain_keys.ts`, `modules/credential_policy.ts`, `modules/key_store.ts`, `modules/bitshares-native/serial/types.ts`, `modules/order/*.ts`).
+- **Fix**: promote v1.3.0 changelog entry from sub-section to top-level header (`CHANGELOG.md`).
+- **Chore**: add `pretest` hook — automatically rebuilds the test fee cache via `npm run test:fee-cache` before test runner invocation; also reconciles `package.json` browser field entries and fixes a brittle log message in `test_cow_orchestration_fixes.ts` (`package.json`, `tests/helpers/fee_cache_init.ts`, `scripts/verify-browser-bundle.ts`).
+- **Chore**: clean up dead import annotations, fix type annotations, and resolve mock regression from mock redefinition across test files (`tests/test_cow_commit_guards.ts`, `tests/test_cow_orchestration_fixes.ts`, `tests/test_cow_structural_resync.ts`, `tests/test_grid_persistence_guard.ts`, `tests/test_uncertain_broadcast.ts`, `tests/test_patch17_invariants.ts`).
+- **Docs**: EVOLUTION.md stats refresh (Phase 6 cleanup, 1,857→1,857 commits, 200+→224 tests, 74→75 releases, ~54k→~67.6k LoC), module file listings per directory, doc cross-links updated (`docs/EVOLUTION.md`, `docs/README.md`, `docs/GRID_RECALCULATION.md`, `docs/DEXBOT_COMPARISON.md`, `tests/README.md`, `modules/README.md`, `market_adapter/README.md`, `docs/developer_guide.md`).
+
 ## [1.3.2] - 2026-07-24 - Dust Health Check, Lightweight Sync Fixes, Doc Updates
 
 ### 2026-07-24
