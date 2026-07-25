@@ -1496,8 +1496,8 @@ console.log('Locked?', manager.isOrderLocked(order.id));
 - `strategy.ts` - Rebalancing logic
 - `grid.ts` - Grid creation
 - `grid_reconcile.ts` - Startup grid reconciliation
+- `grid_reconcile_internal.ts` - Internal grid reconciliation helpers
 - `sync_engine.ts` - Blockchain sync
-- `runner.ts` - Order execution runner
 - `logger.ts` - Order logging
 - `working_grid.ts` - COW working copy (clone/delta/commit)
 - `processed_fill_store.ts` - Fill dedupe persistence

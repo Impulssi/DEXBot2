@@ -51,7 +51,7 @@ applies the symmetric penalty.
 ### 1. Enable AMA
 
 Set `gridPrice` to `ama`, `ama1`, `ama2`, `ama3`, or `ama4` in
-`profiles/bots.json` or through `tsx dexbot.ts bots`. Use `ama` for the pair's
+`profiles/bots.json` or through `tsx dexbot.ts bot`. Use `ama` for the pair's
 default preset.
 
 `startPrice` selects the candle source:
@@ -185,7 +185,7 @@ The adapter writes a recalc trigger when both conditions are true:
 - candle data is not stale
 
 Configure the default in `profiles/general.settings.json` or from the
-`tsx dexbot.ts bots` general settings menu:
+`tsx dexbot.ts bot` general settings menu:
 
 ```json
 {
@@ -200,7 +200,7 @@ Configure the default in `profiles/general.settings.json` or from the
 Market-adapter settings resolve in this order:
 
 1. Built-in defaults in `modules/constants.ts`
-2. Global overrides in `profiles/general.settings.json` or `tsx dexbot.ts bots`
+2. Global overrides in `profiles/general.settings.json` or `tsx dexbot.ts bot`
 3. Pair-specific overrides in `profiles/market_profiles.json`
 4. Bot-specific overrides in `profiles/market_adapter_settings.json`
 
@@ -561,6 +561,7 @@ market_adapter/
 |   |-- kibana_candles.ts          LP pool candle fetch engine
 |   |-- kibana_market_candles.ts   orderbook candle fetch and transform
 |   `-- strategies/
+|       |-- ama.ts                 Kaufman's Adaptive Moving Average (KAMA)
 |       |-- ama_slope_model.ts     AMA slope and trend weight logic
 |       |-- collateral_manager.ts  advisory collateral-ratio logic
 |       |-- regime_gate.ts         regime multiplier gating

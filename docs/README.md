@@ -71,6 +71,12 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Release Images**: Container release and startup guidance
 - **Security**: Notes on secure container launch behavior
 
+### 🛠️ [Scripts](../scripts/README.md)
+*CLI maintenance and diagnostic utilities.*
+- **Update**: Safe production update via `dexbot update`
+- **Reset & Cleanup**: Log wiping, setting resets, PM2 ecosystem regeneration
+- **Analysis Helpers**: Diagnostic connection tests and health probes
+
 ## Reference Docs
 
 ### 🏛️ [Architecture](architecture.md)
@@ -135,6 +141,12 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Test mapping**: Links each invariant to regression tests
 - **Review checklist**: Quick-use verification for COW/accounting changes
 
+### 🧪 [Test Suite](../tests/README.md)
+*Test organization, categories, and key architectural patterns tested.*
+- **Test Layout**: Directory structure, helpers, and quick-start commands
+- **Categories**: Core infrastructure, order management, COW rebalancing, fees/accounting, integration, edge cases, and more
+- **Architectural Patterns**: COW rebalancing, RMS divergence, and fund invariants with doc cross-references
+
 ### 💰 [Fund Movement & Accounting](FUND_MOVEMENT_AND_ACCOUNTING.md)
 *The most critical part of the bot: safe capital management.*
 - **Single Source of Truth**: How the bot avoids double-spending and out-of-sync balances.
@@ -151,7 +163,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ## Source Code Map
 
-While these docs explain the *why*, the *how* lives in the code. Key source modules:
+While these docs explain the *why*, the *how* lives in the code. See the full [module index](../modules/README.md) for a complete directory walkthrough. Key source modules:
 
 - **`modules/dexbot_class.ts`**: Bot initialization, account setup, lifecycle orchestration, credit runtime startup, and shared runtime wiring
 - **`modules/dexbot_fill_runtime.ts`**: Fill processing, replay-safe accounting, and fill queue handling

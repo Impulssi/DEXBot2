@@ -20,8 +20,12 @@ After those four, branch out into `order/accounting.ts` (fund tracking), `order/
 ```
 modules/
 ├── dexbot_class.ts                bot lifecycle orchestration
+├── dexbot_cow_runtime.ts          COW rebalance runtime
+├── dexbot_credential_client.ts    credential daemon client
 ├── dexbot_fill_runtime.ts         fill processing pipeline
 ├── dexbot_maintenance_runtime.ts  sync loops, grid maintenance, triggers
+├── dexbot_startup_runtime.ts      bot startup runtime
+├── dexbot_state_recovery.ts       state recovery after restart
 ├── bitshares_client.ts            blockchain connection manager
 ├── node_manager.ts                multi-node health and failover
 ├── chain_orders.ts                blockchain order operations
@@ -31,7 +35,6 @@ modules/
 ├── credential_runtime.ts          credential daemon lifecycle
 ├── credential_policy.ts           signing policy validation
 ├── credential_session_cache.ts    encrypted session cache
-├── dexbot_credential_client.ts    credential daemon client
 ├── constants.ts                   central config and tuning params
 ├── config.ts                      load-time process.env snapshot
 ├── env.ts                         isBrowser/hasProcess detection
@@ -80,7 +83,7 @@ modules/
 │   ├── accounting.ts              fund tracking, fee accounting
 │   ├── sync_engine.ts             blockchain sync, fill detection, reconciliation
 │   ├── grid_reconcile.ts          startup grid reconciliation
-│   ├── runner.ts                  order execution runner
+│   ├── grid_reconcile_internal.ts  internal grid reconciliation helpers
 │   ├── index.ts                   barrel export
 │   ├── logger.ts                  order-scoped logging
 │   ├── logger_state.ts            logger state management
@@ -109,6 +112,7 @@ modules/
 ├── bitshares-native/              native blockchain client
 │   ├── chain_client.ts            blockchain read API
 │   ├── index.ts                   barrel export
+│   ├── lru_cache.ts               LRU cache for blockchain reads
 │   ├── signing_client.ts          transaction signing
 │   ├── transport.ts               WebSocket transport
 │   ├── subscriptions.ts           event subscriptions

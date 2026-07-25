@@ -120,7 +120,6 @@ EOF
 - `accounting.ts` - Fee accounting and fund tracking
 - `sync_engine.ts` - Blockchain synchronization
 - `grid_reconcile.ts` - Startup grid reconciliation
-- `runner.ts` - Order execution runner
 - `logger.ts` - Order logging
 - `utils/` - Utilities (math, order, system, validate)
 
@@ -211,7 +210,7 @@ npm run version:sync
 adding or removing a classification.
 
 **Node-only** (must not be reached from a browser bundle):
-`modules/launcher/*`, `modules/dexbot_class.ts`, `modules/dexbot_maintenance_runtime.ts`, `modules/dexbot_fill_runtime.ts`, `modules/dexbot_cow_runtime.ts`, `modules/dexbot_state_recovery.ts`, `modules/dexbot_startup_runtime.ts`, `modules/credential_runtime.ts`, `modules/dexbot_credential_client.ts`, `modules/node_health_cache.ts`, `modules/process_discovery.ts`, `modules/graceful_shutdown.ts`, `modules/order/logger.ts`, `modules/order/export.ts`, `modules/order/runner.ts`, `modules/order/utils/system.ts`, `modules/storage/node_adapter.ts`, `modules/paths.ts`, `modules/logger.ts`, `modules/key_store.ts`, `unlock.ts`, `bot.ts`, `dexbot.ts`, `pm2.ts`, `credential-daemon.ts`, `market_adapter/market_adapter.ts`, `market_adapter/lp_chart_runner.ts`, `market_adapter/ama_signal_runner.ts`
+`modules/launcher/*`, `modules/dexbot_class.ts`, `modules/dexbot_maintenance_runtime.ts`, `modules/dexbot_fill_runtime.ts`, `modules/dexbot_cow_runtime.ts`, `modules/dexbot_state_recovery.ts`, `modules/dexbot_startup_runtime.ts`, `modules/credential_runtime.ts`, `modules/dexbot_credential_client.ts`, `modules/node_health_cache.ts`, `modules/process_discovery.ts`, `modules/graceful_shutdown.ts`, `modules/order/logger.ts`, `modules/order/export.ts`, `modules/order/utils/system.ts`, `modules/storage/node_adapter.ts`, `modules/paths.ts`, `modules/logger.ts`, `modules/key_store.ts`, `unlock.ts`, `bot.ts`, `dexbot.ts`, `pm2.ts`, `credential-daemon.ts`, `market_adapter/market_adapter.ts`, `market_adapter/lp_chart_runner.ts`, `market_adapter/ama_signal_runner.ts`
 
 **Environment detection** — always go through `modules/env.ts`:
 ```ts

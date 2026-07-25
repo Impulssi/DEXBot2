@@ -66,7 +66,7 @@ Fee deduction, fund tracking, precision, invariant checks.
 
 ### Integration & Workflows
 Cross-module scenarios: startup reconciliation, engine integration, market simulations.
-*Examples:* `test_engine_integration.ts`, `test_market_scenarios.ts`, `test_startup_reconcile.ts`, `test_startup_decision.ts`, `test_main_loop_sync_fill_rebalance.ts`
+*Examples:* `test_engine_integration.ts`, `test_market_scenarios.ts`, `test_grid_reconcile.ts`, `test_startup_decision.ts`, `test_main_loop_sync_fill_rebalance.ts`
 
 ### Credential Daemon & Runtime
 Credential management, daemon lifecycle, session caching, debt policy.
@@ -118,6 +118,7 @@ Shared utility functions, precision handling, chain helpers.
 
 ## Documentation References
 
+- **Documentation Index:** [docs/README.md](../docs/README.md)
 - **Module Architecture:** [root README](../README.md#-modules)
 - **Copy-on-Write:** [COPY_ON_WRITE_MASTER_PLAN.md](../docs/COPY_ON_WRITE_MASTER_PLAN.md)
 - **Fund Accounting:** [FUND_MOVEMENT_AND_ACCOUNTING.md](../docs/FUND_MOVEMENT_AND_ACCOUNTING.md)

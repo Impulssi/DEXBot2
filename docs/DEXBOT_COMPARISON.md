@@ -1,6 +1,6 @@
 # DEXBot vs DEXBot2 — Detailed Comparison Report
 
-> **Date:** 2026-07-11 *(metrics refreshed against local source trees)*
+> **Date:** 2026-07-25 *(metrics refreshed against local source trees)*
 > **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.3.2).
 > **Audience:** Developers, contributors, and operators evaluating or migrating between the two projects.
 
@@ -39,14 +39,14 @@
 | **Release Track** | 1.0.0 | v1.3.2 |
 | **Language** | Python 3.6+ | TypeScript 5.x |
 | **Status** | Released 1.0.0, unmaintained | Active development |
-| **Last Repo Activity** | May 23, 2020 | 2026-07-10 |
+| **Last Repo Activity** | May 23, 2020 | 2026-07-25 |
 | **License** | MIT | MIT |
 | **Origin** | BitShares worker-proposal funded, Codaone Oy | Private rewrite by froooze |
 | **Primary Goal** | Multi-strategy, extensible trading framework | Hardened adaptive grid runtime with operator/AI tooling |
 | **Target Exchange** | BitShares DEX | BitShares DEX |
 | **Lines of Code** | ~10,846 Python LOC in `dexbot/` | Large TypeScript codebase; core runtime, adapter, analysis, Claw, and test modules |
-| **Source Files** | 72 Python files in `dexbot/` | 472 TS files across the repo |
-| **Test Files** | 16 Python test files | 220 `test_*.ts` files (217 auto-discovered via `globSync`) |
+| **Source Files** | 72 Python files in `dexbot/` | ~490 TS files across the repo |
+| **Test Files** | 16 Python test files | 233 `test_*.ts` files (231 auto-discovered via `globSync`) |
 
 ### Summary
 
@@ -144,7 +144,7 @@ DEXBot brings a full Python desktop GUI and a strategy plugin model. DEXBot2 is 
 - **Targeted fill subscription** via `set_subscribe_callback` → `get_account_history_operations` filtered for `OP_FILL_ORDER` fill operations; push-triggered fixed-cap fill batching (max 4 fills per batch)
 - **Market Adapter**: AMA-based price tracking, dynamic buy/sell weighting, Kalman confirmation, ATR/regime dampening, asymmetric grid bounds, and configurable delta triggers
 - **`fund_registry.ts`**: shared-account fund registry — tracks per-account, per-bot fund and collateral allocations; pre-registered atomically at startup so all bots sharing an account see a consistent proportional split before any bot starts; cross-bot invariant enforcement
-- **Stable bot keys**: deterministic sha256-derived 8-char bot id eliminates name-collision risk across restarts and config reorders
+- **Bot keys**: deterministic name-derived key (`sanitizeKey(name)`) with uniqueness enforced at all write paths — eliminates name-collision risk across restarts and config reorders
 - State in **JSON flat files** (no database dependency)
 - The default `unlock` launcher runs the active bot set as **one monolithic bot process** (credential daemon + market adapter in separate helper processes); isolated per-bot mode and PM2 are available alternatives; multiple bots can share an account via fund_registry
 
@@ -288,7 +288,7 @@ Price Scale (geometric, e.g. 0.4% increments):
 | **Orphan Detection** | Basic | Full two-pass matching |
 | **Ghost Order Prevention** | Basic | Hardened (multiple guards) |
 | **Partial Fill Tracking** | Basic | Advanced (per-order tracking) |
-| **Dust Detection** | No | Yes |
+| **Dust Detection** | Basic (staggered_orders.py:979) | Yes (systematic health checks) |
 | **Stale State Detection** | No | Version epoch tracking |
 | **Fill Replay Dedupe** | No formal persistent layer | Yes (`processed_fill_store.ts`) |
 | **Startup Reconcile** | Basic restart from SQLite | Dedicated startup reconciliation pipeline |
@@ -373,7 +373,7 @@ workers:
 | **Exchange** | BitShares DEX | BitShares DEX |
 | **Client Library** | `bitshares` (Python, v0.5.x) | `modules/bitshares-native/` (native) |
 | **Key Management** | `uptick` library | AES-256-GCM + credential daemon + authority resolution fallback |
-| **Connection Mode** | WebSocket (event-driven) | WebSocket (event-driven subscriptions + periodic safety-net sync) |
+| **Connection Mode** | WebSocket (event-driven + per-tick JSON-RPC order book fetches over same WebSocket) | WebSocket (event-driven subscriptions + periodic safety-net sync) |
 | **Multi-node Failover** | Yes (latency-sorted) | Yes (health-checked) |
 | **External Price Feeds** | CoinGecko, CCXT, Waves | On-chain/pool/Kibana candles; optional CEX seed generator (`market_adapter/inputs/fetch_cex_synthetic_data.ts`) for adapter bootstrap |
 | **Account Type** | Single or multi-account | Per-bot or shared-account (via fund_registry.ts); per-key credential daemon |
@@ -417,7 +417,7 @@ Where:
 - **Recovery triggers**: invariant violation automatically initiates recovery cycle
 - **Market-fee and BTS-fee regression coverage**: tests cover fee cache fallback, BTS fee deduction, batching, and precision quantization
 - **`fund_registry.ts`**: shared-account fund registry with async-locked per-account, per-bot fund and collateral allocation tracking; pre-registered atomically at startup so all bots see consistent proportional splits before any bot starts; cross-bot invariant enforcement with widened tolerance for shared accounts
-- **Stable bot keys**: deterministic sha256-derived bot id embedded in registry keys; eliminates name-collision risk across config reorders and restarts
+- **Bot keys**: deterministic name-derived key (`sanitizeKey(name)`) used in registry keys; duplicate names rejected at all write paths, eliminating name-collision risk across config reorders and restarts
 - **Credit/MPA collateral allocation**: fund registry extended with `registerCollateralAllocation` / `getEffectiveCollateralAllocationSync` to proportionally split credit bot collateral across bots sharing one account
 - **Credit/MPA runtime support**: separate runtime modules track collateral/debt position data and planning state for advanced BitShares workflows
 
@@ -508,7 +508,6 @@ Where:
 |---|---|---|
 | **Desktop GUI** | Yes (PyQt5) | No |
 | **Interactive Config Wizard** | Yes (GUI + whiptail) | No |
-| **TUI Dashboard** | No | Not a primary interface |
 | **CLI** | Yes (Click) | Yes (custom) |
 | **Real-time Status** | GUI view | `unlock status` / `dexbot stat` + log tailing |
 | **Automation Surface** | Plugin/strategy hooks | Claw modules, scripts, and runtime helpers |
@@ -616,7 +615,7 @@ Where:
 ### DEXBot2
 
 - **Framework:** Native Node `assert` module (no external test framework)
-- **217 `test_*.ts` files** auto-discovered via `globSync` (`tests/test_*.ts` + `claw/tests/test_*.ts`; 220 repo-wide including analysis), covering:
+- **231 `test_*.ts` files** auto-discovered via `globSync` (`tests/test_*.ts` + `claw/tests/test_*.ts`; 233 repo-wide including analysis), covering:
   - Unit tests: accounting, strategy, grid, manager logic
   - Copy-on-Write semantics: COW commits, guards, concurrent fills
   - Edge cases: ghost orders, partial fills, BTS fee accounting, precision
@@ -634,7 +633,7 @@ Where:
 | Feature | DEXBot | DEXBot2 |
 |---|---|---|
 | **Framework** | pytest | Native Node assert |
-| **Test Count** | 16 Python test files | 217 `test_*.ts` files; auto-discovered via `globSync` |
+| **Test Count** | 16 Python test files | 231 `test_*.ts` files; auto-discovered via `globSync` |
 | **Test Types** | Unit + integration | Unit + integration + edge-case + runtime regression |
 | **Testnet Integration** | Yes (Docker) | No (mocks) |
 | **External Dependency** | pytest, Docker | None |
@@ -784,11 +783,11 @@ Where:
 |---|---|---|
 | **Release Track** | 1.0.0 | v1.3.2 |
 | **Active Since** | ~2018 | December 2025 |
-| **Last Commit** | May 23, 2020 | 2026-07-10 |
-| **Total Commits** | 2281 | 1713 at current HEAD |
+| **Last Commit** | May 23, 2020 | 2026-07-25 |
+| **Total Commits** | 2281 | 1,857 at current HEAD |
 | **Lines of Code** | ~10,846 Python LOC in `dexbot/` | Large TypeScript runtime + adapter + Claw + analysis + tests |
-| **Source Files** | 72 Python files in `dexbot/` | 472 TS files across the repo |
-| **Test Files** | 16 Python test files | 220 `test_*.ts` files (217 auto-discovered via `globSync`) |
+| **Source Files** | 72 Python files in `dexbot/` | ~490 TS files across the repo |
+| **Test Files** | 16 Python test files | 233 `test_*.ts` files (231 auto-discovered via `globSync`) |
 | **Documentation** | Sphinx docs + README | 50+ Markdown docs plus Claw skills/references |
 | **Strategies** | 3 + plugins | 1 |
 | **Max Concurrent Bots** | Many (one process) | Many (one monolithic process by default; per-bot via `--isolated`/PM2) |
@@ -887,7 +886,7 @@ The 500× figure is not theoretical: it materializes in production when higher o
 | **Fund Accounting** | ★★☆☆☆ | ★★★★★ (formal model + fund_registry + cross-bot invariants) | DEXBot2 |
 | **Concurrency Safety** | ★★☆☆☆ | ★★★★★ (AsyncLock + COW) | DEXBot2 |
 | **Security** | ★★★☆☆ | ★★★★★ (AES-256-GCM, credential daemon, authority resolution) | DEXBot2 |
-| **Ease of Setup** | ★★☆☆☆ (PyQt5/PyInstaller/Systemd dependency hell) | ★★★★★ (zero deps, `dexbot bot`, `dexbot key`, `dexbot test`/`start`) | DEXBot2 |
+| **Ease of Setup** | ★★☆☆☆ (PyQt5/PyInstaller/Systemd dependency hell) | ★★★★★ (`npm i -g dexbot`, zero deps) | DEXBot2 |
 | **Accessibility** | ★★★★★ (GUI) | ★★☆☆☆ (CLI only) | DEXBot |
 | **Testing Depth** | ★★★☆☆ | ★★★★★ (220 test files; focused regressions) | DEXBot2 |
 | **Documentation** | ★★★☆☆ | ★★★★★ (architecture/accounting/security/adapter docs) | DEXBot2 |
@@ -922,4 +921,4 @@ The practical migration path is to treat DEXBot2 as a new runtime: recreate bot 
 
 ---
 
-*Report generated 2026-07-11. Metrics refreshed 2026-07-11 from local DEXBot-master and DEXBot2 source trees.*
+*Report generated 2026-07-25. Metrics refreshed 2026-07-25 from local DEXBot-master and DEXBot2 source trees.*
