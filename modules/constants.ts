@@ -295,6 +295,18 @@ let TIMING = {
     // retry once on disconnect, while leaving room for a slow block before the deadline.
     CREDENTIAL_DAEMON_BROADCAST_RETRIES: 3,
 
+    // CREDENTIAL_DAEMON_SOCKET_TIMEOUT_MS: Idle timeout for credential daemon
+    // Unix socket client connections. If a client connects but sends no complete
+    // request (no newline-delimited JSON) within this window, the connection is
+    // closed. Prevents idle connections from accumulating in the daemon.
+    CREDENTIAL_DAEMON_SOCKET_TIMEOUT_MS: 30000,
+
+    // CREDENTIAL_DAEMON_MAX_BUFFER_SIZE: Maximum per-connection buffer size for
+    // partial (non-newline-terminated) data. If a client sends more data than
+    // this without a newline, the connection is terminated with an error.
+    // Prevents OOM from a single malicious or broken client connection.
+    CREDENTIAL_DAEMON_MAX_BUFFER_SIZE: 1024 * 1024,
+
     // SAFETY_NET_SYNC_TIMEOUT_MS: Cap on the post-reconnect safety-net sync
     // in dexbot_class.ts. Must stay below the 20s shutdown lock timeout so
     // it never holds _fillProcessingLock longer than the shutdown deadline.

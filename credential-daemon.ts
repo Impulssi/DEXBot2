@@ -141,12 +141,15 @@ let daemonShuttingDown = false;
 let policyConfig: any = null;
 let activeSessions: Map<string, { accountName: string; createdAt: number }> = new Map();
 let auditLogPath: any = null;
-let auditLogQueue: Promise<void> = Promise.resolve();
+let auditLogQueue: Array<() => Promise<void>> = [];
+let auditLogDraining = false;
 // Policy-file watcher (cleared on shutdown so we don't leak the inotify FD
 // or fire a debounced reload after secrets have been zeroed).
 let policyWatcher: import('fs').FSWatcher | null = null;
 let policyWatchDebounce: ReturnType<typeof setTimeout> | null = null;
 let sessionPurgeInterval: ReturnType<typeof setInterval> | null = null;
+let nodeRefreshIntervalTimer: ReturnType<typeof setInterval> | null = null;
+let auditPruneIntervalTimer: ReturnType<typeof setInterval> | null = null;
 // Signing client cache: key = `${accountName}:${keyFingerprint(wif)}`, value = full signing client + createdAt.
 // Key rotation: loadDaemonPrivateKey re-reads from vault on every call. If the WIF changes the
 // fingerprint changes → cache miss → new signing client created with the current key. No staleness.
@@ -240,13 +243,26 @@ function checkSessionValid(accountName: any, sessionId: any) {
     return session && session.accountName === accountName;
 }
 
-function queueAuditLogWork(work: any) {
-    auditLogQueue = auditLogQueue
-        .then(work)
-        .catch((err) => {
-            debugLog('Audit log operation failed', err);
-        });
-    return auditLogQueue;
+function drainAuditLogQueue() {
+    while (auditLogQueue.length > 0) {
+        const task = auditLogQueue.shift();
+        if (task) {
+            try {
+                task().catch((err: any) => debugLog('Audit log operation failed', err));
+            } catch (err: any) {
+                debugLog('Audit log operation failed', err);
+            }
+        }
+    }
+    auditLogDraining = false;
+}
+
+function queueAuditLogWork(work: () => Promise<void>) {
+    auditLogQueue.push(work);
+    if (!auditLogDraining) {
+        auditLogDraining = true;
+        process.nextTick(drainAuditLogQueue);
+    }
 }
 
 function performAuditLogPrune() {
@@ -504,6 +520,10 @@ async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn
         return await Promise.race([work, deadlinePromise]);
     } finally {
         if (deadlineTimer) clearTimeout(deadlineTimer);
+        // Prune stale signing clients on every broadcast, not just on cache
+        // miss, so long-running daemons don't accumulate stale entries when
+        // accounts always hit the cache (same WIF, no rotation).
+        pruneStaleSigningClients();
     }
 }
 
@@ -595,9 +615,9 @@ async function initialize() {
 
         // Lightweight node list refresh from the health cache. This is separate
         // from updater schedules and does not run active node probes.
-        const nodeRefreshInterval = setInterval(refreshNodeList, getCredentialDaemonNodeRefreshIntervalMs(settings));
-        if (typeof nodeRefreshInterval.unref === 'function') {
-            nodeRefreshInterval.unref();
+        nodeRefreshIntervalTimer = setInterval(refreshNodeList, getCredentialDaemonNodeRefreshIntervalMs(settings));
+        if (typeof nodeRefreshIntervalTimer.unref === 'function') {
+            nodeRefreshIntervalTimer.unref();
         }
 
         // Periodic purge of expired sessions (every 5 min) to prevent stale
@@ -612,9 +632,9 @@ async function initialize() {
         // append, which caused read+rewrite of the entire file on each signed
         // operation.  Hourly prune is sufficient for the 7-day retention window.
         const AUDIT_LOG_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
-        const auditPruneInterval = setInterval(() => { pruneAuditLog(); }, AUDIT_LOG_PRUNE_INTERVAL_MS);
-        if (typeof auditPruneInterval.unref === 'function') {
-            auditPruneInterval.unref();
+        auditPruneIntervalTimer = setInterval(() => { pruneAuditLog(); }, AUDIT_LOG_PRUNE_INTERVAL_MS);
+        if (typeof auditPruneIntervalTimer.unref === 'function') {
+            auditPruneIntervalTimer.unref();
         }
 
         // Register SIGHUP handler for policy and node list reload.
@@ -740,9 +760,22 @@ async function initialize() {
 function handleConnection(socket: any) {
     let buffer = '';
 
+    socket.setTimeout(TIMING.CREDENTIAL_DAEMON_SOCKET_TIMEOUT_MS);
+
+    socket.on('timeout', () => {
+        daemonLogger.debug?.('[credential-daemon] Socket timeout — client idle');
+        socket.destroy();
+    });
+
     socket.on('data', (data: any) => {
         try {
             buffer += data.toString();
+
+            if (buffer.length > TIMING.CREDENTIAL_DAEMON_MAX_BUFFER_SIZE) {
+                sendError(socket, 'Request too large');
+                socket.destroy();
+                return;
+            }
 
             // Look for newline-delimited JSON
             const lines = buffer.split('\n');
@@ -777,6 +810,7 @@ function handleConnection(socket: any) {
  * @param {net.Socket} socket - Client socket to send response
  */
 function processRequest(requestStr: string, socket: any) {
+    if (daemonShuttingDown) return;
     // The outer try/catch handles JSON parse errors and any synchronous throws.
     // Each async branch manages its own errors via .catch() → sendError(), so
     // the outer catch is not expected to fire for async operation failures.
@@ -1154,6 +1188,14 @@ function shutdown(exitCode = 0, reason = 'shutdown') {
     if (sessionPurgeInterval) {
         clearInterval(sessionPurgeInterval);
         sessionPurgeInterval = null;
+    }
+    if (nodeRefreshIntervalTimer) {
+        clearInterval(nodeRefreshIntervalTimer);
+        nodeRefreshIntervalTimer = null;
+    }
+    if (auditPruneIntervalTimer) {
+        clearInterval(auditPruneIntervalTimer);
+        auditPruneIntervalTimer = null;
     }
 
     daemonLogger.log?.('[credential-daemon] Server closed');

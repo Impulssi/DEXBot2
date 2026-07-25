@@ -171,12 +171,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.2.7 → v1.3.0 | 1 | `dexbot unlock`/`dexbot pm2` rebranding, docstring sweep across 53 files, browser-field `market_adapter.js` exclusion, stale `typeof __filename` guard removal |
 | v1.3.0 → v1.3.1 | 6 | Repo-root symlinks (`./dexbot`/`./pm2`/`./unlock`), CLI canonical naming `keys`/`bots`→`key`/`bot`, browser exclusion completeness (logger, paths, system), README `npm link` fix + Quick Start dedup |
 | v1.3.1 → v1.3.2 | 6 | Startup dust health check, lightweight sync RMS/chain-filter fixes, dust-handling lock-safe cancel, `dexbot stat` CLI fix, capital allocation docs, README polish |
-| v1.3.2 → v1.3.3 | 10 | Runtime extraction (COW, fill, state recovery), dead-import cleanup, profile resolution fix, pretest hook, EVOLUTION.md refresh |
+| v1.3.2 → v1.3.3 | 12 | Runtime extraction (COW, fill, state recovery), dead-import cleanup, profile resolution fix, credential daemon hardening, pretest hook, EVOLUTION.md refresh |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: July 25, 2026 (v1.3.3)
-**Total Commits**: 1,858
-**Date Range**: December 2, 2025 – July 24, 2026
+**Total Commits**: 1,859
+**Date Range**: December 2, 2025 – July 25, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
