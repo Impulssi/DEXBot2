@@ -1295,7 +1295,7 @@ class SyncEngine {
                             mgr.logger.log(`[SYNC] Failed to apply ghost fill state for order ${orderId}`, 'warn');
                         }
                         filledOrders.push(result.filledOrder);
-                        return { filledOrders, updatedOrders, partialFill: false, ghostOrderId: result.ghostOrderId };
+                        return { filledOrders, updatedOrders, partialFill: false };
                     }
                     mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
                     const fullOk = await mgr._updateOrder(result.fullUpdate, 'handle-fill-full', { skipAccounting: false, fee: 0 });
@@ -1335,7 +1335,7 @@ class SyncEngine {
         const mgr = this.manager;
         const persistenceMode = resolveProcessedFillPersistenceMode(options);
         if (!Array.isArray(fills) || fills.length === 0) {
-            return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [] };
+            return { filledOrders: [], updatedOrders: [], partialFill: false };
         }
 
         // Phase 1: Extract & validate fill data
@@ -1374,7 +1374,7 @@ class SyncEngine {
         }
 
         if (fillEntries.length === 0) {
-            return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [], requiresOpenOrdersSync: anyRequiresSync };
+            return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: anyRequiresSync };
         }
 
         // Phase 2: Lock all unique order IDs once
@@ -1403,7 +1403,7 @@ class SyncEngine {
                 }
 
                 if (validEntries.length === 0) {
-                    return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [], requiresOpenOrdersSync: anyRequiresSync };
+                    return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: anyRequiresSync };
                 }
 
                 // Phase 4: Build per-fill context + identify drift candidates
@@ -1414,7 +1414,7 @@ class SyncEngine {
                 const assetBPrecision = mgr.assets?.assetB?.precision;
                 if (assetAPrecision === undefined || assetBPrecision === undefined) {
                     mgr.logger?.log?.('Error: manager.assets precision missing in syncFromFillHistoryBatch', 'error');
-                    return { filledOrders: [], updatedOrders: [], partialFill: false, ghostOrderIds: [], requiresOpenOrdersSync: anyRequiresSync };
+                    return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: anyRequiresSync };
                 }
 
                 for (const entry of validEntries) {
@@ -1492,7 +1492,6 @@ class SyncEngine {
                 const gridUpdates: any[] = [];
                 const filledOrders: any[] = [];
                 const updatedOrders: any[] = [];
-                const ghostOrderIds: string[] = [];
                 let anyPartialFill = false;
 
                 for (const ctx of entryContexts) {
@@ -1528,7 +1527,6 @@ class SyncEngine {
                                 'info'
                             );
                             gridUpdates.push({ id: matchedGridOrder.id, ...result.ghostUpdate, context: 'handle-fill-ghost' });
-                            ghostOrderIds.push(result.ghostOrderId);
                         } else {
                             mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
                             gridUpdates.push({ id: matchedGridOrder.id, ...result.fullUpdate, context: 'handle-fill-full' });
@@ -1555,7 +1553,7 @@ class SyncEngine {
                     }
                 }
 
-                return { filledOrders, updatedOrders, partialFill: anyPartialFill, ghostOrderIds, requiresOpenOrdersSync: anyRequiresSync };
+                return { filledOrders, updatedOrders, partialFill: anyPartialFill, requiresOpenOrdersSync: anyRequiresSync };
             } finally {
                 await mgr.resumeFundRecalc();
             }

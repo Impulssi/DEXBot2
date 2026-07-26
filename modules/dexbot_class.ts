@@ -142,7 +142,6 @@ class DEXBot {
     _credentialRecoveryDeferredTimer: any;
     _structuralGridResyncTimer: any;
     _structuralGridResyncRunning: boolean;
-    _ghostOrderCancelAttempted: Set<string> | null;
     _dustHealthCheckTimer: any;
     _lastBroadcastHeartbeatAt: number | undefined;
     _lastDeferredDustCount: number;
@@ -240,10 +239,6 @@ class DEXBot {
         this._currentCycleId = 0;
         this._autoCancelOrphanCycleMarker = null;
         this._autoCancelOrphanSubCount = 0;
-        // Per-session guard: ghost order IDs successfully cancelled
-        // (avoids spamming the chain with repeated cancel attempts for the same
-        // orphan residual on every fill cycle).
-        this._ghostOrderCancelAttempted = null as Set<string> | null;
 
         // Dust cancellation uses immediate on-chain cancel — no maps or timers needed.
         this._dustHealthCheckTimer = null;

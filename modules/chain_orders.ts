@@ -107,6 +107,7 @@
  */
 
 const { BitShares, createAccountClient, waitForConnected, withTimeout } = require('./bitshares_client');
+function getNodeManager() { return require('./bitshares_client').getNodeManager(); }
 const { floatToBlockchainInt, blockchainToFloat, normalizeInt, validateOrderAmountsWithinLimits } = require('./order/utils/math');
 const { FILL_PROCESSING, TIMING, NATIVE_CLIENT } = require('./constants');
 const Format = require('./order/format');
@@ -478,7 +479,16 @@ function isDaemonSigningToken(value) {
  * @returns {Promise<import('./types').BroadcastResult>} Broadcast result
  */
 async function executeViaDaemonToken(accountName, signingToken, operations, extraOptions = {}) {
-    return getKeyStore().executeOperations(accountName, operations, signingToken, extraOptions);
+    const nodeManager = getNodeManager();
+    const healthyNodes = nodeManager?.getHealthyNodes() ?? [];
+    const fallbackNodes = healthyNodes.length > 1 ? healthyNodes.slice(1) : undefined;
+    const opts: Record<string, any> = extraOptions;
+    if (healthyNodes.length > 0 && nodeManager && !opts.fallbackNodes && !opts.nodeUrl) {
+        opts.nodeUrl = healthyNodes[0];
+        opts.fallbackNodes = fallbackNodes;
+        opts.onNodeFailed = (nodeUrl: string) => nodeManager.reportNodeFailure(nodeUrl, 'BROADCAST_DEADLINE', 'broadcast');
+    }
+    return getKeyStore().executeOperations(accountName, operations, signingToken, opts);
 }
 
 /**
@@ -897,7 +907,7 @@ async function buildUpdateOrderOp(accountName, orderId, newParams, cachedOrder =
  * @returns {Promise<Object|null>} Success object or null if skipped.
  * @throws {Error} If update fails.
  */
-async function updateOrder(accountName, privateKey, orderId, newParams) {
+async function updateOrder(accountName, privateKey, orderId, newParams, extraOptions = {}) {
     try {
         const buildResult = await buildUpdateOrderOp(accountName, orderId, newParams);
         if (!buildResult) {
@@ -907,7 +917,7 @@ async function updateOrder(accountName, privateKey, orderId, newParams) {
 
         const { op } = buildResult;
         if (isDaemonSigningToken(privateKey)) {
-            const result = await executeViaDaemonToken(accountName, privateKey, [op]);
+            const result = await executeViaDaemonToken(accountName, privateKey, [op], extraOptions);
             chainOrdersLogger.info(`Order ${orderId} updated successfully`);
             return { success: true, orderId, raw: result.raw, operation_results: result.operation_results };
         }
@@ -1003,7 +1013,7 @@ async function buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToR
  * @returns {Promise<Object>} The transaction result or dry run info.
  * @throws {Error} If account not found or creation fails.
  */
-async function createOrder(accountName, privateKey, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration, dryRun = false) {
+async function createOrder(accountName, privateKey, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration, dryRun = false, extraOptions = {}) {
     try {
         const buildResult = await buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration);
         if (!buildResult) return { skipped: true };
@@ -1015,7 +1025,7 @@ async function createOrder(accountName, privateKey, amountToSell, sellAssetId, m
         }
 
         if (isDaemonSigningToken(privateKey)) {
-            const result = await executeViaDaemonToken(accountName, privateKey, [op]);
+            const result = await executeViaDaemonToken(accountName, privateKey, [op], extraOptions);
             chainOrdersLogger.info(`Limit order created successfully for account ${accountName}`);
             return result;
         }
@@ -1113,14 +1123,15 @@ async function cancelOrder(accountName, privateKey, orderId, extraOptions = {}) 
  * @param {string} accountName - Account paying fees (usually the bot account)
  * @param {string|Object} privateKey - Private key for signing (or daemon signing token)
  * @param {Array} operations - Array of operation objects { op_name, op_data } returned by build helpers
+ * @param {Object} [extraOptions] - Optional parameters (fallbackNodes, etc.)
  * @returns {Promise<Object>} Transaction result
  */
-async function executeBatch(accountName, privateKey, operations) {
+async function executeBatch(accountName, privateKey, operations, extraOptions = {}) {
     if (!operations || operations.length === 0) return { success: true, operations: 0 };
 
     try {
         if (isDaemonSigningToken(privateKey)) {
-            const result = await executeViaDaemonToken(accountName, privateKey, operations);
+            const result = await executeViaDaemonToken(accountName, privateKey, operations, extraOptions);
             recordOwnCancelOps(operations);
             return result;
         }

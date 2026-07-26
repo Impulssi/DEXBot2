@@ -641,7 +641,6 @@ async function consumeFillQueue(bot, chainOrders) {
 
                 let allFilledOrders = [];
                 let ordersNeedingCorrection = [];
-                const pendingGhostOrders = new Set();
                 const fillMode = chainOrders.getFillProcessingMode();
 
                 const processValidFills = async (fillsToSync) => {
@@ -663,11 +662,6 @@ async function consumeFillQueue(bot, chainOrders) {
                             }
                             if (batchResult.filledOrders) resolvedOrders.push(...batchResult.filledOrders);
                             if (batchResult.requiresOpenOrdersSync) requiresOpenOrdersSync = true;
-                            if (batchResult.ghostOrderIds?.length > 0) {
-                                for (const id of batchResult.ghostOrderIds) {
-                                    pendingGhostOrders.add(id);
-                                }
-                            }
                         } else {
                             for (const fill of fillsToSync) {
                                 const resultHistory = await bot.manager.syncFromFillHistory(fill, {
@@ -681,7 +675,6 @@ async function consumeFillQueue(bot, chainOrders) {
                                 if (fillKey) pendingFillKeysForCurrentCycle.add(fillKey);
                                 if (resultHistory.filledOrders) resolvedOrders.push(...resultHistory.filledOrders);
                                 if (resultHistory.requiresOpenOrdersSync) requiresOpenOrdersSync = true;
-                                if (resultHistory.ghostOrderId) pendingGhostOrders.add(resultHistory.ghostOrderId);
                             }
                         }
                     }
@@ -758,82 +751,6 @@ async function consumeFillQueue(bot, chainOrders) {
                     }
 
                 } finally {
-                    if (pendingGhostOrders.size > 0) {
-                        if (!bot._ghostOrderCancelAttempted) bot._ghostOrderCancelAttempted = new Set();
-                        const newGhostIds = [...pendingGhostOrders].filter(
-                            id => !bot._ghostOrderCancelAttempted.has(id)
-                        );
-                        if (newGhostIds.length > 0) {
-                            const MAX_OPS_PER_TX = 200;
-                            let batchFailed = false;
-
-                            const buildResults = await Promise.allSettled(
-                                newGhostIds.map(id =>
-                                    chainOrders.buildCancelOrderOp(bot.account, id)
-                                )
-                            );
-                            const cancelOps = [];
-                            for (let i = 0; i < buildResults.length; i++) {
-                                const result = buildResults[i];
-                                const id = newGhostIds[i];
-                                if (result.status === 'fulfilled') {
-                                    cancelOps.push(result.value);
-                                } else {
-                                    bot.manager.logger.log(
-                                        `[SYNC] Failed to build cancel op for ghost order ${id}: ${result.reason?.message || result.reason}`,
-                                        'warn'
-                                    );
-                                }
-                            }
-
-                            for (let i = 0; i < cancelOps.length; i += MAX_OPS_PER_TX) {
-                                const chunk = cancelOps.slice(i, i + MAX_OPS_PER_TX);
-                                const batchIds = newGhostIds.slice(i, i + MAX_OPS_PER_TX);
-                                try {
-                                    bot.manager.logger.log(
-                                        `[SYNC] Batch-cancelling ${chunk.length} orphaned chain order(s) ` +
-                                        `(batch ${Math.floor(i / MAX_OPS_PER_TX) + 1}/${Math.ceil(cancelOps.length / MAX_OPS_PER_TX)})`,
-                                        'info'
-                                    );
-                                    await chainOrders.executeBatch(bot.account, bot.privateKey, chunk);
-                                    for (const id of batchIds) {
-                                        bot._ghostOrderCancelAttempted.add(id);
-                                    }
-                                } catch (batchErr) {
-                                    batchFailed = true;
-                                    bot.manager.logger.log(
-                                        `[SYNC] Batch ghost cancel failed for chunk ${Math.floor(i / MAX_OPS_PER_TX) + 1} ` +
-                                        `(${chunk.length} orders): ${batchErr?.message || batchErr}`,
-                                        'warn'
-                                    );
-                                }
-                            }
-
-                            if (!batchFailed && cancelOps.length === newGhostIds.length) {
-                                bot.manager.logger.log(
-                                    `[SYNC] Successfully batch-cancelled ${newGhostIds.length} orphaned chain order(s)`,
-                                    'info'
-                                );
-                            }
-
-                            for (const ghostOrderId of newGhostIds) {
-                                if (bot._ghostOrderCancelAttempted.has(ghostOrderId)) continue;
-                                try {
-                                    bot.manager.logger.log(
-                                        `[SYNC] Cancelling orphaned chain order ${ghostOrderId} (other-side full-fill residual)`,
-                                        'info'
-                                    );
-                                    await chainOrders.cancelOrder(bot.account, bot.privateKey, ghostOrderId);
-                                    bot._ghostOrderCancelAttempted.add(ghostOrderId);
-                                } catch (err) {
-                                    bot.manager.logger.log(
-                                        `[SYNC] Failed to cancel orphaned order ${ghostOrderId}: ${err?.message || err}`,
-                                        'warn'
-                                    );
-                                }
-                            }
-                        }
-                    }
                     await bot.manager.resumeFundRecalc();
                 }
 

@@ -7,11 +7,11 @@
  * Coverage:
  *   1. Two partial fills in one batch (drift refetch batched)
  *   2. Full + partial mix in batch
- *   3. Ghost order detection preserves orderId in batch
+ *   3. Ghost order detection preserves orderId in batch.
  *   4. Replay fill filtered during accounting (skip in batch)
  *   5. Missing grid order skipped gracefully
  *   6. Fallback to individual on batch drift refetch error
- *   7. Batch returns aggregated ghostOrderIds
+ *   7. (removed — ghost order batch aggregation retired)
  *   8. Empty fills array returns early
  *   9. Sequential processValidFills branch: single fill still uses individual path
  */
@@ -166,8 +166,6 @@ async function testGhostOrderInBatch() {
         persistenceMode: 'batched'
     });
 
-    assert.ok(result.ghostOrderIds.length === 1, 'Should return one ghost order ID');
-    assert.strictEqual(result.ghostOrderIds[0], orderId, 'Ghost order ID should match');
     const slot0 = mgr.orders.get('slot-0');
     // Ghost: SPREAD state, orderId preserved (as PARTIAL)
     assert.ok(slot0.state === ORDER_STATES.PARTIAL || slot0.state === ORDER_STATES.SPREAD,
@@ -260,13 +258,12 @@ async function testEmptyFillsArray() {
     const mgr = createManager();
     const result = await mgr.syncFromFillHistoryBatch([], { persistenceMode: 'batched' });
     assert.ok(result.filledOrders.length === 0, 'Should have no filled orders');
-    assert.ok(result.ghostOrderIds.length === 0, 'Should have no ghost orders');
     assert.strictEqual(result.partialFill, false, 'Should not be partial');
     console.log('  PASS');
 }
 
 async function testAggregatedGhostOrderIds() {
-    console.log('\n - Batch returns aggregated ghostOrderIds from multiple fills...');
+    console.log('\n - Batch returns aggregated ghostOrderIds from multiple fills... (retired)');
     const mgr = createManager();
     const orderId1 = '1.7.700001';
     const orderId2 = '1.7.700002';
@@ -290,9 +287,6 @@ async function testAggregatedGhostOrderIds() {
         persistenceMode: 'batched'
     });
 
-    assert.ok(result.ghostOrderIds.length === 2, 'Should return both ghost order IDs');
-    assert.ok(result.ghostOrderIds.includes(orderId1), 'Should include first order ID');
-    assert.ok(result.ghostOrderIds.includes(orderId2), 'Should include second order ID');
     console.log('  PASS');
 }
 

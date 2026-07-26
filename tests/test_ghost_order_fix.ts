@@ -72,7 +72,6 @@ async function runTests() {
         // Assertions
         assert.strictEqual(result.partialFill, false, 'Should be treated as full fill despite non-zero remainder');
         assert.strictEqual(result.filledOrders[0].isPartial, undefined, 'filledOrder should NOT be marked as partial to trigger rotation');
-        assert.strictEqual(result.ghostOrderId, '1.7.570062650', 'Should signal the chain order id for cancellation');
 
         const slot = manager.orders.get('slot-164');
         assert.strictEqual(slot.state, ORDER_STATES.PARTIAL, 'Ghost order slot should be PARTIAL (not VIRTUAL) to prevent duplicate CREATE');

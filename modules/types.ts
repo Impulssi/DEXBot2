@@ -638,11 +638,9 @@ export interface SyncResult {
   unmatchedChainOrders?: any[];
   partialFill?: boolean;
   requiresOpenOrdersSync?: boolean;
-  ghostOrderId?: string;
 }
 
 export interface BatchSyncResult extends SyncResult {
-  ghostOrderIds: string[];
 }
 
 export interface SynchronizeResult {
