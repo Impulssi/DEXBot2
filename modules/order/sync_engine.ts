@@ -338,8 +338,6 @@ class SyncEngine {
             });
         }
 
-        mgr.logger?.log?.(`[SYNC] Starting synchronization from ${chainOrders?.length || 0} blockchain orders...`, 'info');
-
         const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS;
         const forceReleaseMs = TIMING.SYNC_LOCK_FORCE_RELEASE_AGE_MS;
         let timedOut = false;
@@ -525,6 +523,8 @@ class SyncEngine {
                 continue;
             }
         }
+
+        mgr.logger?.log?.(`[SYNC] Starting synchronization from ${parsedChainOrders.size} blockchain orders...`, 'info');
 
         // Collect all order IDs that might be modified during reconciliation
         // Lock them to prevent concurrent modifications from createOrder/cancelOrder
