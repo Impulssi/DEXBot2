@@ -6,7 +6,7 @@ const { getErrorMessage } = require('../modules/utils/errors');
 console.log('Running ama_slope_model tests');
 
 const { computeAmaSlopeWeights } = require('../market_adapter/core/strategies/ama_slope_model');
-const { calculateAMA, getAmaWarmupBars } = require('../market_adapter/core/strategies/ama');/ama');
+const { calculateAMA, getAmaWarmupBars } = require('../market_adapter/core/strategies/ama');
 
 // Generate a series of N values with a given pattern
 function flatSeries(n, value) {

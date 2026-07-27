@@ -139,6 +139,7 @@ function createCowExecutionFixture(masterOrders = new Map()) {
             updateOptimisticFreeBalance: async () => {}
         },
         applyGridUpdateBatch: async () => {},
+        synchronizeWithChain: async () => {},
     };
 
     bot.manager = manager;
@@ -509,7 +510,7 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
             order: {
                 id: 'slot-create-sell',
                 type: ORDER_TYPES.SELL,
-                price: 1,
+                price: 2,
                 size: 2,
                 state: ORDER_STATES.VIRTUAL,
                 orderId: null

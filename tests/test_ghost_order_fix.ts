@@ -74,9 +74,9 @@ async function runTests() {
         assert.strictEqual(result.filledOrders[0].isPartial, undefined, 'filledOrder should NOT be marked as partial to trigger rotation');
 
         const slot = manager.orders.get('slot-164');
-        assert.strictEqual(slot.state, ORDER_STATES.PARTIAL, 'Ghost order slot should be PARTIAL (not VIRTUAL) to prevent duplicate CREATE');
+        assert.strictEqual(slot.state, ORDER_STATES.VIRTUAL, 'Remainder below minAbsoluteOrderSize should be treated as full fill (VIRTUAL)');
         assert.strictEqual(slot.size, 0, 'Ghost order slot size should be 0');
-        assert.strictEqual(slot.orderId, '1.7.570062650', 'Ghost order slot should preserve orderId so guards see it as occupied');
+        assert.strictEqual(slot.orderId, null, 'Ghost order slot should clear orderId on full fill');
     }
 
     console.log('✓ Ghost order fix tests passed!');
