@@ -97,7 +97,7 @@ const {
     getCredentialReadyFilePath,
     getCredentialSocketPath,
 } = require('./modules/credential_runtime');
-const storage: any = getStorage();
+const storage = getStorage();
 
 // Setup graceful shutdown handlers
 setupGracefulShutdown();

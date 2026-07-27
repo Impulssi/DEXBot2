@@ -59,7 +59,7 @@ import { runMigration } from './scripts/migrate_bot_keys';
 import { getErrorMessage } from './modules/utils/errors';
 setUmask(0o077);
 
-const storage: any = getStorage();
+const storage = getStorage();
 const {
     createBotSupervisor, SOCKET_PATH,
     forwardSignal, isPidAlive, waitForPidExit,
@@ -176,7 +176,7 @@ function waitForStableChildStartup(child: any, { label = 'child process', timeou
         return waitForChildSpawn(child);
     }
 
-    return new Promise((resolve: any, reject: any) => {
+    return new Promise<void>((resolve, reject) => {
         const handleSpawn = () => {
             const t = setTimeout(() => finish(resolve), timeoutMs);
             if (t && typeof t.unref === 'function') {
@@ -228,7 +228,7 @@ function isSupervisorTransientError(err: any): boolean {
 }
 
 function waitForSupervisorReady({ child = null, timeoutMs = 15000, intervalMs = 250 }: { child?: any; timeoutMs?: number; intervalMs?: number } = {}): Promise<boolean> {
-    return new Promise((resolve: any, reject: any) => {
+    return new Promise<boolean>((resolve, reject) => {
         const handleClose = (code: any, signal: any) => {
             finish(reject, new Error(`supervisor exited before becoming ready (exit ${code}${signal ? `, signal ${signal}` : ''})`));
         };
@@ -386,7 +386,7 @@ async function runIsolated({ botName, botEntry = null, stayResident = false, sta
         return new Promise(() => {});
     }
 
-    return new Promise((resolve: any, reject: any) => {
+    return new Promise<number>((resolve, reject) => {
         const pollStartedAt = Date.now();
         const interval = setInterval(async () => {
             try {
@@ -833,7 +833,7 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                 } else {
                     console.log(`    ${colorStatus('(not running)', STATUS_COLORS.muted)}`);
                 }
-                function botKeyFromName(name: any) {
+                function botKeyFromName(name: string) {
                     return String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'bot';
                 }
                 console.log(`    ${statusLabel('Active:')}  ${formatBotCount(amaBots.length)}`);
@@ -948,8 +948,8 @@ if (isUnlockStartDirectRun) {
             if (bot && !bot.killed) {
                 forwardSignal(bot, 'SIGTERM');
                 await Promise.race([
-                    new Promise((resolve: any) => bot.once('close', resolve)),
-                    new Promise((resolve: any) => setTimeout(resolve, 10000)),
+                    new Promise<void>((resolve) => bot.once('close', resolve)),
+                    new Promise<void>((resolve) => setTimeout(resolve, 10000)),
                 ]);
             }
         });

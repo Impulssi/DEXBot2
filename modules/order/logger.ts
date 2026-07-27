@@ -137,8 +137,8 @@ class Logger {
             const perFileLimit = Math.floor(this._maxTotalSize / (this._maxLogFiles + 1));
             if (perFileLimit > 0) {
                 try {
-                    const stat: any = storage.stat(this.logFile);
-                    if (stat.size >= perFileLimit) {
+                    const stat = storage.stat(this.logFile);
+                    if ((stat.size ?? 0) >= perFileLimit) {
                         this._rotateLogFile();
                     }
                 } catch (err: any) {

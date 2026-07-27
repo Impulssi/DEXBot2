@@ -4,7 +4,7 @@ import { getStorage } from './storage';
 import { runtime } from './runtime';
 import { sleep } from './order/utils/system';
 
-const storage: any = getStorage();
+const storage = getStorage();
 
 export interface ProcessStat {
     utime: number;

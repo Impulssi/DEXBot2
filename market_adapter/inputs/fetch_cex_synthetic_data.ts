@@ -579,7 +579,8 @@ const EXCHANGES: Record<string, any> = {
         },
         parseCandles: (json: any) => {
             const result = json?.result || {};
-            const pairKey: any = Object.keys(result).find((key: any) => key !== 'last');
+            const pairKey: string | undefined = Object.keys(result).find((key: any) => key !== 'last');
+            if (!pairKey) return [];
             const rows = Array.isArray(result[pairKey]) ? result[pairKey] : [];
             return rows
                 .map((row: any) => {

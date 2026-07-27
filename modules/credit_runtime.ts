@@ -1708,7 +1708,7 @@ class CreditRuntime {
 
         const borrowAmountFloat = blockchainToFloat(borrowInt, debtAsset.precision);
         const collateralValueInDebtAsset: any = await this._calculateCollateralValueInDebtAsset(requiredCollateralInt, collateralAsset, debtAsset, collateralPrice);
-        const offerCollateralValueInDebtAsset: any = this._calculateCreditOfferCollateralValueInDebtAsset(requiredCollateralInt, collateralAsset, debtAsset, collateralPrice);
+        const offerCollateralValueInDebtAsset: number | null = this._calculateCreditOfferCollateralValueInDebtAsset(requiredCollateralInt, collateralAsset, debtAsset, collateralPrice);
         if (collateralValueInDebtAsset == null || offerCollateralValueInDebtAsset == null || borrowAmountFloat <= 0 || collateralValueInDebtAsset <= 0 || offerCollateralValueInDebtAsset <= 0) {
             throw new Error(collateralAsset?.for_liquidity_pool
                 ? 'Unable to value liquidity pool collateral for credit offer'

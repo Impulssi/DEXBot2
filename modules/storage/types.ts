@@ -5,6 +5,7 @@ export interface FileStat {
   /** @internal Node-only extended properties */
   mode?: number;
   uid?: number;
+  size?: number;
   isSymbolicLink?(): boolean;
   isSocket?(): boolean;
 }

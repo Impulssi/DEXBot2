@@ -9,7 +9,7 @@
 
 
 import { getStorage } from '../storage';
-const storage: any = getStorage();
+const storage = getStorage();
 
 function readJSON<T = any>(filePath: string): T {
     return storage.readJSON(filePath);

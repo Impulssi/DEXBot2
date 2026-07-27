@@ -791,7 +791,7 @@ async function fetchNativeTradesSince(poolId: any, sinceMs: any, pageLimit: any,
         }
 
         const last: any = page[page.length - 1];
-        const lastSeq: any = Number(last?.sequence);
+        const lastSeq: number = Number(last?.sequence);
         if (!Number.isFinite(lastSeq) || lastSeq <= 1) break;
         if (hitOld) break;
         startSeq = lastSeq - 1;
@@ -873,7 +873,7 @@ async function fetchNativeTradesUntilOverlap(poolId: any, overlapSequences: any,
         }
 
         const last: any = page[page.length - 1];
-        const lastSeq: any = Number(last?.sequence);
+        const lastSeq: number = Number(last?.sequence);
         if (!Number.isFinite(lastSeq) || lastSeq <= 1) break;
         startSeq = lastSeq - 1;
     }
