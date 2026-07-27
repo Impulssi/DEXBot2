@@ -133,7 +133,7 @@ import {
     calculateSpreadFromOrders,
     allocateFundsByWeights,
     calculateGapSlots as _mathGapSlots,
-    calculatePriceTolerance
+    findPriceCollision,
 } from './utils/math';
 import {
     adjustBudgetForBtsFees,
@@ -1803,15 +1803,12 @@ export async function checkWindowDust(manager: any): Promise<any> {
         // Uses the LARGER size of the two orders for tolerance calculation to prevent
         // a tiny dust order from inflating the tolerance window.
         const hasDuplicatePriceLevel = (order: any, assets: any): boolean =>
-            allOrders.some((o: any) => {
-                if (o.id === order.id || o.type !== order.type) return false;
-                if (o.state !== ORDER_STATES.ACTIVE || !o.orderId || o.price == null) return false;
-                const toleranceSize = Math.max(order.size, o.size);
-                const tolerance = calculatePriceTolerance(
-                    Math.min(order.price, o.price), toleranceSize, order.type, assets
-                );
-                return tolerance != null && Math.abs(o.price - order.price) <= tolerance;
-            });
+            findPriceCollision(
+                allOrders,
+                order.id,
+                order.price, order.size, order.type, assets,
+                (o: any) => o.type === order.type && o.state === ORDER_STATES.ACTIVE && !!o.orderId && o.price != null
+            ) != null;
 
         const assets = manager.assets;
         const allPartials = allOrders.filter((o: any) => isLiveOrder(o) && o.state === ORDER_STATES.PARTIAL);
@@ -2123,21 +2120,17 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
         // order was not properly cleaned up (e.g. uncertain broadcast).
         if (spreadCandidates.length > 0) {
             const preFilter = spreadCandidates.length;
-            const placedOrders = allOrders.filter((o: any) => isOrderPlaced(o) && o.price != null);
             spreadCandidates = spreadCandidates.filter((c: any) => {
                 if (c.price == null) return false;
-                const candidatePrice = c.price;
-                const candidateSize = (c.size && c.size > 0) ? c.size : getMinAbsoluteOrderSize(railType, manager.assets);
-                const collision = placedOrders.some((placed: any) => {
-                    const tolerance = calculatePriceTolerance(
-                        Math.min(placed.price, candidatePrice),
-                        Math.max(placed.size || 0, candidateSize),
-                        railType,
-                        manager.assets
-                    );
-                    return tolerance != null && Math.abs(placed.price - candidatePrice) <= tolerance;
-                });
-                return !collision;
+                // Resolve candidate size: if zero/missing, use minimum so tolerance
+                // doesn't collapse to zero (calculatePriceTolerance returns null for size <= 0).
+                const cs = (c.size && c.size > 0) ? c.size : getMinAbsoluteOrderSize(railType, manager.assets);
+                return !findPriceCollision(
+                    allOrders,
+                    c.id,
+                    c.price, cs, railType, manager.assets,
+                    (o: any) => isOrderPlaced(o) && o.price != null
+                );
             });
             const filteredCount = preFilter - spreadCandidates.length;
             if (filteredCount > 0) {

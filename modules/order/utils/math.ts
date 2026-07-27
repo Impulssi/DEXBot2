@@ -736,6 +736,47 @@ function calculatePriceTolerance(gridPrice: any, orderSize: any, orderType: any,
 }
 
 /**
+ * Scan an iterable of candidate items for a price collision with the target order.
+ * Each candidate must have `id` and a price accessible via `item.price ?? item.order?.price`.
+ *
+ * @param {Iterable} items - Candidates to scan (manager.orders values or opContexts)
+ * @param {string} excludeId - Slot id to skip (the item being created)
+ * @param {number} targetPrice
+ * @param {number} targetSize
+ * @param {string} targetType - ORDER_TYPES.BUY or SELL
+ * @param {object} assets - Manager assets (assetA/assetB with precision)
+ * @param {Function} [isValid] - Optional predicate; candidate must return true to be considered
+ * @returns {object|null} The colliding item, or null
+ */
+function findPriceCollision(
+    items: Iterable<any>,
+    excludeId: string,
+    targetPrice: number,
+    targetSize: number,
+    targetType: string,
+    assets: any,
+    isValid?: ((item: any) => boolean) | null
+): any {
+    for (const item of items) {
+        if (item.id === excludeId) continue;
+        if (isValid && !isValid(item)) continue;
+        const price = item.price ?? item.order?.price;
+        const size = item.size ?? item.order?.size ?? 0;
+        if (price == null || targetPrice == null) continue;
+        const tolerance = calculatePriceTolerance(
+            Math.min(price, targetPrice),
+            Math.max(size, targetSize),
+            targetType,
+            assets
+        );
+        if (tolerance != null && Math.abs(price - targetPrice) <= tolerance) {
+            return item;
+        }
+    }
+    return null;
+}
+
+/**
  * Validate order amounts are within blockchain limits (0 < INT64_MAX).
  * Converts floats to blockchain integers and checks they fit in signed 64-bit integers.
  * 
@@ -1171,7 +1212,7 @@ function calculateGapSlots(incrementPercent: any, targetSpreadPercent: any, grid
     return Math.max(MIN_SPREAD_ORDERS, requiredSteps - 1);
 }
 
-export { calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, deductOrderFeesFromFunds, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+export { calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, deductOrderFeesFromFunds, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.

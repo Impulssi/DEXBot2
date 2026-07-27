@@ -8,7 +8,7 @@
 
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
-import { getMinAbsoluteOrderSize, getAssetFees, blockchainToFloat } from './utils/math';
+import { getMinAbsoluteOrderSize, getAssetFees, blockchainToFloat, findPriceCollision } from './utils/math';
 import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults } from './utils/order';
 import { resolveAccountRef } from './utils/system';
 import * as Format from './format';
@@ -210,6 +210,11 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
 
 /**
  * Create a new chain order from a grid slot.
+ *
+ * @private
+ * @requires _gridLock MUST be held by caller — the collision check and
+ *   subsequent create are not atomic otherwise.
+ *
  * @param {Object} params - Creation parameters.
  * @param {Object} params.chainOrders - Chain orders module.
  * @param {string} params.account - Account name.
@@ -218,15 +223,34 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
  * @param {Object} params.gridOrder - Grid order object.
  * @param {boolean} params.dryRun - Whether to simulate.
  * @returns {Promise<void>}
- * @private
  */
 async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun }: { chainOrders: any; account: any; privateKey: any; manager: any; gridOrder: any; dryRun: any; }): Promise<void> {
     if (dryRun) return;
 
-    // ATOMIC RE-VERIFICATION: Ensure slot is still virtual and hasn't been filled by recovery sync
+    // ATOMIC RE-VERIFICATION: Ensure slot is still virtual and hasn't been filled by recovery sync.
+    // This protects the same slot (own orderId). The collision check below protects
+    // against other slots at the same price — the two are complementary.
     const currentSlot = manager.orders.get(gridOrder.id);
     if (currentSlot && currentSlot.orderId) {
         manager.logger?.log?.(`[_createOrderFromGrid] SKIP: Slot ${gridOrder.id} already has orderId ${currentSlot.orderId}`, 'warn');
+        return;
+    }
+
+    // Price collision guard: reject if another placed order already exists at this price level.
+    const createPrice = gridOrder.price;
+    const createSize = gridOrder.size;
+    const priceCollision = createPrice != null && findPriceCollision(
+        manager.orders.values(),
+        gridOrder.id,
+        createPrice, createSize, gridOrder.type, manager.assets,
+        isOrderPlaced
+    );
+    if (priceCollision) {
+        manager.logger?.log?.(
+            `[_createOrderFromGrid] SKIP: Create for ${gridOrder.id} at ${Format.formatPrice6(createPrice)} ` +
+            `collides with placed order ${priceCollision.id} (${priceCollision.orderId}) at ${Format.formatPrice6(priceCollision.price)}`,
+            'warn'
+        );
         return;
     }
 
@@ -700,6 +724,27 @@ async function _executeStartupCreateGroupBatch({
         const currentSlot = manager.orders.get(gridOrder.id);
         if (currentSlot?.orderId) {
             logger?.log?.(`Startup: Skip create ${plan.orderLabel} - slot ${gridOrder.id} already has orderId ${currentSlot.orderId}`, 'warn');
+            continue;
+        }
+
+        // Price collision guard: reject if another placed order already exists at this price level.
+        // The slot-orderId check (above) protects the same slot; this protects against other
+        // slots whose price falls within tolerance — the two are complementary.
+        const createPrice = gridOrder.price;
+        const createSize = gridOrder.size;
+        const priceCollision = createPrice != null && findPriceCollision(
+            manager.orders.values(),
+            gridOrder.id,
+            createPrice, createSize, gridOrder.type, manager.assets,
+            isOrderPlaced
+        );
+        if (priceCollision) {
+            logger?.log?.(
+                `Startup: Skip create ${plan.orderLabel} - price ${Format.formatPrice6(createPrice)} ` +
+                `collides with placed order ${priceCollision.id} (${priceCollision.orderId}) ` +
+                `at ${Format.formatPrice6(priceCollision.price)}`,
+                'warn'
+            );
             continue;
         }
 

@@ -20,7 +20,7 @@ const {
     isOrderPlaced,
 } = require('./order/utils/order');
 const { validateCreateTargetSlots } = require('./order/utils/validate');
-const { validateOrderSize, calculatePriceTolerance } = require('./order/utils/math');
+const { validateOrderSize, findPriceCollision } = require('./order/utils/math');
 // Lazy accessor so test mocks on the math module export take effect at call time.
 function getAssetFees(...args: any) { return require('./order/utils/math').getAssetFees(...args); }
 const {
@@ -107,48 +107,6 @@ function findMissingCreateResultContexts(operationResults: any, opContexts: any)
     }
 
     return missing;
-}
-
-/**
- * Scan an iterable of candidate items for a price collision with the target order.
- * Each candidate must have `id` (or `ctx.id` through the accessor) and a price
- * accessible via `item.price ?? item.order?.price`.
- *
- * @param {Iterable} items - Candidates to scan (bot.manager.orders values or opContexts)
- * @param {string} excludeId - Slot id to skip (the item being created)
- * @param {number} targetPrice
- * @param {number} targetSize
- * @param {string} targetType - ORDER_TYPES.BUY or SELL
- * @param {object} assets - Manager assets (assetA/assetB with precision)
- * @param {Function} [isValid] - Optional predicate; candidate must return true to be considered
- * @returns {object|null} The colliding item, or null
- */
-function findPriceCollision(
-    items: Iterable<any>,
-    excludeId: string,
-    targetPrice: number,
-    targetSize: number,
-    targetType: string,
-    assets: any,
-    isValid?: ((item: any) => boolean) | null
-): any {
-    for (const item of items) {
-        if (item.id === excludeId) continue;
-        if (isValid && !isValid(item)) continue;
-        const price = item.price ?? item.order?.price;
-        const size = item.size ?? item.order?.size ?? 0;
-        if (price == null || targetPrice == null) continue;
-        const tolerance = calculatePriceTolerance(
-            Math.min(price, targetPrice),
-            Math.max(size, targetSize),
-            targetType,
-            assets
-        );
-        if (tolerance != null && Math.abs(price - targetPrice) <= tolerance) {
-            return item;
-        }
-    }
-    return null;
 }
 
 /**
