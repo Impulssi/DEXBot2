@@ -720,6 +720,28 @@ class CreditRuntime {
         }
 
         if (offerIds.size === 0) {
+            // Fallback: scan owned credit offers for pricing when no deal-based
+            // or allowed offer IDs are configured.
+            const ownedOffers = Array.isArray(this.state.ownedCreditOffers) ? this.state.ownedCreditOffers : [];
+            if (ownedOffers.length > 0 && debtAssetId && collateralAssetId) {
+                const debtAsset = await this._resolveAsset(debtAssetId);
+                const collateralAsset = await this._resolveAsset(collateralAssetId);
+                if (debtAsset && collateralAsset) {
+                    const match = ownedOffers.find((o: any) =>
+                        String(o.assetType) === String(debtAssetId) && o.enabled !== false
+                    );
+                    if (match) {
+                        const collateralMap = normalizeCollateralMap(match.acceptableCollateral);
+                        const rate = this._extractRateFromCollateralMap(collateralMap, String(collateralAssetId), debtAsset, collateralAsset);
+                        if (rate !== null) {
+                            if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
+                            this.state.positions[posKey].creditConversionRate = rate;
+                            this.state.positions[posKey].creditConversionRateAt = Date.now();
+                            return options.includeSource ? { price: rate, source: 'owned-offer' } : rate;
+                        }
+                    }
+                }
+            }
             if (options.includeSource) {
                 return cachedIsFresh
                     ? { price: cached, source: 'cached-offer' }
@@ -746,18 +768,8 @@ class CreditRuntime {
                 if (offer.enabled === false) continue;
 
                 const collateralMap = normalizeCollateralMap(offer?.acceptable_collateral);
-                const price = collateralMap.get(String(collateralAssetId));
-                if (!price) continue;
-
-                const orientation = this._creditPriceOrientation(price, debtAsset, collateralAsset);
-                const baseAmount = blockchainAmountToFloat(price?.base, orientation === 'legacy-reversed' ? collateralAsset : debtAsset);
-                const quoteAmount = blockchainAmountToFloat(price?.quote, orientation === 'legacy-reversed' ? debtAsset : collateralAsset);
-                if (baseAmount == null || quoteAmount == null || baseAmount <= 0) continue;
-
-                const rate = orientation === 'legacy-reversed'
-                    ? quoteAmount / baseAmount
-                    : baseAmount / quoteAmount;
-                if (!Number.isFinite(rate) || rate <= 0) continue;
+                const rate = this._extractRateFromCollateralMap(collateralMap, String(collateralAssetId), debtAsset, collateralAsset);
+                if (rate === null) continue;
 
                 if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
                 this.state.positions[posKey].creditConversionRate = rate;
@@ -899,6 +911,20 @@ class CreditRuntime {
         if (baseAssetId === debtAssetId && quoteAssetId === collateralAssetId) return 'core';
         if (baseAssetId === collateralAssetId && quoteAssetId === debtAssetId) return 'legacy-reversed';
         return 'core';
+    }
+
+    _extractRateFromCollateralMap(collateralMap: Map<string, any>, collateralAssetId: string, debtAsset: any, collateralAsset: any): number | null {
+        const price = collateralMap.get(collateralAssetId);
+        if (!price) return null;
+        const orientation = this._creditPriceOrientation(price, debtAsset, collateralAsset);
+        const baseAmount = blockchainAmountToFloat(price?.base, orientation === 'legacy-reversed' ? collateralAsset : debtAsset);
+        const quoteAmount = blockchainAmountToFloat(price?.quote, orientation === 'legacy-reversed' ? debtAsset : collateralAsset);
+        if (baseAmount == null || quoteAmount == null || baseAmount <= 0) return null;
+        const rate = orientation === 'legacy-reversed'
+            ? quoteAmount / baseAmount
+            : baseAmount / quoteAmount;
+        if (!Number.isFinite(rate) || rate <= 0) return null;
+        return rate;
     }
 
     _calculateBorrowAmountFromCollateral(collateralAmountInt: any, collateralPrice: any, debtAsset: any = null, collateralAsset: any = null): number | null {
@@ -1341,26 +1367,37 @@ class CreditRuntime {
         // This is a price for the debt+collateral asset pair, not for a specific offer id.
         // In practice, offers for the same pair should expose interchangeable acceptable-collateral pricing.
         if (expectedCollateralId) {
-            for (const offer of trackedOffers.values()) {
-                if (String(offer?.asset_type) !== assetId) continue;
-                if (offer?.enabled === false) continue;
-                const collateralMap = normalizeCollateralMap(offer?.acceptable_collateral);
-                const price = collateralMap.get(expectedCollateralId);
-                if (!price) continue;
-                const debtAssetResolved = await this._resolveAsset(assetId);
-                const collateralAssetResolved = await this._resolveAsset(expectedCollateralId);
-                const orientation = this._creditPriceOrientation(price, debtAssetResolved, collateralAssetResolved);
-                const baseAmount = blockchainAmountToFloat(price?.base, orientation === 'legacy-reversed' ? collateralAssetResolved : debtAssetResolved);
-                const quoteAmount = blockchainAmountToFloat(price?.quote, orientation === 'legacy-reversed' ? debtAssetResolved : collateralAssetResolved);
-                if (baseAmount == null || quoteAmount == null || baseAmount <= 0) continue;
-                const rate = orientation === 'legacy-reversed'
-                    ? quoteAmount / baseAmount
-                    : baseAmount / quoteAmount;
-                if (!Number.isFinite(rate) || rate <= 0) continue;
-                if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
-                this.state.positions[posKey].creditConversionRate = rate;
-                this.state.positions[posKey].creditConversionRateAt = Date.now();
-                break;
+            const debtAssetResolved = await this._resolveAsset(assetId);
+            const collateralAssetResolved = await this._resolveAsset(expectedCollateralId);
+            if (debtAssetResolved && collateralAssetResolved) {
+                for (const offer of trackedOffers.values()) {
+                    if (String(offer?.asset_type) !== assetId) continue;
+                    if (offer?.enabled === false) continue;
+                    const collateralMap = normalizeCollateralMap(offer?.acceptable_collateral);
+                    const rate = this._extractRateFromCollateralMap(collateralMap, expectedCollateralId, debtAssetResolved, collateralAssetResolved);
+                    if (rate === null) continue;
+                    if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
+                    this.state.positions[posKey].creditConversionRate = rate;
+                    this.state.positions[posKey].creditConversionRateAt = Date.now();
+                    break;
+                }
+
+                // Fallback: cache conversion rate from owned credit offers.
+                // This ensures pricing is available even when there are no active
+                // borrowing deals and allowedOfferIds is empty.
+                if (!this.state.positions[posKey]?.creditConversionRate) {
+                    for (const offer of ownedCreditOffers) {
+                        if (String(offer.assetType) !== assetId) continue;
+                        if (offer.enabled === false) continue;
+                        const collateralMap = normalizeCollateralMap(offer.acceptableCollateral);
+                        const rate = this._extractRateFromCollateralMap(collateralMap, expectedCollateralId, debtAssetResolved, collateralAssetResolved);
+                        if (rate === null) continue;
+                        if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
+                        this.state.positions[posKey].creditConversionRate = rate;
+                        this.state.positions[posKey].creditConversionRateAt = Date.now();
+                        break;
+                    }
+                }
             }
         }
 

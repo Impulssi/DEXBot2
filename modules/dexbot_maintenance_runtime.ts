@@ -32,6 +32,7 @@ function isPm2Runtime(...args: any) { return require('./order/logger').isPm2Runt
 function getSharedMarketAdapterRuntime(...args: any) { return require('./launcher/market_adapter_runtime').getSharedMarketAdapterRuntime(...args); }
 function resetMarketAdapterWhitelistCache(...args: any) { return require('./market_adapter_whitelist').resetMarketAdapterWhitelistCache(...args); }
 function isBotDynamicWeightWhitelisted(...args: any) { return require('./market_adapter_whitelist').isBotDynamicWeightWhitelisted(...args); }
+function getRuntimeSettingsKeys() { return require('./runtime_settings').RUNTIME_SETTINGS_KEYS; }
 function cloneWeightDistribution(...args: any) { return require('./order/utils/math').cloneWeightDistribution(...args); }
 function calculateOrderCreationFees(...args: any) { return require('./order/utils/math').calculateOrderCreationFees(...args); }
 function calculateSwapInAmount(...args: any) { return require('./order/utils/math').calculateSwapInAmount(...args); }
@@ -825,7 +826,16 @@ function performGridResync(bot: any, options: {
                     self._log(`Reloaded configuration for bot '${myName}'`);
                     const oldKey = self.config.botKey;
                     const oldIndex = self.config.botIndex;
-                    self.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex };
+                    // Preserve runtime-only properties set by the constructor
+                    // (timing, gridLimits, feeParams, etc.) that are not present
+                    // in the raw profile from bots.json.
+                    const runtimeProps: Record<string, any> = {};
+                    for (const key of getRuntimeSettingsKeys()) {
+                        if (self.config[key] !== undefined) {
+                            runtimeProps[key] = self.config[key];
+                        }
+                    }
+                    self.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex, ...runtimeProps };
                     self.manager.config = { ...self.manager.config, ...self.config };
                     self._baseWeightDistribution = cloneWeightDistribution(
                         updatedBot.weightDistribution,

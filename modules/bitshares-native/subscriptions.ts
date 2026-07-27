@@ -27,6 +27,9 @@ function createSubscriptionManager(chainClient: any): any {
     // Subscription health watchdog timer and re-entrancy guard.
     let subscriptionHealthTimer: any = null;
     let healthCheckInProgress = false;
+    // Dedicated subscription keepalive timer - prevents server-side subscription TTL expiry
+    // independent of the health check. Runs a lightweight DB ping every KEEPALIVE_INTERVAL_MS.
+    let subscriptionKeepaliveTimer: any = null;
 
     function parseObjectIdInstance(id: any): number {
         if (typeof id !== 'string') return Number.NaN;
@@ -648,15 +651,37 @@ function createSubscriptionManager(chainClient: any): any {
         }
     }
 
-    function startSubscriptionHealthCheck(): void {
-        const intervalMs = Number.isFinite(SUBSCRIPTIONS.SUBSCRIPTION_HEALTH_CHECK_INTERVAL_MS)
-            ? Math.max(10000, SUBSCRIPTIONS.SUBSCRIPTION_HEALTH_CHECK_INTERVAL_MS)
-            : 60000;
+    function startSubscriptionKeepalive(): void {
+        if (subscriptionKeepaliveTimer) return;
+        // Fire at half the silent threshold to guarantee at least two pings
+        // within the window, preventing server-side subscription TTL expiry.
         const silentThresholdMs = Number.isFinite(SUBSCRIPTIONS.SUBSCRIPTION_SILENT_THRESHOLD_MS)
             ? Math.max(30000, SUBSCRIPTIONS.SUBSCRIPTION_SILENT_THRESHOLD_MS)
             : 600000;
+        const keepaliveMs = Math.max(30000, Math.round(silentThresholdMs / 2));
+        subscriptionKeepaliveTimer = setInterval(() => {
+            chainClient.db.get_dynamic_global_properties().catch((err: any) => {
+                subscriptionsLogger.warn(`Subscription keepalive ping failed: ${getErrorMessage(err)}`);
+            });
+        }, keepaliveMs);
+        if (typeof subscriptionKeepaliveTimer.unref === 'function') {
+            subscriptionKeepaliveTimer.unref();
+        }
+    }
+
+    function startSubscriptionHealthCheck(): void {
+        const silentThresholdMs = Number.isFinite(SUBSCRIPTIONS.SUBSCRIPTION_SILENT_THRESHOLD_MS)
+            ? Math.max(30000, SUBSCRIPTIONS.SUBSCRIPTION_SILENT_THRESHOLD_MS)
+            : 600000;
+        // Health check fires at half the silent threshold so staleness is
+        // detected within at most one full threshold window after expiry.
+        const intervalMs = Math.max(10000, Math.round(silentThresholdMs / 2));
 
         if (subscriptionHealthTimer) return;
+
+        // Start dedicated subscription keepalive on a shorter interval to prevent
+        // server-side subscription TTL expiry (~120s on some nodes).
+        startSubscriptionKeepalive();
 
         subscriptionHealthTimer = setInterval(async () => {
             // Re-entrancy guard: if a previous tick is still processing (e.g.
@@ -665,13 +690,6 @@ function createSubscriptionManager(chainClient: any): any {
             if (healthCheckInProgress) return;
             healthCheckInProgress = true;
             try {
-                // Lightweight DB API ping to keep the subscription alive.
-                // Some nodes have a server-side subscription TTL (~120s) that
-                // silently kills the notice stream even when the WebSocket and
-                // login session remain healthy. A periodic read on the database
-                // API keeps the session alive so notices keep flowing.
-                chainClient.db.get_dynamic_global_properties().catch(() => {});
-
                 const now = Date.now();
                 const stale: { entry: any; elapsed: number; }[] = [];
                 for (const [, entry] of subscriptions) {
@@ -734,6 +752,10 @@ function createSubscriptionManager(chainClient: any): any {
         if (subscriptionHealthTimer) {
             clearInterval(subscriptionHealthTimer);
             subscriptionHealthTimer = null;
+        }
+        if (subscriptionKeepaliveTimer) {
+            clearInterval(subscriptionKeepaliveTimer);
+            subscriptionKeepaliveTimer = null;
         }
     }
 

@@ -333,8 +333,8 @@ let TIMING = {
     // If a sync operation holds the lock longer than this, the lock is released so subsequent
     // syncs are not permanently blocked. The sync that timed out continues running but the lock
     // is detached from it.
-    // Default: 40000 (40s) — 2x SYNC_LOCK_TIMEOUT_MS, gives slow operations time to finish.
-    SYNC_LOCK_FORCE_RELEASE_AGE_MS: 40000,
+    // Derived as SYNC_LOCK_TIMEOUT_MS * 2 after override merge (see end of this module).
+    SYNC_LOCK_FORCE_RELEASE_AGE_MS: 40000, // overridden by derivation after merge
 
     // GRID_BLOAT_RESYNC_GRACE_MS: Grace period before the maintenance runtime
     // re-triggers a structural resync for a previously detected grid bloat.
@@ -1550,16 +1550,13 @@ let NATIVE_CLIENT = {
         // where the websocket stays connected and keep-alive passes but the
         // node stops delivering notices (server-side timeout, node overload).
         //
-        // SUBSCRIPTION_HEALTH_CHECK_INTERVAL_MS: How often the watchdog timer
-        // runs to check for stale subscriptions. Default: 60s.
-        SUBSCRIPTION_HEALTH_CHECK_INTERVAL_MS: 60000,
-
         // SUBSCRIPTION_SILENT_THRESHOLD_MS: If a subscription has not received
         // any notice (fill or non-fill) within this window, the watchdog
         // triggers a resubscribe + history scan. Default: 2 minutes.
         // Reduced from 5min to detect fill-stream death faster without
         // excessive resubscribes on low-activity accounts.
         SUBSCRIPTION_SILENT_THRESHOLD_MS: 120000,
+
     },
 
     // -------------------------------------------------------------------------
@@ -1694,6 +1691,10 @@ if (settings) {
     NODE_MANAGEMENT = merged.NODE_MANAGEMENT;
     MARKET_ADAPTER = merged.MARKET_ADAPTER;
 }
+
+// Post-merge derivations: compute values from their documented relationships
+// so that user overrides to base constants propagate automatically.
+TIMING.SYNC_LOCK_FORCE_RELEASE_AGE_MS = TIMING.SYNC_LOCK_TIMEOUT_MS * 2;
 
 // Freeze objects to prevent accidental runtime modifications
 Object.freeze(ORDER_TYPES);

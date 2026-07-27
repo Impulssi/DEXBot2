@@ -38,6 +38,11 @@ export interface BotRuntimeSettings {
     };
 }
 
+export const RUNTIME_SETTINGS_KEYS: readonly string[] = [
+    'gridLimits', 'feeParams', 'incrementBounds', 'timing',
+    'fillProcessing', 'pipelineTiming', 'logging',
+];
+
 export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRuntimeSettings {
     const result: BotRuntimeSettings = {
         gridLimits: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },

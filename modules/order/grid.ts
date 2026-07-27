@@ -981,7 +981,19 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
             await manager._initializeAssets();
             await manager.fetchAccountTotals();
 
-            const chainOpenOrders = await readOpenOrdersFn();
+            const READ_OPEN_ORDERS_TIMEOUT_MS = 30000;
+            let _readOpenOrdersTimer: NodeJS.Timeout | undefined;
+            let chainOpenOrders: any[];
+            try {
+                chainOpenOrders = await Promise.race([
+                    readOpenOrdersFn(),
+                    new Promise((_: any, reject: any) => {
+                        _readOpenOrdersTimer = setTimeout(() => reject(new Error('readOpenOrders timeout')), READ_OPEN_ORDERS_TIMEOUT_MS);
+                    })
+                ]);
+            } finally {
+                clearTimeout(_readOpenOrdersTimer);
+            }
             if (!Array.isArray(chainOpenOrders)) return;
 
             // CRITICAL: Filter out PARTIAL orders before synchronizing - they're from old grid

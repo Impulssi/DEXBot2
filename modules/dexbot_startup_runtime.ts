@@ -492,8 +492,9 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     await bot._processFillsWithBootstrapMode(chainOrders);
                 }
 
-                bot.manager.finishBootstrap();
-
+                // Fetch fresh account totals BEFORE finishBootstrap so the drift
+                // check inside finishBootstrap uses accurate on-chain balances
+                // rather than the stale snapshot from initializeStartupState.
                 const FETCH_TIMEOUT_MS = 30000;
                 let _fetchTimeoutHandle: NodeJS.Timeout;
                 try {
@@ -511,6 +512,8 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 } finally {
                     clearTimeout(_fetchTimeoutHandle!);
                 }
+
+                bot.manager.finishBootstrap();
 
                 await bot._runGridMaintenance('startup');
 
