@@ -6,10 +6,10 @@ DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares 
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 1,871+ commits over ~8 active months
+- **Growth Phase**: 1,872+ commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
-- **Stability**: Progression from manual testing to a suite of 225 automated test files
-- **Releases**: 77 release entries (v0.1.0 to v1.4.0)
+- **Stability**: Progression from manual testing to a suite of 232 automated test files
+- **Releases**: 83 release entries (v0.1.0 to v1.4.0)
 
 ---
 
@@ -53,7 +53,7 @@ The release introduced profile validation, on-chain authority resolution, a shar
 
 ### Phase 6: Production Hardening & Iterative Refinement (July 2026)
 
-Post-stable work focused on reliability. Subscription health watchdogs, broadcast deadlock recovery at both bot and daemon level, and comprehensive system invariants documentation were added. A series of rapid releases (v1.1.1–v1.2.0) delivered multi-round AMA refits, oversize credit deal splitting with per-operation caps, lock contention reduction, unique bot name enforcement, chart controls, HTML order analysis exports, committed order protection during recovery, price correction queue processing on startup, COW broadcast recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload), centralized node-fallback for BROADCAST_DEADLINE, orphan-fill death spiral resolution, fee cache persistence, credit-only bot mode for MPA workflows, boundary shift recovery after uncertain broadcast discard, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync loop), parallel node connect with `Promise.any`, subscription re-entrancy guards, credential daemon memory leak, order correction reliability, StateManager inline refactor, invariant sabotage prevention, credential daemon signing client cache with session purge, daemon-signing node failover, CJS→ESM migration completion, strict-mode zero-errors across all 99 source files, subscription health-check cycling elimination, bootstrap fund-drift false positive fix, price-collision guard centralization, and review-concerns dedup (rate extraction, keepalive cleanup, runtime settings keys export, SYNC_LOCK_FORCE_RELEASE_AGE_MS derivation).
+Post-stable work focused on reliability. Subscription health watchdogs, broadcast deadlock recovery at both bot and daemon level, and comprehensive system invariants documentation were added. A series of rapid releases (v1.1.1–v1.2.0) delivered multi-round AMA refits, oversize credit deal splitting with per-operation caps, lock contention reduction, unique bot name enforcement, chart controls, HTML order analysis exports, committed order protection during recovery, price correction queue processing on startup, COW broadcast recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload), centralized node-fallback for BROADCAST_DEADLINE, orphan-fill death spiral resolution, fee cache persistence, credit-only bot mode for MPA workflows, boundary shift recovery after uncertain broadcast discard, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync loop), parallel node connect with `Promise.any`, subscription re-entrancy guards, credential daemon memory leak, order correction reliability, StateManager inline refactor, invariant sabotage prevention, credential daemon signing client cache with session purge, daemon-signing node failover, CJS→ESM migration completion, strict-mode zero-errors across all 99 source files, subscription health-check cycling elimination, bootstrap fund-drift false positive fix, price-collision guard centralization, review-concerns dedup (rate extraction, keepalive cleanup, runtime settings keys export, SYNC_LOCK_FORCE_RELEASE_AGE_MS derivation), and active fill polling with stale-watchdog removal.
 
 ---
 
@@ -63,12 +63,12 @@ DEXBot2's architecture progressed through distinct maturity stages:
 - **Phases 1–2**: Modular order/account management and basic grid trading.
 - **Phases 3–4**: Copy-on-Write grid with atomic modifications; Market Adapter decoupling signals from execution.
 - **Phase 5**: Multi-layered runtime — COW core, signal pipeline, credit/debt MPA runtime, browser compatibility core, portable abstractions, and pure-JS crypto.
-- **Phase 6**: Incremental production hardening — iterative AMA refits, oversize deal splitting, lock contention reduction, unique bot name enforcement, chart controls, HTML order analysis export, committed order protection, price correction queue processing, AMA config centralization, COW broadcast recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload, orphan-fill death spiral fix), centralized node-fallback for BROADCAST_DEADLINE, fee cache persistence, node-failure blacklist sync, gap regression fixes, credit-only mode, boundary shift recovery, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync), parallel node connect, subscription re-entrancy guards, fund accounting stale-fetch guard, AsyncLock re-entrancy, credential daemon memory leak, order correction reliability, StateManager inline refactor, uncertain-broadcast grid corruption fix, unmatched-order adoption, grid-bloat loop fix, credential daemon signing client cache with session purge, daemon-signing node failover, CJS→ESM migration completion, strict-mode zero-errors, subscription health-check cycling elimination, bootstrap fund-drift false positive fix, price-collision guard centralization, review-concerns dedup.
+- **Phase 6**: Incremental production hardening — iterative AMA refits, oversize deal splitting, lock contention reduction, unique bot name enforcement, chart controls, HTML order analysis export, committed order protection, price correction queue processing, AMA config centralization, COW broadcast recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload, orphan-fill death spiral fix), centralized node-fallback for BROADCAST_DEADLINE, fee cache persistence, node-failure blacklist sync, gap regression fixes, credit-only mode, boundary shift recovery, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync), parallel node connect, subscription re-entrancy guards, fund accounting stale-fetch guard, AsyncLock re-entrancy, credential daemon memory leak, order correction reliability, StateManager inline refactor, uncertain-broadcast grid corruption fix, unmatched-order adoption, grid-bloat loop fix, credential daemon signing client cache with session purge, daemon-signing node failover, CJS→ESM migration completion, strict-mode zero-errors, subscription health-check cycling elimination, bootstrap fund-drift false positive fix, price-collision guard centralization, review-concerns dedup, active fill polling.
 ---
 
 ## Development Statistics
 
-The project has accumulated 225 automated test files across 77 release entries. See the **Version History** below for a per-release commit breakdown.
+The project has accumulated 232 automated test files across 83 release entries. See the **Version History** below for a per-release commit breakdown.
 
 ---
 
@@ -87,7 +87,7 @@ The project has accumulated 225 automated test files across 77 release entries. 
 
 ## Documentation & Testing
 
-Evolved from a basic README to a comprehensive framework (50+ docs entries, 80%+ JSDoc coverage, AGENTS.md). Testing matured from manual blockchain trials → Jest → lightweight Node.js assert across a 224-file suite covering unit, integration, simulation, and COW architectural guard tests.
+Evolved from a basic README to a comprehensive framework (50+ docs entries, 80%+ JSDoc coverage, AGENTS.md). Testing matured from manual blockchain trials → Jest → lightweight Node.js assert across a 232-file suite covering unit, integration, simulation, and COW architectural guard tests.
 
 ---
 
@@ -172,12 +172,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.3.0 → v1.3.1 | 6 | Repo-root symlinks (`./dexbot`/`./pm2`/`./unlock`), CLI canonical naming `keys`/`bots`→`key`/`bot`, browser exclusion completeness (logger, paths, system), README `npm link` fix + Quick Start dedup |
 | v1.3.1 → v1.3.2 | 6 | Startup dust health check, lightweight sync RMS/chain-filter fixes, dust-handling lock-safe cancel, `dexbot stat` CLI fix, capital allocation docs, README polish |
 | v1.3.2 → v1.3.3 | 12 | Runtime extraction (COW, fill, state recovery), dead-import cleanup, profile resolution fix, credential daemon hardening, pretest hook, EVOLUTION.md refresh |
-| v1.3.3 → v1.4.0 | 12 | CJS→ESM migration completion, strict-mode zero-errors, daemon-signing node failover, ghost-order cancellation, subscription keepalive fix, price-collision guard centralization, review-concerns dedup & runtime keys export |
+| v1.3.3 → v1.4.0 | 13 | CJS→ESM migration completion, strict-mode zero-errors, daemon-signing node failover, ghost-order cancellation, subscription keepalive fix, price-collision guard centralization, review-concerns dedup & runtime keys export, active fill polling |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: July 27, 2026 (v1.4.0)
-**Total Commits**: 1,871
+**Total Commits**: 1,872
 **Date Range**: December 2, 2025 – July 27, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

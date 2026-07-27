@@ -24,12 +24,9 @@ function createSubscriptionManager(chainClient: any): any {
     // (Map iteration order is stable so we can reuse a single timer per entry).
     const pendingScans = new Map<any, { timer: any; lastNoticeAt: number }>();
 
-    // Subscription health watchdog timer and re-entrancy guard.
-    let subscriptionHealthTimer: any = null;
-    let healthCheckInProgress = false;
-    // Dedicated subscription keepalive timer - prevents server-side subscription TTL expiry
-    // independent of the health check. Runs a lightweight DB ping every KEEPALIVE_INTERVAL_MS.
-    let subscriptionKeepaliveTimer: any = null;
+    // Fill polling timer + re-entrancy guard for discovering fills via history scan.
+    let fillPollTimer: any = null;
+    let fillPollInProgress = false;
 
     function parseObjectIdInstance(id: any): number {
         if (typeof id !== 'string') return Number.NaN;
@@ -651,111 +648,40 @@ function createSubscriptionManager(chainClient: any): any {
         }
     }
 
-    function startSubscriptionKeepalive(): void {
-        if (subscriptionKeepaliveTimer) return;
-        // Fire at half the silent threshold to guarantee at least two pings
-        // within the window, preventing server-side subscription TTL expiry.
-        const silentThresholdMs = Number.isFinite(SUBSCRIPTIONS.SUBSCRIPTION_SILENT_THRESHOLD_MS)
-            ? Math.max(30000, SUBSCRIPTIONS.SUBSCRIPTION_SILENT_THRESHOLD_MS)
-            : 600000;
-        const keepaliveMs = Math.max(30000, Math.round(silentThresholdMs / 2));
-        subscriptionKeepaliveTimer = setInterval(() => {
-            chainClient.db.get_dynamic_global_properties().catch((err: any) => {
-                subscriptionsLogger.warn(`Subscription keepalive ping failed: ${getErrorMessage(err)}`);
-            });
-        }, keepaliveMs);
-        if (typeof subscriptionKeepaliveTimer.unref === 'function') {
-            subscriptionKeepaliveTimer.unref();
-        }
-    }
+    function startFillPolling(): void {
+        if (fillPollTimer) return;
 
-    function startSubscriptionHealthCheck(): void {
-        const silentThresholdMs = Number.isFinite(SUBSCRIPTIONS.SUBSCRIPTION_SILENT_THRESHOLD_MS)
-            ? Math.max(30000, SUBSCRIPTIONS.SUBSCRIPTION_SILENT_THRESHOLD_MS)
-            : 600000;
-        // Health check fires at half the silent threshold so staleness is
-        // detected within at most one full threshold window after expiry.
-        const intervalMs = Math.max(10000, Math.round(silentThresholdMs / 2));
+        const intervalMs = Number.isFinite(SUBSCRIPTIONS.FILL_POLL_INTERVAL_MS)
+            ? Math.max(10000, SUBSCRIPTIONS.FILL_POLL_INTERVAL_MS)
+            : 60000;
 
-        if (subscriptionHealthTimer) return;
-
-        // Start dedicated subscription keepalive on a shorter interval to prevent
-        // server-side subscription TTL expiry (~120s on some nodes).
-        startSubscriptionKeepalive();
-
-        subscriptionHealthTimer = setInterval(async () => {
-            // Re-entrancy guard: if a previous tick is still processing (e.g.
-            // resubscribeEntry + catch-up scans take longer than intervalMs),
-            // skip this tick rather than running redundant set_subscribe_callback.
-            if (healthCheckInProgress) return;
-            healthCheckInProgress = true;
+        fillPollTimer = setInterval(async () => {
+            if (fillPollInProgress) return;
+            fillPollInProgress = true;
             try {
-                const now = Date.now();
-                const stale: { entry: any; elapsed: number; }[] = [];
                 for (const [, entry] of subscriptions) {
                     if (!entry.active) continue;
                     if (entry.reconnecting) continue;
-                    const elapsed = now - entry.lastNoticeAt;
-                    if (elapsed >= silentThresholdMs) {
-                        stale.push({ entry, elapsed });
-                    }
-                }
-
-                if (stale.length === 0) return;
-
-                // Sort so the longest-stale account drives the resubscribe.
-                stale.sort((a, b) => b.elapsed - a.elapsed);
-
-                // All accounts share one WebSocket subscription feed. If one is
-                // stale the entire feed is dead — resubscribe once and catch up
-                // all stale entries rather than triggering N redundant resubscribes.
-                subscriptionsLogger.warn(
-                    `Subscription health: ${stale.length} account(s) stale; resubscribing via ${stale[0].entry.accountName} ` +
-                    `(oldest=${Math.round(stale[0].elapsed / 1000)}s, threshold=${Math.round(silentThresholdMs / 1000)}s)`
-                );
-                const firstEntry = stale[0].entry;
-                try {
-                    await resubscribeEntry(firstEntry, 'healthcheck');
-                } catch (err: any) {
-                    subscriptionsLogger.warn(`Subscription health: resubscribe failed for ${firstEntry.accountName}: ${getErrorMessage(err)}`);
-                }
-
-                // Catch up remaining stale entries with processObjects (the
-                // subscription is already re-established for all accounts by
-                // refreshSubscriptions inside resubscribeEntry).
-                for (let i = 1; i < stale.length; i++) {
-                    const { entry } = stale[i];
-                    if (entry.reconnecting) continue;
-                    entry.reconnecting = true;
                     try {
-                        await processObjects(entry, [entry.accountId], { throwOnError: true });
-                        clearReconnectRetry(entry);
-                        subscriptionsLogger.warn(`Subscription restored for ${entry.accountName} (healthcheck)`);
+                        await processObjects(entry, [entry.accountId]);
                     } catch (err: any) {
-                        subscriptionsLogger.warn(`Subscription health: catch-up scan failed for ${entry.accountName}: ${getErrorMessage(err)}`);
-                        scheduleReconnectRetry(entry, err);
-                    } finally {
-                        entry.reconnecting = false;
+                        subscriptionsLogger.warn(`Fill poll failed for ${entry.accountName}: ${getErrorMessage(err)}`);
                     }
                 }
             } finally {
-                healthCheckInProgress = false;
+                fillPollInProgress = false;
             }
         }, intervalMs);
 
-        if (typeof subscriptionHealthTimer.unref === 'function') {
-            subscriptionHealthTimer.unref();
+        if (typeof fillPollTimer.unref === 'function') {
+            fillPollTimer.unref();
         }
     }
 
-    function stopSubscriptionHealthCheck(): void {
-        if (subscriptionHealthTimer) {
-            clearInterval(subscriptionHealthTimer);
-            subscriptionHealthTimer = null;
-        }
-        if (subscriptionKeepaliveTimer) {
-            clearInterval(subscriptionKeepaliveTimer);
-            subscriptionKeepaliveTimer = null;
+    function stopFillPolling(): void {
+        if (fillPollTimer) {
+            clearInterval(fillPollTimer);
+            fillPollTimer = null;
         }
     }
 
@@ -775,7 +701,7 @@ function createSubscriptionManager(chainClient: any): any {
                 accountId: null,
                 statisticsId: null,
                 lastDeliveredHistoryId: SUBSCRIPTIONS.HISTORY_API_OBJECT,
-                lastNoticeAt: Date.now(),  // cold-start: watchdog won't fire for one full threshold window
+                lastNoticeAt: Date.now(),
                 active: false,
                 callbacks: new Set(),
                 onError: null,
@@ -842,7 +768,7 @@ function createSubscriptionManager(chainClient: any): any {
                 }
                 const entryRefreshFailure = refreshFailures.find((failure: any) => failure.entry === entry);
                 if (entryRefreshFailure) throw entryRefreshFailure.err;
-                startSubscriptionHealthCheck();
+                startFillPolling();
                 for (const failure of refreshFailures) {
                     scheduleReconnectRetry(failure.entry, failure.err);
                 }
@@ -865,7 +791,7 @@ function createSubscriptionManager(chainClient: any): any {
                         entry.active = false;
                         subscriptions.delete(accountName);
                         if (subscriptions.size === 0) {
-                            stopSubscriptionHealthCheck();
+                            stopFillPolling();
                             removeNoticeSubscription();
                         }
                     }
@@ -898,7 +824,7 @@ function createSubscriptionManager(chainClient: any): any {
             subscriptions.delete(accountName);
 
             if (subscriptions.size === 0) {
-                stopSubscriptionHealthCheck();
+                stopFillPolling();
                 removeNoticeSubscription();
             }
         }

@@ -1546,16 +1546,17 @@ let NATIVE_CLIENT = {
         // per notice. Set to 0 to disable coalescing.
         NOTICE_COALESCE_MS: 250,
 
-        // Subscription health watchdog — detects silent subscription death
-        // where the websocket stays connected and keep-alive passes but the
-        // node stops delivering notices (server-side timeout, node overload).
-        //
-        // SUBSCRIPTION_SILENT_THRESHOLD_MS: If a subscription has not received
-        // any notice (fill or non-fill) within this window, the watchdog
-        // triggers a resubscribe + history scan. Default: 2 minutes.
-        // Reduced from 5min to detect fill-stream death faster without
-        // excessive resubscribes on low-activity accounts.
+        // Subscription health watchdog — no longer triggers resubscribe.
+        // Retained only as a reference value for notice frequency tracking.
         SUBSCRIPTION_SILENT_THRESHOLD_MS: 120000,
+
+        // Fill polling interval (ms): how often to scan account history for
+        // fills via get_account_history instead of relying on push notifications.
+        // Push notifications (handleNotice) are still received when available,
+        // but the poller ensures fills are discovered within this interval even
+        // if the server-side subscription silently stops delivering notices.
+        // Default: 60 seconds.
+        FILL_POLL_INTERVAL_MS: 60000,
 
     },
 

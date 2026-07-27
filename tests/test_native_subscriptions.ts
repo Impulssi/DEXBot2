@@ -892,9 +892,9 @@ function makeAccountRecord(account) {
         }
     }
 
-    // ── Subscription health watchdog state tests ───────────────────────
+    // ── lastNoticeAt state tracking ───────────────────────────────────
     {
-        console.log('\n - Testing subscription health watchdog state tracking...');
+        console.log('\n - Testing lastNoticeAt state tracking...');
         let noticeHandler = null;
         const dbCalls = [];
         const historyCalls = [];
@@ -948,7 +948,82 @@ function makeAccountRecord(account) {
 
         // Clean up
         unsub();
-        console.log('   watchdog state tests passed');
+        console.log('   lastNoticeAt tests passed');
+    }
+
+    // ── Fill polling regression test ─────────────────────────────────
+    {
+        console.log('\n - Testing fill polling invokes processObjects per active subscription...');
+        const NATIVE_CLIENT = require('../modules/constants').NATIVE_CLIENT;
+        const FILL_POLL_INTERVAL_MS = NATIVE_CLIENT.SUBSCRIPTIONS.FILL_POLL_INTERVAL_MS;
+
+        const originalSetInterval = global.setInterval;
+        const originalClearInterval = global.clearInterval;
+
+        let noticeHandler = null;
+        let pollTimerHandle: any = null;
+        const getAccountHistoryCalls: any[][] = [];
+        const dbCalls: any[][] = [];
+
+        const chainClient = {
+            transport: {
+                addMessageHandler(handler) {
+                    noticeHandler = handler;
+                    return () => { noticeHandler = null; };
+                },
+            },
+            db: {
+                get_full_accounts: async ([account]) => {
+                    dbCalls.push(['get_full_accounts', account]);
+                    return [makeAccountRecord(account)];
+                },
+                call: async (method, args) => {
+                    dbCalls.push([method, args]);
+                    return null;
+                },
+            },
+            history: {
+                getAccountHistoryOperations: async () => [],
+                get_account_history: async (...args: any[]) => {
+                    getAccountHistoryCalls.push(args);
+                    return [];
+                },
+            },
+        };
+
+        try {
+            global.setInterval = ((fn: any, interval: number) => {
+                pollTimerHandle = { fn, interval };
+                return pollTimerHandle as any;
+            }) as any;
+            global.clearInterval = ((_handle: any) => {}) as any;
+
+            const manager = createSubscriptionManager(chainClient);
+            const unsub = await manager.subscribe('alice', () => {});
+
+            assert.ok(pollTimerHandle, 'fill poll timer should be created on first subscribe');
+            assert.strictEqual(pollTimerHandle.interval, FILL_POLL_INTERVAL_MS,
+                `poll interval should be ${FILL_POLL_INTERVAL_MS}ms`);
+
+            // Run the poll callback — should trigger processObjects for the active sub.
+            await pollTimerHandle.fn();
+
+            assert.ok(getAccountHistoryCalls.length > 0,
+                'processObjects should call get_account_history during fill poll');
+
+            // Verify it was for alice's account
+            const aliceSub = manager.getSubscriptions().get('alice');
+            assert.ok(aliceSub, 'alice subscription should still exist');
+            assert.ok(aliceSub.lastNoticeAt > 0, 'lastNoticeAt should be stamped by processObjects');
+
+            // Clean up
+            unsub();
+        } finally {
+            global.setInterval = originalSetInterval;
+            global.clearInterval = originalClearInterval;
+        }
+
+        console.log('   fill polling test passed');
     }
 
     console.log('\n=== All subscription tests passed ===');

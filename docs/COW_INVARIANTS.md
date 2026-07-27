@@ -247,10 +247,10 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 ## Subscriptions
 
-- `INV-SUB-001` Subscription health watchdog
-  - A periodic timer (`SUBSCRIPTION_HEALTH_CHECK_INTERVAL_MS`) must check `lastNoticeAt` per subscription.
-  - If silence exceeds `SUBSCRIPTION_SILENT_THRESHOLD_MS`, trigger `resubscribeEntry('healthcheck')`.
-  - `reconnecting` flag must guard against concurrent resubscribe calls.
+- `INV-SUB-001` Fill discovery via periodic polling
+  - `startFillPolling` invokes `processObjects` per active subscription every `FILL_POLL_INTERVAL_MS` (default 60s).
+  - `entry.active` and `entry.reconnecting` flags gate per-subscription work.
+  - `fillPollInProgress` flag prevents overlapping poll ticks.
 
 ---
 
