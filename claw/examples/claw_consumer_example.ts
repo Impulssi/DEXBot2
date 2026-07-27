@@ -1,4 +1,5 @@
 const { createClawInfrastructure } = require('../modules/claw_infra');
+const { getErrorMessage } = require('../../modules/utils/errors');
 
 async function main() {
   const accountName = process.argv[2] || null;
@@ -44,7 +45,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err.message);
+  console.error(getErrorMessage(err));
   process.exit(1);
 });
 export {};

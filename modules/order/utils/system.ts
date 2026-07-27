@@ -691,7 +691,7 @@ export async function initializeFeeCache(botsConfig: any[], BitShares: any): Pro
         if (lastError) {
             const hasDiskFallback = cache[assetSymbol] !== undefined;
             systemLogger.warn(
-                `initializeFeeCache: all ${maxAttempts} attempts failed for ${assetSymbol}: ${lastError.message}` +
+                `initializeFeeCache: all ${maxAttempts} attempts failed for ${assetSymbol}: ${getErrorMessage(lastError)}` +
                 (hasDiskFallback ? '. Using previously cached value from disk.' : '.')
             );
         }

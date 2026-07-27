@@ -2,6 +2,7 @@
 import { createTransactionBuilder } from './tx/builder';
 import * as txCache from './tx/tx_cache';
 import Logger from '../logger';
+import { getErrorMessage } from '../utils/errors';
 'use strict';
 
 
@@ -92,7 +93,7 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
                 try {
                     result = await broadcastFn(signed.signedTxObject);
                 } catch (err: any) {
-                    const msg = String(err?.message || err || '');
+                    const msg = String(getErrorMessage(err) || err || '');
                     if (/fee/i.test(msg)) {
                         txCache.invalidateFees();
                     }

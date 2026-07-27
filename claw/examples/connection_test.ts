@@ -5,6 +5,7 @@ const {
   getFullAccount,
   getOrderBook
 } = require('../modules/chain_queries');
+const { getErrorMessage } = require('../../modules/utils/errors');
 
 async function main() {
   const accountRef = process.argv[2];
@@ -30,7 +31,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err.message);
+  console.error(getErrorMessage(err));
   process.exit(1);
 });
 export {};

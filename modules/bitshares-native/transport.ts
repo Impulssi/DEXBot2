@@ -334,7 +334,7 @@ function createTransport(config: TransportConfig = {}) {
                 try {
                     await onReconnect(nodeUrl);
                 } catch (err: any) {
-                    transportLogger.warn(`Reconnect callback (subscription re-establishment) failed: ${err?.message || err}`);
+                    transportLogger.warn(`Reconnect callback (subscription re-establishment) failed: ${getErrorMessage(err)}`);
                 }
             }
         })();

@@ -3,6 +3,7 @@ import { NATIVE_CLIENT } from '../../constants';
 import { LRUCache } from '../lru_cache';
 import Logger from '../../logger';
 import { hasTxBuilderFeeCacheTtlSet, getTxBuilderFeeCacheTtl } from '../../config';
+import { getErrorMessage } from '../../utils/errors';
 'use strict';
 
 const txCacheLogger = new Logger('TxCache');
@@ -17,7 +18,7 @@ function _resolveFeeCacheTtl(): number {
             if (typeof v === 'number' && v > 0) return v;
         }
     } catch (err: any) {
-        txCacheLogger.warn(`Failed to load TX_BUILDER_FEE_CACHE_TTL_MS config, using default: ${err?.message || err}`);
+        txCacheLogger.warn(`Failed to load TX_BUILDER_FEE_CACHE_TTL_MS config, using default: ${getErrorMessage(err)}`);
     }
     return TX_BUILDER.FEE_CACHE_TTL_MS;
 }

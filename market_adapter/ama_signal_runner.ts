@@ -2,7 +2,7 @@
 'use strict';
 
 import '../modules/storage/index.js';
-
+import { getErrorMessage } from '../modules/utils/errors';
 /**
  * AMA SIGNAL RUNNER
  *
@@ -231,7 +231,7 @@ async function main(): Promise<void> {
 main().catch((err: Error) => {
     const out = {
         ok: false,
-        error: err.message,
+        error: getErrorMessage(err),
     };
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     process.exit(1);

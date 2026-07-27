@@ -1671,7 +1671,7 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
             syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
             bot._log(`[DUST] Cancelled ${(order as any).id} (${(order as any).orderId}) size=${(order as any).size}`, 'debug');
         } catch (err: any) {
-            const errMsg = err?.message || '';
+            const errMsg = getErrorMessage(err) || '';
             if (isOrderDoesNotExistError(errMsg, (order as any).orderId)) {
                 syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
                 bot._log(`[DUST] Order ${(order as any).id} (${(order as any).orderId}) already gone from chain`, 'debug');
@@ -1927,10 +1927,10 @@ async function runDustHealthCheck(bot: any) {
             }
         }
     } catch (err: any) {
-        if (err?.message?.includes('Lock acquisition timeout')) {
+        if (getErrorMessage(err).includes('Lock acquisition timeout')) {
             bot._warn('[DUST] Lock busy, skipping dust cancel this cycle (retry in 5 min)');
         } else {
-            bot._warn(`[DUST] Health check error (retry in 5 min): ${err?.message || err}`);
+            bot._warn(`[DUST] Health check error (retry in 5 min): ${getErrorMessage(err)}`);
         }
     }
 }

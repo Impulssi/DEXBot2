@@ -1,5 +1,6 @@
 const assert = require('assert');
 const AsyncLock = require('../modules/order/async_lock');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 function deferred() {
     let resolve, reject;
@@ -184,6 +185,6 @@ async function runTests() {
 }
 
 runTests().catch(err => {
-    console.error('AsyncLock Force-Release tests failed:', err.message);
+    console.error('AsyncLock Force-Release tests failed:', getErrorMessage(err));
     process.exit(1);
 });

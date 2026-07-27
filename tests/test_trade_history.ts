@@ -14,6 +14,7 @@ if (process.env.RUN_LIVE_BITSHARES_TESTS !== '1') {
 }
 
 const { BitShares } = require('../modules/bitshares_client');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const ACCOUNT_NAME = 'hanzac-si';
 
@@ -144,6 +145,6 @@ async function main() {
 }
 
 main().catch(err => {
-    console.error('Error:', err && err.message ? err.message : err);
+    console.error('Error:', getErrorMessage(err));
     process.exit(1);
 });

@@ -92,7 +92,7 @@ const {
 try {
     runMigration();
 } catch (err: any) {
-    console.error(`Migration error: ${err?.message || err}`);
+    console.error(`Migration error: ${getErrorMessage(err)}`);
 }
 
 const CODE_ROOT = __dirname;

@@ -6,6 +6,7 @@ const {
   openShortOnBts,
   placeTakeProfitBuyOrderOnBts
 } = require('../modules/short_mpa_strategy');
+const { getErrorMessage } = require('../../modules/utils/errors');
 
 function parseArgs(argv) {
   const options = {};
@@ -117,7 +118,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err.message);
+  console.error(getErrorMessage(err));
   process.exit(1);
 });
 export {};

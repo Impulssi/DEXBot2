@@ -8,6 +8,7 @@ const CreditRuntime = require('../modules/credit_runtime');
 const { disconnectClient, waitForConnected } = require('../modules/bitshares_client');
 const chainOrders = require('../modules/chain_orders');
 const { PATHS } = require('../modules/paths');
+const { getErrorMessage } = require('../modules/utils/errors');
 const { loadSettingsFile, normalizeBotEntries, resolveRawBotEntries } = require('../modules/bot_settings');
 const { blockchainToFloat } = require('../modules/order/utils/math');
 
@@ -333,7 +334,7 @@ async function main() {
 }
 
 main().catch((err: any) => {
-  console.error(`credit renewal test failed: ${err.message}`);
+  console.error(`credit renewal test failed: ${getErrorMessage(err)}`);
   process.exitCode = 1;
 });
 export {};

@@ -6,6 +6,7 @@ console.log('Running market adapter service tests');
 const { MarketAdapterService } = require('../market_adapter/core/market_adapter_service');
 const { detectMissingCandleTimestamps, fillCandleGaps, mergeCandles, pruneStaleTail } = require('../market_adapter/candle_utils');
 const { calculateATR } = require('../market_adapter/core/strategies/atr/calculator');
+const { getErrorMessage } = require('../modules/utils/errors');
 const {
     computeAmaSlopeWeights,
     computeAverageAmaSlopePct,
@@ -6126,6 +6127,5 @@ run()
         console.log('market adapter service tests passed');
     })
     .catch((err) => {
-        console.error(err.message || err);
-        process.exit(1);
+console.error(getErrorMessage(err));
     });

@@ -7,6 +7,7 @@ import { MARKET_ADAPTER } from '../../modules/constants';
 import * as kibanaSource from '../../market_adapter/inputs/kibana_source';
 import { PATHS } from '../../modules/paths';
 import { ensureDir, writeJSON } from '../../modules/utils/fs_utils';
+import { getErrorMessage } from '../../modules/utils/errors';
 
 'use strict';
 /**
@@ -180,6 +181,6 @@ async function main() {
     console.log(`  npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js --data ${path.relative(process.cwd(), outPath)}`);
 }
 main().catch((err: any) => {
-    console.error('Error:', err.message);
+    console.error('Error:', getErrorMessage(err));
     process.exit(1);
 });

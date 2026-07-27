@@ -2,6 +2,7 @@ const assert = require('assert');
 const { isGridBloated, loadGrid } = require('../modules/order/grid');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { ORDER_SPREAD_TOLERANCE } = require('../modules/constants');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 function makeOrder(id, type, overrides = {}) {
     const inc = 0.3;
@@ -230,6 +231,6 @@ async function runTests() {
 }
 
 runTests().catch(err => {
-    console.error('Grid bloat tests failed:', err.message);
+    console.error('Grid bloat tests failed:', getErrorMessage(err));
     process.exit(1);
 });

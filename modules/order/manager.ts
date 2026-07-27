@@ -722,7 +722,7 @@ class OrderManager {
                     this._pauseFundRecalc = 0;
                     this._pauseFundRecalcWatchdog = null;
                     this._recalculateFunds().catch((err: any) => {
-                        this.logger?.log?.(`[MANAGER] Watchdog recalc failed: ${err.message}`, 'error');
+                        this.logger?.log?.(`[MANAGER] Watchdog recalc failed: ${getErrorMessage(err)}`, 'error');
                     });
                 }
             }, TIMING.SAFETY_PAUSE_TIMEOUT_MS);

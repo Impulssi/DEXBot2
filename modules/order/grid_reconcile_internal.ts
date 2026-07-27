@@ -787,7 +787,7 @@ async function _executeStartupCreateGroupBatch({
 
 function _buildOutsideInCreateGroups(createPlans: any): any[] {
     return buildOutsideInPairGroups(createPlans, {
-        isValid: ((p: any) => p?.gridOrder != null) as unknown as BooleanConstructor,
+        isValid: (p: any) => Boolean(p?.gridOrder),
         getType: (p: any) => p.orderType,
         getPrice: (p: any) => p.gridOrder?.price,
     });

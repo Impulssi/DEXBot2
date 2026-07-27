@@ -3,6 +3,7 @@
 const assert = require('assert');
 const fs = require('fs/promises');
 const os = require('os');
+const { getErrorMessage } = require('../../modules/utils/errors');
 const path = require('path');
 const { createClawBridge, runClawCommand } = require('../modules/claw_bridge');
 const { buildRuntimeSkillMarkdown, writeRuntimeSkillMarkdown } = require('../modules/claw_skill_md');
@@ -51,7 +52,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err && err.stack ? err.stack : err.message);
+  console.error(err && err.stack ? err.stack : getErrorMessage(err));
   process.exit(1);
 });
 export {};

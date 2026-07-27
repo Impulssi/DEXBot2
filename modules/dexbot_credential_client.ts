@@ -17,7 +17,7 @@ import {
     getCredentialSocketPath,
     isPrivatePathSecure,
 } from './credential_runtime';
-
+import { getErrorMessage } from './utils/errors';
 interface BroadcastUncertainErrorDetails {
     operations?: any[] | null;
     accountName?: string | null;
@@ -167,7 +167,7 @@ function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs
 
         socket.on('error', (error: any) => {
             clearTimeout(timer);
-            if (!settled) { settled = true; reject(new Error(`Credential daemon connection failed: ${error.message}`)); }
+            if (!settled) { settled = true; reject(new Error(`Credential daemon connection failed: ${getErrorMessage(error)}`)); }
         });
 
         socket.on('end', () => {

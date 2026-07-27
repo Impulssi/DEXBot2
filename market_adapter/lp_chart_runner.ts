@@ -2,6 +2,7 @@
 import { path } from '../modules/path_api';
 import { getStorage } from '../modules/storage';
 import { exec } from 'node:child_process';
+import { getErrorMessage } from '../modules/utils/errors';
 import { calculateAMA } from './core/strategies/ama';
 import { MARKET_ADAPTER } from '../modules/constants';
 import { generateHTML } from './lp_chart_core';
@@ -256,7 +257,7 @@ function openInBrowser(filePath: string): void {
             ? `start "" "${url}"`
             : `xdg-open "${url}"`;
     exec(cmd, (err: Error | null) => {
-        if (err) console.warn(`  Could not auto-open browser: ${err.message}`);
+        if (err) console.warn(`  Could not auto-open browser: ${getErrorMessage(err)}`);
     });
 }
 

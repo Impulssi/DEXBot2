@@ -7,6 +7,7 @@ import { loadLpDataFile } from '../../market_adapter/lp_chart_runner';
 import { ensureDir } from '../../modules/order/utils/system';
 import { PATHS } from '../../modules/paths';
 import { MARKET_ADAPTER } from '../../modules/constants';
+import { getErrorMessage } from '../../modules/utils/errors';
 'use strict';
 
 /**
@@ -396,7 +397,7 @@ async function run() {
 
 if (require.main === module) {
     run().catch(err => {
-        console.error('Fatal:', err.message);
+        console.error('Fatal:', getErrorMessage(err));
         process.exit(1);
     });
 }

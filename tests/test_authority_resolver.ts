@@ -189,6 +189,6 @@ async function testAccountAuthsInsufficientWeightHint() {
     console.log('All authority resolver tests passed');
     process.exit(0);
 })().catch((err) => {
-    console.error('TEST FAILED:', err.message || err);
+    console.error('TEST FAILED:', getErrorMessage(err));
     process.exit(1);
 });

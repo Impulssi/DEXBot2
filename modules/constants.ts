@@ -130,6 +130,7 @@
 import { BUILD_DIR } from './utils/build_dir';
 import { readGeneralSettings } from './general_settings';
 import { mergeSettings } from './settings_merge';
+import { getErrorMessage } from './utils/errors';
 const ORDER_TYPES = Object.freeze({
     SELL: 'sell',
     BUY: 'buy',
@@ -1649,7 +1650,7 @@ let NATIVE_CLIENT = {
 const settings = readGeneralSettings({
     fallback: null,
     onError: (err: any, filePath: string) => {
-        console.warn(`[WARN] Failed to load local settings from ${filePath}: ${err.message}`);
+        console.warn(`[WARN] Failed to load local settings from ${filePath}: ${getErrorMessage(err)}`);
     }
 });
 

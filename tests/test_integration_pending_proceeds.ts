@@ -12,6 +12,7 @@
 const { AccountOrders, createBotKey } = require('../modules/account_orders');
 const { OrderManager } = require('../modules/order');
 const Format = require('../modules/order/format');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 async function testCompleteLifecycle() {
     console.log('\n╔========================================================╗');
@@ -101,6 +102,6 @@ async function testCompleteLifecycle() {
 }
 
 testCompleteLifecycle().catch(err => {
-    console.error('Test error:', err.message);
+    console.error('Test error:', getErrorMessage(err));
     process.exit(1);
 });

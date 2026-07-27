@@ -143,7 +143,7 @@ try {
     const { runMigration } = require('./scripts/migrate_bot_keys');
     runMigration();
 } catch (err: any) {
-    console.error(`\x1b[1;31mMigration error:\x1b[0m ${err?.message || err}`);
+    console.error(`\x1b[1;31mMigration error:\x1b[0m ${getErrorMessage(err)}`);
 }
 
 // Setup graceful shutdown handlers

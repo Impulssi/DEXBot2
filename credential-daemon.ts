@@ -795,7 +795,7 @@ function handleConnection(socket: any) {
     });
 
     socket.on('error', (error: any) => {
-        daemonLogger.debug?.('[credential-daemon] Socket error: ' + (error?.message || error));
+        daemonLogger.debug?.('[credential-daemon] Socket error: ' + getErrorMessage(error));
         socket.destroy();
     });
 }

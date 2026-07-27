@@ -364,7 +364,7 @@ function createSubscriptionManager(chainClient: any): any {
                     entry.timer = setTimeout(() => {
                         pendingScans.delete(sub);
                         (processObjects(sub, data).catch((err: any) => {
-                            subscriptionsLogger.warn(`processObjects (coalesced) error for ${sub.accountName}: ${err?.message}`);
+                            subscriptionsLogger.warn(`processObjects (coalesced) error for ${sub.accountName}: ${getErrorMessage(err)}`);
                         })).finally(() => {
                             sub._processingHistory = false;
                         });
@@ -413,7 +413,7 @@ function createSubscriptionManager(chainClient: any): any {
                 try {
                     await Promise.resolve(callback(subFills));
                 } catch (err: any) {
-                    subscriptionsLogger.warn(`handleNotice: callback error for ${sub.accountName}: ${err?.message}`);
+                    subscriptionsLogger.warn(`handleNotice: callback error for ${sub.accountName}: ${getErrorMessage(err)}`);
                     failed.push(err);
                 }
             }
@@ -522,7 +522,7 @@ function createSubscriptionManager(chainClient: any): any {
                     try {
                         await Promise.resolve(callback(fills));
                     } catch (err: any) {
-                        subscriptionsLogger.warn(`processObjects: callback error for ${sub.accountName}: ${err?.message}`);
+                        subscriptionsLogger.warn(`processObjects: callback error for ${sub.accountName}: ${getErrorMessage(err)}`);
                         failed.push(err);
                     }
                 }
@@ -559,7 +559,7 @@ function createSubscriptionManager(chainClient: any): any {
             }
         } catch (err: any) {
             sub.lastNoticeAt = Date.now();
-            subscriptionsLogger.warn(`processObjects: error for ${sub.accountName}: ${err?.message}`);
+            subscriptionsLogger.warn(`processObjects: error for ${sub.accountName}: ${getErrorMessage(err)}`);
             if (sub.onError && !err?.subscriptionErrorReported) {
                 try { sub.onError(err); } catch (_: any) {}
             }
@@ -579,7 +579,7 @@ function createSubscriptionManager(chainClient: any): any {
         entry.reconnectRetryTimer = setTimeout(() => {
             entry.reconnectRetryTimer = null;
             resubscribeEntry(entry, 'retry').catch((retryErr: any) => {
-                subscriptionsLogger.warn(`Failed to resubscribe ${entry.accountName}: ${retryErr.message}`);
+                subscriptionsLogger.warn(`Failed to resubscribe ${entry.accountName}: ${getErrorMessage(retryErr)}`);
                 scheduleReconnectRetry(entry, retryErr);
             });
         }, reconnectRetryDelayMs);

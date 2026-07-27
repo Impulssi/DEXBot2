@@ -8,6 +8,7 @@ import { generateHTML } from './tradingview_uplot_chart_generator';
 import { MARKET_ADAPTER } from '../../modules/constants';
 import { loadCandleFile } from '../math_utils';
 import { ensureDir } from '../../modules/utils/fs_utils';
+import { getErrorMessage } from '../../modules/utils/errors';
 import { toIntervalLabel } from '../../market_adapter/interval_utils';
 import { loadBotSettings, resolveCandleFile, candleFileForBot, loadBotMeta, resolveAmaConfig } from '../bot_key_utils';
 import { PATHS } from '../../modules/paths';
@@ -165,7 +166,7 @@ async function main() {
 
         if (!config.quiet) console.log(`[TradingView] ✓ Chart saved to ${config.chartFile}`);
     } catch (err: any) {
-        console.error(`[TradingView] Error: ${err.message}`);
+        console.error(`[TradingView] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 }

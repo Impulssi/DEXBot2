@@ -9,6 +9,7 @@ import { PIPELINE_TIMING } from '../../modules/constants';
 import { Config } from '../../modules/config';
 import { runtime } from '../../modules/runtime';
 import { clone } from './utils';
+import { getErrorMessage } from '../../modules/utils/errors';
 const storage = getStorage();
 
 const DEFAULT_HEALTH_PATH = PATHS.CLAW.WATCHER_HEALTH_FILE;
@@ -135,7 +136,7 @@ function createPositionManagerWatcher(options: Record<string, any> = {}) {
   async function recordSyncFailure(err: any) {
     consecutiveFailures += 1;
     lastFailureAt = new Date().toISOString();
-    lastFailureMessage = err.message || String(err);
+    lastFailureMessage = getErrorMessage(err);
 
     if (consecutiveFailures >= resolvedOptions.maxConsecutiveFailures) {
       logger.error(`[position-manager-watch] sync failed ${consecutiveFailures} consecutive times: ${lastFailureMessage}`);
@@ -180,7 +181,7 @@ function createPositionManagerWatcher(options: Record<string, any> = {}) {
     logger.info(`[position-manager-watch] starting for ${resolvedOptions.accountName}`);
 
     await waitForConnected().catch((err: any) => {
-      throw new Error(`BitShares connection not ready: ${err.message}`);
+      throw new Error(`BitShares connection not ready: ${getErrorMessage(err)}`);
     });
 
     await manager.syncAllPositions()
@@ -243,7 +244,7 @@ export { DEFAULT_HEALTH_PATH, DEFAULT_MAX_CONSECUTIVE_FAILURES, createPositionMa
 
 if (typeof require !== 'undefined' && require.main === module) {
   main().catch((err) => {
-    console.error(err.message);
+    console.error(getErrorMessage(err));
     runtime.exit(1);
   });
 }

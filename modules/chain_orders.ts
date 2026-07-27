@@ -402,7 +402,7 @@ async function _ensureAccountSubscriber(accountName: any, userCallback: any = nu
                 } catch (rollbackErr: any) {
                     chainOrdersLogger.warn(
                         `Failed to roll back partial subscription for ${accountName} after error: ` +
-                        `${rollbackErr?.message || rollbackErr}`
+                        `${getErrorMessage(rollbackErr)}`
                     );
                 }
             }
@@ -1243,7 +1243,7 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
                     }
                 }
             } catch (dealErr) {
-                chainOrdersLogger.warn(`getOnChainAssetBalances: failed to fetch credit deals for ${accountRef}: ${(dealErr as any)?.message}`);
+                chainOrdersLogger.warn(`getOnChainAssetBalances: failed to fetch credit deals for ${accountRef}: ${getErrorMessage(dealErr)}`);
             }
         }
 

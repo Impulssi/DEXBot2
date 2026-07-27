@@ -3,6 +3,7 @@
 import path from 'path';
 import { PATHS } from '../../modules/paths.js';
 import { buildRuntimeSkillMarkdown, writeRuntimeSkillMarkdown } from '../modules/claw_skill_md.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 
 const CS_PROJECT_ROOT = PATHS.PROJECT_ROOT;
 
@@ -83,7 +84,7 @@ async function main() {
 
 if (require.main === module) {
   main().catch((err) => {
-    console.error(err && err.stack ? err.stack : err.message);
+    console.error(err && err.stack ? err.stack : getErrorMessage(err));
     process.exit(1);
   });
 }

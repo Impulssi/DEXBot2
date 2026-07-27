@@ -4,6 +4,7 @@
 
 import { listClawCommandNames } from '../modules/claw_catalog';
 import { describeRuntimeManifest, runClawCommand } from '../modules/claw_bridge';
+import { getErrorMessage } from '../../modules/utils/errors';
 function parseJson(value: any, fieldName: any) {
   if (value === undefined || value === null || value === '') {
     return {};
@@ -128,7 +129,7 @@ async function main(runtimeName = null, scriptPath = 'tsx scripts/claw_bridge.ts
 
 if (require.main === module) {
   main().catch((err) => {
-    console.error(err && err.stack ? err.stack : err.message);
+    console.error(err && err.stack ? err.stack : getErrorMessage(err));
     process.exit(1);
   });
 }

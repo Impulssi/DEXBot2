@@ -3,6 +3,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
+const { getErrorMessage } = require('../../modules/utils/errors');
 const { spawnSync } = require('child_process');
 const path = require('path');
 const { isDistCodeRoot } = require('../../modules/launcher/runtime_entry');
@@ -232,6 +233,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err && err.stack ? err.stack : err.message);
+  console.error(err && err.stack ? err.stack : getErrorMessage(err));
   process.exit(1);
 });

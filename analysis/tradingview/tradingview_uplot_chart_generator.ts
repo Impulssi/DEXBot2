@@ -5,6 +5,7 @@ import { escapeHtml, serializeJsonForScript } from '../chart_utils';
 import { normalizeCandle } from '../math_utils';
 import { PATHS } from '../../modules/paths';
 import { readJSON } from '../../modules/utils/fs_utils';
+import { getErrorMessage } from '../../modules/utils/errors';
 'use strict';
 
 
@@ -30,7 +31,7 @@ function loadMarketProfiles(filePath: any = PATHS.PROFILES.MARKET_PROFILES_JSON)
     try {
         return readJSON(filePath);
     } catch (err: any) {
-        console.warn(`[WARN] Failed to parse ${filePath}: ${err.message}. Falling back to built-in AMA defaults.`);
+        console.warn(`[WARN] Failed to parse ${filePath}: ${getErrorMessage(err)}. Falling back to built-in AMA defaults.`);
         return null;
     }
 }

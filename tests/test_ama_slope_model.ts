@@ -1,11 +1,12 @@
 'use strict';
 
 const assert = require('assert');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running ama_slope_model tests');
 
 const { computeAmaSlopeWeights } = require('../market_adapter/core/strategies/ama_slope_model');
-const { calculateAMA, getAmaWarmupBars } = require('../market_adapter/core/strategies/ama');
+const { calculateAMA, getAmaWarmupBars } = require('../market_adapter/core/strategies/ama');/ama');
 
 // Generate a series of N values with a given pattern
 function flatSeries(n, value) {
@@ -458,6 +459,6 @@ async function run() {
 run()
     .then(() => console.log('ama_slope_model tests passed'))
     .catch((err) => {
-        console.error(err.message || err);
+        console.error(getErrorMessage(err));
         process.exit(1);
     });

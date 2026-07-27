@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running kibana candle tests');
 
@@ -275,6 +276,6 @@ run()
         console.log('kibana candle tests passed');
     })
     .catch((err) => {
-        console.error(err.stack || err.message || err);
+        console.error(getErrorMessage(err));
         process.exit(1);
     });

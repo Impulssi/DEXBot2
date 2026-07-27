@@ -1,4 +1,5 @@
 const { DEFAULT_STATE_PATH, PositionManager } = require('../modules/position_manager');
+const { getErrorMessage } = require('../../modules/utils/errors');
 
 function parseArgs(argv: any) {
   const options: any = {
@@ -119,7 +120,7 @@ async function main() {
 }
 
 main().catch((err: any) => {
-  console.error(err.message);
+  console.error(getErrorMessage(err));
   process.exit(1);
 });
 export {};

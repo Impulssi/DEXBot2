@@ -5,6 +5,7 @@ import { fillCandleGaps } from '../market_adapter/candle_utils';
 import { getCandleClose, getCandleTimestamp, loadCandleFile } from './math_utils';
 import { PATHS } from '../modules/paths';
 import { readJSON } from '../modules/utils/fs_utils';
+import { getErrorMessage } from '../modules/utils/errors';
 'use strict';
 
 /**
@@ -52,7 +53,7 @@ class JsonFileSource {
 
             return candles;
         } catch (err: any) {
-            throw new Error(`[JsonFileSource] Failed to read ${this.filePath}: ${err.message}`);
+            throw new Error(`[JsonFileSource] Failed to read ${this.filePath}: ${getErrorMessage(err)}`);
         }
     }
 
@@ -104,7 +105,7 @@ class MarketAdapterSource {
                 volume: 0,
             })) || [];
         } catch (err: any) {
-            throw new Error(`[MarketAdapterSource] Failed to read: ${err.message}`);
+            throw new Error(`[MarketAdapterSource] Failed to read: ${getErrorMessage(err)}`);
         }
     }
 

@@ -1,5 +1,6 @@
 const assert = require('assert');
 const path = require('path');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Testing NodeManager WebSocket RPC protocol...\n');
 
@@ -82,6 +83,6 @@ async function main() {
 }
 
 main().catch((err) => {
-    console.error('NodeManager RPC protocol test failed:', err.message || err);
+    console.error('NodeManager RPC protocol test failed:', getErrorMessage(err));
     process.exitCode = 1;
 });

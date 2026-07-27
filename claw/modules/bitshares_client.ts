@@ -3,6 +3,7 @@
 
 import { TIMING, NODE_MANAGEMENT } from '../../modules/constants';
 import { sleep } from '../../modules/order/utils/system';
+import { getErrorMessage } from '../../modules/utils/errors';
 import * as native from '../../modules/bitshares-native';
 import { createSigningClient } from '../../modules/bitshares-native';
 const DEFAULT_TIMEOUT_MS = TIMING.CONNECTION_TIMEOUT_MS;
@@ -61,7 +62,7 @@ async function waitForConnected(timeoutMs = DEFAULT_TIMEOUT_MS) {
     while (!connected) {
         if (!_connectPromise && _nativeClient.getStatus() !== 'connecting') {
             ensureConnected().catch((err: any) => {
-                console.warn(`[CLAW] Connection attempt failed: ${err.message}`);
+                console.warn(`[CLAW] Connection attempt failed: ${getErrorMessage(err)}`);
             });
         }
         if (Date.now() - start > timeoutMs) {
