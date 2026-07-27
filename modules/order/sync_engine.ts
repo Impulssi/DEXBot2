@@ -102,7 +102,8 @@ import {
     blockchainToFloat,
     floatToBlockchainInt,
     calculatePriceTolerance,
-    getAssetFees
+    getAssetFees,
+    getMinAbsoluteOrderSize
 } from './utils/math';
 import {
     parseChainOrder,
@@ -1113,6 +1114,21 @@ class SyncEngine {
         const gridAlsoEmpty = currentSizeIntFromGrid <= 0;
         let isEffectivelyFull = resolvedChainConfirmsEmpty || gridAlsoEmpty;
         let ghostOrderId;
+
+        // P4: Inline dust detection — if remaining size is below the minimum
+        // absolute order size, treat as full fill to trigger rotation instead
+        // of leaving a sub-minimum remnant on chain that would accumulate as dust.
+        if (!isEffectivelyFull && newSize > 0) {
+            const minSize = getMinAbsoluteOrderSize(orderType, mgr.assets);
+            if (newSize < minSize) {
+                mgr.logger.log(
+                    `[SYNC] Order ${matchedGridOrder.orderId} (slot ${matchedGridOrder.id}) ` +
+                    `remaining size ${newSize} below minimum ${minSize}. Treating as full fill.`,
+                    'info'
+                );
+                isEffectivelyFull = true;
+            }
+        }
 
         if (!isEffectivelyFull) {
             const otherPrecision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetB.precision : mgr.assets.assetA.precision;

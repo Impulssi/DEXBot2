@@ -17,9 +17,10 @@ const {
     formatUnmatchedChainOrder,
     convertToSpreadPlaceholder,
     buildOutsideInPairGroups,
+    isOrderPlaced,
 } = require('./order/utils/order');
 const { validateCreateTargetSlots } = require('./order/utils/validate');
-const { validateOrderSize } = require('./order/utils/math');
+const { validateOrderSize, calculatePriceTolerance } = require('./order/utils/math');
 // Lazy accessor so test mocks on the math module export take effect at call time.
 function getAssetFees(...args: any) { return require('./order/utils/math').getAssetFees(...args); }
 const {
@@ -106,6 +107,48 @@ function findMissingCreateResultContexts(operationResults: any, opContexts: any)
     }
 
     return missing;
+}
+
+/**
+ * Scan an iterable of candidate items for a price collision with the target order.
+ * Each candidate must have `id` (or `ctx.id` through the accessor) and a price
+ * accessible via `item.price ?? item.order?.price`.
+ *
+ * @param {Iterable} items - Candidates to scan (bot.manager.orders values or opContexts)
+ * @param {string} excludeId - Slot id to skip (the item being created)
+ * @param {number} targetPrice
+ * @param {number} targetSize
+ * @param {string} targetType - ORDER_TYPES.BUY or SELL
+ * @param {object} assets - Manager assets (assetA/assetB with precision)
+ * @param {Function} [isValid] - Optional predicate; candidate must return true to be considered
+ * @returns {object|null} The colliding item, or null
+ */
+function findPriceCollision(
+    items: Iterable<any>,
+    excludeId: string,
+    targetPrice: number,
+    targetSize: number,
+    targetType: string,
+    assets: any,
+    isValid?: ((item: any) => boolean) | null
+): any {
+    for (const item of items) {
+        if (item.id === excludeId) continue;
+        if (isValid && !isValid(item)) continue;
+        const price = item.price ?? item.order?.price;
+        const size = item.size ?? item.order?.size ?? 0;
+        if (price == null || targetPrice == null) continue;
+        const tolerance = calculatePriceTolerance(
+            Math.min(price, targetPrice),
+            Math.max(size, targetSize),
+            targetType,
+            assets
+        );
+        if (tolerance != null && Math.abs(price - targetPrice) <= tolerance) {
+            return item;
+        }
+    }
+    return null;
 }
 
 /**
@@ -540,7 +583,53 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
         discarded = pending.filter((e: any) => !newlyAdoptedSlotIds.has(e.slotId));
     }
 
-    // 3. Apply decisions
+    // 3a. Re-read chain for discarded CREATE entries to catch broadcasts that
+    // landed between the initial read and this point (TOCTOU window).
+    if (discarded.length > 0 && typeof chainOrders.readOpenOrders === 'function') {
+        const createDiscarded = discarded.filter((e: any) => {
+            const ctx = opContexts[e.ctxIndex];
+            return ctx && ctx.kind === 'create';
+        });
+        if (createDiscarded.length > 0) {
+            try {
+                const freshChain = await chainOrders.readOpenOrders(accountRef);
+                const remainingDiscarded: any[] = [];
+                for (const entry of discarded) {
+                    const ctx = opContexts[entry.ctxIndex];
+                    if (ctx && ctx.kind === 'create') {
+                        const match = findChainOrderForSlot(
+                            bot, freshChain, entry.slotId,
+                            {
+                                sell: entry.finalInts?.sell,
+                                receive: entry.finalInts?.receive,
+                                orderType: entry.orderType,
+                                fingerprint: entry.fingerprint,
+                            }
+                        );
+                        if (match) {
+                            adopted.push({ entry, match });
+                            bot.manager.logger.log(
+                                `[COW][UNCERTAIN] Late-adopted discarded CREATE for slot ${entry.slotId} (${match.id}) via fresh chain read`,
+                                'info'
+                            );
+                        } else {
+                            remainingDiscarded.push(entry);
+                        }
+                    } else {
+                        remainingDiscarded.push(entry);
+                    }
+                }
+                discarded = remainingDiscarded;
+            } catch {
+                bot.manager.logger.log(
+                    '[COW][UNCERTAIN] Fresh chain read for late adoption failed; proceeding with original discard decisions.',
+                    'warn'
+                );
+            }
+        }
+    }
+
+    // 3b. Apply decisions
     let adoptedCount = 0;
     let discardedCount = 0;
 
@@ -1509,6 +1598,42 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                             'debug'
                         );
                     }
+
+                    const createPrice = effectiveOrder.price;
+                    const createSize = effectiveOrder.size;
+                    const priceCollision = findPriceCollision(
+                        bot.manager.orders.values(),
+                        order.id,
+                        createPrice, createSize, order.type, bot.manager.assets,
+                        isOrderPlaced
+                    );
+                    if (priceCollision) {
+                        bot.manager.logger.log(
+                            `[COW] Skipping CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ` +
+                            `existing placed order ${priceCollision.id} (${priceCollision.orderId}) ` +
+                            `already at price ${Format.formatPrice6(priceCollision.price)}. ` +
+                            `The next reconcile cycle will resolve the mismatch.`,
+                            'warn'
+                        );
+                        continue;
+                    }
+                    const batchCollision = findPriceCollision(
+                        opContexts,
+                        order.id,
+                        createPrice, createSize, order.type, bot.manager.assets,
+                        (ctx: any) => ctx.kind === 'create'
+                    );
+                    if (batchCollision) {
+                        bot.manager.logger.log(
+                            `[COW] Skipping CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ` +
+                            `same-batch CREATE ${batchCollision.id} already at ` +
+                            `price ${Format.formatPrice6(batchCollision.order.price)}. ` +
+                            `The next reconcile cycle will resolve the mismatch.`,
+                            'warn'
+                        );
+                        continue;
+                    }
+
                     const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
                     const buildResult = await chainOrders.buildCreateOrderOp(
                         bot.account,
@@ -1665,6 +1790,36 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                                     'warn'
                                 );
                             } else if (fbType && fbSize > 0 && fbPrice > 0) {
+                                const fbCollision = findPriceCollision(
+                                    bot.manager.orders.values(),
+                                    targetSlotId,
+                                    fbPrice, fbSize, fbType, bot.manager.assets,
+                                    isOrderPlaced
+                                );
+                                if (fbCollision) {
+                                    bot.manager.logger.log(
+                                        `[COW] Skipping CREATE fallback for ${targetSlotId} at ${Format.formatPrice6(fbPrice)}: ` +
+                                        `existing placed order ${fbCollision.id} (${fbCollision.orderId}) ` +
+                                        `already at price ${Format.formatPrice6(fbCollision.price)}.`,
+                                        'warn'
+                                    );
+                                    continue;
+                                }
+                                const fbBatchCollision = findPriceCollision(
+                                    opContexts,
+                                    targetSlotId,
+                                    fbPrice, fbSize, fbType, bot.manager.assets,
+                                    (ctx: any) => ctx.kind === 'create'
+                                );
+                                if (fbBatchCollision) {
+                                    bot.manager.logger.log(
+                                        `[COW] Skipping CREATE fallback for ${targetSlotId} at ${Format.formatPrice6(fbPrice)}: ` +
+                                        `same-batch CREATE ${fbBatchCollision.id} already at ` +
+                                        `price ${Format.formatPrice6(fbBatchCollision.order.price)}.`,
+                                        'warn'
+                                    );
+                                    continue;
+                                }
                                 const fbArgs = buildCreateOrderArgs(
                                     { type: fbType, size: fbSize, price: fbPrice },
                                     assetA, assetB

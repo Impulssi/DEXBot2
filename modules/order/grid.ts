@@ -146,6 +146,7 @@ import {
     isPhantomOrder,
     isSlotAvailable,
     isOrderOnChain,
+    isOrderPlaced,
     hasOnChainId,
     calculateIdealBoundary,
     assignGridRoles
@@ -2112,10 +2113,40 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
         // Merge: prefer orphaned virtuals (they already occupy correct grid positions) then
         // fall back to SPREAD slots for any remaining quota.
         const remainingQuota = Math.max(0, missingSlots - orphanedVirtualCandidates.length);
-        const spreadCandidates = [
+        let spreadCandidates: any[] = [
             ...orphanedVirtualCandidates,
             ...typedSpreadCandidates.slice(0, remainingQuota)
         ];
+
+        // P2: Filter out candidates whose price already has a placed order from any slot.
+        // This prevents creating a duplicate order at the same price when a prior cycle's
+        // order was not properly cleaned up (e.g. uncertain broadcast).
+        if (spreadCandidates.length > 0) {
+            const preFilter = spreadCandidates.length;
+            const placedOrders = allOrders.filter((o: any) => isOrderPlaced(o) && o.price != null);
+            spreadCandidates = spreadCandidates.filter((c: any) => {
+                if (c.price == null) return false;
+                const candidatePrice = c.price;
+                const candidateSize = (c.size && c.size > 0) ? c.size : getMinAbsoluteOrderSize(railType, manager.assets);
+                const collision = placedOrders.some((placed: any) => {
+                    const tolerance = calculatePriceTolerance(
+                        Math.min(placed.price, candidatePrice),
+                        Math.max(placed.size || 0, candidateSize),
+                        railType,
+                        manager.assets
+                    );
+                    return tolerance != null && Math.abs(placed.price - candidatePrice) <= tolerance;
+                });
+                return !collision;
+            });
+            const filteredCount = preFilter - spreadCandidates.length;
+            if (filteredCount > 0) {
+                manager.logger?.log?.(
+                    `[SPREAD-CORRECTION] Filtered ${filteredCount}/${preFilter} candidate(s) with duplicate price levels`,
+                    'warn'
+                );
+            }
+        }
 
         if (spreadCandidates.length > 0) {
             manager.logger?.log?.(`[SPREAD-CORRECTION] Identified ${spreadCandidates.length}/${missingSlots} slot(s) for activation on ${sideName} (orphaned=${orphanedVirtualCandidates.length}, spread=${spreadCandidates.length - orphanedVirtualCandidates.length})`, 'debug');
