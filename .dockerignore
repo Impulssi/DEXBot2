@@ -10,7 +10,6 @@ coverage
 *.log
 update.log
 profiles
-analysis
 dashboard
 dist
 claw
