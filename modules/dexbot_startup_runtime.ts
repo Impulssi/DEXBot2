@@ -61,59 +61,56 @@ async function initializeStartupState(bot: any) {
     bot._wireStructuralGridResyncRequest();
     bot._wireProcessedFillTracking();
     bot.manager.startBootstrap();
+
     try {
-        try {
-            if (bot.accountId && bot.config.assetA && bot.config.assetB) {
-                await bot.manager._initializeAssets();
-                await bot.manager.fetchAccountTotals(bot.accountId);
-                bot._log('Fetched blockchain account balances at startup');
-            }
-        } catch (err: any) {
-            bot._log(`Startup balance fetch FAILED: ${getErrorMessage(err)}. Order sizing may be incorrect until next successful sync.`, 'error');
+        if (bot.accountId && bot.config.assetA && bot.config.assetB) {
+            await bot.manager._initializeAssets();
+            await bot.manager.fetchAccountTotals(bot.accountId);
+            bot._log('Fetched blockchain account balances at startup');
         }
-
-        try {
-            await initializeFeeCache([bot.config || {}], BitShares);
-        } catch (err: any) {
-            bot._log(`Fee cache initialization FAILED: ${getErrorMessage(err)}. Fee calculations will use defaults until cache is refreshed.`, 'error');
-        }
-
-        const persistedGrid = bot.accountOrders.loadGrid();
-
-        let repairedGrid = persistedGrid;
-        if (persistedGrid && persistedGrid.length > 0) {
-            let repairCount = 0;
-            repairedGrid = persistedGrid.map((order: any) => {
-                if (order && order.orderId && order.orderId === order.id) {
-                    repairCount++;
-                    const repairedOrder = { ...order, orderId: '' };
-                    if (repairedOrder.state === ORDER_STATES.ACTIVE || repairedOrder.state === ORDER_STATES.PARTIAL) {
-                        repairedOrder.state = ORDER_STATES.VIRTUAL;
-                    }
-                    return repairedOrder;
-                }
-                return order;
-            });
-            if (repairCount > 0) {
-                bot._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
-            }
-        }
-
-        const persistedBtsFeesOwed = bot.accountOrders.loadBtsFeesOwed();
-        const persistedBoundaryIdx = bot.accountOrders.loadBoundaryIdx();
-        const persistedBtsBalance = bot.accountOrders.loadBtsBalance();
-        const persistedRecentFillKeys = bot.accountOrders.loadRecentFillKeys();
-
-        return {
-            persistedGrid: repairedGrid,
-            persistedBtsFeesOwed,
-            persistedBoundaryIdx,
-            persistedBtsBalance,
-            persistedRecentFillKeys,
-        };
-    } finally {
-        bot.manager.finishBootstrap();
+    } catch (err: any) {
+        bot._log(`Startup balance fetch FAILED: ${getErrorMessage(err)}. Order sizing may be incorrect until next successful sync.`, 'error');
     }
+
+    try {
+        await initializeFeeCache([bot.config || {}], BitShares);
+    } catch (err: any) {
+        bot._log(`Fee cache initialization FAILED: ${getErrorMessage(err)}. Fee calculations will use defaults until cache is refreshed.`, 'error');
+    }
+
+    const persistedGrid = bot.accountOrders.loadGrid();
+
+    let repairedGrid = persistedGrid;
+    if (persistedGrid && persistedGrid.length > 0) {
+        let repairCount = 0;
+        repairedGrid = persistedGrid.map((order: any) => {
+            if (order && order.orderId && order.orderId === order.id) {
+                repairCount++;
+                const repairedOrder = { ...order, orderId: '' };
+                if (repairedOrder.state === ORDER_STATES.ACTIVE || repairedOrder.state === ORDER_STATES.PARTIAL) {
+                    repairedOrder.state = ORDER_STATES.VIRTUAL;
+                }
+                return repairedOrder;
+            }
+            return order;
+        });
+        if (repairCount > 0) {
+            bot._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
+        }
+    }
+
+    const persistedBtsFeesOwed = bot.accountOrders.loadBtsFeesOwed();
+    const persistedBoundaryIdx = bot.accountOrders.loadBoundaryIdx();
+    const persistedBtsBalance = bot.accountOrders.loadBtsBalance();
+    const persistedRecentFillKeys = bot.accountOrders.loadRecentFillKeys();
+
+    return {
+        persistedGrid: repairedGrid,
+        persistedBtsFeesOwed,
+        persistedBoundaryIdx,
+        persistedBtsBalance,
+        persistedRecentFillKeys,
+    };
 }
 
 /**
@@ -344,6 +341,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
             bot._setupDustHealthCheckInterval();
             await bot._runDustHealthCheck();
             bot._log('[DUST] Startup health check complete');
+            bot.manager.finishBootstrap();
 
             if (bot._isOpenOrdersSyncLoopEnabled()) {
                 bot._startOpenOrdersSyncLoop();

@@ -665,6 +665,13 @@ function createSubscriptionManager(chainClient: any): any {
             if (healthCheckInProgress) return;
             healthCheckInProgress = true;
             try {
+                // Lightweight DB API ping to keep the subscription alive.
+                // Some nodes have a server-side subscription TTL (~120s) that
+                // silently kills the notice stream even when the WebSocket and
+                // login session remain healthy. A periodic read on the database
+                // API keeps the session alive so notices keep flowing.
+                chainClient.db.get_dynamic_global_properties().catch(() => {});
+
                 const now = Date.now();
                 const stale: { entry: any; elapsed: number; }[] = [];
                 for (const [, entry] of subscriptions) {
