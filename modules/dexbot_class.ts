@@ -77,6 +77,7 @@ import {
     DAEMON_CODES,
 } from './constants';
 import { normalizeBotEntry } from './bot_settings';
+import { getErrorMessage } from './utils/errors';
 
 function waitForConnected(...args: any) { return require('./bitshares_client').waitForConnected(...args); }
 function getKeyStore(...args: any) { return require('./key_store').getKeyStore(...args); }
@@ -810,7 +811,7 @@ class DEXBot {
                     );
                 } catch (err: any) {
                     if (vaultSecret) throw err;
-                    this._warn(`Credential daemon probe failed: ${err.message}. Falling back to interactive authentication.`);
+                    this._warn(`Credential daemon probe failed: ${getErrorMessage(err)}. Falling back to interactive authentication.`);
                 }
 
                 if (!privateKey) {
@@ -824,7 +825,7 @@ class DEXBot {
                 if (chainKeys.isMasterPasswordFailure(err)) {
                     throw err;
                 }
-                this._warn(`Auto-selection of preferredAccount failed: ${err.message}`);
+                this._warn(`Auto-selection of preferredAccount failed: ${getErrorMessage(err)}`);
                 // dexbot.ts has fallback to selectAccount, bot.ts throws
                 if (typeof chainOrders.selectAccount === 'function') {
                     const accountData = await chainOrders.selectAccount();
@@ -1338,7 +1339,7 @@ class DEXBot {
                 );
             }
         } catch (err: any) {
-            const message = `Credential daemon unavailable before ${contextLabel}: ${err.message}`;
+            const message = `Credential daemon unavailable before ${contextLabel}: ${getErrorMessage(err)}`;
             this._credentialDaemonDown = true;
             this._credentialRecoveryNeeded = true;
             this._suspendGridPersistenceForCredentialOutage(message);
@@ -1358,7 +1359,7 @@ class DEXBot {
     _isCredentialDaemonError(err: any) {
         if (!err) return false;
         if (err.code === DAEMON_CODES.CREDENTIAL_DAEMON_UNAVAILABLE) return true;
-        const message = String(err.message || '');
+        const message = String(getErrorMessage(err) || '');
         return /Credential daemon|Daemon connection failed|daemon .*unavailable|dexbot-cred-daemon\.sock|ECONNREFUSED|ENOENT/.test(message);
     }
 
@@ -1380,7 +1381,7 @@ class DEXBot {
                 this._credentialRecoveryDeferredTimer = setTimeout(() => {
                     this._credentialRecoveryDeferredTimer = null;
                     this._runCredentialRecoveryAfterDaemonRestored().catch((err: any) => {
-                        this.manager?.logger?.log?.(`[CREDENTIAL] Deferred recovery failed: ${err.message}`, 'error');
+                        this.manager?.logger?.log?.(`[CREDENTIAL] Deferred recovery failed: ${getErrorMessage(err)}`, 'error');
                         if (this.manager) {
                             this.manager._recoveryState = { ...this.manager._recoveryState, lastFailureAt: Date.now() };
                         }
@@ -1410,9 +1411,9 @@ class DEXBot {
             this.manager?.logger?.log?.('[CREDENTIAL] Credential recovery sync complete.', 'info');
         } catch (err: any) {
             this._credentialRecoveryNeeded = true;
-            this._suspendGridPersistenceForCredentialOutage(`credential recovery failed: ${err.message}`);
+            this._suspendGridPersistenceForCredentialOutage(`credential recovery failed: ${getErrorMessage(err)}`);
             this.manager?.logger?.log?.(
-                `[CREDENTIAL] Credential recovery sync failed: ${err.message}. Writes remain guarded by preflight.`,
+                `[CREDENTIAL] Credential recovery sync failed: ${getErrorMessage(err)}. Writes remain guarded by preflight.`,
                 'error'
             );
         } finally {
@@ -1460,7 +1461,7 @@ class DEXBot {
                     await this._runCredentialRecoveryAfterDaemonRestored();
                 } catch (err: any) {
                     if (!this._credentialDaemonDown) {
-                        const errMsg = String(err.message || '');
+                        const errMsg = String(getErrorMessage(err) || '');
                         let hint = '';
                         if (errMsg.includes('ENOENT')) {
                             hint = `Socket file missing at ${token.socketPath}. The credential daemon process may have been killed (e.g. by stray Ctrl-C). Restart it with: dexbot pm2 restart dexbot-cred. If the problem persists, check the daemon log: profiles/logs/dexbot-cred.log`;
@@ -1473,12 +1474,12 @@ class DEXBot {
                         }
 
                         this.manager?.logger?.log?.(
-                            `[CREDENTIAL] Credential daemon watchdog failed: ${err.message}. ${hint}`,
+                            `[CREDENTIAL] Credential daemon watchdog failed: ${getErrorMessage(err)}. ${hint}`,
                             'error'
                         );
                     }
                     this._credentialDaemonDown = true;
-                    this._suspendGridPersistenceForCredentialOutage(`credential daemon watchdog failed: ${err.message}`);
+                    this._suspendGridPersistenceForCredentialOutage(`credential daemon watchdog failed: ${getErrorMessage(err)}`);
                 }
             } finally {
                 this._credentialDaemonWatchdogInFlight = false;
@@ -1487,7 +1488,7 @@ class DEXBot {
 
         this._credentialDaemonWatchdogInterval = setInterval(() => {
             probe().catch((err: any) => {
-                this.manager?.logger?.log?.(`[CREDENTIAL] Credential daemon watchdog error: ${err.message}`, 'warn');
+                this.manager?.logger?.log?.(`[CREDENTIAL] Credential daemon watchdog error: ${getErrorMessage(err)}`, 'warn');
             });
         }, intervalMs);
         if (typeof this._credentialDaemonWatchdogInterval.unref === 'function') {
@@ -1637,7 +1638,7 @@ class DEXBot {
                 this.privateKey = privateKey;
                 await this._setupAccountContext(this.config.preferredAccount);
             } catch (err: any) {
-                this._warn(`Auto-selection of preferredAccount failed: ${err.message}`);
+                this._warn(`Auto-selection of preferredAccount failed: ${getErrorMessage(err)}`);
                 throw err;
             }
         } else {
@@ -1660,7 +1661,7 @@ class DEXBot {
             const startupState = await this._initializeStartupState();
             await this._finishStartupSequence(startupState);
         } catch (err: any) {
-            this._warn(`Error during grid initialization: ${err.message}`);
+            this._warn(`Error during grid initialization: ${getErrorMessage(err)}`);
             await this.shutdown();
             throw err;
         }
@@ -1774,7 +1775,7 @@ class DEXBot {
         try {
             await runtime.refreshState();
         } catch (err: any) {
-            this._warn(`Credit runtime refresh/sync failed: ${err.message}`);
+            this._warn(`Credit runtime refresh/sync failed: ${getErrorMessage(err)}`);
         }
     }
 
@@ -1815,7 +1816,7 @@ class DEXBot {
             try {
                 await runtime.runCreditWatchdog();
             } catch (err: any) {
-                this._warn(`Credit watchdog error: ${err.message}`);
+                this._warn(`Credit watchdog error: ${getErrorMessage(err)}`);
             }
         }, intervalMs);
         if (typeof this._creditWatchdogInterval?.unref === 'function') {
@@ -2012,7 +2013,7 @@ class DEXBot {
             try {
                 await this._creditRuntime.shutdown();
             } catch (err: any) {
-                this._warn(`Failed to persist credit runtime state: ${err.message}`);
+                this._warn(`Failed to persist credit runtime state: ${getErrorMessage(err)}`);
             }
         }
 
@@ -2020,7 +2021,7 @@ class DEXBot {
             try {
                 this._triggerWatcher.close();
             } catch (err: any) {
-                this._warn(`Failed to close trigger watcher: ${err.message}`);
+                this._warn(`Failed to close trigger watcher: ${getErrorMessage(err)}`);
             } finally {
                 this._triggerWatcher = null;
             }
@@ -2030,7 +2031,7 @@ class DEXBot {
             try {
                 await this._fillsUnsubscribe();
             } catch (err: any) {
-                this._warn(`Failed to unsubscribe fill listener: ${err.message}`);
+                this._warn(`Failed to unsubscribe fill listener: ${getErrorMessage(err)}`);
             } finally {
                 this._fillsUnsubscribe = null;
             }
@@ -2038,7 +2039,7 @@ class DEXBot {
 
         if (typeof this._reconnectUnregister === 'function') {
             try { this._reconnectUnregister(); } catch (err: any) {
-                this._warn(`Error unregistering reconnect callback: ${err.message}`);
+                this._warn(`Error unregistering reconnect callback: ${getErrorMessage(err)}`);
             }
             this._reconnectUnregister = null;
         }
@@ -2046,13 +2047,13 @@ class DEXBot {
         try {
             await this._stopOpenOrdersSyncLoop();
         } catch (err: any) {
-            this._warn(`Error while stopping open-orders sync loop: ${err.message}`);
+            this._warn(`Error while stopping open-orders sync loop: ${getErrorMessage(err)}`);
         }
 
         try {
             await this._releaseMarketAdapterRuntime('shutdown');
         } catch (err: any) {
-            this._warn(`Error while releasing market adapter runtime: ${err.message}`);
+            this._warn(`Error while releasing market adapter runtime: ${getErrorMessage(err)}`);
         }
 
         // Wait for current fill processing to complete
@@ -2092,7 +2093,7 @@ class DEXBot {
                                 await this.manager.persistGrid();
                                 this._log('Final grid snapshot persisted');
                             } catch (err: any) {
-                                this._warn(`Failed to persist final state: ${err.message}`);
+                                this._warn(`Failed to persist final state: ${getErrorMessage(err)}`);
                             }
                         }
                     }).then(() => 'acquired'),
@@ -2134,11 +2135,11 @@ class DEXBot {
                                 await this.manager.persistGrid();
                                 this._log('Final grid snapshot persisted (best-effort, lock not held)');
                             } catch (err: any) {
-                                this._warn(`Failed to persist final state (best-effort): ${err.message}`);
+                                this._warn(`Failed to persist final state (best-effort): ${getErrorMessage(err)}`);
                             }
                         }
                     } catch (err: any) {
-                        this._warn(`Best-effort flush during shutdown failed: ${err.message}`);
+                        this._warn(`Best-effort flush during shutdown failed: ${getErrorMessage(err)}`);
                     }
                 }
 
@@ -2148,7 +2149,7 @@ class DEXBot {
                 this._consumeFailureFirstAt = 0;
             }
         } catch (err: any) {
-            this._warn(`Error during shutdown lock acquisition: ${err.message}`);
+            this._warn(`Error during shutdown lock acquisition: ${getErrorMessage(err)}`);
         }
 
         // Release fund registry allocation
@@ -2156,7 +2157,7 @@ class DEXBot {
             const botName = this.config.botKey;
             if (botName) {
                 fundRegistry.releaseAllocation(this.config.preferredAccount, botName).catch((err: any) => {
-                    this._warn(`Failed to release fund allocation for ${botName}: ${err.message}`);
+                    this._warn(`Failed to release fund allocation for ${botName}: ${getErrorMessage(err)}`);
                 });
             }
         }

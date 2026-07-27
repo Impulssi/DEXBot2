@@ -90,6 +90,7 @@ import {
     PROCESSED_FILL_PERSISTENCE_MODES,
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store';
+import { getErrorMessage } from '../utils/errors';
 const { toFiniteNumber } = Format;
 
 /**
@@ -427,7 +428,7 @@ class Accountant {
                     nextSnapshot.chainSell
                 )
                     .catch((err: any) => {
-                        mgr.logger?.log?.(`[RECOVERY] Verification error: ${err.message}`, 'error');
+                        mgr.logger?.log?.(`[RECOVERY] Verification error: ${getErrorMessage(err)}`, 'error');
                     })
                     .finally(() => {
                         this._isVerifyingInvariants = false;
@@ -577,7 +578,7 @@ class Accountant {
                     }
                 }
             } catch (_err: any) {
-                mgr.logger?.log?.(`[INVARIANT] Cross-bot registry check skipped: ${_err.message}`, 'warn');
+                mgr.logger?.log?.(`[INVARIANT] Cross-bot registry check skipped: ${getErrorMessage(_err)}`, 'warn');
             }
         }
 
@@ -587,13 +588,13 @@ class Accountant {
                 try {
                     await this._attemptFundRecovery(mgr, 'Fund invariant violation');
                 } catch (err: any) {
-                    mgr.logger?.log?.(`[RECOVERY] Deferred recovery failed: ${err.message}`, 'error');
+                    mgr.logger?.log?.(`[RECOVERY] Deferred recovery failed: ${getErrorMessage(err)}`, 'error');
                     mgr._recoveryState = { ...mgr._recoveryState, lastFailureAt: Date.now() };
                 }
             };
             if (mgr._gridLock?.isLocked?.()) {
                 doRecovery().catch((err: any) => {
-                    mgr.logger?.log?.(`[RECOVERY] Deferred recovery scheduling failed: ${err.message}`, 'error');
+                    mgr.logger?.log?.(`[RECOVERY] Deferred recovery scheduling failed: ${getErrorMessage(err)}`, 'error');
                 });
             } else {
                 await doRecovery();
@@ -795,7 +796,7 @@ class Accountant {
                           })
                           .catch((err: any) => {
                               state.structuralResyncRequested = false;
-                              mgr.logger?.log?.(`[RECOVERY] Structural grid resync scheduling failed: ${err.message}`, 'error');
+                              mgr.logger?.log?.(`[RECOVERY] Structural grid resync scheduling failed: ${getErrorMessage(err)}`, 'error');
                           });
                   } else {
                       this._logThrottled(
@@ -809,7 +810,7 @@ class Accountant {
               return false;
           } catch (err: any) {
               state.lastFailureAt = Date.now();
-              mgr.logger?.log?.(`[RECOVERY] State recovery error: ${err.message}`, 'error');
+              mgr.logger?.log?.(`[RECOVERY] State recovery error: ${getErrorMessage(err)}`, 'error');
               return false;
           } finally {
               state.inFlight = false;
@@ -1100,7 +1101,7 @@ class Accountant {
                     if (!mgr._pendingRecovery) {
                         mgr._pendingRecovery = this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure')
                             .catch((err: any) => {
-                                mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
+                                mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${getErrorMessage(err)}`, 'error');
                                 mgr._recoveryState = { ...mgr._recoveryState, lastFailureAt: Date.now() };
                             })
                             .finally(() => {
@@ -1291,7 +1292,7 @@ class Accountant {
             return netProceeds;
         } catch (err: any) {
             this.manager?.logger?.log?.(
-                `[FILL-FEE] CRITICAL: Failed to compute fees for ${assetSymbol}: ${err.message}. Using raw proceeds (${Format.formatAmount8(rawAmount)}) — fund tracking will over-credit by un-deducted fee.`,
+                `[FILL-FEE] CRITICAL: Failed to compute fees for ${assetSymbol}: ${getErrorMessage(err)}. Using raw proceeds (${Format.formatAmount8(rawAmount)}) — fund tracking will over-credit by un-deducted fee.`,
                 'error'
             );
             return rawAmount;
@@ -1396,7 +1397,7 @@ class Accountant {
                      throw err;
                  }
                  mgr.logger?.log?.(
-                     `[FILL-DEDUP] Failed to persist fill ${fillKey}: ${err.message}`,
+                     `[FILL-DEDUP] Failed to persist fill ${fillKey}: ${getErrorMessage(err)}`,
                      'warn'
                  );
              }

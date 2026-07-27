@@ -10,6 +10,7 @@ import * as Format from './order/format';
 import { AccountOrders } from './account_orders';
 import { BitShares, onReconnect as registerReconnectHook } from './bitshares_client';
 import orderModule from './order';
+import { getErrorMessage } from './utils/errors';
 const { OrderManager, grid: Grid } = orderModule;
 function initializeFeeCache(...args: any) { return require('./order/utils/system').initializeFeeCache(...args); }
 function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
@@ -68,13 +69,13 @@ async function initializeStartupState(bot: any) {
                 bot._log('Fetched blockchain account balances at startup');
             }
         } catch (err: any) {
-            bot._log(`Startup balance fetch FAILED: ${err.message}. Order sizing may be incorrect until next successful sync.`, 'error');
+            bot._log(`Startup balance fetch FAILED: ${getErrorMessage(err)}. Order sizing may be incorrect until next successful sync.`, 'error');
         }
 
         try {
             await initializeFeeCache([bot.config || {}], BitShares);
         } catch (err: any) {
-            bot._log(`Fee cache initialization FAILED: ${err.message}. Fee calculations will use defaults until cache is refreshed.`, 'error');
+            bot._log(`Fee cache initialization FAILED: ${getErrorMessage(err)}. Fee calculations will use defaults until cache is refreshed.`, 'error');
         }
 
         const persistedGrid = bot.accountOrders.loadGrid();
@@ -172,7 +173,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                                         sell: reconnectHealth.sellDustOrders,
                                     });
                                 } catch (_dustErr: any) {
-                                    bot._warn(`[RECONNECT] Dust cancel failed: ${_dustErr.message}`);
+                                    bot._warn(`[RECONNECT] Dust cancel failed: ${getErrorMessage(_dustErr)}`);
                                 }
                             }
                         });
@@ -328,7 +329,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             sell: postResetHealth.sellDustOrders,
                         });
                     } catch (_dustErr: any) {
-                        bot._warn(`[POST-RESET] Dust cancel failed: ${_dustErr.message}`);
+                        bot._warn(`[POST-RESET] Dust cancel failed: ${getErrorMessage(_dustErr)}`);
                     }
                 }
                 bot._log('Bootstrap phase complete - fill processing resumed', 'info');
@@ -506,7 +507,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     ]);
                 } catch (fetchErr: any) {
                     bot._log(
-                        `[STARTUP] [${bot.config?.botKey || 'unknown'}] fetchAccountTotals ${fetchErr.message === 'timeout' ? 'timed out' : 'failed'} (${fetchErr.message}). Continuing with cached account totals.`,
+                        `[STARTUP] [${bot.config?.botKey || 'unknown'}] fetchAccountTotals ${getErrorMessage(fetchErr) === 'timeout' ? 'timed out' : 'failed'} (${getErrorMessage(fetchErr)}). Continuing with cached account totals.`,
                         'warn'
                     );
                 } finally {
@@ -549,7 +550,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
         bot._log(`DEXBot started. OrderManager running (dryRun=${!!bot.config.dryRun})`);
 
     } catch (err: any) {
-        bot._warn(`Error during grid initialization: ${err.message}`);
+        bot._warn(`Error during grid initialization: ${getErrorMessage(err)}`);
         await bot.shutdown();
         throw err;
     }
@@ -577,7 +578,7 @@ async function placeInitialOrdersImpl(bot: any) {
                 }
             }
         } catch (errFetch: any) {
-            bot._warn(`Could not fetch account totals before initializing grid: ${errFetch && errFetch.message ? errFetch.message : errFetch}`);
+            bot._warn(`Could not fetch account totals before initializing grid: ${errFetch && getErrorMessage(errFetch) ? getErrorMessage(errFetch) : errFetch}`);
         }
 
         await Grid.initializeGrid(bot.manager);

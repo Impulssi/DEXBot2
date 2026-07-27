@@ -60,6 +60,7 @@ import { isPhantomOrder } from './order/utils/order';
 import * as Format from './order/format';
 import { ensureDir } from './order/utils/system';
 import Logger from './logger';
+import { getErrorMessage } from './utils/errors';
 const storage = getStorage();
 const { toFiniteNumber } = Format;
 
@@ -307,7 +308,7 @@ class AccountOrders {
       if (typeof parsed === 'object' && parsed !== null) return parsed;
     } catch (err: any) {
       if (err?.code !== 'ENOENT' && !(err instanceof SyntaxError)) {
-        accountOrdersLogger.warn(`Failed to read ${filePath} - ${err.message}`);
+        accountOrdersLogger.warn(`Failed to read ${filePath} - ${getErrorMessage(err)}`);
       }
     }
     return null;

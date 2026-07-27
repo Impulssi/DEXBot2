@@ -154,6 +154,7 @@ import { derivePrice, loadAmaCenterPrice, loadAmaCenterSnapshot } from './utils/
 import { getWhitelistFlags } from '../market_adapter_whitelist';
 
 import type { Order } from '../types.js';
+import { getErrorMessage } from '../utils/errors';
 
 export function calculateGapSlots(incrementPercent: any, targetSpreadPercent: any, gridLimitsOverride?: Record<string, any>): any {
     return _mathGapSlots(incrementPercent, targetSpreadPercent, gridLimitsOverride ?? GRID_LIMITS);
@@ -541,7 +542,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
             try {
                 await manager._initializeAssets();
             } catch (e: any) {
-                manager.logger?.log?.(`Asset initialization failed during grid load: ${e.message}`, 'warn');
+                manager.logger?.log?.(`Asset initialization failed during grid load: ${getErrorMessage(e)}`, 'warn');
             }
 
             // RC-2: Use logic helper
@@ -620,7 +621,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                             { reason: `Grid size ${d.gridSize} exceeds maximum ${d.maxAllowed}` }
                         ).catch((err: any) => {
                             manager.logger?.log?.(
-                                `[GRID-BLOAT] Structural resync request failed: ${err.message}`,
+                                `[GRID-BLOAT] Structural resync request failed: ${getErrorMessage(err)}`,
                                 'error'
                             );
                         });
@@ -686,7 +687,7 @@ export async function initializeGrid(manager: any): Promise<void> {
                     throw new Error(`Price derivation returned no result for ${manager.config.assetA}/${manager.config.assetB}`);
                 }
             } catch (err: any) {
-                manager.logger?.log?.(`Failed to derive market price: ${err.message}`, 'warn');
+                manager.logger?.log?.(`Failed to derive market price: ${getErrorMessage(err)}`, 'warn');
                 throw err; // Re-throw to prevent "pool" string reaching numeric math
             }
         }
@@ -725,7 +726,7 @@ export async function initializeGrid(manager: any): Promise<void> {
                     manager.logger?.log?.(`initializeGrid: ${gpMode} gridPrice unavailable, falling back to startPrice`, 'warn');
                 }
             } catch (err: any) {
-                manager.logger?.log?.(`initializeGrid: ${gpMode} gridPrice derivation failed: ${err.message}`, 'warn');
+                manager.logger?.log?.(`initializeGrid: ${gpMode} gridPrice derivation failed: ${getErrorMessage(err)}`, 'warn');
             }
         } else if (/^ama(?:[1-4])?$/.test(gpMode || '')) {
             amaSnapshot = loadAmaCenterSnapshot(manager.config.botKey);
@@ -862,10 +863,10 @@ export async function initializeGrid(manager: any): Promise<void> {
                 await manager.waitForAccountTotals(TIMING.ACCOUNT_TOTALS_TIMEOUT_MS);
             }
         } catch (e: any) {
-            manager.logger?.log?.(`Failed to load account totals: ${e.message}`, 'warn');
+            manager.logger?.log?.(`Failed to load account totals: ${getErrorMessage(e)}`, 'warn');
             // FIX: Add error handling - cannot proceed with grid initialization without account totals
             // Continuing would create grid with 0 fund allocation, rendering it non-functional
-            throw new Error(`Cannot initialize grid without account totals: ${e.message}`);
+            throw new Error(`Cannot initialize grid without account totals: ${getErrorMessage(e)}`);
         }
 
         const { orders, boundaryIdx, initialSpreadCount } = createOrderGrid({
@@ -884,7 +885,7 @@ export async function initializeGrid(manager: any): Promise<void> {
                 try {
                     manager.notifyBoundaryUpdate(boundaryIdx);
                 } catch (err: any) {
-                    manager.logger?.log?.(`Error notifying boundary update: ${err.message}`, 'warn');
+                    manager.logger?.log?.(`Error notifying boundary update: ${getErrorMessage(err)}`, 'warn');
                 }
             }
         }
@@ -998,8 +999,8 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
             try {
                 await reconcileGridOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders });
             } catch (err: any) {
-                manager.logger?.log?.(`Error during startup order reconciliation: ${err.message}`, 'error');
-                throw new Error(`Grid recalculation failed during order reconciliation: ${err.message}`);
+                manager.logger?.log?.(`Error during startup order reconciliation: ${getErrorMessage(err)}`, 'error');
+                throw new Error(`Grid recalculation failed during order reconciliation: ${getErrorMessage(err)}`);
             }
 
             // FIX: Use consistent optional chaining pattern for logger calls
@@ -1637,7 +1638,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                             { reason: `Boundary ${manager.boundaryIdx} leaves ${buySideCount} buy / ${sellSideCount} sell slots` }
                         ).catch((err: any) => {
                             manager.logger?.log?.(
-                                `[SPREAD] Structural resync request failed: ${err.message}`,
+                                `[SPREAD] Structural resync request failed: ${getErrorMessage(err)}`,
                                 'error'
                             );
                         });
@@ -1666,7 +1667,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
         try {
             shouldApplyCorrection = await manager._gridLock.acquire(executeSpreadCheck);
         } catch (err: any) {
-            manager.logger?.log?.(`Error checking spread condition: ${err.message}`, 'warn');
+            manager.logger?.log?.(`Error checking spread condition: ${getErrorMessage(err)}`, 'warn');
             return { ordersPlaced: 0, partialsMoved: 0 };
         }
 
@@ -1721,7 +1722,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                 const updated = correction.ordersToUpdate?.length || 0;
                 return { ordersPlaced: placed + updated, partialsMoved: updated };
             } catch (err: any) {
-                manager.logger?.log?.(`Error applying spread correction on-chain: ${err.message}`, 'warn');
+                manager.logger?.log?.(`Error applying spread correction on-chain: ${getErrorMessage(err)}`, 'warn');
                 return { ordersPlaced: 0, partialsMoved: 0 };
             }
         }
@@ -2051,7 +2052,7 @@ export async function calculateGeometricSizeForSpreadCorrection(manager: any, ta
             }
             return side === 'sell' ? sized[0].size : sized[sized.length - 1].size;
         } catch (e: any) {
-            manager.logger?.log?.(`Error calculating geometric size for spread correction: ${e.message}`, 'warn');
+            manager.logger?.log?.(`Error calculating geometric size for spread correction: ${getErrorMessage(e)}`, 'warn');
             return null;
         }
     }

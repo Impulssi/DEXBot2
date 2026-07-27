@@ -178,7 +178,7 @@ async function main() {
             console.log(`  Raw: ${fmt(rows).slice(0, 500)}`);
         }
     } catch (err: any) {
-        console.log(`ERROR: ${err.message}`);
+        console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
     // ── Test 2: get_liquidity_pool_history (without op_type filter) ──
@@ -194,7 +194,7 @@ async function main() {
             console.log(`  Raw: ${fmt(rows).slice(0, 500)}`);
         }
     } catch (err: any) {
-        console.log(`ERROR: ${err.message}`);
+        console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
     // ── Test 3: Try reversed args order (if applicable) ───────────────
@@ -226,7 +226,7 @@ async function main() {
             console.log('get_account_history_by_operations NOT available');
         }
     } catch (err: any) {
-        console.log(`ERROR: ${err.message}`);
+        console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
     // ── Test 5: Try get_relative_account_history ─────────────────
@@ -244,7 +244,7 @@ async function main() {
             console.log('get_relative_account_history NOT available');
         }
     } catch (err: any) {
-        console.log(`ERROR: ${err.message}`);
+        console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
     // ── Test 6: Last 24h of trades — try to query recent only ─────
@@ -273,7 +273,7 @@ async function main() {
             console.log(`  Rows with received:      ${withReceived}`);
         }
     } catch (err: any) {
-        console.log(`ERROR: ${err.message}`);
+        console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
     // ── Test 7: Paged recent summary ──────────────────────────────
@@ -295,7 +295,7 @@ async function main() {
             }
         }
     } catch (err: any) {
-        console.log(`ERROR: ${err.message}`);
+        console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
     console.log('\n══════════════════════════════════════════════');
@@ -307,7 +307,7 @@ async function main() {
 }
 
 main().catch(err => {
-    console.error(`Fatal: ${err.message}`);
+    console.error(`Fatal: ${getErrorMessage(err)}`);
     process.exit(1);
 });
 export {};

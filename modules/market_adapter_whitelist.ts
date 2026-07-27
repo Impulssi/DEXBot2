@@ -2,6 +2,7 @@
 import { PATHS } from './paths';
 import { getStorage } from './storage';
 import { readJSON } from './utils/fs_utils';
+import { getErrorMessage } from './utils/errors';
 'use strict';
 
 const storage = getStorage();
@@ -59,7 +60,7 @@ function loadMarketAdapterWhitelist(): Map<string, WhitelistFlags> | false {
         _whitelistCache = map;
         return _whitelistCache;
     } catch (_: any) {
-        console.warn(`[WARN] Failed to parse ${WHITELIST_FILE}: ${_.message}. All whitelist features disabled.`);
+        console.warn(`[WARN] Failed to parse ${WHITELIST_FILE}: ${getErrorMessage(_)}. All whitelist features disabled.`);
         _whitelistCache = false;
         return _whitelistCache;
     }

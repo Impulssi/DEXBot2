@@ -24,6 +24,7 @@ import {
     resolveMinCollateralIncreaseThreshold,
     resolveTargetCollateralRatio,
 } from './cr_planner';
+import { getErrorMessage } from './utils/errors';
 
 const CREDIT_FEE_RATE_DENOM = 1_000_000;
 const ZERO_ASSET_ID = '1.3.0';
@@ -395,7 +396,7 @@ class CreditRuntime {
             const parsed = readJSON(this.statePath);
             this.state = this._stateWithDefaults(parsed);
         } catch (err: any) {
-            this.warn(`credit runtime: failed to load ${this.statePath}: ${err.message}`);
+            this.warn(`credit runtime: failed to load ${this.statePath}: ${getErrorMessage(err)}`);
             this.state = this._stateWithDefaults();
         }
 
@@ -1878,8 +1879,8 @@ class CreditRuntime {
             }
             return await lock.acquire(runCheck);
         } catch (err: any) {
-            this.warn(`credit runtime: post-credit grid maintenance failed during ${context}: ${err.message}`);
-            return { skipped: false, error: err.message };
+            this.warn(`credit runtime: post-credit grid maintenance failed during ${context}: ${getErrorMessage(err)}`);
+            return { skipped: false, error: getErrorMessage(err) };
         }
     }
 
@@ -1994,7 +1995,7 @@ class CreditRuntime {
                         excludeOfferId: dealSummary.offerId,
                     });
                     if (fallback) {
-                        this.warn(`credit runtime: fallback reborrow offer ${fallback.offer.id} selected after original offer ${dealSummary.offerId} failed: ${err.message}`);
+                        this.warn(`credit runtime: fallback reborrow offer ${fallback.offer.id} selected after original offer ${dealSummary.offerId} failed: ${getErrorMessage(err)}`);
                         operations.push(fallback.op);
                         inlineReborrowPlanned = true;
                     } else {
@@ -2008,7 +2009,7 @@ class CreditRuntime {
                             pendingRepayAmount: repayAmount,
                             pendingReleaseCollateralAmount: options.pendingReleaseCollateralAmount,
                             requestedAt: new Date().toISOString(),
-                            reason: err.message,
+                            reason: getErrorMessage(err),
                         };
                     }
                 }
@@ -2086,7 +2087,7 @@ class CreditRuntime {
                 } catch (err: any) {
                     this.queueReborrow({
                         ...reborrowRequest,
-                        reason: err.message,
+                        reason: getErrorMessage(err),
                     });
                 }
             } else {
@@ -2181,7 +2182,7 @@ class CreditRuntime {
             }
             return offers;
         } catch (err: any) {
-            this.warn(`credit runtime: unable to fetch fallback credit offers for ${assetId}: ${err.message}`);
+            this.warn(`credit runtime: unable to fetch fallback credit offers for ${assetId}: ${getErrorMessage(err)}`);
             return [];
         }
     }
@@ -2663,8 +2664,8 @@ class CreditRuntime {
                             await this.executeOperations([fallback.op], 'credit reborrow');
                             processed++;
                         } catch (err: any) {
-                            this.warn(`credit runtime: fallback reborrow for offer ${request.offerId} failed: ${err.message}`);
-                            nextQueue.push({ ...request, reason: err.message });
+                            this.warn(`credit runtime: fallback reborrow for offer ${request.offerId} failed: ${getErrorMessage(err)}`);
+                            nextQueue.push({ ...request, reason: getErrorMessage(err) });
                         }
                     } else {
                         this.warn(`credit runtime: pending reborrow for offer ${request.offerId} deferred — ${offer ? 'offer disabled' : 'offer unavailable'}`);
@@ -2686,8 +2687,8 @@ class CreditRuntime {
                     await this.executeOperations([acceptOp], 'credit reborrow');
                     processed++;
                 } catch (err: any) {
-                    this.warn(`credit runtime: pending reborrow for offer ${request.offerId} failed: ${err.message}`);
-                    nextQueue.push({ ...request, reason: err.message });
+                    this.warn(`credit runtime: pending reborrow for offer ${request.offerId} failed: ${getErrorMessage(err)}`);
+                    nextQueue.push({ ...request, reason: getErrorMessage(err) });
                 }
             }
 
@@ -2736,7 +2737,7 @@ class CreditRuntime {
                 if (!isDeterministicMpaDebtBalanceError(err, plan)) {
                     throw err;
                 }
-                this.warn(`credit runtime: MPA combined operation failed; attempting collateral fallback: ${err.message}`);
+                this.warn(`credit runtime: MPA combined operation failed; attempting collateral fallback: ${getErrorMessage(err)}`);
                 await this.refreshMpaState(lendingItem);
 
                 if (lendingItem.debtOnly) {
@@ -2796,8 +2797,8 @@ class CreditRuntime {
                     this.state.lastGridResetAt = new Date().toISOString();
                     return { plan, executed, resetResult };
                 } catch (err: any) {
-                    this.warn(`credit runtime: grid reset after CR adjustment failed: ${err.message}`);
-                    return { plan, executed, resetError: err.message };
+                    this.warn(`credit runtime: grid reset after CR adjustment failed: ${getErrorMessage(err)}`);
+                    return { plan, executed, resetError: getErrorMessage(err) };
                 }
             }
             return { plan, executed };
@@ -2831,7 +2832,7 @@ class CreditRuntime {
                 this.log(`credit runtime: restructured oversized deals for ${assetId}`);
             }
         } catch (err: any) {
-            this.warn(`credit runtime: deal restructuring failed: ${err.message}`);
+            this.warn(`credit runtime: deal restructuring failed: ${getErrorMessage(err)}`);
         }
 
         let activeDealIds = new Set((posState.creditDeals || []).map((d: any) => String(d?.id)).filter(Boolean));
@@ -2911,7 +2912,7 @@ class CreditRuntime {
                         activeDealIds.delete(String(deal.id));
                     }
                 } catch (err: any) {
-                    this.warn(`credit runtime: proactive repay/reborrow for deal ${deal.id} failed: ${err.message}`);
+                    this.warn(`credit runtime: proactive repay/reborrow for deal ${deal.id} failed: ${getErrorMessage(err)}`);
                 }
             }
         }
@@ -2928,7 +2929,7 @@ class CreditRuntime {
                         await this.executeOperations([updateOp], 'credit deal auto_repay update');
                         deal.autoRepay = policyAutoRepay;
                     } catch (err: any) {
-                        this.warn(`credit runtime: failed to update auto_repay on deal ${deal.id}: ${err.message}`);
+                        this.warn(`credit runtime: failed to update auto_repay on deal ${deal.id}: ${getErrorMessage(err)}`);
                     }
                 }
             }
@@ -3060,8 +3061,8 @@ class CreditRuntime {
                 remainingDeals: Array.isArray(this.state.creditDeals) ? this.state.creditDeals.length : 0,
             };
         } catch (err: any) {
-            this.warn(`credit runtime: watchdog error: ${err.message}`);
-            return { skipped: true, reason: err.message };
+            this.warn(`credit runtime: watchdog error: ${getErrorMessage(err)}`);
+            return { skipped: true, reason: getErrorMessage(err) };
         } finally {
             this._watchdogInFlight = false;
         }

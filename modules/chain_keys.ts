@@ -122,6 +122,7 @@ import {
     getCredentialSocketPath,
     assertPrivatePathSecurity,
 } from './credential_runtime';
+import { getErrorMessage } from './utils/errors';
 const storage = getStorage();
 
 const chainKeysLogger = new Logger('chain-keys');
@@ -436,7 +437,7 @@ function validatePrivateKey(key: any) {
             // Graphene PVT_K1_ keys are 32 bytes of key material
             return { valid: false, reason: `PVT_K1_ key decoded to ${payload.length} bytes, expected 32` };
         } catch (err: any) {
-            return { valid: false, reason: `PVT_K1_ key has invalid base58check encoding: ${err.message}` };
+            return { valid: false, reason: `PVT_K1_ key has invalid base58check encoding: ${getErrorMessage(err)}` };
         }
     }
 
@@ -458,7 +459,7 @@ function loadAccounts() {
         return normalizeAccountsData(storage.readJSON(PROFILES_KEYS_FILE));
     } catch (error: any) {
         if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) {
-            console.error('Error loading accounts file, resetting to default:', error.message);
+            console.error('Error loading accounts file, resetting to default:', getErrorMessage(error));
         }
         return normalizeAccountsData();
     }
@@ -747,7 +748,7 @@ async function changeMasterPassword(accountsData: any, currentSecret: any) {
     } catch (error: any) {
         // Clear any partially-decrypted keys before returning
         for (const key of Object.keys(decryptedKeys)) delete decryptedKeys[key];
-        console.log('Failed to decrypt stored keys with the current master password:', error.message);
+        console.log('Failed to decrypt stored keys with the current master password:', getErrorMessage(error));
         return currentSecret;
     }
 
@@ -833,7 +834,7 @@ async function main() {
             console.log('Authenticated successfully.');
         } catch (err: any) {
             if (err instanceof MasterPasswordError) {
-                console.log(err.message);
+                console.log(getErrorMessage(err));
                 return;
             }
             throw err;
@@ -1104,7 +1105,7 @@ function sendDaemonRequest(requestType: any, accountName: any, timeout: any = TI
 
         socket.on('error', (error: any) => {
             clearTimeout(timer);
-            if (!settled) { settled = true; reject(new Error(`Daemon connection failed: ${error.message}`)); }
+            if (!settled) { settled = true; reject(new Error(`Daemon connection failed: ${getErrorMessage(error)}`)); }
         });
 
         socket.on('end', () => {

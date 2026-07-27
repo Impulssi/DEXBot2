@@ -9,6 +9,7 @@
 import { getStorage } from './storage';
 import { PATHS } from './paths';
 import { writeJsonFileAtomic } from './bots_file_lock';
+import { getErrorMessage } from './utils/errors';
 const storage = getStorage();
 
 const PROFILES_DIR = PATHS.PROFILES_DIR;
@@ -34,7 +35,7 @@ function readGeneralSettings({ fallback = null, onError = null }: { fallback?: a
         if (typeof onError === 'function') {
             onError(err, SETTINGS_FILE);
         } else {
-            console.warn(`Failed to parse ${SETTINGS_FILE}: ${err.message}. Using defaults.`);
+            console.warn(`Failed to parse ${SETTINGS_FILE}: ${getErrorMessage(err)}. Using defaults.`);
         }
         return fallback;
     }

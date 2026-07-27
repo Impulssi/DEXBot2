@@ -66,6 +66,7 @@ const { getKeyStore } = require('./modules/key_store');
 const credentialPolicy = require('./modules/credential_policy');
 const { PATHS } = require('./modules/paths');
 const { Config } = require('./modules/config');
+const { getErrorMessage } = require('./modules/utils/errors');
 
 // Auto-migrate bot state files from old stable-ID key format to sanitized-name format
 try {
@@ -139,7 +140,7 @@ function loadBotConfig(name: string) {
 
         return botEntry;
     } catch (err: any) {
-        launcherLogger.error(`Error loading bot config: ${err.message}`);
+        launcherLogger.error(`Error loading bot config: ${getErrorMessage(err)}`);
         runtime.exit(1);
     }
 }
@@ -214,13 +215,13 @@ async function getSigningSecretForAccount(accountName: string) {
               try {
                   await bot.shutdown();
               } catch (shutdownErr: any) {
-                  launcherLogger.error(`Error during cleanup: ${shutdownErr.message}`);
+                  launcherLogger.error(`Error during cleanup: ${getErrorMessage(shutdownErr)}`);
               }
               throw err;
           }
 
      } catch (err: any) {
-         launcherLogger.error(`Failed to start bot: ${err.message}`);
+         launcherLogger.error(`Failed to start bot: ${getErrorMessage(err)}`);
          runtime.exit(1);
      }
 })();

@@ -18,6 +18,7 @@ import { sleep } from '../order/utils/system';
 import type { Socket } from 'net';
 const storage = getStorage();
 import { buildRuntimeScriptPath, isDistCodeRoot, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry';
+import { getErrorMessage } from '../utils/errors';
 
 const BOT_SCRIPT = buildRuntimeScriptPath(CODE_ROOT, ['bot']);
 const SOCKET_PATH = Config.DEXBOT_SUPERVISOR_SOCKET || PATHS.PROFILES.SUPERVISOR_SOCK;
@@ -511,7 +512,7 @@ function createBotSupervisor({
                         await waitForChildSpawn(child);
                     }
                 } catch (err: any) {
-                    logError(`Failed to start scheduled job ${state.name}:`, err.message);
+                    logError(`Failed to start scheduled job ${state.name}:`, getErrorMessage(err));
                     state.status = 'crashed';
                 } finally {
                     scheduleNextRun(state);
@@ -521,7 +522,7 @@ function createBotSupervisor({
                 state.scheduledRunTimer.unref();
             }
         } catch (err: any) {
-            logError(`Invalid cron schedule for ${state.name}: ${err.message}`);
+            logError(`Invalid cron schedule for ${state.name}: ${getErrorMessage(err)}`);
         }
     }
 
@@ -655,7 +656,7 @@ function createBotSupervisor({
         });
 
         child.on('error', (err: any) => {
-            logError(`${appName} spawn error:`, err.message);
+            logError(`${appName} spawn error:`, getErrorMessage(err));
         });
 
         return child;
@@ -742,7 +743,7 @@ function createBotSupervisor({
                     return { error: `unknown command: ${cmd.cmd}` };
             }
         } catch (err: any) {
-            return { error: err.message };
+            return { error: getErrorMessage(err) };
         }
     }
 
@@ -784,7 +785,7 @@ function createBotSupervisor({
                     .then(handler)
                     .catch((err: any) => {
                         try {
-                            socket.write(JSON.stringify({ error: err.message }) + '\n');
+                            socket.write(JSON.stringify({ error: getErrorMessage(err) }) + '\n');
                         } catch (_: any) {}
                     });
                 return commandQueue;
@@ -833,7 +834,7 @@ function createBotSupervisor({
             });
 
             const onError = (err: any) => {
-                logError(`Socket server error: ${err.message}`);
+                logError(`Socket server error: ${getErrorMessage(err)}`);
                 reject(err);
             };
 
@@ -841,7 +842,7 @@ function createBotSupervisor({
             socketServer.listen(SOCKET_PATH, () => {
                 socketServer.off('error', onError);
                 socketServer.on('error', (err: any) => {
-                    logError(`Socket server error: ${err.message}`);
+                    logError(`Socket server error: ${getErrorMessage(err)}`);
                 });
                 try { storage.chmod(SOCKET_PATH, 0o600); } catch (_: any) {}
                 log(`Control socket: ${SOCKET_PATH}`);
@@ -922,7 +923,7 @@ function createBotSupervisor({
                     await waitForChildSpawn(child);
                 }
             } catch (err: any) {
-                logError(`Failed to start ${app.name}:`, err.message);
+                logError(`Failed to start ${app.name}:`, getErrorMessage(err));
                 const state = botStates.get(app.name);
                 if (state) {
                     state.status = 'crashed';

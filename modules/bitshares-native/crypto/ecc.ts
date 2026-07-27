@@ -2,6 +2,7 @@
 
 import { createHash, createHmac, randomBytes as cryptoRandomBytes, createECDH } from '../../crypto/sync';
 import { base58Encode as _base58Encode, base58Decode as _base58Decode } from '../../utils/base58check';
+import { getErrorMessage } from '../../utils/errors';
 
 interface EcPoint {
     x: bigint;
@@ -351,7 +352,7 @@ function sign(digest: Buffer, privateKey: Buffer): Buffer {
                     recoveryId = i;
                     break;
                 }
-            } catch (err: any) { console.warn('[ecc]', 'recoverPublicKey failed:', err.message); }
+            } catch (err: any) { console.warn('[ecc]', 'recoverPublicKey failed:', getErrorMessage(err)); }
         }
         if (recoveryId < 0 || recoveryId > 3) {
             nonce++;

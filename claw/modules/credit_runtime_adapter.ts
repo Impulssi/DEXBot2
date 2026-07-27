@@ -2,6 +2,7 @@
 import { path } from '../../modules/path_api';
 import { Config } from '../../modules/config';
 import CreditRuntime from '../../modules/credit_runtime';
+import { getErrorMessage } from '../../modules/utils/errors';
 'use strict';
 
 
@@ -89,7 +90,7 @@ function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {
           if (!bot.debtPolicy) return { error: `bot ${botRef} has no debtPolicy configured` };
           return { error: `unable to initialize credit runtime for ${botRef}` };
         } catch (err: any) {
-          return { error: err.message };
+          return { error: getErrorMessage(err) };
         }
       }
       await rt.refreshState();

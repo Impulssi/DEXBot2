@@ -56,12 +56,13 @@ import * as OrderUtils from './order';
 import Logger from '../../logger';
 import { runtime } from '../../runtime';
 import { ensureDir, readJSON } from '../../utils/fs_utils';
+import { getErrorMessage } from '../../utils/errors';
 const systemLogger = new Logger('System');
 
 function _debugLogAndNull(method: any, symA: any, symB: any) {
     return (err: any) => {
         // debug level: underlying derivePoolPrice/deriveMarketPrice already log at warn
-        systemLogger.debug(`derivePrice(${method}) for ${symA}/${symB}: ${err.message}`);
+        systemLogger.debug(`derivePrice(${method}) for ${symA}/${symB}: ${getErrorMessage(err)}`);
         return null;
     };
 }
@@ -109,7 +110,7 @@ export const lookupAsset = async (BitShares: any, s: string): Promise<any> => {
                 return { ...(cached || {}), ...r[0] };
             }
         } catch (e: any) {
-            systemLogger.debug(`lookupAsset: method failed for ${s}: ${e.message}`);
+            systemLogger.debug(`lookupAsset: method failed for ${s}: ${getErrorMessage(e)}`);
         }
     }
 
@@ -145,7 +146,7 @@ export const deriveMarketPrice = async (BitShares: any, symA: string, symB: stri
                 const bestAsk = isValidNumber(ob.asks?.[0]?.price) ? toFiniteNumber(ob.asks[0].price) : null;
                 if (bestBid !== null && bestAsk !== null) mid = (bestBid + bestAsk) / 2;
             } catch (e: any) {
-                systemLogger.debug(`deriveMarketPrice: get_order_book failed for ${symA}/${symB}: ${e.message}`);
+                systemLogger.debug(`deriveMarketPrice: get_order_book failed for ${symA}/${symB}: ${getErrorMessage(e)}`);
             }
         }
 
@@ -154,7 +155,7 @@ export const deriveMarketPrice = async (BitShares: any, symA: string, symB: stri
                 const t = await BitShares.db.get_ticker(baseId, quoteId);
                 mid = isValidNumber(t?.latest) ? toFiniteNumber(t.latest) : (isValidNumber(t?.latest_price) ? toFiniteNumber(t.latest_price) : null);
             } catch (err: any) {
-                systemLogger.debug(`deriveMarketPrice: get_ticker failed for ${symA}/${symB}: ${err.message}`);
+                systemLogger.debug(`deriveMarketPrice: get_ticker failed for ${symA}/${symB}: ${getErrorMessage(err)}`);
             }
         }
 
@@ -165,7 +166,7 @@ export const deriveMarketPrice = async (BitShares: any, symA: string, symB: stri
         }
         return finalPrice;
     } catch (err: any) {
-        systemLogger.warn(`deriveMarketPrice failed for ${symA}/${symB}: ${err.message}`);
+        systemLogger.warn(`deriveMarketPrice failed for ${symA}/${symB}: ${getErrorMessage(err)}`);
         return null;
     }
 };
@@ -206,7 +207,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
                     }
                 }
             } catch (e: any) {
-                systemLogger.debug(`derivePoolPrice: get_liquidity_pools_by_both_assets failed: ${e.message}`);
+                systemLogger.debug(`derivePoolPrice: get_liquidity_pools_by_both_assets failed: ${getErrorMessage(e)}`);
             }
         }
 
@@ -261,7 +262,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
                         poolIdCache.set(cacheKey, chosen.id);
                     }
                 } catch (e: any) {
-                    systemLogger.warn(`derivePoolPrice: pool pagination failed: ${e.message || e}`);
+                    systemLogger.warn(`derivePoolPrice: pool pagination failed: ${getErrorMessage(e) || e}`);
                 }
             }
         }
@@ -273,7 +274,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
                 const [full] = await BitShares.db.get_objects([chosen.id]);
                 if (full) chosen = full;
             } catch (e: any) {
-                systemLogger.debug(`derivePoolPrice: get_objects failed for pool ${chosen.id}: ${e.message}`);
+                systemLogger.debug(`derivePoolPrice: get_objects failed for pool ${chosen.id}: ${getErrorMessage(e)}`);
             }
         }
 
@@ -314,7 +315,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
         }
         return finalPrice;
     } catch (err: any) {
-        systemLogger.warn(`derivePoolPrice failed for ${symA}/${symB}: ${err.message}`);
+        systemLogger.warn(`derivePoolPrice failed for ${symA}/${symB}: ${getErrorMessage(err)}`);
         return null;
     }
 };
@@ -372,7 +373,7 @@ export async function resolveLiquidityPoolByShareAsset(BitShares: any, shareAsse
     }
 
     const shareAsset = await lookupAsset(BitShares, shareAssetRef).catch((e: any) => {
-        systemLogger.debug(`resolveLiquidityPoolByShareAsset: lookupAsset failed for ${shareAssetRef}: ${e.message}`);
+        systemLogger.debug(`resolveLiquidityPoolByShareAsset: lookupAsset failed for ${shareAssetRef}: ${getErrorMessage(e)}`);
         return null;
     });
     if (!shareAsset?.id) {
@@ -380,7 +381,7 @@ export async function resolveLiquidityPoolByShareAsset(BitShares: any, shareAsse
     }
 
     const response = await BitShares.db.get_liquidity_pools_by_share_asset([shareAsset.id], false, false).catch((e: any) => {
-        systemLogger.debug(`resolveLiquidityPoolByShareAsset: get_liquidity_pools_by_share_asset failed for ${shareAssetRef}: ${e.message}`);
+        systemLogger.debug(`resolveLiquidityPoolByShareAsset: get_liquidity_pools_by_share_asset failed for ${shareAssetRef}: ${getErrorMessage(e)}`);
         return null;
     });
     if (!Array.isArray(response)) {
@@ -402,7 +403,7 @@ async function getAssetCurrentSupply(BitShares: any, assetRef: any): Promise<any
     const asset = typeof assetRef === 'object' && assetRef !== null
         ? assetRef
         : await lookupAsset(BitShares, assetRef).catch((e: any) => {
-            systemLogger.debug(`getAssetCurrentSupply: lookupAsset failed for ${assetRef}: ${e.message}`);
+            systemLogger.debug(`getAssetCurrentSupply: lookupAsset failed for ${assetRef}: ${getErrorMessage(e)}`);
             return null;
         });
     if (!asset) {
@@ -420,7 +421,7 @@ async function getAssetCurrentSupply(BitShares: any, assetRef: any): Promise<any
     }
 
     const objects = await BitShares.db.get_objects([dynamicId]).catch((e: any) => {
-        systemLogger.debug(`getAssetCurrentSupply: get_objects failed for ${dynamicId}: ${e.message}`);
+        systemLogger.debug(`getAssetCurrentSupply: get_objects failed for ${dynamicId}: ${getErrorMessage(e)}`);
         return null;
     });
     const dynamicData = Array.isArray(objects) ? objects[0] : null;
@@ -479,13 +480,13 @@ export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRe
         const priceA = String(assetA.id) === String(denominationAsset.id)
             ? 1
             : await derivePrice(BitShares, assetA.id, denominationAsset.id, mode).catch((e: any) => {
-                systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${assetA.id}/${denominationAsset.id}: ${e.message}`);
+                systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${assetA.id}/${denominationAsset.id}: ${getErrorMessage(e)}`);
                 return null;
             });
         const priceB = String(assetB.id) === String(denominationAsset.id)
             ? 1
             : await derivePrice(BitShares, assetB.id, denominationAsset.id, mode).catch((e: any) => {
-                systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${assetB.id}/${denominationAsset.id}: ${e.message}`);
+                systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${assetB.id}/${denominationAsset.id}: ${getErrorMessage(e)}`);
                 return null;
             });
 
@@ -502,7 +503,7 @@ export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRe
         const valuePerShare = totalValue / supplyFloat;
         return isValidNumber(valuePerShare) && valuePerShare > 0 ? valuePerShare : null;
     } catch (err: any) {
-        systemLogger.debug(`deriveLiquidityPoolTokenValue failed for ${shareAssetRef}/${denominationAssetRef}: ${err.message}`);
+        systemLogger.debug(`deriveLiquidityPoolTokenValue failed for ${shareAssetRef}/${denominationAssetRef}: ${getErrorMessage(err)}`);
         return null;
     }
 }
@@ -589,7 +590,7 @@ export function _loadFeeCacheFromDisk(): Record<string, any> {
             }
         }
     } catch (e: any) {
-        systemLogger.debug(`_loadFeeCacheFromDisk: ${e.message}`);
+        systemLogger.debug(`_loadFeeCacheFromDisk: ${getErrorMessage(e)}`);
     }
     return {};
 }
@@ -602,7 +603,7 @@ export function _saveFeeCacheToDisk(cache: Record<string, any>): void {
     try {
         (storage as any).writeJSON(PATHS.PROFILES.FEE_CACHE_JSON, cache);
     } catch (e: any) {
-        systemLogger.debug(`_saveFeeCacheToDisk: ${e.message}`);
+        systemLogger.debug(`_saveFeeCacheToDisk: ${getErrorMessage(e)}`);
     }
 }
 
@@ -680,7 +681,7 @@ export async function initializeFeeCache(botsConfig: any[], BitShares: any): Pro
                 if (attempt < maxAttempts) {
                     const delay = baseDelay * attempt;
                     systemLogger.warn(
-                        `initializeFeeCache: attempt ${attempt}/${maxAttempts} failed for ${assetSymbol}: ${error.message}. Retrying in ${delay}ms...`
+                        `initializeFeeCache: attempt ${attempt}/${maxAttempts} failed for ${assetSymbol}: ${getErrorMessage(error)}. Retrying in ${delay}ms...`
                     );
                     await sleep(delay);
                 }
@@ -776,7 +777,7 @@ export async function retryPersistenceIfNeeded(manager: any): Promise<boolean> {
         if (success) delete manager._persistenceWarning;
         return success;
     } catch (e: any) {
-        systemLogger.warn(`retryPersistenceIfNeeded failed: ${e.message}`);
+        systemLogger.warn(`retryPersistenceIfNeeded failed: ${getErrorMessage(e)}`);
         return false;
     }
 }
@@ -832,7 +833,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         try {
             resizeCowResult = await updateGridFromBlockchainSnapshot(manager, resizeOrderType, true, pendingBoundaryIdx);
         } catch (err: any) {
-            manager.logger?.log?.(`[DIVERGENCE-COW] Grid resize failed: ${err.message}`, 'error');
+            manager.logger?.log?.(`[DIVERGENCE-COW] Grid resize failed: ${getErrorMessage(err)}`, 'error');
             manager._gridSidesUpdated.clear();
             return;
         }
@@ -1014,7 +1015,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                 manager._gridSidesUpdated.clear();
             }
         } catch (err: any) {
-            manager.logger.log(`[DIVERGENCE-COW] Error executing divergence corrections: ${err.message}`, 'error');
+            manager.logger.log(`[DIVERGENCE-COW] Error executing divergence corrections: ${getErrorMessage(err)}`, 'error');
             manager._gridSidesUpdated.clear();
         }
     } else {

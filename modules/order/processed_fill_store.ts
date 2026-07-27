@@ -1,6 +1,7 @@
 /**
  * @enum {string}
  */
+const { getErrorMessage } = require('../utils/errors');
 const PROCESSED_FILL_PERSISTENCE_MODES: { readonly IMMEDIATE: string; readonly BATCHED: string; readonly MANUAL: string } = Object.freeze({
     IMMEDIATE: 'immediate',
     BATCHED: 'batched',
@@ -192,7 +193,7 @@ class ProcessedFillStore {
                         this.pendingWrites.set(fillKey, timestamp);
                     }
                 }
-                this._warn(`[FILL-DEDUP] Failed to flush ${batch.size} processed fill record(s) (${reason}): ${err.message}`);
+                this._warn(`[FILL-DEDUP] Failed to flush ${batch.size} processed fill record(s) (${reason}): ${getErrorMessage(err)}`);
                 this._schedule();
             }
         };
@@ -244,7 +245,7 @@ class ProcessedFillStore {
                         this.pendingWrites.set(fillKey, timestamp);
                     }
                 }
-                this._warn(`[FILL-DEDUP] Failed to flush ${batch.size} selected processed fill record(s) (${reason}): ${err.message}`);
+                this._warn(`[FILL-DEDUP] Failed to flush ${batch.size} selected processed fill record(s) (${reason}): ${getErrorMessage(err)}`);
                 this._schedule();
             }
         };

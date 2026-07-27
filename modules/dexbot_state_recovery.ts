@@ -6,6 +6,7 @@ import * as chainOrders from './chain_orders';
 import { ORDER_TYPES } from './constants';
 import * as Format from './order/format';
 import * as grid from './order/grid';
+import { getErrorMessage } from './utils/errors';
 function virtualizeOrder(...args: any) { return require('./order/utils/order').virtualizeOrder(...args); }
 function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
 function blockchainToFloat(...args: any) { return require('./order/utils/math').blockchainToFloat(...args); }
@@ -244,9 +245,9 @@ async function recoverBatchSizeDrift(bot: any, err: any, opContexts: any = []) {
         );
     }
 
-    const reason = `recoverable size drift during COW batch: ${err.message}`;
+    const reason = `recoverable size drift during COW batch: ${getErrorMessage(err)}`;
     bot.manager.logger.log(
-        `[COW] Recovering from on-chain size drift via recovery sync: ${err.message}`,
+        `[COW] Recovering from on-chain size drift via recovery sync: ${getErrorMessage(err)}`,
         'warn'
     );
     await bot._triggerStateRecoverySync(reason);
@@ -359,10 +360,10 @@ async function recoverFromPersistedGrid(bot: any) {
         return { success: true };
     } catch (err: any) {
         bot.manager.logger.log(
-            `[RECOVERY] Full grid reload from persisted snapshot failed: ${err.message}`,
+            `[RECOVERY] Full grid reload from persisted snapshot failed: ${getErrorMessage(err)}`,
             'error'
         );
-        return { success: false, reason: err.message };
+        return { success: false, reason: getErrorMessage(err) };
     }
 }
 

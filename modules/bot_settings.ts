@@ -6,6 +6,7 @@ import { createBotKey } from './account_orders';
 import { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } from './order/utils/math';
 import { resolveMinCollateralIncreaseThreshold } from './cr_planner';
 import { writeJSON } from './utils/fs_utils';
+import { getErrorMessage } from './utils/errors';
 const storage = getStorage();
 
 function loadSettingsFile(filePath: string, { silent = false, exitOnError = true }: { silent?: boolean; exitOnError?: boolean } = {}): { config: any; filePath: string } {
@@ -21,7 +22,7 @@ function loadSettingsFile(filePath: string, { silent = false, exitOnError = true
         return { config, filePath };
     } catch (err: any) {
         console.error('Failed to parse bot settings from', filePath);
-        console.error('Error:', err.message);
+        console.error('Error:', getErrorMessage(err));
         console.error('Please check the JSON syntax in profiles/bots.json and try again.');
         if (exitOnError) {
             throw err;
@@ -34,7 +35,7 @@ function saveSettingsFile(config: any, filePath: string): void {
     try {
         writeJSON(filePath, config);
     } catch (err: any) {
-        console.error('Failed to save bot settings to', filePath, '-', err.message);
+        console.error('Failed to save bot settings to', filePath, '-', getErrorMessage(err));
         throw err;
     }
 }

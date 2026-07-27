@@ -1,6 +1,7 @@
 
 import { NATIVE_CLIENT } from '../constants';
 import Logger from '../logger';
+import { getErrorMessage } from '../utils/errors';
 'use strict';
 
 const { SUBSCRIPTIONS, OPERATIONS } = NATIVE_CLIENT;
@@ -55,7 +56,7 @@ function createSubscriptionManager(chainClient: any): any {
 
     function warnSubscription(sub: any, message: string, err: any = null): void {
         const account = sub?.accountName || sub?.accountId || 'unknown';
-        const detail = err?.message ? `: ${err.message}` : '';
+        const detail = err?.message ? `: ${getErrorMessage(err)}` : '';
         subscriptionsLogger.warn(`${message} for ${account}${detail}`);
     }
 
@@ -225,7 +226,7 @@ function createSubscriptionManager(chainClient: any): any {
                 return latestId;
             }
         } catch (err: any) {
-            subscriptionsLogger.warn(`primeLastDeliveredHistoryId: get_account_history failed for ${sub.accountName}: ${err.message}`);
+            subscriptionsLogger.warn(`primeLastDeliveredHistoryId: get_account_history failed for ${sub.accountName}: ${getErrorMessage(err)}`);
         }
 
         subscriptionsLogger.info(`primeLastDeliveredHistoryId: no history found, using HISTORY_API_OBJECT for ${sub.accountName}`);
@@ -607,7 +608,7 @@ function createSubscriptionManager(chainClient: any): any {
             try {
                 await chainClient.db.get_full_accounts([subEntry.accountName], true);
             } catch (err: any) {
-                subscriptionsLogger.warn(`Failed to re-subscribe account after set_subscribe_callback for ${subEntry.accountName}: ${err.message}`);
+                subscriptionsLogger.warn(`Failed to re-subscribe account after set_subscribe_callback for ${subEntry.accountName}: ${getErrorMessage(err)}`);
                 failures.push({ entry: subEntry, err });
             }
         }
@@ -627,7 +628,7 @@ function createSubscriptionManager(chainClient: any): any {
                     entry.statisticsId = accounts[0][1].account.statistics || null;
                 }
             } catch (err: any) {
-                subscriptionsLogger.warn(`Failed to refresh account data for ${entry.accountName}: ${err.message}`);
+                subscriptionsLogger.warn(`Failed to refresh account data for ${entry.accountName}: ${getErrorMessage(err)}`);
             }
 
             const refreshFailures = await refreshSubscriptions();
@@ -691,7 +692,7 @@ function createSubscriptionManager(chainClient: any): any {
                 try {
                     await resubscribeEntry(firstEntry, 'healthcheck');
                 } catch (err: any) {
-                    subscriptionsLogger.warn(`Subscription health: resubscribe failed for ${firstEntry.accountName}: ${err.message}`);
+                    subscriptionsLogger.warn(`Subscription health: resubscribe failed for ${firstEntry.accountName}: ${getErrorMessage(err)}`);
                 }
 
                 // Catch up remaining stale entries with processObjects (the
@@ -706,7 +707,7 @@ function createSubscriptionManager(chainClient: any): any {
                         clearReconnectRetry(entry);
                         subscriptionsLogger.warn(`Subscription restored for ${entry.accountName} (healthcheck)`);
                     } catch (err: any) {
-                        subscriptionsLogger.warn(`Subscription health: catch-up scan failed for ${entry.accountName}: ${err.message}`);
+                        subscriptionsLogger.warn(`Subscription health: catch-up scan failed for ${entry.accountName}: ${getErrorMessage(err)}`);
                         scheduleReconnectRetry(entry, err);
                     } finally {
                         entry.reconnecting = false;
@@ -840,7 +841,7 @@ function createSubscriptionManager(chainClient: any): any {
                         }
                     }
                 }
-                throw new Error(`Failed to register subscription callback: ${err.message}`);
+                throw new Error(`Failed to register subscription callback: ${getErrorMessage(err)}`);
             }
         }
 
@@ -894,7 +895,7 @@ function createSubscriptionManager(chainClient: any): any {
                         entry.statisticsId = accounts[0][1].account.statistics || null;
                     }
                 }).catch((err: any) => {
-                    subscriptionsLogger.warn(`Failed to refresh account data for ${entry.accountName}: ${err.message}`);
+                    subscriptionsLogger.warn(`Failed to refresh account data for ${entry.accountName}: ${getErrorMessage(err)}`);
                 })
             );
         }
@@ -916,7 +917,7 @@ function createSubscriptionManager(chainClient: any): any {
                 processObjects(entry, [entry.accountId], { throwOnError: true })
                     .then(() => clearReconnectRetry(entry))
                     .catch((err: any) => {
-                        subscriptionsLogger.warn(`Failed to resubscribe ${entry.accountName}: ${err.message}`);
+                        subscriptionsLogger.warn(`Failed to resubscribe ${entry.accountName}: ${getErrorMessage(err)}`);
                         scheduleReconnectRetry(entry, err);
                     })
             );

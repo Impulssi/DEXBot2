@@ -207,7 +207,7 @@ async function _getAssetPrecision(assetRef: any) {
             }
         }
     } catch (e: any) {
-        throw new Error(`CRITICAL: Could not resolve precision for asset ${assetRef}. Halting operation to prevent scaling errors. Cause: ${e.message}`);
+        throw new Error(`CRITICAL: Could not resolve precision for asset ${assetRef}. Halting operation to prevent scaling errors. Cause: ${getErrorMessage(e)}`);
     }
 
     throw new Error(`CRITICAL: Could not resolve precision for asset ${assetRef}. Halting operation to prevent scaling errors. Cause: asset not found or precision missing.`);
@@ -376,7 +376,7 @@ async function _ensureAccountSubscriber(accountName: any, userCallback: any = nu
                     }
                 }
                 if (failures.length > 0) {
-                    const err: any = new Error(`Fill listener delivery failed for ${failures.length} callback(s): ${failures.map((e: any) => e.message || String(e)).join('; ')}`);
+                    const err: any = new Error(`Fill listener delivery failed for ${failures.length} callback(s): ${failures.map((e: any) => getErrorMessage(e) || String(e)).join('; ')}`);
                     err.causes = failures;
                     throw err;
                 }
@@ -453,7 +453,7 @@ async function selectAccount() {
             else if (full[0][1] && full[0][1].account && full[0][1].account.id) selectedId = full[0][1].account.id;
         }
     } catch (e: any) {
-        console.error(`Failed to resolve account ID for ${selectedAccount}: ${e.message}`);
+        console.error(`Failed to resolve account ID for ${selectedAccount}: ${getErrorMessage(e)}`);
     }
 
     if (selectedId) {
@@ -607,7 +607,7 @@ async function readOpenOrders(accountId: string | null = null, timeoutMs: any = 
         }
         return orders;
     } catch (error: any) {
-        chainOrdersLogger.error(`Error reading open orders: ${error.message}`);
+        chainOrdersLogger.error(`Error reading open orders: ${getErrorMessage(error)}`);
         throw error;
     }
 }
@@ -657,7 +657,7 @@ async function listenForFills(accountRef: any, callback: any) {
     }
 
     if (accountId) {
-        readOpenOrders(accountId, 30000, true).catch((error: any) => chainOrdersLogger.error(`Error loading account for listening: ${error.message}`));
+        readOpenOrders(accountId, 30000, true).catch((error: any) => chainOrdersLogger.error(`Error loading account for listening: ${getErrorMessage(error)}`));
     } else {
         chainOrdersLogger.warn('Unable to derive account id before listening for fills; skipping open-order prefetch.');
     }
@@ -687,12 +687,12 @@ async function listenForFills(accountRef: any, callback: any) {
                         if (typeof BitShares.unsubscribe === 'function') {
                             await BitShares.unsubscribe('account', entry.bsCallback, accountName);
                         }
-                    } catch (e: any) { chainOrdersLogger.warn(`Unsubscribe failed: ${e.message}`); }
+                    } catch (e: any) { chainOrdersLogger.warn(`Unsubscribe failed: ${getErrorMessage(e)}`); }
                     accountSubscriptions.delete(accountName);
                 }
             });
         } catch (e: any) {
-            chainOrdersLogger.error(`Error unsubscribing listenForFills ${e.message}`);
+            chainOrdersLogger.error(`Error unsubscribing listenForFills ${getErrorMessage(e)}`);
         }
     };
 }
@@ -938,7 +938,7 @@ async function updateOrder(accountName: any, privateKey: any, orderId: any, newP
         chainOrdersLogger.info(`Order ${orderId} updated successfully`);
         return { success: true, orderId };
     } catch (error: any) {
-        chainOrdersLogger.error(`Error updating order: ${error.message}`);
+        chainOrdersLogger.error(`Error updating order: ${getErrorMessage(error)}`);
         throw error;
     }
 }
@@ -1040,7 +1040,7 @@ async function createOrder(accountName: any, privateKey: any, amountToSell: any,
         chainOrdersLogger.info(`Limit order created successfully for account ${accountName}`);
         return result;
     } catch (error: any) {
-        chainOrdersLogger.error(`Error creating limit order: ${error.message}`);
+        chainOrdersLogger.error(`Error creating limit order: ${getErrorMessage(error)}`);
         throw error;
     }
 }
@@ -1114,7 +1114,7 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
                 // Fall through to the original error.
             }
         }
-        chainOrdersLogger.error(`Error cancelling order: ${error.message}`);
+        chainOrdersLogger.error(`Error cancelling order: ${getErrorMessage(error)}`);
         throw error;
     }
 }
@@ -1172,7 +1172,7 @@ async function executeBatch(accountName: any, privateKey: any, operations: any, 
             operation_results: operationResults
         };
     } catch (error: any) {
-        chainOrdersLogger.error(`Error executing batch transaction: ${error.message}`);
+        chainOrdersLogger.error(`Error executing batch transaction: ${getErrorMessage(error)}`);
         throw error;
     }
 }
@@ -1271,7 +1271,7 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
                     if (res && res[0] && res[0].id) aid = res[0].id;
                 }
             } catch (e: any) {
-                chainOrdersLogger.warn(`lookup_asset_symbols failed for ${a}: ${e.message}`);
+                chainOrdersLogger.warn(`lookup_asset_symbols failed for ${a}: ${getErrorMessage(e)}`);
             }
 
             // try to get precision and symbol
@@ -1283,7 +1283,7 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
                     symbol = am[0].symbol || symbol;
                 }
             } catch (e: any) { 
-                chainOrdersLogger.warn(`Failed to fetch asset data for ${aid}: ${e.message}`);
+                chainOrdersLogger.warn(`Failed to fetch asset data for ${aid}: ${getErrorMessage(e)}`);
             }
 
             if (precision === null) {
@@ -1300,7 +1300,7 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
 
         return out;
     } catch (err: any) {
-        chainOrdersLogger.error(`getOnChainAssetBalances failed: ${err.message}`);
+        chainOrdersLogger.error(`getOnChainAssetBalances failed: ${getErrorMessage(err)}`);
         return {};
     }
 }

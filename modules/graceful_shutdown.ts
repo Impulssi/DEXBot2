@@ -61,6 +61,7 @@
 
 import Logger from './logger';
 import { runtime } from './runtime';
+import { getErrorMessage } from './utils/errors';
 let cleanupHandlers: any[] = [];
 let shutdownInProgress = false;
 const shutdownLogger = new Logger('Shutdown');
@@ -127,7 +128,7 @@ async function executeCleanup() {
             }
             shutdownLogger.info(`✓ ${name}`);
         } catch (err: any) {
-            shutdownLogger.error(`✗ Error cleaning up ${name}: ${err.message || err}`);
+            shutdownLogger.error(`✗ Error cleaning up ${name}: ${getErrorMessage(err) || err}`);
         }
     }
 

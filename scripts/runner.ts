@@ -77,6 +77,7 @@ import { initializeGrid } from '../modules/order/grid';
 import { readBotsFileSync } from '../modules/bots_file_lock';
 import { Config } from '../modules/config';
 import { parseJsonWithComments, sleep } from '../modules/order/utils/system';
+import { getErrorMessage } from '../modules/utils/errors';
 async function runOrderManagerCalculation() {
     const cfgFile = PATHS.PROFILES.BOTS_JSON;
     let botConfig: any = {};
@@ -97,7 +98,7 @@ async function runOrderManagerCalculation() {
         console.log(`Using bot from settings: ${chosenBot.name || '<unnamed>'}`);
         botConfig = { ...chosenBot };
     } catch (err: any) {
-        console.warn('Failed to read bot configuration:', err.message);
+        console.warn('Failed to read bot configuration:', getErrorMessage(err));
         throw err;
     }
 
@@ -106,7 +107,7 @@ async function runOrderManagerCalculation() {
     try {
         await initializeGrid(manager);
     } catch (err: any) {
-        console.error('Grid initialization failed — ensure BitShares nodes are reachable and asset symbols are valid:', err.message);
+        console.error('Grid initialization failed — ensure BitShares nodes are reachable and asset symbols are valid:', getErrorMessage(err));
         throw err;
     }
 

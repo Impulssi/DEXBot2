@@ -6,13 +6,14 @@ import { TIMING } from '../constants';
 import { safeUnlink } from '../utils/fs_utils';
 import { assertPrivatePathSecurity } from '../credential_runtime';
 import { getStorage } from '../storage';
+import { getErrorMessage } from '../utils/errors';
 const storage = getStorage();
 
 const BOOTSTRAP_SOCKET_PREFIX = 'dexbot-cred-bootstrap-';
 const DEFAULT_TIMEOUT_MS = TIMING.DAEMON_STARTUP_TIMEOUT_MS;
 
 function debugLog(message: any, err: any = null) {
-    const suffix = err && err.message ? `: ${err.message}` : '';
+    const suffix = err && getErrorMessage(err) ? `: ${getErrorMessage(err)}` : '';
     console.error(`[credential-bootstrap][debug] ${message}${suffix}`);
 }
 

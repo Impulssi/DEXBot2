@@ -5,6 +5,7 @@ import { PATHS } from '../../modules/paths';
 import { runtime } from '../../modules/runtime';
 import { ensureDir, safeUnlink } from '../../modules/utils/fs_utils';
 import { Config } from '../../modules/config';
+import { getErrorMessage } from '../../modules/utils/errors';
 const storage = getStorage();
 
 let _spawn: any;
@@ -103,7 +104,7 @@ function runMemuPython(args: string[], options: Record<string, any> = {}) {
         const parsed = JSON.parse(output);
         resolve(parsed);
       } catch (error: any) {
-        reject(new Error(`Failed to parse memU output: ${error.message}\nOutput: ${stdout.trim()}\nStderr: ${stderr.trim()}`));
+        reject(new Error(`Failed to parse memU output: ${getErrorMessage(error)}\nOutput: ${stdout.trim()}\nStderr: ${stderr.trim()}`));
       }
     });
 

@@ -30,6 +30,7 @@ const ecc = require('../modules/bitshares-native/crypto/ecc');
 const { NODE_MANAGEMENT } = require('../modules/constants');
 const { PATHS } = require('../modules/paths');
 const { ensureDir, writeJSON } = require('../modules/utils/fs_utils');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const argv: string[] = process.argv.slice(2);
 function flag(name: string, fallback: string | number): string | number {
@@ -108,7 +109,7 @@ async function main(): Promise<void> {
         try {
             block = await client.db('get_block', [b]);
         } catch (e: any) {
-            console.log(`  block ${b}: fetch error ${e.message}`);
+            console.log(`  block ${b}: fetch error ${getErrorMessage(e)}`);
             continue;
         }
         if (!block || !Array.isArray(block.transactions)) continue;
@@ -162,7 +163,7 @@ async function main(): Promise<void> {
                     } catch (e: any) {
                         if (txHexAvailable === null) {
                             txHexAvailable = false;
-                            console.log(`  note: get_transaction_hex unavailable on this node (${e.message}); txid-only mode\n`);
+                            console.log(`  note: get_transaction_hex unavailable on this node (${getErrorMessage(e)}); txid-only mode\n`);
                         }
                     }
                 }
@@ -176,7 +177,7 @@ async function main(): Promise<void> {
                     skipped++;
                 }
             } catch (e: any) {
-                detail.error = e.message;
+                detail.error = getErrorMessage(e);
                 skipped++;
             }
 

@@ -25,6 +25,7 @@ import type {
   BroadcastOptions,
   ClawInfrastructureOptions,
 } from './types';
+import { getErrorMessage } from '../../modules/utils/errors';
 
 const CLAW_ROOT = PATHS.CLAW.DIR;
 const DEFAULT_DATA_DIR = PATHS.CLAW.DATA_DIR;
@@ -79,7 +80,7 @@ function createStateStore(options: StateStoreOptions = {}) {
       if (error && error.code === 'ENOENT') {
         return clone(defaultValue);
       }
-      throw new Error(`Failed to read state store ${filePath}: ${error.message}`);
+      throw new Error(`Failed to read state store ${filePath}: ${getErrorMessage(error)}`);
     }
   }
 

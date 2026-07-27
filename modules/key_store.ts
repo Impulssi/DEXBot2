@@ -12,6 +12,7 @@ import { PATHS } from './paths';
 import { getStorage } from './storage';
 import { runtime } from './runtime';
 import { sleep } from './order/utils/system';
+import { getErrorMessage } from './utils/errors';
 
 const storage = getStorage();
 
@@ -76,8 +77,8 @@ export class DaemonKeyStore implements KeyStore {
                 };
             } catch (err: any) {
                 if (err instanceof BroadcastUncertainError) throw err;
-                if (err.message && (err.message.includes(DAEMON_ERRORS.SESSION_EXPIRED) || err.message.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED))) {
-                    const isSourceAuthError = err.message.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED);
+                if (getErrorMessage(err) && (getErrorMessage(err).includes(DAEMON_ERRORS.SESSION_EXPIRED) || getErrorMessage(err).includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED))) {
+                    const isSourceAuthError = getErrorMessage(err).includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED);
                     if (isSourceAuthError) {
                         try {
                             const readyFile = credentialRuntime.getCredentialReadyFilePath({ root: PATHS.PROJECT_ROOT });

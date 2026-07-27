@@ -25,6 +25,7 @@ import { path } from '../modules/path_api.js';
 import { getStorage } from '../modules/storage/index.js';
 import { mergeCandles } from './candle_utils.js';
 import { ensureDir, readJSON, writeJSON } from '../modules/utils/fs_utils.js';
+import { getErrorMessage } from '../modules/utils/errors';
 const storage = getStorage();
 
 // ─── CLI ──────────────────────────────────────────────────────────────────────
@@ -143,6 +144,6 @@ function run() {
 try {
     run();
 } catch (e: any) {
-    console.error('\n[error]', e.message);
+    console.error('\n[error]', getErrorMessage(e));
     process.exit(1);
 }

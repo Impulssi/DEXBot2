@@ -1,6 +1,7 @@
 
 import { NATIVE_CLIENT } from '../constants';
 import { LRUCache } from './lru_cache';
+import { getErrorMessage } from '../utils/errors';
 'use strict';
 
 const { RESOLVERS } = NATIVE_CLIENT;
@@ -43,7 +44,7 @@ function createResolvers(chainClient: ChainClient) {
                 asset = assets && assets[0];
             }
         } catch (err: any) {
-            throw new Error(`Failed to resolve asset ${idOrSymbol}: ${err.message}`);
+            throw new Error(`Failed to resolve asset ${idOrSymbol}: ${getErrorMessage(err)}`);
         }
 
         if (!asset) throw new Error(`Asset not found: ${idOrSymbol}`);

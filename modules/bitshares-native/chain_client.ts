@@ -2,6 +2,7 @@
 import { createTransport, ConnectionError } from './transport';
 import { GRAPHENE_CHAIN_ID, GRAPHENE_ADDRESS_PREFIX } from './serial/chain_constants';
 import { NATIVE_CLIENT } from '../constants';
+import { getErrorMessage } from '../utils/errors';
 'use strict';
 
 const { CHAIN } = NATIVE_CLIENT;
@@ -99,14 +100,14 @@ function createChainClient(config: ChainClientConfig = {}) {
             try {
                 const props = await transport.call('call', [_dbApiId, 'get_chain_properties', []]);
                 if (props && props.address_prefix) addressPrefix = props.address_prefix;
-            } catch (err: any) { console.warn('[chain_client]', 'get_chain_properties failed:', err.message); }
+            } catch (err: any) { console.warn('[chain_client]', 'get_chain_properties failed:', getErrorMessage(err)); }
 
             try {
                 const globals = await transport.call('call', [_dbApiId, 'get_global_properties', []]);
                 if (globals && globals.parameters && globals.parameters.core_asset) {
                     coreAsset = globals.parameters.core_asset;
                 }
-            } catch (err: any) { console.warn('[chain_client]', 'get_global_properties failed:', err.message); }
+            } catch (err: any) { console.warn('[chain_client]', 'get_global_properties failed:', getErrorMessage(err)); }
 
             try {
                 // login_api.get_config() returns application_options (which

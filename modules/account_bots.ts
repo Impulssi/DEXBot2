@@ -107,6 +107,7 @@ import { parseJsonWithComments } from './order/utils/system';
 import { writeJSON } from './utils/fs_utils';
 import { assertNoDuplicateBotKeys } from './bot_settings';
 import { mergeSettings } from './settings_merge';
+import { getErrorMessage } from './utils/errors';
 const storage = getStorage();
 
 
@@ -128,7 +129,7 @@ function loadBotsConfig() {
         if (!Array.isArray(parsed.bots)) parsed.bots = [];
         return { config: parsed, filePath: BOTS_FILE };
     } catch (err: any) {
-        console.error('Failed to load bots configuration:', err.message);
+        console.error('Failed to load bots configuration:', getErrorMessage(err));
         return { config: { bots: [] }, filePath: BOTS_FILE };
     }
 }
@@ -146,7 +147,7 @@ function saveBotsConfig(config: any, filePath: string): void {
         if (entries.length >= 2) assertNoDuplicateBotKeys(entries, 'account_bots');
         writeJSON(filePath, config);
     } catch (err: any) {
-        console.error('Failed to save bots configuration:', err.message);
+        console.error('Failed to save bots configuration:', getErrorMessage(err));
         throw err;
     }
 }
@@ -183,7 +184,7 @@ function loadGeneralSettings() {
     const settings = readGeneralSettings({
         fallback: null,
         onError: (err: any) => {
-            console.error('Failed to load general settings:', err.message);
+            console.error('Failed to load general settings:', getErrorMessage(err));
         }
     });
 
@@ -208,7 +209,7 @@ function saveGeneralSettings(settings: any): void {
         writeGeneralSettings(settings);
         console.log(`\n✓ General settings saved to ${path.basename(SETTINGS_FILE)}`);
     } catch (err: any) {
-        console.error('Failed to save general settings:', err.message);
+        console.error('Failed to save general settings:', getErrorMessage(err));
     }
 }
 
@@ -1152,7 +1153,7 @@ async function main() {
                         saveBotsConfig(config, filePath);
                         console.log(`\nAdded bot '${entry.name}' to ${path.basename(filePath)}.`);
                     } catch (err: any) {
-                        console.log(`\n❌ Invalid input: ${err.message}\n`);
+                        console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
                         break;
                     }
                 }
@@ -1170,7 +1171,7 @@ async function main() {
                             console.log(`saved settings '${entry.name}' in ${path.basename(filePath)}.\n`);
                         }
                     } catch (err: any) {
-                        console.log(`\n❌ Invalid input: ${err.message}\n`);
+                        console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
                     }
                 }
                 break;
@@ -1204,7 +1205,7 @@ async function main() {
                             console.log(`Copied bot '${entry.name}' into ${path.basename(filePath)}.\n`);
                         }
                     } catch (err: any) {
-                        console.log(`\n❌ Invalid input: ${err.message}\n`);
+                        console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
                     }
                 }
                 break;

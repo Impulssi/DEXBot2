@@ -1,6 +1,7 @@
 
 import { NATIVE_CLIENT } from '../constants';
 import Logger from '../logger';
+import { getErrorMessage } from '../utils/errors';
 'use strict';
 
 // Ambient WebSocket declaration for the ws module (no @types/ws installed)
@@ -248,7 +249,7 @@ function createTransport(config: TransportConfig = {}) {
                     reject(new ConnectionError(`handshake closed code=${evt.code} for ${url}`));
                 };
             } catch (err: any) {
-                reject(new ConnectionError(`Failed to create WebSocket for ${url}: ${err.message}`));
+                reject(new ConnectionError(`Failed to create WebSocket for ${url}: ${getErrorMessage(err)}`));
             }
         });
     }
@@ -497,7 +498,7 @@ function createTransport(config: TransportConfig = {}) {
             } catch (err: any) {
                 clearTimeout(timer);
                 pendingRequests.delete(id);
-                reject(new ConnectionError(`Failed to send: ${err.message}`));
+                reject(new ConnectionError(`Failed to send: ${getErrorMessage(err)}`));
             }
         });
     }

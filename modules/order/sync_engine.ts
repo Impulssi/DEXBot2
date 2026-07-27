@@ -118,6 +118,7 @@ import {
 import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store';
+import { getErrorMessage } from '../utils/errors';
 
 function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision: any, calcTolerance: any, matchedGridOrderIds: Set<string> | null = null) {
     if (!mgr?.orders || !chainOrder || typeof precision !== 'number') return 'candidate diagnostics unavailable';
@@ -418,7 +419,7 @@ class SyncEngine {
         } catch (err: any) {
             clearTimeout(timeoutHandle);
             clearTimeout(forceReleaseHandle);
-            if (err.message?.includes('timed out')) {
+            if (getErrorMessage(err)?.includes('timed out')) {
                 // Gap 3: Schedule a force-release of the sync lock if the inner
                 // operation doesn't complete within the grace window. This prevents
                 // a single stuck sync from permanently blocking all subsequent syncs.
@@ -441,7 +442,7 @@ class SyncEngine {
                     'warn'
                 );
             }
-            mgr.logger?.log?.(`Sync lock error: ${err.message}`, 'error');
+            mgr.logger?.log?.(`Sync lock error: ${getErrorMessage(err)}`, 'error');
             throw err;
         }
     }
@@ -520,7 +521,7 @@ class SyncEngine {
                 // Store raw blockchain data in separate map - clean separation of concerns
                 rawChainOrders.set(order.id, order);
             } catch (e: any) {
-                mgr.logger?.log?.(`Warning: Error parsing chain order ${order.id}: ${e.message}`, 'warn');
+                mgr.logger?.log?.(`Warning: Error parsing chain order ${order.id}: ${getErrorMessage(e)}`, 'warn');
                 continue;
             }
         }
@@ -1402,7 +1403,7 @@ class SyncEngine {
                         }
                         validEntries.push(entry);
                     } catch (acctErr: any) {
-                        mgr.logger.log(`[SYNC] Accounting error for fill ${entry.fillKey}: ${acctErr.message}`, 'error');
+                        mgr.logger.log(`[SYNC] Accounting error for fill ${entry.fillKey}: ${getErrorMessage(acctErr)}`, 'error');
                         continue;
                     }
                 }
@@ -1709,7 +1710,7 @@ class SyncEngine {
                     btsFeeData = getAssetFees('BTS');
                 } catch (err: any) {
                     mgr.logger?.log?.(
-                        `[FILL-FEE] Failed to load BTS cancel fee cache: ${err.message}. Using zero-fee fallback.`,
+                        `[FILL-FEE] Failed to load BTS cancel fee cache: ${getErrorMessage(err)}. Using zero-fee fallback.`,
                         'warn'
                     );
                     btsFeeData = {
@@ -1840,7 +1841,7 @@ class SyncEngine {
             const accountIdOrName = mgr.accountId || mgr.account || null;
             if (!accountIdOrName) return;
 
-            try { await this.initializeAssets(); } catch (err: any) { mgr.logger.log(`[SYNC] initializeAssets failed: ${err.message}`, 'warn'); }
+            try { await this.initializeAssets(); } catch (err: any) { mgr.logger.log(`[SYNC] initializeAssets failed: ${getErrorMessage(err)}`, 'warn'); }
             const assetAId = mgr.assets?.assetA?.id;
             const assetBId = mgr.assets?.assetB?.id;
             if (!assetAId || !assetBId) return;
@@ -1868,7 +1869,7 @@ class SyncEngine {
                  }
              }
         } catch (err: any) {
-            mgr.logger.log(`Failed to fetch on-chain balances: ${err.message}`, 'warn');
+            mgr.logger.log(`Failed to fetch on-chain balances: ${getErrorMessage(err)}`, 'warn');
         }
     }
 
@@ -1931,7 +1932,7 @@ class SyncEngine {
                     const assetData = (side === 'A') ? persistedAssets?.assetA : persistedAssets?.assetB;
 
                     if (assetData && assetData.symbol === symbol && typeof assetData.precision === 'number') {
-                        mgr.logger.log(`Blockchain lookup failed for ${symbol}: ${err.message}. Persisted data: id=${assetData.id}, precision=${assetData.precision} — refusing stale fallback`, 'error');
+                        mgr.logger.log(`Blockchain lookup failed for ${symbol}: ${getErrorMessage(err)}. Persisted data: id=${assetData.id}, precision=${assetData.precision} — refusing stale fallback`, 'error');
                     }
                 }
                 throw err;
@@ -1944,7 +1945,7 @@ class SyncEngine {
                 assetB: await fetchAssetWithFallback(mgr.config.assetB, 'B')
             };
         } catch (err: any) {
-            mgr.logger.log(`Asset metadata lookup failed: ${err.message}`, 'error');
+            mgr.logger.log(`Asset metadata lookup failed: ${getErrorMessage(err)}`, 'error');
             throw err;
         }
     }

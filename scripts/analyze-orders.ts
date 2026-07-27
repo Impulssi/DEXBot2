@@ -25,6 +25,7 @@ import { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } from '../modules/constants'
 import { PATHS } from '../modules/paths';
 import { getWhitelistFlags } from '../modules/market_adapter_whitelist';
 import { readJSON } from '../modules/utils/fs_utils';
+import { getErrorMessage } from '../modules/utils/errors';
 const ORDERS_DIR = PATHS.ORDERS_DIR;
 const BOTS_CONFIG = PATHS.PROFILES.BOTS_JSON;
 
@@ -386,7 +387,7 @@ function getOrderFileCandidate(fileName: string): any {
   try {
     data = readJSON(filePath);
   } catch (error: any) {
-    return { include: false, reason: `invalid JSON: ${error.message}`, report: true, name: fileName };
+    return { include: false, reason: `invalid JSON: ${getErrorMessage(error)}`, report: true, name: fileName };
   }
 
   if (!hasOrderGrid(data)) {
@@ -1642,7 +1643,7 @@ function main() {
 
     } catch (error: any) {
       // Log error but continue processing other files
-      console.error(`\n❌ Error processing ${file.name}: ${error.message}`);
+      console.error(`\n❌ Error processing ${file.name}: ${getErrorMessage(error)}`);
       skipped++;
     }
   });

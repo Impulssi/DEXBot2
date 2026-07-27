@@ -4,6 +4,7 @@ import { ops as serialOps } from '../serial';
 import getEcc from '../crypto/ecc_selector';
 import Logger from '../../logger';
 import * as txCache from './tx_cache';
+import { getErrorMessage } from '../../utils/errors';
 'use strict';
 
 const { TRANSACTION, CHAIN } = NATIVE_CLIENT;
@@ -162,13 +163,13 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
             } catch (err: any) {
                 if (stale && stale.length === ops.length) {
                     builderLogger.info(
-                        `setRequiredFees: chain fetch failed (${err.message}), using stale cached fees`
+                        `setRequiredFees: chain fetch failed (${getErrorMessage(err)}), using stale cached fees`
                     );
                     // Report the failing node to NodeManager (3 strikes → blacklist)
                     try {
                         const nodeUrl = chainClient?.transport?.getNodeUrl?.();
                         if (nodeUrl && typeof chainClient.reportNodeFailure === 'function') {
-                            chainClient.reportNodeFailure(nodeUrl, err.message, 'fee-cache');
+                            chainClient.reportNodeFailure(nodeUrl, getErrorMessage(err), 'fee-cache');
                         }
                     } catch (_) { /* best-effort */ }
                     for (let i = 0; i < ops.length; i++) {
@@ -176,7 +177,7 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
                     }
                     return;
                 }
-                throw new Error(`Failed to fetch required fees: ${err.message}`);
+                throw new Error(`Failed to fetch required fees: ${getErrorMessage(err)}`);
             }
         },
 
@@ -191,7 +192,7 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
                         return;
                     }
                 }
-            } catch (err: any) { console.warn('[builder]', 'fetchRefBlock (get_objects) failed:', err.message); }
+            } catch (err: any) { console.warn('[builder]', 'fetchRefBlock (get_objects) failed:', getErrorMessage(err)); }
 
             try {
                 const dgp = await chainClient.db.get_dynamic_global_properties();

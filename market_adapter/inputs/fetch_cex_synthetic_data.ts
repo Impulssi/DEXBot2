@@ -19,6 +19,7 @@ const { PATHS } = require('../../modules/paths');
 const PROJECT_ROOT = PATHS.PROJECT_ROOT;
 const { MARKET_ADAPTER } = require('../../modules/constants');
 const { getAmaWarmupBars } = require('../core/strategies/ama');
+const { getErrorMessage } = require('../../modules/utils/errors');
 const {
     DEFAULTS: MARKET_ADAPTER_DEFAULTS,
     resolveAmaForBot,
@@ -1034,7 +1035,7 @@ async function probeExchange(exchangeId: any, base: any, quote: any, commonQuote
         return {
             exchangeId,
             name: def.name,
-            error: err.message,
+            error: getErrorMessage(err),
         };
     }
 }

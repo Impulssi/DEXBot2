@@ -253,7 +253,7 @@ async function maybeRunTargetedDriftReconciliation(bot: any, context: any) {
         await bot.manager.persistGrid?.();
         return true;
     } catch (err: any) {
-        bot._warn(`[TARGETED-SYNC] Failed during ${context}: ${err.message}`);
+        bot._warn(`[TARGETED-SYNC] Failed during ${context}: ${getErrorMessage(err)}`);
         return false;
     }
 }
@@ -482,7 +482,7 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
             processNames = await getPm2ProcessNamesFn();
         } catch (err: any) {
             pm2QueryFailed = true;
-            bot._warn(`Could not query PM2 for ${MARKET_ADAPTER_APP_NAME}: ${err.message}. Using a direct PM2 action.`);
+            bot._warn(`Could not query PM2 for ${MARKET_ADAPTER_APP_NAME}: ${getErrorMessage(err)}. Using a direct PM2 action.`);
         }
 
         // Cross-reference config-active bots against actually running PM2 processes
@@ -540,14 +540,14 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
             mode: 'pm2',
         };
     } catch (err: any) {
-        bot._warn(`Market adapter watchdog failed during ${context}: ${err.message}`);
+        bot._warn(`Market adapter watchdog failed during ${context}: ${getErrorMessage(err)}`);
         return {
             changed: false,
             required: false,
             running: false,
             started: false,
             stopped: false,
-            error: err.message,
+            error: getErrorMessage(err),
         };
     } finally {
         bot._marketAdapterWatchdogInFlight = false;
@@ -834,7 +834,7 @@ function performGridResync(bot: any, options: {
                     refreshDynamicWeightDistribution(self, 'grid resync');
                 }
             } catch (e: any) {
-                self._warn(`Failed to reload config during resync (using current settings): ${e.message}`);
+                self._warn(`Failed to reload config during resync (using current settings): ${getErrorMessage(e)}`);
             }
 
             if (refreshCenterPrice) {
@@ -883,7 +883,7 @@ function performGridResync(bot: any, options: {
                         sell: resyncHealth.sellDustOrders,
                     });
                 } catch (_dustErr: any) {
-                    self._warn(`[DUST] Post-resync dust cancel failed: ${_dustErr.message}`);
+                    self._warn(`[DUST] Post-resync dust cancel failed: ${getErrorMessage(_dustErr)}`);
                 }
             }
 
@@ -897,7 +897,7 @@ function performGridResync(bot: any, options: {
                 self.manager._lastUnmatchedChainOrdersAt = 0;
             }
         } catch (err: any) {
-            self._log(`Error during triggered resync: ${err.message}`, 'error');
+            self._log(`Error during triggered resync: ${getErrorMessage(err)}`, 'error');
         } finally {
             self.manager.finishBootstrap();
         }
@@ -974,18 +974,18 @@ async function setupTriggerFileDetection(bot: any) {
                                     bot._warn('Runtime trigger reset failed; retaining existing grid state.');
                                 }
                             }).catch((err: any) => {
-                                bot._warn(`Trigger reset lock error: ${err.message}`);
+                                bot._warn(`Trigger reset lock error: ${getErrorMessage(err)}`);
                                 bot.manager._recoveryState = { ...bot.manager._recoveryState, lastFailureAt: Date.now() };
                             });
                         }, 200);
                     }
                 }
             } catch (err: any) {
-                bot._warn(`fs.watch handler error: ${err && err.message ? err.message : err}`);
+                bot._warn(`fs.watch handler error: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`);
             }
         });
     } catch (err: any) {
-        bot._warn(`Failed to setup file watcher: ${err.message}`);
+        bot._warn(`Failed to setup file watcher: ${getErrorMessage(err)}`);
     }
 }
 
@@ -1068,13 +1068,13 @@ function startOpenOrdersSyncLoop(bot: any) {
                     }
                 }
             } catch (err: any) {
-                bot._warn(`Order manager loop error: ${err.message}`);
+                bot._warn(`Order manager loop error: ${getErrorMessage(err)}`);
             }
 
             await sleep(loopDelayMs);
         }
     })().catch((err: any) => {
-        bot._warn(`Open-orders sync loop failed: ${err && err.message ? err.message : err}`);
+        bot._warn(`Open-orders sync loop failed: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`);
     }).finally(() => {
         bot._mainLoopPromise = null;
     });
@@ -1111,13 +1111,13 @@ function setupBlockchainFetchInterval(bot: any) {
                 bot._blockchainFetchIntervalMin = intervalMin;
             }
         } catch (_err: any) {
-            bot?._warn?.(`Registry unavailable for shared-account interval check: ${_err.message}`);
+            bot?._warn?.(`Registry unavailable for shared-account interval check: ${getErrorMessage(_err)}`);
         }
     }
 
     syncMarketAdapterOnPeriodicConfigCheck(bot, 'startup blockchain fetch setup')
         .catch((err: any) => {
-            bot._warn(`Market adapter watchdog failed during startup blockchain fetch setup: ${err.message}`);
+            bot._warn(`Market adapter watchdog failed during startup blockchain fetch setup: ${getErrorMessage(err)}`);
         });
 
     if (bot._blockchainFetchInterval !== null && bot._blockchainFetchInterval !== undefined) {
@@ -1198,14 +1198,14 @@ function setupBlockchainFetchInterval(bot: any) {
                                 );
                             }
                         } catch (err: any) {
-                            bot._warn(`Error reading open orders during periodic fetch: ${err.message}`);
+                            bot._warn(`Error reading open orders during periodic fetch: ${getErrorMessage(err)}`);
                         }
                     }
 
                     await performPeriodicGridChecks(bot);
                 });
             } catch (err: any) {
-                bot._warn(`Error during periodic blockchain fetch: ${err && err.message ? err.message : err}`);
+                bot._warn(`Error during periodic blockchain fetch: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`);
             }
         } finally {
             bot._blockchainFetchInFlight = false;
@@ -1320,7 +1320,7 @@ function scheduleMaintenanceAfterIdle(ctx: any, context: any, options: any = {})
         if (ctx._shuttingDown) return;
         ctx._runGridMaintenance(context, timerOptions)
             .catch((err: any) => {
-                ctx._warn(`Deferred ${context} grid maintenance failed: ${err.message}`);
+                ctx._warn(`Deferred ${context} grid maintenance failed: ${getErrorMessage(err)}`);
                 if (ctx.manager) {
                     ctx.manager._recoveryState = { ...ctx.manager._recoveryState, lastFailureAt: Date.now() };
                 }
@@ -1366,7 +1366,7 @@ function scheduleDeferredGridResync(ctx: any, options: any = {}) {
                 ctx._warn(`Deferred trigger reset blocked: ${reason}; retaining existing grid state.`);
             }
         }).catch((err: any) => {
-            ctx._warn(`Deferred trigger reset lock error: ${err.message}`);
+            ctx._warn(`Deferred trigger reset lock error: ${getErrorMessage(err)}`);
             if (ctx.manager) {
                 ctx.manager._recoveryState = { ...ctx.manager._recoveryState, lastFailureAt: Date.now() };
             }
@@ -1439,7 +1439,7 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                     { reason: `Grid size ${d.gridSize} still exceeds max ${d.maxAllowed} after grace` }
                 ).catch((err: any) => {
                     bot.manager?.logger?.log?.(
-                        `[GRID-BLOAT] Structural resync request failed: ${err.message}`,
+                        `[GRID-BLOAT] Structural resync request failed: ${getErrorMessage(err)}`,
                         'error'
                     );
                 });
@@ -1491,7 +1491,7 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                 }
             }
         } catch (e: any) {
-            bot._log(`[LIGHTWEIGHT-SYNC] Check failed: ${e.message}`, 'debug');
+            bot._log(`[LIGHTWEIGHT-SYNC] Check failed: ${getErrorMessage(e)}`, 'debug');
         }
     }
 
@@ -1574,11 +1574,11 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                     if (await bot._abortFlowIfIllegalState(`${context} divergence correction`)) return;
                     bot._log(`Grid divergence corrections applied during ${context}`);
                 } catch (err: any) {
-                    bot._warn(`Error applying divergence corrections during ${context}: ${err.message}`);
+                    bot._warn(`Error applying divergence corrections during ${context}: ${getErrorMessage(err)}`);
                 }
             }
         } catch (err: any) {
-            bot._warn(`Error running divergence check during ${context}: ${err.message}`);
+            bot._warn(`Error running divergence check during ${context}: ${getErrorMessage(err)}`);
         }
 
         const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
@@ -1666,7 +1666,7 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
                     await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
                 }
             } catch (refetchErr: any) {
-                bot._warn(`[DUST] Cancel succeeded but refetch failed for ${(order as any).id} (${(order as any).orderId}): ${refetchErr.message}`);
+                bot._warn(`[DUST] Cancel succeeded but refetch failed for ${(order as any).id} (${(order as any).orderId}): ${getErrorMessage(refetchErr)}`);
             }
             syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
             bot._log(`[DUST] Cancelled ${(order as any).id} (${(order as any).orderId}) size=${(order as any).size}`, 'debug');
@@ -1735,7 +1735,7 @@ async function runGridMaintenance(
             await bot.manager._divergenceLock.acquire(runWithDivergenceLock);
         });
     } catch (err: any) {
-        bot._warn(`Error during ${context} grid maintenance: ${err.message}`);
+        bot._warn(`Error during ${context} grid maintenance: ${getErrorMessage(err)}`);
         throw err;
     }
 }
@@ -1851,7 +1851,7 @@ async function acquireBts(bot: any, deficit: any) {
 
             candidates.push({ asset, poolId: poolData.id, sellAmount, expectedReceive, priceImpact: sellAmount / assetReserve });
         } catch (e: any) {
-            bot._log(`[BTS-ACQ] Pool lookup failed for ${asset?.symbol}: ${e.message}`, 'debug');
+            bot._log(`[BTS-ACQ] Pool lookup failed for ${asset?.symbol}: ${getErrorMessage(e)}`, 'debug');
         }
     }
 
@@ -2016,7 +2016,7 @@ function wireStructuralGridResyncRequest(bot: any) {
                     bot.manager._recoveryState = { ...bot.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
                 }
             } catch (err: any) {
-                bot._warn(`[RECOVERY] Structural full grid resync failed: ${err.message}`);
+                bot._warn(`[RECOVERY] Structural full grid resync failed: ${getErrorMessage(err)}`);
             } finally {
                 bot._structuralGridResyncRunning = false;
                 if (bot.manager?._recoveryState) {
@@ -2108,7 +2108,7 @@ async function syncOpenOrdersAndProcessFills(bot: any, tag: any) {
         const hasUnmatched = syncResult?.unmatchedChainOrders?.length || 0;
         return { syncResult, aborted, hasUnmatched, openOrders };
     } catch (err: any) {
-        bot._warn(`[SYNC-CHAIN] Open-orders sync failed during ${tag}: ${err.message}`);
+        bot._warn(`[SYNC-CHAIN] Open-orders sync failed during ${tag}: ${getErrorMessage(err)}`);
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }
 }

@@ -1,6 +1,7 @@
 
 
 import * as chainKeys from './chain_keys';
+import { getErrorMessage } from './utils/errors';
 interface SessionAccount {
     encryptedKey: string;
 }
@@ -118,8 +119,8 @@ async function loadDaemonPrivateKey(accountName: string, sessionState: SessionSt
                     }
                     const combined = new Error(
                         `No signing key for '${accountName}'.\n` +
-                        `  Vault lookup: ${err.message}\n` +
-                        `  Authority resolution: ${resolutionErr.message}`
+                        `  Vault lookup: ${getErrorMessage(err)}\n` +
+                        `  Authority resolution: ${getErrorMessage(resolutionErr)}`
                     );
                     combined.cause = resolutionErr;
                     throw combined;

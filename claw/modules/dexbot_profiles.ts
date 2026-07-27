@@ -12,6 +12,7 @@ import { clone } from './utils';
 const storage = getStorage();
 
 import type { BotSettings, ProfileOptions, Logger, ClawProfileBundle } from './types';
+import { getErrorMessage } from '../../modules/utils/errors';
 
 const DEFAULT_MANIFEST_FILE = 'config.json';
 const DEFAULT_BOTS_FILE = 'bots.json';
@@ -768,7 +769,7 @@ function readJsonFile(filePath: any) {
     if (error && error.code === 'ENOENT') {
       return null;
     }
-    throw new Error(`Failed to read ${filePath}: ${error.message}`);
+    throw new Error(`Failed to read ${filePath}: ${getErrorMessage(error)}`);
   }
 }
 
@@ -819,7 +820,7 @@ function listFiles(dirPath: any) {
     if (error && error.code === 'ENOENT') {
       return [];
     }
-    throw new Error(`Failed to list ${dirPath}: ${error.message}`);
+    throw new Error(`Failed to list ${dirPath}: ${getErrorMessage(error)}`);
   }
 }
 

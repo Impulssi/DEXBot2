@@ -28,6 +28,7 @@ import {
     resolveMaxAsymmetryFactor,
     computeAsymmetricBoundsMetrics,
 } from './asymmetric_bounds.js';
+import { getErrorMessage } from '../../modules/utils/errors';
 const marketAdapterServiceLogger = new Logger('MarketAdapterService');
 
 const AMA_SLOPE_PERCENT_MODE_PER_BAR = 'perBar';
@@ -374,7 +375,7 @@ class MarketAdapterService {
             if (!Number.isFinite(minP) || !Number.isFinite(maxP)) return base;
             return Math.min(maxP, Math.max(minP, base));
         } catch (err: any) {
-            throw new Error(`clampGridPriceToBounds: failed to resolve bounds: ${err.message}`);
+            throw new Error(`clampGridPriceToBounds: failed to resolve bounds: ${getErrorMessage(err)}`);
         }
     }
 
@@ -1521,7 +1522,7 @@ class MarketAdapterService {
                             }
                         } catch (overlapErr: any) {
                             if (typeof deps.logger?.log === 'function') {
-                                deps.logger.log(`[market_adapter] ${bot.botKey}: overlap fetch exhausted (${overlapErr.message}), falling back to time-based`, 'warn');
+                                deps.logger.log(`[market_adapter] ${bot.botKey}: overlap fetch exhausted (${getErrorMessage(overlapErr)}), falling back to time-based`, 'warn');
                             }
                             // Fall through to time-based path below
                         }
@@ -1588,7 +1589,7 @@ class MarketAdapterService {
                     }
                 } catch (err: any) {
                     if (typeof deps.logger?.warn === 'function') {
-                        deps.logger.warn(`[market_adapter] Native fetch failed for ${bot.botKey}; continuing with cached candles (${err.message})`);
+                        deps.logger.warn(`[market_adapter] Native fetch failed for ${bot.botKey}; continuing with cached candles (${getErrorMessage(err)})`);
                     }
                     nativePagesFetched = 0;
                     nativeOverlapCount = null;
@@ -1709,7 +1710,7 @@ class MarketAdapterService {
                         }
                     } catch (err: any) {
                         logGapRepairEvent(
-                            `[market_adapter] ${bot.botKey}: Kibana gap repair failed (${err.message || String(err)})`,
+                            `[market_adapter] ${bot.botKey}: Kibana gap repair failed (${getErrorMessage(err) || String(err)})`,
                             'warn'
                         );
                     }
@@ -2198,7 +2199,7 @@ class MarketAdapterService {
                         marketSource,
                     });
                 } catch (err: any) {
-                    triggerCallbackError = err.message;
+                    triggerCallbackError = getErrorMessage(err);
                 }
             }
         };

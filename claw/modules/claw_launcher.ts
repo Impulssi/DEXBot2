@@ -5,6 +5,7 @@ import { PATHS, getRecalculateTriggerFile } from '../../modules/paths';
 import { loadSettingsFile, resolveRawBotEntries, saveSettingsFile, normalizeBotEntries } from '../../modules/bot_settings';
 import { normalizeMode, detectMode, setPreferredMode, describeModeChoice } from './launcher_mode_detector';
 import { normalizeRoot, resolveRuntimeScript } from './launcher_paths';
+import { getErrorMessage } from '../../modules/utils/errors';
 'use strict';
 
 const storage = getStorage();
@@ -147,7 +148,7 @@ async function launcherReset(botName: string | null, options: Record<string, any
         triggerFile: path.basename(triggerFile),
       });
     } catch (err: any) {
-      throw new Error(`Failed to write trigger for '${bot.name}': ${err.message}`);
+      throw new Error(`Failed to write trigger for '${bot.name}': ${getErrorMessage(err)}`);
     }
   }
 

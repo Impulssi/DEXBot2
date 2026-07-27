@@ -223,7 +223,7 @@ function getLaunchedBotNames(botName: any) {
 // ── Isolated supervisor mode ───────────────────────────────────────
 
 function isSupervisorTransientError(err: any): boolean {
-    const msg = String(err && err.message || '');
+    const msg = String(err && getErrorMessage(err) || '');
     return msg.includes('No supervisor socket found') || msg.includes('Connection timed out');
 }
 

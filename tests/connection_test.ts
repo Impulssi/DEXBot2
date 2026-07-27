@@ -1,12 +1,13 @@
 'use strict';
 
+const { getErrorMessage } = require('../modules/utils/errors');
 const RUN_LIVE_TEST = process.env.RUN_LIVE_BITSHARES_TESTS === '1';
 const CONNECT_TIMEOUT_MS = Number(process.env.BITSHARES_CONNECTION_TEST_TIMEOUT_MS) || 5000;
 const STRICT_LIVE_TEST = process.env.RUN_LIVE_BITSHARES_TESTS_STRICT === '1';
 const OVERALL_TIMEOUT_MS = Number(process.env.BITSHARES_CONNECTION_TEST_OVERALL_TIMEOUT_MS) || 15000;
 
 function formatError(error) {
-    return error && error.message ? error.message : String(error);
+    return error && getErrorMessage(error) ? getErrorMessage(error) : String(error);
 }
 
 function createRejectionGuard() {

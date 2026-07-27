@@ -51,6 +51,7 @@ import {
     resolveHealthCacheFile,
     writeHealthCache,
 } from './node_health_cache';
+import { getErrorMessage } from './utils/errors';
 
 interface NodeManagerConfig {
     list?: string[];
@@ -184,7 +185,7 @@ class NodeManager {
                 this.logger.debug(`Loaded persisted blacklist: ${nodeUrl}`);
             }
         } catch (err: any) {
-            this.logger.warn(`Failed to load blacklist state: ${err.message}`);
+            this.logger.warn(`Failed to load blacklist state: ${getErrorMessage(err)}`);
         }
     }
 
@@ -210,7 +211,7 @@ class NodeManager {
             // all blacklist state or, worse, fail to parse it.
             writeJsonFileAtomic(this.blacklistStateFile, state);
         } catch (err: any) {
-            this.logger.warn(`Failed to save blacklist state: ${err.message}`);
+            this.logger.warn(`Failed to save blacklist state: ${getErrorMessage(err)}`);
         }
     }
 
@@ -223,7 +224,7 @@ class NodeManager {
         try {
             writeHealthCache(this.nodeStats.values(), { healthCacheFile: this.healthCacheFile });
         } catch (err: any) {
-            this.logger.warn(`Failed to save node health cache: ${err.message}`);
+            this.logger.warn(`Failed to save node health cache: ${getErrorMessage(err)}`);
         }
     }
 
@@ -241,13 +242,13 @@ class NodeManager {
 
         // Initial check immediately
         this.checkAllNodes().catch((err: any) => {
-            this.logger.warn(`Initial health check failed: ${err.message}`);
+            this.logger.warn(`Initial health check failed: ${getErrorMessage(err)}`);
         });
 
         // Schedule periodic checks
         this.checkIntervalId = setInterval(() => {
             this.checkAllNodes().catch((err: any) => {
-                this.logger.warn(`Health check cycle failed: ${err.message}`);
+                this.logger.warn(`Health check cycle failed: ${getErrorMessage(err)}`);
             });
         }, this.config.healthCheck.intervalMs);
         if (typeof this.checkIntervalId.unref === 'function') {
@@ -301,7 +302,7 @@ class NodeManager {
                 .map((nodeUrl: any) => {
                     return this.checkNode(nodeUrl).catch((err: any) => {
                         // Don't throw, just log - one node failure shouldn't crash the check cycle
-                        this.logger.debug(`Check failed for ${nodeUrl}: ${err.message}`);
+                        this.logger.debug(`Check failed for ${nodeUrl}: ${getErrorMessage(err)}`);
                     });
                 });
 
@@ -374,8 +375,8 @@ class NodeManager {
                 ws.close();
             }
         } catch (err: any) {
-            this.reportNodeFailure(nodeUrl, err.message, 'health-check');
-            return { status: stats.status, latency: null, error: err.message };
+            this.reportNodeFailure(nodeUrl, getErrorMessage(err), 'health-check');
+            return { status: stats.status, latency: null, error: getErrorMessage(err) };
         }
     }
 
@@ -435,7 +436,7 @@ class NodeManager {
                         } else {
                             ws.close();
                         }
-                    } catch (err: any) { this.logger.warn(`WebSocket cleanup failed: ${err.message}`); }
+                    } catch (err: any) { this.logger.warn(`WebSocket cleanup failed: ${getErrorMessage(err)}`); }
                 }
                 settle(reject, new Error(`Connection timeout after ${timeoutMs}ms`));
             }, timeoutMs);
@@ -448,7 +449,7 @@ class NodeManager {
                 };
 
                 ws.onerror = (err: any) => {
-                    settle(reject, new Error(`WebSocket error: ${err.message || 'Unknown'}`));
+                    settle(reject, new Error(`WebSocket error: ${getErrorMessage(err) || 'Unknown'}`));
                 };
 
                 ws.onclose = () => {

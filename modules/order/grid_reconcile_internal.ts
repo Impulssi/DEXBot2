@@ -12,6 +12,7 @@ import { getMinAbsoluteOrderSize, getAssetFees, blockchainToFloat } from './util
 import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults } from './utils/order';
 import { resolveAccountRef } from './utils/system';
 import * as Format from './format';
+import { getErrorMessage } from '../utils/errors';
 /**
  * Count active orders on the grid for a given type.
  * @param {Object} manager - OrderManager instance.
@@ -202,7 +203,7 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
         // Return info needed to create this order fresh later
         return { index: largestIndex, orderType };
     } catch (err: any) {
-        logger?.log?.(`Warning: Could not cancel largest order ${orderId}: ${err.message}`, 'warn');
+        logger?.log?.(`Warning: Could not cancel largest order ${orderId}: ${getErrorMessage(err)}`, 'warn');
         return null;
     }
 }
@@ -283,7 +284,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
                 gridLockAlreadyHeld: true,
             });
         } catch (syncErr: any) {
-            logger?.log?.(`[_createOrderFromGrid] Recovery sync failed: ${syncErr.message}`, 'error');
+            logger?.log?.(`[_createOrderFromGrid] Recovery sync failed: ${getErrorMessage(syncErr)}`, 'error');
         }
     }
 }
@@ -347,7 +348,7 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
         });
         return freshChainOrders;
     } catch (syncErr: any) {
-        logger?.log?.(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
+        logger?.log?.(`Startup: Recovery sync failed: ${getErrorMessage(syncErr)}`, 'error');
         return null;
     }
 }
@@ -595,7 +596,7 @@ async function _executeStartupSequentialUpdateFallback({
             else skipped++;
         } catch (err: any) {
             failed++;
-            logger?.log?.(`Startup: Sequential update failed for ${plan.chainOrderId} -> ${plan.gridOrderId || plan.gridOrder?.id}: ${err.message}`, 'error');
+            logger?.log?.(`Startup: Sequential update failed for ${plan.chainOrderId} -> ${plan.gridOrderId || plan.gridOrder?.id}: ${getErrorMessage(err)}`, 'error');
 
             const refreshedChainOrders = await _recoverStartupSyncFailure({
                 chainOrders,
@@ -635,7 +636,7 @@ async function _createStartupOrderWithHandling({
     try {
         await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
     } catch (err: any) {
-        manager?.logger?.log?.(`Startup: Failed to create ${orderLabel}: ${err.message}`, 'error');
+        manager?.logger?.log?.(`Startup: Failed to create ${orderLabel}: ${getErrorMessage(err)}`, 'error');
 
         if (recovery && recovery.triggerMessage && recovery.source) {
             await _recoverStartupSyncFailure({
@@ -772,7 +773,7 @@ async function _executeStartupCreateGroupBatch({
                 });
         }
     } catch (err: any) {
-        logger?.log?.(`Startup: Failed to create group ${groupIndex + 1}/${totalGroups}: ${err.message}`, 'error');
+        logger?.log?.(`Startup: Failed to create group ${groupIndex + 1}/${totalGroups}: ${getErrorMessage(err)}`, 'error');
         await _recoverStartupSyncFailure({
             chainOrders,
             manager,
@@ -1015,7 +1016,7 @@ async function _reconcileStartupSide({
                 logger?.log?.(`Startup: Successfully cancelled excess ${sideUpper} order ${x.chain.id}`, 'info');
                 cancelCount--;
             } catch (err: any) {
-                logger?.log?.(`Startup: Failed to cancel ${sideUpper} ${x.chain.id}: ${err.message}`, 'error');
+                logger?.log?.(`Startup: Failed to cancel ${sideUpper} ${x.chain.id}: ${getErrorMessage(err)}`, 'error');
             }
         }
 
@@ -1032,7 +1033,7 @@ async function _reconcileStartupSide({
                     logger?.log?.(`Startup: Successfully cancelled excess matched ${sideUpper} order ${o.orderId} (grid ${o.id})`, 'info');
                     cancelCount--;
                 } catch (err: any) {
-                    logger?.log?.(`Startup: Failed to cancel matched ${sideUpper} ${o.orderId}: ${err.message}`, 'error');
+                    logger?.log?.(`Startup: Failed to cancel matched ${sideUpper} ${o.orderId}: ${getErrorMessage(err)}`, 'error');
                 }
             }
         }

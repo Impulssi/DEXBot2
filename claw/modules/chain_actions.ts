@@ -5,6 +5,7 @@ import { executeOperations } from './chain_broadcast';
 import { loadDexbotOrderUtils, requireDexbot2Module, loadDexbotOrderConstants } from './dexbot_bridge';
 import { requireBtsBackedMpa, CORE_SYMBOL } from './mpa_utils';
 import { getAsset, getBackingAsset, getFullAccount, readOpenOrders, resolveAccountId, resolveAccountName } from './chain_queries.js';
+import { getErrorMessage } from '../../modules/utils/errors';
 
 // Graphene protocol constant: operation type 4 = limit_order_create (fill events carry op[0] = 4 for matched orders)
 const FILL_ORDER_OPERATION_TYPE = 4;
@@ -313,7 +314,7 @@ async function listenForFills(accountNameOrId: any, callback: any) {
         try {
           fn(fills);
         } catch (err: any) {
-          console.error('listenForFills callback error:', err.message);
+          console.error('listenForFills callback error:', getErrorMessage(err));
         }
       }
     };

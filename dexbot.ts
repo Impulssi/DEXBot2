@@ -136,6 +136,7 @@ const { buildRuntimeScriptArgs } = require('./modules/launcher/runtime_entry');
 const { PATHS, getRecalculateTriggerFile } = require('./modules/paths');
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
+const { getErrorMessage } = require('./modules/utils/errors');
 
 // Auto-migrate bot state files from old stable-ID key format to sanitized-name format
 try {
@@ -317,7 +318,7 @@ async function runAccountManager({ waitForConnection = false, exitAfter = false,
              try {
                  disconnectClient();
      } catch (err: any) {
-         console.warn('Failed to disconnect BitShares connection after key manager exited:', err.message || err);
+         console.warn('Failed to disconnect BitShares connection after key manager exited:', getErrorMessage(err) || err);
      }
          }
      }
@@ -337,7 +338,7 @@ async function authenticateMasterPassword() {
     try {
         return await chainKeys.authenticate();
     } catch (err: any) {
-        if (!keySetupInProgress && err && err.message && err.message.includes('No master password set')) {
+        if (!keySetupInProgress && err && getErrorMessage(err) && getErrorMessage(err).includes('No master password set')) {
             keySetupInProgress = true;
             try {
                 await runAccountManager();
@@ -383,7 +384,7 @@ function printStartLauncherSuccess({ botName = null, dryRun = false } = {}) {
 
 function printMasterPasswordFailure(err: any) {
     console.error();
-    console.error(startupError(`❌ ${err.message}`));
+    console.error(startupError(`❌ ${getErrorMessage(err)}`));
 }
 
 /**
@@ -483,7 +484,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
             announceConnection();
             await initializeFeeCache(prepared.filter((b: any) => b.active), BitShares);
         } catch (err: any) {
-            console.error(startupError(`Fee cache initialization failed: ${err.message}`));
+            console.error(startupError(`Fee cache initialization failed: ${getErrorMessage(err)}`));
             console.error(startupError('Cannot proceed without fee cache for fill processing. Aborting.'));
             process.exit(1);
         }
@@ -592,7 +593,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                     try {
                         await bot.shutdown();
                     } catch (shutdownErr: any) {
-                        console.error(startupError(`Error during cleanup: ${shutdownErr.message}`));
+                        console.error(startupError(`Error during cleanup: ${getErrorMessage(shutdownErr)}`));
                     }
                 }
                 if (chainKeys.isMasterPasswordFailure(err)) {
@@ -600,8 +601,8 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                     process.exit(1);
                     return;
                 }
-                console.error(startupError(`Failed to start bot: ${err.message}`));
-                if (err && err.message && String(err.message).toLowerCase().includes('marketprice')) {
+                console.error(startupError(`Failed to start bot: ${getErrorMessage(err)}`));
+                if (err && getErrorMessage(err) && String(getErrorMessage(err)).toLowerCase().includes('marketprice')) {
                     console.info('Hint: startPrice could not be derived.');
                     console.info(' - If using profiles/bots.json with "pool" or "book" signals, ensure the chain contains a matching liquidity pool or orderbook for the configured pair.');
                     console.info(' - Alternatively, set a numeric `startPrice` directly in profiles/bots.json for this bot to avoid auto-derive.');
@@ -731,7 +732,7 @@ async function resetBotByName(botName: string | null | undefined) {
             storage.writeFile(triggerFile, '');
             console.log(startupSuccess(`✓ Trigger set for '${bot.name}' (${path.basename(triggerFile)})`));
         } catch (err: any) {
-            console.warn(`Failed to set trigger for '${bot.name}': ${err.message}`);
+            console.warn(`Failed to set trigger for '${bot.name}': ${getErrorMessage(err)}`);
         }
     }
 
@@ -789,7 +790,7 @@ async function exportBotTrades(botName: string | undefined) {
             process.exit(1);
         }
     } catch (err: any) {
-        console.error(startupError(`\nExport error: ${err.message}\n`));
+        console.error(startupError(`\nExport error: ${getErrorMessage(err)}\n`));
         process.exit(1);
     }
 }
@@ -856,7 +857,7 @@ async function handleCLICommands() {
                  try {
                      disconnectClient();
                   } catch (err: any) {
-                      console.warn('Failed to disconnect BitShares after bot helper exit:', err && err.message ? err.message : err);
+                      console.warn('Failed to disconnect BitShares after bot helper exit:', err && getErrorMessage(err) ? getErrorMessage(err) : err);
                   }
              }
              process.exit(0);
@@ -869,7 +870,7 @@ async function handleCLICommands() {
                 if (process.stdin) process.stdin.destroy();
                 process.exit(0);
             } catch (err: any) {
-                console.error('Error:', err.message);
+                console.error('Error:', getErrorMessage(err));
                 process.exit(1);
             }
             return true;
@@ -970,7 +971,7 @@ async function handleCLICommands() {
                                 console.warn('[dexbot]', `process.kill(${pid}, 0) EACCES — process exists but permission denied`);
                                 unlockRunning = true;
                             } else if (err.code !== 'ESRCH') {
-                                console.warn('[dexbot]', `process.kill(${pid}, 0) unexpected error: ${err.message}`);
+                                console.warn('[dexbot]', `process.kill(${pid}, 0) unexpected error: ${getErrorMessage(err)}`);
                             }
                         }
                     }
@@ -1257,8 +1258,8 @@ function handleFatalBootstrapError(err: any) {
         printMasterPasswordFailure(err);
         process.exit(1);
         return;
-    } else if (err && err.message) {
-        console.error(err.message);
+    } else if (err && getErrorMessage(err)) {
+        console.error(getErrorMessage(err));
     } else {
         console.error(err);
     }

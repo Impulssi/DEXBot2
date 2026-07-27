@@ -11,6 +11,7 @@ import { readJSON } from '../../modules/utils/fs_utils';
 import { runtime } from '../../modules/runtime';
 const storage = getStorage();
 import { isCredentialDaemonReady, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, waitForCredentialDaemon } from './dexbot_credential_client.js';
+import { getErrorMessage } from '../../modules/utils/errors';
 
 // Lazy-load DEXBot2 modules
 let chainKeys: any = null;
@@ -38,7 +39,7 @@ function _sendSighupToDaemon() {
       }
     }
   } catch (sigErr: any) {
-    console.warn(`[CLAW][credential-daemon] Could not send SIGHUP: ${sigErr.message}`);
+    console.warn(`[CLAW][credential-daemon] Could not send SIGHUP: ${getErrorMessage(sigErr)}`);
   }
 }
 
@@ -73,7 +74,7 @@ async function resolveSessionCredentials(accountName: any, options: Record<strin
       botHmacSecret = policyMod.loadBotHmacSecret(accountName, policyPath);
     }
   } catch (err: any) {
-    console.warn(`[CLAW] Failed to resolve session credentials: ${err.message}`);
+    console.warn(`[CLAW] Failed to resolve session credentials: ${getErrorMessage(err)}`);
   }
 
   return { sessionId, botHmacSecret };
@@ -160,7 +161,7 @@ async function executeOperations(operations: any, options: Record<string, any> =
         success: true
       };
     } catch (err: any) {
-      const msg = String(err.message || err);
+      const msg = String(getErrorMessage(err) || err);
       if (msg.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED) || msg.includes(DAEMON_ERRORS.SESSION_EXPIRED)) {
         const isSourceAuthError = msg.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED);
         console.warn(`[CLAW] Session/HMAC error, re-resolving credentials and retrying: ${msg}`);
@@ -264,7 +265,7 @@ async function broadcastOperation(operation: any, options: Record<string, any> =
     try {
       return await doBroadcast(sessionId, botHmacSecret);
     } catch (err: any) {
-      const msg = String(err.message || err);
+      const msg = String(getErrorMessage(err) || err);
       if (msg.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED) || msg.includes(DAEMON_ERRORS.SESSION_EXPIRED)) {
         const isSourceAuthError = msg.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED);
         console.warn(`[CLAW] Session/HMAC error, re-resolving credentials and retrying: ${msg}`);

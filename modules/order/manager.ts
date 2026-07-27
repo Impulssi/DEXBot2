@@ -61,6 +61,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate';
+import { getErrorMessage } from '../utils/errors';
 const { toFiniteNumber } = Format;
 
 // ===============================================================================
@@ -624,7 +625,7 @@ class OrderManager {
             try {
                 this._accountTotalsResolve();
             } catch (e: any) {
-                this.logger?.log?.(`Error resolving account totals promise: ${e.message}`, 'warn');
+                this.logger?.log?.(`Error resolving account totals promise: ${getErrorMessage(e)}`, 'warn');
             }
             this._accountTotalsPromise = null;
             this._accountTotalsResolve = null;
@@ -984,8 +985,8 @@ class OrderManager {
             );
             this._currentWorkingGrid.syncFromMaster(this.orders, orderId, this._gridVersion);
         } catch (syncErr: any) {
-            this._currentWorkingGrid.markStale(`working-grid sync failure: ${syncErr.message}`);
-            this.logger.log(`[COW] Failed to sync working grid for order ${orderId}: ${syncErr.message}`, 'warn');
+            this._currentWorkingGrid.markStale(`working-grid sync failure: ${getErrorMessage(syncErr)}`);
+            this.logger.log(`[COW] Failed to sync working grid for order ${orderId}: ${getErrorMessage(syncErr)}`, 'warn');
         }
     }
 
@@ -1278,7 +1279,7 @@ class OrderManager {
             this.logger.log('✗ Index repair failed - structure is damaged', 'error');
             return false;
         } catch (e: any) {
-            this.logger.log(`Index repair failed with exception: ${e.message}`, 'error');
+            this.logger.log(`Index repair failed with exception: ${getErrorMessage(e)}`, 'error');
             return false;
         }
     }
@@ -1549,7 +1550,7 @@ class OrderManager {
         try {
             comparePrecisions = this._getCowComparePrecisions();
         } catch (precisionErr: any) {
-            this.logger.log(`[COW] ${precisionErr.message}`, 'error');
+            this.logger.log(`[COW] ${getErrorMessage(precisionErr)}`, 'error');
             this._clearWorkingGridRef();
             return false;
         }
@@ -1651,7 +1652,7 @@ class OrderManager {
                 );
             }
         } catch (recalcErr: any) {
-            this.logger.log(`[COW] Fund recalculation failed post-commit: ${recalcErr.message}`, 'error');
+            this.logger.log(`[COW] Fund recalculation failed post-commit: ${getErrorMessage(recalcErr)}`, 'error');
             this._recoveryState = { ...this._recoveryState, lastFailureAt: Date.now() };
         } finally {
             this._clearWorkingGridRef();
@@ -1773,7 +1774,7 @@ class OrderManager {
         } catch (precisionErr: any) {
             return {
                 canCommit: false,
-                reason: precisionErr.message,
+                reason: getErrorMessage(precisionErr),
                 level: 'error'
             };
         }

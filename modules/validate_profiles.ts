@@ -2,6 +2,7 @@
 import { readJSON } from './utils/fs_utils';
 import { PATHS } from './paths';
 import { normalizeBotEntry } from './bot_settings';
+import { getErrorMessage } from './utils/errors';
 'use strict';
 
 
@@ -60,7 +61,7 @@ function loadJsonFile(filePath: string): { data: any; ok: boolean; error?: strin
     } catch (err: any) {
         if (err?.code === 'ENOENT') return { data: null, ok: true };
         if (err instanceof SyntaxError) return { data: null, ok: true };
-        return { data: null, ok: false, error: `${filePath}: ${err.message}` };
+        return { data: null, ok: false, error: `${filePath}: ${getErrorMessage(err)}` };
     }
 }
 

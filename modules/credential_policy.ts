@@ -22,6 +22,7 @@ import { getStorage } from './storage';
 import { runtime } from './runtime';
 import { readJSON } from './utils/fs_utils';
 import { LRUCache } from './bitshares-native/lru_cache';
+import { getErrorMessage } from './utils/errors';
 const { RESOLVERS } = NATIVE_CLIENT;
 const storage = getStorage();
 
@@ -182,7 +183,7 @@ function readPolicyConfigDetailed(filePath: string): { status: string; config: a
         return {
             status: 'invalid',
             config: null,
-            error: `failed to load config: ${error.message}`,
+            error: `failed to load config: ${getErrorMessage(error)}`,
         };
     }
 
@@ -241,7 +242,7 @@ function ensurePolicyConfig(filePath: string): PolicyConfig {
             storage.writeJSON(filePath, createMinimalPolicyConfig(), { mode: 0o600, flag: 'wx' });
         } catch (err: any) {
             if (err.code !== 'EEXIST') {
-                const wrapped = new Error(`Failed to create required policy config: ${err.message}`) as Error & { code: string };
+                const wrapped = new Error(`Failed to create required policy config: ${getErrorMessage(err)}`) as Error & { code: string };
                 wrapped.code = 'POLICY_CONFIG_CREATE_FAILED';
                 throw wrapped;
             }
@@ -296,7 +297,7 @@ function reloadPolicyFromDisk(filePath: string, options: { strict?: boolean } = 
         return loadRequiredPolicyConfig(filePath);
     } catch (err: any) {
         if (strict) throw err;
-        policyLogger.warn(`[policy] Reload from ${filePath} failed: ${err.message} — keeping in-memory config`);
+        policyLogger.warn(`[policy] Reload from ${filePath} failed: ${getErrorMessage(err)} — keeping in-memory config`);
         return null;
     }
 }
@@ -1270,7 +1271,7 @@ async function evaluatePolicy(policy: any, context: PolicyContext): Promise<{ al
         // Any evaluation error → deny
         return {
             allow: false,
-            reason: `policy evaluation error: ${error.message}`,
+            reason: `policy evaluation error: ${getErrorMessage(error)}`,
             policyId: 'policy_eval_error',
         };
     }
@@ -1322,7 +1323,7 @@ function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ 
             if (error.code === 'ETIMEDOUT') {
                 resolve({ allow: false, reason: `executable timed out after ${EXECUTABLE_TIMEOUT_MS}ms` });
             } else {
-                resolve({ allow: false, reason: `executable spawn failed: ${error.message}` });
+                resolve({ allow: false, reason: `executable spawn failed: ${getErrorMessage(error)}` });
             }
         });
 
@@ -1347,7 +1348,7 @@ function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ 
                     reason: result.allow ? null : (result.reason || 'denied by executable'),
                 });
             } catch (error: any) {
-                resolve({ allow: false, reason: `executable output invalid JSON: ${error.message}` });
+                resolve({ allow: false, reason: `executable output invalid JSON: ${getErrorMessage(error)}` });
             }
         });
 
@@ -1357,7 +1358,7 @@ function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ 
             child.stdin.end();
         } catch (error: any) {
             child.kill();
-            resolve({ allow: false, reason: `failed to pipe context to executable: ${error.message}` });
+            resolve({ allow: false, reason: `failed to pipe context to executable: ${getErrorMessage(error)}` });
         }
     });
 }
@@ -1448,11 +1449,11 @@ function loadBotHmacSecret(accountName: string, policyConfigPath: string, option
             if (e && e.code === 'ENOENT') {
                 info(`[policy] Ready file not present; daemon not running, SIGHUP skipped`);
             } else if (e instanceof SyntaxError) {
-                warn(`[policy] Ready file is malformed JSON (${e.message}); SIGHUP skipped, fs.watch will pick up the change`);
+                warn(`[policy] Ready file is malformed JSON (${getErrorMessage(e)}); SIGHUP skipped, fs.watch will pick up the change`);
             } else if (e && (e.code === 'ESRCH' || e.code === 'EPERM')) {
-                warn(`[policy] SIGHUP to daemon failed (${e.code}: ${e.message}); fs.watch will pick up the change`);
+                warn(`[policy] SIGHUP to daemon failed (${e.code}: ${getErrorMessage(e)}); fs.watch will pick up the change`);
             } else {
-                warn(`[policy] Unexpected error signalling daemon (${e && e.message}); fs.watch will pick up the change`);
+                warn(`[policy] Unexpected error signalling daemon (${e && getErrorMessage(e)}); fs.watch will pick up the change`);
             }
         }
         secret = newSecret;

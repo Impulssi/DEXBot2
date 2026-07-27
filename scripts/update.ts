@@ -522,7 +522,7 @@ try {
         generateEcosystemConfig({ clawOnly: false, exitOnError: false });
         log('Ecosystem config regenerated successfully.');
     } catch (err: any) {
-        log(`Warning: Ecosystem config regeneration failed (${err.message}). Continuing with existing config.`);
+        log(`Warning: Ecosystem config regeneration failed (${getErrorMessage(err)}). Continuing with existing config.`);
     }
 
     /**
@@ -629,7 +629,7 @@ try {
             }
         }
     } catch (err: any) {
-        log(`Warning: runtime restart logic failed (${err.message}). Skipping bulk restart to avoid touching dexbot-cred.`);
+        log(`Warning: runtime restart logic failed (${getErrorMessage(err)}). Skipping bulk restart to avoid touching dexbot-cred.`);
     }
 
     /**
@@ -672,7 +672,7 @@ try {
 } catch (err: any) {
     console.error(updateError('=========================================='));
     console.error(updateError('UPDATE FAILED'));
-    console.error(updateError(`Error: ${err.message}`));
+    console.error(updateError(`Error: ${getErrorMessage(err)}`));
     console.error(updateError('=========================================='));
     process.exit(1);
 }

@@ -19,6 +19,7 @@
 import { discoverPositions } from './position_discovery';
 import { assessPosition } from './position_health';
 import { fetchTrendInput } from './feed_price_source';
+import { getErrorMessage } from '../../modules/utils/errors';
 'use strict';
 
 
@@ -102,7 +103,7 @@ async function evaluate(accountName: string, options: Record<string, any> = {}) 
           };
         }
       } catch (err: any) {
-        logger.info(`[decision_loop] trend fetch failed for ${mpa}: ${err.message}`);
+        logger.info(`[decision_loop] trend fetch failed for ${mpa}: ${getErrorMessage(err)}`);
       }
     } else {
       // Reuse last trend signal for same market

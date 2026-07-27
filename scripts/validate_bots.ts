@@ -16,6 +16,7 @@
 
 const fs = require('fs');
 const { PATHS } = require('../modules/paths');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const livePath = PATHS.PROFILES.BOTS_JSON;
 
@@ -103,7 +104,7 @@ try {
     console.warn(`live config not found, skipping: ${livePath}`);
   }
 } catch (err: any) {
-  console.error('live config: parse error ->', err.message);
+  console.error('live config: parse error ->', getErrorMessage(err));
 }
 
 // Exit with success code (validation warnings don't cause non-zero exit)

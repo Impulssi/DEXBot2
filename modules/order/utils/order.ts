@@ -75,6 +75,7 @@ import * as Format from '../format';
 import * as MathUtils from './math';
 import Logger from '../../logger';
 import { sleep } from './system';
+import { getErrorMessage } from '../../utils/errors';
 const { isValidNumber, toFiniteNumber } = Format;
 const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = MathUtils;
 const orderLogger = new Logger('Order');
@@ -132,7 +133,7 @@ function parseChainOrder(chainOrder: any, assets: any) {
             size = blockchainToFloat(toFiniteNumber(chainOrder.for_sale), prec);
         }
     } catch (e: any) {
-        orderLogger.warn(`parseChainOrder failed for ${chainOrder?.id}: ${e.message}`);
+        orderLogger.warn(`parseChainOrder failed for ${chainOrder?.id}: ${getErrorMessage(e)}`);
         return null;
     }
 
@@ -311,12 +312,12 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
             shouldRemove = true;
             return { success: true, cancelled: true };
         } catch (error: any) {
-            const orderGone = error.message?.includes(ORDER_GONE_ERROR_FRAGMENT);
+            const orderGone = getErrorMessage(error)?.includes(ORDER_GONE_ERROR_FRAGMENT);
             if (orderGone) {
                 shouldRemove = true;
                 _filterUnmatchedChainOrders(manager, chainOrderId);
             }
-            return { success: false, error: error.message, orderGone };
+            return { success: false, error: getErrorMessage(error), orderGone };
         } finally {
             if (shouldRemove) {
                 manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter((c: any) => c.chainOrderId !== chainOrderId);
@@ -342,12 +343,12 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
             shouldRemove = true;
             return { success: true, cancelled: true };
         } catch (error: any) {
-            const orderGone = error.message?.includes(ORDER_GONE_ERROR_FRAGMENT);
+            const orderGone = getErrorMessage(error)?.includes(ORDER_GONE_ERROR_FRAGMENT);
             if (orderGone) {
                 shouldRemove = true;
                 _filterUnmatchedChainOrders(manager, chainOrderId);
             }
-            return { success: false, error: error.message, orderGone };
+            return { success: false, error: getErrorMessage(error), orderGone };
         } finally {
             if (shouldRemove) {
                 manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter((c: any) => c.chainOrderId !== chainOrderId);
@@ -374,12 +375,12 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
         shouldRemove = true;
         return { success: true };
     } catch (error: any) {
-        const orderGone = error.message?.includes(ORDER_GONE_ERROR_FRAGMENT);
+        const orderGone = getErrorMessage(error)?.includes(ORDER_GONE_ERROR_FRAGMENT);
         if (orderGone) {
             shouldRemove = true;
             _filterUnmatchedChainOrders(manager, chainOrderId);
         }
-        return { success: false, error: error.message, orderGone };
+        return { success: false, error: getErrorMessage(error), orderGone };
     } finally {
         if (shouldRemove) {
             manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter((c: any) => c.chainOrderId !== chainOrderId);

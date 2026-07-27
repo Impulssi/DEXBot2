@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { PATHS } from '../modules/paths.js';
 import { Config } from '../modules/config.js';
 import { readJSON } from '../modules/utils/fs_utils.js';
+import { getErrorMessage } from '../modules/utils/errors';
 const nodeBin = process.execPath;
 
 function run(label: any, args: any, env: any = {}) {
@@ -35,7 +36,7 @@ function assertMainnetCorpusReport() {
     try {
         report = readJSON(reportPath);
     } catch (err: any) {
-        console.error(`\nInvalid mainnet corpus report JSON: ${err.message}`);
+        console.error(`\nInvalid mainnet corpus report JSON: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 

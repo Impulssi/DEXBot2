@@ -6,6 +6,7 @@ import * as Format from './format';
 import LoggerState from './logger_state';
 import { LOGGING_CONFIG, ORDER_STATES, ORDER_TYPES } from '../constants';
 import { Config } from '../config';
+import { getErrorMessage } from '../utils/errors';
 
 const storage = getStorage();
 
@@ -150,7 +151,7 @@ class Logger {
             const now = Date.now();
             if (now - this._lastFileErrorTime > 60000) {
                 this._lastFileErrorTime = now;
-                console.error(`[LOGGER] File write failed (${this.logFile}): ${err.message}`);
+                console.error(`[LOGGER] File write failed (${this.logFile}): ${getErrorMessage(err)}`);
             }
         }
 

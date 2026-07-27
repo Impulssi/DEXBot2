@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running browser abstraction tests');
 
@@ -1196,7 +1197,7 @@ async function testEccComprehensive() {
         await ecc.wifDecode('invalid');
         assert.fail('should have thrown');
     } catch (e: any) {
-        assert.ok(e.message.includes('Invalid base58'), 'base58 error: ' + e.message);
+        assert.ok(getErrorMessage(e).includes('Invalid base58'), 'base58 error: ' + getErrorMessage(e));
     }
 
     // base58 encode / decode round-trip
@@ -1217,7 +1218,7 @@ async function testEccComprehensive() {
         await ecc.base58CheckDecode('1111');
         assert.fail('should have thrown');
     } catch (e: any) {
-        assert.ok(e.message.includes('checksum mismatch'), 'checksum error: ' + e.message);
+        assert.ok(getErrorMessage(e).includes('checksum mismatch'), 'checksum error: ' + getErrorMessage(e));
     }
 
     // normalizeBrainKey / brainKeyToPrivateKey
@@ -1282,8 +1283,8 @@ async function testClawIndexLoad() {
         assert.ok(claw, 'claw/index loaded successfully');
     } catch (err: any) {
         assert.ok(
-            err.message?.includes('ws') || err.message?.includes('Cannot find module'),
-            `claw/index load error: ${err.message}`
+            getErrorMessage(err)?.includes('ws') || getErrorMessage(err)?.includes('Cannot find module'),
+            `claw/index load error: ${getErrorMessage(err)}`
         );
         console.log('  ~ claw/index: blocked by ws dependency (expected without npm install)');
         return;
@@ -1320,7 +1321,7 @@ async function testClawIndexLoad() {
         await testClawIndexLoad();
         console.log('\n✓ All browser abstraction tests passed');
     } catch (err: any) {
-        console.error(`\n✗ FAILED: ${err.message}`);
+        console.error(`\n✗ FAILED: ${getErrorMessage(err)}`);
         console.error(err.stack);
         process.exit(1);
     }

@@ -135,15 +135,15 @@ async function recoverAfterMissingCreateResults(bot: any, reason: any = 'missing
             await bot.manager.persistGrid();
         }
     } catch (err: any) {
-        bot.manager?.logger?.log?.(`[COW] CRITICAL: Recovery sync failed after ${reason}: ${err.message}`, 'error');
+        bot.manager?.logger?.log?.(`[COW] CRITICAL: Recovery sync failed after ${reason}: ${getErrorMessage(err)}`, 'error');
         if (typeof bot.manager?.requestStructuralGridResync === 'function') {
             try {
                 await bot.manager.requestStructuralGridResync(`recovery sync failed after ${reason}`, {
-                    error: err.message
+                    error: getErrorMessage(err)
                 });
             } catch (scheduleErr: any) {
                 bot.manager?.logger?.log?.(
-                    `[COW] CRITICAL: Failed to schedule structural resync after recovery failure: ${scheduleErr.message}`,
+                    `[COW] CRITICAL: Failed to schedule structural resync after recovery failure: ${getErrorMessage(scheduleErr)}`,
                     'error'
                 );
             }
@@ -1465,14 +1465,14 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                     const order = bot.manager.orders.get(action.id) || { id: action.id, orderId: action.orderId };
                     opContexts.push({ kind: 'cancel', order });
                 } catch (err: any) {
-                    const orderNotFound = /\bnot found\b/i.test(err.message) || /\bdoes not exist\b/i.test(err.message);
+                    const orderNotFound = /\bnot found\b/i.test(getErrorMessage(err)) || /\bdoes not exist\b/i.test(getErrorMessage(err));
                     if (orderNotFound) {
                         bot.manager.logger.log(
                             `[COW] Cancel skipped for ${action.id} (${action.orderId}): order already removed from chain`,
                             'debug'
                         );
                     } else {
-                        bot.manager.logger.log(`Failed to prepare cancel op for ${action.id}: ${err.message}`, 'error');
+                        bot.manager.logger.log(`Failed to prepare cancel op for ${action.id}: ${getErrorMessage(err)}`, 'error');
                     }
                 }
             } else if (action.type === COW_ACTIONS.CREATE) {
@@ -1534,7 +1534,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                         finalInts: buildResult.finalInts
                     });
                 } catch (err: any) {
-                    bot.manager.logger.log(`Failed to prepare create op for ${action.id}: ${err.message}`, 'error');
+                    bot.manager.logger.log(`Failed to prepare create op for ${action.id}: ${getErrorMessage(err)}`, 'error');
                 }
             } else if (action.type === COW_ACTIONS.UPDATE) {
                 try {
@@ -1637,7 +1637,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                     };
                     opContexts.push({ kind: 'size-update', updateInfo: { partialOrder, newSize }, finalInts: op.finalInts });
                 } catch (err: any) {
-                    const orderNotFound = /\bnot found\b/i.test(err.message) || /\bdoes not exist\b/i.test(err.message);
+                    const orderNotFound = /\bnot found\b/i.test(getErrorMessage(err)) || /\bdoes not exist\b/i.test(getErrorMessage(err));
                     if (orderNotFound) {
                         try {
                             const fbOrder = action.order || bot.manager.orders.get(action.id);
@@ -1701,7 +1701,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                             }
                         } catch (fbErr: any) {
                             bot.manager.logger.log(
-                                `[COW] CREATE fallback also failed for ${action.id}: ${fbErr.message}`,
+                                `[COW] CREATE fallback also failed for ${action.id}: ${getErrorMessage(fbErr)}`,
                                 'warn'
                             );
                         }
@@ -1830,7 +1830,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
         }
 
     } catch (err: any) {
-        bot.manager.logger.log(`[COW] Batch transaction failed: ${err.message}`, 'error');
+        bot.manager.logger.log(`[COW] Batch transaction failed: ${getErrorMessage(err)}`, 'error');
         if (err?.partialOnChainState) {
             bot.manager.logger.log(
                 `[COW] Non-atomic grouped execution detected (${err.groupsBroadcast}/${err.groupsTotal} groups broadcast). Local rollback cannot undo confirmed on-chain operations; next sync/reconcile will converge state.`,
@@ -1855,12 +1855,12 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
         ];
         for (const pattern of patterns) {
             let m;
-            while ((m = pattern.exec(err.message)) !== null) {
+            while ((m = pattern.exec(getErrorMessage(err))) !== null) {
                 staleOrderIds.add(m[1]);
             }
         }
 
-        if (/Cannot deduct all or more from order than order contains/.test(err.message)) {
+        if (/Cannot deduct all or more from order than order contains/.test(getErrorMessage(err))) {
             return await bot._recoverBatchSizeDrift(err, opContexts);
         }
 

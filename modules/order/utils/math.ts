@@ -75,6 +75,7 @@ import { ORDER_TYPES, FEE_PARAMETERS, DEFAULT_CONFIG, GRID_LIMITS } from '../../
 import * as Format from '../format';
 import Logger from '../../logger';
 import * as fundRegistry from '../../fund_registry';
+import { getErrorMessage } from '../../utils/errors';
 const { isValidNumber, toFiniteNumber } = Format;
 const mathLogger = new Logger('Math');
 
@@ -1087,7 +1088,7 @@ function calculateOrderCreationFees(assetA: any, assetB: any, totalOrders: any, 
             return btsFeeData.createFee * totalOrders * feeMultiplier;
         }
     } catch (err: any) {
-        mathLogger.warn(`calculateOrderCreationFees: fee cache unavailable for ${assetA}/${assetB}: ${err.message}. Using fallback fee.`);
+        mathLogger.warn(`calculateOrderCreationFees: fee cache unavailable for ${assetA}/${assetB}: ${getErrorMessage(err)}. Using fallback fee.`);
         return FEE_PARAMETERS.BTS_FALLBACK_FEE;
     }
     return 0;

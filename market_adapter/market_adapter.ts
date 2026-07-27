@@ -133,7 +133,7 @@ function loadMarketAdapterSettings() {
         _marketAdapterSettingsCache = readJSON(MARKET_ADAPTER_SETTINGS_FILE);
         return _marketAdapterSettingsCache;
     } catch (_: any) {
-        console.warn(`[WARN] Failed to parse ${MARKET_ADAPTER_SETTINGS_FILE}: ${_.message}. Using defaults.`);
+        console.warn(`[WARN] Failed to parse ${MARKET_ADAPTER_SETTINGS_FILE}: ${getErrorMessage(_)}. Using defaults.`);
         _marketAdapterSettingsCache = false;
         return null;
     }
@@ -1024,7 +1024,7 @@ function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
         });
         return result.ok && result.written;
     } catch (err: any) {
-        logger.warn(`[writeBotDynamicGrid] Failed to write dynamic grid for ${botKey}: ${err.message}`);
+        logger.warn(`[writeBotDynamicGrid] Failed to write dynamic grid for ${botKey}: ${getErrorMessage(err)}`);
         return false;
     }
 }
@@ -1035,6 +1035,7 @@ import {
     normalizeAmaSlopePercentMode,
     convertSlopePercentToPerBar,
 } from './core/market_adapter_service.js';
+import { getErrorMessage } from '../modules/utils/errors';
 const adapterService = new MarketAdapterService({
     resolveBotContext,
     resolveAmaForBot,
@@ -1243,12 +1244,12 @@ async function runOnce(cfg: any, state: any, contextCache: any) {
                 ...r,
             });
         } catch (err: any) {
-            log(cfg, `error (${err.message})`);
+            log(cfg, `error (${getErrorMessage(err)})`);
             results.push({
                 botName: bot.name,
                 botKey: bot.botKey,
                 ok: false,
-                reason: err.message,
+                reason: getErrorMessage(err),
             });
         }
     }
@@ -1367,7 +1368,7 @@ async function main() {
                     lastErr = err;
                     if (attempt < maxRetries) {
                         const delay = Math.min(1000 * Math.pow(2, attempt - 1), TIMING.RETRY_BACKOFF_CAP_MS);
-                        logger.warn(`Connection attempt ${attempt}/${maxRetries} failed: ${err.message}; retrying in ${delay}ms`);
+                        logger.warn(`Connection attempt ${attempt}/${maxRetries} failed: ${getErrorMessage(err)}; retrying in ${delay}ms`);
                         await sleep(delay);
                     }
                 }
@@ -1398,7 +1399,7 @@ async function main() {
                 const { connectClient } = getBitsharesClient();
                 await connectClient();
             } catch (err: any) {
-                logger.error(`Connection failed before cycle: ${err.message}`);
+                logger.error(`Connection failed before cycle: ${getErrorMessage(err)}`);
                 // Fall through and let runOnce attempt to handle its own retries/failures
             }
 
@@ -1421,7 +1422,7 @@ if (require.main === module) {
     main()
         .then((exitCode: any) => process.exit(Number.isInteger(exitCode) ? exitCode : 0))
         .catch((err: any) => {
-            logger.error(`Fatal: ${err.message}`);
+            logger.error(`Fatal: ${getErrorMessage(err)}`);
             process.exit(1);
         });
 }

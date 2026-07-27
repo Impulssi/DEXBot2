@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { getErrorMessage } = require('../modules/utils/errors');
 const {
     buildSessionAccountCache,
     loadDaemonPrivateKey,
@@ -169,9 +170,9 @@ async function testCombinedErrorWhenBothPathsFail() {
         });
         assert.fail('should have thrown');
     } catch (e: any) {
-        assert.ok(e.message.includes('Vault lookup'), `error should include vault lookup message, got: ${e.message}`);
-        assert.ok(e.message.includes('Authority resolution'), `error should include authority resolution message, got: ${e.message}`);
-        assert.ok(e.message.includes('nobody'), 'error should mention account name');
+        assert.ok(getErrorMessage(e).includes('Vault lookup'), `error should include vault lookup message, got: ${getErrorMessage(e)}`);
+        assert.ok(getErrorMessage(e).includes('Authority resolution'), `error should include authority resolution message, got: ${getErrorMessage(e)}`);
+        assert.ok(getErrorMessage(e).includes('nobody'), 'error should mention account name');
     }
     console.log('  ✓ combined error includes both vault and resolution messages');
 }

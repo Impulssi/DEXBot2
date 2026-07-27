@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries } from '../modules/bot_settings';
 import { PATHS } from '../modules/paths';
 import { readJSON } from '../modules/utils/fs_utils';
+import { getErrorMessage } from '../modules/utils/errors';
 'use strict';
 
 
@@ -41,7 +42,7 @@ function loadExistingWhitelist() {
     try {
         json = readJSON(WHITELIST_FILE);
     } catch (err: any) {
-        process.stderr.write(`Warning: ignoring malformed ${WHITELIST_FILE}: ${err.message}\n`);
+        process.stderr.write(`Warning: ignoring malformed ${WHITELIST_FILE}: ${getErrorMessage(err)}\n`);
         return {};
     }
     const raw = json?.whitelist;

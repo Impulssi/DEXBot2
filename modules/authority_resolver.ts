@@ -2,6 +2,7 @@
 import getEcc from './bitshares-native/crypto/ecc_selector';
 import { NATIVE_CLIENT } from './constants';
 import Logger from './logger';
+import { getErrorMessage } from './utils/errors';
 'use strict';
 
 const ecc = getEcc();
@@ -61,7 +62,7 @@ async function resolvePrivateKey(
         full = await chainClient.db.get_full_accounts([accountName], false);
     } catch (e: any) {
         throw new Error(
-            `Failed to fetch account '${accountName}' from chain: ${e.message}`
+            `Failed to fetch account '${accountName}' from chain: ${getErrorMessage(e)}`
         );
     }
 
@@ -95,7 +96,7 @@ async function resolvePrivateKey(
         try {
             refName = await resolveAccountIdToName(chainClient, accountId);
         } catch (e: any) {
-            logger.debug(`  account_auth entry ${accountId}: name resolution failed — ${e.message}`);
+            logger.debug(`  account_auth entry ${accountId}: name resolution failed — ${getErrorMessage(e)}`);
             continue;
         }
 
@@ -103,7 +104,7 @@ async function resolvePrivateKey(
             logger.debug(`  account_auth: '${accountName}' → resolving via '${refName}'`);
             return await resolvePrivateKey(refName, chainClient, tryGetKey, listNames, depth + 1, pubKeyCache);
         } catch (e: any) {
-            logger.debug(`  account_auth: '${refName}' resolution failed — ${e.message}`);
+            logger.debug(`  account_auth: '${refName}' resolution failed — ${getErrorMessage(e)}`);
             continue;
         }
     }
@@ -182,7 +183,7 @@ function getAddressPrefix(chainClient: any) {
             : null;
         if (config && config.addressPrefix) return config.addressPrefix;
     } catch (e: any) {
-        logger.warn(`getAddressPrefix: failed to read chain config: ${e.message}`);
+        logger.warn(`getAddressPrefix: failed to read chain config: ${getErrorMessage(e)}`);
     }
     return DEFAULT_ADDRESS_PREFIX;
 }

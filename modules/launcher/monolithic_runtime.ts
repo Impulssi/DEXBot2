@@ -24,6 +24,7 @@ import {
     isNodeProcessWithExactScript,
 } from './bot_supervisor';
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry';
+import { getErrorMessage } from '../utils/errors';
 
 const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
 const MONOLITHIC_BOT_PID_FILE = PATHS.PROFILES.MONOLITHIC_BOT_PID;
@@ -309,7 +310,7 @@ function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProc
                 _updateTimer.unref();
             }
         } catch (err: any) {
-            warn(`Update scheduler: ${err.message}`);
+            warn(`Update scheduler: ${getErrorMessage(err)}`);
             _updateTimer = setTimeout(scheduleNext, 3600000);
             if (_updateTimer && typeof _updateTimer.unref === 'function') {
                 _updateTimer.unref();

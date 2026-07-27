@@ -11,6 +11,7 @@ import { getActiveAmaBotFingerprint } from './monolithic_runtime';
 'use strict';
 
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
+import { getErrorMessage } from '../utils/errors';
 
 function createMarketAdapterWatchdog({
     codeRoot = DEFAULT_CODE_ROOT,
@@ -201,10 +202,10 @@ function createMarketAdapterWatchdog({
                 try {
                     spawnChild(errorLog);
                 } catch (err: any) {
-                    logError(`[market-adapter-watchdog] spawn failed: ${err.message}`);
+                    logError(`[market-adapter-watchdog] spawn failed: ${getErrorMessage(err)}`);
                 }
             } catch (err: any) {
-                logWarn(`[market-adapter-watchdog] tick error: ${err.message}`);
+                logWarn(`[market-adapter-watchdog] tick error: ${getErrorMessage(err)}`);
             }
         };
 

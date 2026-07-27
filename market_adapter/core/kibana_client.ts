@@ -16,6 +16,7 @@
 
 import { getNodeRequire } from '../../modules/env';
 import { MARKET_ADAPTER } from '../../modules/constants';
+import { getErrorMessage } from '../../modules/utils/errors';
 'use strict';
 
 const _require = getNodeRequire();
@@ -96,7 +97,7 @@ function doKibanaRequest(cfg: any, esQuery: any, resolve: any, reject: any, redi
         return;
       }
       try { resolve(JSON.parse(raw)); }
-      catch (e: any) { reject(new Error(`JSON parse failed: ${e.message}\n${raw.slice(0, 200)}`)); }
+      catch (e: any) { reject(new Error(`JSON parse failed: ${getErrorMessage(e)}\n${raw.slice(0, 200)}`)); }
     });
   });
 

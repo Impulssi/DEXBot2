@@ -2,6 +2,7 @@
 import { getStorage } from '../storage';
 import { assertPrivatePathSecurity } from '../credential_runtime';
 import { Config } from '../config';
+import { getErrorMessage } from '../utils/errors';
 const storage = getStorage();
 
 function readHeadlessPassword({ passwordFile }: { passwordFile?: string | null } = {}): string {
@@ -12,7 +13,7 @@ function readHeadlessPassword({ passwordFile }: { passwordFile?: string | null }
             assertPrivatePathSecurity(passwordFile, { expectedType: 'file', requiredMode: 0o400 });
             password = storage.readFile(passwordFile).trim().split('\n')[0];
         } catch (err: any) {
-            throw new Error(`Cannot read master password from '${passwordFile}': ${err.message}`);
+            throw new Error(`Cannot read master password from '${passwordFile}': ${getErrorMessage(err)}`);
         }
         if (!password) {
             throw new Error(`Master password file '${passwordFile}' is empty`);

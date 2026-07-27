@@ -2,6 +2,7 @@
 
 import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store';
 import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants';
+import { getErrorMessage } from './utils/errors';
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function retryPersistenceIfNeeded(...args: any) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
@@ -197,7 +198,7 @@ async function applyReplaySafeTrackedFillAccounting(bot: any, fill: any, fillOp:
         logger,
         missingKeyMessage: (op: any) => `[${context}] Missing fill history id for ${op.order_id}; deferring to open-orders sync`,
         replayMessage,
-        errorMessage: (op: any, _fill: any, err: any) => `[${context}] Failed to process accounting for ${op.order_id}: ${err.message}`,
+        errorMessage: (op: any, _fill: any, err: any) => `[${context}] Failed to process accounting for ${op.order_id}: ${getErrorMessage(err)}`,
         persistenceMode
     });
 }
@@ -231,7 +232,7 @@ async function applyReplaySafeOrphanFillAccounting(bot: any, fill: any, fillOp: 
         missingKeyMessage: (op: any) => `[${context}] Missing fill history id and orphan fallback key for ${op.order_id}; deferring to open-orders sync`,
         fallbackKeyMessage: (op: any) => `[${context}] Missing fill history id for orphan fill ${op.order_id}; using degraded orphan replay key for proceeds-only accounting`,
         replayMessage,
-        errorMessage: (op: any, _fill: any, err: any) => `[${context}] Failed to process accounting for ${op.order_id}: ${err.message}`,
+        errorMessage: (op: any, _fill: any, err: any) => `[${context}] Failed to process accounting for ${op.order_id}: ${getErrorMessage(err)}`,
         persistenceMode,
         allowOrphanFallbackKey: true
     });
@@ -260,7 +261,7 @@ function createFillCallback(bot: any, chainOrders: any) {
             bot._markGridActivity?.('fill queued');
             bot._incomingFillQueue.push(...fills);
             bot._consumeFillQueue(chainOrders).catch((err: any) => {
-                bot._warn(`Fill queue consume failed: ${err.message}`);
+                bot._warn(`Fill queue consume failed: ${getErrorMessage(err)}`);
             });
         }
     };
@@ -338,7 +339,7 @@ function scheduleFillConsumerRestart(bot: any, chainOrders: any) {
                     `Fill consumer resume after backoff failed ` +
                     `(${newFailures} total, ` +
                     `next backoff ${Math.round(computeFillConsumerBackoffMs(bot, newFailures) / TIMING.MILLISECONDS_PER_SECOND)}s): ` +
-                    `${err.message}`,
+                    `${getErrorMessage(err)}`,
                     resumeLevel
                 );
                 bot._scheduleFillConsumerRestart(chainOrders);
@@ -355,7 +356,7 @@ function scheduleFillConsumerRestart(bot: any, chainOrders: any) {
         const remaining = maxConsecutiveFillConsumerFailures(bot) - bot._consecutiveConsumeFailures;
         bot._log(
             `Fill consumer failed (${bot._consecutiveConsumeFailures}/${maxConsecutiveFillConsumerFailures(bot)}, ` +
-            `${remaining} attempts remaining): ${err.message}`,
+            `${remaining} attempts remaining): ${getErrorMessage(err)}`,
             bot._consecutiveConsumeFailures >= 3 ? 'warn' : 'error'
         );
     }));
@@ -466,8 +467,8 @@ async function processFillsWithBootstrapMode(bot: any, chainOrders: any) {
         bot._metrics.fillsProcessed += validFills.length;
         bot._metrics.fillProcessingTimeMs += Date.now() - startTime;
     } catch (err: any) {
-        bot._warn(`[BOOTSTRAP] Error processing fills: ${err.message}`);
-        bot.manager.logger.log(`[BOOTSTRAP] Fill error: ${err.message}`, 'error');
+        bot._warn(`[BOOTSTRAP] Error processing fills: ${getErrorMessage(err)}`);
+        bot.manager.logger.log(`[BOOTSTRAP] Fill error: ${getErrorMessage(err)}`, 'error');
     }
 }
 
@@ -825,7 +826,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                         await bot.accountOrders.cleanOldProcessedFills(TIMING.FILL_RECORD_RETENTION_MS);
                         bot._fillCleanupCounter = 0;
                     } catch (err: any) {
-                        bot.manager?.logger?.log(`Warning: Fill cleanup failed (will retry): ${err.message}`, 'warn');
+                        bot.manager?.logger?.log(`Warning: Fill cleanup failed (will retry): ${getErrorMessage(err)}`, 'warn');
                     }
                 }
 
@@ -865,7 +866,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
 
             if (isCredentialOutage) {
                 bot._credentialRecoveryNeeded = true;
-                bot._suspendGridPersistenceForCredentialOutage(`credential outage during fill processing: ${err.message}`);
+                bot._suspendGridPersistenceForCredentialOutage(`credential outage during fill processing: ${getErrorMessage(err)}`);
             }
 
             try {
@@ -881,7 +882,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                 );
             } catch (flushErr: any) {
                 bot.manager?.logger?.log?.(
-                    `[FILL-DEDUP] Failed to persist verified fill keys during fill error handling: ${flushErr.message}`,
+                    `[FILL-DEDUP] Failed to persist verified fill keys during fill error handling: ${getErrorMessage(flushErr)}`,
                     'warn'
                 );
             }
@@ -889,9 +890,9 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
 
         if (isCredentialOutage && pendingFillKeysForCurrentCycle.size === 0) {
             bot._credentialRecoveryNeeded = true;
-            bot._suspendGridPersistenceForCredentialOutage(`credential outage during fill processing: ${err.message}`);
+            bot._suspendGridPersistenceForCredentialOutage(`credential outage during fill processing: ${getErrorMessage(err)}`);
         }
-        bot._log(`Error processing fills: ${err.message}`, 'error');
+        bot._log(`Error processing fills: ${getErrorMessage(err)}`, 'error');
         if (err.stack) bot._log(err.stack, 'error');
     }
 

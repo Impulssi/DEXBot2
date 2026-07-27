@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running credit runtime tests');
 
@@ -4423,7 +4424,7 @@ async function testMaxBorrowAmountPerOperationIsMaxBorrowAmountError() {
       (err) => {
         // Simulate what _selectCreditOfferForIncrease does:
         // isMaxBorrowAmountError(err) should return true
-        return /exceeds maxBorrowAmountPerOperation/.test(err.message);
+        return /exceeds maxBorrowAmountPerOperation/.test(getErrorMessage(err));
       },
       'should throw error matching the per-operation limit pattern',
     );

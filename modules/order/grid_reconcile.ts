@@ -11,6 +11,7 @@ const {
     isOrderPlaced, parseChainOrder, isOrderOnChain,
 } = require('./utils/order');
 const Format = require('./format');
+const { getErrorMessage } = require('../utils/errors');
 const SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5;
 
 
@@ -65,7 +66,7 @@ async function attemptResumePersistedGridByPriceMatch({
         }
         return { resumed: true, matchedCount: matchedOrderIds.size };
     } catch (err: any) {
-        logger && logger.log && logger.log(`Price-based resume attempt failed: ${err && err.message ? err.message : err}`, 'warn');
+        logger && logger.log && logger.log(`Price-based resume attempt failed: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`, 'warn');
         return { resumed: false, matchedCount: 0 };
     }
 }
@@ -276,7 +277,7 @@ async function reconcileGridOrders({
                         );
                     } catch (cancelErr: any) {
                         logger?.log?.(
-                            `Failed to cancel duplicate chain order ${p.orderId}: ${cancelErr.message}`,
+                            `Failed to cancel duplicate chain order ${p.orderId}: ${getErrorMessage(cancelErr)}`,
                             'error'
                         );
                     }
@@ -367,7 +368,7 @@ async function reconcileGridOrders({
                     batchCompleted = true;
                     break;
                 } catch (err: any) {
-                    logger?.log?.(`Startup: Update batch attempt ${attempt}/${maxBatchAttempts} failed: ${err.message}`, 'error');
+                    logger?.log?.(`Startup: Update batch attempt ${attempt}/${maxBatchAttempts} failed: ${getErrorMessage(err)}`, 'error');
 
                     const refreshedChainOrders = await _recoverStartupSyncFailure({
                         chainOrders,
@@ -413,7 +414,7 @@ async function reconcileGridOrders({
                     );
                 }
             } catch (err: any) {
-                logger?.log?.(`Startup: Sequential fallback failed unexpectedly: ${err.message}`, 'error');
+                logger?.log?.(`Startup: Sequential fallback failed unexpectedly: ${getErrorMessage(err)}`, 'error');
             }
         }
     }
@@ -440,7 +441,7 @@ async function reconcileGridOrders({
             finalChainSellCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).length;
             finalChainBuyCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).length;
         } catch (err: any) {
-            logger?.log?.(`Startup: Failed to refresh final chain counts: ${err.message}`, 'warn');
+            logger?.log?.(`Startup: Failed to refresh final chain counts: ${getErrorMessage(err)}`, 'warn');
         }
     }
 

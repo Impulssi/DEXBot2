@@ -122,6 +122,7 @@ const daemonLogger = new Logger('credential-daemon');
 
 // Resolve project root — handles running from dist/ (compiled) vs source
 const { PATHS } = require('./modules/paths');
+const { getErrorMessage } = require('./modules/utils/errors');
 
 // Unix sockets are required; only Unix-like systems are supported
 
@@ -155,7 +156,7 @@ let auditPruneIntervalTimer: ReturnType<typeof setInterval> | null = null;
 const signingClientCache = new Map<string, { signingClient: any; createdAt: number }>();
 
 function debugLog(message: string, err: any = null) {
-    const suffix = err && err.message ? `: ${err.message}` : '';
+    const suffix = err && getErrorMessage(err) ? `: ${getErrorMessage(err)}` : '';
     daemonLogger.error(`[credential-daemon][debug] ${message}${suffix}`);
 }
 
@@ -349,7 +350,7 @@ async function resolveVaultSecret() {
                 process.exit(0);
             }
             daemonLogger.log?.(
-                `[credential-daemon] Bootstrap path file not available (${err.message}), falling back to interactive auth.`
+                `[credential-daemon] Bootstrap path file not available (${getErrorMessage(err)}), falling back to interactive auth.`
             );
         }
         // delete on process.env directly (not Config) — see note above
@@ -502,7 +503,7 @@ async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn
                 return await broadcastFn(client);
             } catch (err: any) {
                 if (attempt === maxRetries) throw err;
-                debugLog(`Broadcast failed (attempt ${attempt}), reconnecting: ${err.message}`);
+                debugLog(`Broadcast failed (attempt ${attempt}), reconnecting: ${getErrorMessage(err)}`);
                 const staleKey = accountName + ':' + keyFingerprint(String(privateKey));
                 const staleEntry = signingClientCache.get(staleKey);
                 if (staleEntry && typeof staleEntry.signingClient.dispose === 'function') {
@@ -543,7 +544,7 @@ function refreshNodeList() {
                 daemonLogger.log?.(`[credential-daemon] Node list refreshed: using best ${bestNodes.length} nodes from cache.`);
             }
         } catch (err: any) {
-            daemonLogger.warn?.(`[credential-daemon] Failed to refresh node list: ${err.message}`);
+            daemonLogger.warn?.(`[credential-daemon] Failed to refresh node list: ${getErrorMessage(err)}`);
         }
     }
 }
@@ -574,7 +575,7 @@ async function initialize() {
         const accountsData = chainKeys.loadAccounts();
         const sessionState = buildSessionAccountCache(accountsData, vaultSecret, {
             onDecryptError: (accountName: any, err: any) => {
-                debugLog(`Skipping account '${accountName}' — decryption failed: ${err.message}`);
+                debugLog(`Skipping account '${accountName}' — decryption failed: ${getErrorMessage(err)}`);
             },
         });
         sessionAccountKeys = sessionState.cache;
@@ -594,7 +595,7 @@ async function initialize() {
             try {
                 ensureDir(auditLogDir, { mode: 0o700 });
             } catch (err: any) {
-                debugLog(`Failed to create audit log directory ${auditLogDir}: ${err.message}`);
+                debugLog(`Failed to create audit log directory ${auditLogDir}: ${getErrorMessage(err)}`);
             }
         }
         auditLogPath = path.join(auditLogDir, 'daemon-audit.jsonl');
@@ -648,7 +649,7 @@ async function initialize() {
                 policyConfig = credentialPolicy.reloadPolicyFromDisk(policyConfigPath, { strict: true });
                 debugLog('Policy config reloaded');
             } catch (err: any) {
-                daemonLogger.error?.(`[credential-daemon] SIGHUP policy reload failed: ${err.message}`);
+                daemonLogger.error?.(`[credential-daemon] SIGHUP policy reload failed: ${getErrorMessage(err)}`);
                 shutdown(1, 'invalid policy reload');
                 return;
             }
@@ -683,7 +684,7 @@ async function initialize() {
             // Log at WARN (not debug): without the watch AND without a
             // successful SIGHUP from the bot, the daemon keeps the stale
             // botHmacSecret until restart.  Operators need to see this.
-            daemonLogger.warn?.(`[credential-daemon] Could not watch policy config file ${policyConfigPath}: ${watchErr.message}. SIGHUP from bot process is now the only reload path.`);
+            daemonLogger.warn?.(`[credential-daemon] Could not watch policy config file ${policyConfigPath}: ${getErrorMessage(watchErr)}. SIGHUP from bot process is now the only reload path.`);
         }
 
         ensureCredentialRuntimeDirSync({ root: PATHS.PROJECT_ROOT, runtimeDir: RUNTIME_DIR, socketPath: SOCKET_PATH, readyFilePath: READY_FILE });
@@ -695,7 +696,7 @@ async function initialize() {
             removeSecureStaleFile(SOCKET_PATH, 'socket');
             removeSecureStaleFile(READY_FILE, 'file');
         } catch (err: any) {
-            throw new Error(`Insecure credential runtime path detected: ${err.message}`);
+            throw new Error(`Insecure credential runtime path detected: ${getErrorMessage(err)}`);
         }
 
         // Create server
@@ -705,7 +706,7 @@ async function initialize() {
                 storage.chmod(SOCKET_PATH, 0o600);
                 assertPrivatePathSecurity(SOCKET_PATH, { expectedType: 'socket', requiredMode: 0o600 });
             } catch (err: any) {
-                daemonLogger.error?.(`[credential-daemon] FATAL: Insecure socket permissions on ${SOCKET_PATH}: ${err.message}`);
+                daemonLogger.error?.(`[credential-daemon] FATAL: Insecure socket permissions on ${SOCKET_PATH}: ${getErrorMessage(err)}`);
                 shutdown(1, 'insecure socket permissions');
                 return;
             }
@@ -719,14 +720,14 @@ async function initialize() {
                 assertPrivatePathSecurity(READY_FILE, { expectedType: 'file', requiredMode: 0o600 });
                 daemonLogger.log?.(`[credential-daemon] Ready: listening on ${SOCKET_PATH}`);
             } catch (err: any) {
-                daemonLogger.error?.(`[credential-daemon] FATAL: Insecure ready-file permissions on ${READY_FILE}: ${err.message}`);
+                daemonLogger.error?.(`[credential-daemon] FATAL: Insecure ready-file permissions on ${READY_FILE}: ${getErrorMessage(err)}`);
                 shutdown(1, 'insecure ready-file permissions');
                 return;
             }
         });
 
         server.on('error', (error: any) => {
-            daemonLogger.error(`Server error: ${error.message}`);
+            daemonLogger.error(`Server error: ${getErrorMessage(error)}`);
             process.exit(1);
         });
 
@@ -744,7 +745,7 @@ async function initialize() {
         });
 
     } catch (error: any) {
-        daemonLogger.error(`[credential-daemon] Startup failed: ${error.stack || error.message}`);
+        daemonLogger.error(`[credential-daemon] Startup failed: ${error.stack || getErrorMessage(error)}`);
         shutdown(1, 'startup failure');
     }
 }
@@ -849,7 +850,7 @@ function processRequest(requestStr: string, socket: any) {
                     });
                     sendSuccess(socket, { sessionId });
                 })
-                .catch((error: any) => sendError(socket, error.message));
+                .catch((error: any) => sendError(socket, getErrorMessage(error)));
             return;
         }
 
@@ -964,7 +965,7 @@ function processRequest(requestStr: string, socket: any) {
                     });
                     sendSuccess(socket, signResult);
                 })
-                .catch((error: any) => sendError(socket, error.message));
+                .catch((error: any) => sendError(socket, getErrorMessage(error)));
             return;
         }
 
@@ -1069,13 +1070,13 @@ function processRequest(requestStr: string, socket: any) {
                     });
                     sendSuccess(socket, signResult);
                 })
-                .catch((error: any) => sendError(socket, error.message));
+                .catch((error: any) => sendError(socket, getErrorMessage(error)));
             return;
         }
 
         return sendError(socket, `Unknown credential type: ${type}`);
     } catch (error: any) {
-        sendError(socket, error.message);
+        sendError(socket, getErrorMessage(error));
     }
 }
 
@@ -1203,7 +1204,7 @@ function shutdown(exitCode = 0, reason = 'shutdown') {
 // Start daemon
 registerProcessDiagnostics();
 initialize().catch(error => {
-    daemonLogger.error(`[credential-daemon] Startup failed: ${error.stack || error.message}`);
+    daemonLogger.error(`[credential-daemon] Startup failed: ${error.stack || getErrorMessage(error)}`);
     shutdown(1, 'startup failure');
 });
 export {};

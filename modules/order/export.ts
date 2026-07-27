@@ -66,6 +66,7 @@ import * as Format from './format';
 import { TIMING, DEFAULT_CONFIG } from '../constants';
 import { PATHS } from '../paths';
 import Logger from '../logger';
+import { getErrorMessage } from '../utils/errors';
 const _require = getNodeRequire();
 const storage = getStorage();
 let _readline: any;
@@ -205,7 +206,7 @@ async function parseLogFile(logFilePath: any) {
 
         return fills;
     } catch (err: any) {
-        exportLogger.error(`Failed to parse log file ${logFilePath}: ${err.message}`);
+        exportLogger.error(`Failed to parse log file ${logFilePath}: ${getErrorMessage(err)}`);
         return [];
     }
 }
@@ -248,8 +249,8 @@ async function writeTradesCSV(trades: any, outputPath: any) {
 
         return { success: true, count: trades.length };
     } catch (err: any) {
-        exportLogger.error(`Failed to write CSV: ${err.message}`);
-        return { success: false, error: err.message };
+        exportLogger.error(`Failed to write CSV: ${getErrorMessage(err)}`);
+        return { success: false, error: getErrorMessage(err) };
     }
 }
 
@@ -291,8 +292,8 @@ async function writeSettingsJSON(botConfig: any, botName: any, outputPath: any) 
 
         return { success: true };
     } catch (err: any) {
-        exportLogger.error(`Failed to write settings JSON: ${err.message}`);
-        return { success: false, error: err.message };
+        exportLogger.error(`Failed to write settings JSON: ${getErrorMessage(err)}`);
+        return { success: false, error: getErrorMessage(err) };
     }
 }
 
@@ -322,7 +323,7 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
                 logFilePath = path.join(logsDir, matchingLog);
             }
         } catch (err: any) {
-            exportLogger.warn(`Could not read logs directory: ${err.message}`);
+            exportLogger.warn(`Could not read logs directory: ${getErrorMessage(err)}`);
         }
 
         // Parse trades from log file
@@ -349,10 +350,10 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
             timestamp: new Date().toISOString()
         };
     } catch (err: any) {
-        exportLogger.error(`Export failed for ${botKey}: ${err.message}`);
+        exportLogger.error(`Export failed for ${botKey}: ${getErrorMessage(err)}`);
         return {
             success: false,
-            error: err.message,
+            error: getErrorMessage(err),
             bot_key: botKey
         };
     }

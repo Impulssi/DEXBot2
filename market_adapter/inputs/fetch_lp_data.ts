@@ -38,6 +38,7 @@ import { writeJsonAtomic } from '../utils/atomic_write';
 import { readJSON } from '../../modules/utils/fs_utils';
 import { PATHS } from '../../modules/paths';
 import * as bitsharesClient from '../../modules/bitshares_client';
+import { getErrorMessage } from '../../modules/utils/errors';
 'use strict';
 
 const storage = getStorage();
@@ -456,7 +457,7 @@ async function fetchWindowCandles(fullPoolId: any, assetA: any, assetB: any, con
             return candles;
         } catch (err: any) {
             lastErr = err;
-            console.warn(`    retrying after failure: ${err.message}`);
+            console.warn(`    retrying after failure: ${getErrorMessage(err)}`);
         }
     }
 
@@ -501,7 +502,7 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
             saveManifest(manifestPath, manifest);
         } catch (err: any) {
             windowEntry.status = 'failed';
-            windowEntry.lastError = err.message;
+            windowEntry.lastError = getErrorMessage(err);
             saveManifest(manifestPath, manifest);
             throw err;
         }
@@ -586,7 +587,7 @@ async function run() {
         try {
             assetIds = await kibanaSource.discoverPoolAssets(fullPoolId, config);
         } catch (err: any) {
-            console.error(`  Discovery failed: ${err.message}`);
+            console.error(`  Discovery failed: ${getErrorMessage(err)}`);
             process.exit(1);
         }
 
@@ -647,7 +648,7 @@ async function run() {
                     resolveAsset(bot.assetB, bitsharesClient),
                 ]);
             } catch (err: any) {
-                console.error(`  Asset resolution failed: ${err.message}`);
+                console.error(`  Asset resolution failed: ${getErrorMessage(err)}`);
                 process.exit(1);
             }
 
@@ -664,7 +665,7 @@ async function run() {
             try {
                 pool = await findPoolByAssets(assetA.id, assetB.id, { bitsharesClient, sortBy: 'assetABalance' });
             } catch (err: any) {
-                console.error(`  Pool lookup failed: ${err.message}`);
+                console.error(`  Pool lookup failed: ${getErrorMessage(err)}`);
                 process.exit(1);
             }
 
@@ -699,7 +700,7 @@ async function run() {
             console.warn('  No trade candles in last 48h — pool may be low-activity. Proceeding with full lookback.');
         }
     } catch (err: any) {
-        console.error(`  Probe failed: ${err.message}`);
+        console.error(`  Probe failed: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 
@@ -730,7 +731,7 @@ async function run() {
         console.log(`  Price range: ${minPrice.toFixed(8)} – ${maxPrice.toFixed(8)}`);
         console.log(`  Avg price:   ${avgPrice.toFixed(8)}  (${assetB.symbol} per ${assetA.symbol})`);
     } catch (err: any) {
-        console.error(`  Fetch failed: ${err.message}`);
+        console.error(`  Fetch failed: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 

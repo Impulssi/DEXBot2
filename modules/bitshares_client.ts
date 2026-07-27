@@ -44,6 +44,7 @@ import { sleep } from './order/utils/system';
 import Logger from './logger';
 import * as native from './bitshares-native';
 import { createSigningClient } from './bitshares-native';
+import { getErrorMessage } from './utils/errors';
 const { TRANSPORT } = NATIVE_CLIENT;
 const logger = new Logger('bitshares_client');
 
@@ -240,7 +241,7 @@ function ensureInitialized() {
     const settings = readGeneralSettings({
         fallback: null,
         onError: (err: any) => {
-            logger.warn(`Config load failed, continuing with defaults: ${err.message}`);
+            logger.warn(`Config load failed, continuing with defaults: ${getErrorMessage(err)}`);
         },
     });
 
@@ -355,7 +356,7 @@ async function restartBitsharesConnection(serverList: any, reason: any = 'startu
         lastConnectionError = err;
         try { _nativeClient.disconnect(); } catch (_: any) {}
         if (!suppressConnectionLog) {
-            logger.warn(`${reason}: reconnect request failed: ${err.message || err}`);
+            logger.warn(`${reason}: reconnect request failed: ${getErrorMessage(err) || err}`);
         }
         return false;
     } finally {
@@ -407,7 +408,7 @@ async function assessFailover(reason: any = 'status change') {
             }
             return restartBitsharesConnection(nextNodes, reason);
         } catch (err: any) {
-            logger.warn(`Failover assessment error: ${err.message}`);
+            logger.warn(`Failover assessment error: ${getErrorMessage(err)}`);
             return false;
         }
     })();
@@ -459,7 +460,7 @@ function handleConnectionStatus(status: any) {
             return true;
         }
         assessFailover('Connection closed').catch((err: any) => {
-            logger.warn(`Failover assessment failed: ${err.message}`);
+            logger.warn(`Failover assessment failed: ${getErrorMessage(err)}`);
         });
         return true;
     }
@@ -498,7 +499,7 @@ async function refreshStartupNodeServers(reason: any = 'startup') {
             return nextNodes;
         } catch (err: any) {
             if (!suppressConnectionLog) {
-                logger.warn(`Startup ${reason} node refresh failed: ${err.message}`);
+                logger.warn(`Startup ${reason} node refresh failed: ${getErrorMessage(err)}`);
             }
             return getConfiguredOrDefaultNodes();
         }

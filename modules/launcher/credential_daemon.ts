@@ -20,6 +20,7 @@ import {
     getCredentialSocketPath,
 } from '../credential_runtime';
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
+import { getErrorMessage } from '../utils/errors';
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 
@@ -52,7 +53,7 @@ function createCredentialDaemonController({
                 storage.unlink(socketPath);
             }
         } catch (err: any) {
-            throw new Error(`Insecure credential socket path: ${err.message}`);
+            throw new Error(`Insecure credential socket path: ${getErrorMessage(err)}`);
         }
         try {
             if (storage.exists(readyFilePath)) {
@@ -60,7 +61,7 @@ function createCredentialDaemonController({
                 storage.unlink(readyFilePath);
             }
         } catch (err: any) {
-            throw new Error(`Insecure credential ready path: ${err.message}`);
+            throw new Error(`Insecure credential ready path: ${getErrorMessage(err)}`);
         }
     }
 
@@ -110,7 +111,7 @@ function createCredentialDaemonController({
         } catch (err: any) {
             bootstrap.close();
             throw new Error(
-                `Cannot write bootstrap path file at ${bootstrapPathFile}: ${err.message}`
+                `Cannot write bootstrap path file at ${bootstrapPathFile}: ${getErrorMessage(err)}`
             );
         }
 

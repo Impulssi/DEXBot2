@@ -90,6 +90,7 @@ import { ensureDir, safeUnlink } from './modules/utils/fs_utils';
 import { Config } from './modules/config';
 import { waitForConnected } from './modules/bitshares_client';
 import * as readline from 'node:readline';
+import { getErrorMessage } from './modules/utils/errors';
 setUmask(0o077);
 
 const {
@@ -345,7 +346,7 @@ module.exports = { apps: ${JSON.stringify(apps, null, 2)} };
         storage.writeFile(ECOSYSTEM_FILE, ecosystemContent);
         return apps;
     } catch (err: any) {
-        fail(`Error reading bots.json: ${err.message}`);
+        fail(`Error reading bots.json: ${getErrorMessage(err)}`);
     }
 }
 
@@ -417,10 +418,10 @@ async function assertActiveBotTarget(target: any) {
             throw new Error(`Bot '${target}' not found or not active in profiles/bots.json`);
         }
     } catch (err: any) {
-        if (String(err && err.message || '').includes('not found or not active')) {
+        if (String(err && getErrorMessage(err) || '').includes('not found or not active')) {
             throw err;
         }
-        throw new Error(`Failed to read bots configuration: ${err.message}`);
+        throw new Error(`Failed to read bots configuration: ${getErrorMessage(err)}`);
     }
 }
 
@@ -489,7 +490,7 @@ async function main({ botNameFilter = null, clawOnly = false, headless = false, 
     try {
         await ensureCredentialDaemonPM2({ headless, passwordFile });
     } catch (error: any) {
-        console.error(pm2Error(`\n❌ ${error.message}`));
+        console.error(pm2Error(`\n❌ ${getErrorMessage(error)}`));
         process.exit(1);
     }
 
@@ -594,7 +595,7 @@ async function startManagedRuntimePM2({ apps, bootstrap }: { apps?: any; bootstr
             storage.writeFile(bootstrapPathFile, bootstrap.socketPath, { mode: 0o600 });
         } catch (err: any) {
             throw new Error(
-                `Cannot write bootstrap path file at ${bootstrapPathFile}: ${err.message}. ` +
+                `Cannot write bootstrap path file at ${bootstrapPathFile}: ${getErrorMessage(err)}. ` +
                 `The daemon needs this file to find the bootstrap socket.`
             );
         }
@@ -793,7 +794,7 @@ async function execPM2CommandIgnoreMissing(action: any, target: any, options: an
         await execPM2Command(action, target, { suppressStderrOnError: true, ...options });
         return true;
     } catch (error: any) {
-        const message = String(error && error.message ? error.message : error);
+        const message = String(error && getErrorMessage(error) ? getErrorMessage(error) : error);
         if (message.includes('Process or Namespace') || message.includes('not found') || message.includes('does not exist')) {
             return false;
         }
@@ -822,7 +823,7 @@ async function stopPM2Processes(target: any) {
             try {
                 await runManagedAppsPm2Action('stop', { regenerate: true });
             } catch (err: any) {
-                console.warn(`Skipping managed bot stop: ${err.message}`);
+                console.warn(`Skipping managed bot stop: ${getErrorMessage(err)}`);
             }
         }
         console.log('');
@@ -845,7 +846,7 @@ async function stopPM2Processes(target: any) {
             throw new Error(`Bot '${target}' not found or not active in profiles/bots.json`);
         }
     } catch (err: any) {
-        throw new Error(`Failed to read bots configuration: ${err.message}`);
+        throw new Error(`Failed to read bots configuration: ${getErrorMessage(err)}`);
     }
 
     // Stop specific bot by name
@@ -871,7 +872,7 @@ async function deletePM2Processes(target: any) {
             try {
                 await runManagedAppsPm2Action('delete', { regenerate: true });
             } catch (err: any) {
-                console.warn(`Skipping managed bot delete: ${err.message}`);
+                console.warn(`Skipping managed bot delete: ${getErrorMessage(err)}`);
             }
         }
         console.log('');
@@ -893,7 +894,7 @@ async function deletePM2Processes(target: any) {
                 throw new Error(`Bot '${target}' not found or not active in profiles/bots.json`);
             }
         } catch (err: any) {
-            throw new Error(`Failed to read bots configuration: ${err.message}`);
+            throw new Error(`Failed to read bots configuration: ${getErrorMessage(err)}`);
         }
 
         // Delete specific bot by name
@@ -1003,7 +1004,7 @@ if (isPm2DirectRun) {
                     await stopPM2Processes(target);
                     process.exit(0);
                 } catch (err: any) {
-                    console.error(pm2Error(`Failed to stop processes: ${err.message}`));
+                    console.error(pm2Error(`Failed to stop processes: ${getErrorMessage(err)}`));
                     process.exit(1);
                 }
             } else if (command === 'delete') {
@@ -1016,7 +1017,7 @@ if (isPm2DirectRun) {
                     await deletePM2Processes(target);
                     process.exit(0);
                 } catch (err: any) {
-                    console.error(pm2Error(`Failed to delete processes: ${err.message}`));
+                    console.error(pm2Error(`Failed to delete processes: ${getErrorMessage(err)}`));
                     process.exit(1);
                 }
             } else if (command === 'restart') {
@@ -1029,7 +1030,7 @@ if (isPm2DirectRun) {
                     await restartPM2Processes(target, { headless, passwordFile });
                     process.exit(0);
                 } catch (err: any) {
-                    console.error(pm2Error(`Failed to restart processes: ${err.message}`));
+                    console.error(pm2Error(`Failed to restart processes: ${getErrorMessage(err)}`));
                     process.exit(1);
                 }
             } else if (command === 'help') {
@@ -1041,7 +1042,7 @@ if (isPm2DirectRun) {
                 process.exit(1);
             }
         } catch (err: any) {
-            console.error(pm2Error(`Error: ${err.message}`));
+            console.error(pm2Error(`Error: ${getErrorMessage(err)}`));
             process.exit(1);
         }
     })();
