@@ -2,9 +2,10 @@
  * Average True Range (ATR) Service
  * Computes market volatility for symmetrical weight shifts.
  */
+
+import { normalizeAtrPeriod } from '../../config_normalizers';
 'use strict';
 
-const { normalizeAtrPeriod } = require('../../config_normalizers');
 
 /**
  * Calculates ATR from candles (High, Low, Close).
@@ -17,8 +18,8 @@ function calculateATR(candles: any, period = 14) {
   if (!Array.isArray(candles)) return Number.NaN;
   if (candles.length < safePeriod + 1) return 0;
 
-  let tr = [];
-  let prevClose = null;
+  let tr: number[] = [];
+  let prevClose: number | null = null;
   for (let i = 0; i < candles.length; i++) {
     const high = Number(candles[i]?.[2]);
     const low = Number(candles[i]?.[3]);
@@ -45,4 +46,5 @@ function calculateATR(candles: any, period = 14) {
   return atr;
 }
 
-export = { calculateATR };
+export { calculateATR }
+

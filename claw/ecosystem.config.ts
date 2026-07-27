@@ -1,4 +1,4 @@
-export = {
+export default {
   apps: [
     {
       name: 'ai-bot-position-watch',
@@ -17,4 +17,5 @@ export = {
       restart_delay: 3000
     }
   ]
-};
+}
+

@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 
-const path = require('path');
-const { PATHS } = require('../../modules/paths');
-const {
-  buildRuntimeSkillMarkdown,
-  writeRuntimeSkillMarkdown
-} = require('../modules/claw_skill_md');
+import path from 'path';
+import { PATHS } from '../../modules/paths.js';
+import { buildRuntimeSkillMarkdown, writeRuntimeSkillMarkdown } from '../modules/claw_skill_md.js';
 
 const CS_PROJECT_ROOT = PATHS.PROJECT_ROOT;
 

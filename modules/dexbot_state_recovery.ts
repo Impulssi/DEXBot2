@@ -1,19 +1,21 @@
 /** State recovery runtime - grid persistence, recovery sync, size-drift repair */
-const { BitShares } = require('./bitshares_client');
-const chainOrders = require('./chain_orders');
-function virtualizeOrder(...args) { return require('./order/utils/order').virtualizeOrder(...args); }
-function parseChainOrder(...args) { return require('./order/utils/order').parseChainOrder(...args); }
-function blockchainToFloat(...args) { return require('./order/utils/math').blockchainToFloat(...args); }
-const { ORDER_TYPES } = require('./constants');
-const Format = require('./order/format');
-const grid = require('./order/grid');
+
+import * as client from './bitshares_client';
+const { BitShares } = client;
+import * as chainOrders from './chain_orders';
+import { ORDER_TYPES } from './constants';
+import * as Format from './order/format';
+import * as grid from './order/grid';
+function virtualizeOrder(...args: any) { return require('./order/utils/order').virtualizeOrder(...args); }
+function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
+function blockchainToFloat(...args: any) { return require('./order/utils/math').blockchainToFloat(...args); }
 const { isGridBloated } = grid;
 
 /**
  * Persist the current grid state and trigger recovery if validation fails.
  * @param {import('./dexbot_class').DEXBot} bot
  */
-async function persistAndRecoverIfNeeded(bot) {
+async function persistAndRecoverIfNeeded(bot: any) {
     bot.manager._recentFillKeysSnapshot = bot._getRecentFillKeysSnapshot();
     const validation = await bot.manager.persistGrid();
     if (!validation.isValid) {
@@ -34,8 +36,8 @@ async function persistAndRecoverIfNeeded(bot) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {Record<string, number>}
  */
-function getRecentFillKeysSnapshot(bot) {
-    const snapshot = {};
+function getRecentFillKeysSnapshot(bot: any) {
+    const snapshot: Record<string, number> = {};
     const now = Date.now();
     for (const [key, timestamp] of bot._recentlyQueuedFills) {
         if (now - Number(timestamp) < bot._fillDedupeWindowMs) {
@@ -45,7 +47,7 @@ function getRecentFillKeysSnapshot(bot) {
     if (bot.manager?._recentFillKeysSnapshot) {
         for (const [key, timestamp] of Object.entries(bot.manager._recentFillKeysSnapshot)) {
             if (!(key in snapshot) && now - Number(timestamp) < bot._fillDedupeWindowMs) {
-                snapshot[key] = Number(timestamp);
+                snapshot[key as string] = Number(timestamp);
             }
         }
     }
@@ -57,7 +59,7 @@ function getRecentFillKeysSnapshot(bot) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {string} [reason='state recovery sync']
  */
-async function triggerStateRecoverySync(bot, reason = 'state recovery sync') {
+async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery sync') {
     if (!bot.manager) return;
 
     if (bot._recoverySyncInFlight) {
@@ -85,7 +87,7 @@ async function triggerStateRecoverySync(bot, reason = 'state recovery sync') {
  * @param {string} flowContext
  * @returns {Promise<boolean>}
  */
-async function abortFlowIfIllegalState(bot, flowContext) {
+async function abortFlowIfIllegalState(bot: any, flowContext: any) {
     const illegalSignal = bot.manager?.consumeIllegalStateSignal?.();
     if (!illegalSignal) {
         return false;
@@ -108,7 +110,7 @@ async function abortFlowIfIllegalState(bot, flowContext) {
  * @param {number} [opsCount=0]
  * @returns {Promise<Object|null>}
  */
-async function handleBatchHardAbort(bot, err, phase = 'batch processing', opsCount = 0) {
+async function handleBatchHardAbort(bot: any, err: any, phase: any = 'batch processing', opsCount: any = 0) {
     const baseResult = { executed: false, hadRotation: false };
     const opsInfo = opsCount > 0 ? ` with ${opsCount} ops` : '';
 
@@ -139,7 +141,7 @@ async function handleBatchHardAbort(bot, err, phase = 'batch processing', opsCou
  * @param {string} [context='recoverable-grid-update']
  * @returns {Promise<number>}
  */
-async function applyRecoverableGridUpdates(bot, updates, context = 'recoverable-grid-update') {
+async function applyRecoverableGridUpdates(bot: any, updates: any, context: any = 'recoverable-grid-update') {
     if (!bot.manager || !Array.isArray(updates) || updates.length === 0) {
         return 0;
     }
@@ -171,7 +173,7 @@ async function applyRecoverableGridUpdates(bot, updates, context = 'recoverable-
  * @param {string} [reason='stale order cleanup']
  * @returns {Promise<Object>}
  */
-async function recoverExplicitStaleOrders(bot, staleOrderIds, reason = 'stale order cleanup') {
+async function recoverExplicitStaleOrders(bot: any, staleOrderIds: any, reason: any = 'stale order cleanup') {
     const staleIds = Array.from(staleOrderIds || []).filter(Boolean) as string[];
     if (staleIds.length === 0) {
         return { executed: false, hadRotation: false, stale: false };
@@ -182,7 +184,7 @@ async function recoverExplicitStaleOrders(bot, staleOrderIds, reason = 'stale or
         'warn'
     );
 
-    const updates = [];
+    const updates: any[] = [];
 
     for (const [, gridOrder] of bot.manager.orders.entries()) {
         if (!gridOrder?.orderId || !staleOrderIds.has(gridOrder.orderId)) continue;
@@ -220,7 +222,7 @@ async function recoverExplicitStaleOrders(bot, staleOrderIds, reason = 'stale or
  * @param {Array<Object>} [opContexts=[]]
  * @returns {Promise<Object>}
  */
-async function recoverBatchSizeDrift(bot, err, opContexts = []) {
+async function recoverBatchSizeDrift(bot: any, err: any, opContexts: any = []) {
     const affectedOrderIds = extractSizeDriftOrderIds(opContexts);
     if (affectedOrderIds.length > 0) {
         bot.manager.logger.log(
@@ -261,7 +263,7 @@ async function recoverBatchSizeDrift(bot, err, opContexts = []) {
  * @param {Array<Object>} opContexts
  * @returns {string[]}
  */
-function extractSizeDriftOrderIds(opContexts) {
+function extractSizeDriftOrderIds(opContexts: any) {
     if (!Array.isArray(opContexts)) return [];
     const ids = new Set();
     for (const ctx of opContexts) {
@@ -279,7 +281,7 @@ function extractSizeDriftOrderIds(opContexts) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {Promise<{success: boolean, reason?: string}>}
  */
-async function recoverFromPersistedGrid(bot) {
+async function recoverFromPersistedGrid(bot: any) {
     if (!bot.accountOrders || !bot.manager) {
         return { success: false, reason: 'accountOrders or manager unavailable' };
     }
@@ -319,7 +321,7 @@ async function recoverFromPersistedGrid(bot) {
 
         const assets = bot.manager?.assets;
         const matchedCount = assets
-            ? chainOpenOrders.filter(o => parseChainOrder(o, assets) !== null).length
+            ? chainOpenOrders.filter((o: any) => parseChainOrder(o, assets) !== null).length
             : chainOpenOrders.length;
         bot.manager.logger.log(
             `[RECOVERY] Grid reloaded from persisted snapshot: ${bot.manager.orders.size} orders, ` +
@@ -332,7 +334,7 @@ async function recoverFromPersistedGrid(bot) {
             : [];
         if (remainingUnmatched.length > 0) {
             const sample = remainingUnmatched.slice(0, 3)
-                .map(o => bot._formatUnmatchedChainOrderForLog(o))
+                .map((o: any) => bot._formatUnmatchedChainOrderForLog(o))
                 .join(' | ');
             bot.manager.logger.log(
                 `[RECOVERY] Persisted grid reloaded but ${remainingUnmatched.length} unmatched chain order(s) ` +
@@ -370,7 +372,7 @@ async function recoverFromPersistedGrid(bot) {
  * @param {'startup'|'recovery'} context
  * @returns {Promise<boolean>}
  */
-async function rejectCorruptedGridSnapshot(bot, context) {
+async function rejectCorruptedGridSnapshot(bot: any, context: any) {
     if (!bot.manager?.checkFundDriftAfterFills) return false;
     const driftCheck = bot.manager.checkFundDriftAfterFills();
     if (driftCheck.isValid) return false;
@@ -385,8 +387,8 @@ async function rejectCorruptedGridSnapshot(bot, context) {
         try {
             await bot.accountOrders.clearGrid();
             bot._warn(`${tag} Corrupted grid snapshot deleted.`);
-        } catch (clearErr) {
-            bot._warn(`${tag} Failed to delete corrupted snapshot: ${clearErr.message}`);
+        } catch (clearErr: unknown) {
+            bot._warn(`${tag} Failed to delete corrupted snapshot: ${(clearErr as any)?.message ?? clearErr}`);
         }
     }
     return true;
@@ -398,12 +400,12 @@ async function rejectCorruptedGridSnapshot(bot, context) {
  * @param {string[]} orderIds
  * @returns {Promise<boolean>}
  */
-async function targetedOrderRepair(bot, orderIds) {
+async function targetedOrderRepair(bot: any, orderIds: any) {
     try {
         const objects = await BitShares.db.get_objects(orderIds);
         if (!Array.isArray(objects) || objects.length !== orderIds.length) return false;
 
-        const updates = [];
+        const updates: any[] = [];
         for (let i = 0; i < orderIds.length; i++) {
             const chainOrder = objects[i];
             const gridOrder = (Array.from(bot.manager.orders.values()) as any[])
@@ -434,26 +436,14 @@ async function targetedOrderRepair(bot, orderIds) {
             await bot._applyRecoverableGridUpdates(updates, 'targeted-size-drift-repair');
         }
         return true;
-    } catch (err) {
+    } catch (err: unknown) {
         bot.manager.logger.log(
-            `[COW] Targeted order repair failed: ${err.message}`,
+            `[COW] Targeted order repair failed: ${(err as any)?.message ?? err}`,
             'debug'
         );
         return false;
     }
 }
 
-export = {
-    persistAndRecoverIfNeeded,
-    getRecentFillKeysSnapshot,
-    triggerStateRecoverySync,
-    abortFlowIfIllegalState,
-    handleBatchHardAbort,
-    applyRecoverableGridUpdates,
-    recoverExplicitStaleOrders,
-    recoverBatchSizeDrift,
-    extractSizeDriftOrderIds,
-    recoverFromPersistedGrid,
-    rejectCorruptedGridSnapshot,
-    targetedOrderRepair,
-};
+export { persistAndRecoverIfNeeded, getRecentFillKeysSnapshot, triggerStateRecoverySync, abortFlowIfIllegalState, handleBatchHardAbort, applyRecoverableGridUpdates, recoverExplicitStaleOrders, recoverBatchSizeDrift, extractSizeDriftOrderIds, recoverFromPersistedGrid, rejectCorruptedGridSnapshot, targetedOrderRepair }
+

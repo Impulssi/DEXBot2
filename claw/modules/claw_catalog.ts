@@ -800,11 +800,5 @@ function getClawToolByName(toolName: any) {
   return match ? cloneTool(match) : null;
 }
 
-export = {
-  buildClawCommandExamples,
-  getClawToolByCommand,
-  getClawToolByName,
-  getClawToolCatalog,
-  listClawCommandNames,
-  objectSchema
-};
+export { buildClawCommandExamples, getClawToolByCommand, getClawToolByName, getClawToolCatalog, listClawCommandNames, objectSchema }
+

@@ -23,6 +23,7 @@ const {
     loadExistingWhitelist,
     parseOptions,
 } = require('../scripts/generate_market_adapter_whitelist');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 async function testWhitelistCache() {
     console.log(' - Testing isBotWhitelisted caching...');
@@ -294,16 +295,16 @@ async function testRobustAssetResolution() {
         await resolveAsset(null);
         assert.fail('resolveAsset(null) should throw');
     } catch (err) {
-        if (err.code === 'ERR_ASSERTION') throw err;
-        assert.ok(err.message.includes('invalid or missing symbol'), `Error message should be descriptive, got: ${err.message}`);
+        if ((err as any).code === 'ERR_ASSERTION') throw err;
+        assert.ok(getErrorMessage(err).includes('invalid or missing symbol'), `Error message should be descriptive, got: ${getErrorMessage(err)}`);
     }
 
     try {
         await resolveAsset('');
         assert.fail('resolveAsset("") should throw');
     } catch (err) {
-        if (err.code === 'ERR_ASSERTION') throw err;
-        assert.ok(err.message.includes('invalid or missing symbol'), `Error message should be descriptive, got: ${err.message}`);
+        if ((err as any).code === 'ERR_ASSERTION') throw err;
+        assert.ok(getErrorMessage(err).includes('invalid or missing symbol'), `Error message should be descriptive, got: ${getErrorMessage(err)}`);
     }
 }
 
@@ -314,16 +315,16 @@ async function testRobustBotContext() {
         await resolveBotContext({ botKey: 'test', assetA: 'BTS' }); // Missing assetB
         assert.fail('resolveBotContext missing assetB should throw');
     } catch (err) {
-        if (err.code === 'ERR_ASSERTION') throw err;
-        assert.ok(err.message.includes('missing assetB'), `Error message should be descriptive, got: ${err.message}`);
+        if ((err as any).code === 'ERR_ASSERTION') throw err;
+        assert.ok(getErrorMessage(err).includes('missing assetB'), `Error message should be descriptive, got: ${getErrorMessage(err)}`);
     }
 
     try {
         await resolveBotContext({ botKey: 'test', assetB: 'BTS' }); // Missing assetA
         assert.fail('resolveBotContext missing assetA should throw');
     } catch (err) {
-        if (err.code === 'ERR_ASSERTION') throw err;
-        assert.ok(err.message.includes('missing assetA'), `Error message should be descriptive, got: ${err.message}`);
+        if ((err as any).code === 'ERR_ASSERTION') throw err;
+        assert.ok(getErrorMessage(err).includes('missing assetA'), `Error message should be descriptive, got: ${getErrorMessage(err)}`);
     }
 }
 

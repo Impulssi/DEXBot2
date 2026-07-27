@@ -18,6 +18,7 @@
 
 const _WebSocket = globalThis.WebSocket;
 const { NODE_MANAGEMENT } = require('../modules/constants');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const EXPECTED_CHAIN_ID = NODE_MANAGEMENT.EXPECTED_CHAIN_ID;
 const NODES = NODE_MANAGEMENT.DEFAULT_NODES;
@@ -92,8 +93,8 @@ async function testNode(nodeUrl, index) {
         log(`  connect ✓ (${Date.now() - t0}ms)`);
         result.checks.push('connect');
     } catch (err) {
-        log(`  connect ✗ ${err.message}`);
-        result.ok = false; (result as any).error = `connect: ${err.message}`;
+        log(`  connect ✗ ${getErrorMessage(err)}`);
+        result.ok = false; (result as any).error = `connect: ${getErrorMessage(err)}`;
         return result;
     }
 
@@ -106,8 +107,8 @@ async function testNode(nodeUrl, index) {
         log(`  login ✓ (db=${dbId} history=${historyId})`);
         result.checks.push('login');
     } catch (err) {
-        log(`  login ✗ ${err.message}`);
-        result.ok = false; (result as any).error = `login: ${err.message}`;
+        log(`  login ✗ ${getErrorMessage(err)}`);
+        result.ok = false; (result as any).error = `login: ${getErrorMessage(err)}`;
         try { ws.close(); } catch (_) {} return result;
     }
 
@@ -120,8 +121,8 @@ async function testNode(nodeUrl, index) {
             throw new Error(`wrong chain ${String(chainId).substring(0, 20)}...`);
         }
     } catch (err) {
-        log(`  chain ✗ ${err.message}`);
-        result.ok = false; (result as any).error = `chain: ${err.message}`;
+        log(`  chain ✗ ${getErrorMessage(err)}`);
+        result.ok = false; (result as any).error = `chain: ${getErrorMessage(err)}`;
         try { ws.close(); } catch (_) {} return result;
     }
     log(`  chain ✓`);
@@ -137,8 +138,8 @@ async function testNode(nodeUrl, index) {
         log(`  assets ✓ ${ASSET_A}=${assetAId} ${ASSET_B}=${assetBId}`);
         result.checks.push('assets');
     } catch (err) {
-        log(`  assets ✗ ${err.message}`);
-        result.ok = false; (result as any).error = `assets: ${err.message}`;
+        log(`  assets ✗ ${getErrorMessage(err)}`);
+        result.ok = false; (result as any).error = `assets: ${getErrorMessage(err)}`;
         try { ws.close(); } catch (_) {} return result;
     }
 
@@ -149,8 +150,8 @@ async function testNode(nodeUrl, index) {
         log(`  pool-swaps ✓ ${count} recent`);
         result.checks.push('pool-swaps');
     } catch (err) {
-        log(`  pool-swaps ✗ ${err.message}`);
-        result.ok = false; (result as any).error = `pool-swaps: ${err.message}`;
+        log(`  pool-swaps ✗ ${getErrorMessage(err)}`);
+        result.ok = false; (result as any).error = `pool-swaps: ${getErrorMessage(err)}`;
         try { ws.close(); } catch (_) {} return result;
     }
 
@@ -167,8 +168,8 @@ async function testNode(nodeUrl, index) {
         log(`  book-candles ✓ ${count} buckets`);
         result.checks.push('book-candles');
     } catch (err) {
-        log(`  book-candles ✗ ${err.message}`);
-        result.ok = false; (result as any).error = `book-candles: ${err.message}`;
+        log(`  book-candles ✗ ${getErrorMessage(err)}`);
+        result.ok = false; (result as any).error = `book-candles: ${getErrorMessage(err)}`;
         try { ws.close(); } catch (_) {} return result;
     }
 
@@ -269,4 +270,4 @@ async function main() {
     process.exit(failed.length > 0 ? 1 : 0);
 }
 
-main().catch((err) => { console.error(`Fatal: ${err.message}`); process.exit(2); });
+main().catch((err) => { console.error(`Fatal: ${getErrorMessage(err)}`); process.exit(2); });

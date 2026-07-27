@@ -1,10 +1,7 @@
-const { Config } = require('../../modules/config');
-const {
-  buildClawCommandExamples,
-  getClawToolCatalog,
-  listClawCommandNames
-} = require('./claw_catalog');
-const { getSupportedClawRuntime, listSupportedClawRuntimes } = require('./claw_runtime_matrix');
+
+import { Config } from '../../modules/config';
+import { getSupportedClawRuntime, listSupportedClawRuntimes } from './claw_runtime_matrix';
+import { buildClawCommandExamples, getClawToolCatalog, listClawCommandNames } from './claw_catalog.js';
 
 function groupCommandsByRisk(tools: any[]) {
   return tools.reduce((groups: Record<string, string[]>, tool: any) => {
@@ -54,6 +51,5 @@ function describeClawBridge(options: Record<string, any> = {}) {
   };
 }
 
-export = {
-  describeClawBridge
-};
+export { describeClawBridge }
+

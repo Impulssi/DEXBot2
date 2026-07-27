@@ -1,8 +1,9 @@
+
+import { getProcessDiscovery } from '../process_discovery';
+import { Config } from '../config';
+import { runtime } from '../runtime';
 'use strict';
 
-const { getProcessDiscovery } = require('../process_discovery');
-const { Config } = require('../config');
-const { runtime } = require('../runtime');
 
 const STATUS_COLORS = {
     reset: '\x1b[0m',
@@ -17,65 +18,65 @@ function colorStatus(text: string, color: string, stream: any = runtime.stdout):
     return stream.isTTY && !Config.NO_COLOR ? `${color}${text}${STATUS_COLORS.reset}` : text;
 }
 
-function statusTitle(text) {
+function statusTitle(text: any) {
     return colorStatus(text, STATUS_COLORS.title);
 }
 
-function statusLabel(text) {
+function statusLabel(text: any) {
     return colorStatus(text, STATUS_COLORS.label);
 }
 
-function statusBool(value) {
+function statusBool(value: any) {
     return colorStatus(value ? 'yes' : 'no', value ? STATUS_COLORS.ok : STATUS_COLORS.warn);
 }
 
-function statusActiveBotName(name) {
+function statusActiveBotName(name: any) {
     return colorStatus(name, STATUS_COLORS.ok);
 }
 
-function statusSuccess(text) {
+function statusSuccess(text: any) {
     return colorStatus(text, STATUS_COLORS.ok);
 }
 
-function statusError(text) {
+function statusError(text: any) {
     return colorStatus(text, STATUS_COLORS.warn, runtime.stderr);
 }
 
-function readProcStat(pid) {
+function readProcStat(pid: any) {
     return getProcessDiscovery().readStat(pid);
 }
 
-function readProcMemMB(pid) {
+function readProcMemMB(pid: any) {
     return getProcessDiscovery().readMemMB(pid);
 }
 
-function readProcCpuTotal(pid) {
+function readProcCpuTotal(pid: any) {
     const stat = readProcStat(pid);
     if (!stat) return null;
     return (stat.utime + stat.stime) / 100;
 }
 
-function readProcCpuTime(pid) {
+function readProcCpuTime(pid: any) {
     return getProcessDiscovery().readCpuTime(pid);
 }
 
-async function readProcCpuPercent(pid, samples = 2, intervalMs = 400) {
+async function readProcCpuPercent(pid: any, samples: any = 2, intervalMs: any = 400) {
     return getProcessDiscovery().readCpuPercent(pid, samples, intervalMs);
 }
 
-function readProcCmdline(pid) {
+function readProcCmdline(pid: any) {
     return getProcessDiscovery().readCmdline(pid);
 }
 
-function readProcArgs(pid) {
+function readProcArgs(pid: any) {
     return getProcessDiscovery().readArgs(pid);
 }
 
-function readProcUptime(pid) {
+function readProcUptime(pid: any) {
     return getProcessDiscovery().readUptime(pid);
 }
 
-function formatControlUptime(ms) {
+function formatControlUptime(ms: any) {
     const s = Math.floor(ms / 1000);
     const m = Math.floor(s / 60);
     const h = Math.floor(m / 60);
@@ -86,7 +87,7 @@ function formatControlUptime(ms) {
     return `${s}s`;
 }
 
-function formatMemoryWithUptime(memory, uptime) {
+function formatMemoryWithUptime(memory: any, uptime: any) {
     return uptime && uptime !== '-' ? `${memory} (${uptime})` : memory;
 }
 
@@ -108,24 +109,5 @@ function printControlStatus(status: any) {
     }
 }
 
-export = {
-    STATUS_COLORS,
-    colorStatus,
-    statusTitle,
-    statusLabel,
-    statusBool,
-    statusActiveBotName,
-    statusSuccess,
-    statusError,
-    readProcStat,
-    readProcMemMB,
-    readProcCpuTotal,
-    readProcCpuTime,
-    readProcCpuPercent,
-    readProcCmdline,
-    readProcArgs,
-    readProcUptime,
-    formatControlUptime,
-    formatMemoryWithUptime,
-    printControlStatus,
-};
+export { STATUS_COLORS, colorStatus, statusTitle, statusLabel, statusBool, statusActiveBotName, statusSuccess, statusError, readProcStat, readProcMemMB, readProcCpuTotal, readProcCpuTime, readProcCpuPercent, readProcCmdline, readProcArgs, readProcUptime, formatControlUptime, formatMemoryWithUptime, printControlStatus }
+

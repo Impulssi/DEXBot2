@@ -32,6 +32,7 @@ export function getCrypto(): CryptoProvider {
             _crypto = new NodeCryptoProvider();
         }
     }
+    if (!_crypto) throw new Error('Crypto provider not initialized');
     return _crypto;
 }
 

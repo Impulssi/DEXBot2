@@ -1,19 +1,16 @@
-const { createAccountClient } = require('./bitshares_client');
-const { path } = require('../../modules/path_api');
-const { getStorage } = require('../../modules/storage');
+
+import * as client from './bitshares_client';
+const { createAccountClient } = client;
+import { path } from '../../modules/path_api';
+import { getStorage } from '../../modules/storage';
+import { getDexbot2Root, requireDexbot2Module } from './dexbot_bridge';
+import { Config } from '../../modules/config';
+import { DAEMON_ERRORS } from '../../modules/constants';
+import { getCredentialReadyFilePath } from '../../modules/credential_runtime';
+import { readJSON } from '../../modules/utils/fs_utils';
+import { runtime } from '../../modules/runtime';
 const storage = getStorage();
-const {
-  isCredentialDaemonReady,
-  broadcastOperationViaCredentialDaemon,
-  executeOperationsViaCredentialDaemon,
-  waitForCredentialDaemon
-} = require('./dexbot_credential_client');
-const { getDexbot2Root, requireDexbot2Module } = require('./dexbot_bridge');
-const { Config } = require('../../modules/config');
-const { DAEMON_ERRORS } = require('../../modules/constants');
-const { getCredentialReadyFilePath } = require('../../modules/credential_runtime');
-const { readJSON } = require('../../modules/utils/fs_utils');
-const { runtime } = require('../../modules/runtime');
+import { isCredentialDaemonReady, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, waitForCredentialDaemon } from './dexbot_credential_client.js';
 
 // Lazy-load DEXBot2 modules
 let chainKeys: any = null;
@@ -288,11 +285,5 @@ async function broadcastOperation(operation: any, options: Record<string, any> =
   return client.broadcast(operation);
 }
 
-export = {
-  broadcastOperation,
-  createSigningClient,
-  createSigningClientFromCredentialDaemon,
-  executeOperations,
-  getSigningClient,
-  resolveAccountName
-};
+export { broadcastOperation, createSigningClient, createSigningClientFromCredentialDaemon, executeOperations, getSigningClient, resolveAccountName }
+

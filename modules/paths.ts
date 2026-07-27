@@ -1,8 +1,9 @@
-const fs = require('fs');
-const { path } = require('./path_api');
-const { Config } = require('./config');
-const { isDistRuntime } = require('./utils/build_dir');
 
+
+import fs from 'node:fs';
+import { path } from './path_api';
+import { Config } from './config';
+import { isDistRuntime } from './utils/build_dir';
 const MODULE_DIR = path.dirname(__dirname);
 const PROJECT_ROOT = isDistRuntime(MODULE_DIR)
     ? path.dirname(MODULE_DIR)
@@ -102,4 +103,5 @@ function getRecalculateTriggerFile(botKey: string): string {
   return path.join(PATHS.PROFILES_DIR, `recalculate.${botKey}.trigger`);
 }
 
-export = { PATHS, resolveProfilesDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile };
+export { PATHS, resolveProfilesDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile }
+

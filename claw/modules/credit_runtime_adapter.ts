@@ -1,8 +1,9 @@
+
+import { path } from '../../modules/path_api';
+import { Config } from '../../modules/config';
+import CreditRuntime from '../../modules/credit_runtime';
 'use strict';
 
-const { path } = require('../../modules/path_api');
-const { Config } = require('../../modules/config');
-const CreditRuntime = require('../../modules/credit_runtime');
 
 const DEFAULT_CREDIT_RUNTIME_DIR = 'profiles/credit_runtime';
 
@@ -138,6 +139,5 @@ function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {
   };
 }
 
-export = {
-  createCreditRuntimeAdapter,
-};
+export { createCreditRuntimeAdapter }
+

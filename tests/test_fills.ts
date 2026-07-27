@@ -11,6 +11,7 @@ if (!RUN_LIVE_TEST) {
 }
 
 const { listenForFills } = require('../modules/chain_orders');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 let TEST_ACCOUNT = '1.2.1624309';
 try {
@@ -54,11 +55,11 @@ const forceExit = setTimeout(() => {
         clearTimeout(forceExit);
         if (!STRICT_LIVE_TEST) {
             console.log('Skipping live fill-listener test: live connectivity not available.');
-            console.log('Error:', err.message || err);
+            console.log('Error:', getErrorMessage(err) || err);
             process.exit(0);
             return;
         }
-        console.error('listenForFills error:', err.message || err);
+        console.error('listenForFills error:', getErrorMessage(err) || err);
         process.exit(1);
     }
 })();

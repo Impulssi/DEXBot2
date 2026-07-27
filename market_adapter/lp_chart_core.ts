@@ -1,8 +1,9 @@
+
+import { toIntervalLabel } from './interval_utils';
+import { escapeHtml, serializeJsonForScript } from '../analysis/chart_utils';
+import { fixedTo, roundTo, roundToDecimals } from '../modules/utils/math_utils';
 'use strict';
 
-const { toIntervalLabel } = require('./interval_utils');
-const { escapeHtml, serializeJsonForScript } = require('../analysis/chart_utils');
-const { fixedTo, roundTo, roundToDecimals } = require('../modules/utils/math_utils');
 
 function formatPct(v: any) {
     const num = Number(v);
@@ -879,4 +880,5 @@ raf(() => {
 </html>`;
 }
 
-export = { generateHTML };
+export { generateHTML }
+

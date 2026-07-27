@@ -1,22 +1,23 @@
+
+import fs from 'node:fs';
+import { path } from '../path_api';
+import net from 'node:net';
+import { getStorage } from '../storage';
+import { spawn } from 'node:child_process';
+import { buildScopedChildEnv } from './child_env';
+import { PATHS } from '../paths';
+import { normalizeBotEntries, resolveRawBotEntries, loadSettingsFile } from '../bot_settings';
+import { UPDATER, BUILD_DIR, LAUNCHER } from '../constants';
+import { ensureDir, readJSON, safeUnlink } from '../utils/fs_utils';
+import { Config } from '../config';
+import { getProcessDiscovery } from '../process_discovery';
+import { runtime } from '../runtime';
+import { sleep } from '../order/utils/system';
 'use strict';
 
-const fs = require('fs');
-const { path } = require('../path_api');
-const net = require('net');
 import type { Socket } from 'net';
-const { getStorage } = require('../storage');
 const storage = getStorage();
-const { spawn, execSync } = require('child_process');
-const { buildScopedChildEnv } = require('./child_env');
-const { buildRuntimeScriptPath, isDistCodeRoot, SCRIPTS_ROOT: CODE_ROOT } = require('./runtime_entry');
-const { PATHS } = require('../paths');
-const { normalizeBotEntries, resolveRawBotEntries, loadSettingsFile } = require('../bot_settings');
-const { UPDATER, BUILD_DIR, LAUNCHER } = require('../constants');
-const { ensureDir, readJSON, safeUnlink } = require('../utils/fs_utils');
-const { Config } = require('../config');
-const { getProcessDiscovery } = require('../process_discovery');
-const { runtime } = require('../runtime');
-const { sleep } = require('../order/utils/system');
+import { buildRuntimeScriptPath, isDistCodeRoot, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry';
 
 const BOT_SCRIPT = buildRuntimeScriptPath(CODE_ROOT, ['bot']);
 const SOCKET_PATH = Config.DEXBOT_SUPERVISOR_SOCKET || PATHS.PROFILES.SUPERVISOR_SOCK;
@@ -36,16 +37,16 @@ const MAX_MEMORY_BYTES = MAX_MEMORY_MB * 1024 * 1024;
 
 const SUPERVISOR_PREFIX = '[supervisor]';
 
-function usesAmaGridPrice(bot) {
+function usesAmaGridPrice(bot: any) {
     const gridPrice = typeof bot?.gridPrice === 'string' ? bot.gridPrice.trim().toLowerCase() : '';
     return /^ama(?:[1-4])?$/.test(gridPrice);
 }
 
-function needsMarketAdapter(bots) {
-    return (bots || []).some((bot) => usesAmaGridPrice(bot));
+function needsMarketAdapter(bots: any) {
+    return (bots || []).some((bot: any) => usesAmaGridPrice(bot));
 }
 
-function isServiceApp(app) {
+function isServiceApp(app: any) {
     const name = String(app?.name || '');
     return name === 'dexbot-update' || name === 'dexbot-adapter';
 }
@@ -56,15 +57,15 @@ function ensureLogDir() {
     }
 }
 
-function loadActiveBots(explicitBots) {
+function loadActiveBots(explicitBots: any) {
     if (explicitBots) return explicitBots;
     const { config } = loadSettingsFile(PATHS.PROFILES.BOTS_JSON);
     const raw = resolveRawBotEntries(config);
-    return normalizeBotEntries(raw).filter((b) => b.active !== false);
+    return normalizeBotEntries(raw).filter((b: any) => b.active !== false);
 }
 
-function buildSupervisedApps(bots, updaterActive) {
-    const apps = (bots || []).map((bot, index) => {
+function buildSupervisedApps(bots: any, updaterActive: any) {
+    const apps = (bots || []).map((bot: any, index: any) => {
         const botName = bot.name || `bot-${index}`;
         return {
             kind: 'bot',
@@ -113,7 +114,7 @@ function buildSupervisedApps(bots, updaterActive) {
     return apps;
 }
 
-function parseCronField(field, min, max) {
+function parseCronField(field: any, min: any, max: any) {
     const trimmed = String(field || '').trim();
     if (!trimmed) {
         throw new Error('empty cron field');
@@ -167,7 +168,7 @@ function parseCronField(field, min, max) {
     return values;
 }
 
-function parseCronExpression(expression) {
+function parseCronExpression(expression: any) {
     const parts = String(expression || '').trim().split(/\s+/);
     if (parts.length !== 5) {
         throw new Error(`invalid cron expression: ${expression}`);
@@ -181,11 +182,11 @@ function parseCronExpression(expression) {
     };
 }
 
-function cronFieldMatches(field, value) {
+function cronFieldMatches(field: any, value: any) {
     return field == null || field.has(value);
 }
 
-function cronMatchesDate(schedule, date) {
+function cronMatchesDate(schedule: any, date: any) {
     if (!schedule) return false;
     const minuteMatch = cronFieldMatches(schedule.minute, date.getMinutes());
     const hourMatch = cronFieldMatches(schedule.hour, date.getHours());
@@ -200,7 +201,7 @@ function cronMatchesDate(schedule, date) {
     return minuteMatch && hourMatch && monthMatch && dayMatch;
 }
 
-function getNextCronDate(schedule, fromDate = new Date()) {
+function getNextCronDate(schedule: any, fromDate: any = new Date()) {
     const cursor = new Date(fromDate.getTime());
     cursor.setSeconds(0, 0);
     cursor.setMinutes(cursor.getMinutes() + 1);
@@ -214,7 +215,7 @@ function getNextCronDate(schedule, fromDate = new Date()) {
     throw new Error('unable to resolve next cron run');
 }
 
-function parseMemoryLimitBytes(limit) {
+function parseMemoryLimitBytes(limit: any) {
     if (!limit) return null;
     const match = String(limit || '').trim().match(/^(\d+(?:\.\d+)?)\s*([kmgt]?)(?:b)?$/i);
     if (!match) return null;
@@ -227,13 +228,13 @@ function parseMemoryLimitBytes(limit) {
     return Math.floor(value * factor);
 }
 
-function normalizeAppArgs(args) {
+function normalizeAppArgs(args: any) {
     if (args == null || args === '') return [];
     if (Array.isArray(args)) return args.map(String);
     return [String(args)];
 }
 
-function forwardSignal(child, signal) {
+function forwardSignal(child: any, signal: any) {
     if (!child || child.killed) return;
     try {
         child.kill(signal);
@@ -242,7 +243,7 @@ function forwardSignal(child, signal) {
     }
 }
 
-function isPidAlive(pid) {
+function isPidAlive(pid: any) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
     try {
         return runtime.kill(pid, 0);
@@ -251,7 +252,7 @@ function isPidAlive(pid) {
     }
 }
 
-async function waitForPidExit(pid, timeoutMs) {
+async function waitForPidExit(pid: any, timeoutMs: any) {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
         if (!isPidAlive(pid)) return true;
@@ -260,15 +261,15 @@ async function waitForPidExit(pid, timeoutMs) {
     return !isPidAlive(pid);
 }
 
-function readProcArgs(pid) {
+function readProcArgs(pid: any) {
     return getProcessDiscovery().readArgs(pid);
 }
 
-function readProcCwd(pid) {
+function readProcCwd(pid: any) {
     return getProcessDiscovery().readCwd(pid);
 }
 
-function normalizeProcScriptArg(arg, cwd) {
+function normalizeProcScriptArg(arg: any, cwd: any) {
     if (!arg || String(arg).startsWith('-')) return '';
     if (!/\.(?:[cm]?js|ts)$/i.test(String(arg))) return '';
     return path.isAbsolute(arg)
@@ -276,14 +277,14 @@ function normalizeProcScriptArg(arg, cwd) {
         : path.resolve(cwd || PATHS.PROJECT_ROOT, arg);
 }
 
-function scriptPathForRoot(root, scriptSegments, ext) {
+function scriptPathForRoot(root: any, scriptSegments: any, ext: any) {
     const segments = [...scriptSegments];
     const last = segments.pop();
     segments.push(String(last).replace(/\.(?:[cm]?js|ts)$/i, '') + ext);
     return path.join(root, ...segments);
 }
 
-function candidateRuntimeScriptPaths(scriptSegments) {
+function candidateRuntimeScriptPaths(scriptSegments: any) {
     const candidates = new Set([
         buildRuntimeScriptPath(CODE_ROOT, scriptSegments),
         scriptPathForRoot(PATHS.PROJECT_ROOT, scriptSegments, '.ts'),
@@ -304,10 +305,10 @@ function candidateRuntimeScriptPaths(scriptSegments) {
     return candidates;
 }
 
-function pidMatchesScriptCandidates(pid, expectedPaths) {
+function pidMatchesScriptCandidates(pid: any, expectedPaths: any) {
     if (!expectedPaths || expectedPaths.size === 0) return false;
     const args = readProcArgs(pid);
-    if (!args.some((arg) => path.basename(String(arg)).includes('node'))) {
+    if (!args.some((arg: any) => path.basename(String(arg)).includes('node'))) {
         return false;
     }
 
@@ -322,7 +323,7 @@ function pidMatchesScriptCandidates(pid, expectedPaths) {
     return false;
 }
 
-function isNodeProcessWithExactScript(pid, scriptSegments) {
+function isNodeProcessWithExactScript(pid: any, scriptSegments: any) {
     return pidMatchesScriptCandidates(pid, candidateRuntimeScriptPaths(scriptSegments));
 }
 
@@ -336,7 +337,7 @@ function readMarketAdapterLockPid() {
     }
 }
 
-async function stopMarketAdapterFromLock(timeoutMs = 5000) {
+async function stopMarketAdapterFromLock(timeoutMs: any = 5000) {
     const pid = readMarketAdapterLockPid();
     if (!pid || !isNodeProcessWithExactScript(pid, ['market_adapter', 'market_adapter'])) {
         return { pid, stopped: false };
@@ -358,13 +359,14 @@ async function stopMarketAdapterFromLock(timeoutMs = 5000) {
     }
 }
 
-function getChildRSS(child) {
+function getChildRSS(child: any) {
     if (!child || !child.pid) return -1;
     try {
         if (Config.PLATFORM === 'linux') {
             const bytes = getProcessDiscovery().readRSSBytes(child.pid);
             if (bytes > 0) return bytes;
         } else if (Config.PLATFORM === 'darwin') {
+            const { execSync } = require('child_process');
             const out = execSync(`ps -o rss= -p ${child.pid}`, { encoding: 'utf8', timeout: 3000 });
             const rssKB = parseInt(out.trim(), 10);
             if (rssKB > 0) return rssKB * 1024;
@@ -373,8 +375,8 @@ function getChildRSS(child) {
     return -1;
 }
 
-function waitForChildSpawn(child) {
-    return new Promise((resolve, reject) => {
+function waitForChildSpawn(child: any) {
+    return new Promise((resolve: any, reject: any) => {
         let settled = false;
         const handleSpawn = () => {
             if (settled) return;
@@ -382,7 +384,7 @@ function waitForChildSpawn(child) {
             cleanup();
             resolve(undefined);
         };
-        const handleError = (error) => {
+        const handleError = (error: any) => {
             if (settled) return;
             settled = true;
             cleanup();
@@ -397,7 +399,7 @@ function waitForChildSpawn(child) {
     });
 }
 
-function formatUptime(ms) {
+function formatUptime(ms: any) {
     const s = Math.floor(ms / 1000);
     const m = Math.floor(s / 60);
     const h = Math.floor(m / 60);
@@ -412,8 +414,8 @@ function createBotSupervisor({
     bots = null,
     buildEnv = buildScopedChildEnv,
     spawnFn = spawn,
-    log = (...args) => console.log(SUPERVISOR_PREFIX, ...args),
-    logError = (...args) => console.error(SUPERVISOR_PREFIX, ...args),
+    log = (...args: any) => console.log(SUPERVISOR_PREFIX, ...args),
+    logError = (...args: any) => console.error(SUPERVISOR_PREFIX, ...args),
     controlSocket = !Config.DEXBOT_DISABLE_SUPERVISOR_SOCKET,
     getChildRss = getChildRSS,
     memoryCheckIntervalMs = MEMORY_CHECK_INTERVAL_MS,
@@ -423,13 +425,13 @@ function createBotSupervisor({
     nowFn = () => Date.now(),
     stopMarketAdapter = stopMarketAdapterFromLock,
     updaterActive = UPDATER.ACTIVE,
-} = {}) {
+}: any = {}) {
     const botStates = new Map();
     let shuttingDown = false;
-    let shutdownResolve = null;
-    let memoryCheckTimer = null;
-    let statusLogTimer = null;
-    let socketServer = null;
+    let shutdownResolve: (() => void) | null = null;
+    let memoryCheckTimer: any = null;
+    let statusLogTimer: any = null;
+    let socketServer: any = null;
     let socketConnections = new Set<Socket>();
     let userStopped = false;
 
@@ -451,7 +453,7 @@ function createBotSupervisor({
 
     function printStatusSummary() {
         if (shuttingDown) return;
-        const lines = [];
+        const lines: string[] = [];
         for (const [name, state] of botStates) {
             const pid = state.child?.pid || '-';
             const uptime = state.lastStartTime && state.status === 'running'
@@ -471,7 +473,7 @@ function createBotSupervisor({
         }
     }
 
-    function clearScheduledRun(state) {
+    function clearScheduledRun(state: any) {
         if (state?.scheduledRunTimer) {
             clearTimeoutFn(state.scheduledRunTimer);
             state.scheduledRunTimer = null;
@@ -481,7 +483,7 @@ function createBotSupervisor({
         }
     }
 
-    function scheduleNextRun(state) {
+    function scheduleNextRun(state: any) {
         clearScheduledRun(state);
         if (shuttingDown || !state?.cronSchedule) {
             return;
@@ -541,7 +543,7 @@ function createBotSupervisor({
         }
     }
 
-    function spawnApp(app) {
+    function spawnApp(app: any) {
         const appName = app.name;
         const state = botStates.get(appName);
         if (!state) return null;
@@ -573,10 +575,10 @@ function createBotSupervisor({
             stdio: ['inherit', 'pipe', 'pipe'],
         });
 
-        child.stdout.pipe(outStream);
-        child.stdout.pipe(runtime.stdout);
-        child.stderr.pipe(errStream);
-        child.stderr.pipe(runtime.stderr);
+        child.stdout.pipe(outStream as any);
+        child.stdout.pipe(runtime.stdout as any);
+        child.stderr.pipe(errStream as any);
+        child.stderr.pipe(runtime.stderr as any);
 
         child.stdout.on('error', () => {});
         child.stderr.on('error', () => {});
@@ -588,7 +590,7 @@ function createBotSupervisor({
         state.stoppedByUser = false;
         state.lastStartTime = nowFn();
 
-        child.once('close', (code, signal) => {
+        child.once('close', (code: any, signal: any) => {
             try { outStream.end(); } catch (_: any) {}
             try { errStream.end(); } catch (_: any) {}
 
@@ -652,14 +654,14 @@ function createBotSupervisor({
             }, restartDelay);
         });
 
-        child.on('error', (err) => {
+        child.on('error', (err: any) => {
             logError(`${appName} spawn error:`, err.message);
         });
 
         return child;
     }
 
-    async function waitForStableStartup({ timeoutMs = 750, pollIntervalMs = 50 } = {}) {
+    async function waitForStableStartup({ timeoutMs = 750, pollIntervalMs = 50 }: any = {}) {
         const trackedStates = () =>
             Array.from(botStates.values()).filter((state: any) => state.appEntry && state.appEntry.kind !== 'job');
 
@@ -677,7 +679,7 @@ function createBotSupervisor({
             }
 
             const remainingMs = Math.max(deadline - nowFn(), 0);
-            await new Promise((resolve) => {
+            await new Promise((resolve: any) => {
                 setTimeoutFn(resolve, Math.min(pollIntervalMs, remainingMs || pollIntervalMs));
             });
         }
@@ -690,7 +692,7 @@ function createBotSupervisor({
         }
     }
 
-    async function handleSocketCommand(cmd) {
+    async function handleSocketCommand(cmd: any) {
         try {
             switch (cmd.cmd) {
                 case 'status': {
@@ -745,9 +747,9 @@ function createBotSupervisor({
     }
 
     function startSocketServer() {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve: any, reject: any) => {
             let settled = false;
-            const settle = (fn, value) => {
+            const settle = (fn: any, value: any) => {
                 if (settled) return;
                 settled = true;
                 fn(value);
@@ -758,29 +760,29 @@ function createBotSupervisor({
                 settle(reject, new Error('Another supervisor instance is already running (socket exists). Stop it first or use a different profile.'));
             });
             testSocket.on('error', () => {
-                startSocketServerInternal().then(() => settle(resolve, undefined)).catch((err) => settle(reject, err));
+                startSocketServerInternal().then(() => settle(resolve, undefined)).catch((err: any) => settle(reject, err));
             });
             testSocket.setTimeout(500, () => {
                 testSocket.destroy();
-                startSocketServerInternal().then(() => settle(resolve, undefined)).catch((err) => settle(reject, err));
+                startSocketServerInternal().then(() => settle(resolve, undefined)).catch((err: any) => settle(reject, err));
             });
         });
     }
 
     function startSocketServerInternal() {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve: any, reject: any) => {
             safeUnlink(SOCKET_PATH)
 
-            socketServer = net.createServer((socket) => {
+            socketServer = net.createServer((socket: any) => {
             socketConnections.add(socket);
             let buffer = '';
             let commandQueue = Promise.resolve();
             let deleteQueued = false;
 
-            const enqueueSocketResponse = (handler) => {
+            const enqueueSocketResponse = (handler: any) => {
                 commandQueue = commandQueue
                     .then(handler)
-                    .catch((err) => {
+                    .catch((err: any) => {
                         try {
                             socket.write(JSON.stringify({ error: err.message }) + '\n');
                         } catch (_: any) {}
@@ -788,11 +790,11 @@ function createBotSupervisor({
                 return commandQueue;
             };
 
-            socket.on('data', (data) => {
+            socket.on('data', (data: any) => {
                 if (deleteQueued) return;
                 buffer += data.toString();
                 const lines = buffer.split('\n');
-                buffer = lines.pop();
+                buffer = lines.pop() ?? '';
                 for (const line of lines) {
                     if (deleteQueued) break;
                     if (!line.trim()) continue;
@@ -800,7 +802,7 @@ function createBotSupervisor({
                     try {
                         cmd = JSON.parse(line);
                     } catch (_: any) {
-                        enqueueSocketResponse(() => new Promise((resolve) => {
+                        enqueueSocketResponse(() => new Promise((resolve: any) => {
                             socket.write(JSON.stringify({ error: 'invalid JSON' }) + '\n', resolve);
                         }));
                         continue;
@@ -811,7 +813,7 @@ function createBotSupervisor({
                     }
                     enqueueSocketResponse(async () => {
                         const resp = await handleSocketCommand({ ...cmd, preserveSockets: [socket] });
-                        await new Promise((resolve) => {
+                        await new Promise((resolve: any) => {
                             socket.write(JSON.stringify(resp) + '\n', resolve);
                         });
                         if (cmd.cmd === 'delete') {
@@ -830,7 +832,7 @@ function createBotSupervisor({
             });
             });
 
-            const onError = (err) => {
+            const onError = (err: any) => {
                 logError(`Socket server error: ${err.message}`);
                 reject(err);
             };
@@ -838,7 +840,7 @@ function createBotSupervisor({
             socketServer.once('error', onError);
             socketServer.listen(SOCKET_PATH, () => {
                 socketServer.off('error', onError);
-                socketServer.on('error', (err) => {
+                socketServer.on('error', (err: any) => {
                     logError(`Socket server error: ${err.message}`);
                 });
                 try { storage.chmod(SOCKET_PATH, 0o600); } catch (_: any) {}
@@ -852,7 +854,7 @@ function createBotSupervisor({
         });
     }
 
-    function closeSocketServer({ preserveSockets = [] } = {}) {
+    function closeSocketServer({ preserveSockets = [] as Socket[] }: any = {}) {
         const preserved = new Set(preserveSockets);
         if (socketServer) {
             try { socketServer.close(); } catch (_: any) {}
@@ -862,7 +864,7 @@ function createBotSupervisor({
             if (preserved.has(sock)) continue;
             try { sock.destroy(); } catch (_: any) {}
         }
-        socketConnections = new Set([...socketConnections].filter((sock) => preserved.has(sock)));
+        socketConnections = new Set([...socketConnections].filter((sock: any) => preserved.has(sock)));
         safeUnlink(SOCKET_PATH)
     }
 
@@ -904,10 +906,10 @@ function createBotSupervisor({
         }
 
         memoryCheckTimer = setInterval(runMemoryCheck, memoryCheckIntervalMs);
-        memoryCheckTimer.unref();
+        if (memoryCheckTimer) memoryCheckTimer.unref();
 
         statusLogTimer = setInterval(printStatusSummary, statusLogIntervalMs);
-        statusLogTimer.unref();
+        if (statusLogTimer) statusLogTimer.unref();
 
         log(`Memory limit: ${MAX_MEMORY_MB}MB per process`);
 
@@ -956,13 +958,13 @@ function createBotSupervisor({
         }
     }
 
-    function shutdownSignalHandler(signal) {
+    function shutdownSignalHandler(signal: any) {
         for (const [, state] of botStates) {
             forwardSignal(state.child, signal);
         }
     }
 
-    async function shutdown({ preserveSockets = [] } = {}) {
+    async function shutdown({ preserveSockets = [] }: any = {}) {
         shuttingDown = true;
         userStopped = false;
         clearTimers();
@@ -970,7 +972,7 @@ function createBotSupervisor({
 
         shutdownSignalHandler('SIGTERM');
 
-        return new Promise((resolve) => {
+        return new Promise((resolve: any) => {
             const done = () => {
                 if (forceKillTimer) clearTimeout(forceKillTimer);
                 if (forceResolveTimer) clearTimeout(forceResolveTimer);
@@ -1003,7 +1005,7 @@ function createBotSupervisor({
     }
 
     function getStatus() {
-        const result = {};
+        const result: Record<string, any> = {};
         for (const [name, state] of botStates) {
             result[name] = {
                 status: state.status,
@@ -1029,9 +1031,9 @@ function createBotSupervisor({
         log('stop-all');
     }
 
-    async function restartRunning({ logAction = true } = {}) {
+    async function restartRunning({ logAction = true }: any = {}) {
         userStopped = false;
-        const runningStates = [];
+        const runningStates: any[] = [];
         for (const [, state] of botStates) {
             if (!state.bulkControl) continue;
             if (state.status === 'running' && state.child) {
@@ -1092,25 +1094,5 @@ function createBotSupervisor({
     };
 }
 
-export = {
-    createBotSupervisor,
-    SOCKET_PATH,
-    parseCronExpression,
-    getNextCronDate,
-    forwardSignal,
-    isPidAlive,
-    waitForPidExit,
-    readProcArgs,
-    readProcCwd,
-    normalizeProcScriptArg,
-    scriptPathForRoot,
-    candidateRuntimeScriptPaths,
-    pidMatchesScriptCandidates,
-    isNodeProcessWithExactScript,
-    readMarketAdapterLockPid,
-    stopMarketAdapterFromLock,
-    usesAmaGridPrice,
-    waitForChildSpawn,
-    getChildRSS,
-    formatUptime,
-};
+export { createBotSupervisor, SOCKET_PATH, parseCronExpression, getNextCronDate, forwardSignal, isPidAlive, waitForPidExit, readProcArgs, readProcCwd, normalizeProcScriptArg, scriptPathForRoot, candidateRuntimeScriptPaths, pidMatchesScriptCandidates, isNodeProcessWithExactScript, readMarketAdapterLockPid, stopMarketAdapterFromLock, usesAmaGridPrice, waitForChildSpawn, getChildRSS, formatUptime }
+

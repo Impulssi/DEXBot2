@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('=== COW Index Set Mutation Detection Report ===\n');
 
@@ -258,8 +259,8 @@ async function runRuntimeVerification() {
     console.log('\n✓ All runtime verification tests passed\n');
     } catch (e) {
         runtimeVerificationFailed = true;
-        console.error('✗ Runtime verification failed:', e.message);
-        console.error(e.stack);
+        console.error('✗ Runtime verification failed:', getErrorMessage(e));
+        console.error((e as any).stack);
     }
 }
 

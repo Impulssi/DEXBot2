@@ -15,7 +15,6 @@
  */
 
 const fs = require('fs');
-const path = require('path');
 const { PATHS } = require('../modules/paths');
 
 const livePath = PATHS.PROFILES.BOTS_JSON;

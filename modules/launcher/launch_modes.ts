@@ -1,4 +1,5 @@
-const { Config } = require('../config');
+
+import { Config } from '../config';
 const CONTROL_COMMANDS = new Set(['status', 'stat', 'stop', 'delete', 'restart', 'stop-all', 'restart-all', 'shutdown']);
 
 function findFirstPositionalArg(args: string[]): string | null {
@@ -129,9 +130,5 @@ function parsePm2Args(argv = process.argv) {
     };
 }
 
-export = {
-    findFirstPositionalArg,
-    parsePm2Args,
-    parseUnlockArgs,
-    parseUnlockStartArgs,
-};
+export { findFirstPositionalArg, parsePm2Args, parseUnlockArgs, parseUnlockStartArgs }
+

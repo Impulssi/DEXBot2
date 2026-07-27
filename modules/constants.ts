@@ -126,6 +126,10 @@
  */
 
 // Order categories used by the OrderManager when classifying grid entries.
+
+import { BUILD_DIR } from './utils/build_dir';
+import { readGeneralSettings } from './general_settings';
+import { mergeSettings } from './settings_merge';
 const ORDER_TYPES = Object.freeze({
     SELL: 'sell',
     BUY: 'buy',
@@ -632,7 +636,6 @@ const DEFAULT_TARGET_CR = (CR_ZONES.RED_LOW + CR_ZONES.RED_HIGH) / 2;
 // Build output directory name (relative to project root).
 // Centralized in modules/utils/build_dir.ts to avoid circular dependency with
 // general_settings.ts (both constants.ts and general_settings.ts import it).
-const { BUILD_DIR } = require('./utils/build_dir');
 
 const DAEMON_ERRORS = Object.freeze({
     SESSION_EXPIRED: 'invalid or expired session',
@@ -1643,7 +1646,6 @@ let NATIVE_CLIENT = {
 // Load user-defined settings from profiles/general.settings.json if it exists.
 // This allows preserving settings during updates without git stashing.
 // Lazy require breaks the circular dependency: constants → general_settings → constants
-const { readGeneralSettings } = require('./general_settings');
 const settings = readGeneralSettings({
     fallback: null,
     onError: (err: any, filePath: string) => {
@@ -1652,7 +1654,6 @@ const settings = readGeneralSettings({
 });
 
 if (settings) {
-    const { mergeSettings } = require('./settings_merge');
     const merged = mergeSettings(settings, {
         LOG_LEVEL,
         TIMING,
@@ -1735,4 +1736,5 @@ Object.freeze(MARKET_ADAPTER.AMAS);
 Object.freeze(MARKET_ADAPTER);
 Object.freeze(CREDENTIAL_PROMPTS);
 
-export = { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS };
+export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS }
+

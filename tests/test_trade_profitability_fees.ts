@@ -283,7 +283,6 @@ function testMultipleFillsFifo() {
     assert.strictEqual(resultFifo.realizedPnls[0].marketFeeEntry, 0);
 
     // Lot 2: gross entry price = 10.5, effective = 52.5 / (5 - 0.05) = 10.606060...
-    const effBuy2 = 52.5 / (5 - 0.05);
     assert.strictEqual(resultFifo.realizedPnls[1].amount, 3);
     assert.strictEqual(resultFifo.realizedPnls[1].buyPrice, 10.5,
         'lot 2 gross buy price = 10.5');
@@ -333,7 +332,6 @@ function testMakerTakerFee() {
     const result = analyzePair(trades, 'fifo');
 
     // Lot = 10 - 0.05 = 9.95, matched = 9.95
-    const netAmount = 10 - 0.05;
     // Full buy fee realised on full sale
     const expectedFeeEntry = 0.05 * (100 / 9.95);
     const expectedFeeExit = 2.2 * (9.95 / 10);

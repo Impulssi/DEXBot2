@@ -7,6 +7,7 @@ process.env.BOT_NAME = 'XRP-BTS';
 const assert = require('assert');
 const fs = require('fs');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running bot daemon probe fallback tests');
 
@@ -210,7 +211,7 @@ require('../bot');
         // before the test saved originalConsoleError.
         restoreStubs();
         console.error(err);
-        process.stderr.write((err && (err.stack || err.message || String(err))) + '\n');
+        process.stderr.write((err && ((err as any).stack || getErrorMessage(err) || String(err))) + '\n');
         process.exit(1);
     }
 })();

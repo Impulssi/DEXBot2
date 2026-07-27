@@ -1,15 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-let _fs: any;
-function getFs(): any {
-    if (!_fs) {
-        try { _fs = require('fs'); } catch { _fs = null; }
-    }
-    return _fs;
-}
-const { getStorage } = require('../modules/storage');
-const storage = getStorage();
+import '../modules/storage/index.js';
 
 /**
  * AMA SIGNAL RUNNER
@@ -23,7 +15,7 @@ const storage = getStorage();
  *   tsx market_adapter/ama_signal_runner.ts --bot xrp-bts-0 --compact
  */
 
-const { runOnceForAma } = require('./market_adapter');
+import { runOnceForAma } from './market_adapter.js';
 
 interface AmaOverrides {
     deltaThresholdPercent?: number;
@@ -213,7 +205,7 @@ function buildOutput(payload: AmaPayload | undefined | null, botFilter: string |
     };
 }
 
-const { Config } = require('../modules/config');
+import { Config } from '../modules/config.js';
 
 async function main(): Promise<void> {
     const cli = parseArgs();

@@ -1,7 +1,8 @@
+
+import { clamp } from '../../modules/order/utils/math';
+import { MARKET_ADAPTER } from '../../modules/constants';
 'use strict';
 
-const { clamp } = require('../../modules/order/utils/math');
-const { MARKET_ADAPTER } = require('../../modules/constants');
 
 const KALMAN_SMOOTHING_BUDGET = MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_SMOOTHING_BUDGET;
 const KALMAN_SMOOTHING_FLOOR = MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_SMOOTHING_FLOOR;
@@ -96,8 +97,8 @@ function buildKalmanVelocitySeries(kalmanHistory: KalmanHistoryPoint[] | null | 
         return rawSeries;
     }
 
-    const series = new Array(kalmanHistory.length).fill(null);
-    let prevAdaptiveVelocity = null;
+    const series: (number | null)[] = new Array(kalmanHistory.length).fill(null);
+    let prevAdaptiveVelocity: number | null = null;
 
     for (let i = 0; i < kalmanHistory.length; i++) {
         const point = kalmanHistory[i];
@@ -108,16 +109,16 @@ function buildKalmanVelocitySeries(kalmanHistory: KalmanHistoryPoint[] | null | 
             config
         );
         series[i] = result.smoothedVelocityPct;
-        prevAdaptiveVelocity = result.adaptiveVelocityPct;
+        prevAdaptiveVelocity = result.adaptiveVelocityPct ?? null;
     }
 
     return series;
 }
 
-function computeAbsolutePercentileThreshold(series, clipPercentile, fallback = Infinity) {
+function computeAbsolutePercentileThreshold(series: (number | null | undefined)[], clipPercentile: number, fallback = Infinity) {
     if (!(clipPercentile > 0)) return fallback;
 
-    const magnitudes = [];
+    const magnitudes: number[] = [];
     for (const value of series || []) {
         if (value != null && Number.isFinite(value)) magnitudes.push(Math.abs(value));
     }
@@ -131,9 +132,5 @@ function computeAbsolutePercentileThreshold(series, clipPercentile, fallback = I
     return magnitudes[idx];
 }
 
-export = {
-    buildKalmanVelocitySeries,
-    computeAbsolutePercentileThreshold,
-    resolveKalmanVelocitySmoothingConfig,
-    smoothKalmanVelocityPoint,
-};
+export { buildKalmanVelocitySeries, computeAbsolutePercentileThreshold, resolveKalmanVelocitySmoothingConfig, smoothKalmanVelocityPoint }
+

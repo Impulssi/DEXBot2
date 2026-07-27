@@ -1,10 +1,10 @@
-const { path } = require('../path_api');
-const { getStorage } = require('../storage');
+
+import { getStorage } from '../storage';
+import { safeUnlink } from '../utils/fs_utils';
+import { getProcessDiscovery } from '../process_discovery';
+import { runtime } from '../runtime';
+import { sleep } from '../order/utils/system';
 const storage = getStorage();
-const { safeUnlink } = require('../utils/fs_utils');
-const { getProcessDiscovery } = require('../process_discovery');
-const { runtime } = require('../runtime');
-const { sleep } = require('../order/utils/system');
 
 /**
  * Foreign credential daemon detection.
@@ -24,7 +24,7 @@ const { sleep } = require('../order/utils/system');
  * password" path.
  */
 
-function isPidAlive(pid) {
+function isPidAlive(pid: any) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
     try {
         return runtime.kill(pid, 0);
@@ -33,15 +33,15 @@ function isPidAlive(pid) {
     }
 }
 
-function readCredentialSocketInode(socketPath) {
+function readCredentialSocketInode(socketPath: any) {
     return getProcessDiscovery().readSocketInode(socketPath);
 }
 
-function findCredentialSocketOwnerPid(socketPath, isLikelyProcess) {
+function findCredentialSocketOwnerPid(socketPath: any, isLikelyProcess: any) {
     return getProcessDiscovery().findSocketOwnerPid(socketPath, isLikelyProcess || undefined);
 }
 
-function readOwnedCredentialDaemonPid(pidFile, isLikelyProcess) {
+function readOwnedCredentialDaemonPid(pidFile: any, isLikelyProcess: any) {
     if (!pidFile) return 0;
     let raw;
     try { raw = storage.readFile(pidFile); } catch (_) { return 0; }
@@ -61,7 +61,7 @@ function readOwnedCredentialDaemonPid(pidFile, isLikelyProcess) {
     return pid;
 }
 
-async function stopPid(pid, timeoutMs = 5000) {
+async function stopPid(pid: any, timeoutMs: any = 5000) {
     if (!isPidAlive(pid)) return true;
     try {
         runtime.kill(pid, 'SIGTERM');
@@ -167,10 +167,5 @@ async function ensureNoForeignCredentialDaemon({
     return false;
 }
 
-module.exports = {
-    ensureNoForeignCredentialDaemon,
-    findCredentialSocketOwnerPid,
-    readCredentialSocketInode,
-    readOwnedCredentialDaemonPid,
-    stopPid,
-};
+export { ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialSocketInode, readOwnedCredentialDaemonPid, stopPid }
+

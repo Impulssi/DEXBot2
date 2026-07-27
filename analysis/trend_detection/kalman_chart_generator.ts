@@ -1,6 +1,7 @@
+
+import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils';
 'use strict';
 
-const { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } = require('../chart_utils');
 
 const NEUTRAL_ZONE_PCT = 0.15;
 const MAX_SLOPE_PCT    = 3.0;
@@ -45,7 +46,7 @@ function generateHTML(data, title = 'Kalman Trajectory Analysis') {
     }
 
     // Extract dense Beams
-    const allBeams = [];
+    const allBeams: any[] = [];
     results.forEach((r, idx) => {
         if (idx % 15 === 0 || (r.beams && r.beams.length > 0 && r.beams[r.beams.length-1].originX === idx)) {
             allBeams.push({
@@ -414,4 +415,5 @@ function generateHTML(data, title = 'Kalman Trajectory Analysis') {
 </html>`;
 }
 
-export = { generateHTML };
+export { generateHTML }
+

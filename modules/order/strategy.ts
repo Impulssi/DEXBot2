@@ -47,13 +47,16 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES } = require("../constants");
-const {
+
+import { ORDER_TYPES, ORDER_STATES } from '../constants';
+import { calculateGapSlots } from './grid';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes } from './utils/order';
+import { assignGridRoles } from './utils/order';
+import {
     virtualizeOrder,
     hasOnChainId,
     isOrderPlaced
-} = require("./utils/order");
-const { calculateGapSlots } = require('./grid');
+} from "./utils/order";
 
 class StrategyEngine {
     manager: any;
@@ -99,7 +102,7 @@ class StrategyEngine {
      * @returns {Promise<boolean>} True if processing completed successfully
      * @async
      */
-    async processFillsOnly(filledOrders, excludeOrderIds = new Set()) {
+    async processFillsOnly(filledOrders: any, excludeOrderIds: any = new Set()) {
         const mgr = this.manager;
         if (!Array.isArray(filledOrders) || filledOrders.length === 0) return true;
 
@@ -206,15 +209,13 @@ class StrategyEngine {
             currentBoundaryIdx 
         } = params;
 
-        const { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes } = require('./utils/order');
-        const { assignGridRoles } = require('./utils/order');
 
         // Clone grid for local simulation (Target Grid)
         // We work with "slots" which are the potential order locations
         const allSlots = Array.from(frozenMasterGrid.values())
-            .filter(o => o.price != null)
-            .sort((a, b) => a.price - b.price)
-            .map(o => ({ ...o })); // Shallow clone for simulation
+            .filter((o: any) => o.price != null)
+            .sort((a: any, b: any) => a.price - b.price)
+            .map((o: any) => ({ ...o })); // Shallow clone for simulation
 
         if (allSlots.length === 0) return { targetGrid: new Map(), boundaryIdx: currentBoundaryIdx };
 
@@ -226,7 +227,7 @@ class StrategyEngine {
         const updatedSlots = assignGridRoles(allSlots, newBoundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES, { assignOnChain: true });
 
         this.manager.logger.log(`[DEBUG] calculateTargetGrid: boundary=${newBoundaryIdx}, gap=${gapSlots}, allSlots=${updatedSlots.length}`, 'debug');
-        updatedSlots.forEach((s) => this.manager.logger.log(`  Slot ${s.id}: price=${s.price}, size=${s.size ?? 'n/a'}, type=${s.type}`, 'debug'));
+        updatedSlots.forEach((s: any) => this.manager.logger.log(`  Slot ${s.id}: price=${s.price}, size=${s.size ?? 'n/a'}, type=${s.type}`, 'debug'));
 
         // 3. Calculate Ideal Sizes (Budgeting)
         const totalTarget = Math.max(0, config.activeOrders?.buy ?? 1) + Math.max(0, config.activeOrders?.sell ?? 1);
@@ -234,8 +235,8 @@ class StrategyEngine {
         const budgetSell = getSideBudget('sell', funds, config, totalTarget);
         
         // Filter slots into BUY/SELL
-        const allBuySlots = updatedSlots.filter(o => o.type === ORDER_TYPES.BUY);
-        const allSellSlots = updatedSlots.filter(o => o.type === ORDER_TYPES.SELL);
+        const allBuySlots = updatedSlots.filter((o: any) => o.type === ORDER_TYPES.BUY);
+        const allSellSlots = updatedSlots.filter((o: any) => o.type === ORDER_TYPES.SELL);
 
         // Apply Window Discipline (activeOrders count)
         const targetCountBuy = Math.max(1, (config.activeOrders?.buy ?? 1));
@@ -243,19 +244,19 @@ class StrategyEngine {
 
         // Sort Closest-First for windowing
         const buySlots = allBuySlots
-            .sort((a, b) => b.price - a.price)
+            .sort((a: any, b: any) => b.price - a.price)
             .slice(0, targetCountBuy);
         
         const sellSlots = allSellSlots
-            .sort((a, b) => a.price - b.price)
+            .sort((a: any, b: any) => a.price - b.price)
             .slice(0, targetCountSell);
         
         // IMPORTANT:
         // Size distribution must be computed on the FULL side topology, not only
         // the active window. Otherwise budgets get concentrated into targetCount
         // slots (e.g., 3), producing absurd per-order sizes.
-        const allBuySortedForSizing = [...allBuySlots].sort((a, b) => a.price - b.price);
-        const allSellSortedForSizing = [...allSellSlots].sort((a, b) => a.price - b.price);
+        const allBuySortedForSizing = [...allBuySlots].sort((a: any, b: any) => a.price - b.price);
+        const allSellSortedForSizing = [...allSellSlots].sort((a: any, b: any) => a.price - b.price);
 
         const fullBuySizes = calculateBudgetedSizes(
             allBuySortedForSizing,
@@ -274,17 +275,17 @@ class StrategyEngine {
             accountAssets
         );
 
-        const buySizeById = new Map(allBuySortedForSizing.map((slot, i) => [slot.id, fullBuySizes[i] || 0]));
-        const sellSizeById = new Map(allSellSortedForSizing.map((slot, i) => [slot.id, fullSellSizes[i] || 0]));
+        const buySizeById = new Map(allBuySortedForSizing.map((slot: any, i: any) => [slot.id, fullBuySizes[i] || 0]));
+        const sellSizeById = new Map(allSellSortedForSizing.map((slot: any, i: any) => [slot.id, fullSellSizes[i] || 0]));
 
-        const buySizes = buySlots.map(slot => buySizeById.get(slot.id) || 0);
-        const sellSizes = sellSlots.map(slot => sellSizeById.get(slot.id) || 0);
+        const buySizes = buySlots.map((slot: any) => buySizeById.get(slot.id) || 0);
+        const sellSizes = sellSlots.map((slot: any) => sellSizeById.get(slot.id) || 0);
 
         // Apply sizes to target grid map
         const targetGrid = new Map();
         
-        const applySizes = (slots, sizes) => {
-            slots.forEach((slot, i) => {
+        const applySizes = (slots: any, sizes: any) => {
+            slots.forEach((slot: any, i: any) => {
                 const size = sizes[i] || 0;
                 targetGrid.set(slot.id, {
                     id: slot.id,
@@ -308,8 +309,8 @@ class StrategyEngine {
         // Window Discipline only controls WHICH orders are placed on-chain,
         // not the grid's fund allocation. Virtual orders must retain their
         // sizes so that funds.virtual reflects the full grid commitment.
-        const windowIds = new Set([...buySlots, ...sellSlots].map(s => s.id));
-        updatedSlots.forEach(slot => {
+        const windowIds = new Set([...buySlots, ...sellSlots].map((s: any) => s.id));
+        updatedSlots.forEach((slot: any) => {
             if (!windowIds.has(slot.id)) {
                 // Use calculated size from full-rail sizing (preserves fund allocation)
                 const calculatedSize = buySizeById.get(slot.id) ?? sellSizeById.get(slot.id) ?? slot.size ?? 0;
@@ -335,4 +336,6 @@ class StrategyEngine {
 
 }
 
-export = StrategyEngine;
+export default StrategyEngine
+
+module.exports = StrategyEngine

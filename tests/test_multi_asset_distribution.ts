@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { setCachedModule } = require('./helpers/module_cache_stub');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // Mock dependencies
 const BitSharesMock = {
@@ -781,7 +782,7 @@ async function testCreditAcceptUsesSpecificPolicy() {
         });
         assert.fail('should have thrown because specificPolicy maxCollateralRatio is stricter');
     } catch (err) {
-        assert.ok(err.message.includes('maxCollateralRatio'), 'error should mention maxCollateralRatio from specificPolicy');
+        assert.ok(getErrorMessage(err).includes('maxCollateralRatio'), 'error should mention maxCollateralRatio from specificPolicy');
     }
 
     // Without specificPolicy, looked-up lending policy maxCollateralRatio=5.0 should allow the operation

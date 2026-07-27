@@ -1,3 +1,7 @@
+
+import path from 'node:path';
+import { hasProcess } from './env';
+import { isDistRuntime } from './utils/build_dir';
 'use strict';
 
 /**
@@ -10,9 +14,6 @@
  * Browser: would be populated from URL params, localStorage, etc.
  */
 
-const path = require('path');
-const { hasProcess } = require('./env');
-const { isDistRuntime } = require('./utils/build_dir');
 
 function str(key: string): string | undefined {
     return hasProcess() && process.env[key] !== undefined ? process.env[key] : undefined;
@@ -193,11 +194,5 @@ function setUmask(mode: number): void {
     if (hasProcess()) { process.umask(mode); }
 }
 
-export = {
-    Config,
-    hasOpenOrdersSyncLoopMsSet,
-    getOpenOrdersSyncLoopMs,
-    hasTxBuilderFeeCacheTtlSet,
-    getTxBuilderFeeCacheTtl,
-    setUmask,
-};
+export { Config, hasOpenOrdersSyncLoopMsSet, getOpenOrdersSyncLoopMs, hasTxBuilderFeeCacheTtlSet, getTxBuilderFeeCacheTtl, setUmask }
+

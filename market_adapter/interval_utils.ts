@@ -7,6 +7,5 @@ function toIntervalLabel(intervalSeconds: any) {
     return `${intervalSeconds}s`;
 }
 
-export = {
-    toIntervalLabel,
-};
+export { toIntervalLabel }
+

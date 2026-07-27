@@ -22,17 +22,18 @@
  * Usage: tsx scripts/update.ts
  */
 
-const { execSync } = require('child_process');
-const path = require('path');
-const fs = require('fs');
-const { sendControlCommand } = require('../modules/launcher/supervisor_control');
+import { execSync } from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+import { sendControlCommand } from '../modules/launcher/supervisor_control.js';
 
 // Import update configuration from constants
 // Contains: REPOSITORY_URL, BRANCH, BUILD_DIR settings
-const { UPDATER, BUILD_DIR } = require('../modules/constants');
-const { PATHS } = require('../modules/paths');
-const { Config } = require('../modules/config');
-const { readJSON } = require('../modules/utils/fs_utils');
+import { UPDATER, BUILD_DIR } from '../modules/constants.js';
+import { PATHS } from '../modules/paths.js';
+import { Config } from '../modules/config.js';
+import { readJSON } from '../modules/utils/fs_utils.js';
+import { getErrorMessage } from '../modules/utils/errors.js';
 
 
 const UPDATE_COLORS = {
@@ -55,15 +56,15 @@ function colorUpdateOutput(text: string, color: string, stream: NodeJS.WriteStre
  *
  * @param {string} msg - Message to log
  */
-function log(msg) {
+function log(msg: string) {
     console.log(`[${new Date().toISOString()}] [UPDATE] ${msg}`);
 }
 
-function logSuccess(msg) {
+function logSuccess(msg: string) {
     console.log(colorUpdateOutput(`[${new Date().toISOString()}] [UPDATE] ${msg}`, UPDATE_COLORS.ok));
 }
 
-function updateError(msg) {
+function updateError(msg: string): string {
     return colorUpdateOutput(msg, UPDATE_COLORS.error, process.stderr);
 }
 
@@ -76,17 +77,17 @@ function updateError(msg) {
  * @param {string} cmd - Shell command to execute
  * @throws {Error} If command exits with non-zero status
  */
-function run(cmd) {
+function run(cmd: string) {
     log(`Executing: ${cmd}`);
     try {
         execSync(cmd, { stdio: 'inherit', cwd: PATHS.PROJECT_ROOT });
-    } catch (err) {
+    } catch (err: any) {
         console.error(updateError(`[ERROR] Command failed: ${cmd}`));
         throw err;
     }
 }
 
-function readLivePidFile(filePath) {
+function readLivePidFile(filePath: string): number {
     if (!fs.existsSync(filePath)) return 0;
 
     try {
@@ -103,11 +104,11 @@ function detectMonolithicRuntime() {
     const wrapperPid = readLivePidFile(PATHS.PROFILES.MONOLITHIC_PID);
     if (!wrapperPid) return null;
 
-    const detected = { wrapperPid, botPid: readLivePidFile(PATHS.PROFILES.MONOLITHIC_BOT_PID), botNames: [] };
+    const detected = { wrapperPid, botPid: readLivePidFile(PATHS.PROFILES.MONOLITHIC_BOT_PID), botNames: [] as string[] };
     try {
         const info = readJSON(PATHS.PROFILES.MONOLITHIC_BOT_INFO);
         if (Array.isArray(info.botNames)) {
-            detected.botNames = info.botNames.map((name) => String(name));
+            detected.botNames = info.botNames.map((name: any) => String(name));
         } else if (info.botName) {
             detected.botNames = [String(info.botName)];
         }
@@ -121,7 +122,7 @@ function detectAnyMonolithicFiles() {
         || fs.existsSync(PATHS.PROFILES.MONOLITHIC_CRED_PID);
 }
 
-function restartMonolithicRuntime(monolithic) {
+function restartMonolithicRuntime(monolithic: any) {
     const details = [
         `wrapper PID ${monolithic.wrapperPid}`,
         monolithic.botPid ? `bot PID ${monolithic.botPid}` : null,
@@ -169,7 +170,7 @@ function startMonolithicRuntime() {
         logSuccess('Monolithic daemon started.');
         return true;
     } catch (err) {
-        log(`Warning: Could not auto-start monolithic daemon (${err.message}). Start manually with: dexbot unlock`);
+        log(`Warning: Could not auto-start monolithic daemon (${getErrorMessage(err)}). Start manually with: dexbot unlock`);
         return false;
     }
 }
@@ -194,7 +195,7 @@ function hasLocalChanges() {
  * action). Falls back to `stash@{0}` if the lookup fails so the script
  * still attempts a restore.
  */
-function resolveStashRef(message) {
+function resolveStashRef(message: string): string {
     try {
         const list = execSync('git stash list --format="%gd %gs" 2>/dev/null', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT }).toString().trim();
         if (list) {
@@ -226,8 +227,8 @@ async function restartActiveIsolatedProcesses() {
     }
 
     const runningNames = Object.entries(status)
-        .filter(([name, info]) => name !== 'dexbot-update' && info && info.status === 'running')
-        .map(([name]) => name);
+        .filter(([name, info]: any) => name !== 'dexbot-update' && info && info.status === 'running')
+        .map(([name]: any) => name);
 
     if (runningNames.length === 0) {
         log('No active isolated processes are currently running. Skipping supervisor restart.');
@@ -267,7 +268,7 @@ try {
     try {
         // Get detached/attached branch name
         currentBranch = execSync('git rev-parse --abbrev-ref HEAD').toString().trim();
-    } catch (e) {
+    } catch (e: any) {
         // Fallback if command fails
         currentBranch = 'unknown';
     }
@@ -297,7 +298,7 @@ try {
     try {
         const currentRemote = execSync('git remote get-url origin', { stdio: 'pipe' }).toString().trim();
         log(`Remote origin already configured (${currentRemote}). Keeping existing remote.`);
-    } catch (e) {
+    } catch (e: any) {
         // Remote doesn't exist, add it from config
         log(`Adding origin remote: ${repoUrl}`);
         run(`git remote add origin ${repoUrl}`);
@@ -310,8 +311,6 @@ try {
     run(`git fetch origin ${branch}`);
 
     // Get current commit hashes for comparison
-    const localHash = execSync('git rev-parse HEAD').toString().trim();
-    const remoteHash = execSync(`git rev-parse origin/${branch}`).toString().trim();
 
     /**
      * Check for incoming commits
@@ -351,7 +350,7 @@ try {
     console.log('Incoming Changes:');
     try {
         execSync(`git log --oneline --graph --decorate HEAD..origin/${branch}`, { stdio: 'inherit', cwd: PATHS.PROJECT_ROOT });
-    } catch (e) {
+    } catch (e: any) {
         log('Warning: Could not list changes.');
     }
     console.log('----------------------------------------------------------------\n');
@@ -514,13 +513,15 @@ try {
         // Try loading from compiled dist/ first, then fall back to source dir
         let generateEcosystemConfig;
         try {
-            ({ generateEcosystemConfig } = require(path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2')));
+            const pm2Module = await import(path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js'));
+            generateEcosystemConfig = pm2Module.generateEcosystemConfig;
         } catch (_) {
-            ({ generateEcosystemConfig } = require(path.join(PATHS.PROJECT_ROOT, 'pm2')));
+            const pm2Module = await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
+            generateEcosystemConfig = pm2Module.generateEcosystemConfig;
         }
         generateEcosystemConfig({ clawOnly: false, exitOnError: false });
         log('Ecosystem config regenerated successfully.');
-    } catch (err) {
+    } catch (err: any) {
         log(`Warning: Ecosystem config regeneration failed (${err.message}). Continuing with existing config.`);
     }
 
@@ -559,41 +560,43 @@ try {
                     const config = JSON.parse(stripped);
 
                     const activeInConfig = (config.bots || [])
-                        .filter(b => b.active !== false)
-                        .map(b => b.name)
-                        .filter(name => !!name);
+                        .filter((b: any) => b.active !== false)
+                        .map((b: any) => b.name)
+                        .filter((name: string) => !!name);
 
                     if (activeInConfig.length > 0) {
-                        let runningProcesses = [];
+                        let runningProcesses: string[] = [];
                         try {
                             const output = execSync('pm2 jlist').toString().trim();
                             const jsonStart = output.indexOf('[');
                             if (jsonStart !== -1) {
                                 const jsonPart = output.substring(jsonStart);
                                 const parsed = JSON.parse(jsonPart);
-                                runningProcesses = parsed.map(p => p.name);
+                                runningProcesses = parsed.map((p: any) => p.name);
                             } else {
                                 log('Warning: PM2 jlist output did not contain JSON array.');
                             }
-                        } catch (e) {
+                        } catch (e: any) {
                             log('Warning: Could not fetch PM2 process list. Falling back to config-only detection.');
                             runningProcesses = activeInConfig;
                         }
 
-                        const botsToRestart = activeInConfig.filter(name => runningProcesses.includes(name));
-                        const activeBots = (config.bots || []).filter(b => b.active !== false);
-                        const runningActiveBots = activeBots.filter(b => runningProcesses.includes(b.name));
-                        let needsMarketAdapter;
+                        const botsToRestart = activeInConfig.filter((name: string) => (runningProcesses as string[]).includes(name));
+                        const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
+                        const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
+                        let needsMarketAdapter: any;
                         try {
-                            ({ needsMarketAdapter } = require(path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2')));
+                            const pm2Module = await import(path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js'));
+                            needsMarketAdapter = pm2Module.needsMarketAdapter;
                         } catch (_) {
-                            ({ needsMarketAdapter } = require(path.join(PATHS.PROJECT_ROOT, 'pm2')));
+                            const pm2Module = await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
+                            needsMarketAdapter = pm2Module.needsMarketAdapter;
                         }
                         const marketAdapterRequired = needsMarketAdapter(runningActiveBots);
 
-                        const serviceAppsToRestart = marketAdapterRequired ? ['dexbot-adapter'] : [];
-                        const servicesToRestart = serviceAppsToRestart.filter(name => runningProcesses.includes(name));
-                        const allToRestart = [...botsToRestart, ...servicesToRestart];
+                        const serviceAppsToRestart: string[] = marketAdapterRequired ? ['dexbot-adapter'] : [];
+                        const servicesToRestart: string[] = serviceAppsToRestart.filter((name: string) => (runningProcesses as string[]).includes(name));
+                        const allToRestart: string[] = [...botsToRestart, ...servicesToRestart];
 
                         if (allToRestart.length > 0) {
                             log(`Active processes detected: ${allToRestart.join(', ')}`);
@@ -625,7 +628,7 @@ try {
                 }
             }
         }
-    } catch (err) {
+    } catch (err: any) {
         log(`Warning: runtime restart logic failed (${err.message}). Skipping bulk restart to avoid touching dexbot-cred.`);
     }
 
@@ -666,7 +669,7 @@ try {
 
     logSuccess('DEXBot2 update completed successfully.');
     process.exit(0);
-} catch (err) {
+} catch (err: any) {
     console.error(updateError('=========================================='));
     console.error(updateError('UPDATE FAILED'));
     console.error(updateError(`Error: ${err.message}`));
@@ -674,4 +677,3 @@ try {
     process.exit(1);
 }
 })();
-export {};

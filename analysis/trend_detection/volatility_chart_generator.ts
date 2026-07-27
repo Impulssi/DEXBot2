@@ -1,8 +1,8 @@
+
+import { MARKET_ADAPTER } from '../../modules/constants';
+import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils';
 'use strict';
 
-const { MARKET_ADAPTER } = require('../../modules/constants');
-const { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } = require('../chart_utils');
-const { roundTo } = require('../../modules/utils/math_utils');
 
 function generateHTML(data, title = 'ATR Volatility Research') {
     const results = data.allResults || [];
@@ -735,4 +735,5 @@ function generateHTML(data, title = 'ATR Volatility Research') {
 </html>`;
 }
 
-export = { generateHTML };
+export { generateHTML }
+

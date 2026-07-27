@@ -74,21 +74,23 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS } = require('../constants');
-const {
+
+import { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS } from '../constants';
+import { resolveAccountRef } from './utils/system';
+import * as Format from './format';
+import * as fundRegistry from '../fund_registry';
+import * as chainOrders from '../chain_orders';
+import {
     calculateAvailableFundsValue,
     getAssetFees,
     blockchainToFloat,
     getPrecisionSlack
-} = require('./utils/math');
-const {
+} from './utils/math';
+import {
     PROCESSED_FILL_PERSISTENCE_MODES,
     resolveProcessedFillPersistenceMode
-} = require('./processed_fill_store');
-const { resolveAccountRef } = require('./utils/system');
-const Format = require('./format');
+} from './processed_fill_store';
 const { toFiniteNumber } = Format;
-const fundRegistry = require('../fund_registry');
 
 /**
  * Accountant engine - Specialized handler for fund tracking and calculations
@@ -109,14 +111,14 @@ class Accountant {
     _pendingInvariantSnapshot: { chainFreeBuy: number; chainFreeSell: number; chainBuy: number; chainSell: number } | null;
     _logThrottleState: Map<string, { lastAt: number; suppressed: number }>;
 
-    constructor(manager) {
+    constructor(manager: any) {
         this.manager = manager;
         this._isVerifyingInvariants = false;  // Prevents overlapping invariant checks
         this._pendingInvariantSnapshot = null;  // Coalesces latest request while one is running
         this._logThrottleState = new Map();
     }
 
-    _logThrottled(key, message, level = 'warn', intervalMs = TIMING.LOG_THROTTLE_INTERVAL_MS) {
+    _logThrottled(key: any, message: any, level: any = 'warn', intervalMs: any = TIMING.LOG_THROTTLE_INTERVAL_MS) {
         const now = Date.now();
         let state = this._logThrottleState.get(key);
 
@@ -137,7 +139,7 @@ class Accountant {
      * @param {Array<{orderType: string, delta: number, operation: string}>} balanceAdjustments
      * @returns {void}
      */
-    _applyBalanceAdjustments(balanceAdjustments) {
+    _applyBalanceAdjustments(balanceAdjustments: any) {
         for (const adjustment of balanceAdjustments) {
             this.adjustTotalBalance(adjustment.orderType, adjustment.delta, adjustment.operation);
         }
@@ -149,7 +151,7 @@ class Accountant {
         return btsSide;
     }
 
-    _normalizeBtsFeeState(order) {
+    _normalizeBtsFeeState(order: any) {
         const deferredFee = toFiniteNumber(order?.btsFeeState?.deferredFee, 0);
         return {
             deferredFee: Math.max(0, deferredFee)
@@ -176,7 +178,7 @@ class Accountant {
         }
     }
 
-    _calculateUpdateDeferredCharge(oldDeferredFee, feeSchedule) {
+    _calculateUpdateDeferredCharge(oldDeferredFee: any, feeSchedule: any) {
         const deferred = Math.max(0, toFiniteNumber(oldDeferredFee, 0));
         const cancelFee = Math.max(0, toFiniteNumber(feeSchedule?.cancelFee, 0));
         const createFee = Math.max(0, toFiniteNumber(feeSchedule?.createFee, 0));
@@ -194,7 +196,7 @@ class Accountant {
         return Math.min(deferred, Math.max(0, charge));
     }
 
-    _resolveBtsFeeLifecycle(oldOrder, newOrder, context, explicitFee) {
+    _resolveBtsFeeLifecycle(oldOrder: any, newOrder: any, context: any, explicitFee: any) {
         const fee = Math.max(0, toFiniteNumber(explicitFee, 0));
         const oldActive = !!(oldOrder && (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL) && oldOrder.orderId);
         const newActive = !!(newOrder && (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL) && newOrder.orderId);
@@ -254,7 +256,7 @@ class Accountant {
         return { balanceDelta, nextDeferred };
     }
 
-    _buildBtsDeferredRefundAdjustment(orderId, isMaker) {
+    _buildBtsDeferredRefundAdjustment(orderId: any, isMaker: any) {
         const btsOrderType = this._getBtsOrderType();
         if (!btsOrderType || !orderId) return null;
 
@@ -415,7 +417,7 @@ class Accountant {
         if (mgr._pauseFundRecalc === 0 && !mgr.isBootstrapping() && !mgr.isBroadcastingActive()) {
             const snapshot = { chainFreeBuy, chainFreeSell, chainBuy, chainSell };
 
-            const runVerification = (nextSnapshot) => {
+            const runVerification = (nextSnapshot: any) => {
                 this._isVerifyingInvariants = true;
                 this._verifyFundInvariants(
                     mgr,
@@ -424,7 +426,7 @@ class Accountant {
                     nextSnapshot.chainBuy,
                     nextSnapshot.chainSell
                 )
-                    .catch(err => {
+                    .catch((err: any) => {
                         mgr.logger?.log?.(`[RECOVERY] Verification error: ${err.message}`, 'error');
                     })
                     .finally(() => {
@@ -463,7 +465,7 @@ class Accountant {
       * @returns {void}
       * @private
       */
-      async _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
+      async _verifyFundInvariants(mgr: any, chainFreeBuy: any, chainFreeSell: any, chainBuy: any, chainSell: any) {
           const buyPrecision = mgr.assets?.assetB?.precision;
           const sellPrecision = mgr.assets?.assetA?.precision;
           if (!Number.isFinite(buyPrecision) || !Number.isFinite(sellPrecision)) {
@@ -590,7 +592,7 @@ class Accountant {
                 }
             };
             if (mgr._gridLock?.isLocked?.()) {
-                doRecovery().catch(err => {
+                doRecovery().catch((err: any) => {
                     mgr.logger?.log?.(`[RECOVERY] Deferred recovery scheduling failed: ${err.message}`, 'error');
                 });
             } else {
@@ -606,8 +608,8 @@ class Accountant {
      * @param {Object} mgr - Manager instance
      * @returns {Promise<Object>} - Validation result from validateGridStateForPersistence()
      */
-    async _performStateRecovery(mgr) {
-        const accountRef = resolveAccountRef(mgr);
+    async _performStateRecovery(mgr: any) {
+        const accountRef = resolveAccountRef(mgr, '');
         if (!accountRef) {
             return {
                 isValid: false,
@@ -623,7 +625,6 @@ class Accountant {
         mgr._orphanFillsCreditedAt = null;
 
         // 2. Sync from open orders
-        const chainOrders = require('../chain_orders');
         const openOrders = await chainOrders.readOpenOrders(accountRef);
         // Recovery runs after fetchAccountTotals() has refreshed authoritative balances
         // from chain. During this pass we only want to reconcile grid structure/order
@@ -676,7 +677,7 @@ class Accountant {
        * @param {string} violationType - Description of the violation for logging
        * @returns {Promise<boolean>} - True if recovery succeeded, false otherwise
        */
-    async _attemptFundRecovery(mgr, violationType) {
+    async _attemptFundRecovery(mgr: any, violationType: any) {
           if (!mgr._recoveryState || typeof mgr._recoveryState !== 'object') {
               mgr._recoveryState = { attemptCount: 0, lastAttemptAt: 0, inFlight: false, lastFailureAt: 0, structuralResyncRequested: false };
           }
@@ -792,7 +793,7 @@ class Accountant {
                                   );
                               }
                           })
-                          .catch(err => {
+                          .catch((err: any) => {
                               state.structuralResyncRequested = false;
                               mgr.logger?.log?.(`[RECOVERY] Structural grid resync scheduling failed: ${err.message}`, 'error');
                           });
@@ -844,7 +845,7 @@ class Accountant {
      * @param {string} [operation='move'] - Label for logging
      * @returns {Promise<{ok: boolean, reason?: string}>} {ok: true} on success, {ok: false, reason} on failure
      */
-    async tryDeductFromChainFree(orderType, size, operation = 'move') {
+    async tryDeductFromChainFree(orderType: any, size: any, operation: any = 'move') {
          const mgr = this.manager;
          const isBuy = orderType === ORDER_TYPES.BUY;
          const key = isBuy ? 'buyFree' : 'sellFree';
@@ -891,7 +892,7 @@ class Accountant {
      * @param {string} [operation='release'] - Label for logging
      * @returns {Promise<boolean>} true if addition succeeded
      */
-    async addToChainFree(orderType, size, operation = 'release') {
+    async addToChainFree(orderType: any, size: any, operation: any = 'release') {
          const mgr = this.manager;
          const isBuy = orderType === ORDER_TYPES.BUY;
          const key = isBuy ? 'buyFree' : 'sellFree';
@@ -917,11 +918,10 @@ class Accountant {
      * @param {string} [context='fill'] - Label for logging
      * @returns {Promise<void>}
      */
-    async recordFillBalances(paysAsset, paysAmount, receivesAsset, receivesAmount, context = 'fill') {
+    async recordFillBalances(paysAsset: any, paysAmount: any, _receivesAsset: any, receivesAmount: any, context: any = 'fill') {
         return await this.manager._fundLock.acquire(async () => {
             const mgr = this.manager;
             const assetA = mgr.config.assetA;
-            const assetB = mgr.config.assetB;
 
             // Determine orientation
             if (paysAsset === assetA) {
@@ -943,7 +943,7 @@ class Accountant {
      * @param {number} delta - Amount to adjust
      * @param {string} operation - Context for logging
      */
-    adjustTotalBalance(orderType, delta, operation) {
+    adjustTotalBalance(orderType: any, delta: any, operation: any) {
         const mgr = this.manager;
         const isBuy = (orderType === ORDER_TYPES.BUY);
         const freeKey = isBuy ? 'buyFree' : 'sellFree';
@@ -972,7 +972,7 @@ class Accountant {
      * @param {string|null} sideHint - Side hint ('buy', 'sell', ORDER_TYPES.BUY, ORDER_TYPES.SELL, or null)
      * @returns {string|null} Normalized side or null if unrecognised
      */
-    _normalizeSideHint(sideHint) {
+    _normalizeSideHint(sideHint: any) {
         if (sideHint === ORDER_TYPES.BUY || sideHint === 'buy') return ORDER_TYPES.BUY;
         if (sideHint === ORDER_TYPES.SELL || sideHint === 'sell') return ORDER_TYPES.SELL;
         return null;
@@ -985,7 +985,7 @@ class Accountant {
      * @param {string|null} [explicitSideHint] - Explicit side override
      * @returns {string|null} Resolved side (ORDER_TYPES.BUY, ORDER_TYPES.SELL) or null
      */
-    _resolveOrderSide(order, fallbackOrder = null, explicitSideHint = null) {
+    _resolveOrderSide(order: any, fallbackOrder: any = null, explicitSideHint: any = null) {
         const fromHint = this._normalizeSideHint(explicitSideHint);
         if (fromHint) return fromHint;
 
@@ -1021,7 +1021,7 @@ class Accountant {
      * @param {number} fee - Blockchain fee to deduct
      * @param {boolean} skipAssetAccounting - If true, skip capital commitment changes (asset amounts) but still process fees
      */
-    async updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0, skipAssetAccounting = false) {
+    async updateOptimisticFreeBalance(oldOrder: any, newOrder: any, context: any, fee: any = 0, skipAssetAccounting: any = false) {
         const mgr = this.manager;
         if (!oldOrder || !newOrder) return;
 
@@ -1050,8 +1050,8 @@ class Accountant {
                 mgr.logger.log(
                     `[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, ` +
                     `state=${oldOrder.state}->${newOrder.state}, ` +
-                    `size=${Format.formatSizeByOrderType(oldSize, sideForPrecision, mgr.assets)}->${Format.formatSizeByOrderType(newSize, sideForPrecision, mgr.assets)}, ` +
-                    `delta=${Format.formatSizeByOrderType(commitmentDelta, sideForPrecision, mgr.assets)}, context=${context}`,
+                    `size=${Format.formatSizeByOrderType(oldSize, sideForPrecision ?? '', mgr.assets)}->${Format.formatSizeByOrderType(newSize, sideForPrecision ?? '', mgr.assets)}, ` +
+                    `delta=${Format.formatSizeByOrderType(commitmentDelta, sideForPrecision ?? '', mgr.assets)}, context=${context}`,
                     'debug'
                 );
             }
@@ -1099,7 +1099,7 @@ class Accountant {
                     // attempting new deductions, reducing redundant recovery cycles.
                     if (!mgr._pendingRecovery) {
                         mgr._pendingRecovery = this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure')
-                            .catch(err => {
+                            .catch((err: any) => {
                                 mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
                                 mgr._recoveryState = { ...mgr._recoveryState, lastFailureAt: Date.now() };
                             })
@@ -1142,7 +1142,7 @@ class Accountant {
      * @param {string|null} [requestedSide=null] - ORDER_TYPES.BUY or ORDER_TYPES.SELL to target a specific side
      * @returns {void}
      */
-    async deductBtsFees(requestedSide = null) {
+    async deductBtsFees(requestedSide: any = null) {
         const mgr = this.manager;
 
         // Early returns for no work needed
@@ -1197,7 +1197,7 @@ class Accountant {
      * @param {Map} targetGrid - Proposed grid (price -> {size, type})
      * @returns {Object} { isValid, shortfall, details }
      */
-    validateTargetGrid(targetGrid) {
+    validateTargetGrid(targetGrid: any) {
         if (!targetGrid || typeof targetGrid.values !== 'function') {
             return { isValid: false, shortfall: { buy: 0, sell: 0 }, details: { error: 'Invalid targetGrid' } };
         }
@@ -1270,7 +1270,7 @@ class Accountant {
      * @returns {number} Net proceeds after fees, or rawAmount if symbol not found
      * @private
      */
-    _deductFeesFromProceeds(assetSymbol, rawAmount, isMaker) {
+    _deductFeesFromProceeds(assetSymbol: any, rawAmount: any, isMaker: any) {
         if (!assetSymbol) return rawAmount;
 
         // BTS has no market fee. Deferred order-fee refunds are handled from
@@ -1284,7 +1284,7 @@ class Accountant {
         // Fail-safe: if fee cache is missing/stale, do not crash fill processing.
         try {
             const feeInfo = getAssetFees(assetSymbol, rawAmount, isMaker);
-            const netProceeds = toFiniteNumber(feeInfo?.netProceeds, null);
+            const netProceeds = toFiniteNumber(feeInfo?.netProceeds, undefined);
             if (netProceeds === null) {
                 throw new Error('netProceeds is not finite');
             }
@@ -1307,7 +1307,7 @@ class Accountant {
       * @param {Object} [options={}] - Persistence mode options
       * @returns {Promise<boolean>} true if fill was successfully processed
       */
-    async processFillAccounting(fillOp, fillKey = null, options = {}) {
+    async processFillAccounting(fillOp: any, fillKey: any = null, options: any = {}) {
          const mgr = this.manager;
          // Persistence is durable by default. Callers that process many fills under
          // the fill lock can opt into deferred persistence and close the window with
@@ -1340,24 +1340,24 @@ class Accountant {
 
          // Derive all numeric effects before recording the fill key.
          // This keeps retries safe if a later computation unexpectedly fails.
-         const balanceAdjustments = [];
+         const balanceAdjustments: any[] = [];
          const assetASymbol = mgr.config?.assetA;
          const assetBSymbol = mgr.config?.assetB;
 
          if (pays.asset_id === assetAId) {
-             const amount = blockchainToFloat(pays.amount, assetAPrecision, true);
+             const amount = blockchainToFloat(pays.amount, assetAPrecision);
              balanceAdjustments.push({ orderType: ORDER_TYPES.SELL, delta: -amount, operation: 'fill-pays' });
          } else if (pays.asset_id === assetBId) {
-             const amount = blockchainToFloat(pays.amount, assetBPrecision, true);
+             const amount = blockchainToFloat(pays.amount, assetBPrecision);
              balanceAdjustments.push({ orderType: ORDER_TYPES.BUY, delta: -amount, operation: 'fill-pays' });
          }
 
          if (receives.asset_id === assetAId) {
-             const rawAmount = blockchainToFloat(receives.amount, assetAPrecision, true);
+             const rawAmount = blockchainToFloat(receives.amount, assetAPrecision);
              const netAmount = this._deductFeesFromProceeds(assetASymbol, rawAmount, isMaker);
              balanceAdjustments.push({ orderType: ORDER_TYPES.SELL, delta: netAmount, operation: 'fill-receives' });
          } else if (receives.asset_id === assetBId) {
-             const rawAmount = blockchainToFloat(receives.amount, assetBPrecision, true);
+             const rawAmount = blockchainToFloat(receives.amount, assetBPrecision);
              const netAmount = this._deductFeesFromProceeds(assetBSymbol, rawAmount, isMaker);
              balanceAdjustments.push({ orderType: ORDER_TYPES.BUY, delta: netAmount, operation: 'fill-receives' });
          }
@@ -1367,7 +1367,7 @@ class Accountant {
              balanceAdjustments.push(btsRefundAdjustment);
          }
 
-         let processedAt = null;
+         let processedAt: number | null = null;
           const tracker = fillKey ? this.manager.processedFillTracker : null;
          if (fillKey) {
              processedAt = Date.now();
@@ -1419,4 +1419,6 @@ class Accountant {
     }
 }
 
-export = Accountant;
+export default Accountant
+
+module.exports = Accountant

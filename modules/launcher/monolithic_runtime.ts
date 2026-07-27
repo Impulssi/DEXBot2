@@ -1,27 +1,29 @@
+
+import { path } from '../path_api';
+import { getStorage } from '../storage';
+import { spawn } from 'node:child_process';
+import { PATHS } from '../paths';
+import { buildScopedChildEnv } from './child_env';
+import { UPDATER, LAUNCHER } from '../constants';
+import { safeUnlink } from '../utils/fs_utils';
+import { readProcStat } from './status_reporting';
+import * as foreignCredDaemon from './foreign_cred_daemon';
+import { Config } from '../config';
+import { runtime } from '../runtime';
+import { getCredentialReadyFilePath, getCredentialSocketPath } from '../credential_runtime';
+import { resolveRawBotEntries, loadSettingsFile } from '../bot_settings';
+import { sleep } from '../order/utils/system';
+import * as chainKeys from '../chain_keys';
 'use strict';
 
-const { path } = require('../path_api');
-const { getStorage } = require('../storage');
 const storage = getStorage();
-const { spawn } = require('child_process');
-const { PATHS } = require('../paths');
-const {
+import {
     isPidAlive,
     parseCronExpression,
     getNextCronDate,
     isNodeProcessWithExactScript,
-} = require('./bot_supervisor');
-const { buildScopedChildEnv } = require('./child_env');
-const { buildRuntimeScriptArgs, SCRIPTS_ROOT: CODE_ROOT } = require('./runtime_entry');
-const { UPDATER, LAUNCHER } = require('../constants');
-const { safeUnlink } = require('../utils/fs_utils');
-const { readProcStat } = require('./status_reporting');
-const foreignCredDaemon = require('./foreign_cred_daemon');
-const { Config } = require('../config');
-const { runtime } = require('../runtime');
-const { getCredentialReadyFilePath, getCredentialSocketPath } = require('../credential_runtime');
-const { resolveRawBotEntries, loadSettingsFile } = require('../bot_settings');
-const { sleep } = require('../order/utils/system');
+} from './bot_supervisor';
+import { buildRuntimeScriptArgs, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry';
 
 const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
 const MONOLITHIC_BOT_PID_FILE = PATHS.PROFILES.MONOLITHIC_BOT_PID;
@@ -33,7 +35,7 @@ const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const CREDENTIAL_SOCKET_FILE = getCredentialSocketPath({ root: PATHS.PROJECT_ROOT });
 const CREDENTIAL_READY_FILE = getCredentialReadyFilePath({ root: PATHS.PROJECT_ROOT });
 
-function formatBotCount(count) {
+function formatBotCount(count: any) {
     return `${count} ${count === 1 ? 'bot' : 'bots'}`;
 }
 
@@ -80,25 +82,25 @@ function readMonolithicBotInfo() {
 
 // ── Process matching ───────────────────────────────────────────────
 
-function isLikelyCredentialDaemonProcess(pid) {
+function isLikelyCredentialDaemonProcess(pid: any) {
     return isNodeProcessWithExactScript(pid, ['credential-daemon']);
 }
 
-function isLikelyDexbotProcess(pid) {
+function isLikelyDexbotProcess(pid: any) {
     return isNodeProcessWithExactScript(pid, ['dexbot']);
 }
 
-function isLikelyUnlockProcess(pid) {
+function isLikelyUnlockProcess(pid: any) {
     return isNodeProcessWithExactScript(pid, ['unlock']);
 }
 
-function isExpectedProcessStarttime(pid, expectedStarttime) {
+function isExpectedProcessStarttime(pid: any, expectedStarttime: any) {
     if (typeof expectedStarttime !== 'number') return false;
     const stat = readProcStat(pid);
     return !!(stat && stat.starttime === expectedStarttime);
 }
 
-function isExpectedMonolithicBotPid(pid, botInfo) {
+function isExpectedMonolithicBotPid(pid: any, botInfo: any) {
     if (!Number.isInteger(pid) || pid <= 0) {
         return false;
     }
@@ -175,7 +177,7 @@ function cleanupCredentialRuntimeFiles() {
 }
 
 async function stopCredentialDaemon() {
-    let pidRaw = null;
+    let pidRaw: string | null = null;
     try {
         pidRaw = storage.readFile(MONOLITHIC_CRED_PID_FILE).trim();
     } catch (_) {}
@@ -194,7 +196,7 @@ async function stopCredentialDaemon() {
     return { signaled, cleaned: true };
 }
 
-async function ensureNoForeignCredentialDaemon({ verbose = true } = {}) {
+async function ensureNoForeignCredentialDaemon({ verbose = true }: any = {}) {
     return foreignCredDaemon.ensureNoForeignCredentialDaemon({
         socketPath: CREDENTIAL_SOCKET_FILE,
         readyFilePath: CREDENTIAL_READY_FILE,
@@ -212,7 +214,6 @@ function findCredentialSocketOwnerPid() {
 }
 
 async function readCredentialDaemonStatus(pid: number | null): Promise<{ alive: boolean; ready: boolean; socket: boolean }> {
-    const chainKeys = require('../chain_keys');
     const alive = !!(pid && isLikelyCredentialDaemonProcess(pid));
     if (!alive) {
         return { alive: false, ready: false, socket: false };
@@ -223,7 +224,7 @@ async function readCredentialDaemonStatus(pid: number | null): Promise<{ alive: 
             socketPath: CREDENTIAL_SOCKET_FILE,
             readyFilePath: CREDENTIAL_READY_FILE,
         });
-        return { alive, ready: responsive, socket: responsive };
+        return { alive, ready: responsive as boolean, socket: responsive as boolean };
     } catch (_) {
         return { alive, ready: false, socket: false };
     }
@@ -235,7 +236,7 @@ function ensureLogDir() {
     storage.ensureDir(PATHS.LOGS_DIR);
 }
 
-function buildDexbotStartArgs(botName, dryrun = false) {
+function buildDexbotStartArgs(botName: any, dryrun: any = false) {
     const scriptArgs = [dryrun ? 'drystart' : 'test'];
     if (botName) scriptArgs.push(botName);
     return buildRuntimeScriptArgs({
@@ -245,8 +246,8 @@ function buildDexbotStartArgs(botName, dryrun = false) {
     });
 }
 
-function buildUnlockArgs({ isolated = false, botName = null } = {}) {
-    const scriptArgs = [];
+function buildUnlockArgs({ isolated = false, botName = null }: any = {}) {
+    const scriptArgs: string[] = [];
     if (isolated) {
         scriptArgs.push('--isolated');
     }
@@ -262,8 +263,8 @@ function buildUnlockArgs({ isolated = false, botName = null } = {}) {
 
 // ── Update scheduler ───────────────────────────────────────────────
 
-function createUpdateScheduler({ botProcessRef, log = console.log, warn = console.warn }: { botProcessRef?: { current: any }; log?: (...data: any[]) => void; warn?: (...data: any[]) => void } = {}) {
-    let _updateTimer = null;
+function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProcessRef?: { current: any }; log?: (...data: any[]) => void; warn?: (...data: any[]) => void } = {}) {
+    let _updateTimer: any = null;
     let _pendingRestart = false;
     let cancelled = false;
 
@@ -282,7 +283,7 @@ function createUpdateScheduler({ botProcessRef, log = console.log, warn = consol
             const delay = Math.max(0, nextDate.getTime() - Date.now());
             _updateTimer = setTimeout(async () => {
                 if (cancelled) return;
-                const updateArgs = buildRuntimeScriptArgs({
+                const updateArgs: string[] = buildRuntimeScriptArgs({
                     codeRoot: CODE_ROOT,
                     scriptSegments: ['scripts', 'update'],
                     scriptArgs: [],
@@ -292,7 +293,7 @@ function createUpdateScheduler({ botProcessRef, log = console.log, warn = consol
                     stdio: 'inherit',
                     env: buildScopedChildEnv({ extra: { DEXBOT_UPDATE_SKIP_RELOAD: '1' } }),
                 });
-                const code = await new Promise((resolve) => {
+                const code = await new Promise((resolve: any) => {
                     updateChild.on('close', resolve);
                 });
                 if (code === 0 && !cancelled) {
@@ -307,7 +308,7 @@ function createUpdateScheduler({ botProcessRef, log = console.log, warn = consol
             if (_updateTimer && typeof _updateTimer.unref === 'function') {
                 _updateTimer.unref();
             }
-        } catch (err) {
+        } catch (err: any) {
             warn(`Update scheduler: ${err.message}`);
             _updateTimer = setTimeout(scheduleNext, 3600000);
             if (_updateTimer && typeof _updateTimer.unref === 'function') {
@@ -327,12 +328,12 @@ function createUpdateScheduler({ botProcessRef, log = console.log, warn = consol
 
 // ── Control command helpers ────────────────────────────────────────
 
-function listConfiguredBots(botsFile?) {
+function listConfiguredBots(botsFile?: any) {
     try {
         const botsFilePath = botsFile || BOTS_FILE;
         const { config } = loadSettingsFile(botsFilePath);
         const raw = resolveRawBotEntries(config);
-        return raw.map((b) => ({
+        return raw.map((b: any) => ({
             name: b.name,
             active: b.active !== false,
             gridPrice: typeof b.gridPrice === 'string' ? b.gridPrice.trim().toLowerCase() : '',
@@ -342,10 +343,10 @@ function listConfiguredBots(botsFile?) {
     }
 }
 
-function getActiveAmaBotFingerprint(botsFile?) {
+function getActiveAmaBotFingerprint(botsFile?: any) {
     return (botsFile ? listConfiguredBots(botsFile) : listConfiguredBots())
-        .filter((b) => b.active && usesAmaGridPrice(b))
-        .map((b) => `${b.name}:${b.gridPrice}`)
+        .filter((b: any) => b.active && usesAmaGridPrice(b))
+        .map((b: any) => `${b.name}:${b.gridPrice}`)
         .sort()
         .join('|');
 }
@@ -353,13 +354,13 @@ function getActiveAmaBotFingerprint(botsFile?) {
 function getAllControlBotNames() {
     // Prefer live bots.json (current intent) over the startup snapshot.
     // Shows what the user configured, even if the wrapper hasn't respawned yet.
-    const liveBots = listConfiguredBots().filter((b) => b.active).map((b) => b.name);
+    const liveBots = listConfiguredBots().filter((b: any) => b.active).map((b: any) => b.name);
     if (liveBots.length > 0) {
         return liveBots;
     }
     const botInfo = readMonolithicBotInfo();
     if (Array.isArray(botInfo?.botNames) && botInfo.botNames.length > 0) {
-        return botInfo.botNames.map((name) => String(name));
+        return botInfo.botNames.map((name: any) => String(name));
     }
     if (botInfo?.botName) {
         return [String(botInfo.botName)];
@@ -367,31 +368,31 @@ function getAllControlBotNames() {
     return [];
 }
 
-function getControlBotNames(target, wholeRuntime = false) {
+function getControlBotNames(target: any, wholeRuntime: any = false) {
     if (target) return [target];
     if (wholeRuntime) return getAllControlBotNames();
     return [];
 }
 
-function getControlActionLabel(cmd) {
+function getControlActionLabel(cmd: any) {
     if (cmd === 'restart' || cmd === 'restart-all') return 'restarting';
     if (cmd === 'shutdown' || cmd === 'delete') return 'shutting down';
     return 'stopping';
 }
 
-function usesAmaGridPrice(bot) {
+function usesAmaGridPrice(bot: any) {
     const gridPrice = typeof bot?.gridPrice === 'string' ? bot.gridPrice.trim().toLowerCase() : '';
     return /^ama(?:[1-4])?$/.test(gridPrice);
 }
 
-function getControlServiceNames(cmd, botNames) {
+function getControlServiceNames(cmd: any, botNames: any) {
     if (!['stop-all', 'restart-all', 'delete', 'shutdown'].includes(cmd)) return [];
-    const serviceNames = [];
+    const serviceNames: string[] = [];
     if (cmd === 'delete' || cmd === 'shutdown') {
         serviceNames.push('credential daemon');
     }
     const botNameSet = new Set(botNames);
-    const affectedAmaBots = listConfiguredBots().some((bot) => (
+    const affectedAmaBots = listConfiguredBots().some((bot: any) => (
         bot.active && usesAmaGridPrice(bot) && botNameSet.has(bot.name)
     ));
     if (affectedAmaBots) {
@@ -400,7 +401,7 @@ function getControlServiceNames(cmd, botNames) {
     return serviceNames;
 }
 
-function printControlActionSummary(action, botNames, serviceNames = []) {
+function printControlActionSummary(action: any, botNames: any, serviceNames: any = []) {
     console.log('='.repeat(50));
     console.log(`DEXBot2 ${action} ${formatBotCount(botNames.length)}`);
     console.log();
@@ -414,55 +415,5 @@ function printControlActionSummary(action, botNames, serviceNames = []) {
     console.log();
 }
 
-export = {
-    // Paths
-    MONOLITHIC_PID_FILE,
-    MONOLITHIC_BOT_PID_FILE,
-    MONOLITHIC_BOT_INFO_FILE,
-    MONOLITHIC_CRED_PID_FILE,
-    MONOLITHIC_OUT_LOG,
-    MONOLITHIC_ERROR_LOG,
-    CREDENTIAL_SOCKET_FILE,
-    CREDENTIAL_READY_FILE,
+export { MONOLITHIC_PID_FILE, MONOLITHIC_BOT_PID_FILE, MONOLITHIC_BOT_INFO_FILE, MONOLITHIC_CRED_PID_FILE, MONOLITHIC_OUT_LOG, MONOLITHIC_ERROR_LOG, CREDENTIAL_SOCKET_FILE, CREDENTIAL_READY_FILE, cleanupStateFiles, readLiveMonolithicPid, readMonolithicBotInfo, isLikelyCredentialDaemonProcess, isLikelyDexbotProcess, isLikelyUnlockProcess, isExpectedProcessStarttime, isExpectedMonolithicBotPid, readProcStat, stopCredentialDaemonPid, cleanupCredentialRuntimeFiles, stopCredentialDaemon, ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialDaemonStatus, ensureLogDir, buildDexbotStartArgs, buildUnlockArgs, createUpdateScheduler, getActiveAmaBotFingerprint, listConfiguredBots, getAllControlBotNames, getControlBotNames, getControlActionLabel, getControlServiceNames, printControlActionSummary, formatBotCount }
 
-    // PID management
-    cleanupStateFiles,
-    readLiveMonolithicPid,
-    readMonolithicBotInfo,
-
-    // Process matching
-    isLikelyCredentialDaemonProcess,
-    isLikelyDexbotProcess,
-    isLikelyUnlockProcess,
-    isExpectedProcessStarttime,
-    isExpectedMonolithicBotPid,
-
-    // Proc helpers (for status)
-    readProcStat,
-
-    // Credential daemon
-    stopCredentialDaemonPid,
-    cleanupCredentialRuntimeFiles,
-    stopCredentialDaemon,
-    ensureNoForeignCredentialDaemon,
-    findCredentialSocketOwnerPid,
-    readCredentialDaemonStatus,
-
-    // Daemonization
-    ensureLogDir,
-    buildDexbotStartArgs,
-    buildUnlockArgs,
-
-    // Update scheduler
-    createUpdateScheduler,
-
-    // Control helpers
-    getActiveAmaBotFingerprint,
-    listConfiguredBots,
-    getAllControlBotNames,
-    getControlBotNames,
-    getControlActionLabel,
-    getControlServiceNames,
-    printControlActionSummary,
-    formatBotCount,
-};

@@ -14,6 +14,7 @@
 'use strict';
 
 const assert = require('assert');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 class StubWebSocket {
     [key: string]: any;
@@ -132,7 +133,7 @@ console.log('=== Transport Connect No-Op Tests ===\n');
         try {
             await transport.connect([]);
         } catch (e) {
-            threw = e.code === 'CONNECTION_ERROR' && /No servers provided/.test(e.message);
+            threw = (e as any).code === 'CONNECTION_ERROR' && /No servers provided/.test(getErrorMessage(e));
         }
         assert.ok(threw, 'empty node list should throw ConnectionError');
         assert.strictEqual(StubWebSocket.instances.length, 1, 'empty-list throw should not create a new WebSocket');

@@ -29,7 +29,7 @@ function createBrowserStorageAdapter() {
       db = await openDB();
       const tx = db.transaction('files', 'readonly');
       const cursor = tx.objectStore('files').openCursor();
-      await new Promise<void>((resolve, reject) => {
+      await new Promise<void>((resolve: any, reject: any) => {
         cursor.onsuccess = (event: any) => {
           const cur = event.target.result;
           if (cur) {
@@ -58,7 +58,7 @@ function createBrowserStorageAdapter() {
       for (const [key, value] of store) {
         os.put(value, key);
       }
-      await new Promise<void>((resolve, reject) => {
+      await new Promise<void>((resolve: any, reject: any) => {
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
@@ -71,7 +71,7 @@ function createBrowserStorageAdapter() {
 
   function openDB() {
     const idb: any = (globalThis as any).indexedDB;
-    return new Promise<any>((resolve, reject) => {
+    return new Promise<any>((resolve: any, reject: any) => {
       const request = idb.open('DEXBotStorage', 1);
       request.onupgradeneeded = (event: any) => {
         const db = event.target.result;
@@ -88,13 +88,13 @@ function createBrowserStorageAdapter() {
   initFromIndexedDB().catch(() => {});
 
   const adapter = {
-    readJSON(path) {
+    readJSON(path: any) {
       const entry = store.get(path);
       if (!entry) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
       return JSON.parse(entry.content);
     },
 
-    writeJSON(path, data, options) {
+    writeJSON(path: any, data: any, options: any) {
       if (options?.flag === 'wx' && store.has(path)) {
         const err: any = new Error(`EEXIST: ${path}`);
         err.code = 'EEXIST';
@@ -109,26 +109,26 @@ function createBrowserStorageAdapter() {
       });
     },
 
-    exists(path) {
+    exists(path: any) {
       return store.has(path);
     },
 
-    ensureDir(_path, _options) {
+    ensureDir(_path: any, _options: any) {
       // In-memory: directories are implicit
     },
 
-    unlink(path) {
+    unlink(path: any) {
       store.delete(path);
     },
 
-    readFile(path, encoding = 'utf8') {
+    readFile(path: any, encoding: any = 'utf8') {
       const entry = store.get(path);
       if (!entry) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
       if (encoding === 'utf8' || encoding === 'utf-8') return entry.content;
       return entry.content;
     },
 
-    writeFile(path, data, options) {
+    writeFile(path: any, data: any, options: any) {
       store.set(path, {
         content: data,
         type: 'text',
@@ -137,7 +137,7 @@ function createBrowserStorageAdapter() {
       });
     },
 
-    rename(oldPath, newPath) {
+    rename(oldPath: any, newPath: any) {
       const entry = store.get(oldPath);
       if (entry) {
         store.set(newPath, entry);
@@ -145,7 +145,7 @@ function createBrowserStorageAdapter() {
       }
     },
 
-    stat(path) {
+    stat(path: any) {
       const entry = store.get(path);
       if (!entry) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
       return {
@@ -155,7 +155,7 @@ function createBrowserStorageAdapter() {
       };
     },
 
-    readdir(dirPath) {
+    readdir(dirPath: any) {
       const normalized = dirPath.endsWith('/') ? dirPath : dirPath + '/';
       const entries = new Set<string>();
       for (const key of store.keys()) {
@@ -168,7 +168,7 @@ function createBrowserStorageAdapter() {
       return Array.from(entries);
     },
 
-    open(_path, _flags, _mode) {
+    open(_path: any, _flags: any, _mode: any) {
       throw new Error('open() not supported in browser adapter');
     },
     close() {
@@ -183,36 +183,36 @@ function createBrowserStorageAdapter() {
     chmod() {
       // no-op in browser
     },
-    realpath(path) {
+    realpath(path: any) {
       return path;
     },
     access() {
       // no-op — all file operations are permitted in-memory
     },
-    utimes(_path, _atime, _mtime) {
+    utimes(_path: any, _atime: any, _mtime: any) {
       // no-op in browser
     },
-    lstat(path) {
+    lstat(path: any) {
       return this.stat(path);
     },
 
-    rmdir(_path) {
+    rmdir(_path: any) {
       // no-op in browser
     },
 
-    rm(_path, _options) {
+    rm(_path: any, _options: any) {
       // no-op in browser
     },
 
-    mkdtemp(prefix) {
+    mkdtemp(prefix: any) {
       return `${prefix}${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
     },
 
-    readlink(path) {
+    readlink(path: any) {
       return path;
     },
 
-    appendFile(path, data, options) {
+    appendFile(path: any, data: any, options: any) {
       const existing = store.get(path);
       const newContent = existing ? existing.content + data : data;
       store.set(path, {
@@ -223,7 +223,7 @@ function createBrowserStorageAdapter() {
       });
     },
 
-    appendFileAsync(path, data, options) {
+    appendFileAsync(path: any, data: any, options: any) {
       this.appendFile(path, data, options);
       return Promise.resolve();
     },
@@ -242,4 +242,6 @@ function createBrowserStorageAdapter() {
   return adapter;
 }
 
-export = createBrowserStorageAdapter;
+export default createBrowserStorageAdapter
+module.exports = createBrowserStorageAdapter
+

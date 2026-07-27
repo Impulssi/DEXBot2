@@ -1,3 +1,6 @@
+
+import { NATIVE_CLIENT } from '../constants';
+import Logger from '../logger';
 'use strict';
 
 // Ambient WebSocket declaration for the ws module (no @types/ws installed)
@@ -24,13 +27,12 @@ function getWebSocketConstructor(): new (url: string) => WebSocketLike {
             _WebSocketCtor = require('ws');
         }
     }
+    if (!_WebSocketCtor) throw new Error('No WebSocket constructor available');
     return _WebSocketCtor;
 }
 
-const { NATIVE_CLIENT } = require('../constants');
 const { TRANSPORT } = NATIVE_CLIENT;
 
-const Logger = require('../logger');
 const transportLogger = new Logger('Transport');
 
 const CONNECT_TIMEOUT_MS: number = TRANSPORT.CONNECT_TIMEOUT_MS;
@@ -351,7 +353,7 @@ function createTransport(config: TransportConfig = {}) {
         // connecting node wins. Each individual connectOne still has its own
         // per-node timeout (connectTimeoutMs), so worst-case wall time is
         // connectTimeoutMs instead of list.length * connectTimeoutMs.
-        const connectPromises = list.map((url, i) => {
+        const connectPromises = list.map((_url, i) => {
             const idx = (nodeIndex + i) % list.length;
             const actualUrl = list[idx];
             return connectOne(actualUrl)
@@ -534,10 +536,5 @@ function createTransport(config: TransportConfig = {}) {
     };
 }
 
-export = {
-    createTransport,
-    ConnectionError,
-    AllNodesFailed,
-    RpcError,
-    RpcTimeoutError,
-};
+export { createTransport, ConnectionError, AllNodesFailed, RpcError, RpcTimeoutError }
+

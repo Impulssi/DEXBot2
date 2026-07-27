@@ -3,6 +3,7 @@ const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
 const { Grid } = require('../modules/order/grid');
 const Format = require('../modules/order/format');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running Partial Order Edge Cases test suite...\n');
 
@@ -451,8 +452,8 @@ async function testSpreadConditionWithPartials() {
         console.log('===========================================\n');
         process.exit(0);
     } catch (err) {
-        console.error('\n✗ Test FAILED:', err.message);
-        console.error(err.stack);
+        console.error('\n✗ Test FAILED:', getErrorMessage(err));
+        console.error((err as any).stack);
         process.exit(1);
     }
 })();

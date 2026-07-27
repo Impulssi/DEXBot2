@@ -1,10 +1,10 @@
-'use strict';
-
-const assert = require('assert');
-const {
+import assert from 'node:assert';
+import {
     buildKalmanVelocitySeries,
     smoothKalmanVelocityPoint,
-} = require('../kalman_velocity_smoothing');
+} from '../kalman_velocity_smoothing';
+
+'use strict';
 
 const baseline = smoothKalmanVelocityPoint(
     0,
@@ -42,9 +42,9 @@ const clamped = smoothKalmanVelocityPoint(
     }
 );
 
-assert.ok(baseline.smoothedVelocityPct > 0 && baseline.smoothedVelocityPct < 10);
-assert.strictEqual(clamped.smoothedVelocityPct, maxed.smoothedVelocityPct);
-assert.ok(clamped.smoothedVelocityPct > baseline.smoothedVelocityPct);
+assert.ok(baseline.smoothedVelocityPct! > 0 && baseline.smoothedVelocityPct! < 10);
+assert.strictEqual(clamped.smoothedVelocityPct!, maxed.smoothedVelocityPct!);
+assert.ok(clamped.smoothedVelocityPct! > baseline.smoothedVelocityPct!);
 
 const rawSeries = buildKalmanVelocitySeries(
     [

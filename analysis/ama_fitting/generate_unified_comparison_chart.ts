@@ -1,3 +1,13 @@
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { calculateAMA } from '../../market_adapter/core/strategies/ama';
+import { generateHTML } from '../../market_adapter/lp_chart_core';
+import { toIntervalLabel } from '../../market_adapter/interval_utils';
+import { loadCandleFile } from '../math_utils';
+import { MARKET_ADAPTER } from '../../modules/constants';
+import { ensureDir } from '../../modules/utils/fs_utils';
+import { PATHS } from '../../modules/paths';
 'use strict';
 
 /**
@@ -14,19 +24,10 @@
  *   tsx analysis/ama_fitting/generate_unified_comparison_chart.ts  (auto-discovers newest lp_pool_*.json)
  */
 
-const fs = require('fs');
-const path = require('path');
 
-const { calculateAMA } = require('../../market_adapter/core/strategies/ama');
-const { generateHTML } = require('../../market_adapter/lp_chart_core');
-const { toIntervalLabel } = require('../../market_adapter/interval_utils');
-const { loadCandleFile } = require('../math_utils');
-const { MARKET_ADAPTER } = require('../../modules/constants');
-const { ensureDir } = require('../../modules/utils/fs_utils');
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
-const { PATHS } = require('../../modules/paths');
 const LP_DATA_DIR = PATHS.MARKET_ADAPTER.LP_DATA_DIR;
 const CHARTS_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 
@@ -34,7 +35,7 @@ const DEFAULT_COLORS = ['#26a69a', '#fb8c00', '#5c9ee6', '#ef5350'];
 const DEFAULT_DASHES = ['dot', 'solid', 'dash', 'dashdot'];
 
 function buildDefaultStrategies() {
-    const presets = MARKET_ADAPTER.AMAS;
+    const presets = MARKET_ADAPTER.AMAS as Record<string, typeof MARKET_ADAPTER.AMAS.AMA1>;
     return Object.keys(presets).map((key, i) => ({
         name: presets[key].name || key,
         erPeriod: presets[key].erPeriod,
@@ -52,9 +53,10 @@ const DEFAULT_STRATEGIES = buildDefaultStrategies();
 function findLatestLpDataFile() {
     if (!fs.existsSync(LP_DATA_DIR)) return null;
     const stack = [LP_DATA_DIR];
-    const matches = [];
+    const matches: { path: string; mtime: number }[] = [];
     while (stack.length > 0) {
         const dir = stack.pop();
+        if (!dir) continue;
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
             const full = path.join(dir, entry.name);
             if (entry.isDirectory()) { stack.push(full); continue; }
@@ -156,8 +158,8 @@ Notes:
 
 // ── Main ───────────────────────────────────────────────────────────────────────
 
-function parseArgs(argv) {
-    const cfg = {
+function parseArgs(argv: string[]) {
+    const cfg: { dataFile: string | null; outFile: string | null; quiet: boolean; help: boolean } = {
         dataFile: null,
         outFile: null,
         quiet: false,
@@ -205,7 +207,7 @@ function generateChart(options = {} as Record<string, any>) {
 
     logger.log(`Data:        ${path.relative(process.cwd(), dataFile)} (${candleObjects.length} candles)`);
 
-    const amaResults = [];
+    const amaResults: any[] = [];
     logger.log('');
     for (const [index, strategy] of strategies.entries()) {
         const values = calculateAMA(closes, strategy);
@@ -251,8 +253,8 @@ function run(argv = process.argv.slice(2)) {
             outFile,
             logger: quiet ? { log() {} } : console,
         });
-    } catch (e) {
-        console.error('Error:', e.message);
+    } catch (e: unknown) {
+        console.error('Error:', (e as any)?.message ?? e);
         process.exitCode = 1;
     }
 }
@@ -261,10 +263,5 @@ if (require.main === module) {
     run();
 }
 
-export = {
-    DEFAULT_STRATEGIES,
-    generateChart,
-    parseArgs,
-    run,
-    showHelp,
-};
+export { DEFAULT_STRATEGIES, generateChart, parseArgs, run, showHelp }
+

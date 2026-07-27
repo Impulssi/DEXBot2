@@ -12,11 +12,12 @@
  * market_adapter/core/ modules for the actual Kibana queries.
  */
 
+
+import { getMarketCandles, getMarketClosePrices } from '../../market_adapter/core/kibana_market_candles';
+import { getLpCandlesForPool, getLpClosePricesForPool, discoverPoolAssets } from '../../market_adapter/inputs/kibana_source';
+import { getAsset } from './chain_queries';
 'use strict';
 
-const { getMarketCandles, getMarketClosePrices } = require('../../market_adapter/core/kibana_market_candles');
-const { getLpCandlesForPool, getLpClosePricesForPool, discoverPoolAssets } = require('../../market_adapter/inputs/kibana_source');
-const { getAsset } = require('./chain_queries');
 
 /**
  * Resolve a symbol or asset ID to a { id, precision, symbol } object.
@@ -128,16 +129,5 @@ async function fetchTrendHistoryCandles(mpaSymbol: string, config: Record<string
   };
 }
 
-export = {
-  // Order book candles
-  fetchMarketCandles,
-  fetchMarketClosePrices,
+export { fetchMarketCandles, fetchMarketClosePrices, fetchLpCandles, fetchLpClosePrices, fetchPoolAssets, fetchTrendHistoryCandles }
 
-  // LP pool candles
-  fetchLpCandles,
-  fetchLpClosePrices,
-  fetchPoolAssets,
-
-  // Trend analysis
-  fetchTrendHistoryCandles,
-};

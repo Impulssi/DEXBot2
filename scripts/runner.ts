@@ -62,12 +62,6 @@
  * ===============================================================================
  */
 
-const { OrderManager } = require('../modules/order/manager');
-const { PATHS } = require('../modules/paths');
-const { initializeGrid } = require('../modules/order/grid');
-const { readBotsFileSync } = require('../modules/bots_file_lock');
-const { Config } = require('../modules/config');
-const { parseJsonWithComments, sleep } = require('../modules/order/utils/system');
 
 /**
  * Run a standalone order grid calculation for testing.
@@ -76,6 +70,13 @@ const { parseJsonWithComments, sleep } = require('../modules/order/utils/system'
  * @returns {Promise<void>}
  * @throws {Error} If config invalid, BitShares unavailable, or grid init fails
  */
+
+import { OrderManager } from '../modules/order/manager';
+import { PATHS } from '../modules/paths';
+import { initializeGrid } from '../modules/order/grid';
+import { readBotsFileSync } from '../modules/bots_file_lock';
+import { Config } from '../modules/config';
+import { parseJsonWithComments, sleep } from '../modules/order/utils/system';
 async function runOrderManagerCalculation() {
     const cfgFile = PATHS.PROFILES.BOTS_JSON;
     let botConfig: any = {};
@@ -85,8 +86,8 @@ async function runOrderManagerCalculation() {
         const bots = config.bots || [];
 
         const envName = Config.LIVE_BOT_NAME || Config.BOT_NAME;
-        let chosenBot = null;
-        if (envName) chosenBot = bots.find(b => String(b.name).toLowerCase() === String(envName).toLowerCase());
+        let chosenBot: any = null;
+        if (envName) chosenBot = bots.find((b: any) => String(b.name).toLowerCase() === String(envName).toLowerCase());
         if (!chosenBot) chosenBot = bots[0];
 
         if (!chosenBot) {
@@ -114,10 +115,11 @@ async function runOrderManagerCalculation() {
 
     for (let cycle = 1; cycle <= cycles; cycle++) {
         manager.logger.log(`\n----- Cycle ${cycle}/${cycles} -----`, 'info');
-        await manager.syncFromOpenOrders([]);
+        await manager.syncFromOpenOrders([], {});
         manager.logger && manager.logger.displayStatus && manager.logger.displayStatus(manager);
         if (cycle < cycles) await sleep(delayMs);
     }
 }
 
-export = { runOrderManagerCalculation };
+export { runOrderManagerCalculation }
+

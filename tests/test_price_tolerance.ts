@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running price_tolerance tests');
 
@@ -11,7 +12,7 @@ try {
     calc(1000, 10, 'buy', null);
     assert.fail('calculatePriceTolerance should throw when assets are missing');
 } catch (err) {
-    assert.strictEqual(err.message, 'CRITICAL: Assets object required for calculatePriceTolerance');
+    assert.strictEqual(getErrorMessage(err), 'CRITICAL: Assets object required for calculatePriceTolerance');
 }
 
 // 2) Example from inline comment in manager: BUY: gridPrice=1820, orderSize=73.88, precisionA=4, precisionB=5

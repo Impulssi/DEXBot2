@@ -5,6 +5,7 @@
  */
 const http = require('http');
 const crypto = require('crypto');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('=== Connection Trace ===\n');
 
@@ -30,8 +31,8 @@ async function testRawWebSocketNodes() {
       await Promise.race([
         new Promise((resolve, reject) => {
           ws.onopen = resolve;
-          ws.onerror = (e) => reject(new Error(e.message || 'WS error'));
-          ws.onclose = (e) => reject(new Error(`close code=${e.code}`));
+          ws.onerror = (e) => reject(new Error(getErrorMessage(e) || 'WS error'));
+          ws.onclose = (e) => reject(new Error(`close code=${(e as any).code}`));
         }),
         new Promise((_, reject) => {
           timeout = setTimeout(() => reject(new Error(`WS timeout after ${WS_TIMEOUT_MS}ms`)), WS_TIMEOUT_MS)
@@ -42,7 +43,7 @@ async function testRawWebSocketNodes() {
       ws.close();
       console.log(`  ✓ ${url}  (${connectMs}ms)`);
     } catch (e) {
-      console.log(`  ✗ ${url}  FAIL: ${e.message}`);
+      console.log(`  ✗ ${url}  FAIL: ${getErrorMessage(e)}`);
     }
   }
 }
@@ -56,7 +57,7 @@ async function testTransportConnectAndLogin(url) {
     const ws = new WebSocket(url);
     await new Promise((resolve, reject) => {
       ws.onopen = resolve;
-      ws.onerror = (e) => reject(new Error(e.message || 'WS error'));
+      ws.onerror = (e) => reject(new Error(getErrorMessage(e) || 'WS error'));
     });
     console.log(`  ✓ WebSocket handshake: ${Date.now() - start}ms`);
 
@@ -99,7 +100,7 @@ async function testTransportConnectAndLogin(url) {
     console.log(`  ✓ Full login sequence: ${Date.now() - rpcStart}ms`);
     ws.close();
   } catch (e) {
-    console.log(`  ✗ FAIL: ${e.message}`);
+    console.log(`  ✗ FAIL: ${getErrorMessage(e)}`);
   }
 }
 
@@ -137,7 +138,7 @@ async function testModuleConnection() {
     await waitForConnected(timeout);
     console.log(`  ✓ Connected in ${Date.now() - t0}ms`);
   } catch (e) {
-    console.log(`  ✗ waitForConnected failed after ${Date.now() - t0}ms: ${e.message}`);
+    console.log(`  ✗ waitForConnected failed after ${Date.now() - t0}ms: ${getErrorMessage(e)}`);
     console.log(`  Warnings (${warnings.length}):`);
     for (const w of warnings) {
       console.log(`    ${w}`);
@@ -164,7 +165,7 @@ let traceTimer;
     process.exit(0);
   } catch (e) {
     clearTimeout(traceTimer);
-    console.error('Trace error:', e.message);
+    console.error('Trace error:', getErrorMessage(e));
     process.exit(1);
   }
 })();

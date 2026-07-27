@@ -1,15 +1,15 @@
+
+import { getStorage } from '../../modules/storage';
 'use strict';
 
-const { getStorage } = require('../../modules/storage');
 const storage = getStorage();
 
 /**
  * Write JSON atomically via the unified StorageAdapter.
  */
-function writeJsonAtomic(targetPath, data, options = {}) {
+function writeJsonAtomic(targetPath: any, data: any, options: any = {}) {
     storage.writeJSON(targetPath, data, options);
 }
 
-export = {
-    writeJsonAtomic,
-};
+export { writeJsonAtomic }
+

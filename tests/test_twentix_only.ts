@@ -1,6 +1,7 @@
 const { BitShares } = require('../modules/bitshares_client');
+const { getErrorMessage } = require('../modules/utils/errors');
 
-function blockchainToFloat(intValue, precision) {
+function _blockchainToFloat(intValue, precision) {
     if (intValue === null || intValue === undefined) return 0;
     if (precision === undefined || precision === null || !Number.isFinite(Number(precision))) {
         throw new Error(`Invalid precision for blockchainToFloat: ${precision}`);
@@ -55,7 +56,7 @@ function blockchainToFloat(intValue, precision) {
 
      process.exit(0);
    } catch(e) {
-     console.error('Error:', e.message);
+     console.error('Error:', getErrorMessage(e));
      process.exit(1);
    }
 })().catch(err => {

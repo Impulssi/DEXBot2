@@ -1,9 +1,13 @@
+
+import { getStorage } from '../../modules/storage';
+import { path } from '../../modules/path_api';
+import { PATHS, getRecalculateTriggerFile } from '../../modules/paths';
+import { loadSettingsFile, resolveRawBotEntries, saveSettingsFile, normalizeBotEntries } from '../../modules/bot_settings';
+import { normalizeMode, detectMode, setPreferredMode, describeModeChoice } from './launcher_mode_detector';
+import { normalizeRoot, resolveRuntimeScript } from './launcher_paths';
 'use strict';
 
-const { getStorage } = require('../../modules/storage');
 const storage = getStorage();
-const { path } = require('../../modules/path_api');
-const { PATHS, getRecalculateTriggerFile } = require('../../modules/paths');
 
 let _chainKeys: any;
 function getChainKeys(): any {
@@ -34,9 +38,6 @@ function getSpawn(): any {
     }
     return _spawn;
 }
-const { loadSettingsFile, resolveRawBotEntries, saveSettingsFile, normalizeBotEntries } = require('../../modules/bot_settings');
-const { normalizeMode, detectMode, setPreferredMode, describeModeChoice } = require('./launcher_mode_detector');
-const { normalizeRoot, resolveRuntimeScript } = require('./launcher_paths');
 
 let _pm2: any;
 function getPM2Module(): any {
@@ -443,16 +444,5 @@ async function launcherUnlockStart(botName: string | null, options: Record<strin
   };
 }
 
-export = {
-  launcherRun,
-  launcherStart,
-  launcherDrystart,
-  launcherReset,
-  launcherDisable,
-  launcherPm2Start,
-  launcherPm2Stop,
-  launcherPm2Delete,
-  launcherPm2Restart,
-  launcherClawOnly,
-  launcherUnlockStart,
-};
+export { launcherRun, launcherStart, launcherDrystart, launcherReset, launcherDisable, launcherPm2Start, launcherPm2Stop, launcherPm2Delete, launcherPm2Restart, launcherClawOnly, launcherUnlockStart }
+

@@ -11,16 +11,15 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
-'use strict';
+import { PATHS } from '../modules/paths';
+import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer';
+import { generateHTML } from './trend_detection/kalman_chart_generator';
+import { createSource } from './price_sources';
+import { calculateAMA } from '../market_adapter/core/strategies/ama';
+import { getCandleClose } from './math_utils';
+import { writeChartFile } from './chart_utils';
 
-const path = require('path');
-const { PATHS } = require('../modules/paths');
-const { KalmanTrendAnalyzer } = require('./trend_detection/kalman_trend_analyzer');
-const { generateHTML } = require('./trend_detection/kalman_chart_generator');
-const { createSource } = require('./price_sources');
-const { calculateAMA } = require('../market_adapter/core/strategies/ama');
-const { computeATR, getCandleClose } = require('./math_utils');
-const { writeChartFile } = require('./chart_utils');
+'use strict';
 
 // Standalone analysis defaults (reuses calculateAMA from production but constants are independent)
 const AMA_ER_PERIOD   = 10;
@@ -30,7 +29,6 @@ const LOOKBACK_BARS   = 72;
 const NEUTRAL_ZONE    = 0.15;
 const MAX_SLOPE_PCT   = 3.0;
 const MAX_SLOPE_OFFSET = 0.5;
-const ATR_PERIOD      = 14;
 
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -88,7 +86,7 @@ async function main() {
             qNoise: config.qNoise
         });
 
-        const allResults = [];
+        const allResults: any[] = [];
         for (let i = 0; i < candles.length; i++) {
             const { marketPrice, timestamp } = source.extractMarketPrice(candles[i]);
             const result = analyzer.update(marketPrice);
@@ -99,7 +97,6 @@ async function main() {
         // ── AMA weight offset (for comparison panel) ─────────────────────────
         const closes    = candles.map(c => getCandleClose(c) ?? 0);
         const amaValues = calculateAMA(closes, { erPeriod: AMA_ER_PERIOD, fastPeriod: AMA_FAST, slowPeriod: AMA_SLOW });
-        const atrs      = computeATR(candles, ATR_PERIOD);
         const warmup    = AMA_ER_PERIOD + LOOKBACK_BARS + 1;
 
         for (let i = 0; i < allResults.length; i++) {
@@ -121,10 +118,10 @@ async function main() {
         writeChartFile(config.chartFile, html);
 
         if (!config.quiet) console.log(`[Kalman] ✓ Chart saved to ${config.chartFile}`);
-    } catch (err) {
-        console.error(`[Kalman] Error: ${err.message}`);
+    } catch (err: unknown) {
+        console.error(`[Kalman] Error: ${(err as any)?.message ?? err}`);
         process.exit(1);
     }
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+main().catch((err: unknown) => { console.error(err); process.exit(1); });

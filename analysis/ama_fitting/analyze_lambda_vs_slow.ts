@@ -1,4 +1,12 @@
 #!/usr/bin/env node
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { calculateAMA } from '../../market_adapter/core/strategies/ama';
+import { loadLpDataFile } from '../../market_adapter/lp_chart_runner';
+import { ensureDir } from '../../modules/order/utils/system';
+import { PATHS } from '../../modules/paths';
+import { MARKET_ADAPTER } from '../../modules/constants';
 'use strict';
 
 /**
@@ -22,14 +30,7 @@
  *     --maxSlow 1000 --lambdaEnd 0.0045 --lambdaSteps 50
  */
 
-const fs = require('fs');
-const path = require('path');
 
-const { calculateAMA } = require('../../market_adapter/core/strategies/ama');
-const { loadLpDataFile } = require('../../market_adapter/lp_chart_runner');
-const { ensureDir } = require('../../modules/order/utils/system');
-const { PATHS } = require('../../modules/paths');
-const { MARKET_ADAPTER } = require('../../modules/constants');
 
 const DEFAULT_ER = MARKET_ADAPTER.AMAS.AMA1.erPeriod;
 const DEFAULT_FAST = MARKET_ADAPTER.AMAS.AMA1.fastPeriod;
@@ -37,7 +38,15 @@ const DEFAULT_FAST = MARKET_ADAPTER.AMAS.AMA1.fastPeriod;
 // ── CLI ────────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv = process.argv.slice(2)) {
-    const out = {
+    const out: {
+        dataFile: string | null;
+        fixEr: number;
+        fixFast: number;
+        maxSlow: number;
+        lambdaEnd: number;
+        lambdaSteps: number;
+        outFile: string | null;
+    } = {
         dataFile: null,
         fixEr: DEFAULT_ER,
         fixFast: DEFAULT_FAST,
@@ -109,7 +118,7 @@ function calcTotalRelativeDistance(amaValues, candles, erPeriod) {
 
 function geometricRange(min, max, count) {
     const ratio = Math.pow(max / min, 1 / (count - 1));
-    const out = [];
+    const out: number[] = [];
     for (let i = 0; i < count; i++) {
         let v = min * Math.pow(ratio, i);
         if (i === 0) v = min;
@@ -122,7 +131,7 @@ function geometricRange(min, max, count) {
 // ── Precompute (movement, distance) per slow ───────────────────────────────────
 
 function precomputeMetrics(closes, candles, erPeriod, fastPeriod, slowValues) {
-    const cache = [];
+    const cache: any[] = [];
     for (const slow of slowValues) {
         if (fastPeriod >= slow) continue;
         const ama = calculateAMA(closes, { erPeriod, fastPeriod, slowPeriod: slow });
@@ -134,7 +143,7 @@ function precomputeMetrics(closes, candles, erPeriod, fastPeriod, slowValues) {
 }
 
 function findBestForLambda(lambda, metricCache) {
-    let best = null;
+    let best: any = null;
     for (const m of metricCache) {
         const score = m.movement + lambda * m.distance;
         if (!best || score < best.score) {
@@ -151,13 +160,13 @@ function findStartLambda(metricCache, maxSlow, lambdaEnd) {
     let lo = 0;
     let hi = 1;
     // Expand hi until the best slow drops below maxSlow
-    while (findBestForLambda(hi, metricCache).slow >= maxSlow && hi < 1e6) hi *= 2;
+    while ((findBestForLambda(hi, metricCache)?.slow ?? Infinity) >= maxSlow && hi < 1e6) hi *= 2;
     if (hi >= 1e6) return null;
 
     for (let i = 0; i < 60; i++) {
         const mid = (lo + hi) / 2;
         const best = findBestForLambda(mid, metricCache);
-        if (best.slow < maxSlow) hi = mid;
+        if (best && best.slow < maxSlow) hi = mid;
         else lo = mid;
     }
     // When cache max equals maxSlow, hi converges near 0 — ensure a minimum gap
@@ -167,7 +176,7 @@ function findStartLambda(metricCache, maxSlow, lambdaEnd) {
 
 // ── HTML Chart (λ → Slow) ──────────────────────────────────────────────────────
 
-function generateChartHtml(results, metricCache, fixEr, fixFast, dataLabel, chartOutPath) {
+function generateChartHtml(results, metricCache, fixEr, fixFast, dataLabel, _chartOutPath) {
     const xs = results.map(r => r.lambda);
     const ys = results.map(r => r.slow);
     const dist = results.map(r => r.distance);
@@ -301,12 +310,13 @@ async function run() {
     const cfg = parseArgs();
 
     // Load data
-    const loaded = loadLpDataFile(path.resolve(cfg.dataFile));
+    const dataFile = cfg.dataFile!;
+    const loaded = loadLpDataFile(path.resolve(dataFile));
     const candles = loaded.candleObjects;
     const meta = loaded.meta;
     const dataLabel = meta
         ? `LP Pool ${meta.pool} (${meta.assetA?.symbol || '?'}/${meta.assetB?.symbol || '?'})`
-        : path.basename(cfg.dataFile);
+        : path.basename(dataFile);
     const closes = candles.map(c => c.close);
 
     console.log('══════════════════════════════════════════════════════════');
@@ -341,14 +351,14 @@ async function run() {
     console.log(`  Derived start λ: ${lambdaStart.toFixed(6)}  (optimal slow first drops below ${cfg.maxSlow})`);
 
     // Verify start lambda produces slow ~= maxSlow
-    const checkStart = findBestForLambda(lambdaStart, metricCache);
+    const checkStart = findBestForLambda(lambdaStart, metricCache)!;
     console.log(`  At start λ:      slow=${checkStart.slow.toFixed(1)}  (should be near ${cfg.maxSlow})\n`);
 
     // Build geometric lambda range
     const lambdaValues = geometricRange(lambdaStart, cfg.lambdaEnd, cfg.lambdaSteps);
 
     // Score each lambda against the cache — no AMA recalculation
-    const results = [];
+    const results: any[] = [];
     for (let idx = 0; idx < lambdaValues.length; idx++) {
         const lambda = lambdaValues[idx];
         const best = findBestForLambda(lambda, metricCache);
@@ -391,4 +401,5 @@ if (require.main === module) {
     });
 }
 
-module.exports = { parseArgs };
+export { parseArgs }
+

@@ -5,10 +5,11 @@
  * Provides read/write operations with fallback handling.
  */
 
-const { getStorage } = require('./storage');
+
+import { getStorage } from './storage';
+import { PATHS } from './paths';
+import { writeJsonFileAtomic } from './bots_file_lock';
 const storage = getStorage();
-const { PATHS } = require('./paths');
-const { writeJsonFileAtomic } = require('./bots_file_lock');
 
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 const SETTINGS_FILE = PATHS.PROFILES.GENERAL_SETTINGS_JSON;
@@ -54,9 +55,5 @@ function writeGeneralSettings(settings: any): void {
     writeJsonFileAtomic(SETTINGS_FILE, settings);
 }
 
-export = {
-    PROFILES_DIR,
-    SETTINGS_FILE,
-    readGeneralSettings,
-    writeGeneralSettings,
-};
+export { PROFILES_DIR, SETTINGS_FILE, readGeneralSettings, writeGeneralSettings }
+

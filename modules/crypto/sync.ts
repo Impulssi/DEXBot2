@@ -10,7 +10,7 @@
  * In browser environments, all exports are stub functions that throw a clear error.
  */
 
-const { isBrowser, getNodeRequire } = require('../env');
+import { isBrowser, getNodeRequire } from '../env';
 const _require = getNodeRequire();
 
 let _crypto: any;

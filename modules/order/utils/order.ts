@@ -69,12 +69,14 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS } = require('../../constants');
-const Format = require('../format');
+
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS } from '../../constants';
+import * as Format from '../format';
+import * as MathUtils from './math';
+import Logger from '../../logger';
+import { sleep } from './system';
 const { isValidNumber, toFiniteNumber } = Format;
-const MathUtils = require('./math');
 const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = MathUtils;
-const Logger = require('../../logger');
 const orderLogger = new Logger('Order');
 
 const ORDER_GONE_ERROR_FRAGMENT = 'not found';
@@ -82,7 +84,7 @@ const ORDER_GONE_ERROR_FRAGMENT = 'not found';
 function _filterUnmatchedChainOrders(manager: any, chainOrderId: string): void {
     if (Array.isArray(manager._lastUnmatchedChainOrders)) {
         manager._lastUnmatchedChainOrders = manager._lastUnmatchedChainOrders.filter(
-            u => (u?.id || u?.orderId || u?.chainOrderId) !== chainOrderId
+            (u: any) => (u?.id || u?.orderId || u?.chainOrderId) !== chainOrderId
         );
     }
 }
@@ -155,7 +157,7 @@ function parseChainOrder(chainOrder: any, assets: any) {
  * @returns {Object|null} Matching grid order or null if no match found
  */
 function findMatchingGridOrderByOpenOrder(parsedChainOrder: any, opts: any) {
-    const { orders, assets, calcToleranceFn, logger } = opts || {};
+    const { orders, assets, calcToleranceFn } = opts || {};
     if (!parsedChainOrder || !orders) return null;
 
     if (parsedChainOrder.orderId) {
@@ -271,7 +273,7 @@ async function applyChainSizeToGridOrder(manager: any, gridOrder: any, chainSize
  * @param {Object} fillOrParts - Fill entry ({ op, block_num, id }) or { orderId, blockNum, historyId }
  * @returns {string|null} Stable key in order:block:history form, or null if fields are missing
  */
-function buildFillKey(fillOrParts) {
+function buildFillKey(fillOrParts: any) {
     const fillOp = fillOrParts?.op?.[1];
     const orderId = fillOp?.order_id ?? fillOrParts?.orderId;
     const blockNum = fillOrParts?.block_num ?? fillOrParts?.blockNum;
@@ -292,9 +294,9 @@ function buildFillKey(fillOrParts) {
  * @param {Object} accountOrders - AccountOrders accessor for blockchain ops
  * @returns {Promise<Object>} Result {success, cancelled, skipped, error, orderGone}
  */
-async function correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders) {
+async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accountName: any, privateKey: any, accountOrders: any) {
     const { gridOrder, chainOrderId, expectedPrice, size, type, isSurplus, cancelOnly } = correctionInfo;
-    const stillNeeded = manager.ordersNeedingPriceCorrection?.some(c => c.chainOrderId === chainOrderId);
+    const stillNeeded = manager.ordersNeedingPriceCorrection?.some((c: any) => c.chainOrderId === chainOrderId);
     if (!stillNeeded) return { success: true, skipped: true };
 
     // Cancel-only entries (e.g., duplicate price level orphans) — cancel without
@@ -317,7 +319,7 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
             return { success: false, error: error.message, orderGone };
         } finally {
             if (shouldRemove) {
-                manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+                manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter((c: any) => c.chainOrderId !== chainOrderId);
             }
         }
     }
@@ -348,7 +350,7 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
             return { success: false, error: error.message, orderGone };
         } finally {
             if (shouldRemove) {
-                manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+                manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter((c: any) => c.chainOrderId !== chainOrderId);
             }
         }
     }
@@ -380,7 +382,7 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
         return { success: false, error: error.message, orderGone };
     } finally {
         if (shouldRemove) {
-            manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+            manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter((c: any) => c.chainOrderId !== chainOrderId);
         }
     }
 }
@@ -395,14 +397,14 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
  * @param {Object} accountOrders - AccountOrders accessor for blockchain ops
  * @returns {Promise<Object>} Summary {corrected, failed, results}
  */
-async function correctAllPriceMismatches(manager, accountName, privateKey, accountOrders) {
+async function correctAllPriceMismatches(manager: any, accountName: any, privateKey: any, accountOrders: any) {
     if (!manager || !manager._gridLock) return { corrected: 0, failed: 0, results: [] };
 
     return await manager._gridLock.acquire(async () => {
-        const results = [];
+        const results: any[] = [];
         let corrected = 0; let failed = 0;
         const seen = new Set();
-        const ordersToCorrect = (manager.ordersNeedingPriceCorrection || []).filter(c => {
+        const ordersToCorrect = (manager.ordersNeedingPriceCorrection || []).filter((c: any) => {
             if (!c.chainOrderId || seen.has(c.chainOrderId)) return false;
             seen.add(c.chainOrderId);
             return true;
@@ -412,7 +414,6 @@ async function correctAllPriceMismatches(manager, accountName, privateKey, accou
             const result = await correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders);
             results.push({ ...correctionInfo, result });
             if (result && result.success) corrected++; else failed++;
-            const { sleep } = require('./system');
             await sleep(TIMING.SYNC_DELAY_MS);
         }
         // Persist master grid mutations from surplus-type-mismatch cancellations.
@@ -441,7 +442,7 @@ async function correctAllPriceMismatches(manager, accountName, privateKey, accou
  * @returns {Object} Blockchain args {amountToSell, sellAssetId, minToReceive, receiveAssetId}
  * @throws {Error} If asset precision missing
  */
-function buildCreateOrderArgs(order, assetA, assetB) {
+function buildCreateOrderArgs(order: any, assetA: any, assetB: any) {
     let precision = (order.type === 'sell') ? assetA?.precision : assetB?.precision;
     if (typeof precision !== 'number') throw new Error("Asset precision missing");
 
@@ -488,7 +489,7 @@ function buildCreateOrderArgs(order, assetA, assetB) {
  * @param {string} params.slotId - Grid slot id (e.g. 'sell-3', 'buy-7')
  * @returns {string|null} Fingerprint or null on bad input
  */
-function buildCreateOpFingerprint(params) {
+function buildCreateOpFingerprint(params: any) {
     if (!params || typeof params !== 'object') return null;
     const { side, assetA, assetB, sellInt, receiveInt, slotId } = params;
     if (side !== 'sell' && side !== 'buy') return null;
@@ -505,7 +506,7 @@ function buildCreateOpFingerprint(params) {
  * @param {boolean} sellUpdated - Whether sell side was updated
  * @returns {string} "buy", "sell", or "both"
  */
-function getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated) {
+function getOrderTypeFromUpdatedFlags(buyUpdated: any, sellUpdated: any) {
     return (buyUpdated && sellUpdated) ? 'both' : (buyUpdated ? 'buy' : 'sell');
 }
 
@@ -520,7 +521,7 @@ function getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated) {
  * @returns {number} Resolved numeric price
  * @throws {Error} If value is invalid and cannot be interpreted
  */
-function resolveConfiguredPriceBound(value, fallback, startPrice, mode) {
+function resolveConfiguredPriceBound(value: any, fallback: any, startPrice: any, mode: any) {
     const configuredValue = (value === null || value === undefined || value === '') ? fallback : value;
 
     const relative = MathUtils.resolveRelativePrice(configuredValue, startPrice, mode);
@@ -544,7 +545,7 @@ function resolveConfiguredPriceBound(value, fallback, startPrice, mode) {
  * @param {Object} order - Order to virtualize
  * @returns {Object} Virtualized order (VIRTUAL state, no orderId)
  */
-function virtualizeOrder(order) {
+function virtualizeOrder(order: any) {
     if (!order) return order;
     const { btsFeeState, ...rest } = order;
     return { ...rest, state: ORDER_STATES.VIRTUAL, orderId: null, rawOnChain: null };
@@ -557,7 +558,7 @@ function virtualizeOrder(order) {
  * @param {Object} order - Order to convert
  * @returns {Object} Spread placeholder order (VIRTUAL, SPREAD type, zero size)
  */
-function convertToSpreadPlaceholder(order) {
+function convertToSpreadPlaceholder(order: any) {
     return { ...virtualizeOrder(order), type: ORDER_TYPES.SPREAD, size: 0 };
 }
 
@@ -572,8 +573,8 @@ function convertToSpreadPlaceholder(order) {
  * @param {string} orderType - Order type to match (BUY, SELL, SPREAD)
  * @returns {Array<Object>} Filtered orders of specified type
  */
-function filterOrdersByType(orders, orderType) {
-    return Array.isArray(orders) ? orders.filter(o => o && o.type === orderType) : [];
+function filterOrdersByType(orders: any, orderType: any) {
+    return Array.isArray(orders) ? orders.filter((o: any) => o && o.type === orderType) : [];
 }
 
 /**
@@ -588,22 +589,22 @@ function filterOrdersByType(orders, orderType) {
  * @param {(item: any) => number|string} accessors.getPrice - Returns item price.
  * @returns {Array<Array<*>>} Grouped items in outside->center pair order.
  */
-function buildOutsideInPairGroups(items, { isValid = Boolean, getType, getPrice }) {
-    const safeItems = Array.isArray(items) ? items.filter(item => isValid(item)) : [];
+function buildOutsideInPairGroups(items: any, { isValid = Boolean, getType, getPrice }: any) {
+    const safeItems = Array.isArray(items) ? items.filter((item: any) => isValid(item)) : [];
     if (safeItems.length === 0) return [];
 
     const sellItems = safeItems
-        .filter(item => getType(item) === ORDER_TYPES.SELL)
-        .sort((a, b) => Number(getPrice(b) || 0) - Number(getPrice(a) || 0));
+        .filter((item: any) => getType(item) === ORDER_TYPES.SELL)
+        .sort((a: any, b: any) => Number(getPrice(b) || 0) - Number(getPrice(a) || 0));
 
     const buyItems = safeItems
-        .filter(item => getType(item) === ORDER_TYPES.BUY)
-        .sort((a, b) => Number(getPrice(a) || 0) - Number(getPrice(b) || 0));
+        .filter((item: any) => getType(item) === ORDER_TYPES.BUY)
+        .sort((a: any, b: any) => Number(getPrice(a) || 0) - Number(getPrice(b) || 0));
 
-    const groups = [];
+    const groups: any[] = [];
     const maxLen = Math.max(sellItems.length, buyItems.length);
     for (let i = 0; i < maxLen; i++) {
-        const group = [];
+        const group: any[] = [];
         if (i < sellItems.length) group.push(sellItems[i]);
         if (i < buyItems.length) group.push(buyItems[i]);
         if (group.length > 0) groups.push(group);
@@ -620,7 +621,7 @@ function buildOutsideInPairGroups(items, { isValid = Boolean, getType, getPrice 
  * @param {Object|Array} result - Raw chain batch execution result.
  * @returns {Array} Array of operation result tuples, or empty array if unrecognized.
  */
-function extractBatchOperationResults(result) {
+function extractBatchOperationResults(result: any) {
     const ops = (
         (result && Array.isArray(result.operation_results) && result.operation_results) ||
         (result && result.raw && Array.isArray(result.raw.operation_results) && result.raw.operation_results) ||
@@ -637,7 +638,7 @@ function extractBatchOperationResults(result) {
  * @param {Object} order - Unmatched chain order or structural blocker.
  * @returns {string} Compact human-readable diagnostic.
  */
-function formatUnmatchedChainOrder(order) {
+function formatUnmatchedChainOrder(order: any) {
     if (!order) return 'unknown unmatched order';
     const parts = [
         `${order.chainOrderId || 'unknown'}:${order.type || 'unknown'}@${Format.formatPrice6(order.price)}`,
@@ -656,7 +657,7 @@ function formatUnmatchedChainOrder(order) {
  * @param {Object} order - Order to check
  * @returns {boolean} True if order has on-chain state
  */
-function isOrderOnChain(order) {
+function isOrderOnChain(order: any) {
     return (order?.state === ORDER_STATES.ACTIVE || order?.state === ORDER_STATES.PARTIAL) && !!order?.orderId;
 }
 
@@ -666,7 +667,7 @@ function isOrderOnChain(order) {
  * @param {Object} order - Order to check
  * @returns {boolean} True if order in VIRTUAL state
  */
-function isOrderVirtual(order) { return order?.state === ORDER_STATES.VIRTUAL; }
+function isOrderVirtual(order: any) { return order?.state === ORDER_STATES.VIRTUAL; }
 
 /**
  * Check if order has on-chain ID.
@@ -674,7 +675,7 @@ function isOrderVirtual(order) { return order?.state === ORDER_STATES.VIRTUAL; }
  * @param {Object} order - Order to check
  * @returns {boolean} True if order has orderId
  */
-function hasOnChainId(order) { return !!order?.orderId; }
+function hasOnChainId(order: any) { return !!order?.orderId; }
 
 /**
  * Check if order is placed and confirmed on blockchain.
@@ -683,7 +684,7 @@ function hasOnChainId(order) { return !!order?.orderId; }
  * @param {Object} order - Order to check
  * @returns {boolean} True if order is confirmed placed
  */
-function isOrderPlaced(order) { return isOrderOnChain(order) && hasOnChainId(order); }
+function isOrderPlaced(order: any) { return isOrderOnChain(order) && hasOnChainId(order); }
 
 /**
  * Check if order is phantom (on-chain but missing orderId).
@@ -692,7 +693,7 @@ function isOrderPlaced(order) { return isOrderOnChain(order) && hasOnChainId(ord
  * @param {Object} order - Order to check
  * @returns {boolean} True if order appears on-chain but has no ID
  */
-function isPhantomOrder(order) {
+function isPhantomOrder(order: any) {
     const inOnChainState = order?.state === ORDER_STATES.ACTIVE || order?.state === ORDER_STATES.PARTIAL;
     return inOnChainState && !hasOnChainId(order);
 }
@@ -704,7 +705,7 @@ function isPhantomOrder(order) {
  * @param {Object} order - Order/slot to check
  * @returns {boolean} True if slot available
  */
-function isSlotAvailable(order) { return isOrderVirtual(order) && !hasOnChainId(order); }
+function isSlotAvailable(order: any) { return isOrderVirtual(order) && !hasOnChainId(order); }
 
 /**
  * Check if order size meets health thresholds.
@@ -716,7 +717,7 @@ function isSlotAvailable(order) { return isOrderVirtual(order) && !hasOnChainId(
  * @param {number} idealSize - Ideal grid size for dust calculation
  * @returns {boolean} True if order is healthy
  */
-function isOrderHealthy(size, type, assets, idealSize) {
+function isOrderHealthy(size: any, type: any, assets: any, idealSize: any) {
     const numericSize = Number(size);
     const numericIdeal = Number(idealSize);
     if (!Number.isFinite(numericSize) || numericSize <= 0) return false;
@@ -742,12 +743,12 @@ function isOrderHealthy(size, type, assets, idealSize) {
  * @param {boolean} [includeNonFinite=false] - Treat non-finite values as below threshold
  * @returns {boolean} True if any size is below threshold
  */
-function checkSizeThreshold(sizes, threshold, precision, includeNonFinite = false) {
+function checkSizeThreshold(sizes: any, threshold: any, precision: any, includeNonFinite: any = false) {
     if (threshold <= 0 || !Array.isArray(sizes) || sizes.length === 0) return false;
     const precisionSlack = isValidNumber(precision)
         ? MathUtils.getPrecisionSlack(precision, 1)
         : Number.EPSILON;
-    return sizes.some(sz => {
+    return sizes.some((sz: any) => {
         if (!Number.isFinite(sz)) return includeNonFinite;
         if (sz <= 0) return false;
         if (isValidNumber(precision)) return floatToBlockchainInt(sz, precision) < floatToBlockchainInt(threshold, precision);
@@ -764,7 +765,7 @@ function checkSizeThreshold(sizes, threshold, precision, includeNonFinite = fals
  * @param {number} precision - Asset precision
  * @returns {boolean} True if any size is below minimum
  */
-function checkSizesBeforeMinimum(sizes, minSize, precision) {
+function checkSizesBeforeMinimum(sizes: any, minSize: any, precision: any) {
     return checkSizeThreshold(sizes, minSize, precision, true);
 }
 
@@ -777,9 +778,9 @@ function checkSizesBeforeMinimum(sizes, minSize, precision) {
  * @param {number} gapSlots - Number of gap slots between buy and sell
  * @returns {number} Ideal boundary index or -1 if slots empty
  */
-function calculateIdealBoundary(allSlots, referencePrice, gapSlots) {
+function calculateIdealBoundary(allSlots: any, referencePrice: any, gapSlots: any) {
     if (!allSlots || allSlots.length === 0) return -1;
-    let splitIdx = allSlots.findIndex(s => s.price >= referencePrice);
+    let splitIdx = allSlots.findIndex((s: any) => s.price >= referencePrice);
     if (splitIdx === -1) splitIdx = allSlots.length;
     const buySpread = Math.floor(gapSlots / 2);
     return Math.max(0, Math.min(allSlots.length - 1, splitIdx - buySpread - 1));
@@ -796,7 +797,7 @@ function calculateIdealBoundary(allSlots, referencePrice, gapSlots) {
  * @param {number} gapSlots - Number of gap slots between buy and sell
  * @returns {number} Fund-driven boundary index
  */
-function calculateFundDrivenBoundary(allSlots, availA, availB, price, gapSlots) {
+function calculateFundDrivenBoundary(allSlots: any, availA: any, availB: any, price: any, gapSlots: any) {
     const valA = toFiniteNumber(availA) * toFiniteNumber(price);
     const valB = toFiniteNumber(availB);
     const totalVal = valA + valB;
@@ -819,13 +820,13 @@ function calculateFundDrivenBoundary(allSlots, availA, availB, price, gapSlots) 
  * @param {boolean} [options.assignOnChain=false] - Override on-chain orders if true
  * @returns {Array<Object>} Slots with updated type assignments
  */
-function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_TYPES: any, ORDER_STATES: any, options: { assignOnChain?: boolean; getCurrentSlot?: (id: any) => any } = {}) {
+function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_TYPES: any, _ORDER_STATES: any, options: { assignOnChain?: boolean; getCurrentSlot?: (id: any) => any } = {}) {
     const assignOnChain = options.assignOnChain === true;
     const getCurrentSlot = (typeof options.getCurrentSlot === 'function') ? options.getCurrentSlot : null;
     const buyEndIdx = boundaryIdx;
     const sellStartIdx = boundaryIdx + gapSlots + 1;
 
-    return allSlots.map((slot, i) => {
+    return allSlots.map((slot: any, i: any) => {
         const liveSlot = getCurrentSlot ? (getCurrentSlot(slot.id) || slot) : slot;
         const canAssign = assignOnChain || !isOrderOnChain(liveSlot);
         if (canAssign) {
@@ -851,7 +852,7 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
  * @param {number} [incrementPercent=0.5] - Grid increment percentage
  * @returns {number} Excess steps (0 if in-spread, >0 if out-of-spread)
  */
-function shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, incrementPercent = 0.5) {
+function shouldFlagOutOfSpread(currentSpread: any, nominalSpread: any, toleranceSteps: any, buyCount: any, sellCount: any, incrementPercent: any = 0.5) {
     if (buyCount === 0 || sellCount === 0) {
         const step = 1 + (incrementPercent / 100);
         const gap = Math.ceil(Math.log(1 + (nominalSpread / 100)) / Math.log(step));
@@ -873,7 +874,7 @@ function shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buy
  * @param {Map} grid - Order grid
  * @returns {Object} - Index object with state and type indexes
  */
-function buildIndexes(grid) {
+function buildIndexes(grid: any) {
     const indexes = {
         [ORDER_STATES.VIRTUAL]: new Set(),
         [ORDER_STATES.ACTIVE]: new Set(),
@@ -884,8 +885,10 @@ function buildIndexes(grid) {
     };
 
     for (const order of grid.values()) {
-        if (indexes[order.state]) indexes[order.state].add(order.id);
-        if (indexes[order.type]) indexes[order.type].add(order.id);
+        const stateKey = order.state as string;
+        const typeKey = order.type as string;
+        if ((indexes as any)[stateKey]) (indexes as any)[stateKey].add(order.id);
+        if ((indexes as any)[typeKey]) (indexes as any)[typeKey].add(order.id);
     }
 
     return indexes;
@@ -897,12 +900,12 @@ function buildIndexes(grid) {
  * @param {Object} indexes - Index object
  * @returns {Object} - Validation result
  */
-function validateIndexes(grid, indexes) {
-    const errors = [];
+function validateIndexes(grid: any, indexes: any) {
+    const errors: string[] = [];
 
     for (const [id, order] of grid.entries()) {
-        const stateIndex = indexes[order.state];
-        const typeIndex = indexes[order.type];
+        const stateIndex = (indexes as any)[order.state];
+        const typeIndex = (indexes as any)[order.type];
 
         if (!stateIndex || !stateIndex.has(id)) {
             errors.push(`Order ${id} missing from state index ${order.state}`);
@@ -913,7 +916,7 @@ function validateIndexes(grid, indexes) {
     }
 
     for (const [key, indexSet] of Object.entries(indexes)) {
-        for (const id of (indexSet as Set<string>)) {
+        for (const id of (indexSet as any as Set<string>)) {
             if (!grid.has(id)) {
                 errors.push(`Orphaned index entry: ${key} has ${id} but not in grid`);
             }
@@ -937,7 +940,7 @@ function _getRelativeTolerance(configOverride?: Record<string, any>): number {
 }
 const ORDER_RELATIVE_TOLERANCE = _getRelativeTolerance();
 
-function getDecimalPlaces(value) {
+function getDecimalPlaces(value: any) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return 0;
 
@@ -954,21 +957,21 @@ function getDecimalPlaces(value) {
     return Math.max(0, mantissaDecimals - exponent);
 }
 
-function parseOptionalPrecision(value) {
+function parseOptionalPrecision(value: any) {
     if (value === null || value === undefined || value === '') return null;
     const numeric = Number(value);
     if (!Number.isFinite(numeric) || numeric < 0) return null;
     return numeric;
 }
 
-function precisionToQuantum(precision) {
+function precisionToQuantum(precision: any) {
     const p = parseOptionalPrecision(precision);
     if (p === null) return null;
     const quantum = Math.pow(10, -p);
     return quantum > 0 ? quantum : Number.EPSILON;
 }
 
-function observedQuantum(a, b) {
+function observedQuantum(a: any, b: any) {
     const maxDecimals = Math.max(getDecimalPlaces(a), getDecimalPlaces(b));
     if (maxDecimals <= 0) return Number.EPSILON;
     const quantum = Math.pow(10, -maxDecimals);
@@ -994,7 +997,7 @@ function resolvePriceTolerance(precisions: { priceRelativeTolerance?: number } =
     return scale * relativeToleranceRatio;
 }
 
-function nearlyEqualAbsolute(a, b, tolerance) {
+function nearlyEqualAbsolute(a: any, b: any, tolerance: any) {
     const left = Number(a);
     const right = Number(b);
 
@@ -1034,9 +1037,11 @@ function nearlyEqualRelative(a: any, b: any, options: { precision?: number } = {
  * @param {Object} order - Order object
  * @returns {number|null} - Size or null if not found
  */
-function getOrderSize(order) {
-    const size = toFiniteNumber(order?.size, null);
-    if (size !== null) return size;
+function getOrderSize(order: any): number | null {
+    const raw = order?.size;
+    if (raw != null && !(typeof raw === 'number' && !Number.isFinite(raw))) {
+        return toFiniteNumber(raw);
+    }
     return toFiniteNumber(order?.amount);
 }
 
@@ -1060,7 +1065,7 @@ function ordersEqual(a: any, b: any, options: { precisions?: { buyPrecision?: nu
            a.type === b.type &&
            a.state === b.state &&
            nearlyEqualAbsolute(a.price, b.price, priceTolerance) &&
-           nearlyEqualRelative(getOrderSize(a), getOrderSize(b), { precision: sizePrecision }) &&
+           nearlyEqualRelative(getOrderSize(a), getOrderSize(b), { precision: sizePrecision ?? undefined }) &&
            a.orderId === b.orderId &&
            a.gridIndex === b.gridIndex;
 }
@@ -1072,8 +1077,8 @@ function ordersEqual(a: any, b: any, options: { precisions?: { buyPrecision?: nu
  * @param {Object} [options={}] - Delta options forwarded to ordersEqual
  * @returns {Array} - Array of action objects
  */
-function buildDelta(masterGrid, workingGrid, options = {}) {
-    const actions = [];
+function buildDelta(masterGrid: any, workingGrid: any, options: any = {}) {
+    const actions: any[] = [];
 
     for (const [id, workingOrder] of workingGrid.entries()) {
         const masterOrder = masterGrid.get(id);
@@ -1122,7 +1127,7 @@ function buildDelta(masterGrid, workingGrid, options = {}) {
  * @param {number} gapSlots - Number of spread gap slots
  * @returns {number} New boundary index
  */
-function deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots) {
+function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any) {
     let newBoundaryIdx = currentBoundaryIdx;
 
     // Initial recovery if boundary is undefined
@@ -1161,7 +1166,7 @@ function deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSl
  * @param {number} totalFree - Total free balance across both sides
  * @returns {number} Budget adjusted for BTS fee reservation
  */
-function adjustBudgetForBtsFees(allocated, isBtsSide, formulaBudget, minBtsValue, btsFree, sideFree, totalFree) {
+function adjustBudgetForBtsFees(allocated: any, isBtsSide: any, formulaBudget: any, minBtsValue: any, btsFree: any, sideFree: any, totalFree: any) {
     if (allocated <= 0) return 0;
 
     if (isBtsSide) {
@@ -1187,7 +1192,7 @@ function adjustBudgetForBtsFees(allocated, isBtsSide, formulaBudget, minBtsValue
  * @param {number} totalTarget - Total target order count (used for BTS fee calculation on both sides)
  * @returns {number} Available budget for the side
  */
-function getSideBudget(side, funds, config, totalTarget) {
+function getSideBudget(side: any, funds: any, config: any, totalTarget: any) {
     const isBuy = side === 'buy';
     const allocated = isBuy ? (funds.allocatedBuy || 0) : (funds.allocatedSell || 0);
     if (allocated <= 0) return 0;
@@ -1231,7 +1236,7 @@ function getSideBudget(side, funds, config, totalTarget) {
  * @param {Object} assets - Asset metadata for precision
  * @returns {Array} Array of calculated sizes
  */
-function calculateBudgetedSizes(slots, side, budget, weightDist, incrementPercent, assets) {
+function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: any, incrementPercent: any, assets: any) {
     const isBuy = side === 'buy';
 
     let precision;
@@ -1257,43 +1262,5 @@ function calculateBudgetedSizes(slots, side, budget, weightDist, incrementPercen
     );
 }
 
-export = {
-    parseChainOrder,
-    findMatchingGridOrderByOpenOrder,
-    applyChainSizeToGridOrder,
-    buildFillKey,
-    correctOrderPriceOnChain,
-    correctAllPriceMismatches,
-    buildCreateOrderArgs,
-    getOrderTypeFromUpdatedFlags,
-    resolveConfiguredPriceBound,
-    virtualizeOrder,
-    convertToSpreadPlaceholder,
-    filterOrdersByType,
-    buildOutsideInPairGroups,
-    extractBatchOperationResults,
-    formatUnmatchedChainOrder,
-    isOrderOnChain,
-    isOrderVirtual,
-    hasOnChainId,
-    isOrderPlaced,
-    isPhantomOrder,
-    isSlotAvailable,
-    isOrderHealthy,
-    checkSizeThreshold,
-    checkSizesBeforeMinimum,
-    calculateIdealBoundary,
-    calculateFundDrivenBoundary,
-    assignGridRoles,
-    shouldFlagOutOfSpread,
-    buildIndexes,
-    validateIndexes,
-    ordersEqual,
-    buildDelta,
-    getOrderSize,
-    deriveTargetBoundary,
-    adjustBudgetForBtsFees,
-    getSideBudget,
-    calculateBudgetedSizes,
-    buildCreateOpFingerprint
-};
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
+

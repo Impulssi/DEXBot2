@@ -7,31 +7,21 @@
  * Keeps test dependencies centralized and explicit.
  */
 
-const {
+import {
     _resetCycleCache,
     writeCenterSnapshot,
     writeBotDynamicGrid,
     writeGridResetTrigger,
     sleepUntilAlignedBoundary,
     normalizeMarketSource,
-} = require('./market_adapter');
+} from './market_adapter.js';
 
-const {
+import {
     resolveAsset,
     findPoolByAssets,
     resolveBotContext,
     resolveMarketSourceForBot,
-} = require('./utils/chain');
+} from './utils/chain.js';
 
-export = {
-    _resetCycleCache,
-    writeCenterSnapshot,
-    writeBotDynamicGrid,
-    writeGridResetTrigger,
-    sleepUntilAlignedBoundary,
-    normalizeMarketSource,
-    resolveMarketSourceForBot,
-    resolveAsset,
-    findPoolByAssets,
-    resolveBotContext,
-};
+export { _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, sleepUntilAlignedBoundary, normalizeMarketSource, resolveMarketSourceForBot, resolveAsset, findPoolByAssets, resolveBotContext }
+

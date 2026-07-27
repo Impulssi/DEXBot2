@@ -46,15 +46,16 @@
  * ===============================================================================
  */
 
-const { OrderManager } = require('./manager');
 // Runner may contain I/O and larger logic; require lazily to avoid loading it
 // during small unit tests. Expose a lazy accessor instead.
-const math = require('./utils/math');
-const order = require('./utils/order');
-const system = require('./utils/system');
+
+import { OrderManager } from './manager';
+import * as math from './utils/math';
+import * as order from './utils/order';
+import * as system from './utils/system';
+import * as constants from '../constants';
+import * as grid from './grid';
 const utils = { ...math, ...order, ...system };
-const constants = require('../constants');
-const grid = require('./grid');
 
 let _logger: any;
 function getLogger(): any {
@@ -69,4 +70,6 @@ const _export: any = {
   grid,
 };
 Object.defineProperty(_export, 'logger', { get: getLogger, enumerable: true });
-export = _export;
+export default _export
+module.exports = _export
+

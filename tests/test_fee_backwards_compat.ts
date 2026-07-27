@@ -4,6 +4,7 @@
  */
 
 const assert = require('assert');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // Mock getAssetFees implementation
 const mockCachedFees = {
@@ -230,7 +231,7 @@ async function runTests() {
         console.log('\n✓ All fee backwards compatibility tests passed!');
         process.exit(0);
     } catch (err) {
-        console.error('\n✗ Test failed:', err.message);
+        console.error('\n✗ Test failed:', getErrorMessage(err));
         process.exit(1);
     }
 }

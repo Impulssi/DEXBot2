@@ -8,6 +8,7 @@
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');
 const Format = require('../modules/order/format');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const colors = {
     reset: '\x1b[0m',
@@ -68,7 +69,7 @@ async function debugOrderBook() {
                  });
              }
         } catch (err) {
-            console.log(`${colors.red}  Error: ${err.message}${colors.reset}`);
+            console.log(`${colors.red}  Error: ${getErrorMessage(err)}${colors.reset}`);
         }
         console.log();
 
@@ -90,7 +91,7 @@ async function debugOrderBook() {
                  });
              }
         } catch (err) {
-            console.log(`${colors.red}  Error: ${err.message}${colors.reset}`);
+            console.log(`${colors.red}  Error: ${getErrorMessage(err)}${colors.reset}`);
         }
         console.log();
 
@@ -102,7 +103,7 @@ async function debugOrderBook() {
             console.log(`  Latest price (alt): ${ticker.latest_price}`);
             console.log(`  Full ticker:`, JSON.stringify(ticker, null, 2));
         } catch (err) {
-            console.log(`${colors.red}  Error: ${err.message}${colors.reset}`);
+            console.log(`${colors.red}  Error: ${getErrorMessage(err)}${colors.reset}`);
         }
         console.log();
 
@@ -114,7 +115,7 @@ async function debugOrderBook() {
             console.log(`  Latest price (alt): ${ticker.latest_price}`);
             console.log(`  Full ticker:`, JSON.stringify(ticker, null, 2));
         } catch (err) {
-            console.log(`${colors.red}  Error: ${err.message}${colors.reset}`);
+            console.log(`${colors.red}  Error: ${getErrorMessage(err)}${colors.reset}`);
         }
         console.log();
 
@@ -129,7 +130,7 @@ async function debugOrderBook() {
                 });
             }
         } catch (err) {
-            console.log(`${colors.red}  Error: ${err.message}${colors.reset}`);
+            console.log(`${colors.red}  Error: ${getErrorMessage(err)}${colors.reset}`);
         }
         console.log();
 
@@ -144,11 +145,11 @@ async function debugOrderBook() {
                 });
             }
         } catch (err) {
-            console.log(`${colors.red}  Error: ${err.message}${colors.reset}`);
+            console.log(`${colors.red}  Error: ${getErrorMessage(err)}${colors.reset}`);
         }
 
     } catch (err) {
-        console.error(`${colors.red}Fatal error: ${err.message}${colors.reset}`);
+        console.error(`${colors.red}Fatal error: ${getErrorMessage(err)}${colors.reset}`);
         process.exit(1);
     }
 }

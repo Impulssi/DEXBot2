@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-const { listClawCommandNames } = require('../modules/claw_catalog');
-const { describeRuntimeManifest, runClawCommand } = require('../modules/claw_bridge');
 
+
+import { listClawCommandNames } from '../modules/claw_catalog';
+import { describeRuntimeManifest, runClawCommand } from '../modules/claw_bridge';
 function parseJson(value: any, fieldName: any) {
   if (value === undefined || value === null || value === '') {
     return {};
@@ -132,7 +133,5 @@ if (require.main === module) {
   });
 }
 
-export = {
-  describeRuntimeManifest: describeScriptRuntimeManifest,
-  main
-};
+export { describeScriptRuntimeManifest as describeRuntimeManifest, main }
+

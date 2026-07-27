@@ -50,19 +50,20 @@
  * ===============================================================================
  */
 
-const { path } = require('./path_api');
-const { getStorage } = require('./storage');
+
+import { path } from './path_api';
+import { getStorage } from './storage';
+import { ORDER_TYPES, ORDER_STATES } from './constants';
+import { PATHS } from './paths';
+import AsyncLock from './order/async_lock';
+import { isPhantomOrder } from './order/utils/order';
+import * as Format from './order/format';
+import { ensureDir } from './order/utils/system';
+import Logger from './logger';
 const storage = getStorage();
-const { ORDER_TYPES, ORDER_STATES } = require('./constants');
-const { PATHS } = require('./paths');
-const AsyncLock = require('./order/async_lock');
-const { isPhantomOrder } = require('./order/utils/order');
-const Format = require('./order/format');
 const { toFiniteNumber } = Format;
 
-const { ensureDir } = require('./order/utils/system');
 
-const Logger = require('./logger');
 const accountOrdersLogger = new Logger('AccountOrders');
 
 /**
@@ -70,7 +71,7 @@ const accountOrdersLogger = new Logger('AccountOrders');
  * @param {string} filePath - The file path to check.
  * @private
  */
-function ensureDirExists(filePath) {
+function ensureDirExists(filePath: any) {
   ensureDir(path.dirname(filePath));
 }
 
@@ -80,7 +81,7 @@ function ensureDirExists(filePath) {
  * @returns {string} The sanitized string.
  * @private
  */
-function sanitizeKey(source) {
+function sanitizeKey(source: any) {
   if (!source) return 'bot';
   return String(source)
     .trim()
@@ -98,7 +99,7 @@ function sanitizeKey(source) {
  * @param {number} index - Index in bots array (used for unnamed fallback)
  * @returns {string} Sanitized key
  */
-function createBotKey(bot, index) {
+function createBotKey(bot: any, index: any) {
   if (bot && bot.name) {
     return sanitizeKey(bot.name);
   }
@@ -121,30 +122,30 @@ function nowIso() {
 
 const SENSITIVE_KEY_PATTERN = /(private|secret|password|credential|wif|token|hmac|memo)/i;
 
-function cloneForDebug(value, seen = new WeakSet()) {
+function cloneForDebug(value: any, seen: any = new WeakSet()): any {
   if (typeof value === 'bigint') return value.toString();
   if (value === null || typeof value !== 'object') return value;
   if (seen.has(value)) return '[Circular]';
   if (value instanceof Map) {
     seen.add(value);
-    return Object.fromEntries(Array.from(value.entries(), ([key, item]) => [
+    return Object.fromEntries(Array.from(value.entries(), ([key, item]: any) => [
       key,
       SENSITIVE_KEY_PATTERN.test(String(key)) ? '[REDACTED]' : cloneForDebug(item, seen)
     ]));
   }
   if (value instanceof Set) {
     seen.add(value);
-    return Array.from(value.values(), item => cloneForDebug(item, seen));
+    return Array.from(value.values(), (item: any) => cloneForDebug(item, seen));
   }
   if (value instanceof Date) return value.toISOString();
 
   seen.add(value);
 
   if (Array.isArray(value)) {
-    return value.map(item => cloneForDebug(item, seen));
+    return value.map((item: any) => cloneForDebug(item, seen));
   }
 
-  const result = {};
+  const result: Record<string, any> = {};
   for (const [key, item] of Object.entries(value)) {
     if (typeof item === 'function') continue;
     result[key] = SENSITIVE_KEY_PATTERN.test(key) ? '[REDACTED]' : cloneForDebug(item, seen);
@@ -260,7 +261,7 @@ class AccountOrders {
     const matching = bots[this.botKey];
     if (matching && typeof matching === 'object' && !Array.isArray(matching)) {
       this.data = { ...emptyData(), ...matching };
-      const orphans = keys.filter((k) => k !== this.botKey);
+      const orphans = keys.filter((k: any) => k !== this.botKey);
       if (orphans.length > 0) {
         accountOrdersLogger.warn(
           `Discarded ${orphans.length} orphan bot entr${orphans.length === 1 ? 'y' : 'ies'} ` +
@@ -273,7 +274,7 @@ class AccountOrders {
 
     // No usable entry for this bot. Pick the first object-valued entry, or
     // start fresh if every value is corrupt (array / primitive / null).
-    const fallbackKey = keys.find((k) => {
+    const fallbackKey = keys.find((k: any) => {
       const v = bots[k];
       return v && typeof v === 'object' && !Array.isArray(v);
     });
@@ -300,7 +301,7 @@ class AccountOrders {
    * @returns {Object|null} The parsed object or null on failure.
    * @private
    */
-  _readFile(filePath) {
+  _readFile(filePath: any) {
     try {
       const parsed = storage.readJSON(filePath);
       if (typeof parsed === 'object' && parsed !== null) return parsed;
@@ -407,7 +408,7 @@ class AccountOrders {
       // Reload from disk before writing to prevent race conditions
       this.data = this._loadData() || emptyData();
 
-      const snapshot = Array.isArray(orders) ? orders.map(order => this._serializeOrder(order)) : [];
+      const snapshot = Array.isArray(orders) ? orders.map((order: any) => this._serializeOrder(order)) : [];
       const debugSnapshot = debugInputs ? cloneForDebug(debugInputs) : null;
 
       this.data.grid = snapshot;
@@ -595,8 +596,8 @@ class AccountOrders {
 
     if (this.data) {
       const fills = this.data.processedFills || {};
-      const entries = Object.entries(fills).filter(([, timestamp]) =>
-        minTimestamp === null || (Number.isFinite(timestamp) && (timestamp as number) >= minTimestamp)
+      const entries = Object.entries(fills).filter(([, timestamp]: any) =>
+        minTimestamp == null || (Number.isFinite(timestamp) && (timestamp as number) >= minTimestamp!)
       );
       return new Map(entries);
     }
@@ -735,7 +736,5 @@ class AccountOrders {
   }
 }
 
-export = {
-  AccountOrders,
-  createBotKey
-};
+export { AccountOrders, createBotKey }
+

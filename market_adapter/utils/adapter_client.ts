@@ -1,3 +1,6 @@
+
+import { NODE_MANAGEMENT, TIMING } from '../../modules/constants';
+import { createReadOnlyClient } from '../../modules/bitshares-native';
 'use strict';
 
 /**
@@ -16,13 +19,11 @@
  *   getConnectionStatus()   — 'open' | 'closed'
  */
 
-const { NODE_MANAGEMENT, TIMING } = require('../../modules/constants');
 
 let _nativeClient: any = null;
 
 function _getClient() {
     if (!_nativeClient) {
-        const { createReadOnlyClient } = require('../../modules/bitshares-native');
         _nativeClient = createReadOnlyClient({
             rpcTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
             connectTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
@@ -83,12 +84,5 @@ function _resetForTests() {
     }
 }
 
-export = {
-    BitShares,
-    connectClient,
-    disconnectClient,
-    isConnected,
-    getNodeUrl,
-    getConnectionStatus,
-    _resetForTests,
-};
+export { BitShares, connectClient, disconnectClient, isConnected, getNodeUrl, getConnectionStatus, _resetForTests }
+

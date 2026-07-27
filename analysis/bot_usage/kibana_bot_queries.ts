@@ -33,10 +33,10 @@
  *     op_object.order                     — the order ID cancelled
  */
 
-'use strict';
 
-const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = require('../../market_adapter/core/kibana_client');
-const { toIntervalLabel } = require('../../market_adapter/interval_utils');
+import { toIntervalLabel } from '../../market_adapter/interval_utils';
+import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from '../../market_adapter/core/kibana_client';
+'use strict';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -423,38 +423,5 @@ function buildTopFilledAccountsQuery(lookbackHours, topN = 100, minFills = 3) {
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-export = {
-    // Constants
-    OP_LIMIT_ORDER_CREATE,
-    OP_LIMIT_ORDER_CANCEL,
-    OP_FILL_ORDER,
-    DEFAULT_CONFIG,
+export { OP_LIMIT_ORDER_CREATE, OP_LIMIT_ORDER_CANCEL, OP_FILL_ORDER, DEFAULT_CONFIG, kibanaSearch, buildOrderCreateQuery, buildFillOrderQuery, buildOrderCancelQuery, buildDailyActivityQuery, buildAssetDiscoveryQuery, buildOrderPriceQuery, buildFillPriceQuery, fetchOrderCreate, fetchFillOrder, fetchOrderCancel, fetchOrderPrices, fetchFillPrices, fetchDailyActivity, fetchAssetDiscovery, buildTopSellerAccountsQuery, buildTopCancellerAccountsQuery, buildTopFilledAccountsQuery }
 
-    // HTTP client
-    kibanaSearch,
-
-    // Query builders (aggregations)
-    buildOrderCreateQuery,
-    buildFillOrderQuery,
-    buildOrderCancelQuery,
-    buildDailyActivityQuery,
-    buildAssetDiscoveryQuery,
-
-    // Query builders (raw docs)
-    buildOrderPriceQuery,
-    buildFillPriceQuery,
-
-    // Fetch helpers
-    fetchOrderCreate,
-    fetchFillOrder,
-    fetchOrderCancel,
-    fetchOrderPrices,
-    fetchFillPrices,
-    fetchDailyActivity,
-    fetchAssetDiscovery,
-
-    // Discovery
-    buildTopSellerAccountsQuery,
-    buildTopCancellerAccountsQuery,
-    buildTopFilledAccountsQuery,
-};

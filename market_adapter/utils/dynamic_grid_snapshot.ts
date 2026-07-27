@@ -1,9 +1,10 @@
+
+import { path } from '../../modules/path_api';
+import { writeJsonAtomic } from './atomic_write';
+import { acquirePathLockSync, releaseFileLockSync } from './file_lock';
+import { ensureDir, readJSON } from '../../modules/utils/fs_utils';
 'use strict';
 
-const { path } = require('../../modules/path_api');
-const { writeJsonAtomic } = require('./atomic_write');
-const { acquirePathLockSync, releaseFileLockSync } = require('./file_lock');
-const { ensureDir, readJSON } = require('../../modules/utils/fs_utils');
 
 function readJsonOrNull(filePath: any) {
     try {
@@ -58,8 +59,5 @@ function updateDynamicGridSnapshotSync(filePath: any, mutator: any, options: any
     }
 }
 
-export = {
-    readJsonOrNull,
-    writeJsonAtomicSync,
-    updateDynamicGridSnapshotSync,
-};
+export { readJsonOrNull, writeJsonAtomicSync, updateDynamicGridSnapshotSync }
+

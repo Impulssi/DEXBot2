@@ -1,28 +1,27 @@
+
+import fs from 'node:fs';
+import { spawn } from 'node:child_process';
+import { MARKET_ADAPTER } from '../constants';
+import { Config } from '../config';
+import { PATHS } from '../paths';
+import { isLikelyMarketAdapterProcess, isLockStale } from './market_adapter_runtime';
+import { readJSON, safeUnlink } from '../utils/fs_utils';
+import { readProcMemMB, readProcUptime } from './status_reporting';
+import { getActiveAmaBotFingerprint } from './monolithic_runtime';
 'use strict';
 
-const fs = require('fs');
-const { spawn } = require('child_process');
-const { MARKET_ADAPTER } = require('../constants');
-const { buildRuntimeScriptArgs, SCRIPTS_ROOT: DEFAULT_CODE_ROOT } = require('./runtime_entry');
-const { Config } = require('../config');
-const { PATHS } = require('../paths');
-const { isLikelyMarketAdapterProcess, isLockStale } = require('./market_adapter_runtime');
-const { readJSON, safeUnlink } = require('../utils/fs_utils');
-const { readProcMemMB, readProcUptime } = require('./status_reporting');
-const { getActiveAmaBotFingerprint } = require('./monolithic_runtime');
+import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
 
 function createMarketAdapterWatchdog({
     codeRoot = DEFAULT_CODE_ROOT,
     root = PATHS.PROJECT_ROOT,
-    logsDir = PATHS.LOGS_DIR,
     lockFile = PATHS.MARKET_ADAPTER.LOCK_FILE,
     botsFile = PATHS.PROFILES.BOTS_JSON,
-    log = console.log,
     logWarn = console.warn,
     logError = console.error,
-} = {}) {
-    let _watchdogTimer = null;
-    let _child = null;
+}: any = {}) {
+    let _watchdogTimer: any = null;
+    let _child: any = null;
     let _childStartedAt = 0;
     let _restartCount = 0;
     let _restartExhaustedAt = 0;
@@ -67,10 +66,10 @@ function createMarketAdapterWatchdog({
             _child.kill('SIGTERM');
         } catch (_) {}
         const exited = await Promise.race([
-            new Promise((resolve) => {
+            new Promise((resolve: any) => {
                 _child.once('close', () => resolve(true));
             }),
-            new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+            new Promise((resolve: any) => setTimeout(() => resolve(false), 5000)),
         ]);
         if (!exited && _child && _child.exitCode == null) {
             try {
@@ -82,14 +81,14 @@ function createMarketAdapterWatchdog({
         safeUnlink(lockFile)
     }
 
-    function spawnChild(errorLog) {
+    function spawnChild(errorLog: any) {
         const args = buildRuntimeScriptArgs({ codeRoot, scriptSegments: ['market_adapter', 'market_adapter'] });
         const child = spawn(Config.EXEC_PATH, args, {
             cwd: root,
             env: process.env,
             stdio: ['ignore', 'ignore', 'pipe'],
         });
-        const childLogStreams = [];
+        const childLogStreams: any[] = [];
         if (child.stderr) {
             const errStream = fs.createWriteStream(errorLog, { flags: 'a' });
             childLogStreams.push(errStream);
@@ -139,7 +138,7 @@ function createMarketAdapterWatchdog({
         return !!(status.pid && status.alive);
     }
 
-    function schedule(errorLog) {
+    function schedule(errorLog: any) {
         clearTimer();
 
         const tick = () => {
@@ -201,16 +200,16 @@ function createMarketAdapterWatchdog({
                 logWarn(`[market-adapter-watchdog] spawning market adapter (attempt ${_restartCount}/${MARKET_ADAPTER.WATCHDOG_DEFAULTS.maxRestarts})`);
                 try {
                     spawnChild(errorLog);
-                } catch (err) {
+                } catch (err: any) {
                     logError(`[market-adapter-watchdog] spawn failed: ${err.message}`);
                 }
-            } catch (err) {
+            } catch (err: any) {
                 logWarn(`[market-adapter-watchdog] tick error: ${err.message}`);
             }
         };
 
         _watchdogTimer = setInterval(tick, MARKET_ADAPTER.WATCHDOG_DEFAULTS.intervalMs);
-        if (_watchdogTimer && typeof _watchdogTimer.unref === 'function') {
+        if (_watchdogTimer && typeof (_watchdogTimer as any).unref === 'function') {
             _watchdogTimer.unref();
         }
 
@@ -235,6 +234,5 @@ function createMarketAdapterWatchdog({
     };
 }
 
-export = {
-    createMarketAdapterWatchdog,
-};
+export { createMarketAdapterWatchdog }
+

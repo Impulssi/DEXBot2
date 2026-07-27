@@ -1,3 +1,5 @@
+
+import { blockchainToFloat } from '../../modules/order/utils/math';
 'use strict';
 
 /**
@@ -8,7 +10,6 @@
  * the raw object format with key.base / key.quote / open_base / etc.
  */
 
-const { blockchainToFloat } = require('../../modules/order/utils/math');
 
 function parseNativeMarketHistoryTimestamp(entry: any) {
     const candidates = [
@@ -109,7 +110,7 @@ function resolveNativeMarketHistoryVolume(entry: any, field: any, assetA: any, a
     return Number.NaN;
 }
 
-function normalizeNativeMarketHistoryCandles(history: any, assetA: any, assetB: any, intervalSeconds: any) {
+function normalizeNativeMarketHistoryCandles(history: any, assetA: any, assetB: any, _intervalSeconds: any) {
     const source = Array.isArray(history)
         ? history
         : Array.isArray(history?.buckets)
@@ -140,7 +141,7 @@ function normalizeNativeMarketHistoryCandles(history: any, assetA: any, assetB: 
             .sort((a: any, b: any) => a[0] - b[0]);
     }
 
-    const candles = [];
+    const candles: any[] = [];
     for (const entry of source) {
         if (!entry || typeof entry !== 'object') continue;
         const tsMs = parseNativeMarketHistoryTimestamp(entry);
@@ -173,13 +174,8 @@ function normalizeNativeMarketHistoryCandles(history: any, assetA: any, assetB: 
         candles.push([tsMs, open, high, low, close, Number.isFinite(volume) ? volume : 0]);
     }
 
-    return candles.sort((a, b) => a[0] - b[0]);
+    return (candles as any[]).sort((a: any, b: any) => a[0] - b[0]);
 }
 
-export = {
-    parseNativeMarketHistoryTimestamp,
-    resolvePairOrientation,
-    resolveNativeMarketHistoryRatio,
-    resolveNativeMarketHistoryVolume,
-    normalizeNativeMarketHistoryCandles,
-};
+export { parseNativeMarketHistoryTimestamp, resolvePairOrientation, resolveNativeMarketHistoryRatio, resolveNativeMarketHistoryVolume, normalizeNativeMarketHistoryCandles }
+

@@ -1,15 +1,16 @@
+
+import { HurstAnalyzer } from '../../../analysis/trend_detection/hurst_analyzer';
+import { PermutationEntropyAnalyzer } from '../../../analysis/trend_detection/permutation_entropy_analyzer';
+import { MARKET_ADAPTER } from '../../../modules/constants';
+import { roundTo } from '../../../modules/utils/math_utils';
 'use strict';
 
-const { HurstAnalyzer } = require('../../../analysis/trend_detection/hurst_analyzer');
-const { PermutationEntropyAnalyzer } = require('../../../analysis/trend_detection/permutation_entropy_analyzer');
-const { MARKET_ADAPTER } = require('../../../modules/constants');
-const { roundTo } = require('../../../modules/utils/math_utils');
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
 const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
 
 function resolveHNodes(hurstZoneBand = null) {
     const band = Number.isFinite(hurstZoneBand) ? hurstZoneBand : MARKET_ADAPTER.HURST_ZONE_BAND;
-    return [0.5 + band, 0.5, 0.5 - band];
+    return [0.5 + band!, 0.5, 0.5 - band!];
 }
 
 function resolvePeNodes(peNodes: any = null) {
@@ -133,8 +134,8 @@ function computeRegimeMultiplier(closes: any, opts: any = {}) {
     const hurst = new HurstAnalyzer(hurstCfg);
     const pe    = new PermutationEntropyAnalyzer(peCfg);
 
-    let hurstResult = null;
-    let peResult    = null;
+    let hurstResult: any = null;
+    let peResult: any    = null;
     const series = new Array(closes.length).fill(1.0);
 
     for (let i = 0; i < closes.length; i++) {
@@ -176,11 +177,5 @@ function computeRegimeMultiplier(closes: any, opts: any = {}) {
     };
 }
 
-export = {
-    computeRegimeMultiplier,
-    bilinearInterpolate,
-    classifyHurstRegime,
-    classifyPeRegime,
-    resolveHNodes,
-    resolvePeNodes,
-};
+export { computeRegimeMultiplier, bilinearInterpolate, classifyHurstRegime, classifyPeRegime, resolveHNodes, resolvePeNodes }
+

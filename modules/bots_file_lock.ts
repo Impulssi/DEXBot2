@@ -39,7 +39,8 @@
  * ===============================================================================
  */
 
-const { getStorage } = require('./storage');
+
+import { getStorage } from './storage';
 const storage = getStorage();
 
 /**
@@ -49,7 +50,7 @@ const storage = getStorage();
  * @param {string} targetPath - Path of the final JSON file.
  * @param {*} data - Anything `JSON.stringify` accepts.
  */
-function writeJsonFileAtomic(targetPath, data) {
+function writeJsonFileAtomic(targetPath: any, data: any) {
     storage.writeJSON(targetPath, data);
 }
 
@@ -74,7 +75,7 @@ class FileLock {
             return;
         }
 
-        await new Promise<void>(resolve => {
+        await new Promise<void>((resolve: any) => {
             this.queue.push(resolve);
         });
     }
@@ -102,7 +103,7 @@ const botsFileLock = new FileLock();
  * @returns {Promise<{content: string, config: Object}>} File content and parsed config
  * @throws {Error} If file doesn't exist or JSON is invalid
  */
-async function readBotsFileWithLock(botsJsonPath, parseFunction) {
+async function readBotsFileWithLock(botsJsonPath: any, parseFunction: any) {
     await botsFileLock.acquire();
     try {
         if (!storage.exists(botsJsonPath)) {
@@ -128,7 +129,7 @@ async function readBotsFileWithLock(botsJsonPath, parseFunction) {
  * @returns {Promise<void>}
  * @throws {Error} If write fails
  */
-async function writeBotsFileWithLock(botsJsonPath, config) {
+async function writeBotsFileWithLock(botsJsonPath: any, config: any) {
     await botsFileLock.acquire();
     try {
         // Atomic write prevents readers (in this process or another) from
@@ -150,7 +151,7 @@ async function writeBotsFileWithLock(botsJsonPath, config) {
  * @returns {{content: string, config: Object}} File content and parsed config
  * @throws {Error} If file doesn't exist or JSON is invalid
  */
-function readBotsFileSync(botsJsonPath, parseFunction) {
+function readBotsFileSync(botsJsonPath: any, parseFunction: any) {
     if (!storage.exists(botsJsonPath)) {
         throw new Error(`bots.json not found at ${botsJsonPath}`);
     }
@@ -164,9 +165,5 @@ function readBotsFileSync(botsJsonPath, parseFunction) {
     return { content, config };
 }
 
-export = {
-    readBotsFileWithLock,
-    writeBotsFileWithLock,
-    readBotsFileSync,
-    writeJsonFileAtomic,
-};
+export { readBotsFileWithLock, writeBotsFileWithLock, readBotsFileSync, writeJsonFileAtomic }
+

@@ -113,7 +113,7 @@ async function runTests() {
             sell_price: { base: { amount: 100, asset_id: '1.3.1' }, quote: { amount: 10001, asset_id: '1.3.0' } },
             for_sale: 10000000000
         }];
-        const result = await manager.sync.syncFromOpenOrders(chainOrders);
+        await manager.sync.syncFromOpenOrders(chainOrders);
         const synced = manager.orders.get('t-1');
         assert(synced !== undefined, 'Should match within tolerance');
     }
@@ -237,14 +237,13 @@ async function runTests() {
         const adoptedId = slotA.orderId || slotB.orderId;
 
         assert.ok(adoptedId, 'One of the two VIRTUAL slots must have adopted an orphan');
-        const adopted = slotA.orderId ? slotA : slotB;
-        const untouched = slotA.orderId ? slotB : slotA;
+        const _untouched = slotA.orderId ? slotB : slotA;
         assert.strictEqual(
             (slotA.orderId ? 1 : 0) + (slotB.orderId ? 1 : 0), 1,
             'Only one of the two VIRTUAL slots should have an orderId'
         );
-        assert.strictEqual(untouched.orderId, null, 'The second slot must remain VIRTUAL (no adoption)');
-        assert.strictEqual(untouched.state, ORDER_STATES.VIRTUAL, 'The second slot must retain VIRTUAL state');
+        assert.strictEqual(_untouched.orderId, null, 'The second slot must remain VIRTUAL (no adoption)');
+        assert.strictEqual(_untouched.state, ORDER_STATES.VIRTUAL, 'The second slot must retain VIRTUAL state');
         assert.ok(
             result.unmatchedChainOrders.some(u =>
                 u.chainOrderId === 'c-orphan-b' && u.reason === 'duplicate-price-level'

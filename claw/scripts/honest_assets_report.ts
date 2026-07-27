@@ -1,12 +1,5 @@
-const {
-  getAsset,
-  getBackingAsset,
-  getBitassetData,
-  getCallOrders,
-  getDynamicGlobalProperties,
-  listAssets
-} = require('../modules/chain_queries');
-const { getHardcodedHonestMoneyBridge } = require('../modules/honest_ecosystem');
+import { getAsset, getBackingAsset, getBitassetData, getCallOrders, getDynamicGlobalProperties, listAssets } from '../modules/chain_queries.js';
+import { getHardcodedHonestMoneyBridge } from '../modules/honest_ecosystem.js';
 
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_MAX_PAGES = 100;

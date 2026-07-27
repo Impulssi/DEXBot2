@@ -5,4 +5,5 @@ function clone(value: any) {
   return JSON.parse(JSON.stringify(value));
 }
 
-export = { clone };
+export { clone }
+

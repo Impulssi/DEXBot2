@@ -8,16 +8,12 @@
  * PositionManager state files. It sees what actually exists on-chain.
  */
 
+
+import { loadDexbotOrderUtils } from './dexbot_bridge';
+import { roundTo } from '../../modules/utils/math_utils';
 'use strict';
 
-const {
-  getAsset,
-  getBackingAsset,
-  getBitassetData,
-  getFullAccount,
-} = require('./chain_queries');
-const { loadDexbotOrderUtils } = require('./dexbot_bridge');
-const { roundTo } = require('../../modules/utils/math_utils');
+import { getAsset, getBackingAsset, getBitassetData, getFullAccount } from './chain_queries.js';
 
 function getBlockchainToFloat() {
   return loadDexbotOrderUtils().blockchainToFloat;
@@ -163,8 +159,5 @@ async function discoverPositionsSummary(accountName: string) {
   };
 }
 
-export = {
-  discoverPositions,
-  discoverPositionsSummary,
-  normalizeCallOrder,
-};
+export { discoverPositions, discoverPositionsSummary, normalizeCallOrder }
+

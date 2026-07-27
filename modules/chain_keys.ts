@@ -82,7 +82,18 @@
  * ===============================================================================
  */
 
-const {
+
+import { path } from './path_api';
+import { readInput, readPassword, sleep } from './order/utils/system';
+import { TIMING, CREDENTIAL_PROMPTS } from './constants';
+import { PATHS } from './paths';
+import Logger from './logger';
+import { getStorage } from './storage';
+import { ensureDir } from './utils/fs_utils';
+import { resolvePrivateKey as resolveAuthKey } from './authority_resolver';
+import { Config } from './config';
+import * as base58check from './utils/base58check';
+import {
     randomBytes,
     hkdfSync,
     scryptSync,
@@ -90,9 +101,7 @@ const {
     timingSafeEqual,
     createCipheriv,
     createDecipheriv,
-} = require('./crypto/sync');
-const { path } = require('./path_api');
-const { readInput, readPassword, sleep } = require('./order/utils/system');
+} from './crypto/sync';
 
 let _net: any;
 function getNet(): any {
@@ -108,18 +117,12 @@ function getNet(): any {
     }
     return _net;
 }
-const { TIMING, CREDENTIAL_PROMPTS } = require('./constants');
-const { PATHS } = require('./paths');
-const {
+import {
     getCredentialReadyFilePath,
     getCredentialSocketPath,
     assertPrivatePathSecurity,
-} = require('./credential_runtime');
-const Logger = require('./logger');
-const { getStorage } = require('./storage');
+} from './credential_runtime';
 const storage = getStorage();
-const { ensureDir } = require('./utils/fs_utils');
-const { resolvePrivateKey: resolveAuthKey } = require('./authority_resolver');
 
 const chainKeysLogger = new Logger('chain-keys');
 
@@ -142,7 +145,6 @@ const VAULT_SECRET_KIND = 'dexbot-vault-secret';
 const VAULT_SESSION_SECRET_KIND = 'dexbot-session-secret';
 const VAULT_DAEMON_SIGNING_TOKEN_KIND = 'dexbot-daemon-signing-token';
 
-const { Config } = require('./config');
 
 // Profiles key file (ignored) only
 const PROFILES_KEYS_FILE = Config.DEXBOT_KEYS_FILE
@@ -168,11 +170,11 @@ function toBuffer(value: any, encoding: BufferEncoding = 'hex') {
     return null;
 }
 
-function isVaultSecret(value) {
+function isVaultSecret(value: any) {
     return !!(value && typeof value === 'object' && value.kind === VAULT_SECRET_KIND);
 }
 
-function resolveVaultKey(secret) {
+function resolveVaultKey(secret: any) {
     if (!secret) return null;
     if (Buffer.isBuffer(secret)) {
         return Buffer.from(secret);
@@ -201,7 +203,7 @@ function createVaultSecret(vaultKey: any, extra: Record<string, any> = {}) {
     };
 }
 
-function createSessionSecret(vaultKey, sessionSalt = randomBytes(VAULT_SALT_BYTES)) {
+function createSessionSecret(vaultKey: any, sessionSalt: any = randomBytes(VAULT_SALT_BYTES)) {
     const keyBuffer = resolveVaultKey(vaultKey);
     const saltBuffer = toBuffer(sessionSalt);
     if (!keyBuffer || !saltBuffer) {
@@ -234,16 +236,16 @@ function createDaemonSigningToken(accountName: string, options: Record<string, a
     };
 }
 
-function isDaemonSigningToken(value) {
+function isDaemonSigningToken(value: any) {
     return !!(value && typeof value === 'object' && value.kind === VAULT_DAEMON_SIGNING_TOKEN_KIND && typeof value.accountName === 'string');
 }
 
-function deriveVaultKey(password, vaultSalt) {
+function deriveVaultKey(password: any, vaultSalt: any) {
     const saltBuffer = toBuffer(vaultSalt) || randomBytes(VAULT_SALT_BYTES);
     return scryptSync(password, saltBuffer, VAULT_KEY_BYTES, VAULT_SCRYPT_PARAMS);
 }
 
-function deriveRecordKey(vaultKey, recordSalt) {
+function deriveRecordKey(vaultKey: any, recordSalt: any) {
     const keyBuffer = resolveVaultKey(vaultKey);
     const saltBuffer = toBuffer(recordSalt);
     if (!keyBuffer || !saltBuffer) {
@@ -252,7 +254,7 @@ function deriveRecordKey(vaultKey, recordSalt) {
     return Buffer.from(hkdfSync('sha256', keyBuffer, saltBuffer, VAULT_RECORD_INFO, VAULT_KEY_BYTES));
 }
 
-function createVaultVerifier(vaultKey) {
+function createVaultVerifier(vaultKey: any) {
     const keyBuffer = resolveVaultKey(vaultKey);
     if (!keyBuffer) {
         throw new Error('Vault key is required');
@@ -260,7 +262,7 @@ function createVaultVerifier(vaultKey) {
     return createHmac('sha256', keyBuffer).update(VAULT_VERIFIER_LABEL).digest('hex');
 }
 
-function timingSafeEqualHex(leftHex, rightHex) {
+function timingSafeEqualHex(leftHex: any, rightHex: any) {
     if (typeof leftHex !== 'string' || typeof rightHex !== 'string' || leftHex.length !== rightHex.length) {
         return false;
     }
@@ -286,7 +288,7 @@ function normalizeAccountsData(data: Record<string, any> = {}) {
     };
 }
 
-function hasModernVault(accountsData) {
+function hasModernVault(accountsData: any) {
     return !!(
         accountsData
         && accountsData.vaultVersion === VAULT_VERSION
@@ -297,7 +299,7 @@ function hasModernVault(accountsData) {
     );
 }
 
-function deriveModernSecretFromPassword(password, accountsData) {
+function deriveModernSecretFromPassword(password: any, accountsData: any) {
     if (!hasModernVault(accountsData)) {
         throw new Error('Vault metadata missing');
     }
@@ -306,7 +308,7 @@ function deriveModernSecretFromPassword(password, accountsData) {
     return createVaultSecret(vaultKey);
 }
 
-function verifyModernPassword(password, accountsData) {
+function verifyModernPassword(password: any, accountsData: any) {
     if (!hasModernVault(accountsData)) {
         return false;
     }
@@ -314,7 +316,7 @@ function verifyModernPassword(password, accountsData) {
     return timingSafeEqualHex(createVaultVerifier(secret), accountsData.vaultVerifier);
 }
 
-function isVersionedEncryptedPayload(encrypted) {
+function isVersionedEncryptedPayload(encrypted: any) {
     return String(encrypted || '').startsWith('v2:');
 }
 
@@ -324,7 +326,7 @@ function isVersionedEncryptedPayload(encrypted) {
  * @param {Object|Buffer} secret - Derived vault secret
  * @returns {string} Encrypted data as hex string
  */
-function encrypt(text, secret) {
+function encrypt(text: any, secret: any) {
     const vaultKey = resolveVaultKey(secret);
     if (!vaultKey) {
         throw new Error('A derived vault secret is required to encrypt v2 key data');
@@ -347,7 +349,7 @@ function encrypt(text, secret) {
  * @returns {string} Decrypted plain text
  * @throws {Error} If decryption fails (wrong password or corrupted data)
  */
-function decrypt(encrypted, secret) {
+function decrypt(encrypted: any, secret: any) {
     const parts = String(encrypted || '').split(':');
     if (parts.length < 4) {
         throw new Error('Invalid encrypted payload');
@@ -388,7 +390,6 @@ function decrypt(encrypted, secret) {
     return decrypted;
 }
 
-const base58check = require('./utils/base58check');
 
 /**
  * Validate a private key format.
@@ -396,12 +397,9 @@ const base58check = require('./utils/base58check');
  * @param {string} key - Private key to validate
  * @returns {Object} { valid: boolean, reason?: string }
  */
-function validatePrivateKey(key) {
+function validatePrivateKey(key: any) {
     if (!key || typeof key !== 'string') return { valid: false, reason: 'Empty key' };
     const k = key.trim();
-
-    // Basic characters allowed for base58-like / ASCII keys
-    const base58chars = /^[1-9A-HJ-NP-Za-km-z]+$/;
 
     // Strict WIF validation using base58check decode (verifies checksum & structure)
     try {
@@ -466,7 +464,7 @@ function loadAccounts() {
     }
 }
 
-function setupModernVault(accountsData, password) {
+function setupModernVault(accountsData: any, password: any) {
     const vaultSalt = randomBytes(VAULT_SALT_BYTES);
     const vaultKey = deriveVaultKey(password, vaultSalt);
     accountsData.vaultVersion = VAULT_VERSION;
@@ -494,8 +492,8 @@ function checkKeysFileSecurity() {
     } catch (err: any) {
         // Auto-remediate legacy 0o644 mode (the state per the security audit)
         const stat = storage.lstat(PROFILES_KEYS_FILE);
-        const mode = stat.mode & 0o777;
-        if (mode === 0o644 && !stat.isSymbolicLink()) {
+        const mode = stat.mode! & 0o777;
+        if (mode === 0o644 && !stat.isSymbolicLink!()) {
             storage.chmod(PROFILES_KEYS_FILE, 0o600);
             chainKeysLogger.warn(`[security] Auto-fixed ${PROFILES_KEYS_FILE} permissions from 0o644 to 0o600. Run: chmod 600 profiles/keys.json`);
             return;
@@ -515,7 +513,7 @@ function checkKeysFileSecurity() {
  * @throws {MasterPasswordError} If password is incorrect
  * @throws {Error} If vault format is unsupported
  */
-function unlockWithPassword(password, accountsData = loadAccounts()) {
+function unlockWithPassword(password: any, accountsData: any = loadAccounts()) {
     if (!hasModernVault(accountsData)) {
         if (Object.keys(accountsData.accounts || {}).length > 0) {
             throw new Error('Unsupported key vault format. Recreate profiles/keys.json with the current key manager.');
@@ -529,7 +527,7 @@ function unlockWithPassword(password, accountsData = loadAccounts()) {
     return deriveModernSecretFromPassword(password, accountsData);
 }
 
-function verifyCurrentPassword(password, accountsData) {
+function verifyCurrentPassword(password: any, accountsData: any) {
     return hasModernVault(accountsData) && verifyModernPassword(password, accountsData);
 }
 
@@ -548,7 +546,7 @@ class MasterPasswordError extends Error {
  * @param {Error} err - Error to check
  * @returns {boolean} True if the error indicates a master password failure
  */
-function isMasterPasswordFailure(err) {
+function isMasterPasswordFailure(err: any) {
     return !!(err && (err instanceof MasterPasswordError || err.code === MasterPasswordError.code));
 }
 
@@ -617,7 +615,7 @@ async function authenticate() {
  * @returns {string} Decrypted private key
  * @throws {Error} If account not found
  */
-function getPrivateKey(accountName, vaultSecret) {
+function getPrivateKey(accountName: any, vaultSecret: any) {
     const accountsData = loadAccounts();
     const account = accountsData.accounts[accountName];
     if (!account) {
@@ -641,10 +639,10 @@ function getPrivateKey(accountName, vaultSecret) {
  * @returns {Promise<string>} Private key WIF string
  * @throws {Error} If no key can be found through direct lookup or authority resolution
  */
-async function resolvePrivateKey(accountName, vaultSecret, chainClient) {
+async function resolvePrivateKey(accountName: any, vaultSecret: any, chainClient: any) {
     const pubKeyCache = new Map();
 
-    const tryGetKey = async (name) => {
+    const tryGetKey = async (name: any) => {
         try {
             return getPrivateKey(name, vaultSecret);
         } catch (e) {
@@ -668,13 +666,13 @@ async function resolvePrivateKey(accountName, vaultSecret, chainClient) {
  * @param {Object} accounts - Accounts object from loadAccounts()
  * @returns {Array<string>} Array of account names
  */
-function listKeyNames(accounts) {
+function listKeyNames(accounts: any) {
     if (!accounts || Object.keys(accounts).length === 0) {
         console.log('  (no accounts stored yet)');
         return [];
     }
     console.log('Stored keys:');
-    return Object.keys(accounts).map((name, index) => {
+    return Object.keys(accounts).map((name: any, index: any) => {
         console.log(`  ${index + 1}. ${name}`);
         return name;
     });
@@ -686,13 +684,13 @@ function listKeyNames(accounts) {
  * @param {string} promptText - The prompt message to display.
  * @returns {Promise<string|null>} The selected account name, or null/ESC.
  */
-async function selectKeyName(accounts, promptText) {
+async function selectKeyName(accounts: any, promptText: any) {
     const names = Object.keys(accounts);
     if (!names.length) {
         console.log('No accounts available to select.');
         return null;
     }
-    names.forEach((name, index) => console.log(`  ${index + 1}. ${name}`));
+    names.forEach((name: any, index: any) => console.log(`  ${index + 1}. ${name}`));
     const raw = (await readInput(`${promptText} [1-${names.length}]: `)).trim();
     if (raw === '\x1b') return '\x1b';
 
@@ -710,7 +708,7 @@ async function selectKeyName(accounts, promptText) {
  * @param {Object|Buffer|null} currentSecret - The current derived secret.
  * @returns {Promise<Object|Buffer|null>} The new vault secret, or the old one if failed/cancelled.
  */
-async function changeMasterPassword(accountsData, currentSecret) {
+async function changeMasterPassword(accountsData: any, currentSecret: any) {
     if (!hasModernVault(accountsData) && !accountsData.masterPasswordHash) {
         console.log('No master password is set yet.');
         return currentSecret;
@@ -774,7 +772,7 @@ async function changeMasterPassword(accountsData, currentSecret) {
  *
  * @param {Object} data - Accounts data to save
  */
-function saveAccounts(data) {
+function saveAccounts(data: any) {
     // Always save sensitive data to the live path (ignored by git)
     ensureProfilesKeysDirectory();
 
@@ -796,7 +794,7 @@ function saveAccounts(data) {
         delete serialized.vaultVerifier;
     }
     if (!hasModernVault(serialized)) {
-        delete serialized.vaultVersion;
+        delete (serialized as any).vaultVersion;
     }
 
     // Atomic write via unified StorageAdapter: tmp file with 0o600 + fsync,
@@ -814,7 +812,7 @@ async function main() {
     console.log('========================');
 
     let accountsData = loadAccounts();
-    let vaultSecret = null;
+    let vaultSecret: { kind: string; version: any; vaultKeyHex: string; } | null = null;
 
     // Check if master password is set
     if (!hasModernVault(accountsData)) {
@@ -949,7 +947,7 @@ async function main() {
  * @param {Object} [options={}] - Optional socket/ready-file path overrides
  * @returns {boolean} True if daemon socket is responsive
  */
-function isDaemonReady(options = {}) {
+function isDaemonReady(options: any = {}) {
     try {
         return storage.exists(getCredentialReadyFilePath(options)) && storage.exists(getCredentialSocketPath(options));
     } catch {
@@ -965,8 +963,8 @@ function isDaemonReady(options = {}) {
  * @param {number} timeout - Probe timeout in milliseconds (default 2000)
  * @returns {Promise<boolean>} True if the daemon accepts connections and replies
  */
-function isDaemonResponsive(options = {}, timeout = 2000) {
-    return new Promise((resolve) => {
+function isDaemonResponsive(options: any = {}, timeout: any = 2000) {
+    return new Promise((resolve: any) => {
         if (!isDaemonReady(options)) {
             return resolve(false);
         }
@@ -997,7 +995,7 @@ function isDaemonResponsive(options = {}, timeout = 2000) {
             socket.write('{}\n');
         });
 
-        socket.on('data', (data) => {
+        socket.on('data', (data: any) => {
             responseBuffer += data.toString();
             if (!settled && responseBuffer.trim().length > 0) {
                 settled = true;
@@ -1032,7 +1030,7 @@ function isDaemonResponsive(options = {}, timeout = 2000) {
  * @returns {Promise<void>} Resolves when daemon is ready
  * @throws {Error} If daemon doesn't start within timeout
  */
-async function waitForDaemon(maxWaitMs = TIMING.DAEMON_STARTUP_TIMEOUT_MS, options = {}) {
+async function waitForDaemon(maxWaitMs: any = TIMING.DAEMON_STARTUP_TIMEOUT_MS, options: any = {}) {
     const startTime = Date.now();
     const checkInterval = TIMING.CHECK_INTERVAL_MS; // Check every 100ms
 
@@ -1057,11 +1055,11 @@ async function waitForDaemon(maxWaitMs = TIMING.DAEMON_STARTUP_TIMEOUT_MS, optio
  * @param {function} extractResult - Callback: (response) => resolved value; throw to reject
  * @returns {Promise<*>} Resolved value from extractResult
  */
-function sendDaemonRequest(requestType, accountName, timeout = TIMING.DAEMON_PING_TIMEOUT_MS, options = {}, label = 'request', extractResult = null) {
+function sendDaemonRequest(requestType: any, accountName: any, timeout: any = TIMING.DAEMON_PING_TIMEOUT_MS, options: any = {}, label: any = 'request', extractResult: ((response: any) => any) | null = null) {
     const net = getNet();
     const socketPath = getCredentialSocketPath(options);
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve: any, reject: any) => {
         let settled = false;
         const socket = net.createConnection(socketPath, () => {
             socket.write(JSON.stringify({ type: requestType, accountName }) + '\n');
@@ -1073,10 +1071,10 @@ function sendDaemonRequest(requestType, accountName, timeout = TIMING.DAEMON_PIN
             if (!settled) { settled = true; reject(new Error(`Daemon ${label} timeout`)); }
         }, timeout);
 
-        socket.on('data', (data) => {
+        socket.on('data', (data: any) => {
             responseBuffer += data.toString();
             const lines = responseBuffer.split('\n');
-            responseBuffer = lines.pop();
+            responseBuffer = lines.pop() ?? '';
 
             for (const line of lines) {
                 if (line.trim()) {
@@ -1104,7 +1102,7 @@ function sendDaemonRequest(requestType, accountName, timeout = TIMING.DAEMON_PIN
             }
         });
 
-        socket.on('error', (error) => {
+        socket.on('error', (error: any) => {
             clearTimeout(timer);
             if (!settled) { settled = true; reject(new Error(`Daemon connection failed: ${error.message}`)); }
         });
@@ -1128,8 +1126,8 @@ function sendDaemonRequest(requestType, accountName, timeout = TIMING.DAEMON_PIN
  * @param {Object} options - Optional socket path overrides
  * @returns {Promise<boolean>} Resolves with true if daemon responds
  */
-function pingDaemon(accountName, timeout = TIMING.DAEMON_PING_TIMEOUT_MS, options = {}) {
-    return sendDaemonRequest('ping', accountName, timeout, options, 'ping', (response) => {
+function pingDaemon(accountName: any, timeout: any = TIMING.DAEMON_PING_TIMEOUT_MS, options: any = {}) {
+    return sendDaemonRequest('ping', accountName, timeout, options, 'ping', (response: any) => {
         if (response.success && response.pong) return true;
         throw new Error(response.error || 'Daemon ping failed');
     });
@@ -1142,36 +1140,13 @@ function pingDaemon(accountName, timeout = TIMING.DAEMON_PING_TIMEOUT_MS, option
  * @param {Object} options - Optional socket path overrides
  * @returns {Promise<string|null>} Resolves with sessionId if account is available, rejects otherwise
  */
-function probeAccountInDaemon(accountName, timeout = TIMING.DAEMON_PING_TIMEOUT_MS, options = {}) {
-    return sendDaemonRequest('probe-account', accountName, timeout, options, 'probe', (response) => {
+function probeAccountInDaemon(accountName: any, timeout: any = TIMING.DAEMON_PING_TIMEOUT_MS, options: any = {}) {
+    return sendDaemonRequest('probe-account', accountName, timeout, options, 'probe', (response: any) => {
         if (response.success) return response.sessionId || null;
         throw new Error(response.error || 'Daemon probe failed');
     });
 }
 
-export = {
-    validatePrivateKey,
-    loadAccounts,
-    saveAccounts,
-    checkKeysFileSecurity,
-    encrypt,
-    decrypt,
-    deriveVaultKey,
-    createDaemonSigningToken,
-    createSessionSecret,
-    createVaultSecret,
-    isVaultSecret,
-    isDaemonSigningToken,
-    unlockWithPassword,
-    main,
-    authenticate,
-    getPrivateKey,
-    resolvePrivateKey,
-    isMasterPasswordFailure,
-    MasterPasswordError,
-    isDaemonReady,
-    isDaemonResponsive,
-    waitForDaemon,
-    probeAccountInDaemon,
-    pingDaemon,
-};
+export { validatePrivateKey, loadAccounts, saveAccounts, checkKeysFileSecurity, encrypt, decrypt, deriveVaultKey, createDaemonSigningToken, createSessionSecret, createVaultSecret, isVaultSecret, isDaemonSigningToken, unlockWithPassword, main, authenticate, getPrivateKey, resolvePrivateKey, isMasterPasswordFailure, MasterPasswordError, isDaemonReady, isDaemonResponsive, waitForDaemon, probeAccountInDaemon, pingDaemon }
+module.exports = { validatePrivateKey, loadAccounts, saveAccounts, checkKeysFileSecurity, encrypt, decrypt, deriveVaultKey, createDaemonSigningToken, createSessionSecret, createVaultSecret, isVaultSecret, isDaemonSigningToken, unlockWithPassword, main, authenticate, getPrivateKey, resolvePrivateKey, isMasterPasswordFailure, MasterPasswordError, isDaemonReady, isDaemonResponsive, waitForDaemon, probeAccountInDaemon, pingDaemon }
+

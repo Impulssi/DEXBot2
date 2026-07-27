@@ -15,15 +15,16 @@
  *   tsx scripts/analyze-orders.ts --export     # standalone HTML report
  */
 
-const fs = require('fs');
-const path = require('path');
-const { formatPrice6 } = require('../modules/order/format');
-const { resolveConfiguredPriceBound } = require('../modules/order/utils/order');
-const { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } = require('../modules/constants');
-const { PATHS } = require('../modules/paths');
-const { getWhitelistFlags } = require('../modules/market_adapter_whitelist');
-const { readJSON } = require('../modules/utils/fs_utils');
 
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { formatPrice6 } from '../modules/order/format';
+import { resolveConfiguredPriceBound } from '../modules/order/utils/order';
+import { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } from '../modules/constants';
+import { PATHS } from '../modules/paths';
+import { getWhitelistFlags } from '../modules/market_adapter_whitelist';
+import { readJSON } from '../modules/utils/fs_utils';
 const ORDERS_DIR = PATHS.ORDERS_DIR;
 const BOTS_CONFIG = PATHS.PROFILES.BOTS_JSON;
 
@@ -65,7 +66,7 @@ const HEADER_WIDTH = 11 + BAR_WIDTH;
  * Helper functions for file I/O, formatting, and data retrieval
  */
 
-function sanitizeKey(source) {
+function sanitizeKey(source: string | null | undefined): string {
   if (!source) return 'bot';
   return String(source)
     .trim()
@@ -74,7 +75,7 @@ function sanitizeKey(source) {
     .replace(/^-+|-+$/g, '') || 'bot';
 }
 
-function createBotKey(bot, index) {
+function createBotKey(bot: Record<string, any> | null | undefined, index: number): string {
   if (bot && bot.name) {
     return sanitizeKey(bot.name);
   }
@@ -86,7 +87,7 @@ function createBotKey(bot, index) {
   return `${sanitizeKey(identifier)}-${index}`;
 }
 
-function hasOrderGrid(data) {
+function hasOrderGrid(data: any): boolean {
   return Boolean(
     data && typeof data === 'object' && !Array.isArray(data) &&
     data.meta && typeof data.meta === 'object' &&
@@ -101,12 +102,12 @@ function hasOrderGrid(data) {
  * analyzer only attempts to load a dynamic grid snapshot for AMA bots. Non-AMA
  * bots never have a meaningful dynamic grid file.
  */
-function isAmaGridPrice(config) {
+function isAmaGridPrice(config: any) {
   return resolveAmaKey(config) !== null;
 }
 
 // Mirrors MARKET_ADAPTER.DEFAULT_AMA_KEY in modules/constants.ts — keep in sync.
-function resolveAmaKey(config) {
+function resolveAmaKey(config: any): string | null {
   if (!config || typeof config !== 'object') return null;
   const gridPrice = typeof config.gridPrice === 'string' ? config.gridPrice.trim().toLowerCase() : '';
   if (!/^ama(?:[1-4])?$/.test(gridPrice)) return null;
@@ -114,7 +115,7 @@ function resolveAmaKey(config) {
   return gridPrice.toUpperCase();
 }
 
-function readDynamicGridSnapshot(botKey) {
+function readDynamicGridSnapshot(botKey: string): any {
   if (!botKey) return null;
   try {
     const filePath = path.join(ORDERS_DIR, `${botKey}.dynamicgrid.json`);
@@ -130,7 +131,7 @@ function readDynamicGridSnapshot(botKey) {
  * computeAsymmetricBoundsPrices: Mirror of applyAsymmetricBounds logic.
  * Computes the resolved min/max prices after grid range scaling adjustment.
  */
-function computeAsymmetricBoundsPrices(centerPrice, minPrice, maxPrice, trend, appliedAsymmetryFactor) {
+function computeAsymmetricBoundsPrices(centerPrice: number, minPrice: number, maxPrice: number, trend: string, appliedAsymmetryFactor: number): { resolvedMinPrice: number; resolvedMaxPrice: number } | null {
   if (!Number.isFinite(centerPrice) || centerPrice <= 0
     || !Number.isFinite(minPrice) || minPrice <= 0
     || !Number.isFinite(maxPrice) || maxPrice <= 0
@@ -159,7 +160,7 @@ function computeAsymmetricBoundsPrices(centerPrice, minPrice, maxPrice, trend, a
  * whitelisted and the snapshot contains effective weights. AMA center and
  * freshness status remain available for AMA-only bots.
  */
-function buildDynamicWeightInfo(botKey, config) {
+function buildDynamicWeightInfo(botKey: string, config: any): any {
   if (!isAmaGridPrice(config)) return null;
   const whitelistFlags = getWhitelistFlags(botKey);
   if (whitelistFlags.ama !== true) return null;
@@ -172,8 +173,8 @@ function buildDynamicWeightInfo(botKey, config) {
     && dw
     && dw.effectiveWeights
     && typeof dw.effectiveWeights === 'object';
-  let live = null;
-  let base = null;
+  let live: any = null;
+  let base: any = null;
   if (hasDynamicWeightData) {
     const effBuy = Number(dw.effectiveWeights.buy);
     const effSell = Number(dw.effectiveWeights.sell);
@@ -238,7 +239,7 @@ function buildDynamicWeightInfo(botKey, config) {
   };
 }
 
-function isRealGridOrder(order) {
+function isRealGridOrder(order: any): boolean {
   if (!order || typeof order !== 'object') return false;
   const hasRealState = order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL;
   const hasRealType = order.type === ORDER_TYPES.BUY || order.type === ORDER_TYPES.SELL;
@@ -250,7 +251,7 @@ function isRealGridOrder(order) {
     && Number(order.size) > 0;
 }
 
-function getRealGridOrders(botData) {
+function getRealGridOrders(botData: any): any[] {
   return Array.isArray(botData?.grid) ? botData.grid.filter(isRealGridOrder) : [];
 }
 
@@ -260,7 +261,7 @@ function getRealGridOrders(botData) {
  * @param {string} filePath - Path to file
  * @returns {Date} Modification time
  */
-function getModifiedTime(filePath) {
+function getModifiedTime(filePath: string): Date {
   return fs.statSync(filePath).mtime;
 }
 
@@ -270,7 +271,7 @@ function getModifiedTime(filePath) {
  * @param {number} value - Decimal value (0-1)
  * @returns {string} Formatted percentage with 2 decimal places
  */
-function formatPercent(value) {
+function formatPercent(value: number): string {
   return (value * 100).toFixed(2) + '%';
 }
 
@@ -280,7 +281,7 @@ function formatPercent(value) {
  * @param {number} value - Numeric value to format
  * @returns {string} Formatted currency/quantity string
  */
-function formatCurrency(value) {
+function formatCurrency(value: number): string {
   if (value === 0) return '0';
   const abs = Math.abs(value);
   if (abs < 0.1) {
@@ -294,7 +295,7 @@ function formatCurrency(value) {
   }
   let intDigits = Math.floor(Math.log10(abs)) + 1;
   if (abs < 1) intDigits = 1;
-  const formatted = intDigits >= 5
+  const formatted: string = intDigits >= 5
     ? String(Math.round(value))
     : value.toFixed(5 - intDigits);
   return intDigits >= 4
@@ -315,7 +316,7 @@ function formatCurrency(value) {
  * @param {number} value
  * @returns {string}
  */
-function formatFundsValue(value) {
+function formatFundsValue(value: number): string {
   if (value === 0) return '0';
   const absValue = Math.abs(value);
 
@@ -350,7 +351,7 @@ function formatFundsValue(value) {
  * @param {string} str - String that may contain color codes
  * @returns {string} String without color codes
  */
-function stripColorCodes(str) {
+function stripColorCodes(str: string): string {
   return str.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
@@ -361,26 +362,18 @@ function stripColorCodes(str) {
  * @param {number} width - Target visual width
  * @returns {string} Padded string with original colors preserved
  */
-function padStringCentered(str, width) {
-  const visualLen = stripColorCodes(str).length;
-  const totalPad = Math.max(0, width - visualLen);
-  const padLeft = Math.ceil(totalPad / 2);
-  const padRight = Math.floor(totalPad / 2);
-  return ' '.repeat(padLeft) + str + ' '.repeat(padRight);
-}
-
 // Load bot configurations
 const botsConfig = readJSON(BOTS_CONFIG).bots;
 
-function getConfiguredBotConfig(botKey, botData) {
+function getConfiguredBotConfig(botKey: string, botData: any): any {
   const meta = botData?.meta || {};
-  return botsConfig.find((bot, index) => {
+  return botsConfig.find((bot: any, index: any) => {
     if (!bot) return false;
     return createBotKey(bot, index) === botKey || (meta.name && bot.name === meta.name);
   }) || null;
 }
 
-function getOrderFileCandidate(fileName) {
+function getOrderFileCandidate(fileName: string): any {
   const filePath = path.join(ORDERS_DIR, fileName);
   if (!fileName.endsWith('.json')) {
     return { include: false, reason: 'not a JSON file', report: false };
@@ -392,7 +385,7 @@ function getOrderFileCandidate(fileName) {
   let data;
   try {
     data = readJSON(filePath);
-  } catch (error) {
+  } catch (error: any) {
     return { include: false, reason: `invalid JSON: ${error.message}`, report: true, name: fileName };
   }
 
@@ -421,16 +414,16 @@ function getOrderFileCandidate(fileName) {
 function getOrderFiles() {
   const candidates = fs.readdirSync(ORDERS_DIR).map(getOrderFileCandidate);
   const files = candidates
-    .filter(candidate => candidate.include)
-    .map(f => ({
+    .filter((candidate: any) => candidate.include)
+    .map((f: any) => ({
       ...f,
       mtime: getModifiedTime(f.path)
     }))
-    .sort((a, b) => b.mtime - a.mtime);
+    .sort((a: any, b: any) => b.mtime.getTime() - a.mtime.getTime());
 
   return {
     files,
-    skippedCandidates: candidates.filter(candidate => !candidate.include && candidate.report)
+    skippedCandidates: candidates.filter((candidate: any) => !candidate.include && candidate.report)
   };
 }
 
@@ -455,7 +448,7 @@ function getOrderFiles() {
  * @param {string} [botKey] - Bot key used to locate the dynamic grid snapshot
  * @returns {Object} Analysis result with spread, increment, funds, distribution
  */
-function analyzeOrder(botData, config, botKey) {
+function analyzeOrder(botData: any, config: any, botKey: string): any {
   const meta = botData.meta;
   const grid = botData.grid;
 
@@ -477,14 +470,14 @@ function analyzeOrder(botData, config, botKey) {
    * and optional spread slots. Separation enables independent analysis.
    */
   const boundaryIdx = botData.boundaryIdx;
-  const buySlots = grid.filter((s, i) => i <= boundaryIdx && s.type === ORDER_TYPES.BUY);
-  const sellSlots = grid.filter((s, i) => i > boundaryIdx && s.type === ORDER_TYPES.SELL);
-  const spreadSlots = grid.filter(s => s.type === ORDER_TYPES.SPREAD);
+  const buySlots = grid.filter((s: any, i: any) => i <= boundaryIdx && s.type === ORDER_TYPES.BUY);
+  const sellSlots = grid.filter((s: any, i: any) => i > boundaryIdx && s.type === ORDER_TYPES.SELL);
+  const spreadSlots = grid.filter((s: any) => s.type === ORDER_TYPES.SPREAD);
 
-  const activeBuySlots = buySlots.filter(s => s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL);
-  const virtualBuySlots = buySlots.filter(s => s.state === ORDER_STATES.VIRTUAL);
-  const activeSellSlots = sellSlots.filter(s => s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL);
-  const virtualSellSlots = sellSlots.filter(s => s.state === ORDER_STATES.VIRTUAL);
+  const activeBuySlots = buySlots.filter((s: any) => s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL);
+  const virtualBuySlots = buySlots.filter((s: any) => s.state === ORDER_STATES.VIRTUAL);
+  const activeSellSlots = sellSlots.filter((s: any) => s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL);
+  const virtualSellSlots = sellSlots.filter((s: any) => s.state === ORDER_STATES.VIRTUAL);
 
   /**
    * Best Prices Identification
@@ -493,7 +486,7 @@ function analyzeOrder(botData, config, botKey) {
    * The spread between these is the "real" spread of the grid
    */
   const bestBuySlot = grid[boundaryIdx];
-  const bestSellSlot = grid.slice(boundaryIdx + 1).find(s => s.type === ORDER_TYPES.SELL);
+  const bestSellSlot = grid.slice(boundaryIdx + 1).find((s: any) => s.type === ORDER_TYPES.SELL);
 
   /**
    * Real Spread Calculation
@@ -534,8 +527,8 @@ function analyzeOrder(botData, config, botKey) {
   const distribution = analyzeDistribution(buySlots, sellSlots, bestBuySlot, bestSellSlot);
 
   // Calculate grid extremes and market price
-  const gridMinPrice = grid.length > 0 ? Math.min(...grid.map(s => s.price)) : null;
-  const gridMaxPrice = grid.length > 0 ? Math.max(...grid.map(s => s.price)) : null;
+  const gridMinPrice = grid.length > 0 ? Math.min(...grid.map((s: any) => s.price)) : null;
+  const gridMaxPrice = grid.length > 0 ? Math.max(...grid.map((s: any) => s.price)) : null;
   const marketPrice = bestBuySlot && bestSellSlot
     ? (bestBuySlot.price + bestSellSlot.price) / 2
     : null;
@@ -546,8 +539,8 @@ function analyzeOrder(botData, config, botKey) {
    */
   const _dynamicWeight = buildDynamicWeightInfo(botKey, config);
   const _ab = computeGridRangeScalingDisplay(config, _dynamicWeight);
-  let gridPriceValue = null;
-  let gridPriceLabel = null;
+  let gridPriceValue: any = null;
+  let gridPriceLabel: any = null;
   let gridPriceStale = false;
   const _amaKey = resolveAmaKey(config);
   if (_amaKey && _dynamicWeight?.amaCenterPrice != null) {
@@ -572,7 +565,7 @@ function analyzeOrder(botData, config, botKey) {
       target: targetSpread,
       diff: spreadDiff,
       // Pass if within 0.1% of target (or null if no config to compare)
-      pass: config ? Math.abs(spreadDiff) < 0.001 : null
+      pass: config ? Math.abs(spreadDiff ?? 0) < 0.001 : null
     },
     // Increment consistency metrics
     increment: incrementCheck,
@@ -591,8 +584,8 @@ function analyzeOrder(botData, config, botKey) {
       virtualBuy: virtualBuySlots.length,
       activeSell: activeSellSlots.length,
       virtualSell: virtualSellSlots.length,
-      partialBuy: buySlots.filter(s => s.state === ORDER_STATES.PARTIAL).length,
-      partialSell: sellSlots.filter(s => s.state === ORDER_STATES.PARTIAL).length
+      partialBuy: buySlots.filter((s: any) => s.state === ORDER_STATES.PARTIAL).length,
+      partialSell: sellSlots.filter((s: any) => s.state === ORDER_STATES.PARTIAL).length
     },
     // Slot data for weight visualization
     slotData: {
@@ -622,7 +615,7 @@ function analyzeOrder(botData, config, botKey) {
  * computeGridRangeScalingDisplay: Compute resolved prices from grid range scaling.
  * Returns null when the bot is not whitelisted or data is incomplete.
  */
-function computeGridRangeScalingDisplay(config, dynamicWeight) {
+function computeGridRangeScalingDisplay(config: any, dynamicWeight: any): any {
   if (!dynamicWeight || dynamicWeight.amaCenterPrice == null) {
     return null;
   }
@@ -643,7 +636,7 @@ function computeGridRangeScalingDisplay(config, dynamicWeight) {
   let resolvedMaxPrice = maxPrice;
   if (hasAsym) {
     const prices = computeAsymmetricBoundsPrices(
-      centerPrice, minPrice, maxPrice,
+      centerPrice, minPrice!, maxPrice!,
       dynamicWeight.trend, dynamicWeight.appliedAsymmetryFactor
     );
     if (prices) {
@@ -689,9 +682,9 @@ function computeGridRangeScalingDisplay(config, dynamicWeight) {
  * @param {number} targetIncrement - Target increment ratio (e.g., 0.02 for 2%)
  * @returns {Object} Increment analysis with avg, target, stdDev, consistency
  */
-function checkGeometricIncrement(grid, targetIncrement) {
+function checkGeometricIncrement(grid: any[], targetIncrement: number | null): any {
   // Filter out spread slots (only analyze regular buy/sell slots)
-  const slots = grid.filter(s => s.type !== 'spread');
+  const slots = grid.filter((s: any) => s.type !== 'spread');
 
   // Need at least 2 slots to calculate increment
   if (slots.length < 2) {
@@ -702,7 +695,7 @@ function checkGeometricIncrement(grid, targetIncrement) {
    * Calculate increment for each consecutive pair of slots
    * Increment = percentage change from previous to current price
    */
-  const increments = [];
+  const increments: number[] = [];
   for (let i = 1; i < slots.length; i++) {
     const prevPrice = slots[i - 1].price;
     const currPrice = slots[i].price;
@@ -716,11 +709,11 @@ function checkGeometricIncrement(grid, targetIncrement) {
    * Average: Mean of all increments
    * Standard deviation: Measure of variability (lower = more consistent)
    */
-  const avgIncrement = increments.reduce((a, b) => a + b) / increments.length;
+  const avgIncrement = increments.reduce((a: any, b: any) => a + b) / increments.length;
 
   // Calculate standard deviation (measure of consistency)
   const stdDev = Math.sqrt(
-    increments.reduce((sum, inc) => sum + Math.pow(inc - avgIncrement, 2), 0) / increments.length
+    increments.reduce((sum: any, inc: any) => sum + Math.pow(inc - avgIncrement, 2), 0) / increments.length
   );
 
   return {
@@ -756,15 +749,15 @@ function checkGeometricIncrement(grid, targetIncrement) {
  * @param {Object} bestSellSlot - Best (lowest) sell price slot
  * @returns {Object} Fund breakdown {buy: {bts, xrp}, sell: {xrp, bts}}
  */
-function calculateGridFunds(buySlots, sellSlots, bestBuySlot, bestSellSlot) {
+function calculateGridFunds(buySlots: any[], sellSlots: any[], bestBuySlot: any, bestSellSlot: any): any {
   /**
    * Direct Fund Aggregation
    * Sum all slot sizes on each side
    * Buy slots: Total BTS committed
    * Sell slots: Total XRP (or base currency) available
    */
-  const totalBTS = buySlots.reduce((sum, s) => sum + s.size, 0);
-  const totalXRP = sellSlots.reduce((sum, s) => sum + s.size, 0);
+  const totalBTS = buySlots.reduce((sum: any, s: any) => sum + s.size, 0);
+  const totalXRP = sellSlots.reduce((sum: any, s: any) => sum + s.size, 0);
 
   /**
    * Market Price Calculation
@@ -800,19 +793,13 @@ function calculateGridFunds(buySlots, sellSlots, bestBuySlot, bestSellSlot) {
  * @param {number} deltaValue - The delta percentage value
  * @returns {string} Color code
  */
-function getDeltaColor(deltaValue) {
-  if (deltaValue < 10) return colors.buy;      // green
-  if (deltaValue <= 20) return colors.spread;  // yellow
-  return colors.sell;                          // red
-}
-
 /**
  * createDistributionBar: Create a horizontal bar chart showing BUY/SELL/spread distribution
  * Differentiates between active (dark) and virtual (light) slots
  * @param {Object} counts - Object containing activeBuy, virtualBuy, activeSell, virtualSell, spread
  * @returns {{bar: string, buyWidth: number}} Colored bar visualization
  */
-function createDistributionBar(counts) {
+function createDistributionBar(counts: any): { bar: string; buyWidth: number } {
   const barWidth = BAR_WIDTH; // total width in characters
   const total = counts.activeBuy + counts.virtualBuy + counts.spread + counts.activeSell + counts.virtualSell;
 
@@ -834,7 +821,7 @@ function createDistributionBar(counts) {
       { name: 'virtualBuy', val: virtualBuyWidth },
       { name: 'activeSell', val: activeSellWidth },
       { name: 'virtualSell', val: virtualSellWidth }
-    ].sort((a, b) => b.val - a.val);
+    ].sort((a: any, b: any) => b.val - a.val);
     if (widths[0].val > 0) {
       if (widths[0].name === 'activeBuy') activeBuyWidth--;
       else if (widths[0].name === 'virtualBuy') virtualBuyWidth--;
@@ -848,25 +835,25 @@ function createDistributionBar(counts) {
   if (sum !== barWidth) {
     let diff = barWidth - sum;
     const sections = [
-      { name: 'activeBuyWidth', get: () => activeBuyWidth, set: v => { activeBuyWidth = v; } },
-      { name: 'virtualBuyWidth', get: () => virtualBuyWidth, set: v => { virtualBuyWidth = v; } },
-      { name: 'spreadWidth', get: () => spreadWidth, set: v => { spreadWidth = v; } },
-      { name: 'activeSellWidth', get: () => activeSellWidth, set: v => { activeSellWidth = v; } },
-      { name: 'virtualSellWidth', get: () => virtualSellWidth, set: v => { virtualSellWidth = v; } }
+      { name: 'activeBuyWidth', get: () => activeBuyWidth, set: (v: any) => { activeBuyWidth = v; } },
+      { name: 'virtualBuyWidth', get: () => virtualBuyWidth, set: (v: any) => { virtualBuyWidth = v; } },
+      { name: 'spreadWidth', get: () => spreadWidth, set: (v: any) => { spreadWidth = v; } },
+      { name: 'activeSellWidth', get: () => activeSellWidth, set: (v: any) => { activeSellWidth = v; } },
+      { name: 'virtualSellWidth', get: () => virtualSellWidth, set: (v: any) => { virtualSellWidth = v; } }
     ];
 
     while (diff > 0) {
       const target = sections
         .slice()
-        .sort((a, b) => b.get() - a.get())[0];
+        .sort((a: any, b: any) => b.get() - a.get())[0];
       target.set(target.get() + 1);
       diff--;
     }
 
     while (diff < 0) {
       const target = sections
-        .filter(section => section.get() > 0)
-        .sort((a, b) => b.get() - a.get())[0];
+        .filter((section: any) => section.get() > 0)
+        .sort((a: any, b: any) => b.get() - a.get())[0];
       if (!target) break;
       target.set(target.get() - 1);
       diff++;
@@ -896,14 +883,14 @@ function createDistributionBar(counts) {
  * @param {number} marketPrice - Market price for currency conversion (sell to quote basis)
  * @returns {string} Colored weight visualization with independent scaling
  */
-function createWeightFactorBar(buyOrders, sellOrders, barWidth = BAR_WIDTH, marketPrice = 1) {
+function createWeightFactorBar(buyOrders: any[], sellOrders: any[], barWidth: any = BAR_WIDTH, marketPrice: any = 1): string {
   if ((!buyOrders || buyOrders.length === 0) && (!sellOrders || sellOrders.length === 0)) {
     return '(no orders)';
   }
 
   // Calculate total fund weight on each side using arithmetic sum
-  const buyTotalSize = (buyOrders || []).reduce((sum, o) => sum + (o.size || 0), 0);
-  const sellTotalSize = (sellOrders || []).reduce((sum, o) => sum + (o.size || 0), 0);
+  const buyTotalSize = (buyOrders || []).reduce((sum: any, o: any) => sum + (o.size || 0), 0);
+  const sellTotalSize = (sellOrders || []).reduce((sum: any, o: any) => sum + (o.size || 0), 0);
 
   // Convert sell side to quote currency equivalent for accurate ratio calculation
   // Buy side is in quote currency, sell side is in base currency
@@ -940,20 +927,20 @@ function createWeightFactorBar(buyOrders, sellOrders, barWidth = BAR_WIDTH, mark
  * @param {string} virtualColor - Color for virtual orders
  * @param {number} sideWidth - Width allocated to this side
  */
-function createWeightSide(orders, activeColor, virtualColor, sideWidth) {
+function createWeightSide(orders: any[], activeColor: string, virtualColor: string, sideWidth: number): string {
   if (!orders || orders.length === 0 || sideWidth === 0) {
     return virtualColor + ' '.repeat(sideWidth) + colors.reset;
   }
 
   // Get sizes and find max for THIS SIDE only (independent scaling)
-  const sizes = orders.map(o => o.size || 0);
+  const sizes = orders.map((o: any) => o.size || 0);
   const maxSize = Math.max(...sizes);
 
   if (maxSize === 0) {
     return virtualColor + '░'.repeat(sideWidth) + colors.reset;
   }
 
-  const compressedWeights = [];
+  const compressedWeights: string[] = [];
 
   // Distribute orders evenly across all bar positions
   // Each bar maps to a position in the orders array
@@ -974,16 +961,16 @@ function createWeightSide(orders, activeColor, virtualColor, sideWidth) {
       groupOrders.push(orders[Math.min(nearestIdx, orders.length - 1)]);
     }
 
-    const groupSizes = groupOrders.map(o => o.size || 0);
+    const groupSizes = groupOrders.map((o: any) => o.size || 0);
     // Calculate arithmetic average of sizes in this group
-    const avgSize = groupSizes.reduce((a, b) => a + b, 0) / groupSizes.length;
+    const avgSize = groupSizes.reduce((a: any, b: any) => a + b, 0) / groupSizes.length;
 
     // Normalize to max on THIS SIDE (1-8, minimum 1 for visibility)
     const ratio = avgSize / maxSize;
     const blockHeight = Math.max(1, Math.round(ratio * 8));
 
     // ACTIVE and PARTIAL slots are both real on-chain orders in this analysis.
-    const hasLiveOrder = groupOrders.some(o => o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL);
+    const hasLiveOrder = groupOrders.some((o: any) => o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL);
     const color = hasLiveOrder ? activeColor : virtualColor;
 
     compressedWeights.push(color + partialBlocks[blockHeight] + colors.reset);
@@ -1014,7 +1001,7 @@ function createWeightSide(orders, activeColor, virtualColor, sideWidth) {
  * @param {Object} bestSellSlot - Best sell price (used for market price calculation)
  * @returns {Object} Distribution analysis with slot%, fund%, and deltas
  */
-function analyzeDistribution(buySlots, sellSlots, bestBuySlot, bestSellSlot) {
+function analyzeDistribution(buySlots: any[], sellSlots: any[], bestBuySlot: any, bestSellSlot: any): any {
   /**
    * Slot Distribution
    * Simple count: what percentage of total slots are buy vs sell
@@ -1028,8 +1015,8 @@ function analyzeDistribution(buySlots, sellSlots, bestBuySlot, bestSellSlot) {
    * Calculate total funds on each side, convert to common currency basis
    * This shows if sides have equal capital or if one is prioritized
    */
-  const totalBuyFunds = buySlots.reduce((sum, s) => sum + s.size, 0);
-  const totalSellFunds = sellSlots.reduce((sum, s) => sum + s.size, 0);
+  const totalBuyFunds = buySlots.reduce((sum: any, s: any) => sum + s.size, 0);
+  const totalSellFunds = sellSlots.reduce((sum: any, s: any) => sum + s.size, 0);
 
   /**
    * Currency Conversion for Comparison
@@ -1086,7 +1073,7 @@ function analyzeDistribution(buySlots, sellSlots, bestBuySlot, bestSellSlot) {
  * @param {Object|null} dynamicWeight
  * @returns {{ buy: string, sell: string } | null}
  */
-function getRawWeightValues(weightDistribution, dynamicWeight) {
+function getRawWeightValues(weightDistribution: any, dynamicWeight: any): { buy: string; sell: string } | null {
   if (!weightDistribution) return null;
   const staticBuy = Number(weightDistribution.buy);
   const staticSell = Number(weightDistribution.sell);
@@ -1131,7 +1118,7 @@ function getRawWeightValues(weightDistribution, dynamicWeight) {
  * @param {number} [maxSellWidth] - Target width for sell-side values (for column alignment)
  * @returns {string|null} Formatted weight line or null if no valid data
  */
-function formatWeightLine(weightDistribution, dynamicWeight, maxBuyWidth, maxSellWidth) {
+function formatWeightLine(weightDistribution: any, dynamicWeight: any, maxBuyWidth?: number, maxSellWidth?: number): string | null {
   if (!weightDistribution) return null;
   const staticBuy = Number(weightDistribution.buy);
   const staticSell = Number(weightDistribution.sell);
@@ -1223,8 +1210,8 @@ function formatWeightLine(weightDistribution, dynamicWeight, maxBuyWidth, maxSel
  * @param {Object} analysis - Analysis result object from analyzeOrder()
  * @returns {string} Formatted multi-line output ready for console.log
  */
-function formatAnalysis(analysis) {
-  const lines = [];
+function formatAnalysis(analysis: any): string {
+  const lines: any[] = [];
 
   // Header: Trading pair name
   lines.push(`\n${colors.cyan}📊 ${analysis.pair}${colors.reset} (${analysis.botName})`);
@@ -1269,8 +1256,8 @@ function formatAnalysis(analysis) {
       buyValues.push(analysis.botFunds.buy);
       sellValues.push(analysis.botFunds.sell);
     }
-    const maxBuyWidth = Math.max(...buyValues.map(v => stripColorCodes(v).length));
-    const maxSellWidth = Math.max(...sellValues.map(v => stripColorCodes(v).length));
+    const maxBuyWidth = Math.max(...buyValues.map((v: any) => stripColorCodes(v).length));
+    const maxSellWidth = Math.max(...sellValues.map((v: any) => stripColorCodes(v).length));
 
     lines.push(`   Active: ${(buyActual + '/' + buyTarget).padEnd(maxBuyWidth)} ${colors.buy}buy${colors.reset} | ${(sellActual + '/' + sellTarget).padEnd(maxSellWidth)} ${colors.sell}sell${colors.reset}`);
     lines.push(``);
@@ -1347,7 +1334,6 @@ function formatAnalysis(analysis) {
 
   // Position items right-aligned at section boundaries, with minimum 1 space gap
   // Buy item: right-align to buySection
-  const buyPriceSpacing1 = Math.max(1, buySection - buyPriceVisualLen);
   // Spread item: positioned to center in spread zone
   const spreadMid = buySection + spreadBarWidth / 2;
   const midPriceSpacing1 = Math.max(1, Math.round(spreadMid - midPriceVisualLen / 2) - buyPriceVisualLen);
@@ -1359,7 +1345,6 @@ function formatAnalysis(analysis) {
   );
 
   // Same logic for slots line
-  const buyLabelSpacing1 = Math.max(1, buySection - buyLabelVisualLen);
   const spreadMidLabel = buySection + spreadBarWidth / 2;
   const spreadLabelSpacing1 = Math.max(1, Math.round(spreadMidLabel - spreadLabelVisualLen / 2) - buyLabelVisualLen);
   const sellLabelSpacing2 = Math.max(1, barEnd - sellLabelVisualLen - buyLabelVisualLen - spreadLabelVisualLen - spreadLabelSpacing1);
@@ -1388,19 +1373,6 @@ function formatAnalysis(analysis) {
    *   Δ 0% = perfectly balanced (slots match funds)
    *   Δ 20% = significant imbalance (e.g., 40% slots but 60% funds)
    */
-  const buySlotPct = analysis.distribution.slots.buyPercent.toFixed(1);
-  const buyFundPct = analysis.distribution.funds.buyPercent.toFixed(1);
-  const sellSlotPct = analysis.distribution.slots.sellPercent.toFixed(1);
-  const sellFundPct = analysis.distribution.funds.sellPercent.toFixed(1);
-  const buyMatch = analysis.distribution.match.buyDiff.toFixed(1);
-  const sellMatch = analysis.distribution.match.sellDiff.toFixed(1);
-
-  // Calculate spread slot percentage (totalSlots already calculated above)
-  const spreadSlotPct = totalSlots > 0 ? ((analysis.slots.spread / totalSlots) * 100).toFixed(1) : '0.0';
-  // Recalculate buy/sell percentages to include spread in total
-  const buySlotPctWithSpread = totalSlots > 0 ? ((analysis.slots.buy / totalSlots) * 100).toFixed(1) : '0.0';
-  const sellSlotPctWithSpread = totalSlots > 0 ? ((analysis.slots.sell / totalSlots) * 100).toFixed(1) : '0.0';
-
   const { bar: slotDistBar, buyWidth: slotDistBuyWidth } = createDistributionBar({
     activeBuy: analysis.slots.activeBuy,
     virtualBuy: analysis.slots.virtualBuy,
@@ -1517,7 +1489,7 @@ function formatAnalysis(analysis) {
  *
  * @param {Array<Object>} analyses - Array of analysis results from analyzeOrder()
  */
-function generateHtmlReport(analyses) {
+function generateHtmlReport(analyses: any[]) {
   const cssColors = {
     buy: '#00ff00',
     buyDark: '#007700',
@@ -1539,7 +1511,7 @@ function generateHtmlReport(analyses) {
     '\x1b[97m': '<span style="color:#ffffff">' // white for spread bar
   };
 
-  function ansiToHtml(str) {
+  function ansiToHtml(str: string): string {
     let escaped = String(str)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -1548,7 +1520,7 @@ function generateHtmlReport(analyses) {
     
     let colorOpen = false;
 
-    return escaped.replace(/\x1b\[[0-9;]*m/g, code => {
+    return escaped.replace(/\x1b\[[0-9;]*m/g, (code: any) => {
       let close = '';
       if (colorOpen) {
         colorOpen = false;
@@ -1565,7 +1537,7 @@ function generateHtmlReport(analyses) {
     }) + (colorOpen ? '</span>' : '');
   }
 
-  const reports = analyses.map(a => ansiToHtml(formatAnalysis(a))).join('\n');
+  const reports = analyses.map((a: any) => ansiToHtml(formatAnalysis(a))).join('\n');
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -1627,13 +1599,13 @@ function main() {
   // Counters for summary statistics
   let analyzed = 0;
   let skipped = 0;
-  const analyses = [];
+  const analyses: any[] = [];
 
   /**
    * Process each order file
    * Try-catch ensures one bad file doesn't stop analysis of others
    */
-  files.forEach((file, index) => {
+  files.forEach((file: any, index: any) => {
     try {
       // Parse order file JSON
       const orderData = readJSON(file.path);
@@ -1668,7 +1640,7 @@ function main() {
       }
       analyzed++;
 
-    } catch (error) {
+    } catch (error: any) {
       // Log error but continue processing other files
       console.error(`\n❌ Error processing ${file.name}: ${error.message}`);
       skipped++;
@@ -1683,7 +1655,7 @@ function main() {
   if (skippedCandidates.length > 0) {
     console.log('');
     console.log(`${colors.cyan}${'='.repeat(HEADER_WIDTH)}${colors.reset}`);
-    skippedCandidates.forEach(candidate => {
+    skippedCandidates.forEach((candidate: any) => {
       console.log(`${colors.gray}Skipped ${candidate.name}: ${candidate.reason}${colors.reset}`);
       skipped++;
     });
@@ -1700,17 +1672,5 @@ if (require.main === module) {
   main();
 }
 
-module.exports = {
-  resolveAmaKey,
-  isAmaGridPrice,
-  readDynamicGridSnapshot,
-  buildDynamicWeightInfo,
-  formatWeightLine,
-  getRawWeightValues,
-  analyzeOrder,
-  formatAnalysis,
-  generateHtmlReport,
-  colors,
-  DYNAMIC_GRID_SNAPSHOT_MAX_AGE_MS,
-  DYNAMIC_WEIGHT_EPSILON,
-};
+export { resolveAmaKey, isAmaGridPrice, readDynamicGridSnapshot, buildDynamicWeightInfo, formatWeightLine, getRawWeightValues, analyzeOrder, formatAnalysis, generateHtmlReport, colors, DYNAMIC_GRID_SNAPSHOT_MAX_AGE_MS, DYNAMIC_WEIGHT_EPSILON }
+

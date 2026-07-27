@@ -99,8 +99,5 @@ function applyAsymmetricBounds(params: any) {
     };
 }
 
-export = {
-    resolveMaxAsymmetryFactor,
-    computeAsymmetricBoundsMetrics,
-    applyAsymmetricBounds,
-};
+export { resolveMaxAsymmetryFactor, computeAsymmetricBoundsMetrics, applyAsymmetricBounds }
+

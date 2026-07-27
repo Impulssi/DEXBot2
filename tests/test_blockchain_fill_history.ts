@@ -16,6 +16,7 @@ if (process.env.RUN_LIVE_BITSHARES_TESTS !== '1') {
 }
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const ACCOUNT_NAME = 'hanzac-si';
 const ACCOUNT_ID = '1.2.1074325';  // Known ID for hanzac-si
@@ -160,8 +161,8 @@ async function testBlockchainFillHistory() {
         }
 
     } catch (error) {
-        console.error(`\nERROR: ${error.message}`);
-        if (error.message.includes('ECONNREFUSED')) {
+        console.error(`\nERROR: ${getErrorMessage(error)}`);
+        if (getErrorMessage(error).includes('ECONNREFUSED')) {
             console.error('(Cannot connect to BitShares. Is a BitShares node available?)');
         }
         process.exit(1);

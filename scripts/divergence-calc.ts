@@ -26,6 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 const Format = require('../modules/order/format');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 /**
  * readData: Read order data from file or stdin
@@ -45,8 +46,8 @@ function readData() {
     const filePath = path.resolve(args[0]);
     try {
       return fs.readFileSync(filePath, 'utf-8');
-    } catch (err) {
-      console.error(`Error reading file "${filePath}":`, err.message);
+    } catch (err: any) {
+      console.error(`Error reading file "${filePath}":`, getErrorMessage(err) ?? String(err));
       process.exit(1);
     }
   }
@@ -60,7 +61,7 @@ const data = readData();
 const lines = data.trim().split('\n');
 const orders: any[] = [];
 
-lines.forEach(line => {
+lines.forEach((line: any) => {
   // Parse orders in format: Buy/Sell order-id @ price: persisted → calculated [state]
   // State is optional and used to exclude partial orders
   const match = line.match(/(?:Buy|Sell) (?:buy|sell)-(\d+) @ ([\d.]+): ([\d.]+) → ([\d.]+)(?:\s+\[(\w+)\])?/);
@@ -77,12 +78,12 @@ lines.forEach(line => {
 // Filter out partial orders from divergence calculation
 // Include: 'active' and 'virtual' orders - these represent the intended grid structure
 // Exclude: 'partial' orders - these are temporarily filled and in transition
-const activeOrders = orders.filter(o => o.state !== 'partial');
+const activeOrders = orders.filter((o: any) => o.state !== 'partial');
 const partialOrdersCount = orders.length - activeOrders.length;
 
 // Calculate divergence metric: sum of ((calculated - persisted) / persisted)^2 / count
 let sumSquaredDiff = 0;
-activeOrders.forEach(order => {
+activeOrders.forEach((order: any) => {
   const relativeError = (order.calculated - order.persisted) / order.persisted;
   sumSquaredDiff += relativeError * relativeError;
 });
@@ -110,15 +111,17 @@ console.log(`  Status: ${promille <= 1 ? '✓ WITHIN THRESHOLD' : '✗ EXCEEDS T
 
 // Show min/max errors
 let minError = Infinity, maxError = -Infinity;
-let minErrorOrder = null, maxErrorOrder = null;
-activeOrders.forEach((order, idx) => {
+let minErrorOrder: any = null, maxErrorOrder: any = null;
+activeOrders.forEach((order: any, idx: any) => {
   const absError = Math.abs((order.calculated - order.persisted) / order.persisted);
   if (absError < minError) { minError = absError; minErrorOrder = { ...order, idx }; }
   if (absError > maxError) { maxError = absError; maxErrorOrder = { ...order, idx }; }
 });
 
-console.log(`\nMin error: ${Format.formatPrice4(minError * 100)}% at order-${minErrorOrder.idx} (${minErrorOrder.type || 'unknown'})`);
-console.log(`  Calculated: ${Format.formatPrice(minErrorOrder.calculated)}, Persisted: ${Format.formatPrice(minErrorOrder.persisted)}`);
-console.log(`Max error: ${Format.formatPrice4(maxError * 100)}% at order-${maxErrorOrder.idx} (${maxErrorOrder.type || 'unknown'})`);
-console.log(`  Calculated: ${Format.formatPrice(maxErrorOrder.calculated)}, Persisted: ${Format.formatPrice(maxErrorOrder.persisted)}`);
+const minOrder = minErrorOrder!;
+const maxOrder = maxErrorOrder!;
+console.log(`\nMin error: ${Format.formatPrice4(minError * 100)}% at order-${minOrder.idx} (${minOrder.type || 'unknown'})`);
+console.log(`  Calculated: ${Format.formatPrice(minOrder.calculated)}, Persisted: ${Format.formatPrice(minOrder.persisted)}`);
+console.log(`Max error: ${Format.formatPrice4(maxError * 100)}% at order-${maxOrder.idx} (${maxOrder.type || 'unknown'})`);
+console.log(`  Calculated: ${Format.formatPrice(maxOrder.calculated)}, Persisted: ${Format.formatPrice(maxOrder.persisted)}`);
 export {};

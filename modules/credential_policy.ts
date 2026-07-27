@@ -7,20 +7,23 @@
  * Default-deny on errors: validation failures, executable timeouts, etc.
  */
 
-const { path } = require('./path_api');
-const { randomBytes, createHmac, timingSafeEqual } = require('./crypto/sync');
-const { BitShares } = require('./bitshares_client');
-const { isPositiveInt } = require('./order/utils/math');
-const { parseJsonWithComments } = require('./order/utils/system');
-const { FEE_PARAMETERS, NATIVE_CLIENT } = require('./constants');
+
+import { path } from './path_api';
+import { randomBytes, createHmac, timingSafeEqual } from './crypto/sync';
+import * as client from './bitshares_client';
+const { BitShares } = client;
+import { isPositiveInt } from './order/utils/math';
+import { parseJsonWithComments } from './order/utils/system';
+import { FEE_PARAMETERS, NATIVE_CLIENT } from './constants';
+import { getCredentialReadyFilePath, assertPrivatePathSecurity } from './credential_runtime';
+import { PATHS } from './paths';
+import Logger from './logger';
+import { getStorage } from './storage';
+import { runtime } from './runtime';
+import { readJSON } from './utils/fs_utils';
+import { LRUCache } from './bitshares-native/lru_cache';
 const { RESOLVERS } = NATIVE_CLIENT;
-const { getCredentialReadyFilePath, assertPrivatePathSecurity } = require('./credential_runtime');
-const { PATHS } = require('./paths');
-const Logger = require('./logger');
-const { getStorage } = require('./storage');
 const storage = getStorage();
-const { runtime } = require('./runtime');
-const { ensureDir, readJSON, writeJSON } = require('./utils/fs_utils');
 
 // Module-scope logger for library-style helpers that don't own a process
 // logger.  The class honours PM2 auto-quiet and routes to a log file when one
@@ -47,19 +50,6 @@ interface PolicyConfig {
     accounts?: Record<string, Record<string, any>>;
 }
 
-// BitShares operation types that DEXBot2 uses
-const ALLOWED_OP_TYPES = [
-    'transfer',
-    'limit_order_create',
-    'limit_order_cancel',
-    'call_order_update',
-    'liquidity_pool_exchange',
-    'limit_order_update',
-    'credit_offer_accept',
-    'credit_deal_repay',
-    'credit_deal_update',
-];
-
 // Hardcoded baseline policy used when resolving policy layers in-process.
 // The credential daemon now requires an explicit on-disk policy file and
 // fails closed on startup/reload mismatches.
@@ -80,7 +70,6 @@ const BUILTIN_DEFAULT_POLICY = Object.freeze({
     executable: null,
 });
 
-const { LRUCache } = require('./bitshares-native/lru_cache');
 
 const policyCache = new Map();
 const assetRefResolutionCache = new LRUCache(RESOLVERS.LRU_DEFAULT_SIZE, RESOLVERS.ASSET_TTL_MS);
@@ -103,7 +92,7 @@ async function resolveAssetRefToId(assetRef: string): Promise<string | null> {
     const cached = assetRefResolutionCache.get(cacheKey);
     if (cached !== undefined) return cached;
 
-    let resolvedId = null;
+    let resolvedId: string | null = null;
 
     // Try external resolver first (credential daemon with native chain client).
     // Only registered by the daemon; the legacy bot process path never sets one.
@@ -144,7 +133,7 @@ async function resolveAssetRefToId(assetRef: string): Promise<string | null> {
 }
 
 async function resolveConfiguredAssetRefs(refs: string[], label: string): Promise<{ ok: boolean; values?: string[]; reason?: string }> {
-    const resolved = [];
+    const resolved: string[] = [];
     for (const ref of refs) {
         if (!ref) continue;
         const normalizedRef = String(ref);
@@ -226,8 +215,8 @@ function checkPolicyFileSecurity(filePath: string) {
         assertPrivatePathSecurity(filePath, { expectedType: 'file', requiredMode: 0o600 });
     } catch (err: any) {
         const stat = storage.lstat(filePath);
-        const mode = stat.mode & 0o777;
-        if (mode === 0o644 && !stat.isSymbolicLink()) {
+        const mode = stat.mode! & 0o777;
+        if (mode === 0o644 && !stat.isSymbolicLink!()) {
             storage.chmod(filePath, 0o600);
             policyLogger.warn(`[security] Auto-fixed ${filePath} permissions from 0o644 to 0o600. Run: chmod 600 profiles/daemon-policies.json`);
             return;
@@ -347,7 +336,7 @@ function isStringArray(v: any): v is string[] {
  * Constraint fields are validated based on operation type.
  */
 function validateOpConstraints(opName: string, constraints: any): { errors: string[] } {
-    const errors = [];
+    const errors: string[] = [];
 
     // transfer
     if (opName === 'transfer') {
@@ -462,7 +451,7 @@ function validateOpConstraints(opName: string, constraints: any): { errors: stri
  * Validate raw policy config. Returns { valid: boolean, errors: string[] }.
  */
 function validatePolicyConfig(raw: any): { valid: boolean; errors: string[] } {
-    const errors = [];
+    const errors: string[] = [];
 
     if (typeof raw !== 'object' || raw === null) {
         errors.push('root must be an object');
@@ -513,13 +502,13 @@ function validatePolicyConfig(raw: any): { valid: boolean; errors: string[] } {
  * Validate a single policy object (used by both default and per-account policies).
  */
 function validatePolicyObject(policy: any): { valid: boolean; errors: string[] } {
-    const errors = [];
+    const errors: string[] = [];
 
     // allowedOpTypes: must be array of strings
     if (policy.allowedOpTypes !== undefined) {
         if (!Array.isArray(policy.allowedOpTypes)) {
             errors.push('allowedOpTypes must be an array');
-        } else if (!policy.allowedOpTypes.every((x) => typeof x === 'string')) {
+        } else if (!policy.allowedOpTypes.every((x: any) => typeof x === 'string')) {
             errors.push('allowedOpTypes must be an array of strings');
         }
     }
@@ -536,7 +525,7 @@ function validatePolicyObject(policy: any): { valid: boolean; errors: string[] }
         if (policy.allowedAssetIds !== null) {
             if (!Array.isArray(policy.allowedAssetIds)) {
                 errors.push('allowedAssetIds must be an array or null');
-            } else if (!policy.allowedAssetIds.every((x) => typeof x === 'string')) {
+            } else if (!policy.allowedAssetIds.every((x: any) => typeof x === 'string')) {
                 errors.push('allowedAssetIds must be an array of strings');
             }
         }
@@ -671,7 +660,7 @@ function resolveAccountPolicy(config: any, accountName: string): any {
     if (Object.keys(debtConstraints).length > 0) {
         policy.allowedOps = { ...policy.allowedOps };
         for (const [opName, constraints] of Object.entries(debtConstraints)) {
-            policy.allowedOps[opName] = { ...(policy.allowedOps[opName] || {}), ...constraints };
+            policy.allowedOps[opName as keyof typeof policy.allowedOps] = { ...(policy.allowedOps[opName as keyof typeof policy.allowedOps] || {}), ...constraints };
         }
     }
 
@@ -865,7 +854,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
                     policyId: 'opParams',
                 };
             }
-            if (collId && !resolved.values.includes(String(collId))) {
+            if (collId && resolved.values && !resolved.values.includes(String(collId))) {
                 return {
                     allow: false,
                     reason: `call_order_update: collateral asset "${collId}" does not match collateralAsset`,
@@ -883,7 +872,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
                     policyId: 'opParams',
                 };
             }
-            if (collId && !resolved.values.includes(String(collId))) {
+            if (collId && resolved.values && !resolved.values.includes(String(collId))) {
                 return {
                     allow: false,
                     reason: `call_order_update: collateral asset "${collId}" not in allowedCollateralAssets`,
@@ -915,7 +904,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
         }
         if (constraints.minCollateralRatio != null && d.extensions && d.extensions.target_collateral_ratio != null) {
             const target = normalizeGrapheneCollateralRatio(d.extensions.target_collateral_ratio);
-            if (Number.isFinite(target) && target < constraints.minCollateralRatio) {
+            if (Number.isFinite(target) && target != null && target < constraints.minCollateralRatio) {
                 return {
                     allow: false,
                     reason: `call_order_update: target_collateral_ratio ${target} below minCollateralRatio ${constraints.minCollateralRatio}`,
@@ -925,7 +914,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
         }
         if (constraints.maxCollateralRatio != null && d.extensions && d.extensions.target_collateral_ratio != null) {
             const target = normalizeGrapheneCollateralRatio(d.extensions.target_collateral_ratio);
-            if (Number.isFinite(target) && target > constraints.maxCollateralRatio) {
+            if (Number.isFinite(target) && target != null && target > constraints.maxCollateralRatio) {
                 return {
                     allow: false,
                     reason: `call_order_update: target_collateral_ratio ${target} above maxCollateralRatio ${constraints.maxCollateralRatio}`,
@@ -956,7 +945,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
                     policyId: 'opParams',
                 };
             }
-            if (assetId && !resolved.values.includes(String(assetId))) {
+            if (assetId && resolved.values && !resolved.values.includes(String(assetId))) {
                 return {
                     allow: false,
                     reason: `credit_offer_accept: collateral asset "${assetId}" does not match collateralAsset`,
@@ -974,7 +963,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
                     policyId: 'opParams',
                 };
             }
-            if (assetId && !resolved.values.includes(String(assetId))) {
+            if (assetId && resolved.values && !resolved.values.includes(String(assetId))) {
                 return {
                     allow: false,
                     reason: `credit_offer_accept: collateral asset "${assetId}" not in allowedCollateralAssets`,
@@ -992,7 +981,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
                     policyId: 'opParams',
                 };
             }
-            if (assetId && !resolved.values.includes(String(assetId))) {
+            if (assetId && resolved.values && !resolved.values.includes(String(assetId))) {
                 return {
                     allow: false,
                     reason: `credit_offer_accept: debt asset "${assetId}" not in allowedDebtAssets`,
@@ -1033,7 +1022,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
                     policyId: 'opParams',
                 };
             }
-            if (assetId && !resolved.values.includes(String(assetId))) {
+            if (assetId && resolved.values && !resolved.values.includes(String(assetId))) {
                 return {
                     allow: false,
                     reason: `credit_deal_repay: debt asset "${assetId}" not in allowedDebtAssets`,
@@ -1297,10 +1286,11 @@ async function evaluatePolicy(policy: any, context: PolicyContext): Promise<{ al
 const X_OK = 1;
 
 function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ allow: boolean; reason: string | null }> {
-    return new Promise((resolve) => {
+    return new Promise((resolve: any) => {
         let spawn;
         try {
-            spawn = require('child_process').spawn;
+            const cp = require('child_process') as any;
+            spawn = cp.spawn;
         } catch {
             return resolve({ allow: false, reason: `executable not supported in this environment: ${exePath}` });
         }
@@ -1320,15 +1310,15 @@ function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ 
             timeout: EXECUTABLE_TIMEOUT_MS,
         });
 
-        child.stdout.on('data', (data) => {
+        child.stdout.on('data', (data: any) => {
             stdout += data.toString();
         });
 
-        child.stderr.on('data', (data) => {
+        child.stderr.on('data', (data: any) => {
             stderr += data.toString();
         });
 
-        child.on('error', (error) => {
+        child.on('error', (error: any) => {
             if (error.code === 'ETIMEDOUT') {
                 resolve({ allow: false, reason: `executable timed out after ${EXECUTABLE_TIMEOUT_MS}ms` });
             } else {
@@ -1336,7 +1326,7 @@ function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ 
             }
         });
 
-        child.on('close', (code, signal) => {
+        child.on('close', (code: any, signal: any) => {
             if (signal === 'SIGTERM') {
                 return resolve({ allow: false, reason: `executable timed out after ${EXECUTABLE_TIMEOUT_MS}ms` });
             }
@@ -1516,20 +1506,5 @@ function verifySourceHmac(request: any, policyConfig: any): { valid: boolean; re
     }
 }
 
-export = {
-    POLICY_DENIED_PREFIX,
-    BUILTIN_DEFAULT_POLICY,
-    checkPolicyFileSecurity,
-    ensurePolicyConfig,
-    loadPolicyConfig,
-    loadRequiredPolicyConfig,
-    reloadPolicyFromDisk,
-    validatePolicyConfig,
-    deriveDebtPolicyConstraints,
-    resolveAccountPolicy,
-    buildPolicyContext,
-    evaluatePolicy,
-    verifySourceHmac,
-    loadBotHmacSecret,
-    setExternalAssetResolver,
-};
+export { POLICY_DENIED_PREFIX, BUILTIN_DEFAULT_POLICY, checkPolicyFileSecurity, ensurePolicyConfig, loadPolicyConfig, loadRequiredPolicyConfig, reloadPolicyFromDisk, validatePolicyConfig, deriveDebtPolicyConstraints, resolveAccountPolicy, buildPolicyContext, evaluatePolicy, verifySourceHmac, loadBotHmacSecret, setExternalAssetResolver }
+

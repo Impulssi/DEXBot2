@@ -18,6 +18,7 @@ const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, COW_ACTIONS } = require('../modu
 const { reconcileGrid } = require('../modules/order/utils/validate');
 const assert = require('assert');
 const { roundTo } = require('../modules/utils/math_utils');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 let testsPassed = 0;
 let testsFailed = 0;
@@ -28,7 +29,7 @@ async function testAsync(name, fn) {
         console.log(`✓ ${name}`);
         testsPassed++;
     } catch (err) {
-        console.log(`✗ ${name}: ${err.message}`);
+        console.log(`✗ ${name}: ${getErrorMessage(err)}`);
         testsFailed++;
     }
 }
@@ -285,7 +286,7 @@ async function testCase7() {
     const preFunds = JSON.parse(JSON.stringify(mgr.funds));
 
     // Perform safe rebalance
-    const rebalance = await mgr.performSafeRebalance();
+    await mgr.performSafeRebalance();
 
     // Verify master grid was NOT modified during planning (COW guarantee)
     assert.deepStrictEqual(
@@ -328,7 +329,7 @@ async function testCase9() {
 
     const preFunds = JSON.parse(JSON.stringify(mgr.funds));
 
-    const rebalance = await mgr.performSafeRebalance();
+    await mgr.performSafeRebalance();
 
     assert(mgr.orders.get((fill as any).id).state === ORDER_STATES.ACTIVE, 'Order should remain ACTIVE after planning');
     assert.deepStrictEqual(mgr.funds, preFunds, 'Funds should remain unchanged during COW planning');

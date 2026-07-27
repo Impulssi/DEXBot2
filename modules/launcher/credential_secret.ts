@@ -1,5 +1,6 @@
-const chainKeys = require('../chain_keys');
 
+
+import * as chainKeys from '../chain_keys';
 function normalizeBootstrapCredential(credential: any): any {
     if (chainKeys.isVaultSecret(credential)) {
         return credential;
@@ -12,6 +13,5 @@ function normalizeBootstrapCredential(credential: any): any {
     throw new Error('Invalid bootstrap credential payload');
 }
 
-export = {
-    normalizeBootstrapCredential,
-};
+export { normalizeBootstrapCredential }
+

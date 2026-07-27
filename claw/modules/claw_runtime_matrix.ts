@@ -100,7 +100,5 @@ function getSupportedClawRuntime(runtimeName: string) {
   return match ? cloneRuntime(match) : null;
 }
 
-export = {
-  getSupportedClawRuntime,
-  listSupportedClawRuntimes
-};
+export { getSupportedClawRuntime, listSupportedClawRuntimes }
+

@@ -15,6 +15,7 @@ if (process.env.RUN_LIVE_BITSHARES_TESTS !== '1') {
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');
 const Format = require('../modules/order/format');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const C = {
     reset: '\x1b[0m',
@@ -86,7 +87,7 @@ async function main() {
             ob1.asks.forEach((a, i) => console.log(`    ${i+1}. price=${Format.formatPrice(Number(a.price))}  base=${a.base}  quote=${a.quote}`));
             }
         } catch (e) {
-            console.log(`${C.red}  Error: ${e.message}${C.reset}`);
+            console.log(`${C.red}  Error: ${getErrorMessage(e)}${C.reset}`);
         }
         console.log();
 
@@ -107,7 +108,7 @@ async function main() {
             ob2.asks.forEach((a, i) => console.log(`    ${i+1}. price=${Format.formatPrice(Number(a.price))}  base=${a.base}  quote=${a.quote}`));
             }
         } catch (e) {
-            console.log(`${C.red}  Error: ${e.message}${C.reset}`);
+            console.log(`${C.red}  Error: ${getErrorMessage(e)}${C.reset}`);
         }
         console.log();
 
@@ -145,7 +146,7 @@ async function main() {
                 const t = await BitShares.db.get_ticker(base, quote);
                 console.log(`  ${label}: latest=${t.latest}, latest_price=${t.latest_price}, lowest_ask=${t.lowest_ask}, highest_bid=${t.highest_bid}`);
             } catch (e) {
-                console.log(`  ${label}: ${C.red}${e.message}${C.reset}`);
+                console.log(`  ${label}: ${C.red}${getErrorMessage(e)}${C.reset}`);
             }
         }
         console.log();
@@ -167,7 +168,7 @@ async function main() {
                 console.log(`${C.yellow}  No LP pool found for BTS/XBTSX.XAUT${C.reset}`);
             }
         } catch (e) {
-            console.log(`  get_liquidity_pools_by_both_assets: ${C.red}${e.message}${C.reset}`);
+            console.log(`  get_liquidity_pools_by_both_assets: ${C.red}${getErrorMessage(e)}${C.reset}`);
             // fallback: try list_liquidity_pools pagination
             try {
                 const allPools = await BitShares.db.list_liquidity_pools(100);
@@ -183,7 +184,7 @@ async function main() {
                     console.log(`${C.yellow}  No LP pool found (confirmed via list_liquidity_pools)${C.reset}`);
                 }
             } catch (e2) {
-                console.log(`  list_liquidity_pools fallback error: ${C.red}${e2.message}${C.reset}`);
+                console.log(`  list_liquidity_pools fallback error: ${C.red}${getErrorMessage(e2)}${C.reset}`);
             }
         }
         console.log();
@@ -210,7 +211,7 @@ async function main() {
                 }
             }
         } catch (e) {
-            console.log(`  get_market_history error: ${C.red}${e.message}${C.reset}`);
+            console.log(`  get_market_history error: ${C.red}${getErrorMessage(e)}${C.reset}`);
             // fallback: get_fill_order_history (limited depth)
             try {
                 const fills = await BitShares.db.get_fill_order_history(btsAsset.id, xautAsset.id, 100);
@@ -221,7 +222,7 @@ async function main() {
                     });
                 }
             } catch (e2) {
-                console.log(`  get_fill_order_history fallback error: ${C.red}${e2.message}${C.reset}`);
+                console.log(`  get_fill_order_history fallback error: ${C.red}${getErrorMessage(e2)}${C.reset}`);
             }
         }
         console.log();
@@ -253,7 +254,7 @@ async function main() {
         console.log(`${C.green}${C.bold}Done.${C.reset}`);
 
     } catch (err) {
-        console.error(`${C.red}Fatal: ${err.message}${C.reset}`);
+        console.error(`${C.red}Fatal: ${getErrorMessage(err)}${C.reset}`);
         process.exit(1);
     }
 }

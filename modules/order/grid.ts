@@ -95,20 +95,20 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, MARKET_ADAPTER } = require('../constants');
+import { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, MARKET_ADAPTER } from '../constants';
 const { GRID_COMPARISON } = GRID_LIMITS;
-const Format = require('./format');
-const {
+import * as Format from './format';
+import {
     resolveMaxAsymmetryFactor,
     applyAsymmetricBounds,
-} = require('../../market_adapter/core/asymmetric_bounds');
+} from '../../market_adapter/core/asymmetric_bounds';
 
 // FIX: Extract magic numbers to named constants for maintainability
 const GRID_CONSTANTS = {
     RMS_PERCENTAGE_SCALE: 100,  // Convert RMS percentage threshold from percent to decimal
 };
 
-function _snapshotFundState(manager) {
+function _snapshotFundState(manager: any): any {
     return {
         buyFree: Number(manager.accountTotals?.buyFree || 0),
         sellFree: Number(manager.accountTotals?.sellFree || 0),
@@ -117,9 +117,8 @@ function _snapshotFundState(manager) {
     };
 }
 
-const {
+import {
     floatToBlockchainInt,
-    blockchainToFloat,
     getPrecisionByOrderType,
     getPrecisionsForManager,
     calculateOrderCreationFees,
@@ -133,10 +132,10 @@ const {
     getGridBestPrices,
     calculateSpreadFromOrders,
     allocateFundsByWeights,
-    calculateGapSlots: _mathGapSlots,
+    calculateGapSlots as _mathGapSlots,
     calculatePriceTolerance
-} = require('./utils/math');
-const {
+} from './utils/math';
+import {
     adjustBudgetForBtsFees,
     filterOrdersByType,
     checkSizesBeforeMinimum,
@@ -150,17 +149,17 @@ const {
     hasOnChainId,
     calculateIdealBoundary,
     assignGridRoles
-} = require('./utils/order');
-const { derivePrice, loadAmaCenterPrice, loadAmaCenterSnapshot } = require('./utils/system');
-const { getWhitelistFlags } = require('../market_adapter_whitelist');
+} from './utils/order';
+import { derivePrice, loadAmaCenterPrice, loadAmaCenterSnapshot } from './utils/system';
+import { getWhitelistFlags } from '../market_adapter_whitelist';
 
 import type { Order } from '../types.js';
 
-export function calculateGapSlots(incrementPercent, targetSpreadPercent, gridLimitsOverride?: Record<string, any>) {
+export function calculateGapSlots(incrementPercent: any, targetSpreadPercent: any, gridLimitsOverride?: Record<string, any>): any {
     return _mathGapSlots(incrementPercent, targetSpreadPercent, gridLimitsOverride ?? GRID_LIMITS);
 }
 
-export function isGridBloated(manager, orders) {
+export function isGridBloated(manager: any, orders: any): any {
         const gridSize = Array.isArray(orders) ? orders.length : orders.size;
         if (!gridSize || !manager?.config) return { bloated: false };
 
@@ -233,7 +232,7 @@ export function isGridBloated(manager, orders) {
      * @param {Object} manager - OrderManager instance.
      * @returns {{active: boolean, elapsed: number, graceMs: number}}
      */
-export function isGridBloatGraceActive(manager) {
+export function isGridBloatGraceActive(manager: any): any {
         const graceMs = Number(TIMING?.GRID_BLOAT_RESYNC_GRACE_MS) || TIMING.GRID_BLOAT_RESYNC_GRACE_MS;
         if (!manager._gridBloatDetectedAt) {
             return { active: false, elapsed: 0, graceMs };
@@ -247,7 +246,7 @@ export function isGridBloatGraceActive(manager) {
      * returned to normal. Shared so both call sites use the same key.
      * @param {Object} manager - OrderManager instance.
      */
-export function clearGridBloatFlag(manager) {
+export function clearGridBloatFlag(manager: any): void {
         delete manager._gridBloatDetectedAt;
     }
 
@@ -259,7 +258,7 @@ export function clearGridBloatFlag(manager) {
      * @param {'buy'|'sell'} side
      * @returns {Promise<import('./types').SizingContext|null>}
      */
-export async function getSizingContext(manager, side) {
+export async function getSizingContext(manager: any, side: any): Promise<any> {
         return await _getSizingContext(manager, side);
     }
 
@@ -371,7 +370,7 @@ export async function _getSizingContext(manager: any, side: any, { skipRecalc = 
      * @param {import('./types').GridConfig} config - Grid configuration
      * @returns {import('./types').GridCreationResult}
      */
-export function createOrderGrid(config) {
+export function createOrderGrid(config: any): any {
         const { startPrice, minPrice, maxPrice, incrementPercent } = config;
 
         // FIX: Add comprehensive input validation to prevent silent grid creation failures
@@ -421,7 +420,7 @@ export function createOrderGrid(config) {
         // We start from startPrice and expand outward in both directions to ensure
         // the grid is centered around the market price.
 
-        const priceLevels = [];
+        const priceLevels: number[] = [];
 
         // Generate levels upwards from startPrice (higher prices for SELL orders)
         // Start from sqrt(stepUp) × startPrice to center the grid
@@ -440,7 +439,7 @@ export function createOrderGrid(config) {
         }
 
         // Sort all levels from lowest to highest (Master Rail order)
-        priceLevels.sort((a, b) => a - b);
+        priceLevels.sort((a: any, b: any) => a - b);
 
         if (priceLevels.length === 0) {
             throw new Error(
@@ -465,14 +464,14 @@ export function createOrderGrid(config) {
         //
         // STRATEGY: Center the spread gap around startPrice
         
-        const boundaryIdx = calculateIdealBoundary(priceLevels.map(p => ({ price: p })), startPrice, gapSlots);
+        const boundaryIdx = calculateIdealBoundary(priceLevels.map((p: any) => ({ price: p })), startPrice, gapSlots);
 
         // ================================================================================
         // STEP 4: CREATE ORDER OBJECTS
         // ================================================================================
         // Convert price levels to order objects with assigned roles.
 
-        const orders = priceLevels.map((price, i) => ({
+        const orders = priceLevels.map((price: any, i: any) => ({
             id: `slot-${i}`,
             price,
             type: null, // assigned below
@@ -482,8 +481,8 @@ export function createOrderGrid(config) {
 
         const updatedOrders = assignGridRoles(orders, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES);
 
-        const buyCount = updatedOrders.filter(o => o.type === ORDER_TYPES.BUY).length;
-        const sellCount = updatedOrders.filter(o => o.type === ORDER_TYPES.SELL).length;
+        const buyCount = updatedOrders.filter((o: any) => o.type === ORDER_TYPES.BUY).length;
+        const sellCount = updatedOrders.filter((o: any) => o.type === ORDER_TYPES.SELL).length;
         if (buyCount === 0 || sellCount === 0) {
             throw new Error(
                 `Grid generation produced an imbalanced rail (buy=${buyCount}, sell=${sellCount}) for ` +
@@ -511,7 +510,7 @@ export function createOrderGrid(config) {
      * @param {import('./types').OrderManager} manager - OrderManager instance
      * @private
      */
-function _clearOrderCachesLogic(manager) {
+function _clearOrderCachesLogic(manager: any): void {
         // Replace frozen master grid with fresh empty frozen Map (COW pattern)
         manager.orders = Object.freeze(new Map());
         
@@ -536,7 +535,7 @@ function _clearOrderCachesLogic(manager) {
      * @param {number|null} [boundaryIdx=null] - The master boundary index.
      * @returns {Promise<void>}
      */
-export async function loadGrid(manager, grid, boundaryIdx = null) {
+export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null): Promise<any> {
         if (!Array.isArray(grid)) return;
         return await manager._gridLock.acquire(async () => {
             try {
@@ -573,7 +572,7 @@ export async function loadGrid(manager, grid, boundaryIdx = null) {
                 const buyEndIdx = boundaryIdx;
                 const sellStartIdx = boundaryIdx + gapSlots + 1;
                 let reassignCount = 0;
-                grid = grid.map((slot, i) => {
+                grid = grid.map((slot: any, i: any) => {
                     if (slot.state === ORDER_STATES.VIRTUAL && !slot.orderId) {
                         const correctType = (i <= buyEndIdx)
                             ? ORDER_TYPES.BUY
@@ -641,7 +640,7 @@ export async function loadGrid(manager, grid, boundaryIdx = null) {
                     }
                     await manager._applyOrderUpdate(currentOrder, 'grid-load', { skipAccounting: true });
                 }
-                 const spreadCount = grid.filter(o => o.type === ORDER_TYPES.SPREAD).length;
+                 const spreadCount = grid.filter((o: any) => o.type === ORDER_TYPES.SPREAD).length;
                  manager.targetSpreadCount = spreadCount;
                  manager.currentSpreadCount = spreadCount;
 
@@ -659,7 +658,7 @@ export async function loadGrid(manager, grid, boundaryIdx = null) {
      * @returns {Promise<void>}
      * @throws {Error} If initialization fails or account totals are missing.
      */
-export async function initializeGrid(manager) {
+export async function initializeGrid(manager: any): Promise<void> {
         if (!manager) throw new Error('initializeGrid requires a manager instance');
 
         await manager._initializeAssets();
@@ -692,7 +691,6 @@ export async function initializeGrid(manager) {
             }
         }
 
-        const configuredStartPrice = manager.config.startPrice;
         const configuredMinPrice = manager.config.minPrice;
         const configuredMaxPrice = manager.config.maxPrice;
         const mp = Number(manager.config.startPrice);
@@ -705,7 +703,7 @@ export async function initializeGrid(manager) {
         //   - null/anything else: fallback to startPrice (backward-compatible)
         let gp = mp;
         let gpSource = 'startPrice';
-        let amaSnapshot = null;
+        let amaSnapshot: any = null;
         const whitelistFlags = getWhitelistFlags(manager.config.botKey);
         const isGridRangeScalingWhitelisted = whitelistFlags.asymmetricBounds === true;
         let gridPriceOffsetPct = 0;
@@ -754,7 +752,7 @@ export async function initializeGrid(manager) {
         // trails price. Uses slope data from the dynamicgrid.json snapshot.
         let resolvedMinP = minP;
         let resolvedMaxP = maxP;
-        let rangeScalingFactor = null;
+        let rangeScalingFactor: number | null = null;
         if (gpSource === 'ama' && Number.isFinite(minP) && Number.isFinite(maxP)
             && isGridRangeScalingWhitelisted) {
             const dw = amaSnapshot?.dynamicWeights;
@@ -785,11 +783,11 @@ export async function initializeGrid(manager) {
                     rangeScalingFactor = Number(adjustment.appliedAsymmetryFactor);
                     manager.logger?.log?.(
                         `[BOUND-ASYMMETRY] trend=${dw.trend} slopeOffset=${dw.slopeOffset.toFixed(4)} `
-                        + `raw=${(adjustment.rawAsymmetryFactor * 100).toFixed(1)}% `
-                        + `cap=${(maxAsymmetryFactor * 100).toFixed(0)}% `
-                        + `asymmetry=${(adjustment.appliedAsymmetryFactor * 100).toFixed(1)}% `
-                        + `min ${minP.toFixed(8)}→${resolvedMinP.toFixed(8)} `
-                        + `max ${maxP.toFixed(8)}→${resolvedMaxP.toFixed(8)}`,
+                        + `raw=${((adjustment.rawAsymmetryFactor ?? 0) * 100).toFixed(1)}% `
+                        + `cap=${((maxAsymmetryFactor ?? 0) * 100).toFixed(0)}% `
+                        + `asymmetry=${((adjustment.appliedAsymmetryFactor ?? 0) * 100).toFixed(1)}% `
+                        + `min ${(minP ?? 0).toFixed(8)}→${(resolvedMinP ?? 0).toFixed(8)} `
+                        + `max ${(maxP ?? 0).toFixed(8)}→${(resolvedMaxP ?? 0).toFixed(8)}`,
                         'info'
                     );
                 }
@@ -798,18 +796,18 @@ export async function initializeGrid(manager) {
                 const asymmetry = Number(rootBounds.appliedAsymmetryFactor);
                 const rootTrend = rootBounds.trend;
                 if (rootTrend === 'DOWN') {
-                    resolvedMinP = gp / ((gp / minP) * (1 + asymmetry));
-                    resolvedMaxP = gp * ((maxP / gp) * (1 - asymmetry));
+                    resolvedMinP = gp / ((gp / minP!) * (1 + asymmetry));
+                    resolvedMaxP = gp * ((maxP! / gp) * (1 - asymmetry));
                 } else {
-                    resolvedMinP = gp / ((gp / minP) * (1 - asymmetry));
-                    resolvedMaxP = gp * ((maxP / gp) * (1 + asymmetry));
+                    resolvedMinP = gp / ((gp / minP!) * (1 - asymmetry));
+                    resolvedMaxP = gp * ((maxP! / gp) * (1 + asymmetry));
                 }
                 rangeScalingFactor = asymmetry;
                 manager.logger?.log?.(
                     `[BOUND-ASYMMETRY] trend=${rootTrend} `
                     + `asymmetry=${(asymmetry * 100).toFixed(1)}% `
-                    + `(root-level) min ${minP.toFixed(8)}→${resolvedMinP.toFixed(8)} `
-                    + `max ${maxP.toFixed(8)}→${resolvedMaxP.toFixed(8)}`,
+                    + `(root-level) min ${(minP ?? 0).toFixed(8)}→${(resolvedMinP ?? 0).toFixed(8)} `
+                    + `max ${(maxP ?? 0).toFixed(8)}→${(resolvedMaxP ?? 0).toFixed(8)}`,
                     'info'
                 );
             }
@@ -827,17 +825,19 @@ export async function initializeGrid(manager) {
             gridStartPrice = adjustedMarketPrice;
             offsetAdjustedStartPrice = adjustedMarketPrice;
         }
-        if (!(gridStartPrice >= resolvedMinP && gridStartPrice <= resolvedMaxP)) {
-            if (Number.isFinite(gp) && gp > 0 && gp >= resolvedMinP && gp <= resolvedMaxP) {
+        const rMinP = resolvedMinP ?? 0;
+        const rMaxP = resolvedMaxP ?? 0;
+        if (!(gridStartPrice >= rMinP && gridStartPrice <= rMaxP)) {
+            if (Number.isFinite(gp) && gp > 0 && gp >= rMinP && gp <= rMaxP) {
                 gridStartPrice = gp;
                 manager.logger?.log?.(
-                    `initializeGrid: startPrice (${mp}) outside bounds [${resolvedMinP}, ${resolvedMaxP}]; using gridPrice center ${gp}`,
+                    `initializeGrid: startPrice (${mp}) outside bounds [${rMinP}, ${rMaxP}]; using gridPrice center ${gp}`,
                     'warn'
                 );
             } else {
-                const clamped = Math.min(resolvedMaxP, Math.max(resolvedMinP, gridStartPrice));
+                const clamped = Math.min(rMaxP, Math.max(rMinP, gridStartPrice));
                 manager.logger?.log?.(
-                    `initializeGrid: startPrice (${mp}) outside bounds [${resolvedMinP}, ${resolvedMaxP}]; clamping to ${clamped}`,
+                    `initializeGrid: startPrice (${mp}) outside bounds [${rMinP}, ${rMaxP}]; clamping to ${clamped}`,
                     'warn'
                 );
                 gridStartPrice = clamped;
@@ -915,8 +915,8 @@ export async function initializeGrid(manager) {
         );
 
         // Verification of sizes
-        const sells = filterOrdersByType(sizedOrders, ORDER_TYPES.SELL).map(o => Number(o.size || 0));
-        const buys = filterOrdersByType(sizedOrders, ORDER_TYPES.BUY).map(o => Number(o.size || 0));
+        const sells = filterOrdersByType(sizedOrders, ORDER_TYPES.SELL).map((o: any) => Number(o.size || 0));
+        const buys = filterOrdersByType(sizedOrders, ORDER_TYPES.BUY).map((o: any) => Number(o.size || 0));
         if (checkSizesBeforeMinimum(sells, minSellSize, precA) || checkSizesBeforeMinimum(buys, minBuySize, precB)) {
             throw new Error('Calculated orders fall below minimum allowable size.');
         }
@@ -966,7 +966,7 @@ export async function initializeGrid(manager) {
      * @param {string} opts.privateKey - Private key.
      * @returns {Promise<void>}
      */
-export async function recalculateGrid(manager, opts) {
+export async function recalculateGrid(manager: any, opts: any): Promise<void> {
         const { readOpenOrdersFn, chainOrders, account, privateKey } = opts;
 
         // Suppress invariant warnings during full resync
@@ -984,7 +984,7 @@ export async function recalculateGrid(manager, opts) {
 
             // CRITICAL: Filter out PARTIAL orders before synchronizing - they're from old grid
             // and shouldn't be part of the fresh regenerated grid structure
-            const activeOrders = chainOpenOrders.filter(o => o.state !== ORDER_STATES.PARTIAL);
+            const activeOrders = chainOpenOrders.filter((o: any) => o.state !== ORDER_STATES.PARTIAL);
 
             await manager.syncFromOpenOrders(activeOrders, { skipAccounting: true });
             manager.resetFunds();
@@ -1015,7 +1015,7 @@ export async function recalculateGrid(manager, opts) {
      * @param {import('./types').OrderManager} manager - Manager instance with order state
      * @returns {import('./types').SideUpdateFlags}
      */
-export function checkAndUpdateGridIfNeeded(manager) {
+export function checkAndUpdateGridIfNeeded(manager: any): any {
         const threshold = manager.config?.gridLimits?.GRID_REGENERATION_PERCENTAGE;
         const chainSnap = manager.getChainFundsSnapshot();
         const gridBuy = Number(manager.funds?.total?.grid?.buy || 0);
@@ -1133,8 +1133,8 @@ export async function _recalculateGridOrderSizesFromBlockchain(manager: any, ord
         // SELL: sorted ASC (Market to Edge)
         // BUY: sorted ASC (Edge to Market)
         const allSideSlots = (Array.from(manager.orders.values()) as Order[])
-            .filter(o => o.type === orderType)
-            .sort((a, b) => a.price - b.price);
+            .filter((o: any) => o.type === orderType)
+            .sort((a: any, b: any) => a.price - b.price);
 
         if (allSideSlots.length === 0) return collectActions ? { actions: [], changed: false } : undefined;
 
@@ -1149,7 +1149,7 @@ export async function _recalculateGridOrderSizesFromBlockchain(manager: any, ord
             ctx.precision
         );
 
-        const actions = [];
+        const actions: any[] = [];
         let changed = false;
 
         const freeKey = isBuy ? 'buyFree' : 'sellFree';
@@ -1257,26 +1257,26 @@ export async function _recalculateGridOrderSizesFromBlockchain(manager: any, ord
      * @param {number|null} [overrideBoundaryIdx=null] - Optional override for boundary index
      * @returns {Promise<{actions: Array, workingGrid: import('./working_grid'), workingIndexes: Object, workingBoundary: number, hasWorkingChanges: boolean, aborted: boolean}|null>}
      */
-export async function updateGridFromBlockchainSnapshot(manager, orderType = 'both', fromBlockchainTimer = false, overrideBoundaryIdx = null) {
+export async function updateGridFromBlockchainSnapshot(manager: any, orderType: any = 'both', fromBlockchainTimer: any = false, overrideBoundaryIdx: any = null) {
         if (!fromBlockchainTimer && manager.config?.accountId) {
             await manager.fetchAccountTotals(manager.config.accountId);
         }
 
         const { WorkingGrid } = require('./working_grid');
         const workingGrid = new WorkingGrid(manager.orders, { baseVersion: manager._gridVersion });
-        const allActions = [];
+        const allActions: any[] = [];
         let hasWorkingChanges = false;
 
         // Calculate size updates for each side (via existing sizing function in COW mode)
         if (orderType === ORDER_TYPES.BUY || orderType === 'both') {
-            const buyResult = await _recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.BUY, { workingGrid });
-            allActions.push(...buyResult.actions);
-            hasWorkingChanges = hasWorkingChanges || buyResult.changed;
+            const buyResult = await _recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.BUY, { workingGrid })!;
+            allActions.push(...buyResult!.actions);
+            hasWorkingChanges = hasWorkingChanges || buyResult!.changed;
         }
         if (orderType === ORDER_TYPES.SELL || orderType === 'both') {
-            const sellResult = await _recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.SELL, { workingGrid });
-            allActions.push(...sellResult.actions);
-            hasWorkingChanges = hasWorkingChanges || sellResult.changed;
+            const sellResult = await _recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.SELL, { workingGrid })!;
+            allActions.push(...sellResult!.actions);
+            hasWorkingChanges = hasWorkingChanges || sellResult!.changed;
         }
 
         // If the boundary is shifting, reassign slot types in the WorkingGrid now.
@@ -1286,8 +1286,8 @@ export async function updateGridFromBlockchainSnapshot(manager, orderType = 'bot
         if (overrideBoundaryIdx !== null && overrideBoundaryIdx !== manager.boundaryIdx) {
             const gapSlots = calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
             const allSlots = (Array.from(workingGrid.values()) as Order[])
-                .filter(s => s.price != null)
-                .sort((a, b) => a.price - b.price);
+                .filter((s: any) => s.price != null)
+                .sort((a: any, b: any) => a.price - b.price);
             const updatedSlots = assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES, ORDER_STATES);
             for (const slot of updatedSlots) {
                 workingGrid.set(slot.id, slot);
@@ -1339,7 +1339,7 @@ export async function updateGridFromBlockchainSnapshot(manager, orderType = 'bot
      * @param {import('./types').OrderManager|null} [manager=null] - Manager instance (for grid lock access)
      * @returns {Promise<import('./types').GridComparisonResult>}
      */
-export async function compareGrids(calculatedGrid, persistedGrid, manager = null) {
+export async function compareGrids(calculatedGrid: any, persistedGrid: any, manager: any = null): Promise<any> {
         if (!Array.isArray(calculatedGrid) || !Array.isArray(persistedGrid)) {
             return { buy: { metric: 0, updated: false }, sell: { metric: 0, updated: false } };
         }
@@ -1364,10 +1364,10 @@ export async function compareGrids(calculatedGrid, persistedGrid, manager = null
         // Partial orders are excluded from divergence calculation as they are expected to deviate;
         // they are instead handled by the available-funds ratio check or follow-up correction.
         // Must be sorted ASC for calculateRotationOrderSizes to match geometric weight distribution
-        const filterForRms = (orders, type) => {
-            const result = Array.isArray(orders) ? orders.filter(o => o && o.type === type && o.state === ORDER_STATES.ACTIVE) : [];
+        const filterForRms = (orders: any, type: any): any[] => {
+            const result = Array.isArray(orders) ? orders.filter((o: any) => o && o.type === type && o.state === ORDER_STATES.ACTIVE) : [];
             return result
-                .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
+                .sort((a: any, b: any) => (a.price ?? 0) - (b.price ?? 0));
         };
 
         const calculatedBuys = filterForRms(calculatedSnap, ORDER_TYPES.BUY);
@@ -1380,14 +1380,14 @@ export async function compareGrids(calculatedGrid, persistedGrid, manager = null
         // so both buy and sell metrics share a single fund snapshot. This avoids the previous
         // double-recalculateFunds between the two sides and keeps the metric consistent even if
         // a fill event arrives between per-side calculations.
-        const computeSideIdeals = (activeOrders, type, ctx) => {
+        const computeSideIdeals = (activeOrders: any, type: any, ctx: any): any => {
             if (!manager || !ctx || ctx.budget <= 0 || activeOrders.length === 0) return activeOrders;
 
             // Identify ALL slots currently assigned to this side.
             // Ideal sizing must use the full slot count to determine geometric share per slot.
             const sideSlots = (Array.from(manager.orders.values()) as Order[])
-                .filter(o => o.type === type)
-                .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
+                .filter((o: any) => o.type === type)
+                .sort((a: any, b: any) => (a.price ?? 0) - (b.price ?? 0));
 
             if (sideSlots.length === 0) return activeOrders;
 
@@ -1405,10 +1405,10 @@ export async function compareGrids(calculatedGrid, persistedGrid, manager = null
 
                 // Map Ideal sizes to IDs for quick lookup
                 const idealMap = new Map();
-                sideSlots.forEach((slot, i) => idealMap.set(slot.id, allIdealSizes[i]));
+                sideSlots.forEach((slot: any, i: any) => idealMap.set(slot.id, allIdealSizes[i]));
 
                 // Return the activeOrders subset with their true geometric ideal sizes
-                return activeOrders.map(o => ({ ...o, size: idealMap.get(o.id) ?? 0 }));
+                return activeOrders.map((o: any) => ({ ...o, size: idealMap.get(o.id) ?? 0 }));
             } catch (e: any) {
                 return activeOrders;
             }
@@ -1469,7 +1469,7 @@ export async function compareGrids(calculatedGrid, persistedGrid, manager = null
      * @param {Array<import('./types').GridOrderSlot>} persistedGrid - Current/persisted grid
      * @returns {Promise<import('./types').DivergenceResult>}
      */
-export async function monitorDivergence(manager, calculatedGrid, persistedGrid) {
+export async function monitorDivergence(manager: any, calculatedGrid: any, persistedGrid: any): Promise<any> {
         // 1. Check ratio-based divergence (available funds vs allocated)
         const ratioResult = checkAndUpdateGridIfNeeded(manager);
 
@@ -1505,16 +1505,16 @@ export async function monitorDivergence(manager, calculatedGrid, persistedGrid) 
      * @param {import('./types').OrderManager} manager - The manager instance.
      * @returns {{onChainBuys: Array<import('./types').Order>, onChainSells: Array<import('./types').Order>}}
      */
-function _getOnChainOrders(manager) {
+function _getOnChainOrders(manager: any): any {
         const onChainBuys = [
             ...manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE),
             ...manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL)
-        ].filter(o => o?.orderId && Number(o?.size || 0) > 0);
+        ].filter((o: any) => o?.orderId && Number(o?.size || 0) > 0);
 
         const onChainSells = [
             ...manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE),
             ...manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.PARTIAL)
-        ].filter(o => o?.orderId && Number(o?.size || 0) > 0);
+        ].filter((o: any) => o?.orderId && Number(o?.size || 0) > 0);
 
         return { onChainBuys, onChainSells };
     }
@@ -1524,7 +1524,7 @@ function _getOnChainOrders(manager) {
      * @param {import('./types').OrderManager} manager - The manager instance.
      * @returns {number} The calculated spread percentage.
      */
-export function calculateCurrentSpread(manager) {
+export function calculateCurrentSpread(manager: any): number {
         const { onChainBuys, onChainSells } = _getOnChainOrders(manager);
         return calculateSpreadFromOrders(onChainBuys, onChainSells);
     }
@@ -1552,10 +1552,10 @@ export function calculateCurrentSpread(manager) {
      * @param {Function|null} [updateOrdersOnChainBatch=null] - Optional batch update function
      * @returns {Promise<import('./types').SpreadCheckResult>}
      */
-export async function checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch = null) {
+export async function checkSpreadCondition(manager: any, _BitShares: any, updateOrdersOnChainBatch: any = null): Promise<any> {
         // CRITICAL: Acquire corrections lock to serialize spread correction operations
         // This prevents concurrent fill processing from modifying funds while we're making decisions
-        let correction = null;
+        let correction: any = null;
         let shouldApplyCorrection = false;
 
         // Derive current market price from the bot's own grid (no blockchain call needed).
@@ -1569,7 +1569,7 @@ export async function checkSpreadCondition(manager, BitShares, updateOrdersOnCha
             : Number(manager.config.startPrice) || 0;
 
         // FIX: Use optional chaining for lock - if no lock exists, execute synchronously
-        let fundSnapshot = null;
+        let fundSnapshot: any = null;
 
         // Detect empty-side condition: when one side has zero on-chain orders,
         // the spread is technically infinite and shouldFlagOutOfSpread's old
@@ -1592,11 +1592,11 @@ export async function checkSpreadCondition(manager, BitShares, updateOrdersOnCha
 
             const buyCount = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE)
                 .concat(manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL))
-                .filter(o => o?.orderId && Number(o?.size || 0) > 0)
+                .filter((o: any) => o?.orderId && Number(o?.size || 0) > 0)
                 .length;
             const sellCount = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE)
                 .concat(manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.PARTIAL))
-                .filter(o => o?.orderId && Number(o?.size || 0) > 0)
+                .filter((o: any) => o?.orderId && Number(o?.size || 0) > 0)
                 .length;
 
             manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, manager.config.incrementPercent);
@@ -1741,7 +1741,7 @@ export async function checkSpreadCondition(manager, BitShares, updateOrdersOnCha
      * @param {Function|null} [updateOrdersOnChainBatch=null] - Optional batch update function.
      * @returns {Promise<import('./types').DustCheckResult>}
      */
-export async function checkGridHealth(manager, updateOrdersOnChainBatch = null) {
+export async function checkGridHealth(manager: any, _updateOrdersOnChainBatch: any = null): Promise<any> {
         if (!manager) return { buyDust: false, sellDust: false, buyDustOrders: [], sellDustOrders: [] };
 
         // Skip health checks during bootstrap to prevent spamming warnings
@@ -1775,12 +1775,12 @@ export async function checkGridHealth(manager, updateOrdersOnChainBatch = null) 
      * @param {import('./types').OrderManager} manager
      * @returns {Promise<import('./types').DustCheckResult>}
      */
-export async function checkWindowDust(manager) {
+export async function checkWindowDust(manager: any): Promise<any> {
         if (!manager) return { buyDust: false, sellDust: false, buyDustOrders: [], sellDustOrders: [] };
 
         const allOrders = Array.from(manager.orders.values()) as Order[];
 
-        const isLiveOrder = order =>
+        const isLiveOrder = (order: any) =>
             order &&
             order.orderId &&
             order.price != null &&
@@ -1788,11 +1788,11 @@ export async function checkWindowDust(manager) {
 
         // Identify top-of-window orders (closest to market per side).
         const topBuyOrder = allOrders
-            .filter(o => o.type === ORDER_TYPES.BUY && isLiveOrder(o))
-            .sort((a, b) => b.price - a.price)[0];
+            .filter((o: any) => o.type === ORDER_TYPES.BUY && isLiveOrder(o))
+            .sort((a: any, b: any) => b.price - a.price)[0];
         const topSellOrder = allOrders
-            .filter(o => o.type === ORDER_TYPES.SELL && isLiveOrder(o))
-            .sort((a, b) => a.price - b.price)[0];
+            .filter((o: any) => o.type === ORDER_TYPES.SELL && isLiveOrder(o))
+            .sort((a: any, b: any) => a.price - b.price)[0];
 
         // Check if an order has a duplicate price level — an active sibling at the
         // same price within tolerance. If so, cancelling won't create a grid gap.
@@ -1801,7 +1801,7 @@ export async function checkWindowDust(manager) {
         // Uses the LARGER size of the two orders for tolerance calculation to prevent
         // a tiny dust order from inflating the tolerance window.
         const hasDuplicatePriceLevel = (order: any, assets: any): boolean =>
-            allOrders.some(o => {
+            allOrders.some((o: any) => {
                 if (o.id === order.id || o.type !== order.type) return false;
                 if (o.state !== ORDER_STATES.ACTIVE || !o.orderId || o.price == null) return false;
                 const toleranceSize = Math.max(order.size, o.size);
@@ -1847,7 +1847,7 @@ export async function checkWindowDust(manager) {
      * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
      * @returns {Promise<Array<import('./types').GridOrderSlot>>} Orders whose size is below the dust threshold.
      */
-async function _getDustOrders(manager, partials, type) {
+async function _getDustOrders(manager: any, partials: any, type: any): Promise<any[]> {
         if (!partials || partials.length === 0) return [];
 
         const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
@@ -1855,8 +1855,8 @@ async function _getDustOrders(manager, partials, type) {
         const dustThresholdPercent = manager.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE;
 
         const sideSlots = (Array.from(manager.orders.values()) as Order[])
-            .filter(o => o.type === type)
-            .sort((a, b) => a.price - b.price);
+            .filter((o: any) => o.type === type)
+            .sort((a: any, b: any) => a.price - b.price);
 
         if (sideSlots.length === 0) return [];
 
@@ -1876,8 +1876,8 @@ async function _getDustOrders(manager, partials, type) {
         // partial's threshold collapses to 0 — no order qualifies as dust.
         // We still run the filter for uniformity so the threshold logic
         // stays consistent regardless of budget state.
-        return partials.filter(p => {
-            const idx = sideSlots.findIndex(s => s.id === p.id);
+        return partials.filter((p: any) => {
+            const idx = sideSlots.findIndex((s: any) => s.id === p.id);
             if (idx === -1) return false;
 
             const threshold = idealSizes.length > idx && idealSizes[idx] > 0
@@ -1896,7 +1896,7 @@ async function _getDustOrders(manager, partials, type) {
      * @returns {Promise<boolean>} true if dust partials exist
      * @private
      */
-async function _hasAnyDust(manager, partials, type) {
+async function _hasAnyDust(manager: any, partials: any, type: any): Promise<boolean> {
         return (await _getDustOrders(manager, partials, type)).length > 0;
     }
 
@@ -1907,7 +1907,7 @@ async function _hasAnyDust(manager, partials, type) {
      * @param {'buy'|'sell'} side
      * @returns {Promise<boolean>}
      */
-export async function hasAnyDust(manager, partials, side) {
+export async function hasAnyDust(manager: any, partials: any, side: any): Promise<boolean> {
         const type = side === 'buy' ? ORDER_TYPES.BUY : side === 'sell' ? ORDER_TYPES.SELL : null;
         if (!type) return false;
         return await _hasAnyDust(manager, partials, type);
@@ -1921,7 +1921,7 @@ export async function hasAnyDust(manager, partials, side) {
      * @param {'buy'|'sell'} side
      * @returns {Promise<Array<import('./types').GridOrderSlot>>}
      */
-export async function getDustOrders(manager, partials, side) {
+export async function getDustOrders(manager: any, partials: any, side: any): Promise<any[]> {
         const type = side === 'buy' ? ORDER_TYPES.BUY : side === 'sell' ? ORDER_TYPES.SELL : null;
         if (!type) return [];
         return await _getDustOrders(manager, partials, type);
@@ -1934,7 +1934,7 @@ export async function getDustOrders(manager, partials, side) {
      *   normalize sell-side funds into buy-side units for a fair cross-asset comparison.
      * @returns {{ side: import('./types').OrderType|null, reason: string }} The side to correct on, or null if insufficient funds.
      */
-export function determineOrderSideByFunds(manager, currentMarketPrice) {
+export function determineOrderSideByFunds(manager: any, currentMarketPrice: any): any {
         const buyAvailable = Math.min(
             Number(manager.funds?.available?.buy || 0),
             Number(manager.accountTotals?.buyFree || 0)
@@ -1956,7 +1956,7 @@ export function determineOrderSideByFunds(manager, currentMarketPrice) {
         const buyViable = buyAvailable > buyMinUnit;
         const sellViable = sellAvailable > sellMinUnit;
 
-        let side = null;
+        let side: any = null;
         if (buyViable && sellViable) {
             // Normalize sell (assetA) to assetB units using market price so both sides
             // are comparable. Without this, a raw number comparison (e.g. 2192 BTS vs
@@ -2018,14 +2018,14 @@ export function determineOrderSideByFunds(manager, currentMarketPrice) {
      * @param {import('./types').OrderType} targetType - The type of order being placed (ORDER_TYPES.BUY or ORDER_TYPES.SELL).
      * @returns {Promise<number|null>} The calculated geometric size.
      */
-export async function calculateGeometricSizeForSpreadCorrection(manager, targetType) {
+export async function calculateGeometricSizeForSpreadCorrection(manager: any, targetType: any): Promise<any> {
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         // Count only on-chain orders (ACTIVE+PARTIAL) to avoid diluting the
         // spread-correction order size across hundreds of virtual slots on a
         // full-rail grid.  Virtual slots have their capital tracked separately
         // in funds.virtual and should not compete for the free budget.
         const slotsCount = (Array.from(manager.orders.values()) as Order[])
-            .filter(o => o.type === targetType && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
+            .filter((o: any) => o.type === targetType && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
             .length + 1;
 
         // Use centralized sizing context (respects botFunds % allocation)
@@ -2063,14 +2063,14 @@ export async function calculateGeometricSizeForSpreadCorrection(manager, targetT
      * @returns {Promise<import('./types').SpreadCorrectionResult>}
      * @throws {Error} If preferredSide is invalid.
      */
-export async function prepareSpreadCorrectionOrders(manager, preferredSide) {
+export async function prepareSpreadCorrectionOrders(manager: any, preferredSide: any): Promise<any> {
         // FIX: Validate preferredSide parameter to prevent silent logic errors
         if (preferredSide !== ORDER_TYPES.BUY && preferredSide !== ORDER_TYPES.SELL) {
             throw new Error(`Invalid preferredSide: ${preferredSide}. Must be '${ORDER_TYPES.BUY}' or '${ORDER_TYPES.SELL}'.`);
         }
 
-        const ordersToPlace = [];
-        const ordersToUpdate = [];
+        const ordersToPlace: any[] = [];
+        const ordersToUpdate: any[] = [];
         const railType = preferredSide;
         const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const configuredMissingSlots = Number(manager.outOfSpread || 0);
@@ -2085,10 +2085,10 @@ export async function prepareSpreadCorrectionOrders(manager, preferredSide) {
         // 2. Fallback: Activate SPREAD slots at the edge (Lowest Spread for Buy / Highest Spread for Sell).
 
         const allOrders = Array.from(manager.orders.values()) as Order[];
-        let edgePartial = null;
+        let edgePartial: any = null;
         const partials = allOrders
-            .filter(o => o.type === railType && o.state === ORDER_STATES.PARTIAL)
-            .sort((a, b) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+            .filter((o: any) => o.type === railType && o.state === ORDER_STATES.PARTIAL)
+            .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
         if (partials.length > 0) {
             edgePartial = partials[0];
             manager.logger?.log?.(`[SPREAD-CORRECTION] Identified partial order at ${edgePartial.price} for update`, 'debug');
@@ -2096,16 +2096,16 @@ export async function prepareSpreadCorrectionOrders(manager, preferredSide) {
 
         // Primary candidates: SPREAD-type slots adjacent to the gap.
         const typedSpreadCandidates = allOrders
-            .filter(o => o.type === ORDER_TYPES.SPREAD && isSlotAvailable(o))
-            .sort((a, b) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price)
+            .filter((o: any) => o.type === ORDER_TYPES.SPREAD && isSlotAvailable(o))
+            .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price)
             .slice(0, missingSlots);
 
         // Secondary candidates: orphaned virtual slots of the correct side-type that have
         // lost their order (e.g. stale-cleaned after a race condition during a crash).
         // These sit inside the active window and are invisible to the SPREAD-type filter above.
         const orphanedVirtualCandidates = allOrders
-            .filter(o => o.type === railType && o.state === ORDER_STATES.VIRTUAL && !o.orderId && Number(o.size || 0) === 0)
-            .sort((a, b) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price)
+            .filter((o: any) => o.type === railType && o.state === ORDER_STATES.VIRTUAL && !o.orderId && Number(o.size || 0) === 0)
+            .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price)
             .slice(0, missingSlots);
 
         // Merge: prefer orphaned virtuals (they already occupy correct grid positions) then
@@ -2125,14 +2125,14 @@ export async function prepareSpreadCorrectionOrders(manager, preferredSide) {
             return { ordersToPlace: [], ordersToUpdate: [] };
         }
 
-        const orphanedIds = new Set(orphanedVirtualCandidates.map(o => o.id));
+        const orphanedIds = new Set(orphanedVirtualCandidates.map((o: any) => o.id));
         const sideSlots = allOrders
-            .filter(o => o.type === railType && !orphanedIds.has(o.id))
-            .sort((a, b) => a.price - b.price);
+            .filter((o: any) => o.type === railType && !orphanedIds.has(o.id))
+            .sort((a: any, b: any) => a.price - b.price);
         const syntheticSideSlots = [
             ...sideSlots,
-            ...spreadCandidates.map(slot => ({ ...slot, type: railType }))
-        ].sort((a, b) => a.price - b.price);
+            ...spreadCandidates.map((slot: any) => ({ ...slot, type: railType }))
+        ].sort((a: any, b: any) => a.price - b.price);
 
         const ctx = await _getSizingContext(manager, sideName);
         if (!ctx || ctx.budget <= 0 || syntheticSideSlots.length === 0) {
@@ -2151,7 +2151,7 @@ export async function prepareSpreadCorrectionOrders(manager, preferredSide) {
         );
 
         const idealById = new Map();
-        syntheticSideSlots.forEach((slot, idx) => {
+        syntheticSideSlots.forEach((slot: any, idx: any) => {
             idealById.set(slot.id, Number(idealSizes[idx] || 0));
         });
 
@@ -2161,7 +2161,7 @@ export async function prepareSpreadCorrectionOrders(manager, preferredSide) {
         ));
 
         const minAbsoluteSize = getMinAbsoluteOrderSize(railType, manager.assets);
-        const prioritizedTargets = [];
+        const prioritizedTargets: any[] = [];
 
         if (edgePartial && edgePartial.id) {
             const ideal = Number(idealById.get(edgePartial.id) || 0);
@@ -2194,17 +2194,17 @@ export async function prepareSpreadCorrectionOrders(manager, preferredSide) {
             return { ordersToPlace: [], ordersToUpdate: [] };
         }
 
-        const totalNeeded = prioritizedTargets.reduce((sum, t) => sum + Math.max(0, Number(t.needed || 0)), 0);
+        const totalNeeded = prioritizedTargets.reduce((sum: any, t: any) => sum + Math.max(0, Number(t.needed || 0)), 0);
         let recoveredBudget = 0;
-        const redistributionUpdates = [];
+        const redistributionUpdates: any[] = [];
 
         if (totalNeeded > availableFund + precisionEpsilon) {
             let shortfall = totalNeeded - availableFund;
 
             const donors = sideSlots
-                .filter(o => hasOnChainId(o) && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
-                .filter(o => !edgePartial || o.id !== edgePartial.id)
-                .sort((a, b) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
+                .filter((o: any) => hasOnChainId(o) && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
+                .filter((o: any) => !edgePartial || o.id !== edgePartial.id)
+                .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
 
             for (const donor of donors) {
                 if (shortfall <= precisionEpsilon) break;
@@ -2263,9 +2263,9 @@ export async function prepareSpreadCorrectionOrders(manager, preferredSide) {
 
         const combinedUpdates = [...redistributionUpdates];
         for (const plannedUpdate of ordersToUpdate) {
-            const id = plannedUpdate?.partialOrder?.id || plannedUpdate?.id;
+            const id = plannedUpdate?.partialOrder?.id || (plannedUpdate as any)?.id;
             if (!id) continue;
-            const existingIdx = combinedUpdates.findIndex(u => (u?.partialOrder?.id || u?.id) === id);
+            const existingIdx = combinedUpdates.findIndex((u: any) => (u?.partialOrder?.id || u?.id) === id);
             if (existingIdx >= 0) {
                 combinedUpdates[existingIdx] = plannedUpdate;
             } else {

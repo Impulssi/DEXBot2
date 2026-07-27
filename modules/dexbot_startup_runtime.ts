@@ -1,23 +1,25 @@
 /** Startup runtime - bot initialization, grid placement, and startup sequence */
-const { path } = require('./path_api');
-const { BitShares, onReconnect: registerReconnectHook } = require('./bitshares_client');
-const chainOrders = require('./chain_orders');
-const { OrderManager, grid: Grid } = require('./order');
-function initializeFeeCache(...args) { return require('./order/utils/system').initializeFeeCache(...args); }
-function parseJsonWithComments(...args) { return require('./order/utils/system').parseJsonWithComments(...args); }
-function buildFillKey(...args) { return require('./order/utils/order').buildFillKey(...args); }
-function correctAllPriceMismatches(...args) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
-function parseChainOrder(...args) { return require('./order/utils/order').parseChainOrder(...args); }
-const { ORDER_STATES } = require('./constants');
-const { PATHS } = require('./paths');
-const { getStorage } = require('./storage');
+
+import { path } from './path_api';
+import * as chainOrders from './chain_orders';
+import { ORDER_STATES } from './constants';
+import { PATHS } from './paths';
+import { getStorage } from './storage';
+import { normalizeBotEntry } from './bot_settings';
+import * as Format from './order/format';
+import { AccountOrders } from './account_orders';
+import { BitShares, onReconnect as registerReconnectHook } from './bitshares_client';
+import orderModule from './order';
+const { OrderManager, grid: Grid } = orderModule;
+function initializeFeeCache(...args: any) { return require('./order/utils/system').initializeFeeCache(...args); }
+function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
+function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
+function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
+function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
 const storage = getStorage();
-const { normalizeBotEntry } = require('./bot_settings');
-const Format = require('./order/format');
-function attemptResumePersistedGridByPriceMatch(...args) { return require('./order/grid_reconcile').attemptResumePersistedGridByPriceMatch(...args); }
-function decideStartupGridAction(...args) { return require('./order/grid_reconcile').decideStartupGridAction(...args); }
-function reconcileGridOrders(...args) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
-const { AccountOrders } = require('./account_orders');
+function attemptResumePersistedGridByPriceMatch(...args: any) { return require('./order/grid_reconcile').attemptResumePersistedGridByPriceMatch(...args); }
+function decideStartupGridAction(...args: any) { return require('./order/grid_reconcile').decideStartupGridAction(...args); }
+function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 
 /**
@@ -25,7 +27,7 @@ const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {Promise<Object>} startupState
  */
-async function initializeStartupState(bot) {
+async function initializeStartupState(bot: any) {
     bot.accountOrders = new AccountOrders({ botKey: bot.config.botKey });
     bot._processedFillStore.configure({
         accountOrders: bot.accountOrders
@@ -41,8 +43,8 @@ async function initializeStartupState(bot) {
     const raw = storage.readFile(PROFILES_BOTS_FILE);
     const allBotsConfig = parseJsonWithComments(raw).bots || [];
     const myBotConfig = allBotsConfig
-        .map((b, originalIdx) => b.active !== false ? normalizeBotEntry(b, originalIdx) : null)
-        .find(b => b && b.botKey === bot.config.botKey);
+        .map((b: any, originalIdx: any) => b.active !== false ? normalizeBotEntry(b, originalIdx) : null)
+        .find((b: any) => b && b.botKey === bot.config.botKey);
 
     if (myBotConfig) {
         await bot.accountOrders.syncMeta(myBotConfig);
@@ -80,7 +82,7 @@ async function initializeStartupState(bot) {
         let repairedGrid = persistedGrid;
         if (persistedGrid && persistedGrid.length > 0) {
             let repairCount = 0;
-            repairedGrid = persistedGrid.map(order => {
+            repairedGrid = persistedGrid.map((order: any) => {
                 if (order && order.orderId && order.orderId === order.id) {
                     repairCount++;
                     const repairedOrder = { ...order, orderId: '' };
@@ -118,7 +120,7 @@ async function initializeStartupState(bot) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {Object} startupState
  */
-async function finishStartupSequence(bot, startupState) {
+async function finishStartupSequence(bot: any, startupState: any) {
     let {
         persistedGrid,
         persistedBtsFeesOwed,
@@ -177,7 +179,7 @@ async function finishStartupSequence(bot, startupState) {
                         try {
                             await Promise.race([
                                 workPromise,
-                                new Promise((_, reject) => {
+                                new Promise((_: any, reject: any) => {
                                     safetyNetTimer = setTimeout(
                                         () => reject(new Error(`Safety-net sync exceeded ${safetyNetTimeoutMs}ms cap`)),
                                         safetyNetTimeoutMs
@@ -187,7 +189,7 @@ async function finishStartupSequence(bot, startupState) {
                         } catch (capErr: any) {
                             const fallback = await Promise.race([
                                 workPromise.then(() => ({ ok: true as const })),
-                                new Promise<{ ok: false }>(resolve => setTimeout(() => resolve({ ok: false }), 0))
+                                new Promise<{ ok: false }>((resolve: any) => setTimeout(() => resolve({ ok: false }), 0))
                             ]);
                             if (fallback.ok) {
                                 bot._log(`Safety-net sync completed despite timeout — ignoring spurious error.`, 'info');
@@ -200,10 +202,10 @@ async function finishStartupSequence(bot, startupState) {
                     }
                 };
                 setImmediate(() => {
-                    runSafetyNetSync().catch(err => {
+                    runSafetyNetSync().catch((err: any) => {
                         try {
                             bot._warn('Post-reconnect safety-net sync failed: ' + (err?.message || err));
-                        } catch (_warnErr: any) {
+                        } catch (_: any) {
                         }
                     });
                 });
@@ -243,7 +245,7 @@ async function finishStartupSequence(bot, startupState) {
                             const accountingResult = await bot._applyReplaySafeOrphanFillAccounting(fill, fillOp, {
                                 context: 'POST-RESET',
                                 logger: { log: bot._log.bind(bot) },
-                                replayMessage: (op) => `[POST-RESET] Replay detected for orphan fill ${op.order_id}; skipping duplicate credit`
+                                replayMessage: (op: any) => `[POST-RESET] Replay detected for orphan fill ${op.order_id}; skipping duplicate credit`
                             });
                             if (accountingResult.status === 'missing_key') {
                                 requiresOpenOrdersSync = true;
@@ -263,7 +265,7 @@ async function finishStartupSequence(bot, startupState) {
                             const accountingResult = await bot._applyReplaySafeTrackedFillAccounting(fill, fillOp, {
                                 context: 'POST-RESET',
                                 logger: { log: bot._log.bind(bot) },
-                                replayMessage: (op) => `[POST-RESET] Replay detected for ${op.order_id}; skipping duplicate rebalance`
+                                replayMessage: (op: any) => `[POST-RESET] Replay detected for ${op.order_id}; skipping duplicate rebalance`
                             });
                             if (accountingResult.status === 'missing_key') {
                                 requiresOpenOrdersSync = true;
@@ -388,8 +390,8 @@ async function finishStartupSequence(bot, startupState) {
                 persistedGrid,
                 chainOpenOrders,
                 manager: bot.manager,
-                logger: { log: (msg) => bot._log(msg) },
-                storeGrid: async (orders) => {
+                logger: { log: (msg: any) => bot._log(msg) },
+                storeGrid: async (orders: any) => {
                     await bot.manager.persistGrid(orders);
                 },
                 attemptResumeFn: attemptResumePersistedGridByPriceMatch,
@@ -402,7 +404,7 @@ async function finishStartupSequence(bot, startupState) {
 
             if (shouldRegenerate && chainOpenOrders.length > 0 && bot.manager?.assets) {
                 const orderCount = chainOpenOrders.filter(
-                    o => parseChainOrder(o, bot.manager.assets) !== null
+                    (o: any) => parseChainOrder(o, bot.manager.assets) !== null
                 ).length;
                 if (orderCount === 0) {
                     bot._log(`Persisted grid found with no matching orders (${chainOpenOrders.length} other-pair order(s) on account). Generating new grid.`);
@@ -498,7 +500,7 @@ async function finishStartupSequence(bot, startupState) {
                 try {
                     await Promise.race([
                         bot.manager.fetchAccountTotals(),
-                        new Promise((_, reject) => {
+                        new Promise((_: any, reject: any) => {
                             _fetchTimeoutHandle = setTimeout(() => reject(new Error('timeout')), FETCH_TIMEOUT_MS);
                         })
                     ]);
@@ -557,7 +559,7 @@ async function finishStartupSequence(bot, startupState) {
  * Place initial orders on the blockchain (extracted logic from original placeInitialOrders).
  * @param {import('./dexbot_class').DEXBot} bot
  */
-async function placeInitialOrdersImpl(bot) {
+async function placeInitialOrdersImpl(bot: any) {
     if (!bot.manager) {
         const mgrLogFile = bot.config?.name ? path.join(PATHS.LOGS_DIR, `${bot.config.name}.log`) : undefined;
         bot.manager = new OrderManager({ ...bot.config, logFile: mgrLogFile });
@@ -568,7 +570,7 @@ async function placeInitialOrdersImpl(bot) {
     try {
         try {
             const botFunds = bot.config && bot.config.botFunds ? bot.config.botFunds : {};
-            const needsPercent = (v) => typeof v === 'string' && v.includes('%');
+            const needsPercent = (v: any) => typeof v === 'string' && v.includes('%');
             if ((needsPercent(botFunds.buy) || needsPercent(botFunds.sell)) && (bot.accountId || bot.account)) {
                 if (typeof bot.manager._fetchAccountBalancesAndSetTotals === 'function') {
                     await bot.manager._fetchAccountBalancesAndSetTotals();
@@ -601,8 +603,5 @@ async function placeInitialOrdersImpl(bot) {
     }
 }
 
-export = {
-    initializeStartupState,
-    finishStartupSequence,
-    placeInitialOrdersImpl,
-};
+export { initializeStartupState, finishStartupSequence, placeInitialOrdersImpl }
+

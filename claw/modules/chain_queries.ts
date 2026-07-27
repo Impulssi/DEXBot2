@@ -1,6 +1,8 @@
-const { BitShares, waitForConnected } = require('./bitshares_client');
-const { loadDexbotOrderSystemUtils, loadDexbotOrderUtils } = require('./dexbot_bridge');
 
+
+import * as client from './bitshares_client';
+const { BitShares, waitForConnected } = client;
+import { loadDexbotOrderSystemUtils, loadDexbotOrderUtils } from './dexbot_bridge';
 function getDexbotSystem() {
   return loadDexbotOrderSystemUtils();
 }
@@ -151,21 +153,5 @@ async function listAssets(lowerBoundSymbol: any = 'A', limit = 100) {
   return dbCall('list_assets', [lowerBoundSymbol, limit]);
 }
 
-export = {
-  dbCall,
-  getAsset,
-  getBackingAsset,
-  getBitassetData,
-  getAssetPrecision,
-  getBalances,
-  getCallOrders,
-  getDynamicGlobalProperties,
-  getFullAccount,
-  getObjects,
-  getOrderBook,
-  getTicker,
-  listAssets,
-  readOpenOrders,
-  resolveAccountId,
-  resolveAccountName
-};
+export { dbCall, getAsset, getBackingAsset, getBitassetData, getAssetPrecision, getBalances, getCallOrders, getDynamicGlobalProperties, getFullAccount, getObjects, getOrderBook, getTicker, listAssets, readOpenOrders, resolveAccountId, resolveAccountName }
+

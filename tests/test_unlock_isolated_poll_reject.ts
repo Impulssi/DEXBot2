@@ -36,7 +36,7 @@ function createThrowingGetStatusSupervisor() {
     };
 }
 
-childProcess.spawn = (command, args, options) => {
+childProcess.spawn = (_command, _args, _options) => {
     return makeFakeChild({ withStdio: true });
 };
 

@@ -1,5 +1,6 @@
 const assert = require('assert');
 const utils = require('../modules/order/utils/math');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // Mock getAssetFees to ensure test can run without blockchain connection
 utils.getAssetFees = (asset, amount, isMaker = true) => {
@@ -307,8 +308,8 @@ function testExactLogScenario() {
          console.log('  ✅ Exact log scenario produces valid remaining amounts');
          process.exit(0);
      } catch (err) {
-         console.error('\n❌ Test failed:', err.message);
-         console.error(err.stack);
+         console.error('\n❌ Test failed:', getErrorMessage(err));
+         console.error((err as any).stack);
          process.exit(1);
      }
  })();

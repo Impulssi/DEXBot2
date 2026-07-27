@@ -18,35 +18,35 @@
 // SECTION 1: EXTERNAL DEPENDENCIES
 // ===============================================================================
 
-const {
+
+import { persistGridSnapshot, deepFreeze, cloneMap } from './utils/system';
+import { WorkingGrid } from './working_grid';
+import Logger from './logger';
+import AsyncLock from './async_lock';
+import Accountant from './accounting';
+import StrategyEngine from './strategy';
+import SyncEngine from './sync_engine';
+import { calculateCurrentSpread, checkSpreadCondition, checkGridHealth } from './grid';
+import * as Format from './format';
+import {
     ORDER_TYPES,
     ORDER_STATES,
     REBALANCE_STATES,
-    COW_ACTIONS,
     DEFAULT_CONFIG,
     TIMING,
     LOG_LEVEL,
     PIPELINE_TIMING,
     COW_PERFORMANCE
-} = require('../constants');
-const {
+} from '../constants';
+import {
     getMinAbsoluteOrderSize,
     computeChainFundTotals,
     hasValidAccountTotals,
-    resolveConfigValue,
     resolveConfigValueWithRegistry,
     isExplicitZeroAllocation,
-    floatToBlockchainInt,
-    getPrecisionSlack
-} = require('./utils/math');
-const {
-    isOrderOnChain,
-    isPhantomOrder,
-    hasOnChainId,
-    convertToSpreadPlaceholder
-} = require('./utils/order');
-const { persistGridSnapshot, deepFreeze, cloneMap } = require('./utils/system');
-const {
+    floatToBlockchainInt
+} from './utils/math';
+import {
     validateOrder,
     validateGridForPersistence,
     calculateRequiredFunds,
@@ -60,16 +60,8 @@ const {
     buildAbortedResult,
     buildSuccessResult,
     evaluateCommit
-} = require('./utils/validate');
-const { WorkingGrid } = require('./working_grid');
-const Logger = require('./logger');
-const AsyncLock = require('./async_lock');
-const Accountant = require('./accounting');
-const StrategyEngine = require('./strategy');
-const SyncEngine = require('./sync_engine');
-const { calculateCurrentSpread, checkSpreadCondition, checkGridHealth } = require('./grid');
-const Format = require('./format');
-const { toFiniteNumber, isValidNumber } = Format;
+} from './utils/validate';
+const { toFiniteNumber } = Format;
 
 // ===============================================================================
 // SECTION 2: COW REBALANCE ENGINE
@@ -120,7 +112,7 @@ class COWRebalanceEngine {
     assets: any;
     config: any;
 
-    constructor(deps) {
+    constructor(deps: any) {
         this.strategy = deps.strategy;
         this.logger = deps.logger;
         this.assets = deps.assets;
@@ -134,7 +126,7 @@ class COWRebalanceEngine {
         funds,
         fills = [],
         excludeIds = new Set()
-    }) {
+    }: any) {
         const startTime = Date.now();
 
         const workingGrid = new WorkingGrid(masterGrid, { baseVersion: gridVersion });
@@ -157,13 +149,13 @@ class COWRebalanceEngine {
             targetGrid,
             targetBoundary,
             {
-                logger: (msg, level) => this.logger?.log(msg, level),
+                logger: (msg: any, level: any) => this.logger?.log(msg, level),
                 dustThresholdPercent
             }
         );
 
         if (reconcileResult.aborted) {
-            return buildAbortedResult(reconcileResult.reason);
+            return buildAbortedResult((reconcileResult as any).reason);
         }
 
         const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid);
@@ -418,7 +410,7 @@ class OrderManager {
         this._rebalanceState = REBALANCE_STATES.NORMAL;
     }
 
-    _setRebalanceState(state) {
+    _setRebalanceState(state: any) {
         this._rebalanceState = state;
         this.logger?.log(`[COW] Rebalance state: ${state}`, 'debug');
     }
@@ -502,7 +494,7 @@ class OrderManager {
             const driftCheck = this.checkFundDriftAfterFills();
             if (!driftCheck.isValid) {
                 result.hadDrift = true;
-                result.driftInfo = driftCheck;
+                result.driftInfo = driftCheck as any;
                 this.logger.log(
                     `[BOOTSTRAP-END] Fund drift detected after bootstrap: ${driftCheck.reason}. ` +
                     `This may indicate a bug in grid initialization.`,
@@ -540,17 +532,17 @@ class OrderManager {
         return this.accountant.resetFunds();
     }
 
-    async _deductFromChainFree(orderType, size, operation) {
+    async _deductFromChainFree(orderType: any, size: any, operation: any) {
         if (!this.accountant) return;
         return await this.accountant.tryDeductFromChainFree(orderType, size, operation);
     }
 
-    async _addToChainFree(orderType, size, operation) {
+    async _addToChainFree(orderType: any, size: any, operation: any) {
         if (!this.accountant) return;
         return await this.accountant.addToChainFree(orderType, size, operation);
     }
 
-    _getGridTotal(side) {
+    _getGridTotal(side: any) {
         return (this.funds?.committed?.grid?.[side] || 0) + (this.funds?.virtual?.[side] || 0);
     }
 
@@ -571,7 +563,7 @@ class OrderManager {
      * @param {number} [timeoutMs]
      * @returns {Promise<void>}
      */
-    async waitForAccountTotals(timeoutMs = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
+    async waitForAccountTotals(timeoutMs: any = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
         if (hasValidAccountTotals(this.accountTotals, true)) return;
 
         let waitPromise = null;
@@ -579,7 +571,7 @@ class OrderManager {
         await this._fundLock.acquire(async () => {
             if (hasValidAccountTotals(this.accountTotals, true)) return;
             if (!this._accountTotalsPromise) {
-                this._accountTotalsPromise = new Promise((resolve) => {
+                this._accountTotalsPromise = new Promise((resolve: any) => {
                     this._accountTotalsResolve = resolve;
                 });
             }
@@ -590,7 +582,7 @@ class OrderManager {
 
         await Promise.race([
             waitPromise,
-            new Promise<void>((resolve) => {
+            new Promise<void>((resolve: any) => {
                 setTimeout(() => {
                     this.logger.log('[FUND] Timeout waiting for account totals', 'warn');
                     resolve();
@@ -603,7 +595,7 @@ class OrderManager {
      * @param {string} [accountId] - Blockchain account ID
      * @returns {Promise<void>}
      */
-    async fetchAccountTotals(accountId) {
+    async fetchAccountTotals(accountId: any) {
         if (accountId) this.accountId = accountId;
         await this._fetchAccountBalancesAndSetTotals();
     }
@@ -616,13 +608,13 @@ class OrderManager {
      * @param {import('./types').AccountTotals} totals - Account balance totals
      * @returns {Promise<void>}
      */
-    async setAccountTotals(totals = { buy: null, sell: null, buyFree: null, sellFree: null }) {
+    async setAccountTotals(totals: any = { buy: null, sell: null, buyFree: null, sellFree: null }) {
         return await this._fundLock.acquire(async () => {
             return await this._setAccountTotals(totals);
         });
     }
 
-    async _setAccountTotals(totals) {
+    async _setAccountTotals(totals: any) {
         this.accountTotals = { ...(this.accountTotals || {}), ...totals, _lastFetchedAt: Date.now() };
         if (!this.funds) this.resetFunds();
 
@@ -798,7 +790,7 @@ class OrderManager {
      * @param {Object} info
      * @returns {Promise<import('./types').SyncResult>}
      */
-    syncFromOpenOrders(orders, info) {
+    syncFromOpenOrders(orders: any, info: any) {
         return this.sync.syncFromOpenOrders(orders, info);
     }
 
@@ -807,7 +799,7 @@ class OrderManager {
      * @param {Object} [options]
      * @returns {Promise<import('./types').SyncResult>}
      */
-    syncFromFillHistory(fill, options) {
+    syncFromFillHistory(fill: any, options: any) {
         return this.sync.syncFromFillHistory(fill, options);
     }
 
@@ -816,7 +808,7 @@ class OrderManager {
      * @param {Object} [options]
      * @returns {Promise<import('./types').BatchSyncResult>}
      */
-    syncFromFillHistoryBatch(fills, options) {
+    syncFromFillHistoryBatch(fills: any, options: any) {
         return this.sync.syncFromFillHistoryBatch(fills, options);
     }
 
@@ -825,14 +817,14 @@ class OrderManager {
      * @param {string} src - Source identifier
      * @returns {Promise<import('./types').SyncResult>}
      */
-    async synchronizeWithChain(data, src, options = {}) {
+    async synchronizeWithChain(data: any, src: any, options: any = {}) {
         // _gridLock acquisition is delegated to sync.synchronizeWithChain itself.
         // createOrder / cancelOrder acquire it inline; readOpenOrders and
         // periodicBlockchainFetch acquire it inside syncFromOpenOrders.
         return await this._applySync(data, src, options);
     }
 
-    async _applySync(data, src, options = {}) {
+    async _applySync(data: any, src: any, options: any = {}) {
         return await this.sync.synchronizeWithChain(data, src, options);
     }
 
@@ -844,7 +836,7 @@ class OrderManager {
      * @param {string[]|Set<string>} orderIds - Order IDs to lock
      * @returns {void}
      */
-    lockOrders(orderIds) {
+    lockOrders(orderIds: any) {
         if (!orderIds) return;
         const expiration = Date.now() + TIMING.LOCK_TIMEOUT_MS;
         for (const id of orderIds) if (id) this.shadowOrderIds.set(id, expiration);
@@ -855,7 +847,7 @@ class OrderManager {
      * @param {string[]|Set<string>} orderIds - Order IDs to unlock
      * @returns {void}
      */
-    unlockOrders(orderIds) {
+    unlockOrders(orderIds: any) {
         if (!orderIds) return;
         for (const id of orderIds) if (id) this.shadowOrderIds.delete(id);
         this._cleanExpiredLocks();
@@ -865,7 +857,7 @@ class OrderManager {
      * @param {string} id - Order ID
      * @returns {boolean}
      */
-    isOrderLocked(id) {
+    isOrderLocked(id: any) {
         const expiresAt = this.shadowOrderIds.get(id);
         if (!expiresAt) return false;
         if (Date.now() > expiresAt) {
@@ -902,14 +894,14 @@ class OrderManager {
         return { skipRecalc: options.skipRecalc === true };
     }
 
-    async _updateOrder(order, context = 'updateOrder', options = {}) {
+    async _updateOrder(order: any, context: any = 'updateOrder', options: any = {}) {
         const updateOptions = this._normalizeOrderUpdateOptions(options);
         return await this._gridLock.acquire(async () => {
             return await this._applyOrderUpdate(order, context, updateOptions);
         });
     }
 
-    async _applyOrderUpdate(order, context = 'updateOrder', options = {}) {
+    async _applyOrderUpdate(order: any, context: any = 'updateOrder', options: any = {}) {
         const updateOptions = this._normalizeOrderUpdateOptions(options);
         const { skipAccounting, fee: normalizedFee } = updateOptions;
         const oldOrder = this.orders.get(order.id);
@@ -920,7 +912,7 @@ class OrderManager {
         }
 
         if (!validation.isValid && validation.errors.length > 0) {
-            const fatalError = validation.errors.find(e => e.isFatal || e.code === 'ILLEGAL_SPREAD_STATE');
+            const fatalError = validation.errors.find((e: any) => (e as any).isFatal || e.code === 'ILLEGAL_SPREAD_STATE');
             if (fatalError) {
                 this.logger.log(fatalError.message, 'error');
                 this._lastIllegalState = {
@@ -943,9 +935,9 @@ class OrderManager {
         let nextOrder = { ...validation.normalizedOrder };
 
         // Apply phantom order auto-correction to the normalized order
-        const phantomError = validation.errors.find(e => e.code === 'PHANTOM_ORDER');
-        if (phantomError && phantomError.autoCorrect) {
-            nextOrder = { ...nextOrder, ...phantomError.autoCorrect };
+        const phantomError = validation.errors.find((e: any) => e.code === 'PHANTOM_ORDER');
+        if (phantomError && (phantomError as any).autoCorrect) {
+            nextOrder = { ...nextOrder, ...(phantomError as any).autoCorrect };
         }
 
         if (this.accountant) {
@@ -955,8 +947,8 @@ class OrderManager {
         const updatedOrder = deepFreeze({ ...nextOrder });
         const id = order.id;
 
-        Object.values(this._ordersByState).forEach(set => set.delete(id));
-        Object.values(this._ordersByType).forEach(set => set.delete(id));
+        Object.values(this._ordersByState).forEach((set: any) => set.delete(id));
+        Object.values(this._ordersByType).forEach((set: any) => set.delete(id));
 
         if (this._ordersByState[updatedOrder.state]) {
             this._ordersByState[updatedOrder.state].add(id);
@@ -981,7 +973,7 @@ class OrderManager {
         return true;
     }
 
-    _syncWorkingGridFromMasterMutation(orderId, context) {
+    _syncWorkingGridFromMasterMutation(orderId: any, context: any) {
         if (!this._currentWorkingGrid || !this.isPlanningActive()) {
             return;
         }
@@ -1003,7 +995,7 @@ class OrderManager {
      * @param {import('./types').OrderUpdateOptions} [options]
      * @returns {Promise<boolean>}
      */
-    async applyGridUpdateBatch(updates, context = 'batch-update', options = {}) {
+    async applyGridUpdateBatch(updates: any, context: any = 'batch-update', options: any = {}) {
         const updateOptions = this._normalizeOrderUpdateOptions(options);
         return await this._gridLock.acquire(async () => {
             let allOk = true;
@@ -1061,7 +1053,7 @@ class OrderManager {
      * @param {string} [contextLabel='flush-grid-dirty'] - Label for logs
      * @returns {Promise<{skipped?: boolean, suspended?: boolean, isValid?: boolean, reason?: string}>}
      */
-    async flushGridDirty(contextLabel = 'flush-grid-dirty') {
+    async flushGridDirty(contextLabel: any = 'flush-grid-dirty') {
         if (this._gridDirtyAt == null) {
             return { skipped: true, reason: 'not-dirty' };
         }
@@ -1073,7 +1065,7 @@ class OrderManager {
             return { skipped: true, suspended: true, reason: this._gridPersistenceSuspendedReason };
         }
         const result = await this.persistGrid(undefined);
-        if (result && result.skipped === true) {
+        if (result && (result as any).skipped === true) {
             // Persistence was deferred (suspension, validation, etc.) — keep
             // the dirty flag so a later tick can retry.
             return result;
@@ -1099,12 +1091,12 @@ class OrderManager {
      * @param {Object} [options]
      * @returns {Promise<import('./types').CowRebalanceResult>}
      */
-    async processFilledOrders(orders, excl, options) {
+    async processFilledOrders(orders: any, excl: any, _options: any) {
         // Step 1: Handle Fills (Accounting & State Updates)
         await this.strategy.processFillsOnly(orders, excl);
 
         // Step 2: Trigger Safe Rebalance only for actual fills.
-        const triggerFills = orders.filter(f => !f.isPartial || f.isDelayedRotationTrigger);
+        const triggerFills = orders.filter((f: any) => !f.isPartial || f.isDelayedRotationTrigger);
         const shouldRebalance = triggerFills.length > 0;
 
         if (shouldRebalance) {
@@ -1145,21 +1137,21 @@ class OrderManager {
 
         // Get closest virtual sells (lowest prices first = closest to market), limit to sellCount
         const vSells = this.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL)
-            .sort((a, b) => a.price - b.price)
+            .sort((a: any, b: any) => a.price - b.price)
             .slice(0, sellCount);
         // Filter by minimum size, then reverse for placement order (highest first)
         const validSells = vSells
-            .filter(o => floatToBlockchainInt(o.size, sellPrecision) >= minSellSizeInt)
-            .sort((a, b) => b.price - a.price);
+            .filter((o: any) => floatToBlockchainInt(o.size, sellPrecision) >= minSellSizeInt)
+            .sort((a: any, b: any) => b.price - a.price);
 
         // Get closest virtual buys (highest prices first = closest to market), limit to buyCount
         const vBuys = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
-            .sort((a, b) => b.price - a.price)
+            .sort((a: any, b: any) => b.price - a.price)
             .slice(0, buyCount);
         // Filter by minimum size, then reverse for placement order (lowest first)
         const validBuys = vBuys
-            .filter(o => floatToBlockchainInt(o.size, buyPrecision) >= minBuySizeInt)
-            .sort((a, b) => a.price - b.price);
+            .filter((o: any) => floatToBlockchainInt(o.size, buyPrecision) >= minBuySizeInt)
+            .sort((a: any, b: any) => a.price - b.price);
 
         return [...validSells, ...validBuys];
     }
@@ -1171,8 +1163,8 @@ class OrderManager {
      * @param {string} state - Order state (ORDER_STATES.ACTIVE/PARTIAL/VIRTUAL)
      * @returns {Array} Array of matching orders
      */
-    getOrdersByTypeAndState(type, state) {
-        const result = [];
+    getOrdersByTypeAndState(type: any, state: any) {
+        const result: any[] = [];
         const ids = this._ordersByState[state];
         if (!ids) return result;
         for (const id of ids) {
@@ -1190,7 +1182,7 @@ class OrderManager {
      * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
      * @returns {Array<import('./types').Order>}
      */
-    getPartialOrdersOnSide(type) {
+    getPartialOrdersOnSide(type: any) {
         return this.getOrdersByTypeAndState(type, ORDER_STATES.PARTIAL);
     }
 
@@ -1268,8 +1260,8 @@ class OrderManager {
 
             for (const [id, order] of this.orders) {
                 if (order && order.state && order.type) {
-                    rebuiltByState[order.state]?.add(id);
-                    rebuiltByType[order.type]?.add(id);
+                    rebuiltByState[order.state as keyof typeof rebuiltByState]?.add(id);
+                    rebuiltByType[order.type as keyof typeof rebuiltByType]?.add(id);
                 } else {
                     this.logger.log(`Skipping corrupted order ${id} during index repair`, 'warn');
                 }
@@ -1314,7 +1306,7 @@ class OrderManager {
      * @param {Function} batchCb - Batch callback
      * @returns {Promise<Object>}
      */
-    async checkSpreadCondition(BitShares, batchCb) {
+    async checkSpreadCondition(BitShares: any, batchCb: any) {
         return await checkSpreadCondition(this, BitShares, batchCb);
     }
 
@@ -1322,7 +1314,7 @@ class OrderManager {
      * @param {Function} batchCb - Batch callback
      * @returns {Promise<Object>}
      */
-    async checkGridHealth(batchCb) {
+    async checkGridHealth(batchCb: any) {
         return await checkGridHealth(this, batchCb);
     }
 
@@ -1359,7 +1351,7 @@ class OrderManager {
         const broadcasting = !!normalizedSignals.broadcasting;
 
         this._cleanExpiredLocks();
-        const reasons = [];
+        const reasons: string[] = [];
 
         // invariant: _gridSidesUpdated is pre-cleared by executeMaintenanceLogic
         // before calling isPipelineEmpty (see modules/dexbot_maintenance_runtime.ts:1378).
@@ -1434,9 +1426,9 @@ class OrderManager {
      * @param {number} targetBoundary
      * @returns {Object}
      */
-    reconcileGrid(targetGrid, targetBoundary) {
+    reconcileGrid(targetGrid: any, targetBoundary: any) {
         return reconcileGrid(this.orders, targetGrid, targetBoundary, {
-            logger: (msg, level) => this.logger.log(msg, level),
+            logger: (msg: any, level: any) => this.logger.log(msg, level),
             dustThresholdPercent: this.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE
         });
     }
@@ -1446,14 +1438,14 @@ class OrderManager {
      * @param {Set<string>} [excludeIds] - Order IDs to exclude
      * @returns {Promise<import('./types').CowRebalanceResult>}
      */
-    async performSafeRebalance(fills = [], excludeIds = new Set()) {
+    async performSafeRebalance(fills: any = [], excludeIds: any = new Set()) {
         this.logger.log("[SAFE-REBALANCE] Starting with COW...", "info");
         return await this._gridLock.acquire(async () => {
             return await this._applySafeRebalanceCOW(fills, excludeIds);
         });
     }
 
-    async _applySafeRebalanceCOW(fills = [], excludeIds = new Set()) {
+    async _applySafeRebalanceCOW(fills: any = [], excludeIds: any = new Set()) {
         const cowEngine = this._getCOWEngine();
         if (!cowEngine) {
             return buildAbortedResult('COW Engine not initialized (assets not available)');
@@ -1478,7 +1470,7 @@ class OrderManager {
         return result;
     }
 
-    _reconcileGridCOW(targetGrid, targetBoundary, workingGrid) {
+    _reconcileGridCOW(targetGrid: any, targetBoundary: any, workingGrid: any) {
         const result = this.reconcileGrid(targetGrid, targetBoundary);
         if (result.aborted) return result;
 
@@ -1492,14 +1484,14 @@ class OrderManager {
         };
     }
 
-    _validateWorkingGridFunds(workingGrid, projectedFunds) {
+    _validateWorkingGridFunds(workingGrid: any, projectedFunds: any) {
         return validateWorkingGridFunds(workingGrid, projectedFunds, {
             buyPrecision: this.assets?.assetB?.precision,
             sellPrecision: this.assets?.assetA?.precision
         }, this.assets);
     }
 
-    _calculateRequiredFundsFromGrid(workingGrid, precisions: Record<string, any> = {}) {
+    _calculateRequiredFundsFromGrid(workingGrid: any, precisions: Record<string, any> = {}) {
         return calculateRequiredFunds(workingGrid, {
             buyPrecision: precisions.buyPrecision || this.assets?.assetB?.precision,
             sellPrecision: precisions.sellPrecision || this.assets?.assetA?.precision
@@ -1539,15 +1531,15 @@ class OrderManager {
         };
     }
 
-    _buildStateUpdates(actions, masterGrid) {
+    _buildStateUpdates(actions: any, masterGrid: any) {
         return buildStateUpdates(actions, masterGrid);
     }
 
-    _buildAbortedCOWResult(reason) {
+    _buildAbortedCOWResult(reason: any) {
         return buildAbortedResult(reason);
     }
 
-    async _commitWorkingGrid(workingGrid, workingIndexes, workingBoundary, options = {}) {
+    async _commitWorkingGrid(workingGrid: any, _workingIndexes: any, workingBoundary: any, options: any = {}) {
         const { skipRecalc } = this._normalizeCommitOptions(options);
         const startTime = Date.now();
         const stats = workingGrid.getMemoryStats();
@@ -1595,7 +1587,7 @@ class OrderManager {
             const finalMap = workingGrid.toMap();
             // RC-4: Deep-freeze all modified orders before committing to master state
             // Ensures COW immutability invariants are maintained for all grid entries.
-            for (const [id, order] of finalMap.entries()) {
+            for (const [, order] of finalMap.entries()) {
                 if (order && !Object.isFrozen(order)) {
                     deepFreeze(order);
                 }
@@ -1611,7 +1603,7 @@ class OrderManager {
             // avoid the intermediate empty state that clear() creates — a crash
             // during clear()+repopulate would lose all committed IDs.
             const newCommittedIds = new Set<string>();
-            for (const [id, order] of finalMap.entries()) {
+            for (const [, order] of finalMap.entries()) {
                 if (order.orderId) newCommittedIds.add(order.orderId);
             }
             this._committedOrderIds = newCommittedIds;
@@ -1689,7 +1681,7 @@ class OrderManager {
      * @param {string} [reason]
      * @returns {void}
      */
-    suspendGridPersistence(reason = 'suspended') {
+    suspendGridPersistence(reason: any = 'suspended') {
         this._gridPersistenceSuspendedReason = reason;
     }
 
@@ -1697,7 +1689,7 @@ class OrderManager {
      * @param {string} [reason]
      * @returns {void}
      */
-    resumeGridPersistence(reason = null) {
+    resumeGridPersistence(reason: any = null) {
         if (!this._gridPersistenceSuspendedReason) return;
         this.logger.log(
             `[PERSISTENCE-GATE] Resuming grid persistence${reason ? ` (${reason})` : ''}`,
@@ -1714,7 +1706,7 @@ class OrderManager {
      *   swapping the live map and exposing it to concurrent readers.
      * @returns {Promise<import('./types').PersistenceValidationResult>}
      */
-    async persistGrid(snapshotOrders, recentFillKeys?) {
+    async persistGrid(snapshotOrders: any, recentFillKeys?: any) {
         if (this._gridPersistenceSuspendedReason) {
             this.logger.log(
                 `[PERSISTENCE-GATE] Skipping grid persistence while suspended: ${this._gridPersistenceSuspendedReason}`,
@@ -1766,15 +1758,15 @@ class OrderManager {
         };
     }
 
-    _projectTargetToWorkingGrid(workingGrid, targetGrid) {
+    _projectTargetToWorkingGrid(workingGrid: any, targetGrid: any) {
         return projectTargetToWorkingGrid(workingGrid, targetGrid);
     }
 
-    _summarizeCowActions(actions) {
+    _summarizeCowActions(actions: any) {
         return summarizeActions(actions);
     }
 
-    _evaluateWorkingGridCommit(workingGrid, hasLock = false) {
+    _evaluateWorkingGridCommit(workingGrid: any, hasLock: any = false) {
         let comparePrecisions;
         try {
             comparePrecisions = this._getCowComparePrecisions();
@@ -1855,4 +1847,5 @@ class OrderManager {
 
 }
 
-export = { OrderManager };
+export { OrderManager }
+

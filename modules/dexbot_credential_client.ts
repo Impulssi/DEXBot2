@@ -1,21 +1,22 @@
 /** Credential client module - connects to credential daemon for key operations */
-const { getNodeRequire } = require('./env');
+
+import { getNodeRequire } from './env';
+import { getStorage } from './storage';
+import { createHmac } from './crypto/sync';
+import { TIMING, DAEMON_CODES } from './constants';
 const _require = getNodeRequire();
-let net;
+let net: any;
 try {
     net = _require ? _require('net') : undefined;
 } catch {
     // Browser: Unix socket IPC unavailable; methods will throw when called
 }
-const { getStorage } = require('./storage');
 const storage = getStorage();
-const { createHmac } = require('./crypto/sync');
-const { TIMING, DAEMON_CODES } = require('./constants');
-const {
+import {
     getCredentialReadyFilePath,
     getCredentialSocketPath,
     isPrivatePathSecure,
-} = require('./credential_runtime');
+} from './credential_runtime';
 
 interface BroadcastUncertainErrorDetails {
     operations?: any[] | null;
@@ -111,7 +112,7 @@ function getSocketPath(options: CredentialClientOptions = {}): string {
 }
 
 function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs: number, meta: CredentialDaemonMeta = {}): Promise<CredentialDaemonResponse> {
-    return new Promise<CredentialDaemonResponse>((resolve, reject) => {
+    return new Promise<CredentialDaemonResponse>((resolve: any, reject: any) => {
         let settled = false;
         const socket = net.createConnection(socketPath, () => {
             socket.write(`${JSON.stringify(payload)}\n`);
@@ -143,10 +144,10 @@ function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs
             }
         }, timeoutMs);
 
-        socket.on('data', (data) => {
+        socket.on('data', (data: any) => {
             responseBuffer += data.toString();
             const lines = responseBuffer.split('\n');
-            responseBuffer = lines.pop();
+            responseBuffer = lines.pop() ?? '';
 
             for (const line of lines) {
                 if (!line.trim()) continue;
@@ -164,7 +165,7 @@ function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs
             }
         });
 
-        socket.on('error', (error) => {
+        socket.on('error', (error: any) => {
             clearTimeout(timer);
             if (!settled) { settled = true; reject(new Error(`Credential daemon connection failed: ${error.message}`)); }
         });
@@ -206,7 +207,7 @@ async function waitForCredentialDaemon(timeoutMs: number = DEFAULT_WAIT_TIMEOUT_
         if (Date.now() - start > timeoutMs) {
             throw new Error(`Timed out waiting for DEXBot2 credential daemon after ${timeoutMs}ms`);
         }
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        await new Promise((resolve: any) => setTimeout(resolve, pollIntervalMs));
     }
 }
 
@@ -303,22 +304,15 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
                     const label = extractHostname(nodeUrl || '') || 'primary';
                     const nextHost = extractHostname(fallbackNodes[attempt]);
                     console.warn(`[cred-daemon-client] BROADCAST_DEADLINE on ${label}, retrying fallback ${nextHost}...`);
-                    await new Promise((resolve) => setTimeout(resolve, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS));
+                    await new Promise((resolve: any) => setTimeout(resolve, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS));
                     continue;
                 }
             }
             throw err;
         }
     }
+    throw new Error('All credential daemon attempts exhausted');
 }
 
-export = {
-    DEFAULT_READY_FILE,
-    DEFAULT_SOCKET_PATH,
-    DEFAULT_BROADCAST_TIMEOUT_MS,
-    sendCredentialDaemonRequest,
-    executeOperationsViaCredentialDaemon,
-    isCredentialDaemonReady,
-    waitForCredentialDaemon,
-    BroadcastUncertainError,
-};
+export { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, DEFAULT_BROADCAST_TIMEOUT_MS, sendCredentialDaemonRequest, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon, BroadcastUncertainError }
+

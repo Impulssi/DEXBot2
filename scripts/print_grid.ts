@@ -49,7 +49,7 @@ function printGridSample() {
 
   // Generate order grid using the configuration
   // createOrderGrid returns { orders, boundaryIdx, initialSpreadCount }
-  const { orders, initialSpreadCount } = createOrderGrid(config);
+  const { orders, initialSpreadCount: _initialSpreadCount } = createOrderGrid(config);
 
   // Separate sell and buy orders, extracting just the prices
   const sell = orders.filter((o: any) => o.type === 'sell').map((o: any) => o.price);

@@ -1,3 +1,11 @@
+
+import path from 'node:path';
+import os from 'node:os';
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
+import { calculateAMA } from '../../market_adapter/core/strategies/ama';
+import { range } from '../math_utils';
+import { parseListOrRange, loadLpData, fmt } from './shared_utils';
+import { readJSON, writeJSON } from '../../modules/utils/fs_utils';
 'use strict';
 
 /**
@@ -15,14 +23,6 @@
  *   tsx analysis/bot_fitting/backtest_ama_sweep.ts --data <path-to-lp-candles.json> --spread 4:16:1 --increment 0.5:4:0.25
  */
 
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
-const { calculateAMA } = require('../../market_adapter/core/strategies/ama');
-const { range } = require('../math_utils');
-const { parseListOrRange, loadLpData, fmt } = require('./shared_utils');
-const { readJSON, writeJSON } = require('../../modules/utils/fs_utils');
 
 const DEFAULT_MAX_ORDERS = 20; // matches bot default activeOrders per side
 const DEFAULT_FEE_ROUNDTRIP_PCT = 0.20;
@@ -52,14 +52,26 @@ const DEFAULT_RATIO_VALUES = [1.05, 1.1, 1.15, 1.2, 1.3, 1.5, 2, 3, 5, 10];
 // Reposition threshold: AMA must move this fraction from last grid center to trigger re-center
 const DEFAULT_REPOSITION_PCT = 2.5;
 
-function jsonSafe(key, val) {
-    if (val === -Infinity || val === Infinity) return null;
-    return val;
-}
 
 function parseArgs() {
     const args = process.argv.slice(2);
-    const out = {
+    const out: {
+        dataPath: string | null;
+        resultsPath: string | null;
+        spreadValues: number[];
+        incrementValues: number[];
+        ratioValues: number[];
+        maxOrders: number;
+        feeRoundtripPct: number;
+        minSpreadFactor: number;
+        capital: number;
+        repositionPct: number;
+        btsCreateFee: number;
+        btsCancelFee: number;
+        makerCreateFactor: number;
+        txFeePrice: number;
+        topN: number;
+    } = {
         dataPath: null,
         resultsPath: null,
         spreadValues: DEFAULT_SPREAD_VALUES,
@@ -163,7 +175,7 @@ function loadAmaStrategies(resultsPath) {
  * @param {number} incrementFactor  Increment as fraction (e.g. 0.02 for 2%)
  * @returns {number[]}          Size per level, index 0 = closest to center
  */
-function allocateFundsByWeights(totalFunds, n, weight, incrementFactor) {
+function allocateFundsByWeights(totalFunds: number, n: number, weight: number, incrementFactor: number): number[] {
     if (n <= 0) return [];
     if (weight === 0) {
         const sz = totalFunds / n;
@@ -201,14 +213,14 @@ function allocateFundsByWeights(totalFunds, n, weight, incrementFactor) {
  *
  * Returns arrays of buy and sell order objects with fixed chain prices and sizes.
  */
-function buildGrid(center, params, capitalPerSide, weightFactor) {
+function buildGrid(center: number, params: any, capitalPerSide: number, weightFactor: number) {
     const { incrementPct, maxMinRatio, maxOrders, spreadPct } = params;
     const minBound = center / maxMinRatio;
     const maxBound = center * maxMinRatio;
     const halfSpread = spreadPct / 200; // as fraction
 
-    const buys = [];
-    const sells = [];
+    const buys: any[] = [];
+    const sells: any[] = [];
 
     // Fill as many levels as fit within ratio bounds (up to maxOrders cap)
     for (let k = 1; k <= maxOrders; k++) {
@@ -220,8 +232,8 @@ function buildGrid(center, params, capitalPerSide, weightFactor) {
         // Bounds check — skip levels outside ratio range
         if (buyPrice < minBound || sellPrice > maxBound) continue;
 
-        buys.push({ level: k, price: buyPrice, filledBar: -1 });
-        sells.push({ level: k, price: sellPrice, filledBar: -1 });
+        buys.push({ level: k, price: buyPrice, filledBar: -1, size: 0 });
+        sells.push({ level: k, price: sellPrice, filledBar: -1, size: 0 });
     }
 
     // Size allocation — index 0 = closest to center
@@ -233,7 +245,7 @@ function buildGrid(center, params, capitalPerSide, weightFactor) {
     return { buys, sells };
 }
 
-function closeFilledInventoryAtPrice(openBuys, openSells, exitPrice, feeRoundtripPct) {
+function closeFilledInventoryAtPrice(openBuys: Map<any, any>, openSells: Map<any, any>, exitPrice: number, feeRoundtripPct: number) {
     if (!Number.isFinite(exitPrice) || exitPrice <= 0) {
         return { grossUnits: 0, profitUnits: 0, closedOrders: 0 };
     }
@@ -265,7 +277,7 @@ function closeFilledInventoryAtPrice(openBuys, openSells, exitPrice, feeRoundtri
     return { grossUnits, profitUnits, closedOrders };
 }
 
-function countCancelableOrders(openBuys, openSells) {
+function countCancelableOrders(openBuys: Map<any, any>, openSells: Map<any, any>): number {
     let count = 0;
     for (const order of openBuys.values()) {
         if (!order?.filled) count++;
@@ -276,7 +288,7 @@ function countCancelableOrders(openBuys, openSells) {
     return count;
 }
 
-function simulatePersistentGrid(candles, amaValues, params, weightName, weightFactor) {
+function simulatePersistentGrid(candles: any[], amaValues: number[], params: any, weightName: string, weightFactor: number) {
     const { spreadPct, incrementPct, maxMinRatio, maxOrders, feeRoundtripPct,
             capital, repositionThreshold, btsCreateFee, btsCancelFee,
             makerCreateFactor, txFeePrice } = params;
@@ -368,8 +380,8 @@ function simulatePersistentGrid(candles, amaValues, params, weightName, weightFa
 
         // ── Check fills on PERSISTENT orders (fixed chain prices) ───────
         // Only check UNFILLED orders (skip already-filled pending match)
-        const filledBuysThisBar = [];
-        const filledSellsThisBar = [];
+        const filledBuysThisBar: any[] = [];
+        const filledSellsThisBar: any[] = [];
 
         for (const [lvl, order] of openBuys) {
             if (!order.filled && lo <= order.price) {
@@ -503,11 +515,11 @@ function simulatePersistentGrid(candles, amaValues, params, weightName, weightFa
 
 // ── Per-AMA sweep logic (runs in main thread or worker) ─────────────────────
 
-function sweepOneAma(strategy, candles, closes, weightEntries, cfg) {
+function sweepOneAma(strategy: any, candles: any[], closes: number[], weightEntries: [string, number][], cfg: any) {
     const amaValues = calculateAMA(closes, { erPeriod: strategy.er, fastPeriod: strategy.fast, slowPeriod: strategy.slow });
-    let best = null;
-    const top5 = [];
-    const allSims = [];
+    let best: any = null;
+    const top5: any[] = [];
+    const allSims: any[] = [];
     let evaluated = 0;
     const minSpreadFactor = Number.isFinite(cfg.minSpreadFactor) && cfg.minSpreadFactor > 0 ? cfg.minSpreadFactor : null;
 
@@ -558,13 +570,13 @@ function sweepOneAma(strategy, candles, closes, weightEntries, cfg) {
 if (!isMainThread) {
     const { strategy, candles, closes, weightEntries, cfg } = workerData;
     const result = sweepOneAma(strategy, candles, closes, weightEntries, cfg);
-    parentPort.postMessage(result);
+        parentPort!.postMessage(result);
     process.exit(0);
 }
 
 // ── Parallel dispatch (main thread) ─────────────────────────────────────────
 
-function runParallel(strategies, candles, closes, weightEntries, cfg) {
+function runParallel(strategies: any[], candles: any[], closes: number[], weightEntries: [string, number][], cfg: any): Promise<any[]> {
     const numCpus = Math.min(os.cpus().length, strategies.length);
     console.log(`  Workers:      ${numCpus} threads (${os.cpus().length} CPUs available)\n`);
 
@@ -587,10 +599,10 @@ function runParallel(strategies, candles, closes, weightEntries, cfg) {
 async function run() {
     const cfg = parseArgs();
 
-    const loaded = loadLpData(cfg.dataPath);
+    const loaded = loadLpData(cfg.dataPath!);
     const candles = loaded.candles;
     const closes = candles.map((c) => c.close);
-    const strategies = loadAmaStrategies(cfg.resultsPath);
+    const strategies = loadAmaStrategies(cfg.resultsPath!);
 
     const weightEntries = Object.entries(WEIGHT_PROFILES);
     const totalCombos = cfg.spreadValues.length * cfg.incrementValues.length *
@@ -599,7 +611,7 @@ async function run() {
     console.log('================================================================================');
     console.log(' AMA SWEEP BACKTEST — persistent grid + weight profiles');
     console.log('================================================================================');
-    console.log(`  Data:         ${path.basename(cfg.dataPath)} (${candles.length} candles, ~${(candles.length / 24).toFixed(0)} days)`);
+    console.log(`  Data:         ${path.basename(cfg.dataPath!)} (${candles.length} candles, ~${(candles.length / 24).toFixed(0)} days)`);
     console.log(`  AMAs:         ${strategies.map((s) => s.id).join(', ')}`);
     console.log(`  Weights:      ${weightEntries.map(([n, w]) => `${n}(${w})`).join(', ')}`);
     console.log(`  Spread:       ${cfg.spreadValues[0]}..${cfg.spreadValues[cfg.spreadValues.length - 1]}% (${cfg.spreadValues.length})`);
@@ -612,8 +624,8 @@ async function run() {
     console.log(`  Combos/AMA:   ${totalCombos}  |  Total: ${totalCombos * strategies.length}\n`);
 
     // ── Run AMA sweeps in parallel (one worker per AMA strategy) ──────
-    const byAma = [];
-    const allResults = [];
+    const byAma: any[] = [];
+    const allResults: any[] = [];
 
     const workerResults = await runParallel(strategies, candles, closes, weightEntries, cfg);
 
@@ -684,7 +696,7 @@ async function run() {
     // ── Global ranking (deduplicated) ───────────────────────────────────────
     allResults.sort((a, b) => b.sim.score - a.sim.score);
     const seen = new Set();
-    const deduped = [];
+    const deduped: any[] = [];
     for (const r of allResults) {
         const key = `${r.strategy.id}|${r.sim.spreadPct}|${r.sim.incrementPct}|${r.sim.maxMinRatio}|${r.sim.weightName}`;
         if (seen.has(key)) continue;
@@ -727,7 +739,7 @@ async function run() {
     console.log(` WINNER`);
     console.log('================================================================================');
     console.log(`  AMA:         ${winner.strategy.id} (ER=${winner.strategy.er}, Fast=${winner.strategy.fast}, Slow=${winner.strategy.slow})`);
-    console.log(`  Weight:      ${winner.sim.weightName} (${WEIGHT_PROFILES[winner.sim.weightName]})`);
+    console.log(`  Weight:      ${winner.sim.weightName} (${WEIGHT_PROFILES[winner.sim.weightName as keyof typeof WEIGHT_PROFILES]})`);
     console.log(`  Spread:      ${fmt(winner.sim.spreadPct, 1)}%`);
     console.log(`  Increment:   ${fmt(winner.sim.incrementPct, 1)}%`);
     console.log(`  Ratio:       ${fmt(winner.sim.maxMinRatio, 1)}x`);
@@ -744,13 +756,13 @@ async function run() {
     console.log(`  Score:       ${fmt(winner.sim.score, 2)}`);
 
     // ── Save JSON ───────────────────────────────────────────────────────────
-    const outName = `ama_sweep_results_${path.basename(cfg.dataPath, '.json')}.json`;
+    const outName = `ama_sweep_results_${path.basename(cfg.dataPath!, '.json')}.json`;
     const outPath = path.join(__dirname, outName);
     writeJSON(outPath, {
         meta: {
             generatedAt: new Date().toISOString(),
-            dataPath: path.relative(process.cwd(), cfg.dataPath),
-            resultsPath: path.relative(process.cwd(), cfg.resultsPath),
+            dataPath: path.relative(process.cwd(), cfg.dataPath!),
+            resultsPath: path.relative(process.cwd(), cfg.resultsPath!),
             candles: candles.length,
             days: candles.length / 24,
             maxOrders: cfg.maxOrders,
@@ -798,12 +810,5 @@ if (require.main === module) {
     run().catch((err) => { console.error(err); process.exit(1); });
 }
 
-export = {
-    WEIGHT_PROFILES,
-    allocateFundsByWeights,
-    buildGrid,
-    closeFilledInventoryAtPrice,
-    countCancelableOrders,
-    simulatePersistentGrid,
-    sweepOneAma,
-};
+export { WEIGHT_PROFILES, allocateFundsByWeights, buildGrid, closeFilledInventoryAtPrice, countCancelableOrders, simulatePersistentGrid, sweepOneAma }
+

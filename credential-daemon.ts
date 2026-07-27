@@ -68,7 +68,6 @@ setUmask(0o077);
 const net = require('net');
 const fs = require('fs');
 const { path } = require('./modules/path_api');
-const os = require('os');
 const { randomBytes, createHmac } = require('./modules/crypto/sync');
 const chainKeys = require('./modules/chain_keys');
 const { TIMING, NODE_MANAGEMENT, DAEMON_ERRORS, DAEMON_CODES } = require('./modules/constants');
@@ -123,7 +122,6 @@ const daemonLogger = new Logger('credential-daemon');
 
 // Resolve project root — handles running from dist/ (compiled) vs source
 const { PATHS } = require('./modules/paths');
-const PROJECT_ROOT = PATHS.PROJECT_ROOT;
 
 // Unix sockets are required; only Unix-like systems are supported
 
@@ -1153,7 +1151,7 @@ function shutdown(exitCode = 0, reason = 'shutdown') {
         sessionSecret = null;
     }
     if (sessionAccountKeys) {
-        for (const [key, val] of sessionAccountKeys) {
+        for (const [_key, val] of sessionAccountKeys) {
             if (Buffer.isBuffer(val)) {
                 val.fill(0);
             }

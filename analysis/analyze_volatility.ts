@@ -20,17 +20,17 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
+import path from 'node:path';
+import { PATHS } from '../modules/paths';
+
+import { createSource } from './price_sources';
+import { calculateAMA } from '../market_adapter/core/strategies/ama';
+import { generateHTML } from './trend_detection/volatility_chart_generator';
+import { MARKET_ADAPTER } from '../modules/constants';
+import { computeATR, getCandleClose } from './math_utils';
+import { writeChartFile } from './chart_utils';
+
 'use strict';
-
-const path = require('path');
-const { PATHS } = require('../modules/paths');
-
-const { createSource } = require('./price_sources');
-const { calculateAMA } = require('../market_adapter/core/strategies/ama');
-const { generateHTML } = require('./trend_detection/volatility_chart_generator');
-const { MARKET_ADAPTER } = require('../modules/constants');
-const { computeATR, getCandleClose } = require('./math_utils');
-const { writeChartFile } = require('./chart_utils');
 
 const AMA_CONFIG = MARKET_ADAPTER.AMAS.AMA3;
 const DEFAULT_ATR_PERIOD = MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_DEFAULT;
@@ -142,7 +142,7 @@ async function main() {
         const atrPeriod = normalizeAtrPeriod(config.atrPeriod);
         const atrs = computeATRSeries(candles, atrPeriod);
 
-        const allResults = [];
+        const allResults: any[] = [];
         for (let i = 0; i < candles.length; i++) {
             const { marketPrice, timestamp } = source.extractMarketPrice(candles[i]);
             const amaPrice = ama3Values[i] ?? null;
@@ -180,10 +180,10 @@ async function main() {
         writeChartFile(config.chartFile, html);
 
         if (!config.quiet) console.log(`[Volatility] ✓ Chart saved to ${config.chartFile}`);
-    } catch (err) {
-        console.error(`[Volatility] Error: ${err.message}`);
+    } catch (err: unknown) {
+        console.error(`[Volatility] Error: ${(err as any)?.message ?? err}`);
         process.exit(1);
     }
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+main().catch((err: unknown) => { console.error(err); process.exit(1); });

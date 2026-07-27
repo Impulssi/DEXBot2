@@ -1,10 +1,11 @@
+
+import net from 'node:net';
+import { SOCKET_PATH } from './bot_supervisor';
 'use strict';
 
-const net = require('net');
-const { SOCKET_PATH } = require('./bot_supervisor');
 
-function sendControlCommand(cmd) {
-    return new Promise((resolve, reject) => {
+function sendControlCommand(cmd: any) {
+    return new Promise((resolve: any, reject: any) => {
         const socket = net.createConnection(SOCKET_PATH);
         let buffer = '';
         let settled = false;
@@ -25,7 +26,7 @@ function sendControlCommand(cmd) {
             socket.write(JSON.stringify(cmd) + '\n');
         });
 
-        socket.on('data', (data) => {
+        socket.on('data', (data: any) => {
             buffer += data.toString();
             const newlineIdx = buffer.indexOf('\n');
             if (newlineIdx >= 0) {
@@ -43,9 +44,9 @@ function sendControlCommand(cmd) {
             }
         });
 
-        socket.on('error', (err) => {
+        socket.on('error', (err: any) => {
             clearTimeout(timeout);
-            if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
+            if ((err as any).code === 'ENOENT' || (err as any).code === 'ECONNREFUSED') {
                 done(new Error('No supervisor socket found. Start bots with: dexbot unlock --isolated'));
             } else {
                 done(err);
@@ -54,4 +55,5 @@ function sendControlCommand(cmd) {
     });
 }
 
-export = { sendControlCommand };
+export { sendControlCommand }
+

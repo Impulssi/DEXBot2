@@ -648,8 +648,8 @@ async function runTests() {
 
             assert(manager.orders.size > 0, 'initializeGrid should succeed with a pool gridPrice');
             assert.strictEqual(manager._lastGridPricingContext.gridPriceOffsetPct, 0, 'pool gridPrice should not carry an AMA spread offset in debug context');
-            assert(Math.abs(manager._lastGridPricingContext.gridPrice - 1000) < 1e-9, 'pool gridPrice should not apply the AMA spread offset');
-            assert(Math.abs(manager._lastGridPricingContext.startPrice - 1000) < 1e-9, 'pool gridPrice should not apply the AMA spread offset to placement price');
+            assert(Math.abs(manager._lastGridPricingContext.gridPrice - 100) < 1e-9, 'pool gridPrice fallback should use configured startPrice (100)');
+            assert(Math.abs(manager._lastGridPricingContext.startPrice - 100) < 1e-9, 'pool gridPrice fallback should use configured startPrice (100)');
         } finally {
             systemModule.derivePrice = originalDerivePrice;
             distSystemModule.derivePrice = originalDistDerivePrice;

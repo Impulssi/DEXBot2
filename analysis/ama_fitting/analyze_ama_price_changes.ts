@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import path from 'node:path';
+import { calculateAMA } from '../../market_adapter/core/strategies/ama';
+import { readJSON } from '../../modules/utils/fs_utils';
+import { MARKET_ADAPTER } from '../../modules/constants';
+
 'use strict';
 /**
  * AMA REPOSITION FREQUENCY ANALYSIS
@@ -12,11 +17,6 @@
  * Usage:
  *   tsx analysis/ama_fitting/analyze_ama_price_changes.ts --data <path-to-lp-candles.json> --results <path-to-optimization-results.json>
  */
-const fs   = require('fs');
-const path = require('path');
-const { calculateAMA } = require('../../market_adapter/core/strategies/ama');
-const { readJSON } = require('../../modules/utils/fs_utils');
-const { MARKET_ADAPTER } = require('../../modules/constants');
 const REPOS_THRESHOLD_PCT = MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT;
 
 /**
@@ -28,7 +28,7 @@ const REPOS_THRESHOLD_PCT = MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT;
  */
 function trackRepositions(amaValues, thresholdPct, warmup) {
     let events = 0;
-    const steps = [];
+    const steps: number[] = [];
     let baseline = amaValues[warmup];
     let stepCounter = 0;
     for (let i = warmup + 1; i < amaValues.length; i++) {
@@ -104,7 +104,7 @@ function run() {
     console.log(' Logic: set baseline at warmup end, count steps until AMA drifts ≥ threshold,');
     console.log('        record reposition + reset baseline.  Repeat for full live window.');
     console.log('');
-    const results = [];
+    const results: any[] = [];
     for (const params of amaParams) {
         const values = calculateAMA(closes, {
             erPeriod:   params.er,

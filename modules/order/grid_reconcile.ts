@@ -1,21 +1,14 @@
-import type { Order } from '../types.js';
-
 const {
-    _countActiveOnGrid, _pickVirtualSlotsToActivate, _getStartupSideComparators,
-    _isGridEdgeFullyActive, _findLargestOrder, _cancelLargestOrder,
-    _createOrderFromGrid, _cancelChainOrder, _recoverStartupSyncFailure,
-    _refreshStartupUpdatePlans, _prepareStartupUpdatePlan, _finalizeStartupUpdate,
-    _executeStartupUpdateBatch, _executeStartupSingleUpdate,
-    _executeStartupSequentialUpdateFallback, _createStartupOrderWithHandling,
-    _extractBatchOperationResults, _resolveGroupRecovery,
-    _executeStartupCreateGroupBatch, _buildOutsideInCreateGroups,
+    _countActiveOnGrid, _cancelChainOrder, _recoverStartupSyncFailure,
+    _refreshStartupUpdatePlans,
+    _executeStartupUpdateBatch,
+    _executeStartupSequentialUpdateFallback,
     _executePlannedStartupCreates, _reconcileStartupSide,
 } = require('./grid_reconcile_internal');
 const { ORDER_TYPES, ORDER_STATES } = require('../constants');
 const { calculatePriceTolerance } = require('./utils/math');
 const {
-    isOrderPlaced, parseChainOrder, isOrderOnChain, buildCreateOrderArgs,
-    buildOutsideInPairGroups, extractBatchOperationResults
+    isOrderPlaced, parseChainOrder, isOrderOnChain,
 } = require('./utils/order');
 const Format = require('./format');
 const SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5;
@@ -37,6 +30,12 @@ async function attemptResumePersistedGridByPriceMatch({
     chainOpenOrders,
     logger,
     storeGrid,
+}: {
+    manager: any;
+    persistedGrid: any[];
+    chainOpenOrders: any[];
+    logger: any;
+    storeGrid: any;
 }) {
     if (!Array.isArray(persistedGrid) || persistedGrid.length === 0) return { resumed: false, matchedCount: 0 };
     if (!Array.isArray(chainOpenOrders) || chainOpenOrders.length === 0) return { resumed: false, matchedCount: 0 };
@@ -95,6 +94,13 @@ async function decideStartupGridAction({
     logger,
     storeGrid,
     attemptResumeFn = attemptResumePersistedGridByPriceMatch,
+}: {
+    persistedGrid: any[];
+    chainOpenOrders: any[];
+    manager: any;
+    logger: any;
+    storeGrid: any;
+    attemptResumeFn?: any;
 }) {
     const persisted = Array.isArray(persistedGrid) ? persistedGrid : [];
     const chain = Array.isArray(chainOpenOrders) ? chainOpenOrders : [];
@@ -143,6 +149,13 @@ async function reconcileGridOrders({
     privateKey,
     chainOrders,
     chainOpenOrders,
+}: {
+    manager: any;
+    config: any;
+    account: any;
+    privateKey: any;
+    chainOrders: any;
+    chainOpenOrders: any[];
 }) {
     // Parameter validation
     if (!manager || typeof manager.synchronizeWithChain !== 'function') {
@@ -170,15 +183,15 @@ async function reconcileGridOrders({
     const dryRun = !!(config && config.dryRun);
 
     const parsedChain = (chainOpenOrders || [])
-        .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-        .filter(x => x.parsed);
+        .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
+        .filter((x: any) => x.parsed);
 
     const activeCfg = (config && config.activeOrders) ? config.activeOrders : {};
     let targetBuy = Math.max(0, Number.isFinite(Number(activeCfg.buy)) ? Number(activeCfg.buy) : 1);
     let targetSell = Math.max(0, Number.isFinite(Number(activeCfg.sell)) ? Number(activeCfg.sell) : 1);
 
-    const chainBuys = parsedChain.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
-    const chainSells = parsedChain.filter(x => x.parsed.type === ORDER_TYPES.SELL).map(x => x.chain);
+    const chainBuys = parsedChain.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).map((x: any) => x.chain);
+    const chainSells = parsedChain.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).map((x: any) => x.chain);
 
     // PHASE 1: In-memory reconciliation under lock (compute + individual quick cancels)
     // Blockchain-heavy batch operations (updates, creates, readOpenOrders) are deferred
@@ -212,21 +225,21 @@ async function reconcileGridOrders({
             }
         }
 
-        const unmatchedChain = (Array.isArray(chainOpenOrders) ? chainOpenOrders : []).filter(co => co && !matchedChainOrderIds.has(co.id));
+        const unmatchedChain = (Array.isArray(chainOpenOrders) ? chainOpenOrders : []).filter((co: any) => co && !matchedChainOrderIds.has(co.id));
         let unmatchedParsed = unmatchedChain
-            .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-            .filter(x => x.parsed);
+            .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
+            .filter((x: any) => x.parsed);
 
         const cancelledDuplicateIds = new Set<string>();
         const activeGridOrders = (Array.from(manager.orders.values()) as any[]).filter((o: any) => o && o.orderId && isOrderPlaced(o));
         for (const u of unmatchedParsed) {
-            const p = u.parsed;
+            const p = u.parsed!;
             const desc = `Unmatched chain order: ${p.orderId} (${p.type === ORDER_TYPES.BUY ? 'BUY' : 'SELL'}), price=${Format.formatPrice6(p.price)}, size=${Format.formatSizeByOrderType(p.size, p.type, manager.assets)}`;
-            let nearest = null;
+            let nearest: any = null;
             for (const gridOrder of activeGridOrders) {
                 if (gridOrder.type !== p.type) continue;
                 const priceDiff = Math.abs(p.price - gridOrder.price);
-                const tolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, manager.assets);
+                const tolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, manager.assets) || 0;
                 const candidate = {
                     gridOrder,
                     priceDiff,
@@ -282,11 +295,11 @@ async function reconcileGridOrders({
         }
 
         if (cancelledDuplicateIds.size > 0) {
-            unmatchedParsed = unmatchedParsed.filter(u => !cancelledDuplicateIds.has(u.parsed.orderId));
+            unmatchedParsed = unmatchedParsed.filter((u: any) => !cancelledDuplicateIds.has(u.parsed!.orderId));
         }
 
-        let unmatchedBuys = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
-        let unmatchedSells = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.SELL).map(x => x.chain);
+        let unmatchedBuys = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).map((x: any) => x.chain);
+        let unmatchedSells = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).map((x: any) => x.chain);
         const plannedCreates: any[] = [];
         const plannedUpdates: any[] = [];
 
@@ -422,10 +435,10 @@ async function reconcileGridOrders({
         try {
             const freshOpenOrders = await chainOrders.readOpenOrders(account);
             const freshParsed = (Array.isArray(freshOpenOrders) ? freshOpenOrders : [])
-                .map(co => ({ parsed: parseChainOrder(co, manager.assets) }))
-                .filter(x => x.parsed);
-            finalChainSellCount = freshParsed.filter(x => x.parsed.type === ORDER_TYPES.SELL).length;
-            finalChainBuyCount = freshParsed.filter(x => x.parsed.type === ORDER_TYPES.BUY).length;
+                .map((co: any) => ({ parsed: parseChainOrder(co, manager.assets) }))
+                .filter((x: any) => x.parsed);
+            finalChainSellCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).length;
+            finalChainBuyCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).length;
         } catch (err: any) {
             logger?.log?.(`Startup: Failed to refresh final chain counts: ${err.message}`, 'warn');
         }

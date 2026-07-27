@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // Import mergeSettings directly — no module mocking needed
 const { mergeSettings } = require('../modules/settings_merge');
@@ -7,13 +8,13 @@ const { mergeSettings } = require('../modules/settings_merge');
 // Helpers
 // =============================================================================
 
-function run(desc, fn) {
+function _run(desc, fn) {
     try {
         fn();
         console.log(`  ✓ ${desc}`);
     } catch (e) {
         console.error(`  ✗ ${desc}`);
-        console.error(`    ${e.message}`);
+        console.error(`    ${getErrorMessage(e)}`);
         process.exitCode = 1;
     }
 }
@@ -54,8 +55,6 @@ const DEFAULTS = Object.freeze({
         RUNTIME_DEFAULTS: { intervalSeconds: 3600 },
     },
 });
-
-const NODE_MGMT_DEFAULTS = DEFAULTS.NODE_MANAGEMENT;
 
 // =============================================================================
 // 1. No settings → passthrough unchanged

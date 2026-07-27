@@ -1,10 +1,11 @@
+
+import { path } from '../../modules/path_api';
+import { getStorage } from '../../modules/storage';
+import { BUILD_DIR } from '../../modules/constants';
+import { PATHS } from '../../modules/paths';
 'use strict';
 
-const { path } = require('../../modules/path_api');
-const { getStorage } = require('../../modules/storage');
 const storage = getStorage();
-const { BUILD_DIR } = require('../../modules/constants');
-const { PATHS } = require('../../modules/paths');
 
 function isDexbot2Root(candidate: string) {
   return !!candidate && (
@@ -64,4 +65,5 @@ function resolveRuntimeScript(root: string, ...segments: string[]) {
   return path.join(root, BUILD_DIR, ...segments);
 }
 
-export = { normalizeRoot, normalizeProfileDir, resolveRuntimeScript };
+export { normalizeRoot, normalizeProfileDir, resolveRuntimeScript }
+

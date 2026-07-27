@@ -15,6 +15,7 @@ const formatPath = require.resolve('../modules/order/format');
 const orderUtilsPath = require.resolve('../modules/order/utils/order');
 const accountBotsPath = require.resolve('../modules/account_bots');
 const marketAdapterRuntimePath = require.resolve('../modules/launcher/market_adapter_runtime');
+const loggerPath = require.resolve('../modules/order/logger');
 
 const originals = new Map([
     [runtimePath, require.cache[runtimePath]],
@@ -27,6 +28,7 @@ const originals = new Map([
     [orderUtilsPath, require.cache[orderUtilsPath]],
     [accountBotsPath, require.cache[accountBotsPath]],
     [marketAdapterRuntimePath, require.cache[marketAdapterRuntimePath]],
+    [loggerPath, require.cache[loggerPath]],
 ]);
 
 const originalExistsSync = fs.existsSync;
@@ -34,6 +36,7 @@ const originalReadFileSync = fs.readFileSync;
 
 function loadRuntimeWithStubs({ marketAdapterRuntimeStub }: any = {}) {
     delete require.cache[runtimePath];
+    delete require.cache[loggerPath];
 
     setCachedModule(bitsharesClientPath, { BitShares: {} });
     setCachedModule(chainOrdersPath, {

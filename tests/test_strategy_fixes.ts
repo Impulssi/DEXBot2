@@ -1,5 +1,6 @@
 const assert = require('assert');
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('='.repeat(70));
 console.log('Testing Strategy Fixes: Critical Bug Fixes & Enhancements');
@@ -130,7 +131,7 @@ try {
     console.log('    ✓ Capital leak prevented');
 
 } catch (e) {
-    console.error(`    ✗ FAILED: ${e.message}`);
+    console.error(`    ✗ FAILED: ${getErrorMessage(e)}`);
     process.exit(1);
 }
 
@@ -185,7 +186,7 @@ try {
     console.log(`    ✓ Performed ${rotations.length} rotations correctly`);
 
 } catch (e) {
-    console.error(`    ✗ FAILED: ${e.message}`);
+    console.error(`    ✗ FAILED: ${getErrorMessage(e)}`);
     process.exit(1);
 }
 
@@ -219,7 +220,7 @@ try {
     console.log(`    ✓ Processed ${processed.length} partials within budget`);
 
 } catch (e) {
-    console.error(`    ✗ FAILED: ${e.message}`);
+    console.error(`    ✗ FAILED: ${getErrorMessage(e)}`);
     process.exit(1);
 }
 
@@ -251,7 +252,7 @@ try {
     console.log('    ✓ VIRTUAL slots correctly converted to SPREAD');
 
 } catch (e) {
-    console.error(`    ✗ FAILED: ${e.message}`);
+    console.error(`    ✗ FAILED: ${getErrorMessage(e)}`);
     process.exit(1);
 }
 
@@ -286,7 +287,7 @@ try {
     console.log('    ✓ Matching orderId correctly passes validation');
 
 } catch (e) {
-    console.error(`    ✗ FAILED: ${e.message}`);
+    console.error(`    ✗ FAILED: ${getErrorMessage(e)}`);
     process.exit(1);
 }
 
@@ -318,7 +319,7 @@ try {
     console.log(`    ✓ All ${slotIndexMap.size} slots mapped with O(1) lookup`);
 
 } catch (e) {
-    console.error(`    ✗ FAILED: ${e.message}`);
+    console.error(`    ✗ FAILED: ${getErrorMessage(e)}`);
     process.exit(1);
 }
 
@@ -374,7 +375,7 @@ try {
     console.log('    ✓ All edge cases handled correctly');
 
 } catch (e) {
-    console.error(`    ✗ FAILED: ${e.message}`);
+    console.error(`    ✗ FAILED: ${getErrorMessage(e)}`);
     process.exit(1);
 }
 

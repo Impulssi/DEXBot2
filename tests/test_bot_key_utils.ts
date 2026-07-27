@@ -13,6 +13,7 @@ const {
     candleFileForBot,
     resolveCandleFile,
 } = require('../analysis/bot_key_utils');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-bot-key-utils-'));
 const tmpDataDir = path.join(tmpRoot, 'data');
@@ -27,8 +28,8 @@ function check(name, fn) {
     } catch (err) {
         failed++;
         console.error(`  FAIL: ${name}`);
-        console.error(`    ${err && err.message ? err.message : err}`);
-        if (err && err.stack) console.error(err.stack.split('\n').slice(1, 4).join('\n'));
+        console.error(`    ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`);
+        if (err && (err as any).stack) console.error((err as any).stack.split('\n').slice(1, 4).join('\n'));
     }
 }
 

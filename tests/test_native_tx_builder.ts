@@ -75,7 +75,7 @@ try {
         });
     }
 } catch (e) {
-    threw = e instanceof TransactionTooLargeError || e.code === 'TX_TOO_LARGE';
+    threw = e instanceof TransactionTooLargeError || (e as any).code === 'TX_TOO_LARGE';
 }
 assert.ok(threw, 'Should throw when exceeding MAX_OPS_PER_TX');
 assert.strictEqual(tx3.getOperationCount(), MAX_OPS_PER_TX);

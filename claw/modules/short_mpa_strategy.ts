@@ -1,11 +1,7 @@
-const {
-  borrowMpa,
-  createLimitOrder,
-  repayMpaDebt
-} = require('./chain_actions');
-const {
-  requireBtsBackedMpa
-} = require('./mpa_utils');
+
+import { Config } from '../../modules/config';
+import { borrowMpa, createLimitOrder, repayMpaDebt } from './chain_actions.js';
+import { requireBtsBackedMpa } from './mpa_utils.js';
 
 function requirePositiveNumber(value: any, fieldName: string) {
   const numericValue = Number(value);
@@ -25,7 +21,6 @@ function requireNonNegativeNumber(value: any, fieldName: string) {
   return numericValue;
 }
 
-const { Config } = require('../../modules/config');
 
 function resolveAccountName(options: Record<string, any> = {}, { required = true }: Record<string, any> = {}) {
   const accountName = options.accountName || Config.BITSHARES_ACCOUNT || null;
@@ -186,11 +181,5 @@ async function closeShortOnBts(options: Record<string, any> = {}) {
   };
 }
 
-export = {
-  buildCloseShortPlan,
-  buildOpenShortPlan,
-  buildTakeProfitPlan,
-  closeShortOnBts,
-  openShortOnBts,
-  placeTakeProfitBuyOrderOnBts
-};
+export { buildCloseShortPlan, buildOpenShortPlan, buildTakeProfitPlan, closeShortOnBts, openShortOnBts, placeTakeProfitBuyOrderOnBts }
+

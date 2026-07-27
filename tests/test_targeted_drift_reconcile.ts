@@ -85,7 +85,7 @@ async function runTests() {
                 broadcasting: false,
             }),
             _processFillsWithBatching: async () => ({ aborted: false }),
-            _syncOpenOrdersAndProcessFills: async function (tag) {
+            _syncOpenOrdersAndProcessFills: async function (_tag) {
                 const openOrders = await chainOrders.readOpenOrders(this.accountId);
                 const syncResult = await this.manager.synchronizeWithChain(openOrders, 'readOpenOrders');
                 return { syncResult, aborted: false, hasUnmatched: 0 };

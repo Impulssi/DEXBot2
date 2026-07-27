@@ -1,9 +1,6 @@
 'use strict';
 
-const {
-  getAsset,
-  getBackingAsset
-} = require('./chain_queries');
+import { getAsset, getBackingAsset } from './chain_queries.js';
 
 const CORE_SYMBOL = 'BTS';
 
@@ -30,7 +27,5 @@ async function requireBtsBackedMpa(mpaSymbolOrId: any) {
   };
 }
 
-export = {
-  CORE_SYMBOL,
-  requireBtsBackedMpa
-};
+export { CORE_SYMBOL, requireBtsBackedMpa }
+

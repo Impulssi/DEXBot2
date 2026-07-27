@@ -1,4 +1,13 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
+import { normalizePoolId } from '../../market_adapter/utils/chain';
+import { toIntervalLabel } from '../../market_adapter/interval_utils';
+import { MARKET_ADAPTER } from '../../modules/constants';
+import * as kibanaSource from '../../market_adapter/inputs/kibana_source';
+import { PATHS } from '../../modules/paths';
+import { ensureDir, writeJSON } from '../../modules/utils/fs_utils';
+
 'use strict';
 /**
  * Fetch LP pool candles from Kibana for AMA optimizer input.
@@ -16,29 +25,32 @@
  * Defaults: --interval 1h  --hours 26280 (3 years)
  * Output: market_adapter/data/lp/<assetA>_<assetB>/lp_pool_<poolShort>_<interval>.json
  */
-const fs   = require('fs');
-const path = require('path');
-const { normalizePoolId } = require('../../market_adapter/utils/chain');
-const { toIntervalLabel } = require('../../market_adapter/interval_utils');
-const { MARKET_ADAPTER } = require('../../modules/constants');
-const kibanaSource = require('../../market_adapter/inputs/kibana_source');
-const { PATHS } = require('../../modules/paths');
-const { ensureDir, writeJSON } = require('../../modules/utils/fs_utils');
 const DATA_DIR = PATHS.MARKET_ADAPTER.LP_DATA_DIR;
 const HOURS_3Y  = 3 * 365 * 24; // 26280
-function slugPart(value) {
+function slugPart(value: string | null | undefined): string {
     return String(value || '')
         .trim()
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '_')
         .replace(/^_+|_+$/g, '') || 'unknown';
 }
-function slugPairFolder(symbolA, symbolB) {
+function slugPairFolder(symbolA: string, symbolB: string): string {
     return `${slugPart(symbolA)}_${slugPart(symbolB)}`;
 }
 function parseArgs() {
     const args = process.argv.slice(2);
-    const out = {
+    const out: {
+        pool: string | null;
+        assetASymbol: string | null;
+        assetAId: string | null;
+        assetAPrecision: number | null;
+        assetBSymbol: string | null;
+        assetBId: string | null;
+        assetBPrecision: number | null;
+        intervalSeconds: number;
+        hours: number;
+        outFile: string | null;
+    } = {
         pool:             null,
         assetASymbol:     null,
         assetAId:         null,
@@ -50,7 +62,7 @@ function parseArgs() {
         hours:            HOURS_3Y,
         outFile:          null,
     };
-    const intervalMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
+    const intervalMap: Record<string, number> = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         const v = args[i + 1];
@@ -93,7 +105,7 @@ function printHelp() {
     console.log('  --hours <n>              Lookback hours (default: 26280 = 3 years)');
     console.log('  --out <filename>         Output filename (default: auto-generated in market_adapter/data/lp/)');
 }
-function validateArgs(args) {
+function validateArgs(args: Record<string, any>) {
     if (!args.pool)            throw new Error('--pool is required');
     if (!args.assetAId)        throw new Error('--assetAId is required');
     if (!Number.isFinite(args.assetAPrecision)) throw new Error('--assetAPrecision is required');
@@ -107,12 +119,12 @@ async function main() {
     const assetA = {
         id:        args.assetAId,
         precision: args.assetAPrecision,
-        symbol:    args.assetASymbol || args.assetAId,
+        symbol:    args.assetASymbol || args.assetAId || '',
     };
     const assetB = {
         id:        args.assetBId,
         precision: args.assetBPrecision,
-        symbol:    args.assetBSymbol || args.assetBId,
+        symbol:    args.assetBSymbol || args.assetBId || '',
     };
     const { intervalSeconds } = args;
     const intervalLabel    = toIntervalLabel(intervalSeconds);
@@ -152,7 +164,7 @@ async function main() {
         },
         candles,
     };
-    const poolShort = poolId.replace('1.19.', '');
+    const poolShort = (poolId || '').replace('1.19.', '');
     const pairFolder = slugPairFolder(assetA.symbol, assetB.symbol);
     const defaultName = `lp_pool_${poolShort}_${intervalLabel}.json`;
     const outName = args.outFile || defaultName;
@@ -167,7 +179,7 @@ async function main() {
     console.log('Run optimizer:');
     console.log(`  npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js --data ${path.relative(process.cwd(), outPath)}`);
 }
-main().catch((err) => {
+main().catch((err: any) => {
     console.error('Error:', err.message);
     process.exit(1);
 });

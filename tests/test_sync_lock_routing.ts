@@ -84,7 +84,6 @@ async function testSyncEngineCreateOrderAcquiresGridLock() {
     const manager = createManagerFixture();
 
     let lockAcquireCalls = 0;
-    const realSyncFromOpenOrders = manager.sync.syncFromOpenOrders;
     manager._gridLock = {
         acquire: async (callback) => {
             lockAcquireCalls += 1;

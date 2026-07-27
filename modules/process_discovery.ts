@@ -1,9 +1,10 @@
 'use strict';
 
-const { getStorage } = require('./storage');
-const storage = getStorage();
-const { runtime } = require('./runtime');
-const { sleep } = require('./order/utils/system');
+import { getStorage } from './storage';
+import { runtime } from './runtime';
+import { sleep } from './order/utils/system';
+
+const storage: any = getStorage();
 
 export interface ProcessStat {
     utime: number;
@@ -114,7 +115,7 @@ export class LinuxProcessDiscovery implements ProcessDiscovery {
         }
     }
 
-    async readCpuPercent(pid: number, samples = 2, intervalMs = 400): Promise<string> {
+    async readCpuPercent(pid: number, samples: any = 2, intervalMs: any = 400): Promise<string> {
         try {
             const snap = () => {
                 const stat = this.readStat(pid);
@@ -201,7 +202,7 @@ export class LinuxProcessDiscovery implements ProcessDiscovery {
     listAllPids(): number[] {
         try {
             return storage.readdir('/proc')
-                .filter((name) => /^\d+$/.test(name))
+                .filter((name: any) => /^\d+$/.test(name))
                 .map(Number);
         } catch {
             return [];

@@ -21,18 +21,18 @@
  *     --out market_adapter/data/lp/<pair>/lp_pool_<poolShort>_1h.json
  */
 
-const { path } = require('../modules/path_api');
-const { getStorage } = require('../modules/storage');
+import { path } from '../modules/path_api.js';
+import { getStorage } from '../modules/storage/index.js';
+import { mergeCandles } from './candle_utils.js';
+import { ensureDir, readJSON, writeJSON } from '../modules/utils/fs_utils.js';
 const storage = getStorage();
-const { mergeCandles } = require('./candle_utils');
-const { ensureDir, readJSON, writeJSON } = require('../modules/utils/fs_utils');
 
 // ─── CLI ──────────────────────────────────────────────────────────────────────
 
 function parseArgs() {
     const args = process.argv.slice(2);
-    const files = [];
-    let out = null;
+    const files: string[] = [];
+    let out: string | null = null;
 
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--out' && args[i + 1]) {
@@ -133,7 +133,7 @@ function run() {
 
     ensureDir(path.dirname(outPath));
     writeJSON(outPath, output);
-    const kb = (storage.stat(outPath).size / 1024).toFixed(1);
+    const kb = ((storage.stat(outPath) as any).size / 1024).toFixed(1);
 
     console.log('');
     console.log(`  Saved: ${path.relative(process.cwd(), outPath)}  (${kb} KB)`);

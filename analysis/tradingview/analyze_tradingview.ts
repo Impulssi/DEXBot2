@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { createSource } from '../price_sources';
+import { generateHTML } from './tradingview_uplot_chart_generator';
+import { MARKET_ADAPTER } from '../../modules/constants';
+import { loadCandleFile } from '../math_utils';
+import { ensureDir } from '../../modules/utils/fs_utils';
+import { toIntervalLabel } from '../../market_adapter/interval_utils';
+import { loadBotSettings, resolveCandleFile, candleFileForBot, loadBotMeta, resolveAmaConfig } from '../bot_key_utils';
+import { PATHS } from '../../modules/paths';
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const { createSource } = require('../price_sources');
-const { generateHTML } = require('./tradingview_uplot_chart_generator');
-const { MARKET_ADAPTER } = require('../../modules/constants');
-const { loadCandleFile } = require('../math_utils');
-const { ensureDir } = require('../../modules/utils/fs_utils');
-const { toIntervalLabel } = require('../../market_adapter/interval_utils');
-const { loadBotSettings, sanitizeKey, computeBotKey, resolveBotKey, resolveCandleFile, candleFileForBot, loadBotMeta, resolveAmaConfig } = require('../bot_key_utils');
 
-const { PATHS } = require('../../modules/paths');
 const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 const DEFAULT_CHART_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'tradingview_chart.html');
@@ -163,7 +164,7 @@ async function main() {
         fs.writeFileSync(config.chartFile, html, 'utf8');
 
         if (!config.quiet) console.log(`[TradingView] ✓ Chart saved to ${config.chartFile}`);
-    } catch (err) {
+    } catch (err: any) {
         console.error(`[TradingView] Error: ${err.message}`);
         process.exit(1);
     }
@@ -173,10 +174,5 @@ if (require.main === module) {
     main();
 }
 
-export = {
-    main,
-    parseArgs,
-    loadJsonMeta,
-    loadBotSettings,
-    inferTitle,
-};
+export { main, parseArgs, loadJsonMeta, loadBotSettings, inferTitle }
+

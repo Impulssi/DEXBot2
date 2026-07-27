@@ -71,11 +71,5 @@ function buildStartupDefaultsLog(defaultAma: any, defaultConfig: any, marketAdap
         + `asymCap=${formatAsymmetryFactor(marketAdapterCfg?.ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR, 0)}`;
 }
 
-export = {
-    formatLogPercent,
-    buildWeightSummary,
-    buildDynamicWeightInputsLog,
-    buildDynamicWeightTuningLog,
-    buildAsymmetricBoundsLog,
-    buildStartupDefaultsLog,
-};
+export { formatLogPercent, buildWeightSummary, buildDynamicWeightInputsLog, buildDynamicWeightTuningLog, buildAsymmetricBoundsLog, buildStartupDefaultsLog }
+

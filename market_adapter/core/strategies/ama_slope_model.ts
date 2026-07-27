@@ -1,18 +1,17 @@
-const { clamp } = require('../../../modules/order/utils/math');
-const { MARKET_ADAPTER } = require('../../../modules/constants');
-const { roundTo } = require('../../../modules/utils/math_utils');
-const {
+
+import { clamp } from '../../../modules/order/utils/math';
+import { MARKET_ADAPTER } from '../../../modules/constants';
+import { roundTo } from '../../../modules/utils/math_utils';
+import {
     normalizeMaxVolatilityOffset,
     normalizeVolatilityThreshold,
-} = require('../config_normalizers');
+} from '../config_normalizers.js';
 
 
-const MAX_OFFSET_FROM_NEUTRAL = MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
-const MAX_SYMMETRIC_SHIFT = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP;
 
-const DEFAULT_ER_PERIOD = MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY].erPeriod;
-const DEFAULT_SLOW_PERIOD = MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY].slowPeriod;
-const DEFAULT_FAST_PERIOD = MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY].fastPeriod;
+
+const _DEFAULT_AMA_KEY = MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS;
+const DEFAULT_ER_PERIOD = MARKET_ADAPTER.AMAS[_DEFAULT_AMA_KEY].erPeriod;
 
 function computeAverageAmaSlopePct(current: any, past: any, lookbackBars: any) {
     const safeLookbackBars = Number.isFinite(lookbackBars) && lookbackBars > 0
@@ -61,12 +60,6 @@ function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any =
     const erPeriod = Number.isFinite(opts.erPeriod) && opts.erPeriod > 0
         ? Math.ceil(opts.erPeriod)
         : DEFAULT_ER_PERIOD;
-    const slowPeriod = Number.isFinite(opts.slowPeriod) && opts.slowPeriod > 0
-        ? Math.ceil(opts.slowPeriod)
-        : DEFAULT_SLOW_PERIOD;
-    const fastPeriod = Number.isFinite(opts.fastPeriod) && opts.fastPeriod > 0
-        ? opts.fastPeriod
-        : DEFAULT_FAST_PERIOD;
     const maxSlopeOffset = opts.maxSlopeOffset ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
     const maxVolatilityOffset = normalizeMaxVolatilityOffset(opts.maxVolatilityOffset);
     const clipThreshold = opts.clipThreshold ?? Infinity;
@@ -159,4 +152,5 @@ function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any =
     };
 }
 
-export = { computeAmaSlopeWeights, computeAverageAmaSlopePct };
+export { computeAmaSlopeWeights, computeAverageAmaSlopePct }
+

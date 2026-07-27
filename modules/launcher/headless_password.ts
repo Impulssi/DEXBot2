@@ -1,7 +1,8 @@
-const { getStorage } = require('../storage');
+
+import { getStorage } from '../storage';
+import { assertPrivatePathSecurity } from '../credential_runtime';
+import { Config } from '../config';
 const storage = getStorage();
-const { assertPrivatePathSecurity } = require('../credential_runtime');
-const { Config } = require('../config');
 
 function readHeadlessPassword({ passwordFile }: { passwordFile?: string | null } = {}): string {
     let password: string | null = null;
@@ -34,6 +35,5 @@ function readHeadlessPassword({ passwordFile }: { passwordFile?: string | null }
     return password;
 }
 
-export = {
-    readHeadlessPassword,
-};
+export { readHeadlessPassword }
+

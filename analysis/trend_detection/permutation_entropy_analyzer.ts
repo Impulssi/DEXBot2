@@ -1,7 +1,8 @@
+
+import { MARKET_ADAPTER } from '../../modules/constants';
+import { roundTo } from '../../modules/utils/math_utils';
 'use strict';
 
-const { MARKET_ADAPTER } = require('../../modules/constants');
-const { roundTo } = require('../../modules/utils/math_utils');
 
 /**
  * Permutation Entropy Analyzer
@@ -124,7 +125,7 @@ class PermutationEntropyAnalyzer {
 
     getAnalysis(): PermutationEntropyAnalysis {
         const ne = this.normalizedEntropy;
-        const [PE_LOW, , PE_HIGH]: [number, number, number] = MARKET_ADAPTER.PE_NODES;
+        const [PE_LOW, , PE_HIGH] = MARKET_ADAPTER.PE_NODES as [number, number, number];
         let regime: string, regimeStrength: number;
         if (ne < PE_LOW) {
             regime = 'STRUCTURED';
@@ -148,4 +149,5 @@ class PermutationEntropyAnalyzer {
     }
 }
 
-export = { PermutationEntropyAnalyzer };
+export { PermutationEntropyAnalyzer }
+

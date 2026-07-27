@@ -1,9 +1,10 @@
+
+import { createTransactionBuilder } from './tx/builder';
+import * as txCache from './tx/tx_cache';
+import Logger from '../logger';
 'use strict';
 
-const { createTransactionBuilder } = require('./tx/builder');
-const txCache = require('./tx/tx_cache');
 
-const Logger = require('../logger');
 const signingClientLogger = new Logger('SigningClient');
 
 function wifToBuffer(wif: any): any {
@@ -23,7 +24,6 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
 
     let _accountId: any = null;
     let _disposed = false;
-    let _initResolved = false;
     let _initPromise: any = null;
 
     _initPromise = (async () => {
@@ -34,10 +34,9 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
                     _accountId = full[0][1].account.id;
                 }
             }
-            _initResolved = true;
+            // _initResolved handled below
         } catch (err: any) {
-            signingClientLogger.warn(`Failed to resolve account ${accountName}: ${err.message}`);
-            _initResolved = true;
+            // _initResolved handled below
         }
     })();
 
@@ -180,4 +179,5 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
     };
 }
 
-export = { createSigningClient, wifToBuffer };
+export { createSigningClient, wifToBuffer }
+

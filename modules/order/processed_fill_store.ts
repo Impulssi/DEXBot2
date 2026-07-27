@@ -31,7 +31,7 @@ function resolveProcessedFillPersistenceMode(options: { persistenceMode?: string
  */
 class ProcessedFillStore {
     tracker: Map<string, number>;
-    pendingWrites: Map<string, number>;
+    pendingWrites: Map<string, number> = new Map();
     _batchMs: number | undefined;
     _batchSize: number | undefined;
     _warn: (msg: string) => void;
@@ -283,7 +283,7 @@ class ProcessedFillStore {
 
         if (!schedule) return;
 
-        if (this.pendingWrites.size >= this._batchSize) {
+        if ((this.pendingWrites?.size ?? 0) >= (this._batchSize ?? 0)) {
             void this.flush('batch-size');
             return;
         }
@@ -305,8 +305,5 @@ class ProcessedFillStore {
     }
 }
 
-export = {
-    ProcessedFillStore,
-    PROCESSED_FILL_PERSISTENCE_MODES,
-    resolveProcessedFillPersistenceMode
-};
+export { ProcessedFillStore, PROCESSED_FILL_PERSISTENCE_MODES, resolveProcessedFillPersistenceMode }
+

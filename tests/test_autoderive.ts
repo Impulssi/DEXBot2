@@ -12,6 +12,7 @@ const assert = require('assert');
 const path = require('path');
 const { BUILD_DIR } = require('../modules/constants');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 async function runAutoderiveForBot(botCfg) {
     console.log('Running autoderive for bot:', botCfg.name || '(unnamed)');
@@ -111,7 +112,7 @@ async function main() {
         console.log('Autoderive test completed successfully');
         process.exit(0);
     } catch (err) {
-        console.error('Autoderive test failed:', err && err.stack ? err.stack : err);
+        console.error('Autoderive test failed:', err && (err as any).stack ? (err as any).stack : getErrorMessage(err));
         process.exit(2);
     }
 }

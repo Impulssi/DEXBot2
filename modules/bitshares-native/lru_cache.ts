@@ -1,6 +1,7 @@
+
+import { NATIVE_CLIENT } from '../constants';
 'use strict';
 
-const { NATIVE_CLIENT } = require('../constants');
 const { RESOLVERS } = NATIVE_CLIENT;
 
 interface CacheEntry {
@@ -66,4 +67,5 @@ class LRUCache {
     get size(): number { return this.cache.size; }
 }
 
-export = { LRUCache };
+export { LRUCache }
+

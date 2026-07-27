@@ -1,3 +1,14 @@
+export interface FileStat {
+  mtimeMs: number;
+  isFile(): boolean;
+  isDirectory(): boolean;
+  /** @internal Node-only extended properties */
+  mode?: number;
+  uid?: number;
+  isSymbolicLink?(): boolean;
+  isSocket?(): boolean;
+}
+
 export interface IStorageAdapter {
   /** Read and parse a JSON file */
   readJSON<T = any>(path: string): T;
@@ -35,7 +46,7 @@ export interface IStorageAdapter {
   rename(oldPath: string, newPath: string): void;
 
   /** Get file stats */
-  stat(path: string): { mtimeMs: number; isFile(): boolean; isDirectory(): boolean };
+  stat(path: string): FileStat;
 
   /** List directory contents */
   readdir(path: string): string[];
@@ -65,7 +76,7 @@ export interface IStorageAdapter {
   utimes(path: string, atime: Date | number, mtime: Date | number): void;
 
   /** Get file stats without following symlinks */
-  lstat(path: string): { mtimeMs: number; isFile(): boolean; isDirectory(): boolean };
+  lstat(path: string): FileStat;
 
   /** Remove a directory (must be empty) */
   rmdir(path: string): void;

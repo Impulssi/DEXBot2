@@ -1,5 +1,6 @@
-const chainKeys = require('./chain_keys');
 
+
+import * as chainKeys from './chain_keys';
 interface SessionAccount {
     encryptedKey: string;
 }
@@ -145,8 +146,5 @@ async function loadDaemonPrivateKey(accountName: string, sessionState: SessionSt
     return chainKeysImpl.decrypt(sessionEncryptedKey, currentSessionSecret);
 }
 
-export = {
-    buildSessionAccountCache,
-    cacheSessionPrivateKey,
-    loadDaemonPrivateKey,
-};
+export { buildSessionAccountCache, cacheSessionPrivateKey, loadDaemonPrivateKey }
+

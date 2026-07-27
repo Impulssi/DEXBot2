@@ -1,12 +1,6 @@
-const { createHmac } = require('../../modules/crypto/sync');
-const {
-  DEFAULT_READY_FILE,
-  DEFAULT_SOCKET_PATH,
-  sendCredentialDaemonRequest,
-  executeOperationsViaCredentialDaemon,
-  isCredentialDaemonReady,
-  waitForCredentialDaemon,
-} = require('../../modules/dexbot_credential_client');
+
+import { createHmac } from '../../modules/crypto/sync';
+import { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, sendCredentialDaemonRequest, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon } from '../../modules/dexbot_credential_client.js';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 
@@ -46,11 +40,5 @@ function broadcastOperationViaCredentialDaemon(accountName: any, operation: any,
   });
 }
 
-export = {
-  DEFAULT_READY_FILE,
-  DEFAULT_SOCKET_PATH,
-  broadcastOperationViaCredentialDaemon,
-  executeOperationsViaCredentialDaemon,
-  isCredentialDaemonReady,
-  waitForCredentialDaemon
-};
+export { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon }
+

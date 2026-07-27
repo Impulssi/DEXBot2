@@ -3,6 +3,7 @@ const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { initializeFeeCache } = require('../modules/order/utils/system');
 const { createTestLogger } = require('./helpers/silent_logger');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // Mock BitShares for fee initialization
 const mockBitShares = {
@@ -219,8 +220,8 @@ async function testConsolidationSyncRebalanceCycle() {
         console.log('='.repeat(80));
         process.exit(0);
     } catch (err) {
-        console.error('\n❌ Test failed:', err.message);
-        console.error(err.stack);
+        console.error('\n❌ Test failed:', getErrorMessage(err));
+        console.error((err as any).stack);
         process.exit(1);
     }
 })();

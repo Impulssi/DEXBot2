@@ -1,7 +1,10 @@
 // Claw shares the DEXBot2 chain client infrastructure but tracks connection state separately for subsystem isolation.
-const { TIMING, NODE_MANAGEMENT } = require('../../modules/constants');
-const { sleep } = require('../../modules/order/utils/system');
 
+
+import { TIMING, NODE_MANAGEMENT } from '../../modules/constants';
+import { sleep } from '../../modules/order/utils/system';
+import * as native from '../../modules/bitshares-native';
+import { createSigningClient } from '../../modules/bitshares-native';
 const DEFAULT_TIMEOUT_MS = TIMING.CONNECTION_TIMEOUT_MS;
 const DEFAULT_CHECK_INTERVAL_MS = TIMING.CHECK_INTERVAL_MS;
 
@@ -10,7 +13,6 @@ let suppressConnectionLog = false;
 let _nativeClient: any = null;
 let _connectPromise: any = null;
 
-const native = require('../../modules/bitshares-native');
 _nativeClient = native.createChainClient({
     onStatusChange: handleConnectionStatus,
     rpcTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
@@ -75,37 +77,20 @@ async function createAccountClient(accountName: any, privateKey: any) {
 
     await waitForConnected();
 
-    const { createSigningClient } = require('../../modules/bitshares-native');
     const signingClient = createSigningClient(_nativeClient, accountName, privateKey);
     return signingClient.client;
 }
 
-export = {
-    BitShares: _nativeClient ? {
-        get connect() {
-            return (servers: any) => {
-                if (Array.isArray(servers) && servers.length > 0) {
-                    _nativeClient.setNodes(servers);
-                }
-                return ensureConnected();
-            };
-        },
-        get disconnect() {
-            return () => {
-                _connectPromise = null;
-                return _nativeClient.disconnect();
-            };
-        },
-        get node() { return _nativeClient.getNodes(); },
-        set node(v) { _nativeClient.setNodes(Array.isArray(v) ? v : []); },
-        get chain() { return { get coreAsset() { return _nativeClient.getCoreAsset(); } }; },
-        get db() { return _nativeClient.db; },
-        get history() { return _nativeClient.history; },
-        subscribe(...args: any[]) { return _nativeClient.subscribe ? _nativeClient.subscribe(...args) : undefined; },
-        unsubscribe(...args: any[]) { if (_nativeClient.unsubscribe) _nativeClient.unsubscribe(...args); },
-    } : null,
-    createAccountClient,
-    isConnected: () => connected,
-    setSuppressConnectionLog,
-    waitForConnected,
-};
+function isConnected() {
+    return connected;
+}
+
+export { createAccountClient, setSuppressConnectionLog, waitForConnected, isConnected }
+const BitShares = new Proxy(_nativeClient, {
+    get(target: any, prop: string) {
+        if (prop === 'node') return target.getNodes();
+        return target[prop];
+    }
+});
+export { BitShares }
+

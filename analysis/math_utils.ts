@@ -1,26 +1,27 @@
+
+import fs from 'node:fs';
+import { readJSON } from '../modules/utils/fs_utils';
 'use strict';
 
-const fs = require('fs');
-const { readJSON } = require('../modules/utils/fs_utils');
 
 /**
  * Math utilities for analysis scripts.
  */
 
-function range(min, max, step, decimals = 4) {
-    const out = [];
+function range(min: number, max: number, step: number, decimals: any = 4) {
+    const out: number[] = [];
     for (let v = min; v <= max + 1e-9; v += step) out.push(Number(v.toFixed(decimals)));
     return [...new Set(out)];
 }
 
-function calcStdDev(arr) {
-    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
-    const sqDiffs = arr.reduce((sum, v) => sum + (v - mean) ** 2, 0);
+function calcStdDev(arr: any) {
+    const mean = arr.reduce((a: any, b: any) => a + b, 0) / arr.length;
+    const sqDiffs = arr.reduce((sum: any, v: any) => sum + (v - mean) ** 2, 0);
     return Math.sqrt(sqDiffs / arr.length);
 }
 
-function computeATR(candles, period = 14) {
-    const atrs = [];
+function computeATR(candles: any[], period: any = 14) {
+    const atrs: number[] = [];
     if (!Array.isArray(candles) || candles.length === 0) return atrs;
 
     const safePeriod = Math.max(1, Math.round(period));
@@ -50,32 +51,28 @@ function computeATR(candles, period = 14) {
     return atrs;
 }
 
-function getCandleOpen(candle) {
-    if (!candle) return null;
-    return Array.isArray(candle) ? candle[1] : candle.open;
-}
 
-function getCandleHigh(candle) {
+function getCandleHigh(candle: any) {
     if (!candle) return null;
     return Array.isArray(candle) ? candle[2] : candle.high;
 }
 
-function getCandleLow(candle) {
+function getCandleLow(candle: any) {
     if (!candle) return null;
     return Array.isArray(candle) ? candle[3] : candle.low;
 }
 
-function getCandleClose(candle) {
+function getCandleClose(candle: any) {
     if (!candle) return null;
     return Array.isArray(candle) ? candle[4] : candle.close;
 }
 
-function getCandleTimestamp(candle) {
+function getCandleTimestamp(candle: any) {
     if (!candle) return null;
     return Array.isArray(candle) ? candle[0] : candle.timestamp;
 }
 
-function normalizeCandle(candle) {
+function normalizeCandle(candle: any) {
     if (!candle) return null;
     if (Array.isArray(candle)) {
         const ts = Number(candle[0]);
@@ -102,7 +99,7 @@ function normalizeCandle(candle) {
  * Parse a candle JSON file with format detection:
  * flat array → {candles: [...]} → {data: [...]}
  */
-function loadCandleFile(filePath) {
+function loadCandleFile(filePath: any) {
     if (!filePath || !fs.existsSync(filePath)) return { candles: [], meta: null };
     const raw = readJSON(filePath);
     if (Array.isArray(raw)) return { candles: raw, meta: null };
@@ -111,12 +108,5 @@ function loadCandleFile(filePath) {
     return { candles: [], meta: null };
 }
 
-export = {
-    range,
-    calcStdDev,
-    computeATR,
-    getCandleClose,
-    getCandleTimestamp,
-    normalizeCandle,
-    loadCandleFile,
-};
+export { range, calcStdDev, computeATR, getCandleClose, getCandleTimestamp, normalizeCandle, loadCandleFile }
+

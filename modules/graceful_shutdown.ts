@@ -58,11 +58,12 @@
  * ===============================================================================
  */
 
+
+import Logger from './logger';
+import { runtime } from './runtime';
 let cleanupHandlers: any[] = [];
 let shutdownInProgress = false;
-const Logger = require('./logger');
 const shutdownLogger = new Logger('Shutdown');
-const { runtime } = require('./runtime');
 
 /**
  * Register a cleanup function to be called on graceful shutdown
@@ -70,7 +71,7 @@ const { runtime } = require('./runtime');
  * @param {string} name - Name of the cleanup operation (for logging)
  * @param {Function} handler - Async or sync function to call on shutdown
  */
-function registerCleanup(name, handler) {
+function registerCleanup(name: any, handler: any) {
     if (typeof handler !== 'function') {
         throw new Error(`Cleanup handler for '${name}' must be a function`);
     }
@@ -84,7 +85,7 @@ function registerCleanup(name, handler) {
  * @param {string|Function} nameOrHandler - Cleanup name or handler reference
  * @returns {boolean} True when a handler was found and removed
  */
-function unregisterCleanup(nameOrHandler) {
+function unregisterCleanup(nameOrHandler: any) {
     const initialLength = cleanupHandlers.length;
     if (typeof nameOrHandler === 'function') {
         for (let i = cleanupHandlers.length - 1; i >= 0; i--) {
@@ -141,7 +142,7 @@ async function executeCleanup() {
 function setupGracefulShutdown() {
     const signals = ['SIGTERM', 'SIGINT'];
     
-    signals.forEach(signal => {
+    signals.forEach((signal: any) => {
         runtime.onSignal(signal, async () => {
             shutdownLogger.info(`Received ${signal}, initiating graceful shutdown...`);
             await executeCleanup();
@@ -158,15 +159,12 @@ function setupGracefulShutdown() {
     });
 
     // Handle unhandled rejections
-    runtime.onSignal('unhandledRejection', async (reason, promise) => {
+    runtime.onSignal('unhandledRejection', async (reason: any, promise: any) => {
         shutdownLogger.error(`Unhandled rejection at: ${promise} reason: ${(reason as any)?.stack || reason}`);
         await executeCleanup();
         runtime.exitAfterStderrDrain(1);
     });
 }
 
-export = {
-    registerCleanup,
-    unregisterCleanup,
-    setupGracefulShutdown,
-};
+export { registerCleanup, unregisterCleanup, setupGracefulShutdown }
+

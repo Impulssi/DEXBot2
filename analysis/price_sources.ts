@@ -1,3 +1,10 @@
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fillCandleGaps } from '../market_adapter/candle_utils';
+import { getCandleClose, getCandleTimestamp, loadCandleFile } from './math_utils';
+import { PATHS } from '../modules/paths';
+import { readJSON } from '../modules/utils/fs_utils';
 'use strict';
 
 /**
@@ -10,12 +17,6 @@
  * Each source returns: { marketPrice, timestamp }
  */
 
-const fs = require('fs');
-const path = require('path');
-const { fillCandleGaps } = require('../market_adapter/candle_utils');
-const { getCandleClose, getCandleTimestamp, loadCandleFile } = require('./math_utils');
-const { PATHS } = require('../modules/paths');
-const { readJSON } = require('../modules/utils/fs_utils');
 
 interface JsonFileConfig {
     filePath: string;
@@ -123,6 +124,5 @@ function createSource(type: string, config: JsonFileConfig | MarketAdapterConfig
     }
 }
 
-export = {
-    createSource,
-};
+export { createSource }
+

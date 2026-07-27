@@ -1,21 +1,22 @@
-const net = require('net');
-const os = require('os');
-const { path } = require('../path_api');
-const { TIMING } = require('../constants');
-const { safeUnlink } = require('../utils/fs_utils');
-const { assertPrivatePathSecurity } = require('../credential_runtime');
-const { getStorage } = require('../storage');
+
+import net from 'node:net';
+import os from 'node:os';
+import { path } from '../path_api';
+import { TIMING } from '../constants';
+import { safeUnlink } from '../utils/fs_utils';
+import { assertPrivatePathSecurity } from '../credential_runtime';
+import { getStorage } from '../storage';
 const storage = getStorage();
 
 const BOOTSTRAP_SOCKET_PREFIX = 'dexbot-cred-bootstrap-';
 const DEFAULT_TIMEOUT_MS = TIMING.DAEMON_STARTUP_TIMEOUT_MS;
 
-function debugLog(message, err = null) {
+function debugLog(message: any, err: any = null) {
     const suffix = err && err.message ? `: ${err.message}` : '';
     console.error(`[credential-bootstrap][debug] ${message}${suffix}`);
 }
 
-function cleanupBootstrapArtifacts(socketPath, socketDir) {
+function cleanupBootstrapArtifacts(socketPath: any, socketDir: any) {
     if (socketPath) {
         safeUnlink(socketPath)
     }
@@ -28,8 +29,8 @@ function cleanupBootstrapArtifacts(socketPath, socketDir) {
  * Try a short connect to determine whether a Unix socket is live.
  * Returns true if the socket accepted the connection (server is listening).
  */
-function probeBootstrapSocket(socketPath, timeoutMs) {
-    return new Promise((resolve) => {
+function probeBootstrapSocket(socketPath: any, timeoutMs: any) {
+    return new Promise((resolve: any) => {
         const socket = net.createConnection(socketPath, () => {
             socket.end();
             resolve(true);
@@ -65,7 +66,7 @@ async function cleanupStaleBootstrapDirs() {
         const socketPath = path.join(dirPath, 'bootstrap.sock');
         try {
             const socketStat = storage.stat(socketPath);
-            if (socketStat.isSocket()) {
+            if ((socketStat as any).isSocket()) {
                 // Probe the socket with a short connect.  If it succeeds the
                 // server is (or was very recently) listening — do not delete.
                 const probeResult = await probeBootstrapSocket(socketPath, 300);
@@ -108,11 +109,11 @@ function fetchBootstrapPassword({
 
     return attemptFetch(retries);
 
-    function attemptFetch(remainingRetries) {
-        return new Promise((resolve, reject) => {
+    function attemptFetch(remainingRetries: any) {
+        return new Promise((resolve: any, reject: any) => {
             let settled = false;
             let buffer = '';
-            const socket = net.createConnection(socketPath, () => {
+            const socket = (net as any).createConnection(socketPath, () => {
                 socket.write(JSON.stringify({ type: 'bootstrap-password' }) + '\n');
             });
 
@@ -124,14 +125,14 @@ function fetchBootstrapPassword({
                 reject(err);
             }, timeoutMs);
 
-            function finish(fn, value) {
+            function finish(fn: any, value: any) {
                 if (settled) return;
                 settled = true;
                 clearTimeout(timer);
                 fn(value);
             }
 
-            socket.on('data', (data) => {
+            socket.on('data', (data: any) => {
                 buffer += data.toString();
                 const newlineIndex = buffer.indexOf('\n');
                 if (newlineIndex === -1) return;
@@ -159,13 +160,13 @@ function fetchBootstrapPassword({
                 }
             });
 
-            socket.on('error', (error) => {
+            socket.on('error', (error: any) => {
                 // Retry on transient socket errors (ECONNREFUSED, ECONNRESET)
                 if (!settled && remainingRetries > 0 && isTransientSocketError(error)) {
                     settled = true;
                     clearTimeout(timer);
                     const delay = Math.min(200 * Math.pow(2, retries - remainingRetries), 2000);
-                    debugLog(`Bootstrap socket error (${remainingRetries} retries left), retrying in ${delay}ms`, error);
+                    debugLog(`Bootstrap socket error (${remainingRetries} retries left), retrying in ${delay}ms`, error as any);
                     setTimeout(() => {
                         attemptFetch(remainingRetries - 1).then(resolve, reject);
                     }, delay);
@@ -183,7 +184,7 @@ function fetchBootstrapPassword({
     }
 }
 
-function isTransientSocketError(error) {
+function isTransientSocketError(error: any) {
     const code = error?.code || '';
     // ENOENT can occur when the bootstrap server has not yet created the
     // socket file, or when a previous connection attempt consumed the
@@ -213,14 +214,14 @@ async function createPasswordBootstrapServer({
 
     const socketDir = await createBootstrapSocketDir();
     const socketPath = path.join(socketDir, 'bootstrap.sock');
-    let server = null;
+    let server: any = null;
     let settled = false;
     let cleanedUp = false;
-    let timeoutHandle = null;
-    let resolveTransfer;
-    let rejectTransfer;
+    let timeoutHandle: any = null;
+    let resolveTransfer: any;
+    let rejectTransfer: any;
 
-    const transferPromise = new Promise((resolve, reject) => {
+    const transferPromise = new Promise((resolve: any, reject: any) => {
         resolveTransfer = resolve;
         rejectTransfer = reject;
     });
@@ -239,18 +240,18 @@ async function createPasswordBootstrapServer({
         cleanupBootstrapArtifacts(socketPath, socketDir);
     }
 
-    function settle(fn, value) {
+    function settle(fn: any, value: any) {
         if (settled) return;
         settled = true;
         fn(value);
         cleanup();
     }
 
-    await new Promise((resolve, reject) => {
-        server = net.createServer((socket) => {
+    await new Promise((resolve: any, reject: any) => {
+        server = net.createServer((socket: any) => {
             let buffer = '';
 
-            socket.on('data', (data) => {
+            socket.on('data', (data: any) => {
                 buffer += data.toString();
                 const newlineIndex = buffer.indexOf('\n');
                 if (newlineIndex === -1) return;
@@ -283,7 +284,7 @@ async function createPasswordBootstrapServer({
             });
         });
 
-        server.on('error', (error) => {
+        server.on('error', (error: any) => {
             cleanup();
             reject(error);
         });
@@ -309,9 +310,5 @@ async function createPasswordBootstrapServer({
     };
 }
 
-export = {
-    BOOTSTRAP_SOCKET_PREFIX,
-    DEFAULT_TIMEOUT_MS,
-    createPasswordBootstrapServer,
-    fetchBootstrapPassword,
-};
+export { BOOTSTRAP_SOCKET_PREFIX, DEFAULT_TIMEOUT_MS, createPasswordBootstrapServer, fetchBootstrapPassword }
+

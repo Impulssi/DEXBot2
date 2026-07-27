@@ -1,14 +1,15 @@
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { PATHS } from '../modules/paths';
+import { readJSON } from '../modules/utils/fs_utils';
+import { MARKET_ADAPTER } from '../modules/constants';
+import { loadMarketProfiles } from './tradingview/tradingview_uplot_chart_generator';
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const { PATHS } = require('../modules/paths');
-const { readJSON } = require('../modules/utils/fs_utils');
-const { MARKET_ADAPTER } = require('../modules/constants');
-const { loadMarketProfiles } = require('./tradingview/tradingview_uplot_chart_generator');
 
 const DEFAULT_AMA_KEY = String(MARKET_ADAPTER.DEFAULT_AMA_KEY).toUpperCase();
-const BUILTIN_AMAS = MARKET_ADAPTER.AMAS;
+const BUILTIN_AMAS = MARKET_ADAPTER.AMAS as Record<string, typeof MARKET_ADAPTER.AMAS.AMA1>;
 const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
 
 function loadBotSettings(filePath = PATHS.PROFILES.BOTS_JSON) {
@@ -148,14 +149,5 @@ function resolveAmaKey(botKey) {
     return 'AMA3';
 }
 
-export = {
-    loadBotSettings,
-    sanitizeKey,
-    computeBotKey,
-    resolveBotKey,
-    candleFileForBot,
-    resolveCandleFile,
-    loadBotMeta,
-    resolveAmaConfig,
-    resolveAmaKey,
-};
+export { loadBotSettings, sanitizeKey, computeBotKey, resolveBotKey, candleFileForBot, resolveCandleFile, loadBotMeta, resolveAmaConfig, resolveAmaKey }
+

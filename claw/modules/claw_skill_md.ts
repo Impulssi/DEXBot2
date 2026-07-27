@@ -1,9 +1,10 @@
-const { getStorage } = require('../../modules/storage');
+
+import { getStorage } from '../../modules/storage';
+import { path } from '../../modules/path_api';
+import { getClawToolCatalog } from './claw_catalog';
+import { getSupportedClawRuntime } from './claw_runtime_matrix';
+import { buildBridgeCommand, buildSkillTomlLines, createTool, normalizeRepoRoot, normalizeProfileRoot } from './skill_utils';
 const storage = getStorage();
-const { path } = require('../../modules/path_api');
-const { getClawToolCatalog } = require('./claw_catalog');
-const { getSupportedClawRuntime } = require('./claw_runtime_matrix');
-const { buildBridgeCommand, buildSkillTomlLines, createTool, normalizeRepoRoot, normalizeProfileRoot } = require('./skill_utils');
 
 function normalizeClawRepoRoot(repoRoot: string) {
   return normalizeRepoRoot('claw-skill-md', repoRoot);
@@ -308,8 +309,5 @@ function writeRuntimeSkillMarkdown(outputPath: string, runtimeName: string, opti
   return content;
 }
 
-export = {
-  buildRuntimeSkillMarkdown,
-  buildRuntimeSkillToml,
-  writeRuntimeSkillMarkdown
-};
+export { buildRuntimeSkillMarkdown, buildRuntimeSkillToml, writeRuntimeSkillMarkdown }
+

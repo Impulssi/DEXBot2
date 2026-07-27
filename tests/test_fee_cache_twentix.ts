@@ -11,6 +11,7 @@
 const { BitShares } = require('../modules/bitshares_client');
 const { initializeFeeCache } = require('../modules/order/utils/system');
 const { getAssetFees } = require('../modules/order/utils/math');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 async function main() {
     try {
@@ -64,7 +65,7 @@ async function main() {
         process.exit(0);
 
     } catch (error) {
-        console.error('Error:', error.message);
+        console.error('Error:', getErrorMessage(error));
         process.exit(1);
     } finally {
         if (BitShares.ws && BitShares.ws.isConnected) {

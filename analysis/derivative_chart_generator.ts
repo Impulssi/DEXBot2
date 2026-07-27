@@ -1,12 +1,13 @@
 #!/usr/bin/env node
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from './chart_utils';
+import { ensureDir, readJSON } from '../modules/utils/fs_utils';
+import { fixedTo } from '../modules/utils/math_utils';
 'use strict';
-const fs = require('fs');
-const path = require('path');
-const { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } = require('./chart_utils');
-const { ensureDir, readJSON } = require('../modules/utils/fs_utils');
-const { fixedTo } = require('../modules/utils/math_utils');
 function parseArgs(argv = process.argv.slice(2)) {
-    const cfg = {
+    const cfg: { inputFile: string | null; outputFile: string; title: string; quiet: boolean } = {
         inputFile: null,
         outputFile: 'analysis/charts/derivative_chart.html',
         title: 'Derivative Trend Analysis',
@@ -14,9 +15,9 @@ function parseArgs(argv = process.argv.slice(2)) {
     };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
-        if (arg === '--input') cfg.inputFile = argv[++i];
-        else if (arg === '--output') cfg.outputFile = argv[++i];
-        else if (arg === '--title') cfg.title = argv[++i];
+        if (arg === '--input') cfg.inputFile = argv[++i] ?? null;
+        else if (arg === '--output') cfg.outputFile = argv[++i] ?? null;
+        else if (arg === '--title') cfg.title = argv[++i] ?? null;
         else if (arg === '--quiet') cfg.quiet = true;
         else if (arg === '--help' || arg === '-h') {
             showHelp();
@@ -128,9 +129,9 @@ function generateHTML(data, title) {
         CONFIRM_SHORT: 'Confirmed short entry',
         LATE_SHORT: 'Late short entry',
     };
-    const entryBiasLabel = entryBias.map((v) => entryLabelMap[v] || v);
-    const signalPhase = results.map((r, i) => {
-        if (entryBias[i] !== 'NONE') return entryLabelMap[entryBias[i]] || entryBias[i];
+    const entryBiasLabel = entryBias.map((v: any) => (entryLabelMap as Record<string, any>)[v] || v);
+    const signalPhase = results.map((_r: any, i: any) => {
+        if (entryBias[i] !== 'NONE') return (entryLabelMap as Record<string, any>)[entryBias[i]] || entryBias[i];
         switch (interpState[i]) {
         case 'BULL':
             return 'Bull trend active';
@@ -186,7 +187,7 @@ function generateHTML(data, title) {
     const fmtSignedPrice = (v) => (v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${Math.round(Number(v))}`);
     const fmtPct = (v) => (v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${Math.round(Number(v))}%`);
     const fmtShare = (count) => (candleCount > 0 ? `${Math.round((count / candleCount) * 100)}%` : 'n/a');
-    const headerParts = [];
+    const headerParts: string[] = [];
     if (smaPeriod !== 'N/A') headerParts.push(`SMA(${smaPeriod})`);
     if (hasFastSma) headerParts.push(`fastSMA(${fastSmaPeriod})`);
     headerParts.push(`MACD(${macdFast},${macdSlow},${macdSig})`);
@@ -862,7 +863,7 @@ raf(() => sizeCharts());
 }
 async function main() {
     const cfg = parseArgs();
-    const data = readJSON(cfg.inputFile);
+    const data = readJSON(cfg.inputFile!);
     const html = generateHTML(data, cfg.title);
     ensureDir(path.dirname(cfg.outputFile));
     fs.writeFileSync(cfg.outputFile, html, 'utf8');
@@ -874,4 +875,5 @@ if (require.main === module) {
         process.exit(1);
     });
 }
-export = { generateHTML, parseArgs, showHelp, trendToNum };
+export { generateHTML, parseArgs, showHelp, trendToNum }
+

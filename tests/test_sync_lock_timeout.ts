@@ -1,7 +1,8 @@
 
 const assert = require('assert');
 const AsyncLock = require('../modules/order/async_lock');
-const { TIMING } = require('../modules/constants');
+const { getErrorMessage } = require('../modules/utils/errors');
+
 
 async function testLockTimeout() {
     console.log('Running AsyncLock Timeout & Cancellation Tests...');
@@ -28,7 +29,7 @@ async function testLockTimeout() {
         await p;
         assert.fail('Should have thrown cancellation error');
     } catch (err) {
-        assert.strictEqual(err.message, 'Lock acquisition cancelled (timeout)');
+        assert.strictEqual(getErrorMessage(err), 'Lock acquisition cancelled (timeout)');
     }
     
     // Wait for queue to clear
@@ -53,8 +54,8 @@ async function testLockTimeout() {
 
     // Ensure they were rejected
     await Promise.all([
-        p1.catch(e => assert.strictEqual(e.message, 'Lock queue cleared')),
-        p2.catch(e => assert.strictEqual(e.message, 'Lock queue cleared'))
+        p1.catch(e => assert.strictEqual(getErrorMessage(e), 'Lock queue cleared')),
+        p2.catch(e => assert.strictEqual(getErrorMessage(e), 'Lock queue cleared'))
     ]);
 
     // 3. Test immediate cancellation after acquisition (SyncEngine style)
@@ -83,7 +84,7 @@ async function testLockTimeout() {
     } catch (err) {
         // Since we check inside the callback too, it might be the Lock error or our Abort error
         // depending on timing, but in our sequential test it will be the Lock error.
-        assert(err.message === 'Lock acquisition cancelled (timeout)' || err.message === 'Aborted');
+        assert(getErrorMessage(err) === 'Lock acquisition cancelled (timeout)' || getErrorMessage(err) === 'Aborted');
     }
     
     assert.strictEqual(abortExecuted, false);

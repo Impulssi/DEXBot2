@@ -1,13 +1,15 @@
-const { path } = require('../../modules/path_api');
-const { getStorage } = require('../../modules/storage');
+
+import { path } from '../../modules/path_api';
+import { getStorage } from '../../modules/storage';
+import { DEFAULT_CONFIG, GRID_LIMITS, INCREMENT_BOUNDS } from '../../modules/constants';
+import { resolveRelativePrice } from '../../modules/order/utils/math';
+import { Config } from '../../modules/config';
+import { PATHS, getRecalculateTriggerFile } from '../../modules/paths';
+import { writeJsonFileAtomic as baseWriteJsonFileAtomic } from '../../modules/bots_file_lock';
+import { acquireFileLock } from '../../market_adapter/utils/file_lock';
+import { assertNoDuplicateBotKeys } from '../../modules/bot_settings';
+import { clone } from './utils';
 const storage = getStorage();
-const { DEFAULT_CONFIG, GRID_LIMITS, INCREMENT_BOUNDS } = require('../../modules/constants');
-const { resolveRelativePrice } = require('../../modules/order/utils/math');
-const { Config } = require('../../modules/config');
-const { PATHS, getRecalculateTriggerFile } = require('../../modules/paths');
-const { writeJsonFileAtomic: baseWriteJsonFileAtomic } = require('../../modules/bots_file_lock');
-const { acquireFileLock } = require('../../market_adapter/utils/file_lock');
-const { assertNoDuplicateBotKeys } = require('../../modules/bot_settings');
 
 import type { BotSettings, ProfileOptions, Logger, ClawProfileBundle } from './types';
 
@@ -687,7 +689,6 @@ async function normalizeBotEntries(rawEntries: Record<string, any>[], options: P
   return results;
 }
 
-const { clone } = require('./utils');
 
 function isFileLike(targetPath: any) {
   try {
@@ -1334,22 +1335,5 @@ function createDexbotProfileAdapter(profileRoot: string, options: Partial<Profil
   };
 }
 
-export = {
-  buildBotSettingsView,
-  createBotKey,
-  createDexbotProfileAdapter,
-  buildClawProfileContext,
-  describeBotSettingMutability,
-  loadDexbotProfileBundle,
-  matchBotIdentifier,
-  normalizeBotSettings,
-  normalizeBotEntries,
-  readTriggerFile,
-  resolveProfilesDir,
-  resolveRawBotEntries,
-  sanitizeKey,
-  validateBotEntry,
-  validateBotSettingsPatch,
-  validateBotSettingsState,
-  writeJsonFileAtomic
-};
+export { buildBotSettingsView, createBotKey, createDexbotProfileAdapter, buildClawProfileContext, describeBotSettingMutability, loadDexbotProfileBundle, matchBotIdentifier, normalizeBotSettings, normalizeBotEntries, readTriggerFile, resolveProfilesDir, resolveRawBotEntries, sanitizeKey, validateBotEntry, validateBotSettingsPatch, validateBotSettingsState, writeJsonFileAtomic }
+

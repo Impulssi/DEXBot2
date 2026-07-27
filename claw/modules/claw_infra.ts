@@ -1,23 +1,21 @@
-const { getStorage } = require('../../modules/storage');
-const storage = getStorage();
-const { path } = require('../../modules/path_api');
-const { PATHS } = require('../../modules/paths');
-const { Config } = require('../../modules/config');
 
-const bitsharesClient = require('./bitshares_client');
-const chainBroadcast = require('./chain_broadcast');
-const chainQueries = require('./chain_queries');
-const credentialClient = require('./dexbot_credential_client');
-const { createHonestEcosystemAdapter } = require('./honest_ecosystem');
-const { loadDexbotOrderSubsystem } = require('./dexbot_bridge');
-const { createDexbotProfileAdapter } = require('./dexbot_profiles');
-const { createCreditRuntimeAdapter } = require('./credit_runtime_adapter');
-const { acquireFileLock } = require('../../market_adapter/utils/file_lock');
-const {
-  createPositionManagerWatcher,
-  parsePositionManagerWatchArgs,
-  runPositionManagerWatch
-} = require('./position_manager_watch');
+import { getStorage } from '../../modules/storage';
+import { path } from '../../modules/path_api';
+import { PATHS } from '../../modules/paths';
+import { Config } from '../../modules/config';
+import * as bitsharesClient from './bitshares_client';
+import * as chainBroadcast from './chain_broadcast';
+import * as chainQueries from './chain_queries';
+import * as credentialClient from './dexbot_credential_client';
+import { createHonestEcosystemAdapter } from './honest_ecosystem';
+import { loadDexbotOrderSubsystem } from './dexbot_bridge';
+import { createDexbotProfileAdapter } from './dexbot_profiles';
+import { createCreditRuntimeAdapter } from './credit_runtime_adapter';
+import { acquireFileLock } from '../../market_adapter/utils/file_lock';
+import { clone } from './utils';
+const storage = getStorage();
+
+import { createPositionManagerWatcher, parsePositionManagerWatchArgs, runPositionManagerWatch } from './position_manager_watch.js';
 
 import type {
   RuntimeContextOptions,
@@ -32,7 +30,6 @@ const CLAW_ROOT = PATHS.CLAW.DIR;
 const DEFAULT_DATA_DIR = PATHS.CLAW.DATA_DIR;
 const DEFAULT_STATE_DIR = PATHS.CLAW.STATE_DIR;
 
-const { clone } = require('./utils');
 
 /**
  * Create a runtime context object with paths, logger, and configuration.
@@ -324,18 +321,5 @@ function createClawInfrastructure(options: ClawInfrastructureOptions = {}) {
   };
 }
 
-export = {
-  DEFAULT_DATA_DIR,
-  DEFAULT_STATE_DIR,
-  createBitsharesClient,
-  createClawInfrastructure,
-  createCredentialClient,
-  createHonestEcosystemAdapter,
-  createMarketAdapter,
-  createOrderTools,
-  createRuntimeContext,
-  createStateStore,
-  createPositionManagerWatcher,
-  parsePositionManagerWatchArgs,
-  runPositionManagerWatch
-};
+export { DEFAULT_DATA_DIR, DEFAULT_STATE_DIR, createBitsharesClient, createClawInfrastructure, createCredentialClient, createHonestEcosystemAdapter, createMarketAdapter, createOrderTools, createRuntimeContext, createStateStore, createPositionManagerWatcher, parsePositionManagerWatchArgs, runPositionManagerWatch }
+

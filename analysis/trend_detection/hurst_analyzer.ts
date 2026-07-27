@@ -1,7 +1,8 @@
+
+import { MARKET_ADAPTER } from '../../modules/constants';
+import { roundTo } from '../../modules/utils/math_utils';
 'use strict';
 
-const { MARKET_ADAPTER } = require('../../modules/constants');
-const { roundTo } = require('../../modules/utils/math_utils');
 
 /**
  * Hurst Exponent Analyzer
@@ -112,7 +113,7 @@ class HurstAnalyzer {
         }
 
         // R/S at each scale → OLS slope
-        const logRS = [], logTau = [];
+        const logRS: number[] = [], logTau: number[] = [];
         for (const τ of this.scales) {
             if (τ >= returns.length) continue;
             const nChunks = Math.floor(returns.length / τ);
@@ -164,4 +165,5 @@ class HurstAnalyzer {
     }
 }
 
-export = { HurstAnalyzer };
+export { HurstAnalyzer }
+

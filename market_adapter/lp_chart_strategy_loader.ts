@@ -1,24 +1,25 @@
+
+import { path } from '../modules/path_api';
+import { getStorage } from '../modules/storage';
+import { normalizeAssetSymbol, isExactPair, isSamePair } from './utils/chain';
+import { toIntervalLabel } from './interval_utils';
+import { PROJECT_ROOT } from './utils/paths';
+import { readJSON } from '../modules/utils/fs_utils';
 'use strict';
 
-const { path } = require('../modules/path_api');
-const { getStorage } = require('../modules/storage');
 const storage = getStorage();
 
-const { normalizeAssetSymbol, isExactPair, isSamePair } = require('./utils/chain');
-const { toIntervalLabel } = require('./interval_utils');
-const { PROJECT_ROOT } = require('./utils/paths');
-const { readJSON } = require('../modules/utils/fs_utils');
 
 const ANALYSIS_AMA_FITTING_DIR = path.join(PROJECT_ROOT, 'analysis', 'ama_fitting');
 const MARKET_ADAPTER_DIR = path.join(PROJECT_ROOT, 'market_adapter');
 
-function inferIntervalLabel(meta) {
+function inferIntervalLabel(meta: any) {
     const sec = Number(meta?.intervalSeconds);
     if (!Number.isFinite(sec) || sec <= 0) return null;
     return toIntervalLabel(sec);
 }
 
-function buildAmaStrategy(name, ama, color, dash, lineWidth = 1.5) {
+function buildAmaStrategy(name: any, ama: any, color: any, dash: any, lineWidth: any = 1.5) {
     if (!ama) return null;
     return {
         name,
@@ -31,7 +32,7 @@ function buildAmaStrategy(name, ama, color, dash, lineWidth = 1.5) {
     };
 }
 
-function loadStrategiesFromResults(resultsPath) {
+function loadStrategiesFromResults(resultsPath: any): any {
     if (!resultsPath || !storage.exists(resultsPath)) return null;
 
     const json = readJSON(resultsPath);
@@ -45,7 +46,7 @@ function loadStrategiesFromResults(resultsPath) {
             ['AMA3', '#66bb6a', 'longdash'],
             ['AMA4', '#ef5350', 'longdashdot'],
         ];
-        const out = [];
+        const out: any[] = [];
         for (const [k, color, dash] of order) {
             const r = meta.amas[k];
             if (!r) continue;
@@ -61,8 +62,8 @@ function loadStrategiesFromResults(resultsPath) {
         return out.length ? out : null;
     }
 
-    const strategies = [];
-    function add(key, label, color, dash) {
+    const strategies: any[] = [];
+    function add(key: any, label: any, color: any, dash: any) {
         const r = meta[key];
         const strat = buildAmaStrategy(label, r, color, dash, 1.5);
         if (strat) strategies.push(strat);
@@ -78,7 +79,7 @@ function loadStrategiesFromResults(resultsPath) {
     return strategies.length ? strategies : null;
 }
 
-function loadStrategiesFromProfiles(profilesPath, meta) {
+function loadStrategiesFromProfiles(profilesPath: any, meta: any): any {
     if (!profilesPath || !storage.exists(profilesPath)) return null;
     if (!meta) return null;
 
@@ -93,7 +94,7 @@ function loadStrategiesFromProfiles(profilesPath, meta) {
     const intervalSeconds = Number(meta?.intervalSeconds);
     const intervalLabel = inferIntervalLabel(meta);
 
-    const matches = profiles.map((p) => {
+    const matches = profiles.map((p: any) => {
         const pA = normalizeAssetSymbol(p?.assetA);
         const pB = normalizeAssetSymbol(p?.assetB);
         const pAId = normalizeAssetSymbol(p?.assetAId);
@@ -105,14 +106,14 @@ function loadStrategiesFromProfiles(profilesPath, meta) {
         const symmetricById = assetAId && assetBId && isSamePair(assetAId, assetBId, pAId, pBId);
         const matchRank = (exactBySymbol || exactById) ? 2 : ((symmetricBySymbol || symmetricById) ? 1 : 0);
         return { profile: p, matchRank };
-    }).filter((entry) => entry.matchRank > 0);
+    }).filter((entry: any) => entry.matchRank > 0);
     if (matches.length === 0) return null;
 
-    const exactMatches = matches.filter((entry) => entry.matchRank === 2);
+    const exactMatches = matches.filter((entry: any) => entry.matchRank === 2);
     const matchedProfiles = (exactMatches.length > 0 ? exactMatches : matches)
-        .map((entry) => entry.profile);
+        .map((entry: any) => entry.profile);
 
-    const sameInterval = matchedProfiles.filter((p) => {
+    const sameInterval = matchedProfiles.filter((p: any) => {
         if (Number.isFinite(intervalSeconds) && intervalSeconds > 0 && Number(p?.intervalSeconds) === intervalSeconds) {
             return true;
         }
@@ -122,7 +123,7 @@ function loadStrategiesFromProfiles(profilesPath, meta) {
         return false;
     });
     const candidates = sameInterval.length > 0 ? sameInterval : matchedProfiles;
-    const profile = [...candidates].sort((a, b) => {
+    const profile = [...candidates].sort((a: any, b: any) => {
         const aTs = Date.parse(String(a?.updatedAt || 0)) || 0;
         const bTs = Date.parse(String(b?.updatedAt || 0)) || 0;
         return bTs - aTs;
@@ -139,10 +140,10 @@ function loadStrategiesFromProfiles(profilesPath, meta) {
         buildAmaStrategy(ama2.name || 'AMA2', ama2, '#42a5f5', 'dash', 2),
         buildAmaStrategy(ama3.name || 'AMA3', ama3, '#66bb6a', 'longdash'),
         buildAmaStrategy(ama4.name || 'AMA4', ama4, '#ef5350', 'longdashdot'),
-    ].filter(Boolean);
+    ].filter((x: any): x is any => x != null);
 }
 
-function candidateResultsPaths(dataFile, extraSearchDirs = []) {
+function candidateResultsPaths(dataFile: any, extraSearchDirs: any[] = []) {
     const base = path.basename(dataFile, '.json');
     const dirs = [
         path.dirname(dataFile),
@@ -152,7 +153,7 @@ function candidateResultsPaths(dataFile, extraSearchDirs = []) {
         ...extraSearchDirs,
     ].filter(Boolean);
     const seen = new Set();
-    const out = [];
+    const out: string[] = [];
 
     for (const dir of dirs) {
         const resolved = path.resolve(dir);
@@ -164,7 +165,7 @@ function candidateResultsPaths(dataFile, extraSearchDirs = []) {
     return out;
 }
 
-function loadStrategiesForLpChart({ dataFile, meta, profilesFile = null, extraSearchDirs = [] }) {
+function loadStrategiesForLpChart({ dataFile, meta, profilesFile, extraSearchDirs = [] }: { dataFile: any; meta: any; profilesFile?: any; extraSearchDirs?: any[] }) {
     for (const resultsPath of candidateResultsPaths(dataFile, extraSearchDirs)) {
         const fromResults = loadStrategiesFromResults(resultsPath);
         if (fromResults) return fromResults;
@@ -173,8 +174,5 @@ function loadStrategiesForLpChart({ dataFile, meta, profilesFile = null, extraSe
     return loadStrategiesFromProfiles(profilesFile, meta);
 }
 
-export = {
-    loadStrategiesForLpChart,
-    loadStrategiesFromProfiles,
-    loadStrategiesFromResults,
-};
+export { loadStrategiesForLpChart, loadStrategiesFromProfiles, loadStrategiesFromResults }
+

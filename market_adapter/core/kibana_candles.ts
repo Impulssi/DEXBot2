@@ -1,7 +1,7 @@
-'use strict';
 
-const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = require('./kibana_client');
-const { fillCandleGaps, tradesToCandles } = require('../candle_utils');
+import { fillCandleGaps, tradesToCandles } from '../candle_utils';
+import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from './kibana_client.js';
+'use strict';
 
 const DEFAULT_CONFIG = {
     ...BASE_CONFIG,
@@ -12,11 +12,11 @@ const DEFAULT_CONFIG = {
     kibanaPageSize: 10000,
 };
 
-function sourceField(field) {
+function sourceField(field: any) {
     return String(field || '').replace(/\.keyword$/, '');
 }
 
-function buildDirectionalDocumentQuery({ opType, soldAssetField, receivedAssetField, poolField, soldAssetId, receivedAssetId, lookbackHours, poolId, timeRange, size, searchAfter = null }) {
+function buildDirectionalDocumentQuery({ opType, soldAssetField, receivedAssetField, poolField, soldAssetId, receivedAssetId, lookbackHours, poolId, timeRange, size, searchAfter }: { opType: any; soldAssetField: any; receivedAssetField: any; poolField: any; soldAssetId: any; receivedAssetId: any; lookbackHours: any; poolId: any; timeRange: any; size: any; searchAfter?: any }) {
     const rangeValue = timeRange
         ? { gte: timeRange.gte, lte: timeRange.lte }
         : { gte: `now-${lookbackHours}h`, lte: 'now' };
@@ -50,7 +50,7 @@ function buildDirectionalDocumentQuery({ opType, soldAssetField, receivedAssetFi
     return query;
 }
 
-function getByPath(obj, path) {
+function getByPath(obj: any, path: any) {
     const parts = sourceField(path).split('.').filter(Boolean);
     let cur = obj;
     for (const part of parts) {
@@ -60,16 +60,16 @@ function getByPath(obj, path) {
     return cur;
 }
 
-function numericAmount(value) {
+function numericAmount(value: any) {
     if (Array.isArray(value)) {
-        const first = value.find((entry) => entry && entry.amount != null);
+        const first = value.find((entry: any) => entry && entry.amount != null);
         return numericAmount(first);
     }
     if (value && typeof value === 'object' && value.amount != null) return Number(value.amount);
     return Number(value);
 }
 
-function amountForAsset(source, amountField, assetId) {
+function amountForAsset(source: any, amountField: any, assetId: any) {
     const direct = getByPath(source, amountField);
     if (!Array.isArray(direct)) {
         const n = numericAmount(direct);
@@ -79,7 +79,7 @@ function amountForAsset(source, amountField, assetId) {
     const arrayPath = sourceField(amountField).replace(/\.amount$/, '');
     const entries = getByPath(source, arrayPath);
     if (Array.isArray(entries)) {
-        const matched = entries.find((entry) => String(entry?.asset_id || '') === String(assetId || ''));
+        const matched = entries.find((entry: any) => String(entry?.asset_id || '') === String(assetId || ''));
         const n = numericAmount(matched || entries[0]);
         if (Number.isFinite(n)) return n;
     }
@@ -87,18 +87,18 @@ function amountForAsset(source, amountField, assetId) {
     return Number.NaN;
 }
 
-function parseOperationIdOrder(value) {
+function parseOperationIdOrder(value: any) {
     const raw = String(value || '');
     const m = raw.match(/(\d+)$/);
     return m ? Number(m[1]) : Number.NaN;
 }
 
-function hitSortKey(hit) {
+function hitSortKey(hit: any) {
     const sort = Array.isArray(hit?.sort) ? hit.sort : [];
-    return sort.map((v) => String(v)).join('|') || String(hit?._id || '');
+    return sort.map((v: any) => String(v)).join('|') || String(hit?._id || '');
 }
 
-function hitSequence(source, operationIdField) {
+function hitSequence(source: any, operationIdField: any) {
     const candidates = [
         getByPath(source, 'operation_id_num'),
         getByPath(source, 'account_history.operation_id'),
@@ -113,7 +113,7 @@ function hitSequence(source, operationIdField) {
     return Number.NaN;
 }
 
-function hitToTrade(hit, { soldAsset, receivedAsset, soldAmountField, receivedAmountField, operationIdField = 'account_history.operation_id' }) {
+function hitToTrade(hit: any, { soldAsset, receivedAsset, soldAmountField, receivedAmountField, operationIdField = 'account_history.operation_id' }: any) {
     const source = hit?._source || {};
     const rawTime = String(getByPath(source, 'block_data.block_time') || '');
     const tsMs = Date.parse(rawTime.endsWith('Z') ? rawTime : `${rawTime}Z`);
@@ -140,10 +140,10 @@ function hitToTrade(hit, { soldAsset, receivedAsset, soldAmountField, receivedAm
     };
 }
 
-async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAsset, receivedAsset, lookbackHours, poolId, timeRange }) {
+async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAsset, receivedAsset, lookbackHours, poolId, timeRange }: any) {
     const size = Math.min(Math.max(1, Number(cfg.kibanaPageSize) || 10000), 10000);
-    const trades = [];
-    let searchAfter = null;
+    const trades: any[] = [];
+    let searchAfter: any = null;
 
     while (true) {
         const query = buildDirectionalDocumentQuery({
@@ -186,7 +186,7 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
     return trades;
 }
 
-function resolveRequestedFillRange(cfg, nowMs = Date.now()) {
+function resolveRequestedFillRange(cfg: any, nowMs: any = Date.now()) {
     const bucketMs = Number(cfg.intervalSeconds) * 1000;
     if (!Number.isFinite(bucketMs) || bucketMs <= 0) return { startTs: null, endTs: null };
 
@@ -208,8 +208,8 @@ function resolveRequestedFillRange(cfg, nowMs = Date.now()) {
     };
 }
 
-async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {}, poolId = null }) {
-    const cfg = { ...DEFAULT_CONFIG, ...config };
+async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {}, poolId = null }: any) {
+    const cfg: any = { ...DEFAULT_CONFIG, ...config };
     const search = typeof cfg.kibanaSearch === 'function' ? cfg.kibanaSearch : kibanaSearch;
 
     const [tradesAtoB, tradesBtoA] = await Promise.all([
@@ -237,7 +237,7 @@ async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {
         }),
     ]);
 
-    const allTrades = [...tradesAtoB, ...tradesBtoA].sort((a, b) => {
+    const allTrades = [...tradesAtoB, ...tradesBtoA].sort((a: any, b: any) => {
         const tsDelta = a.tsMs - b.tsMs;
         if (tsDelta !== 0) return tsDelta;
         const aSeq = Number(a.sequence);
@@ -260,15 +260,10 @@ async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {
     return fillCandleGaps(consolidated, cfg.intervalSeconds, startTs, endTs);
 }
 
-async function fetchKibanaClosePrices(params) {
+async function fetchKibanaClosePrices(params: any) {
     const candles = await fetchKibanaCandles(params);
-    return candles.map(([, , , , close]) => close);
+    return candles.map(([, , , , close]: any) => close);
 }
 
-export = {
-    buildDirectionalDocumentQuery,
-    resolveRequestedFillRange,
-    fetchKibanaCandles,
-    fetchKibanaClosePrices,
-    DEFAULT_CONFIG,
-};
+export { buildDirectionalDocumentQuery, resolveRequestedFillRange, fetchKibanaCandles, fetchKibanaClosePrices, DEFAULT_CONFIG }
+

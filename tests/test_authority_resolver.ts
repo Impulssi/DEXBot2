@@ -1,6 +1,7 @@
 const assert = require('assert');
 const ecc = require('../modules/bitshares-native/crypto/ecc');
 const { resolvePrivateKey, resolveAccountIdToName } = require('../modules/authority_resolver');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running authority resolver tests');
 
@@ -125,8 +126,8 @@ async function testThrowsWhenNoKey() {
         await resolvePrivateKey('isolated', chain, async () => null, () => []);
         assert.fail('should have thrown');
     } catch (e) {
-        assert.ok(e.message.includes('No signing key found'), 'error should mention no key found');
-        assert.ok(e.message.includes('isolated'), 'error should mention account name');
+        assert.ok(getErrorMessage(e).includes('No signing key found'), 'error should mention no key found');
+        assert.ok(getErrorMessage(e).includes('isolated'), 'error should mention account name');
     }
     console.log('  ✓ throws informative error when no key found');
 }
@@ -148,8 +149,8 @@ async function testThrowsAtDepthLimit() {
         assert.fail('should have thrown — depth limit prevents reaching l4');
     } catch (e) {
         assert.ok(
-            e.message.includes('No signing key found'),
-            `expected resolution-failure error, got: ${e.message}`
+            getErrorMessage(e).includes('No signing key found'),
+            `expected resolution-failure error, got: ${getErrorMessage(e)}`
         );
     }
     console.log('  ✓ depth limit prevents resolution beyond 2 levels');
@@ -169,8 +170,8 @@ async function testAccountAuthsInsufficientWeightHint() {
         assert.fail('should have thrown');
     } catch (e) {
         assert.ok(
-            e.message.includes('Multi-signature'),
-            `expected multi-sig hint, got: ${e.message}`
+            getErrorMessage(e).includes('Multi-signature'),
+            `expected multi-sig hint, got: ${getErrorMessage(e)}`
         );
     }
     console.log('  ✓ multi-sig hint in error when no single entry meets threshold');

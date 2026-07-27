@@ -33,7 +33,7 @@ function makeMgr(opts = {}) {
         lockOrders: () => {},
         unlockOrders: () => {},
         shadowOrderIds: new Map(),
-        _applyOrderUpdate: async (order, reason, opts2) => {
+        _applyOrderUpdate: async (order, _reason, _opts2) => {
             orders.set(order.id, { ...(orders.get(order.id) || {}), ...order });
             return orders.get(order.id);
         }

@@ -5,6 +5,7 @@
  */
 
 const { BitShares } = require('../modules/bitshares_client');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const ACCOUNT_NAME = 'hanzac-si';
 const STRICT_LIVE_TEST = process.env.RUN_LIVE_BITSHARES_TESTS_STRICT === '1';
@@ -39,7 +40,7 @@ async function getAssetPrecision(assetId) {
         assetPrecisions[assetId] = asset.precision;
         return asset.precision;
     } catch (e) {
-        throw new Error(`Failed to get precision for ${assetId}: ${e?.message ?? e}`);
+        throw new Error(`Failed to get precision for ${assetId}: ${(e as any)?.message ?? e}`);
     }
 }
 
@@ -59,7 +60,7 @@ async function main() {
         await BitShares.connect();
         console.log('Connected!\n');
     } catch (err) {
-        const message = err && err.message ? err.message : err;
+        const message = err && getErrorMessage(err) ? getErrorMessage(err) : err;
         if (!STRICT_LIVE_TEST) {
             console.log('⚠️  Skipping live funds test: could not connect to BitShares');
             console.log('   Error:', message);
@@ -173,7 +174,7 @@ async function main() {
 }
 
 main().catch(err => {
-    console.error('Error:', err && err.message ? err.message : err);
+    console.error('Error:', err && getErrorMessage(err) ? getErrorMessage(err) : err);
     process.exit(1);
 });
 

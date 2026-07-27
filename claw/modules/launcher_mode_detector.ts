@@ -1,12 +1,13 @@
+
+import { path } from '../../modules/path_api';
+import { getStorage } from '../../modules/storage';
+import { PATHS } from '../../modules/paths';
+import { loadSettingsFile, resolveRawBotEntries } from '../../modules/bot_settings';
+import { normalizeProfileDir } from './launcher_paths';
+import { ensureDir, readJSON, writeJSON } from '../../modules/utils/fs_utils';
 'use strict';
 
-const { path } = require('../../modules/path_api');
-const { getStorage } = require('../../modules/storage');
 const storage = getStorage();
-const { PATHS } = require('../../modules/paths');
-const { loadSettingsFile, resolveRawBotEntries } = require('../../modules/bot_settings');
-const { normalizeProfileDir } = require('./launcher_paths');
-const { ensureDir, readJSON, writeJSON } = require('../../modules/utils/fs_utils');
 
 const LEGACY_MODE_ALIASES = {
   'unlock-start': 'unlock',
@@ -193,12 +194,5 @@ function describeModeChoice(mode: string) {
   return descriptions[mode] || mode;
 }
 
-export = {
-  normalizeMode,
-  detectMode,
-  setPreferredMode,
-  loadConfig,
-  saveConfig,
-  hasActiveBots,
-  describeModeChoice
-};
+export { normalizeMode, detectMode, setPreferredMode, loadConfig, saveConfig, hasActiveBots, describeModeChoice }
+

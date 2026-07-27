@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+import path from 'node:path';
+import { MARKET_ADAPTER } from '../../modules/constants';
+import { readJSON } from '../../modules/utils/fs_utils';
+import { PATHS } from '../../modules/paths';
+import { roundTo } from '../../modules/utils/math_utils';
+
 'use strict';
 /**
  * AMA CONVERGENCE ER CALIBRATION
@@ -19,18 +25,12 @@
  *   tsx analysis/ama_fitting/calibrate_convergence_er.ts --data <lp-file.json>
  *   tsx analysis/ama_fitting/calibrate_convergence_er.ts --data <lp-file.json> --amas AMA3
  */
-const fs   = require('fs');
-const path = require('path');
-const { MARKET_ADAPTER } = require('../../modules/constants');
-const { readJSON } = require('../../modules/utils/fs_utils');
-const { PATHS } = require('../../modules/paths');
-const { roundTo } = require('../../modules/utils/math_utils');
 const DEFAULT_DATA = path.join(PATHS.MARKET_ADAPTER.LP_DATA_DIR,
     '1_3_5537_1_3_0', 'lp_pool_133_1h.json');
 const FALLBACK_ER_PERIOD = 781;
 function parseArgs() {
     const args = process.argv.slice(2);
-    const opts = { data: DEFAULT_DATA, amas: null };
+    const opts: { data: string; amas: string[] | null } = { data: DEFAULT_DATA, amas: null };
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--data' && args[i + 1]) opts.data = args[++i];
         if (args[i] === '--amas' && args[i + 1]) opts.amas = args[++i].split(',');
@@ -46,7 +46,7 @@ function computeSCstats(closes, erPeriod, fastPeriod, slowPeriod) {
     const slowSC = 2 / (slowPeriod + 1);
     const deltaSC = fastSC - slowSC;
     let sumSC = 0;
-    const erValues = [];
+    const erValues: number[] = [];
     for (let i = erPeriod; i < closes.length; i++) {
         const dir = Math.abs(closes[i] - closes[i - erPeriod]);
         let vol = 0;
@@ -78,16 +78,17 @@ function main() {
     let data;
     try {
         data = readJSON(opts.data);
-    } catch (err) {
-        if (err.code === 'ENOENT') {
+    } catch (err: unknown) {
+        const e = err as any;
+        if (e.code === 'ENOENT') {
             console.error(`Data file not found: ${opts.data}`);
             console.error('Export LP candles first, or point --data at an existing file.');
             console.error('  tsx market_adapter/inputs/fetch_lp_data.ts --pool 133 --precA 4 --precB 5 --interval 1h --lookback 26280h');
-        } else if (err instanceof SyntaxError) {
+        } else if (e instanceof SyntaxError) {
             console.error(`Failed to parse JSON from: ${opts.data}`);
-            console.error(err.message);
+            console.error(e.message);
         } else {
-            console.error(`Error reading data file: ${err.message}`);
+            console.error(`Error reading data file: ${e.message}`);
         }
         process.exit(1);
     }
@@ -97,7 +98,7 @@ function main() {
         console.error(`Not enough candles (need > 100, got ${closes.length})`);
         process.exit(1);
     }
-    const amas = MARKET_ADAPTER.AMAS;
+    const amas = MARKET_ADAPTER.AMAS as Record<string, typeof MARKET_ADAPTER.AMAS.AMA1>;
     const keys = opts.amas || Object.keys(amas);
     const eps = MARKET_ADAPTER.AMA_CONVERGENCE_EPSILON;
     console.log(`Data:    ${opts.data}`);
@@ -117,7 +118,7 @@ function main() {
     console.log(`  p5 ${p5}  p50 ${p50}  p95 ${p95}  avg ${refAvgER.toFixed(4)}`);
     console.log('');
     // ── Per-AMA analysis (compute once, cache results) ─────────────────
-    const results = [];
+    const results: any[] = [];
     // Validate erPeriod / fastPeriod consistency for meaningful naiveSC comparison
     const erPeriods = new Set();
     const fastPeriods = new Set();

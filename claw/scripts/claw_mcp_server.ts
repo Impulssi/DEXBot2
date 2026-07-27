@@ -2,12 +2,13 @@
 
 // MCP stdio reserves stdout for JSON-RPC frames. Some shared DEXBot2 modules
 // log during require-time initialization, so suppress incidental console logs.
+
+import { getClawToolByName, getClawToolCatalog } from '../modules/claw_catalog';
+import { runClawCommand } from '../modules/claw_bridge';
+import { success, failure, runMcpServer, createMessageParser } from '../modules/mcp_utils';
 console.log = () => {};
 console.warn = () => {};
 
-const { getClawToolByName, getClawToolCatalog } = require('../modules/claw_catalog');
-const { runClawCommand } = require('../modules/claw_bridge');
-const { success, failure, runMcpServer, createMessageParser } = require('../modules/mcp_utils');
 
 function parseArgs(argv: any) {
   const options: Record<string, any> = {};
@@ -127,10 +128,5 @@ if (require.main === module) {
   });
 }
 
-export = {
-  createMessageParser,
-  failure,
-  handleRequest,
-  listMcpTools,
-  success,
-};
+export { createMessageParser, failure, handleRequest, listMcpTools, success }
+

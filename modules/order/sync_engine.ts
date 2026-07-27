@@ -89,17 +89,22 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } = require('../constants');
-const Format = require('./format');
+
+import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
+import * as Format from './format';
+import { lookupAsset } from './utils/system';
+import * as chainOrders from '../chain_orders';
+import * as client from '../bitshares_client';
+const { BitShares } = client;
+import { NATIVE_CLIENT } from '../constants';
 const { toFiniteNumber } = Format;
-const {
+import {
     blockchainToFloat,
     floatToBlockchainInt,
-    hasValidAccountTotals,
     calculatePriceTolerance,
     getAssetFees
-} = require('./utils/math');
-const {
+} from './utils/math';
+import {
     parseChainOrder,
     findMatchingGridOrderByOpenOrder,
     applyChainSizeToGridOrder,
@@ -107,24 +112,20 @@ const {
     virtualizeOrder,
     buildFillKey,
     isOrderPlaced,
-    isOrderOnChain,
     hasOnChainId,
-    isOrderVirtual,
-    isPhantomOrder
-} = require('./utils/order');
-const {
+    isOrderVirtual
+} from './utils/order';
+import {
     resolveProcessedFillPersistenceMode
-} = require('./processed_fill_store');
-const { lookupAsset } = require('./utils/system');
-const chainOrders = require('../chain_orders');
+} from './processed_fill_store';
 
-function describeNearestAdoptionCandidates(mgr, chainOrder, precision, calcTolerance, matchedGridOrderIds = null) {
+function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision: any, calcTolerance: any, matchedGridOrderIds: Set<string> | null = null) {
     if (!mgr?.orders || !chainOrder || typeof precision !== 'number') return 'candidate diagnostics unavailable';
 
     const chainPrice = toFiniteNumber(chainOrder.price);
     const chainSize = toFiniteNumber(chainOrder.size);
     const chainInt = floatToBlockchainInt(chainSize, precision);
-    const candidates = [];
+    const candidates: any[] = [];
 
     for (const slot of mgr.orders.values()) {
         if (!slot || ![ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL, ORDER_STATES.VIRTUAL].includes(slot.state)) continue;
@@ -163,7 +164,7 @@ function describeNearestAdoptionCandidates(mgr, chainOrder, precision, calcToler
 
     return candidates.slice(0, 5).map((candidate) => {
         const slot = candidate.slot;
-        const reasons = [];
+        const reasons: string[] = [];
         if (!candidate.typeMatch && !candidate.spreadMatch) reasons.push('type');
         if (candidate.priceDiff > candidate.tolerance) reasons.push('price');
         if (Math.abs(candidate.sizeDiffInt) > 1) reasons.push('size');
@@ -205,7 +206,7 @@ function describeNearestAdoptionCandidates(mgr, chainOrder, precision, calcToler
  * @param {Function} calcToleranceFn - calculatePriceTolerance function
  * @returns {{candidateSlotId: string, candidateSlotPrice: number, priceDiff: number, tolerance: number}|null}
  */
-function computeOutOfToleranceDriftTag(mgr, chainOrder, calcToleranceFn) {
+function computeOutOfToleranceDriftTag(mgr: any, chainOrder: any, calcToleranceFn: any) {
     if (!mgr?.orders || !chainOrder) return null;
     const chainPrice = toFiniteNumber(chainOrder.price);
     if (!Number.isFinite(chainPrice)) return null;
@@ -213,7 +214,7 @@ function computeOutOfToleranceDriftTag(mgr, chainOrder, calcToleranceFn) {
     const orderType = chainOrder.type;
     if (orderType !== ORDER_TYPES.BUY && orderType !== ORDER_TYPES.SELL) return null;
 
-    let bestDrift = null;
+    let bestDrift: any = null;
     for (const slot of mgr.orders.values()) {
         if (!slot) continue;
         if (slot.type !== orderType && slot.type !== ORDER_TYPES.SPREAD) continue;
@@ -341,8 +342,8 @@ class SyncEngine {
         const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS;
         const forceReleaseMs = TIMING.SYNC_LOCK_FORCE_RELEASE_AGE_MS;
         let timedOut = false;
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-        let forceReleaseHandle: ReturnType<typeof setTimeout> | undefined;
+        let timeoutHandle: any;
+        let forceReleaseHandle: any;
         const syncStartedAt = Date.now();
         // Capture sync generation so the orphan callback can detect that it
         // was force-released and abort early instead of running to completion.
@@ -355,7 +356,7 @@ class SyncEngine {
                     // orphaned and should return immediately.
                     if (((mgr as any)._syncGeneration ?? 0) !== captureGeneration) {
                         mgr.logger?.log?.('[SYNC] Sync abandoned: force-released before lock acquired', 'warn');
-                        return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
+                        return { filledOrders: [] as any[], updatedOrders: [] as any[], ordersNeedingCorrection: [] as any[], unmatchedChainOrders: [] as any[] };
                     }
 
                     // Snapshot the correction queue length so we can roll back
@@ -364,7 +365,7 @@ class SyncEngine {
                         ? mgr.ordersNeedingPriceCorrection.length
                         : 0;
 
-                    const innerResult = await this._doSyncFromOpenOrders(chainOrders, options);
+                    const innerResult: any = await this._doSyncFromOpenOrders(chainOrders, options);
 
                     // Re-check generation after sync completes: if forceRelease fired
                     // during the sync, this result is orphaned — discard it.
@@ -379,7 +380,7 @@ class SyncEngine {
                         if (Array.isArray(mgr.ordersNeedingPriceCorrection) && mgr.ordersNeedingPriceCorrection.length > preSyncCorrectionLen) {
                             mgr.ordersNeedingPriceCorrection.length = preSyncCorrectionLen;
                         }
-                        return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
+                        return { filledOrders: [] as any[], updatedOrders: [] as any[], ordersNeedingCorrection: [] as any[], unmatchedChainOrders: [] as any[] };
                     }
 
                     if (timedOut) {
@@ -395,7 +396,7 @@ class SyncEngine {
                         ? innerResult.unmatchedChainOrders.length
                         : 0;
                     mgr._lastUnmatchedChainOrders = unmatchedCount > 0
-                        ? innerResult.unmatchedChainOrders.map(order => ({ ...order }))
+                        ? innerResult.unmatchedChainOrders.map((order: any) => ({ ...order }))
                         : [];
                     mgr._lastUnmatchedChainOrdersAt = unmatchedCount > 0 ? Date.now() : 0;
                     mgr.logger?.log?.(
@@ -561,10 +562,10 @@ class SyncEngine {
 
         const chainOrderIdsOnGrid = new Set<string>();
         const matchedGridOrderIds = new Set<string>();
-        const filledOrders = [];
-        const updatedOrders = [];
-        const ordersNeedingCorrection = [];
-        const unmatchedChainOrders = [];
+        const filledOrders: any[] = [];
+        const updatedOrders: any[] = [];
+        const ordersNeedingCorrection: any[] = [];
+        const unmatchedChainOrders: any[] = [];
 
         // Lock orders before reconciliation
         mgr.lockOrders(orderIdsToLockFinal);
@@ -639,11 +640,11 @@ class SyncEngine {
         chainOrderIdsOnGrid: Set<string>, matchedGridOrderIds: Set<string>, filledOrders: any[], updatedOrders: any[], ordersNeedingCorrection: any[], unmatchedChainOrders: any[], options: Record<string, any>) {
         const skipAccounting = options?.skipAccounting ?? true;
 
-        const queueCorrection = (entry) => {
+        const queueCorrection = (entry: any) => {
             ordersNeedingCorrection.push(entry);
             if (!Array.isArray(mgr.ordersNeedingPriceCorrection)) return;
 
-            const existingIndex = mgr.ordersNeedingPriceCorrection.findIndex((queued) =>
+            const existingIndex = mgr.ordersNeedingPriceCorrection.findIndex((queued: any) =>
                 queued?.chainOrderId === entry.chainOrderId && Boolean(queued?.isSurplus) === Boolean(entry.isSurplus)
             );
 
@@ -719,7 +720,7 @@ class SyncEngine {
                 const chainSizeInt = floatToBlockchainInt(chainOrder.size, precision);
 
                 if (currentSizeInt !== chainSizeInt) {
-                    const newSize = blockchainToFloat(chainSizeInt, precision, true);
+                    const newSize = blockchainToFloat(chainSizeInt, precision);
                     const newInt = floatToBlockchainInt(newSize, precision);
 
                     if (newInt > 0) {
@@ -807,16 +808,19 @@ class SyncEngine {
             // this orphan is a stale duplicate — skip adoption so the reconcile
             // layer cancels it. Size is irrelevant; any duplicate violates the
             // invariant. Check BEFORE any adoption attempt, including the first
-            // match (line 684), because a VIRTUAL slot at a nearby price can
+            // match (line 684), because a VIRTUAL slot at a nearby price can
             // otherwise silently adopt the orphan before the duplicate guard runs.
-            const duplicatePriceOrder: any = Array.from(mgr.orders.values()).find((o: any) =>
-                o.type === chainOrder.type &&
-                isOrderPlaced(o) &&
-                Math.abs(o.price - chainOrder.price) <= calculatePriceTolerance(
-                    Math.min(o.price, chainOrder.price),
-                    Math.max(o.size, chainOrder.size),
-                    o.type, mgr.assets
-                )
+            const duplicatePriceOrder: any = Array.from(mgr.orders.values()).find((o: any) => {
+                const co: any = chainOrder;
+                return o.type === co.type &&
+                    isOrderPlaced(o) &&
+                    co != null &&
+                    Math.abs(o.price - co.price) <= (calculatePriceTolerance as any)(
+                        Math.min(o.price, co.price),
+                        Math.max(o.size, co.size),
+                        o.type, mgr.assets
+                    );
+            }
             );
             if (duplicatePriceOrder) {
                 unmatchedChainOrders.push({
@@ -854,7 +858,7 @@ class SyncEngine {
                 {
                     orders: mgr.orders,
                     assets: mgr.assets,
-                    calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets),
+                    calcToleranceFn: (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets),
                     logger: mgr.logger,
                     allowSmallerChainSize: true,
                     requireAvailableSlot: true,
@@ -883,7 +887,7 @@ class SyncEngine {
                 // deletes btsFeeState when nextDeferred is 0, so setting it to 0 here
                 // would be an unnecessary set-then-delete cycle.
                 if (bestMatch.rawOnChain) {
-                    const rawDeferredFee = toFiniteNumber(bestMatch.rawOnChain.deferred_fee, null);
+                    const rawDeferredFee = toFiniteNumber(bestMatch.rawOnChain.deferred_fee, undefined);
                     if (rawDeferredFee !== null && rawDeferredFee > 0) {
                         bestMatch.btsFeeState = { deferredFee: blockchainToFloat(rawDeferredFee, BTS_PRECISION) };
                     } else if (wasVirtual && rawDeferredFee !== null && rawDeferredFee <= 0 && bestMatch.rawOnChain.for_sale > 0) {
@@ -967,7 +971,7 @@ class SyncEngine {
                     {
                         orders: mgr.orders,
                         assets: mgr.assets,
-                        calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets),
+                        calcToleranceFn: (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets),
                         allowSpreadType: true,
                         skipSizeMatch: true,
                         requireAvailableSlot: true,
@@ -981,7 +985,7 @@ class SyncEngine {
                     const adoptedRaw = rawChainOrders.get(chainOrderId);
                     const adoptedState = chainInt > 0 ? ORDER_STATES.PARTIAL : ORDER_STATES.VIRTUAL;
                     const adoptedBtsFeeState = (adoptedRaw) ? (() => {
-                        const rawFee = toFiniteNumber(adoptedRaw.deferred_fee, null);
+                        const rawFee = toFiniteNumber(adoptedRaw.deferred_fee, undefined);
                         return rawFee !== null && rawFee > 0 ? { deferredFee: blockchainToFloat(rawFee, BTS_PRECISION) } : undefined;
                     })() : undefined;
                     const adoptedOrder = {
@@ -1011,13 +1015,13 @@ class SyncEngine {
                         mgr,
                         chainOrder,
                         precision,
-                        (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets),
+                        (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets),
                         matchedGridOrderIds
                     );
                     const driftTag = computeOutOfToleranceDriftTag(
                         mgr,
                         chainOrder,
-                        (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets)
+                        (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets)
                     );
                     const unmatchedEntry: Record<string, any> = {
                         chainOrderId,
@@ -1054,7 +1058,7 @@ class SyncEngine {
     // syncFromFillHistoryBatch)
     // ------------------------------------------------------------------
 
-    _findMatchingGridOrder(mgr, orderId) {
+    _findMatchingGridOrder(mgr: any, orderId: any) {
         for (const gridOrder of mgr.orders.values()) {
             if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
                 return gridOrder;
@@ -1063,27 +1067,28 @@ class SyncEngine {
         return null;
     }
 
-    _computeFillContext(mgr, matchedGridOrder, paysAssetId, paysAmountRaw) {
+    _computeFillContext(mgr: any, matchedGridOrder: any, paysAssetId: any, paysAmountRaw: any) {
         const orderType = matchedGridOrder.type;
         const currentSize = toFiniteNumber(matchedGridOrder.size);
         const precision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetA.precision : mgr.assets.assetB.precision;
 
         let filledAmount = 0;
         if (orderType === ORDER_TYPES.SELL) {
-            if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmountRaw, precision, true);
+            if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmountRaw, precision);
         } else {
-            if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmountRaw, precision, true);
+            if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmountRaw, precision);
         }
 
         const currentSizeIntFromGrid = floatToBlockchainInt(currentSize, precision);
-        const rawForSaleInt = toFiniteNumber(matchedGridOrder?.rawOnChain?.for_sale, null);
+        const rawForSale = matchedGridOrder?.rawOnChain?.for_sale;
+        const rawForSaleInt = rawForSale !== undefined && rawForSale !== null ? toFiniteNumber(rawForSale) : NaN;
         const driftSignal = Number.isFinite(rawForSaleInt) && Math.round(rawForSaleInt) < currentSizeIntFromGrid;
 
         return { orderType, currentSize, precision, filledAmount, currentSizeIntFromGrid, rawForSaleInt, driftSignal };
     }
 
-    async _computeFillTransitionResult(mgr, params) {
-        const { matchedGridOrder, orderType, precision, filledAmount, filledAmountInt, currentSizeIntFromGrid, rawForSaleInt, chainRefetched, chainConfirmsEmpty, effectiveRawForSale, blockNum, historyId, isMaker } = params;
+    async _computeFillTransitionResult(mgr: any, params: any) {
+        const { matchedGridOrder, orderType, precision, filledAmount, filledAmountInt, currentSizeIntFromGrid, chainRefetched, chainConfirmsEmpty, effectiveRawForSale, blockNum, historyId, isMaker } = params;
 
         let resolvedChainConfirmsEmpty = chainConfirmsEmpty;
         if (chainRefetched && Number.isFinite(effectiveRawForSale) && Math.round(effectiveRawForSale) <= 0) {
@@ -1094,7 +1099,7 @@ class SyncEngine {
             ? Math.max(0, Math.round(effectiveRawForSale))
             : currentSizeIntFromGrid;
         const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
-        const newSize = blockchainToFloat(newSizeInt, precision, true);
+        const newSize = blockchainToFloat(newSizeInt, precision);
 
         if (Number.isFinite(effectiveRawForSale) && currentSizeInt !== currentSizeIntFromGrid) {
             mgr.logger.log(
@@ -1249,7 +1254,7 @@ class SyncEngine {
                     try {
                         const fresh = await chainOrders.readSingleOrder(orderId, 3000);
                         if (fresh) {
-                            const freshForSale = toFiniteNumber(fresh.for_sale, null);
+                            const freshForSale = toFiniteNumber(fresh.for_sale, undefined);
                             if (Number.isFinite(freshForSale)) {
                                 effectiveRawForSale = freshForSale;
                                 chainRefetched = true;
@@ -1453,7 +1458,7 @@ class SyncEngine {
                         const batchResults = await chainOrders.batchReadOrders([...driftOrderIds], 3000);
                         for (const [orderId, freshOrder] of batchResults) {
                             if (freshOrder) {
-                                const freshForSale = toFiniteNumber(freshOrder.for_sale, null);
+                                const freshForSale = toFiniteNumber(freshOrder.for_sale, undefined);
                                 if (Number.isFinite(freshForSale)) {
                                     refetchMap.set(orderId, {
                                         chainConfirmsEmpty: Math.round(freshForSale) <= 0,
@@ -1719,7 +1724,7 @@ class SyncEngine {
                     };
                 }
                 const runCancel = async () => {
-                    const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
+                    const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
                     if (gridOrder) {
                         // Lock both chain orderId and grid order ID to prevent concurrent modifications
                         const orderIds = [orderId, gridOrder.id].filter(Boolean);
@@ -1831,7 +1836,6 @@ class SyncEngine {
     async fetchAccountBalancesAndSetTotals() {
         const mgr = this.manager;
         try {
-            const { BitShares } = require('../bitshares_client');
             if (!BitShares || !BitShares.db) return;
             const accountIdOrName = mgr.accountId || mgr.account || null;
             if (!accountIdOrName) return;
@@ -1841,7 +1845,6 @@ class SyncEngine {
             const assetBId = mgr.assets?.assetB?.id;
             if (!assetAId || !assetBId) return;
 
-            const { NATIVE_CLIENT } = require('../constants');
             const assetList = [assetAId, assetBId];
 
             // For non-BTS pairs, also fetch core asset (BTS) balance for fee management
@@ -1849,7 +1852,7 @@ class SyncEngine {
                 assetList.push(NATIVE_CLIENT.CHAIN.CORE_ASSET_ID);
             }
 
-            const lookup = await chainOrders.getOnChainAssetBalances(accountIdOrName, assetList);
+            const lookup: Record<string, any> = await chainOrders.getOnChainAssetBalances(accountIdOrName, assetList);
             const aInfo = lookup?.[assetAId] || lookup?.[mgr.config.assetA];
             const bInfo = lookup?.[assetBId] || lookup?.[mgr.config.assetB];
 
@@ -1918,8 +1921,7 @@ class SyncEngine {
         const mgr = this.manager;
         if (mgr.assets) return;
 
-        const { BitShares } = require('../bitshares_client');
-        const fetchAssetWithFallback = async (symbol, side) => {
+        const fetchAssetWithFallback = async (symbol: any, side: any) => {
             try {
                 return await lookupAsset(BitShares, symbol);
             } catch (err: any) {
@@ -1948,4 +1950,6 @@ class SyncEngine {
     }
 }
 
-export = SyncEngine;
+export default SyncEngine
+
+module.exports = SyncEngine

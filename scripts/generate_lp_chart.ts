@@ -1,6 +1,7 @@
+
+import path from 'node:path';
 'use strict';
 
-const path = require('path');
 
 const {
     defaultMarketChartPath,
@@ -31,7 +32,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     const parsed = parseLpChartCliArgs(args, {
         dataFlags: ['--data', '--file'],
     });
-    let outFile = null;
+    let outFile: string | null = null;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (arg === '--out' && args[i + 1]) {
@@ -107,11 +108,5 @@ if (require.main === module) {
     run();
 }
 
-export = {
-    defaultUplotMarketChartPath: defaultMarketChartPath,
-    generateLpChartCli,
-    generateMarketLpChartUplot: generateMarketLpChart,
-    parseArgs,
-    run,
-    showHelp,
-};
+export { defaultMarketChartPath as defaultUplotMarketChartPath, generateLpChartCli, generateMarketLpChart as generateMarketLpChartUplot, parseArgs, run, showHelp }
+

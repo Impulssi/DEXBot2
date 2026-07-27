@@ -1,24 +1,16 @@
-const { getStorage } = require('../../modules/storage');
+
+import { getStorage } from '../../modules/storage';
+import { path } from '../../modules/path_api';
+import { PATHS } from '../../modules/paths';
+import { Config } from '../../modules/config';
+import { requireBtsBackedMpa } from './mpa_utils';
+import { listenForFills } from './chain_actions';
+import { writeJsonFileAtomic } from './dexbot_profiles';
+import { loadDexbotOrderUtils } from './dexbot_bridge';
+import { clone } from './utils';
 const storage = getStorage();
-const { path } = require('../../modules/path_api');
-const { PATHS } = require('../../modules/paths');
-const { Config } = require('../../modules/config');
-const {
-  closeShortOnBts,
-  openShortOnBts,
-  placeTakeProfitBuyOrderOnBts
-} = require('./short_mpa_strategy');
-const {
-  getAsset,
-  getBackingAsset,
-  getBalances,
-  getBitassetData,
-  getFullAccount
-} = require('./chain_queries');
-const { requireBtsBackedMpa } = require('./mpa_utils');
-const { listenForFills } = require('./chain_actions');
-const { writeJsonFileAtomic } = require('./dexbot_profiles');
-const { loadDexbotOrderUtils } = require('./dexbot_bridge');
+import { closeShortOnBts, openShortOnBts, placeTakeProfitBuyOrderOnBts } from './short_mpa_strategy.js';
+import { getAsset, getBackingAsset, getBalances, getBitassetData, getFullAccount } from './chain_queries.js';
 
 import type { ShortPositionOptions, PositionManagerOptions, PositionData, AssetData, ChainPosition } from './types';
 
@@ -29,7 +21,6 @@ function getBlockchainToFloat() {
 const DEFAULT_STATE_PATH = PATHS.CLAW.POSITIONS_FILE;
 const STRATEGY_NAME = 'short-mpa-bts';
 
-const { clone } = require('./utils');
 
 function nowIso() {
   return new Date().toISOString();
@@ -735,7 +726,5 @@ class PositionManager {
   }
 }
 
-export = {
-  DEFAULT_STATE_PATH,
-  PositionManager
-};
+export { DEFAULT_STATE_PATH, PositionManager }
+

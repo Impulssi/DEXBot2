@@ -1,8 +1,9 @@
-const { NODE_MANAGEMENT } = require('./constants');
-const { PATHS, getNodeHealthCacheFile } = require('./paths');
-const { writeJsonFileAtomic } = require('./bots_file_lock');
-const { readJSON } = require('./utils/fs_utils');
 
+
+import { NODE_MANAGEMENT } from './constants';
+import { PATHS, getNodeHealthCacheFile } from './paths';
+import { writeJsonFileAtomic } from './bots_file_lock';
+import { readJSON } from './utils/fs_utils';
 const DEFAULT_HEALTH_CACHE_FILE = PATHS.PROFILES.NODE_HEALTH_CACHE_JSON;
 
 interface HealthCacheOptions {
@@ -68,7 +69,7 @@ function buildHealthCachePayload(stats: Iterable<NodeHealthStat> | ArrayLike<Nod
         .map((stat) => ({
             url: stat.url,
             status: stat.status,
-            latencyMs: Number.isFinite(stat.latencyMs) ? stat.latencyMs : null,
+            latencyMs: Number.isFinite(stat.latencyMs) ? (stat.latencyMs ?? null) : null,
             lastCheckTime: stat.lastCheckTime || null,
         }));
 
@@ -170,14 +171,5 @@ function orderNodesForSettings(settings: NodeSettings, options: HealthCacheOptio
     });
 }
 
-export = {
-    DEFAULT_HEALTH_CACHE_FILE,
-    buildHealthCachePayload,
-    orderNodesFromHealthCache,
-    orderNodesForSettings,
-    readHealthCache,
-    resolveConfiguredNodes,
-    resolveHealthCacheFile,
-    resolveHealthCacheMaxAgeMs,
-    writeHealthCache,
-};
+export { DEFAULT_HEALTH_CACHE_FILE, buildHealthCachePayload, orderNodesFromHealthCache, orderNodesForSettings, readHealthCache, resolveConfiguredNodes, resolveHealthCacheFile, resolveHealthCacheMaxAgeMs, writeHealthCache }
+

@@ -1,4 +1,5 @@
-const { roundTo, roundToDecimals } = require('../../../modules/utils/math_utils');
+
+import { roundTo, roundToDecimals } from '../../../modules/utils/math_utils';
 'use strict';
 
 /**
@@ -74,4 +75,5 @@ function adjustCollateralRatio(trendData: any, minRatio = 1.5, maxRatio = 2.0) {
     };
 }
 
-export = { adjustCollateralRatio };
+export { adjustCollateralRatio }
+

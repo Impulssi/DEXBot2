@@ -1,7 +1,9 @@
+
+import { readJSON } from './utils/fs_utils';
+import { PATHS } from './paths';
+import { normalizeBotEntry } from './bot_settings';
 'use strict';
 
-const { readJSON } = require('./utils/fs_utils');
-const { PATHS } = require('./paths');
 
 interface ValidationProblem {
     file: string;
@@ -49,10 +51,6 @@ function push(problems: ProblemList, file: string, field: string, message: strin
 
 function isPositiveFinite(v: any): boolean {
     return typeof v === 'number' && Number.isFinite(v) && v > 0;
-}
-
-function normalizeSymbol(value: any): string {
-    return String(value || '').trim().toUpperCase();
 }
 
 function loadJsonFile(filePath: string): { data: any; ok: boolean; error?: string } {
@@ -246,7 +244,6 @@ function validateGeneralSettings(data: any, filePath: string, problems: ProblemL
 
 // --- Cross-file consistency ---
 function validateCrossFileConsistency(problems: ProblemList) {
-    const { normalizeBotEntry } = require('./bot_settings');
     const botKeysInWhitelist = new Set<string>();
     const botKeysInWhitelistEnabledAma = new Set<string>();
 
@@ -407,13 +404,5 @@ function printValidationProblems(result: { errors: ProblemList; warnings: Proble
     return true;
 }
 
-export = {
-    validateAllProfiles,
-    printValidationProblems,
-    loadJsonFile,
-    validateMarketProfiles,
-    validateWhitelist,
-    validateMarketAdapterSettings,
-    validateGeneralSettings,
-    validateCrossFileConsistency,
-};
+export { validateAllProfiles, printValidationProblems, loadJsonFile, validateMarketProfiles, validateWhitelist, validateMarketAdapterSettings, validateGeneralSettings, validateCrossFileConsistency }
+

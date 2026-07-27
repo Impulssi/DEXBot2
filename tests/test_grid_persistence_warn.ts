@@ -20,6 +20,7 @@
 
 const assert = require('assert');
 const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const bitsharesClientPath = require.resolve('../modules/bitshares_client');
 installBitsharesClientStub(bitsharesClientPath);
@@ -183,8 +184,8 @@ async function testApplyRecoverableUpdatesReturnsCount() {
         console.log('\n✓ All validation-failure warning tests passed!\n');
         process.exit(0);
     } catch (e) {
-        console.error('\n✗ Test failed:', e.message);
-        console.error(e.stack);
+        console.error('\n✗ Test failed:', getErrorMessage(e));
+        console.error((e as any).stack);
         process.exit(1);
     }
 })();

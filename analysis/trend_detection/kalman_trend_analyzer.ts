@@ -1,7 +1,8 @@
+
+import { smoothKalmanVelocityPoint } from './kalman_velocity_smoothing';
+import { roundTo } from '../../modules/utils/math_utils';
 'use strict';
 
-const { smoothKalmanVelocityPoint } = require('./kalman_velocity_smoothing');
-const { roundTo } = require('../../modules/utils/math_utils');
 
 /**
  * Kalman Trend Analyzer
@@ -42,7 +43,7 @@ interface KalmanTrendConfig {
     warmupBars?: number;
 }
 
-interface TrendAnalysis {
+export interface TrendAnalysis {
     isReady: boolean;
     price: number | null;
     kalmanPrice: number;
@@ -60,6 +61,10 @@ interface TrendAnalysis {
     updateCount: number;
     beams: Beam[];
     projections: { modal: number; tactical: number };
+    timestamp?: number;
+    hurst?: number;
+    pe?: number;
+    amaWeightOffset?: number | null;
 }
 
 class KalmanFilter {
@@ -78,7 +83,8 @@ class KalmanFilter {
         this.R = opts.R ?? 0.05;
 
         this.Q = opts.Q ?? 0.005;
-        this.dt = Number.isFinite(opts.dt) && opts.dt > 0 ? opts.dt : 1;
+        const dt = opts.dt;
+        this.dt = dt != null && Number.isFinite(dt) && dt > 0 ? dt : 1;
 
         this.x = 0;
         this.v = 0;
@@ -159,7 +165,7 @@ class KalmanFilter {
 
 const MIN_PRICE_DENOMINATOR = 1e-10;
 
-function safePct(numerator, denominator) {
+function safePct(numerator: any, denominator: any) {
     const pct = Math.abs(denominator) > MIN_PRICE_DENOMINATOR
         ? (numerator / denominator) * 100
         : 0;
@@ -185,7 +191,8 @@ class KalmanTrendAnalyzer {
         const rNoise = config.rNoise ?? 0.05;
         const qTactical = config.qTactical ?? config.qNoise ?? 0.01;
         const qModal = config.qModal ?? config.qNoise ?? 0.0001;
-        const dt = Number.isFinite(config.dt) && config.dt > 0 ? config.dt : 1;
+        const _dt = config.dt;
+        const dt = _dt != null && Number.isFinite(_dt) && _dt > 0 ? _dt : 1;
 
         // Tactical Filter: For short-term heading and inflections
         this.tacticalKf = new KalmanFilter({
@@ -204,8 +211,9 @@ class KalmanTrendAnalyzer {
         this.beams = [];
         this.inflections = [];
         this.maxBeams = config.beamCount ?? 100;
-        this.warmupBars = Number.isInteger(config.warmupBars) && config.warmupBars >= 0
-            ? config.warmupBars
+        const wb = config.warmupBars;
+        this.warmupBars = wb != null && Number.isInteger(wb) && wb >= 0
+            ? wb
             : 20;
         this.updateCount = 0;
 
@@ -260,7 +268,7 @@ class KalmanTrendAnalyzer {
     }
 
     getAnalysis(): TrendAnalysis {
-        const displacement = this.currPrice - this.modal.x;
+        const displacement = this.currPrice! - this.modal.x;
         const displacementPct = safePct(displacement, this.modal.x);
         const rawVelocityPct = safePct(this.tactical.v, this.modal.x);
 
@@ -308,7 +316,8 @@ class KalmanTrendAnalyzer {
         const rNoise = this.config.rNoise ?? 0.05;
         const qTactical = this.config.qTactical ?? this.config.qNoise ?? 0.01;
         const qModal = this.config.qModal ?? this.config.qNoise ?? 0.0001;
-        const dt = Number.isFinite(this.config.dt) && this.config.dt > 0 ? this.config.dt : 1;
+        const _resetDt = this.config.dt;
+        const dt = _resetDt != null && Number.isFinite(_resetDt) && _resetDt > 0 ? _resetDt : 1;
         this.tacticalKf = new KalmanFilter({ R: rNoise, Q: qTactical, dt });
         this.modalKf = new KalmanFilter({ R: rNoise, Q: qModal, dt });
         this.beams = [];
@@ -320,4 +329,5 @@ class KalmanTrendAnalyzer {
     }
 }
 
-export = { KalmanTrendAnalyzer, KalmanFilter };
+export { KalmanTrendAnalyzer, KalmanFilter }
+

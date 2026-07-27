@@ -8,11 +8,12 @@
  * Also computes the empirical standard deviation of per-bar AMA movement
  * (σ_ama_delta) for calibrating AMA_DELTA_THRESHOLD_PERCENT.
  */
+import fs from 'node:fs';
+import { calculateAMA } from '../market_adapter/core/strategies/ama';
+import { MARKET_ADAPTER } from '../modules/constants';
+import { generateHTML } from '../market_adapter/lp_chart_core';
+
 'use strict';
-const fs = require('fs');
-const { calculateAMA } = require('../market_adapter/core/strategies/ama');
-const { MARKET_ADAPTER } = require('../modules/constants');
-const { generateHTML } = require('../market_adapter/lp_chart_core');
 function normSInv(p) {
     if (p <= 0 || p >= 1) return p <= 0 ? -Infinity : Infinity;
     const a = [-3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2, 1.383577518672690e2, -3.066479806614716e1, 2.506628277459239];
@@ -36,11 +37,11 @@ function normSInv(p) {
 function quantileToSigma(q) {
     return normSInv((1 + q) / 2);
 }
-const { calcStdDev } = require('./math_utils');
-const { readJSON } = require('../modules/utils/fs_utils');
+import { calcStdDev } from './math_utils';
+import { readJSON } from '../modules/utils/fs_utils';
 function getAmaDeltaStdDev(closes, amaConfig, warmup) {
     const amaValues = calculateAMA(closes, amaConfig);
-    const deltas = [];
+    const deltas: number[] = [];
     for (let i = warmup + 1; i < closes.length; i++) {
         const prev = amaValues[i - 1];
         const cur = amaValues[i];
@@ -51,7 +52,7 @@ function getAmaDeltaStdDev(closes, amaConfig, warmup) {
 }
 function getDivergenceDist(closes, amaConfig) {
     const amaValues = calculateAMA(closes, amaConfig);
-    const dists = [];
+    const dists: number[] = [];
     // Skip initial warmup
     for (let i = 1600; i < closes.length; i++) {
         const ama = amaValues[i];
@@ -92,7 +93,7 @@ function main() {
     const sigmaLabels = quantiles.map(q => `${(q * 100).toFixed(3)}% — ${quantileToSigma(q).toFixed(2)}σ`);
     console.log('Preset, Max_Divergence(x), ' + sigmaLabels.map((l, i) => `${l} (${['Soft','Hard','Emergency'][i]})`).join(', '));
     presets.forEach(name => {
-        const config = MARKET_ADAPTER.AMAS[name];
+        const config = MARKET_ADAPTER.AMAS[name as keyof typeof MARKET_ADAPTER.AMAS];
         const allDists = getDivergenceDist(closes, config);
         
         if (allDists.length === 0) {
@@ -113,12 +114,12 @@ function main() {
         console.log(`  σ_div: ${(stdDist * 100).toFixed(3)}% | mean_div: ${(meanDist * 100).toFixed(3)}% | σ_ama_delta: ${amaDeltaSigma !== null ? (amaDeltaSigma * 100).toFixed(3) : 'N/A'}%`);
     });
     if (outPath) {
-        if (!MARKET_ADAPTER.AMAS[selectedAma]) {
+        if (!MARKET_ADAPTER.AMAS[selectedAma as keyof typeof MARKET_ADAPTER.AMAS]) {
             console.error(`Invalid AMA preset for output: ${selectedAma}. Choose from: ${Object.keys(MARKET_ADAPTER.AMAS).join(', ')}`);
             process.exit(1);
         }
         
-        const config = MARKET_ADAPTER.AMAS[selectedAma];
+        const config = MARKET_ADAPTER.AMAS[selectedAma as keyof typeof MARKET_ADAPTER.AMAS];
         const amaValues = calculateAMA(closes, config);
         const candleArrays = data.candles.map(c => [c[0], c[1], c[2], c[3], c[4], c[5]]);
         

@@ -9,6 +9,7 @@
  */
 
 const assert = require('assert');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // Helper function to simulate getAssetFees behavior
 function mockGetAssetFees(assetSymbol: any, assetAmount: any, marketFeePercent = 0): any {
@@ -218,7 +219,7 @@ tests.forEach((test, index) => {
         passed++;
     } catch (e) {
         console.log(`✗ ${test.name}`);
-        console.log(`  Error: ${e.message}`);
+        console.log(`  Error: ${getErrorMessage(e)}`);
         failed++;
     }
 });

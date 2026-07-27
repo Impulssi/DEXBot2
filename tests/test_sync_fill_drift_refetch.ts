@@ -72,7 +72,7 @@ function makeSellFillEvent(orderId, amountXrp) {
     };
 }
 
-function installReadSingleOrderMock(mgr, mockImpl) {
+function installReadSingleOrderMock(_mgr, mockImpl) {
     const original = chainOrders.readSingleOrder;
     chainOrders.readSingleOrder = mockImpl;
     return () => { chainOrders.readSingleOrder = original; };

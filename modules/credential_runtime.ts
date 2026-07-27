@@ -1,9 +1,10 @@
-const { path } = require('./path_api');
-const { getStorage } = require('./storage');
+
+import { path } from './path_api';
+import { getStorage } from './storage';
+import { Config } from './config';
+import { runtime } from './runtime';
+import { ensureDir } from './utils/fs_utils';
 const storage = getStorage();
-const { Config } = require('./config');
-const { runtime } = require('./runtime');
-const { ensureDir } = require('./utils/fs_utils');
 
 interface RuntimeDirOptions {
     runtimeDir?: string;
@@ -49,7 +50,7 @@ function getDexbotRoot() {
     return getResolveProjectRoot()(MODULE_DIR);
 }
 
-function isUsableRuntimeBaseDir(dirPath) {
+function isUsableRuntimeBaseDir(dirPath: any) {
     try {
         storage.access(dirPath, 3);
         return storage.stat(dirPath).isDirectory();
@@ -128,14 +129,14 @@ function assertPrivatePathSecurity(filePath: string, options: PrivatePathOptions
 
     const stat = storage.lstat(filePath);
 
-    if (stat.isSymbolicLink()) {
+    if (stat.isSymbolicLink!()) {
         throw new Error(`Refusing to use symbolic link: ${filePath}`);
     }
 
     const typeCheck = {
         dir: () => stat.isDirectory(),
         file: () => stat.isFile(),
-        socket: () => stat.isSocket(),
+        socket: () => stat.isSocket!(),
     }[expectedType];
 
     if (!typeCheck) {
@@ -152,9 +153,9 @@ function assertPrivatePathSecurity(filePath: string, options: PrivatePathOptions
         throw new Error(`Unexpected owner for ${filePath}; expected uid ${currentUid}, found ${stat.uid}`);
     }
     if (Number.isInteger(requiredMode) && Config.PLATFORM !== 'win32') {
-        const mode = stat.mode & 0o777;
+        const mode = stat.mode! & 0o777;
         if (mode !== requiredMode) {
-            throw new Error(`Unexpected permissions for ${filePath}; expected ${requiredMode.toString(8)}, found ${mode.toString(8)}`);
+            throw new Error(`Unexpected permissions for ${filePath}; expected ${requiredMode!.toString(8)}, found ${mode.toString(8)}`);
         }
     }
 
@@ -170,16 +171,5 @@ function isPrivatePathSecure(filePath: string, options: PrivatePathOptions = {})
     }
 }
 
-export = {
-    DEFAULT_READY_BASENAME,
-    DEFAULT_RUNTIME_DIR_NAME,
-    DEFAULT_SOCKET_BASENAME,
-    assertPrivatePathSecurity,
-    ensureCredentialRuntimeDirSync,
-    getCredentialReadyFilePath,
-    getCredentialRuntimeDir,
-    getCredentialSocketPath,
-    getCurrentUid,
-    isUsableRuntimeBaseDir,
-    isPrivatePathSecure,
-};
+export { DEFAULT_READY_BASENAME, DEFAULT_RUNTIME_DIR_NAME, DEFAULT_SOCKET_BASENAME, assertPrivatePathSecurity, ensureCredentialRuntimeDirSync, getCredentialReadyFilePath, getCredentialRuntimeDir, getCredentialSocketPath, getCurrentUid, isUsableRuntimeBaseDir, isPrivatePathSecure }
+

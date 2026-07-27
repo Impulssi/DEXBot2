@@ -23,7 +23,6 @@
 
 'use strict';
 
-const fs = require('fs');
 const path = require('path');
 const { createReadOnlyClient } = require('../modules/bitshares-native');
 const serial = require('../modules/bitshares-native/serial');

@@ -1,10 +1,11 @@
+
+import { createTransport, ConnectionError } from './transport';
+import { GRAPHENE_CHAIN_ID, GRAPHENE_ADDRESS_PREFIX } from './serial/chain_constants';
+import { NATIVE_CLIENT } from '../constants';
 'use strict';
 
-const { createTransport, ConnectionError } = require('./transport');
-const { GRAPHENE_CHAIN_ID, GRAPHENE_ADDRESS_PREFIX } = require('./serial/chain_constants');
-const { NATIVE_CLIENT } = require('../constants');
 const { CHAIN } = NATIVE_CLIENT;
-const DEFAULT_CORE_ASSET: string = CHAIN.CORE_ASSET_ID;
+
 
 class ChainConfigError extends Error {
     code: string;
@@ -390,4 +391,5 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
     };
 }
 
-export = { createChainClient, createReadOnlyClient, ChainConfigError };
+export { createChainClient, createReadOnlyClient, ChainConfigError }
+

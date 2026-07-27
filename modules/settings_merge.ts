@@ -255,4 +255,5 @@ function mergeSettings(raw: any, defaults: Record<string, any>): Record<string, 
     return result;
 }
 
-export = { mergeSettings };
+export { mergeSettings }
+

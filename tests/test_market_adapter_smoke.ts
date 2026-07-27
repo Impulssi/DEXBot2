@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const { spawnSync } = require('child_process');
 const path = require('path');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running market_adapter smoke tests');
 
@@ -82,7 +83,7 @@ const _spawnArgs = _isDist ? [] : ['--import', 'tsx'];
     try {
         parsed = JSON.parse(String(res.stdout || '').trim());
     } catch (err) {
-        throw new Error(`runner output must be valid JSON: ${err.message}\nSTDOUT:\n${res.stdout}`);
+        throw new Error(`runner output must be valid JSON: ${getErrorMessage(err)}\nSTDOUT:\n${res.stdout}`);
     }
 
     assert.strictEqual(parsed.ok, true, 'runner output should include ok=true');

@@ -2,8 +2,8 @@
 'use strict';
 
 import fs from 'node:fs';
-import KC from '../market_adapter/core/kibana_client';
-import C from '../modules/constants';
+import * as KC from '../market_adapter/core/kibana_client';
+import * as C from '../modules/constants';
 
 const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = KC;
 
@@ -706,7 +706,7 @@ function fmtAsset(id: string): string {
     return assetSymbol(id);
 }
 
-function printSummary(pairs: PairAnalysis[], accountId: string, start: string, end: string, matchMode: 'fifo' | 'sequential' = 'sequential') {
+function printSummary(pairs: PairAnalysis[], _accountId: string, _start: string, _end: string, _matchMode: 'fifo' | 'sequential' = 'sequential') {
     console.log('');
 
     for (const pair of pairs) {

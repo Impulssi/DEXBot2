@@ -58,20 +58,21 @@
  * ===============================================================================
  */
 
-const { getStorage } = require('../storage');
-const { getNodeRequire } = require('../env');
+
+import { getStorage } from '../storage';
+import { getNodeRequire } from '../env';
+import { path } from '../path_api';
+import * as Format from './format';
+import { TIMING, DEFAULT_CONFIG } from '../constants';
+import { PATHS } from '../paths';
+import Logger from '../logger';
 const _require = getNodeRequire();
 const storage = getStorage();
-const { path } = require('../path_api');
 let _readline: any;
 function getReadline() {
     if (!_readline && _require) _readline = _require('readline');
     return _readline;
 }
-const Format = require('./format');
-const { TIMING, DEFAULT_CONFIG } = require('../constants');
-const { PATHS } = require('../paths');
-const Logger = require('../logger');
 const exportLogger = new Logger('Export');
 
 /**
@@ -141,7 +142,7 @@ function parseFeeLine(line: string): FeeEntry | null {
  * @param {Array} fees - Array of parsed fee objects
  * @returns {void}
  */
-function linkFillWithFee(fills, fees) {
+function linkFillWithFee(fills: any, fees: any) {
     // Match most recent fill with most recent fee
     if (fills.length > 0 && fees.length > 0) {
         const lastFill = fills[fills.length - 1];
@@ -160,10 +161,9 @@ function linkFillWithFee(fills, fees) {
  * @param {string} logFilePath - Path to PM2 log file
  * @returns {Promise<Array>} Array of trade objects
  */
-async function parseLogFile(logFilePath) {
-    const trades = [];
-    const fills = [];
-    const fees = [];
+async function parseLogFile(logFilePath: any) {
+    const fills: any[] = [];
+    const fees: any[] = [];
 
     try {
         const fileStream = storage.createReadStream(logFilePath);
@@ -195,7 +195,7 @@ async function parseLogFile(logFilePath) {
         // Link any remaining fills with fees
         for (const fill of fills) {
             if (fill.fee_amount === 0 && fees.length > 0) {
-                const relevantFee = fees.find(f => Math.abs(f.timestamp - fill.timestamp) < 5);
+                const relevantFee = fees.find((f: any) => Math.abs(f.timestamp - fill.timestamp) < 5);
                 if (relevantFee) {
                     fill.fee_asset = relevantFee.fee_asset;
                     fill.fee_amount = relevantFee.total_fee;
@@ -216,13 +216,13 @@ async function parseLogFile(logFilePath) {
  * @param {string} outputPath - Path to output CSV file
  * @returns {Promise<Object>} { success: boolean, count: number } or { success: false, error: string }
  */
-async function writeTradesCSV(trades, outputPath) {
+async function writeTradesCSV(trades: any, outputPath: any) {
     try {
         // CSV header
         const headers = ['unix', 'price', 'amount', 'side', 'fee_asset', 'fee_amount', 'order_id'];
 
         // CSV rows
-        const rows = trades.map(trade => [
+        const rows = trades.map((trade: any) => [
             trade.timestamp.toFixed(1),
             Format.formatPrice(trade.price),
             Format.formatAmount8(trade.amount),
@@ -234,7 +234,7 @@ async function writeTradesCSV(trades, outputPath) {
 
         // Combine and write
         const csv = [headers, ...rows]
-            .map(row => row.map(val => {
+            .map((row: any) => row.map((val: any) => {
                 // Escape quotes and wrap in quotes if contains comma
                 if (typeof val === 'string' && val.includes(',')) {
                     return `"${val.replace(/"/g, '""')}"`;
@@ -261,7 +261,7 @@ async function writeTradesCSV(trades, outputPath) {
  * @param {string} outputPath - Path to output JSON file
  * @returns {Promise<Object>} Write result { success, count } or { success: false, error }
  */
-async function writeSettingsJSON(botConfig, botName, outputPath) {
+async function writeSettingsJSON(botConfig: any, botName: any, outputPath: any) {
     try {
         const sanitized = {
             bot_name: botName,
@@ -303,18 +303,18 @@ async function writeSettingsJSON(botConfig, botName, outputPath) {
  * @param {string} outputDir - Output directory for exports (default: './exports')
  * @returns {Promise<Object>} Export result status
  */
-async function exportBotTrades(botKey, botConfig, outputDir = './exports') {
+async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './exports') {
     try {
         // Ensure output directory exists
         storage.ensureDir(outputDir);
 
         // Find log file (PM2 format: {botKey}-error.log or {botKey}.log)
         const logsDir = PATHS.LOGS_DIR;
-        let logFilePath = null;
+        let logFilePath: string | null = null;
 
         try {
             const logFiles = storage.readdir(logsDir);
-            const matchingLog = logFiles.find(f =>
+            const matchingLog = logFiles.find((f: any) =>
                 f.includes(botKey) && f.endsWith('.log') && !f.includes('error')
             );
 
@@ -358,9 +358,5 @@ async function exportBotTrades(botKey, botConfig, outputDir = './exports') {
     }
 }
 
-export = {
-    exportBotTrades,
-    parseLogFile,
-    writeTradesCSV,
-    writeSettingsJSON
-};
+export { exportBotTrades, parseLogFile, writeTradesCSV, writeSettingsJSON }
+

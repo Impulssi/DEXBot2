@@ -8,6 +8,7 @@
  */
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const POOL_ID = process.argv.includes('--pool')
     ? process.argv[process.argv.indexOf('--pool') + 1]
@@ -27,33 +28,33 @@ const MAX_PAGES = process.argv.includes('--maxPages')
 
 const LP_OP_TYPE = 63;
 
-function fmt(obj) {
+function fmt(obj: any): string {
     try { return JSON.stringify(obj); } catch (_) { return String(obj); }
 }
 
-function parseChainTimeToMs(timeStr) {
+function parseChainTimeToMs(timeStr: string | null | undefined): number {
     if (!timeStr) return Number.NaN;
     const s = String(timeStr);
     return Date.parse(s.endsWith('Z') ? s : `${s}Z`);
 }
 
-function extractReceived(row) {
+function extractReceived(row: any) {
     const resultPayload = Array.isArray(row?.op?.result) ? row.op.result[1] : null;
     return Array.isArray(resultPayload?.received)
         ? resultPayload.received[0]
         : (resultPayload?.received || null);
 }
 
-function rowHasTradePayload(row) {
+function rowHasTradePayload(row: any): boolean {
     const opPayload = Array.isArray(row?.op?.op) ? row.op.op[1] : null;
     return !!(opPayload?.amount_to_sell && extractReceived(row));
 }
 
-async function collectRecentPoolHistory(poolId, sinceMs, limit, maxPages) {
-    const rows = [];
+async function collectRecentPoolHistory(poolId: string, sinceMs: number, limit: number, maxPages: number) {
+    const rows: any[] = [];
     const seenSequences = new Set();
     let pages = 0;
-    let startSeq = null;
+    let startSeq: any = null;
     let hitOld = false;
 
     while (pages < maxPages) {
@@ -90,7 +91,7 @@ async function collectRecentPoolHistory(poolId, sinceMs, limit, maxPages) {
     return { rows, pages, hitOld, exhausted: pages >= maxPages && !hitOld };
 }
 
-function summarizeRows(rows) {
+function summarizeRows(rows: any[]) {
     if (!Array.isArray(rows) || rows.length === 0) {
         return {
             count: 0,
@@ -120,7 +121,7 @@ function summarizeRows(rows) {
     };
 }
 
-function inspectRow(row, index) {
+function inspectRow(row: any, index: number) {
     if (!row) {
         console.log(`  [${index}] NULL/undefined row`);
         return;
@@ -176,7 +177,7 @@ async function main() {
         } else {
             console.log(`  Raw: ${fmt(rows).slice(0, 500)}`);
         }
-    } catch (err) {
+    } catch (err: any) {
         console.log(`ERROR: ${err.message}`);
     }
 
@@ -192,7 +193,7 @@ async function main() {
         } else {
             console.log(`  Raw: ${fmt(rows).slice(0, 500)}`);
         }
-    } catch (err) {
+    } catch (err: any) {
         console.log(`ERROR: ${err.message}`);
     }
 
@@ -206,7 +207,7 @@ async function main() {
         console.log(`Available BitShares.history methods:`);
         historyApis.forEach(m => console.log(`  - ${m}`));
     } catch (err) {
-        console.log(`Could not list methods: ${err.message}`);
+        console.log(`Could not list methods: ${getErrorMessage(err)}`);
     }
 
     // ── Test 4: Try get_account_history for pool account ───────────
@@ -224,7 +225,7 @@ async function main() {
         } else {
             console.log('get_account_history_by_operations NOT available');
         }
-    } catch (err) {
+    } catch (err: any) {
         console.log(`ERROR: ${err.message}`);
     }
 
@@ -242,7 +243,7 @@ async function main() {
         } else {
             console.log('get_relative_account_history NOT available');
         }
-    } catch (err) {
+    } catch (err: any) {
         console.log(`ERROR: ${err.message}`);
     }
 
@@ -271,7 +272,7 @@ async function main() {
             console.log(`  Rows with amount_to_sell: ${withSell}`);
             console.log(`  Rows with received:      ${withReceived}`);
         }
-    } catch (err) {
+    } catch (err: any) {
         console.log(`ERROR: ${err.message}`);
     }
 
@@ -293,7 +294,7 @@ async function main() {
                 console.log(`    ${hour}: ${count}`);
             }
         }
-    } catch (err) {
+    } catch (err: any) {
         console.log(`ERROR: ${err.message}`);
     }
 

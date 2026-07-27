@@ -10,6 +10,7 @@
  */
 
 const { waitForConnected, disconnectClient, reconnectForCycle, getConnectionStatus } = require('../modules/bitshares_client');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const CYCLES = (() => {
     const idx = process.argv.indexOf('--cycles');
@@ -39,7 +40,7 @@ async function cycle(n) {
         await waitForConnected(10000);
         log(`connected, ws=${getConnectionStatus()}`);
     } catch (err) {
-        log(`waitForConnected timed out: ${err.message}`);
+        log(`waitForConnected timed out: ${getErrorMessage(err)}`);
     }
 
     // Simulate the adapter's disconnectClient at end of cycle
@@ -58,7 +59,7 @@ async function main() {
         await waitForConnected(30000);
         log(`startup connected, ws=${getConnectionStatus()}`);
     } catch (err) {
-        log(`startup connect failed: ${err.message}`);
+        log(`startup connect failed: ${getErrorMessage(err)}`);
     }
 
     for (let i = 1; i <= CYCLES; i++) {
@@ -73,4 +74,4 @@ async function main() {
     process.exit(0);
 }
 
-main().catch((err) => { log(`fatal: ${err.message}`); process.exit(1); });
+main().catch((err) => { log(`fatal: ${getErrorMessage(err)}`); process.exit(1); });

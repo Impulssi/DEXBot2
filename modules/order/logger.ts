@@ -1,23 +1,13 @@
-'use strict';
 
-const { getStorage } = require('../storage');
-const { path } = require('../path_api');
-const { runtime } = require('../runtime');
+import { getStorage } from '../storage';
+import { path } from '../path_api';
+import { runtime } from '../runtime';
+import * as Format from './format';
+import LoggerState from './logger_state';
+import { LOGGING_CONFIG, ORDER_STATES, ORDER_TYPES } from '../constants';
+import { Config } from '../config';
+
 const storage = getStorage();
-const Format = require('./format');
-const LoggerState = require('./logger_state');
-const { LOGGING_CONFIG, ORDER_STATES } = require('../constants');
-const { Config } = require('../config');
-
-function pmExecPath(): string | undefined {
-    return Config.pm_exec_path;
-}
-function pmOutLogPath(): string | undefined {
-    return Config.pm_out_log_path;
-}
-function pmErrLogPath(): string | undefined {
-    return Config.pm_err_log_path;
-}
 
 /**
  * Color-coded console logger with structured output, optional file logging,
@@ -39,7 +29,7 @@ class Logger {
     quiet: boolean;
     logFile: any;
     state: any;
-    levels: { debug: number; info: number; warn: number; error: number; critical: number };
+    levels: Record<string, number>;
     colors: any;
     marketName: any;
     correlationId: string | null;
@@ -68,8 +58,8 @@ class Logger {
     constructor(category = 'DEXBot', options: { quiet?: boolean; quietUnderPm2?: boolean; logFile?: string; level?: string; configOverride?: any; correlationId?: string } = {}) {
         this.category = category;
 
-        const isUnderPm2 = !!pmExecPath();
-        const hasPm2Logging = !!(pmOutLogPath() || pmErrLogPath());
+        const isUnderPm2 = !!Config.pm_exec_path;
+        const hasPm2Logging = !!(Config.pm_out_log_path || Config.pm_err_log_path);
         const pm2AutoQuiet = isUnderPm2 && hasPm2Logging;
         const quietUnderPm2 = options.quietUnderPm2 !== false;
 
@@ -117,7 +107,7 @@ class Logger {
 
     _enqueueWrite(text: string) {
         if (!this.logFile) return;
-        if (pmOutLogPath() || pmErrLogPath()) return;
+        if (Config.pm_out_log_path || Config.pm_err_log_path) return;
         this._writeQueue.push(text);
         if (this._writeQueue.length >= this._maxQueueSize) {
             this._drainQueue();
@@ -147,7 +137,7 @@ class Logger {
             const perFileLimit = Math.floor(this._maxTotalSize / (this._maxLogFiles + 1));
             if (perFileLimit > 0) {
                 try {
-                    const stat = storage.stat(this.logFile);
+                    const stat: any = storage.stat(this.logFile);
                     if (stat.size >= perFileLimit) {
                         this._rotateLogFile();
                     }
@@ -233,7 +223,7 @@ class Logger {
     log(message: string, level = 'info') {
         if (this.levels[level] >= this.levels[this.level]) {
             const color = this.colors[level] || '';
-            const isUnderPm2 = !!pmExecPath();
+            const isUnderPm2 = !!Config.pm_exec_path;
             const timestamp = isUnderPm2 ? '' : new Date().toISOString();
             const timestampPart = timestamp ? `[${timestamp}] ` : '';
             const output = `${color}${timestampPart}[${level.toUpperCase()}] [${this.category}] ${message}${this.colors.reset}`;
@@ -548,7 +538,6 @@ class Logger {
         const committedChainSell = manager.funds?.committed?.chain?.sell ?? 0;
 
         const c = this.colors;
-        const debug = c.debug;
         const reset = c.reset;
         const buy = c.buy;
         const sell = c.sell;
@@ -589,7 +578,6 @@ class Logger {
         if (!manager) return;
         if (!this.config.display?.gridDiagnostics?.enabled && !forceOutput) return;
 
-        const { ORDER_TYPES, ORDER_STATES } = require('../constants');
         const c = this.colors;
         const reset = c.reset;
         const buy = c.buy;
@@ -660,21 +648,17 @@ class Logger {
     }
 }
 
-function isPm2Runtime() {
-    return !!pmExecPath();
+function isPm2Runtime(): boolean {
+    return !!Config.pm_exec_path;
 }
 
-function isPm2LoggingEnabled() {
-    return !!(pmOutLogPath() || pmErrLogPath());
+function createPm2AwareLogger(category: string, options: { quietUnderPm2?: boolean } = {}) {
+    return new Logger(category, options);
 }
+export { createPm2AwareLogger, isPm2Runtime }
+export default Logger
+module.exports = Logger
 
-function createPm2AwareLogger(category: string, options = {}) {
-    return new Logger(category, { ...options });
-}
+Object.assign(module.exports, { createPm2AwareLogger, isPm2Runtime });
 
-export = Object.assign(Logger, {
-    Logger,
-    isPm2Runtime,
-    isPm2LoggingEnabled,
-    createPm2AwareLogger
-});
+

@@ -12,13 +12,14 @@
  *
  * Exports the same API shape as ecc.ts (async where hashing/crypto is needed).
  */
+
+import { getCrypto } from '../../crypto';
+import * as pureSecp from '../../crypto/pure_secp256k1';
 'use strict';
 
 import type { EcPoint } from '../../crypto/provider';
 
-const { getCrypto } = require('../../crypto');
-const { base58Encode: _base58Encode, base58Decode: _base58Decode } = require('../../utils/base58check');
-const pureSecp = require('../../crypto/pure_secp256k1');
+import { base58Encode as _base58Encode, base58Decode as _base58Decode } from '../../utils/base58check';
 const secp256k1 = pureSecp.secp256k1;
 const pointFromPublicKey = pureSecp.pointFromPublicKey;
 const publicKeyFromPoint = pureSecp.publicKeyFromPoint;
@@ -410,31 +411,5 @@ function publicKeyFromBuffer(pubKeyBuffer: Uint8Array): Uint8Array {
 
 // ── Exports ─────────────────────────────────────────────────────────
 
-export = {
-    sha256,
-    sha512,
-    ripemd160,
-    hash160,
-    hash256,
-    randomBytes,
-    generatePrivateKey,
-    isValidPrivateKey,
-    privateKeyToPublicKey,
-    sign,
-    verify,
-    recoverPublicKey,
-    wifEncode,
-    wifDecode,
-    normalizeBrainKey,
-    brainKeyToPrivateKey,
-    publicKeyToString,
-    addressFromPublicKey,
-    publicKeyFromBuffer,
-    base58Encode,
-    base58Decode,
-    base58CheckEncode,
-    base58CheckDecode,
-    buildSignatureDer,
-    buildPublicKeyDer,
-    secp256k1,
-};
+export { sha256, sha512, ripemd160, hash160, hash256, randomBytes, generatePrivateKey, isValidPrivateKey, privateKeyToPublicKey, sign, verify, recoverPublicKey, wifEncode, wifDecode, normalizeBrainKey, brainKeyToPrivateKey, publicKeyToString, addressFromPublicKey, publicKeyFromBuffer, base58Encode, base58Decode, base58CheckEncode, base58CheckDecode, buildSignatureDer, buildPublicKeyDer, secp256k1 }
+

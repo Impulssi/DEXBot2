@@ -1,9 +1,10 @@
-const { path } = require('../../modules/path_api');
-const { getStorage } = require('../../modules/storage');
+
+import { path } from '../../modules/path_api';
+import { getStorage } from '../../modules/storage';
+import { BUILD_DIR } from '../../modules/constants';
+import { PATHS } from '../../modules/paths';
+import { Config } from '../../modules/config';
 const storage = getStorage();
-const { BUILD_DIR } = require('../../modules/constants');
-const { PATHS } = require('../../modules/paths');
-const { Config } = require('../../modules/config');
 
 function candidateExists(candidatePath: string) {
   if (storage.exists(candidatePath)) {
@@ -74,12 +75,5 @@ function loadDexbotOrderSystemUtils() {
   return requireDexbot2Module('modules/order/utils/system');
 }
 
-export = {
-  getDexbot2Root,
-  loadDexbotOrderConstants,
-  loadDexbotOrderSubsystem,
-  loadDexbotOrderSystemUtils,
-  loadDexbotOrderUtils,
-  requireDexbot2Module,
-  resolveDexbot2Path
-};
+export { getDexbot2Root, loadDexbotOrderConstants, loadDexbotOrderSubsystem, loadDexbotOrderSystemUtils, loadDexbotOrderUtils, requireDexbot2Module, resolveDexbot2Path }
+

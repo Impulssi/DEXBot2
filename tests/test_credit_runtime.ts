@@ -1855,6 +1855,7 @@ async function testLpCollateralRatioGate() {
         bitasset_data_id: null,
         dynamic_asset_data_id: '2.4.20',
         for_liquidity_pool: '1.19.1',
+        current_supply: 10000,
       },
     },
     assetDynamicData: {

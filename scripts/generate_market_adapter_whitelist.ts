@@ -1,9 +1,10 @@
+
+import fs from 'node:fs';
+import { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries } from '../modules/bot_settings';
+import { PATHS } from '../modules/paths';
+import { readJSON } from '../modules/utils/fs_utils';
 'use strict';
 
-const fs = require('fs');
-const { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries } = require('../modules/bot_settings');
-const { PATHS } = require('../modules/paths');
-const { readJSON } = require('../modules/utils/fs_utils');
 
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const WHITELIST_FILE = PATHS.PROFILES.MARKET_ADAPTER_WHITELIST_JSON();
@@ -113,9 +114,5 @@ if (require.main === module) {
     main();
 }
 
-module.exports = {
-    isAmaGridPrice,
-    parseOptions,
-    loadExistingWhitelist,
-    buildWhitelist,
-};
+export { isAmaGridPrice, parseOptions, loadExistingWhitelist, buildWhitelist }
+

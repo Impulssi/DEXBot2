@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
-const { createMemuBridge, describeMemuBridge } = require('../modules/memu_bridge');
-const { success, failure, runMcpServer, createMessageParser } = require('../modules/mcp_utils');
 
+
+import { createMemuBridge, describeMemuBridge } from '../modules/memu_bridge';
+import { success, failure, runMcpServer, createMessageParser } from '../modules/mcp_utils';
+import { runMemuCommand } from '../modules/memu_bridge';
 function parseArgs(argv: any) {
   const options: Record<string, any> = {};
 
@@ -421,7 +423,6 @@ async function handleRequest(message: any, defaults: any) {
 }
 
 async function runMemuTool(command: any, args: any, defaults: any) {
-  const { runMemuCommand } = require('../modules/memu_bridge');
   return runMemuCommand(command, { ...defaults, ...args });
 }
 
@@ -432,10 +433,5 @@ if (require.main === module) {
   });
 }
 
-export = {
-  createMessageParser,
-  failure,
-  handleRequest,
-  listMcpTools,
-  success,
-};
+export { createMessageParser, failure, handleRequest, listMcpTools, success }
+

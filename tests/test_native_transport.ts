@@ -8,6 +8,7 @@
 const assert = require('assert');
 const http = require('http');
 const crypto = require('crypto');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('=== Native Transport Tests ===\n');
 
@@ -300,7 +301,7 @@ async function testConnectionLifecycle() {
         try {
             await transport.call('unregistered_method', [], 500);
         } catch (e) {
-            timeoutCaught = e.code === 'RPC_TIMEOUT';
+            timeoutCaught = (e as any).code === 'RPC_TIMEOUT';
         }
         assert.ok(timeoutCaught, 'Timeout should be caught');
 
@@ -355,8 +356,8 @@ async function testAllNodesFail() {
         ]);
         assert.fail('Should have thrown');
     } catch (e) {
-        assert.ok(e instanceof AllNodesFailed || e.code === 'ALL_NODES_FAILED' || e.code === 'CONNECTION_ERROR',
-            `Expected connection error, got: ${e.code || e.message}`);
+        assert.ok(e instanceof AllNodesFailed || (e as any).code === 'ALL_NODES_FAILED' || (e as any).code === 'CONNECTION_ERROR',
+            `Expected connection error, got: ${(e as any).code || getErrorMessage(e)}`);
     }
 
     console.log('  PASS: All nodes fail gracefully');
@@ -594,8 +595,8 @@ async function testKeepAliveRecovery() {
             console.log('Error:', formatError(e));
             process.exit(0);
         }
-        console.error('\nTransport test FAILED:', e.message);
-        console.error(e.stack);
+        console.error('\nTransport test FAILED:', getErrorMessage(e));
+        console.error((e as any).stack);
         process.exit(1);
     }
 })();

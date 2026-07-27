@@ -1,9 +1,10 @@
+
+import { PATHS } from './paths';
+import { getStorage } from './storage';
+import { readJSON } from './utils/fs_utils';
 'use strict';
 
-const { PATHS } = require('./paths');
-const { getStorage } = require('./storage');
 const storage = getStorage();
-const { readJSON } = require('./utils/fs_utils');
 
 const WHITELIST_FILE = PATHS.PROFILES.MARKET_ADAPTER_WHITELIST_JSON();
 
@@ -88,12 +89,5 @@ function isBotGridRangeScalingWhitelisted(botKey: string): boolean {
     return isBotAsymmetricBoundsWhitelisted(botKey);
 }
 
-export = {
-    WHITELIST_FILE,
-    resetMarketAdapterWhitelistCache,
-    getWhitelistFlags,
-    isBotWhitelisted,
-    isBotDynamicWeightWhitelisted,
-    isBotAsymmetricBoundsWhitelisted,
-    isBotGridRangeScalingWhitelisted,
-};
+export { WHITELIST_FILE, resetMarketAdapterWhitelistCache, getWhitelistFlags, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, isBotGridRangeScalingWhitelisted }
+

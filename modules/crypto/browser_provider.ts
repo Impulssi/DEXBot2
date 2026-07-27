@@ -1,6 +1,6 @@
-const { ripemd160: pureRipemd160 } = require('./pure_ripemd160');
-const { privateKeyToPublicKey: pureSecp256k1Pubkey } = require('./pure_secp256k1');
-const { scrypt: pureScrypt } = require('./pure_scrypt');
+import { ripemd160 as pureRipemd160 } from './pure_ripemd160';
+import { privateKeyToPublicKey as pureSecp256k1Pubkey } from './pure_secp256k1';
+import { scrypt as pureScrypt } from './pure_scrypt';
 import type { CryptoProvider, ScryptOptions, Aes256GcmEncryptResult } from './provider';
 
 function toAB(data: Uint8Array): ArrayBuffer {

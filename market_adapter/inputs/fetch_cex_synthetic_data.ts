@@ -38,17 +38,17 @@ const DEFAULT_EXCHANGES = [
     'mexc',
 ];
 
-function upper(value) {
+function upper(value: any) {
     return String(value || '').trim().toUpperCase();
 }
 
-function lower(value) {
+function lower(value: any) {
     return String(value || '').trim().toLowerCase();
 }
 
-function parseInterval(raw) {
+function parseInterval(raw: any) {
     const value = String(raw || DEFAULT_INTERVAL).trim().toLowerCase();
-    const map = {
+    const map: Record<string, { seconds: number; label: string }> = {
         '1m': { seconds: 60, label: '1m' },
         '5m': { seconds: 300, label: '5m' },
         '15m': { seconds: 900, label: '15m' },
@@ -73,23 +73,7 @@ function parseInterval(raw) {
     throw new Error(`Unsupported interval: ${raw}`);
 }
 
-function sanitizePart(value) {
-    return String(value || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '_')
-        .replace(/^_+|_+$/g, '') || 'unknown';
-}
-
-function sanitizeBotKeyPart(value) {
-    return String(value || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '') || 'bot';
-}
-
-function loadBotNameIndex(botsFile) {
+function loadBotNameIndex(botsFile: any) {
     try {
         if (!botsFile || !storage.exists(botsFile)) return [];
         const raw = storage.readFile(botsFile, 'utf8');
@@ -97,24 +81,24 @@ function loadBotNameIndex(botsFile) {
         const parsed = parseJsonWithComments(raw);
         const bots = Array.isArray(parsed?.bots) ? parsed.bots : [];
         return bots
-            .map((bot, index) => ({ bot, index }))
-            .filter(({ bot }) => bot && typeof bot === 'object' && bot.name);
+            .map((bot: any, index: any) => ({ bot, index }))
+            .filter(({ bot }: any) => bot && typeof bot === 'object' && bot.name);
     } catch (_err) {
         return [];
     }
 }
 
-function resolveBotEntryFromIdentity(config) {
+function resolveBotEntryFromIdentity(config: any) {
     const botName = String(config.botName || '').trim();
     if (!botName) return null;
 
     const botsFile = config.botsFile ? String(config.botsFile) : DEFAULT_BOTS_FILE;
     const entries = loadBotNameIndex(botsFile);
-    const match = entries.find(({ bot }) => String(bot.name || '').trim() === botName);
+    const match = entries.find(({ bot }: any) => String(bot.name || '').trim() === botName);
     return match || null;
 }
 
-function resolveBotKeyFromIdentity(config) {
+function resolveBotKeyFromIdentity(config: any) {
     if (config.botKey) return String(config.botKey).trim();
 
     const match = resolveBotEntryFromIdentity(config);
@@ -123,7 +107,7 @@ function resolveBotKeyFromIdentity(config) {
     return null;
 }
 
-function normalizeCexAssetSymbol(value) {
+function normalizeCexAssetSymbol(value: any) {
     const raw = upper(value);
     if (!raw) return raw;
     const knownGatewayPrefixes = [
@@ -145,7 +129,7 @@ function normalizeCexAssetSymbol(value) {
     return raw;
 }
 
-function resolveBotContextFromIdentity(config) {
+function resolveBotContextFromIdentity(config: any) {
     const match = resolveBotEntryFromIdentity(config);
     if (!match) return null;
     return {
@@ -157,7 +141,7 @@ function resolveBotContextFromIdentity(config) {
     };
 }
 
-function normalizeBaseAsset(base, symbol) {
+function normalizeBaseAsset(base: any, symbol: any) {
     const rawBase = upper(base);
     const rawSymbol = upper(symbol);
     const goldMatch = rawBase.match(/^GOLD\(([^)]+)\)$/);
@@ -170,14 +154,14 @@ function normalizeBaseAsset(base, symbol) {
     return rawBase;
 }
 
-function normalizeTimestamp(raw) {
+function normalizeTimestamp(raw: any) {
     const ts = Number(raw);
     if (!Number.isFinite(ts)) return null;
     return ts >= 1e12 ? Math.trunc(ts) : Math.trunc(ts * 1000);
 }
 
-function computeRequiredCandles(amaConfig = null, cfg = null) {
-    const ama = amaConfig || MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY] || MARKET_ADAPTER.AMAS.AMA3;
+function computeRequiredCandles(amaConfig: any = null, cfg: any = null) {
+    const ama = amaConfig || MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS] || MARKET_ADAPTER.AMAS.AMA3;
     if (!ama) return DEFAULT_BOOTSTRAP_LOOKBACK_HOURS;
 
     const warmupBars = getAmaWarmupBars(
@@ -191,7 +175,7 @@ function computeRequiredCandles(amaConfig = null, cfg = null) {
     return Math.max(DEFAULT_BOOTSTRAP_LOOKBACK_HOURS, analysisKeepCount);
 }
 
-function candlesToLookbackHours(candleCount, intervalSeconds) {
+function candlesToLookbackHours(candleCount: any, intervalSeconds: any) {
     const candles = Number(candleCount);
     const seconds = Number(intervalSeconds);
     if (!Number.isFinite(candles) || candles <= 0) return 0;
@@ -199,7 +183,7 @@ function candlesToLookbackHours(candleCount, intervalSeconds) {
     return Math.ceil((candles * seconds) / 3600);
 }
 
-function lookbackHoursToCandles(lookbackHours, intervalSeconds) {
+function lookbackHoursToCandles(lookbackHours: any, intervalSeconds: any) {
     const hours = Number(lookbackHours);
     const seconds = Number(intervalSeconds);
     if (!Number.isFinite(hours) || hours <= 0) return 0;
@@ -207,8 +191,8 @@ function lookbackHoursToCandles(lookbackHours, intervalSeconds) {
     return Math.ceil((hours * 3600) / seconds);
 }
 
-function measureCandles(candles, intervalSeconds) {
-    const rows = Array.isArray(candles) ? candles.filter((row) => Array.isArray(row) && Number.isFinite(row[0])) : [];
+function measureCandles(candles: any, intervalSeconds: any) {
+    const rows = Array.isArray(candles) ? candles.filter((row: any) => Array.isArray(row) && Number.isFinite(row[0])) : [];
     if (rows.length === 0) {
         return {
             count: 0,
@@ -217,7 +201,7 @@ function measureCandles(candles, intervalSeconds) {
             spanHours: 0,
         };
     }
-    const sorted = rows.slice().sort((a, b) => a[0] - b[0]);
+    const sorted = rows.slice().sort((a: any, b: any) => a[0] - b[0]);
     const oldestTs = sorted[0][0];
     const newestTs = sorted[sorted.length - 1][0];
     const intervalMs = Math.max(1, Number(intervalSeconds || 3600)) * 1000;
@@ -229,7 +213,7 @@ function measureCandles(candles, intervalSeconds) {
     };
 }
 
-async function fetchJson(url, { headers = {}, timeoutMs = 20000 } = {}) {
+async function fetchJson(url: any, { headers = {}, timeoutMs = 20000 }: any = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -254,7 +238,7 @@ async function fetchJson(url, { headers = {}, timeoutMs = 20000 } = {}) {
     }
 }
 
-function marketRow(base, quote, id, extra = {}) {
+function marketRow(base: any, quote: any, id: any, extra: any = {}) {
     return {
         base: upper(base),
         quote: upper(quote),
@@ -268,12 +252,12 @@ function extractMarketsFromList(list: any, mapper: (row: any) => any) {
     return rows.map(mapper).filter((row: any) => row && row.id && row.base && row.quote);
 }
 
-const EXCHANGES = {
+const EXCHANGES: Record<string, any> = {
     binance: {
         name: 'Binance',
-        formatInterval: (interval) => interval,
+        formatInterval: (interval: any) => interval,
         marketsUrl: 'https://api.binance.com/api/v3/exchangeInfo',
-        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }) => {
+        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }: any) => {
             const url = new URL('https://api.binance.com/api/v3/klines');
             url.searchParams.set('symbol', id);
             url.searchParams.set('interval', interval);
@@ -282,16 +266,16 @@ const EXCHANGES = {
             if (untilMs != null) url.searchParams.set('endTime', String(Math.max(0, Math.trunc(untilMs))));
             return url.toString();
         },
-        parseMarkets: (json) => extractMarketsFromList(json?.symbols, (row) => marketRow(
+        parseMarkets: (json: any) => extractMarketsFromList(json?.symbols, (row: any) => marketRow(
             row.baseAsset,
             row.quoteAsset,
             row.symbol,
             { status: row.status }
         )),
-        parseCandles: (json) => {
+        parseCandles: (json: any) => {
             const rows = Array.isArray(json) ? json : [];
             return rows
-                .map((row) => {
+                .map((row: any) => {
                     if (!Array.isArray(row) || row.length < 6) return null;
                     const ts = normalizeTimestamp(row[0]);
                     const open = Number(row[1]);
@@ -302,14 +286,14 @@ const EXCHANGES = {
                     if (!Number.isFinite(ts) || ![open, high, low, close].every(Number.isFinite)) return null;
                     return [ts, open, high, low, close, Number.isFinite(volume) ? volume : 0];
                 })
-                .filter(Boolean)
-                .sort((a, b) => a[0] - b[0]);
+                .filter((x: any) => x != null)
+                .sort((a: any, b: any) => a[0] - b[0]);
         },
     },
     bybit: {
         name: 'Bybit',
-        formatInterval: (interval) => {
-            const map = {
+        formatInterval: (interval: any) => {
+            const map: Record<string, any> = {
                 '1m': '1',
                 '5m': '5',
                 '15m': '15',
@@ -324,7 +308,7 @@ const EXCHANGES = {
             return map[lower(interval)] || interval;
         },
         marketsUrl: 'https://api.bybit.com/v5/market/instruments-info?category=spot&limit=1000',
-        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }) => {
+        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }: any) => {
             const url = new URL('https://api.bybit.com/v5/market/kline');
             url.searchParams.set('category', 'spot');
             url.searchParams.set('symbol', id);
@@ -334,16 +318,16 @@ const EXCHANGES = {
             if (untilMs != null) url.searchParams.set('end', String(Math.max(0, Math.trunc(untilMs))));
             return url.toString();
         },
-        parseMarkets: (json) => extractMarketsFromList(json?.result?.list, (row) => marketRow(
+        parseMarkets: (json: any) => extractMarketsFromList(json?.result?.list, (row: any) => marketRow(
             row.baseCoin,
             row.quoteCoin,
             row.symbol,
             { status: row.status }
         )),
-        parseCandles: (json) => {
+        parseCandles: (json: any) => {
             const rows = Array.isArray(json?.result?.list) ? json.result.list : [];
             return rows
-                .map((row) => {
+                .map((row: any) => {
                     if (!Array.isArray(row) || row.length < 6) return null;
                     const ts = normalizeTimestamp(row[0]);
                     const open = Number(row[1]);
@@ -354,15 +338,15 @@ const EXCHANGES = {
                     if (!Number.isFinite(ts) || ![open, high, low, close].every(Number.isFinite)) return null;
                     return [ts, open, high, low, close, Number.isFinite(volume) ? volume : 0];
                 })
-                .filter(Boolean)
-                .sort((a, b) => a[0] - b[0]);
+                .filter((x: any) => x != null)
+                .sort((a: any, b: any) => a[0] - b[0]);
         },
     },
     gate: {
         name: 'Gate',
-        formatInterval: (interval) => interval,
+        formatInterval: (interval: any) => interval,
         marketsUrl: 'https://api.gateio.ws/api/v4/spot/currency_pairs',
-        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }) => {
+        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }: any) => {
             const url = new URL('https://api.gateio.ws/api/v4/spot/candlesticks');
             url.searchParams.set('currency_pair', id);
             url.searchParams.set('interval', interval);
@@ -371,16 +355,16 @@ const EXCHANGES = {
             if (untilMs != null) url.searchParams.set('to', String(Math.max(0, Math.trunc(untilMs / 1000))));
             return url.toString();
         },
-        parseMarkets: (json) => extractMarketsFromList(json, (row) => marketRow(
+        parseMarkets: (json: any) => extractMarketsFromList(json, (row: any) => marketRow(
             row.base,
             row.quote,
             row.id,
             { tradeStatus: row.trade_status }
         )),
-        parseCandles: (json) => {
+        parseCandles: (json: any) => {
             const rows = Array.isArray(json) ? json : [];
             return rows
-                .map((row) => {
+                .map((row: any) => {
                     if (!Array.isArray(row) || row.length < 7) return null;
                     const ts = normalizeTimestamp(row[0]);
                     const close = Number(row[2]);
@@ -391,14 +375,14 @@ const EXCHANGES = {
                     if (!Number.isFinite(ts) || ![open, high, low, close].every(Number.isFinite)) return null;
                     return [ts, open, high, low, close, Number.isFinite(volume) ? volume : 0];
                 })
-                .filter(Boolean)
-                .sort((a, b) => a[0] - b[0]);
+                .filter((x: any) => x != null)
+                .sort((a: any, b: any) => a[0] - b[0]);
         },
     },
     bitget: {
         name: 'Bitget',
-        formatInterval: (interval) => {
-            const map = {
+        formatInterval: (interval: any) => {
+            const map: Record<string, any> = {
                 '1m': '1m',
                 '5m': '5m',
                 '15m': '15m',
@@ -413,7 +397,7 @@ const EXCHANGES = {
             return map[lower(interval)] || interval;
         },
         marketsUrl: 'https://api.bitget.com/api/v2/spot/public/symbols',
-        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }) => {
+        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }: any) => {
             const url = new URL('https://api.bitget.com/api/v2/spot/market/candles');
             url.searchParams.set('symbol', id);
             url.searchParams.set('granularity', interval);
@@ -422,16 +406,16 @@ const EXCHANGES = {
             if (untilMs != null) url.searchParams.set('endTime', String(Math.max(0, Math.trunc(untilMs))));
             return url.toString();
         },
-        parseMarkets: (json) => extractMarketsFromList(json?.data, (row) => marketRow(
+        parseMarkets: (json: any) => extractMarketsFromList(json?.data, (row: any) => marketRow(
             row.baseCoin,
             row.quoteCoin,
             row.symbol,
             { status: row.status }
         )),
-        parseCandles: (json) => {
+        parseCandles: (json: any) => {
             const rows = Array.isArray(json?.data) ? json.data : [];
             return rows
-                .map((row) => {
+                .map((row: any) => {
                     if (!Array.isArray(row) || row.length < 6) return null;
                     const ts = normalizeTimestamp(row[0]);
                     const open = Number(row[1]);
@@ -442,14 +426,14 @@ const EXCHANGES = {
                     if (!Number.isFinite(ts) || ![open, high, low, close].every(Number.isFinite)) return null;
                     return [ts, open, high, low, close, Number.isFinite(volume) ? volume : 0];
                 })
-                .filter(Boolean)
-                .sort((a, b) => a[0] - b[0]);
+                .filter((x: any) => x != null)
+                .sort((a: any, b: any) => a[0] - b[0]);
         },
     },
     kucoin: {
         name: 'KuCoin',
-        formatInterval: (interval) => {
-            const map = {
+        formatInterval: (interval: any) => {
+            const map: Record<string, any> = {
                 '1m': '1min',
                 '5m': '5min',
                 '15m': '15min',
@@ -464,7 +448,7 @@ const EXCHANGES = {
             return map[lower(interval)] || interval;
         },
         marketsUrl: 'https://api.kucoin.com/api/v2/symbols',
-        candlesUrl: ({ id, interval, intervalSeconds, limit, sinceMs, untilMs }) => {
+        candlesUrl: ({ id, interval, sinceMs, untilMs }: any) => {
             const url = new URL('https://api.kucoin.com/api/v1/market/candles');
             url.searchParams.set('symbol', id);
             url.searchParams.set('type', interval);
@@ -472,16 +456,16 @@ const EXCHANGES = {
             if (untilMs != null) url.searchParams.set('endAt', String(Math.max(0, Math.trunc(untilMs / 1000))));
             return url.toString();
         },
-        parseMarkets: (json) => extractMarketsFromList(json?.data, (row) => marketRow(
+        parseMarkets: (json: any) => extractMarketsFromList(json?.data, (row: any) => marketRow(
             row.baseCurrency,
             row.quoteCurrency,
             row.symbol,
             { enableTrading: row.enableTrading }
         )),
-        parseCandles: (json) => {
+        parseCandles: (json: any) => {
             const rows = Array.isArray(json?.data) ? json.data : [];
             return rows
-                .map((row) => {
+                .map((row: any) => {
                     if (!Array.isArray(row) || row.length < 6) return null;
                     const ts = normalizeTimestamp(row[0]);
                     const open = Number(row[1]);
@@ -492,14 +476,14 @@ const EXCHANGES = {
                     if (!Number.isFinite(ts) || ![open, high, low, close].every(Number.isFinite)) return null;
                     return [ts, open, high, low, close, Number.isFinite(volume) ? volume : 0];
                 })
-                .filter(Boolean)
-                .sort((a, b) => a[0] - b[0]);
+                .filter((x: any) => x != null)
+                .sort((a: any, b: any) => a[0] - b[0]);
         },
     },
     htx: {
         name: 'HTX',
-        formatInterval: (interval) => {
-            const map = {
+        formatInterval: (interval: any) => {
+            const map: Record<string, any> = {
                 '1m': '1min',
                 '5m': '5min',
                 '15m': '15min',
@@ -514,7 +498,7 @@ const EXCHANGES = {
             return map[lower(interval)] || interval;
         },
         marketsUrl: 'https://api.htx.com/v1/common/symbols',
-        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }) => {
+        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }: any) => {
             const url = new URL('https://api.htx.com/market/history/candles');
             url.searchParams.set('symbol', id);
             url.searchParams.set('period', interval);
@@ -523,16 +507,16 @@ const EXCHANGES = {
             if (untilMs != null) url.searchParams.set('to', String(Math.max(0, Math.trunc(untilMs / 1000))));
             return url.toString();
         },
-        parseMarkets: (json) => extractMarketsFromList(json?.data || json, (row) => {
+        parseMarkets: (json: any) => extractMarketsFromList(json?.data || json, (row: any) => {
             const base = row.baseCurrency || row['base-currency'] || row.base_currency;
             const quote = row.quoteCurrency || row['quote-currency'] || row.quote_currency;
             const id = row.symbol || row['symbol'];
             return marketRow(base, quote, id, { state: row.state });
         }),
-        parseCandles: (json) => {
+        parseCandles: (json: any) => {
             const rows = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
             return rows
-                .map((row) => {
+                .map((row: any) => {
                     if (Array.isArray(row)) {
                         if (row.length < 6) return null;
                         const ts = normalizeTimestamp(row[0]);
@@ -554,14 +538,14 @@ const EXCHANGES = {
                     if (!Number.isFinite(ts) || ![open, high, low, close].every(Number.isFinite)) return null;
                     return [ts, open, high, low, close, Number.isFinite(volume) ? volume : 0];
                 })
-                .filter(Boolean)
-                .sort((a, b) => a[0] - b[0]);
+                .filter((x: any) => x != null)
+                .sort((a: any, b: any) => a[0] - b[0]);
         },
     },
     kraken: {
         name: 'Kraken',
-        formatInterval: (interval) => {
-            const map = {
+        formatInterval: (interval: any) => {
+            const map: Record<string, any> = {
                 '1m': '1',
                 '5m': '5',
                 '15m': '15',
@@ -574,7 +558,7 @@ const EXCHANGES = {
             return map[lower(interval)] || interval;
         },
         marketsUrl: 'https://api.kraken.com/0/public/AssetPairs',
-        candlesUrl: ({ id, interval, intervalSeconds, limit, sinceMs, untilMs }) => {
+        candlesUrl: ({ id, interval, intervalSeconds, limit, sinceMs }: any) => {
             const url = new URL('https://api.kraken.com/0/public/OHLC');
             url.searchParams.set('pair', id);
             url.searchParams.set('interval', interval);
@@ -593,12 +577,12 @@ const EXCHANGES = {
                 return marketRow(base, quote, id, { wsname: row.wsname });
             }).filter((row: any) => row.id && row.base && row.quote);
         },
-        parseCandles: (json) => {
+        parseCandles: (json: any) => {
             const result = json?.result || {};
-            const pairKey = Object.keys(result).find((key) => key !== 'last');
+            const pairKey: any = Object.keys(result).find((key: any) => key !== 'last');
             const rows = Array.isArray(result[pairKey]) ? result[pairKey] : [];
             return rows
-                .map((row) => {
+                .map((row: any) => {
                     if (!Array.isArray(row) || row.length < 7) return null;
                     const ts = normalizeTimestamp(Number(row[0]) * 1000);
                     const open = Number(row[1]);
@@ -609,29 +593,29 @@ const EXCHANGES = {
                     if (!Number.isFinite(ts) || ![open, high, low, close].every(Number.isFinite)) return null;
                     return [ts, open, high, low, close, Number.isFinite(volume) ? volume : 0];
                 })
-                .filter(Boolean)
-                .sort((a, b) => a[0] - b[0]);
+                .filter((x: any) => x != null)
+                .sort((a: any, b: any) => a[0] - b[0]);
         },
     },
     okx: {
         name: 'OKX',
-        formatInterval: (interval) => {
-            const map = {
-                '1m': '1m',
-                '5m': '5m',
-                '15m': '15m',
-                '30m': '30m',
-                '1h': '1H',
-                '4h': '4H',
-                '6h': '6H',
-                '12h': '12H',
-                '1d': '1D',
-                '1w': '1W',
+        formatInterval: (interval: any) => {
+            const map: Record<string, any> = {
+                '1m': '1',
+                '5m': '5',
+                '15m': '15',
+                '30m': '30',
+                '1h': '60',
+                '4h': '240',
+                '6h': '360',
+                '12h': '720',
+                '1d': 'D',
+                '1w': 'W',
             };
             return map[lower(interval)] || interval;
         },
         marketsUrl: 'https://www.okx.com/api/v5/public/instruments?instType=SPOT',
-        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }) => {
+        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }: any) => {
             const url = new URL('https://www.okx.com/api/v5/market/candles');
             url.searchParams.set('instId', id);
             url.searchParams.set('bar', interval);
@@ -640,16 +624,16 @@ const EXCHANGES = {
             if (untilMs != null) url.searchParams.set('after', String(Math.max(0, Math.trunc(untilMs))));
             return url.toString();
         },
-        parseMarkets: (json) => extractMarketsFromList(json?.data, (row) => marketRow(
+        parseMarkets: (json: any) => extractMarketsFromList(json?.data, (row: any) => marketRow(
             row.baseCcy,
             row.quoteCcy,
             row.instId,
             { state: row.state }
         )),
-        parseCandles: (json) => {
+        parseCandles: (json: any) => {
             const rows = Array.isArray(json?.data) ? json.data : [];
             return rows
-                .map((row) => {
+                .map((row: any) => {
                     if (!Array.isArray(row) || row.length < 6) return null;
                     const ts = normalizeTimestamp(row[0]);
                     const open = Number(row[1]);
@@ -660,14 +644,14 @@ const EXCHANGES = {
                     if (!Number.isFinite(ts) || ![open, high, low, close].every(Number.isFinite)) return null;
                     return [ts, open, high, low, close, Number.isFinite(volume) ? volume : 0];
                 })
-                .filter(Boolean)
-                .sort((a, b) => a[0] - b[0]);
+                .filter((x: any) => x != null)
+                .sort((a: any, b: any) => a[0] - b[0]);
         },
     },
     mexc: {
         name: 'MEXC',
-        formatInterval: (interval) => {
-            const map = {
+        formatInterval: (interval: any) => {
+            const map: Record<string, any> = {
                 '1m': '1m',
                 '5m': '5m',
                 '15m': '15m',
@@ -680,7 +664,7 @@ const EXCHANGES = {
             return map[lower(interval)] || interval;
         },
         marketsUrl: 'https://api.mexc.com/api/v3/exchangeInfo',
-        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }) => {
+        candlesUrl: ({ id, interval, limit, sinceMs, untilMs }: any) => {
             const url = new URL('https://api.mexc.com/api/v3/klines');
             url.searchParams.set('symbol', id);
             url.searchParams.set('interval', interval);
@@ -689,16 +673,16 @@ const EXCHANGES = {
             if (untilMs != null) url.searchParams.set('endTime', String(Math.max(0, Math.trunc(untilMs))));
             return url.toString();
         },
-        parseMarkets: (json) => extractMarketsFromList(json?.symbols, (row) => marketRow(
+        parseMarkets: (json: any) => extractMarketsFromList(json?.symbols, (row: any) => marketRow(
             normalizeBaseAsset(row.baseAsset, row.symbol),
             row.quoteAsset,
             row.symbol,
             { status: row.status }
         )),
-        parseCandles: (json) => {
+        parseCandles: (json: any) => {
             const rows = Array.isArray(json) ? json : [];
             return rows
-                .map((row) => {
+                .map((row: any) => {
                     if (!Array.isArray(row) || row.length < 6) return null;
                     const ts = normalizeTimestamp(row[0]);
                     const open = Number(row[1]);
@@ -709,15 +693,15 @@ const EXCHANGES = {
                     if (!Number.isFinite(ts) || ![open, high, low, close].every(Number.isFinite)) return null;
                     return [ts, open, high, low, close, Number.isFinite(volume) ? volume : 0];
                 })
-                .filter(Boolean)
-                .sort((a, b) => a[0] - b[0]);
+                .filter((x: any) => x != null)
+                .sort((a: any, b: any) => a[0] - b[0]);
         },
     },
 };
 
 function parseArgs() {
     const args = process.argv.slice(2);
-    const config = {
+    const config: Record<string, any> = {
         exchange: 'auto',
         interval: DEFAULT_INTERVAL,
         limit: DEFAULT_LIMIT,
@@ -808,7 +792,7 @@ function parseArgs() {
     return config;
 }
 
-function applyBotDerivedConfig(config) {
+function applyBotDerivedConfig(config: any) {
     const botContext = resolveBotContextFromIdentity(config);
     if (!botContext) {
         if (config.botName) {
@@ -861,10 +845,10 @@ Options:
 `);
 }
 
-function normalizeExchangeList(raw) {
+function normalizeExchangeList(raw: any) {
     const list = String(raw || 'auto')
         .split(',')
-        .map((item) => lower(item))
+        .map((item: any) => lower(item))
         .filter(Boolean);
     if (list.length === 0 || (list.length === 1 && list[0] === 'auto')) {
         return DEFAULT_EXCHANGES.slice();
@@ -872,14 +856,14 @@ function normalizeExchangeList(raw) {
     return list;
 }
 
-function findMarketId(markets, base, quote) {
+function findMarketId(markets: any, base: any, quote: any) {
     const targetBase = upper(base);
     const targetQuote = upper(quote);
-    const market = markets.find((row) => upper(row.base) === targetBase && upper(row.quote) === targetQuote);
+    const market = markets.find((row: any) => upper(row.base) === targetBase && upper(row.quote) === targetQuote);
     return market || null;
 }
 
-function buildSyntheticCandle(left, right) {
+function buildSyntheticCandle(left: any, right: any) {
     const open = left[1] / right[1];
     const close = left[4] / right[4];
     const high = Math.max(left[2] / right[3], open, close);
@@ -892,10 +876,10 @@ function synthesizeCrossCandles(leftCandles: any[], rightCandles: any[]) {
     const leftMap = new Map<number, any[]>(leftCandles.map((row: any) => [row[0], row]));
     const rightMap = new Map<number, any[]>(rightCandles.map((row: any) => [row[0], row]));
     const timestamps = Array.from(leftMap.keys()).filter((ts: number) => rightMap.has(ts)).sort((a: number, b: number) => a - b);
-    return timestamps.map((ts) => buildSyntheticCandle(leftMap.get(ts), rightMap.get(ts)));
+    return timestamps.map((ts: any) => buildSyntheticCandle(leftMap.get(ts), rightMap.get(ts)));
 }
 
-function chooseOutputPath(config, intervalLabel) {
+function chooseOutputPath(config: any, intervalLabel: any) {
     if (config.out) return config.out;
     const botKey = resolveBotKeyFromIdentity(config);
     if (!botKey) {
@@ -907,16 +891,16 @@ function chooseOutputPath(config, intervalLabel) {
     return path.join(PROJECT_ROOT, 'market_adapter', 'data', `market_adapter_${botKey}_${intervalLabel}.json`);
 }
 
-function dedupeCandles(candles) {
+function dedupeCandles(candles: any) {
     const map = new Map();
     for (const candle of Array.isArray(candles) ? candles : []) {
         if (!Array.isArray(candle) || !Number.isFinite(candle[0])) continue;
         map.set(candle[0], candle);
     }
-    return [...map.values()].sort((a, b) => a[0] - b[0]);
+    return [...map.values()].sort((a: any, b: any) => a[0] - b[0]);
 }
 
-async function fetchHistoricalCandles(def, marketId, interval, intervalSeconds, lookbackHours, pageLimit) {
+async function fetchHistoricalCandles(def: any, marketId: any, interval: any, intervalSeconds: any, lookbackHours: any, pageLimit: any) {
     const apiInterval = def.formatInterval ? def.formatInterval(interval) : interval;
     const intervalMs = Math.max(1, Number(intervalSeconds || 3600)) * 1000;
     const endMs = Math.floor(Date.now() / intervalMs) * intervalMs;
@@ -924,7 +908,7 @@ async function fetchHistoricalCandles(def, marketId, interval, intervalSeconds, 
     const startMs = Math.max(0, endMs - lookbackMs);
     const maxIterations = Math.ceil(lookbackMs / Math.max(intervalMs, pageLimit * intervalMs * 0.8)) + 8;
     let cursor = startMs;
-    let collected = [];
+    let collected: any[] = [];
 
     for (let i = 0; i < maxIterations && cursor <= endMs; i++) {
         const pageEnd = Math.min(endMs, cursor + intervalMs * Math.max(1, pageLimit - 1));
@@ -958,14 +942,14 @@ async function fetchHistoricalCandles(def, marketId, interval, intervalSeconds, 
         }
 
         if (i < maxIterations - 1) {
-            await new Promise(r => setTimeout(r, MARKET_ADAPTER.CEX_API_DELAY_MS));
+            await new Promise((r: any) => setTimeout(r, MARKET_ADAPTER.CEX_API_DELAY_MS));
         }
     }
 
     return dedupeCandles(collected);
 }
 
-async function probeExchange(exchangeId, base, quote, commonQuote, interval, intervalSeconds, requiredCandles, probeLookbackHours, pageLimit) {
+async function probeExchange(exchangeId: any, base: any, quote: any, commonQuote: any, interval: any, intervalSeconds: any, requiredCandles: any, probeLookbackHours: any, pageLimit: any) {
     const def = EXCHANGES[exchangeId];
     if (!def) {
         return { exchangeId, error: `Unknown exchange: ${exchangeId}` };
@@ -1045,7 +1029,7 @@ async function probeExchange(exchangeId, base, quote, commonQuote, interval, int
         }
 
         return result;
-    } catch (err) {
+    } catch (err: any) {
         return {
             exchangeId,
             name: def.name,
@@ -1054,25 +1038,25 @@ async function probeExchange(exchangeId, base, quote, commonQuote, interval, int
     }
 }
 
-function pickBestExchange(probes, preferredExchangeIds) {
-    const preferred = (preferredExchangeIds || []).map((id) => lower(id));
+function pickBestExchange(probes: any, preferredExchangeIds: any) {
+    const preferred = (preferredExchangeIds || []).map((id: any) => lower(id));
     const ranked = rankProbes(probes, preferred, true);
     return ranked[0] || null;
 }
 
-function rankProbes(probes, preferredExchangeIds, onlyUsable = false) {
-    const preferred = (preferredExchangeIds || []).map((id) => lower(id));
+function rankProbes(probes: any, preferredExchangeIds: any, onlyUsable: any = false) {
+    const preferred = (preferredExchangeIds || []).map((id: any) => lower(id));
     return probes
-        .filter((probe) => probe && !probe.error && probe.xrpCommon && probe.xautCommon && probe.hasUsableTimeframe)
-        .map((probe) => ({
+        .filter((probe: any) => probe && !probe.error && probe.xrpCommon && probe.xautCommon && probe.hasUsableTimeframe)
+        .map((probe: any) => ({
             ...probe,
             score: Math.min(probe.xrpRange?.count || 0, probe.xautRange?.count || 0),
             depthScore: Math.min(probe.xrpRange?.spanHours || 0, probe.xautRange?.spanHours || 0),
             preferredRank: preferred.length > 0 ? preferred.indexOf(lower(probe.exchangeId)) : -1,
             usable: Boolean(probe.lookbackSatisfied),
         }))
-        .filter((probe) => (onlyUsable ? probe.usable : true))
-        .sort((a, b) => {
+        .filter((probe: any) => (onlyUsable ? probe.usable : true))
+        .sort((a: any, b: any) => {
             if (a.usable !== b.usable) return a.usable ? -1 : 1;
             if (b.depthScore !== a.depthScore) return b.depthScore - a.depthScore;
             if (b.score !== a.score) return b.score - a.score;
@@ -1085,8 +1069,8 @@ function rankProbes(probes, preferredExchangeIds, onlyUsable = false) {
         });
 }
 
-function printSummary(probes, base, quote, commonQuote) {
-    const rows = probes.map((probe, index) => {
+function printSummary(probes: any, base: any, quote: any, commonQuote: any) {
+    const rows = probes.map((probe: any, index: any) => {
         const xrp = probe.xrpCommon ? `yes (${probe.xrpCommon.id})` : 'no';
         const xaut = probe.xautCommon ? `yes (${probe.xautCommon.id})` : 'no';
         const cross = probe.nativeCross ? `yes (${probe.nativeCross.id})` : 'no';
@@ -1139,7 +1123,7 @@ async function main() {
         : DEFAULT_LIMIT;
     const preferredExchangeIds = normalizeExchangeList(config.exchange);
 
-    const probes = [];
+    const probes: any[] = [];
     for (const exchangeId of preferredExchangeIds) {
         if (!EXCHANGES[exchangeId]) continue;
         probes.push(await probeExchange(exchangeId, config.base, config.quote, config.commonQuote, config.interval, intervalSeconds, requiredCandles, probeLookbackHours, pageLimit));
@@ -1158,7 +1142,7 @@ async function main() {
         ? preferredExchangeIds[0]
         : null;
     const selected = forcedExchange
-        ? rankedProbes.find((probe) => probe.exchangeId === forcedExchange && probe.lookbackSatisfied)
+        ? rankedProbes.find((probe: any) => probe.exchangeId === forcedExchange && probe.lookbackSatisfied)
         : pickBestExchange(probes, preferredExchangeIds);
 
     if (!selected) {
@@ -1242,7 +1226,7 @@ async function main() {
     }
 }
 
-main().catch((err) => {
+main().catch((err: any) => {
     console.error(err?.stack || err?.message || String(err));
     process.exit(1);
 });

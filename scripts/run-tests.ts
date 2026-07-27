@@ -26,6 +26,7 @@ const liveTestFiles = new Set([
   'tests/test_market_price.ts',
   'tests/test_trade_history.ts',
   'tests/test_connection_trace.ts',
+  'tests/test_unlock_foreign_cred_daemon_live.ts',
 ]);
 
 const testFiles = globSync(['tests/test_*.ts', 'claw/tests/test_*.ts']).sort();

@@ -1,9 +1,10 @@
+
+import getEcc from './bitshares-native/crypto/ecc_selector';
+import { NATIVE_CLIENT } from './constants';
+import Logger from './logger';
 'use strict';
 
-const getEcc = require('./bitshares-native/crypto/ecc_selector');
 const ecc = getEcc();
-const { NATIVE_CLIENT } = require('./constants');
-const Logger = require('./logger');
 
 const DEFAULT_ADDRESS_PREFIX = NATIVE_CLIENT.CHAIN.ADDRESS_PREFIX;
 const logger = new Logger('authority-resolver');
@@ -35,12 +36,12 @@ const logger = new Logger('authority-resolver');
  * @returns {Promise<string>} Private key WIF string
  */
 async function resolvePrivateKey(
-    accountName,
-    chainClient,
-    tryGetKey,
-    listNames,
-    depth = 0,
-    pubKeyCache = new Map()
+    accountName: any,
+    chainClient: any,
+    tryGetKey: any,
+    listNames: any,
+    depth: any = 0,
+    pubKeyCache: any = new Map()
 ) {
     if (depth > 2) {
         throw new Error(
@@ -58,7 +59,7 @@ async function resolvePrivateKey(
     let full;
     try {
         full = await chainClient.db.get_full_accounts([accountName], false);
-    } catch (e) {
+    } catch (e: any) {
         throw new Error(
             `Failed to fetch account '${accountName}' from chain: ${e.message}`
         );
@@ -93,7 +94,7 @@ async function resolvePrivateKey(
         let refName;
         try {
             refName = await resolveAccountIdToName(chainClient, accountId);
-        } catch (e) {
+        } catch (e: any) {
             logger.debug(`  account_auth entry ${accountId}: name resolution failed — ${e.message}`);
             continue;
         }
@@ -101,7 +102,7 @@ async function resolvePrivateKey(
         try {
             logger.debug(`  account_auth: '${accountName}' → resolving via '${refName}'`);
             return await resolvePrivateKey(refName, chainClient, tryGetKey, listNames, depth + 1, pubKeyCache);
-        } catch (e) {
+        } catch (e: any) {
             logger.debug(`  account_auth: '${refName}' resolution failed — ${e.message}`);
             continue;
         }
@@ -152,7 +153,7 @@ async function resolvePrivateKey(
 /**
  * Normalize account_auths / key_auths from either array or object format.
  */
-function normalizeAuthMap(auth) {
+function normalizeAuthMap(auth: any) {
     if (!auth) return [];
     if (Array.isArray(auth)) return auth;
     return Object.entries(auth);
@@ -161,7 +162,7 @@ function normalizeAuthMap(auth) {
 /**
  * Resolve account ID (1.2.x) to account name via chain.
  */
-async function resolveAccountIdToName(chainClient, accountId) {
+async function resolveAccountIdToName(chainClient: any, accountId: any) {
     if (!/^1\.2\./.test(String(accountId))) return String(accountId);
 
     const full = await chainClient.db.get_full_accounts([accountId], false);
@@ -174,7 +175,7 @@ async function resolveAccountIdToName(chainClient, accountId) {
 /**
  * Get address prefix from chain config, falling back to default.
  */
-function getAddressPrefix(chainClient) {
+function getAddressPrefix(chainClient: any) {
     try {
         const config = typeof chainClient.getConfig === 'function'
             ? chainClient.getConfig()
@@ -189,9 +190,9 @@ function getAddressPrefix(chainClient) {
 /**
  * Collect all stored keys by calling tryGetKey for every known account name.
  */
-async function collectAllStoredKeys(tryGetKey, listNames) {
+async function collectAllStoredKeys(tryGetKey: any, listNames: any) {
     const names = typeof listNames === 'function' ? listNames() : [];
-    const results = [];
+    const results: { name: any; wif: any; }[] = [];
     for (const name of names) {
         const wif = await tryGetKey(name);
         if (wif) results.push({ name, wif });
@@ -203,7 +204,7 @@ async function collectAllStoredKeys(tryGetKey, listNames) {
  * Match a stored private key against a target public key string.
  * Uses the per-call pubKeyCache to avoid re-deriving public keys.
  */
-function matchKeyByPublicKey(targetPubKey, storedKeys, prefix, pubKeyCache) {
+function matchKeyByPublicKey(targetPubKey: any, storedKeys: any, prefix: any, pubKeyCache: any) {
     for (const { wif } of storedKeys) {
         try {
             let pubKeyStr = pubKeyCache.get(wif);
@@ -224,18 +225,18 @@ function matchKeyByPublicKey(targetPubKey, storedKeys, prefix, pubKeyCache) {
 /**
  * Build a human-readable summary of an authority object.
  */
-function buildAuthSummary(auth) {
-    const parts = [];
+function buildAuthSummary(auth: any) {
+    const parts: string[] = [];
     parts.push(`threshold=${auth.weight_threshold}`);
 
     const keyAuths = normalizeAuthMap(auth.key_auths);
     if (keyAuths.length > 0) {
-        parts.push(`keys=[${keyAuths.map(([k, w]) => `${k.substring(0, 12)}…:${w}`).join(', ')}]`);
+        parts.push(`keys=[${keyAuths.map(([k, w]: any) => `${k.substring(0, 12)}…:${w}`).join(', ')}]`);
     }
 
     const accountAuths = normalizeAuthMap(auth.account_auths);
     if (accountAuths.length > 0) {
-        parts.push(`accounts=[${accountAuths.map(([id, w]) => `${id}:${w}`).join(', ')}]`);
+        parts.push(`accounts=[${accountAuths.map(([id, w]: any) => `${id}:${w}`).join(', ')}]`);
     }
 
     return parts.join(' ');
@@ -244,7 +245,7 @@ function buildAuthSummary(auth) {
 /**
  * Find the highest single weight across all authority entries.
  */
-function findMaxWeight(auth) {
+function findMaxWeight(auth: any) {
     let max = 0;
     for (const [, weight] of normalizeAuthMap(auth.key_auths)) {
         if (weight > max) max = weight;
@@ -255,4 +256,5 @@ function findMaxWeight(auth) {
     return max;
 }
 
-module.exports = { resolvePrivateKey, resolveAccountIdToName };
+export { resolvePrivateKey, resolveAccountIdToName }
+

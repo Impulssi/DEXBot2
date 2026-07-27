@@ -15,11 +15,12 @@
  * Execution is a separate concern.
  */
 
+
+import { discoverPositions } from './position_discovery';
+import { assessPosition } from './position_health';
+import { fetchTrendInput } from './feed_price_source';
 'use strict';
 
-const { discoverPositions } = require('./position_discovery');
-const { assessPosition } = require('./position_health');
-const { fetchTrendInput } = require('./feed_price_source');
 
 // Lazy-load KalmanTrendAnalyzer to avoid circular dependency issues at startup
 let KalmanTrendAnalyzer: any = null;
@@ -175,8 +176,5 @@ function resetAnalyzers() {
   analyzerConfigs.clear();
 }
 
-export = {
-  evaluate,
-  getOrCreateAnalyzer,
-  resetAnalyzers,
-};
+export { evaluate, getOrCreateAnalyzer, resetAnalyzers }
+

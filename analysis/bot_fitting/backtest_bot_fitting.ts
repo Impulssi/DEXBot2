@@ -1,11 +1,10 @@
-'use strict';
+import path from 'node:path';
+import { calculateAMA } from '../../market_adapter/core/strategies/ama';
+import { range } from '../math_utils';
+import { parseListOrRange, loadLpData, fmt } from './shared_utils';
+import { ensureDir, readJSON, writeJSON } from '../../modules/utils/fs_utils';
 
-const fs = require('fs');
-const path = require('path');
-const { calculateAMA } = require('../../market_adapter/core/strategies/ama');
-const { range } = require('../math_utils');
-const { parseListOrRange, loadLpData, fmt } = require('./shared_utils');
-const { ensureDir, readJSON, writeJSON } = require('../../modules/utils/fs_utils');
+'use strict';
 
 const DEFAULT_ACTIVE_ORDERS = 5;
 const DEFAULT_FEE_ROUNDTRIP_PCT = 0.20;
@@ -23,7 +22,20 @@ const DEFAULT_RATIO_VALUES = [1.5, 1.75, 2, 2.5, 3, 4, 5, 8, 10];
 
 function parseArgs() {
     const args = process.argv.slice(2);
-    const out = {
+    const out: {
+        dataPath: string | null;
+        resultsPath: string | null;
+        spreadValues: number[];
+        incrementValues: number[];
+        ratioValues: number[];
+        activeOrders: number;
+        feeRoundtripPct: number;
+        minSpreadFactor: number;
+        riskWDuration: number;
+        riskWPeakOpen: number;
+        riskWImbalance: number;
+        riskWCancel: number;
+    } = {
         dataPath: null,
         resultsPath: null,
         spreadValues: DEFAULT_SPREAD_VALUES,
@@ -271,18 +283,18 @@ function run() {
     })) {
         if (!Number.isFinite(v) || v < 0) throw new Error(`Invalid ${k}: ${v}`);
     }
-    const loaded = loadLpData(cfg.dataPath);
+    const loaded = loadLpData(cfg.dataPath!);
     const candles = loaded.candles;
     const closes = candles.map((c) => c.close);
-    const strategies = loadAmaStrategies(cfg.resultsPath);
+    const strategies = loadAmaStrategies(cfg.resultsPath!);
 
     const totalCombos = cfg.spreadValues.length * cfg.incrementValues.length * cfg.ratioValues.length;
 
     console.log('================================================================================');
     console.log(' BOT FITTING BACKTEST (1h LP candles)');
     console.log('================================================================================');
-    console.log(`  Data:         ${path.basename(cfg.dataPath)} (${candles.length} candles)`);
-    console.log(`  Results file: ${path.basename(cfg.resultsPath)}`);
+    console.log(`  Data:         ${path.basename(cfg.dataPath!)} (${candles.length} candles)`);
+    console.log(`  Results file: ${path.basename(cfg.resultsPath!)}`);
     console.log(`  Spread grid:  ${cfg.spreadValues[0]}..${cfg.spreadValues[cfg.spreadValues.length - 1]}% (${cfg.spreadValues.length})`);
     console.log(`  Increment:    ${cfg.incrementValues[0]}..${cfg.incrementValues[cfg.incrementValues.length - 1]}% (${cfg.incrementValues.length})`);
     console.log(`  Max/Min ratio:${cfg.ratioValues[0]}..${cfg.ratioValues[cfg.ratioValues.length - 1]} (${cfg.ratioValues.length})`);
@@ -292,11 +304,11 @@ function run() {
     console.log(`  Risk W:       duration=${cfg.riskWDuration}, peakOpen=${cfg.riskWPeakOpen}, imbalance=${cfg.riskWImbalance}, cancel=${cfg.riskWCancel}`);
     console.log(`  Combos/AMA:   ${totalCombos}\n`);
 
-    const byAma = [];
+    const byAma: any[] = [];
 
     for (const s of strategies) {
         const amaValues = calculateAMA(closes, { erPeriod: s.er, fastPeriod: s.fast, slowPeriod: s.slow });
-        let best = null;
+        let best: any = null;
 
         for (const spreadPct of cfg.spreadValues) {
             for (const incrementPct of cfg.incrementValues) {
@@ -329,6 +341,7 @@ function run() {
     console.log('---------------------------------|--------|------|-------|-------|-------|--------|-------|-------');
     for (const row of byAma) {
         const b = row.best;
+        if (!b) continue;
         console.log(
             `${row.strategy.name.padEnd(33)}| ` +
             `${fmt(b.spreadPct, 2).padStart(6)} | ` +
@@ -343,14 +356,14 @@ function run() {
     }
     console.log();
 
-    const outName = `bot_fitting_results_${path.basename(cfg.dataPath, '.json')}.json`;
+    const outName = `bot_fitting_results_${path.basename(cfg.dataPath!, '.json')}.json`;
     const outPath = path.join(__dirname, outName);
     ensureDir(__dirname);
     writeJSON(outPath, {
         meta: {
             generatedAt: new Date().toISOString(),
-            dataPath: path.relative(process.cwd(), cfg.dataPath),
-            resultsPath: path.relative(process.cwd(), cfg.resultsPath),
+            dataPath: path.relative(process.cwd(), cfg.dataPath!),
+            resultsPath: path.relative(process.cwd(), cfg.resultsPath!),
             candles: candles.length,
             activeOrders: cfg.activeOrders,
             feeRoundtripPct: cfg.feeRoundtripPct,

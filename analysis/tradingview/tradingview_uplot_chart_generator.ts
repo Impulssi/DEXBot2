@@ -1,16 +1,16 @@
+
+import fs from 'node:fs';
+import { MARKET_ADAPTER } from '../../modules/constants';
+import { escapeHtml, serializeJsonForScript } from '../chart_utils';
+import { normalizeCandle } from '../math_utils';
+import { PATHS } from '../../modules/paths';
+import { readJSON } from '../../modules/utils/fs_utils';
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const { MARKET_ADAPTER } = require('../../modules/constants');
-const { escapeHtml, serializeJsonForScript } = require('../chart_utils');
-const { normalizeCandle } = require('../math_utils');
-const { PATHS } = require('../../modules/paths');
-const { readJSON } = require('../../modules/utils/fs_utils');
 
-function inferBaseIntervalSeconds(candles, fallback = 3600) {
+function inferBaseIntervalSeconds(candles: any[], fallback: any = 3600) {
     if (!Array.isArray(candles) || candles.length < 2) return fallback;
-    const deltas = [];
+    const deltas: number[] = [];
     for (let i = 1; i < candles.length; i++) {
         const prev = Number(candles[i - 1]?.time);
         const curr = Number(candles[i]?.time);
@@ -19,13 +19,13 @@ function inferBaseIntervalSeconds(candles, fallback = 3600) {
         if (d > 0) deltas.push(d);
     }
     if (deltas.length === 0) return fallback;
-    deltas.sort((a, b) => a - b);
+    deltas.sort((a: any, b: any) => a - b);
     const mid = Math.floor(deltas.length / 2);
     const med = deltas.length % 2 === 0 ? (deltas[mid - 1] + deltas[mid]) / 2 : deltas[mid];
     return Math.max(60, Math.round(med));
 }
 
-function loadMarketProfiles(filePath = PATHS.PROFILES.MARKET_PROFILES_JSON) {
+function loadMarketProfiles(filePath: any = PATHS.PROFILES.MARKET_PROFILES_JSON) {
     if (!filePath || !fs.existsSync(filePath)) return null;
     try {
         return readJSON(filePath);
@@ -41,7 +41,7 @@ function findMarketProfile(profiles: any, meta: any = {}) {
     const assetA = meta.assetA?.symbol || meta.assetA?.id || meta.assetA;
     const assetB = meta.assetB?.symbol || meta.assetB?.id || meta.assetB;
     const intervalSeconds = Number(meta.intervalSeconds);
-    return entries.find((entry) => {
+    return entries.find((entry: any) => {
         if (!entry || typeof entry !== 'object') return false;
         if (assetA && assetB) {
             const matchesPair = (String(entry.assetA) === String(assetA) || String(entry.assetAId) === String(assetA))
@@ -76,7 +76,7 @@ function resolveAmaDefaults({ meta, data, marketProfiles }: any = {}) {
     };
 }
 
-function generateHTML(data, title = 'TradingView Style Research') {
+function generateHTML(data: any, title: any = 'TradingView Style Research') {
     const rawCandles = Array.isArray(data.candles) ? data.candles : [];
     const candles = rawCandles.map(normalizeCandle).filter(Boolean);
     if (candles.length === 0) throw new Error('No candle data in input');
@@ -91,10 +91,10 @@ function generateHTML(data, title = 'TradingView Style Research') {
         { label: '4h', seconds: 14400 },
         { label: '1d', seconds: 86400 },
         { label: '1w', seconds: 604800 },
-    ].map((item) => ({ ...item, enabled: item.seconds >= baseIntervalSeconds }));
+    ].map((item: any) => ({ ...item, enabled: item.seconds >= baseIntervalSeconds }));
 
-    const defaultTimeframe = timeframes.find((item) => item.label === data.defaultTimeframe && item.enabled)
-        || timeframes.find((item) => item.enabled)
+    const defaultTimeframe = timeframes.find((item: any) => item.label === data.defaultTimeframe && item.enabled)
+        || timeframes.find((item: any) => item.enabled)
         || timeframes[0];
 
     const marketProfiles = data.marketProfiles || loadMarketProfiles();
@@ -412,7 +412,7 @@ function generateHTML(data, title = 'TradingView Style Research') {
             </div>
             <div id="toolbar">
                 <div class="group" id="tf-group">
-                    ${timeframes.map((item) => `<button class="time-btn${item.label === defaultTimeframe.label ? ' active' : ''}" data-timeframe="${escapeHtml(item.label)}"${item.enabled ? '' : ' disabled'}>${escapeHtml(item.label)}</button>`).join('')}
+                    ${timeframes.map((item: any) => `<button class="time-btn${item.label === defaultTimeframe.label ? ' active' : ''}" data-timeframe="${escapeHtml(item.label)}"${item.enabled ? '' : ' disabled'}>${escapeHtml(item.label)}</button>`).join('')}
                 </div>
                 <div class="group">
                     <div class="indicator">
@@ -1712,8 +1712,5 @@ function generateHTML(data, title = 'TradingView Style Research') {
 </html>`;
 }
 
-export = {
-    generateHTML,
-    normalizeCandle,
-    loadMarketProfiles,
-};
+export { generateHTML, normalizeCandle, loadMarketProfiles }
+

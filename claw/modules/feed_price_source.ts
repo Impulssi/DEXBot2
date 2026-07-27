@@ -8,11 +8,12 @@
  * the feed for a complete trend analyzer update.
  */
 
+
+import { getAsset, getBackingAsset, getBitassetData, dbCall } from './chain_queries';
+import { loadDexbotOrderUtils } from './dexbot_bridge';
+import { roundTo } from '../../modules/utils/math_utils';
 'use strict';
 
-const { getAsset, getBackingAsset, getBitassetData, dbCall } = require('./chain_queries');
-const { loadDexbotOrderUtils } = require('./dexbot_bridge');
-const { roundTo } = require('../../modules/utils/math_utils');
 
 function getBlockchainToFloat() {
   return loadDexbotOrderUtils().blockchainToFloat;
@@ -129,9 +130,5 @@ async function fetchTrendInput(mpaSymbol: string) {
   };
 }
 
-export = {
-  fetchFeedPrice,
-  fetchMidPrice,
-  fetchTrendInput,
-  parseBtsPerMpa,
-};
+export { fetchFeedPrice, fetchMidPrice, fetchTrendInput, parseBtsPerMpa }
+

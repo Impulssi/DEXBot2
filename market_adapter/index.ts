@@ -7,77 +7,42 @@
  */
 
 // ── Main adapter ───────────────────────────────────────────────────────────────
-const adapter = require('./market_adapter');
-const { MarketAdapterService } = require('./core/market_adapter_service');
 
 // ── Candle / interval utils ────────────────────────────────────────────────────
-const candleUtils = require('./candle_utils');
-const intervalUtils = require('./interval_utils');
 
 // ── Kibana / data sources ──────────────────────────────────────────────────────
-const kibanaClient = require('./core/kibana_client');
-const kibanaMarketCandles = require('./core/kibana_market_candles');
-const kibanaCandles = require('./core/kibana_candles');
-const kibanaSource = require('./inputs/kibana_source');
-const fetchLpData = require('./inputs/fetch_lp_data');
 
 // ── AMA & strategy core ────────────────────────────────────────────────────────
-const ama = require('./core/strategies/ama');
-const amaSlope = require('./core/strategies/ama_slope_model');
-const regimeGate = require('./core/strategies/regime_gate');
-const atrCalc = require('./core/strategies/atr/calculator');
-const asymBounds = require('./core/asymmetric_bounds');
-const configNormalizers = require('./core/config_normalizers');
 
 // ── Charting ────────────────────────────────────────────────────────────────────
-const lpChartCore = require('./lp_chart_core');
-const lpChartRunner = require('./lp_chart_runner');
-const lpChartStrategyLoader = require('./lp_chart_strategy_loader');
 
 // ── Utilities ───────────────────────────────────────────────────────────────────
-const adapterClient = require('./utils/adapter_client');
-const chainUtils = require('./utils/chain');
-const nativeHistory = require('./utils/native_history');
-const fileLock = require('./utils/file_lock');
-const dataDiscovery = require('./utils/data_discovery');
-const dynamicGridSnapshot = require('./utils/dynamic_grid_snapshot');
 
 // Note: test_helpers excluded — only consumed by test files referencing explicit paths.
 
-export = {
-    // Main adapter
-    MarketAdapterService,
-    ...adapter,
 
-    // Candle / interval utils
-    candle_utils: candleUtils,
-    interval_utils: intervalUtils,
+import { MarketAdapterService } from './core/market_adapter_service';
+import * as candleUtils from './candle_utils';
+import * as intervalUtils from './interval_utils';
+import * as kibanaClient from './core/kibana_client';
+import * as kibanaMarketCandles from './core/kibana_market_candles';
+import * as kibanaCandles from './core/kibana_candles';
+import * as kibanaSource from './inputs/kibana_source';
+import * as fetchLpData from './inputs/fetch_lp_data';
+import * as ama from './core/strategies/ama';
+import * as amaSlope from './core/strategies/ama_slope_model';
+import * as regimeGate from './core/strategies/regime_gate';
+import * as atrCalc from './core/strategies/atr/calculator';
+import * as asymBounds from './core/asymmetric_bounds';
+import * as configNormalizers from './core/config_normalizers';
+import * as lpChartCore from './lp_chart_core';
+import * as lpChartRunner from './lp_chart_runner';
+import * as lpChartStrategyLoader from './lp_chart_strategy_loader';
+import * as adapterClient from './utils/adapter_client';
+import * as chainUtils from './utils/chain';
+import * as nativeHistory from './utils/native_history';
+import * as fileLock from './utils/file_lock';
+import * as dataDiscovery from './utils/data_discovery';
+import * as dynamicGridSnapshot from './utils/dynamic_grid_snapshot';
+export { MarketAdapterService, candleUtils as candle_utils, intervalUtils as interval_utils, kibanaClient as kibana_client, kibanaMarketCandles as kibana_market_candles, kibanaCandles as kibana_candles, kibanaSource as kibana_source, fetchLpData as fetch_lp_data, ama, amaSlope as ama_slope_model, regimeGate as regime_gate, atrCalc as atr_calculator, asymBounds as asymmetric_bounds, configNormalizers as config_normalizers, lpChartCore as lp_chart_core, lpChartRunner as lp_chart_runner, lpChartStrategyLoader as lp_chart_strategy_loader, adapterClient as adapter_client, chainUtils as chain, nativeHistory as native_history, fileLock as file_lock, dataDiscovery as data_discovery, dynamicGridSnapshot as dynamic_grid_snapshot }
 
-    // Kibana / data sources
-    kibana_client: kibanaClient,
-    kibana_market_candles: kibanaMarketCandles,
-    kibana_candles: kibanaCandles,
-    kibana_source: kibanaSource,
-    fetch_lp_data: fetchLpData,
-
-    // AMA & strategy core
-    ama,
-    ama_slope_model: amaSlope,
-    regime_gate: regimeGate,
-    atr_calculator: atrCalc,
-    asymmetric_bounds: asymBounds,
-    config_normalizers: configNormalizers,
-
-    // Charting
-    lp_chart_core: lpChartCore,
-    lp_chart_runner: lpChartRunner,
-    lp_chart_strategy_loader: lpChartStrategyLoader,
-
-    // Utilities
-    adapter_client: adapterClient,
-    chain: chainUtils,
-    native_history: nativeHistory,
-    file_lock: fileLock,
-    data_discovery: dataDiscovery,
-    dynamic_grid_snapshot: dynamicGridSnapshot,
-};

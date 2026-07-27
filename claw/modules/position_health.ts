@@ -6,10 +6,11 @@
  * TrendAnalyzer to produce actionable health assessments.
  */
 
+
+import { CR_ZONES } from '../../modules/constants';
+import { roundToDecimals } from '../../modules/utils/math_utils';
 'use strict';
 
-const { CR_ZONES } = require('../../modules/constants');
-const { roundToDecimals } = require('../../modules/utils/math_utils');
 
 const DEFAULT_PRICE_RANGE_RATIO = 3.0;
 
@@ -355,15 +356,5 @@ function computeOrderWeightBias(trend = 'NEUTRAL', confidence = 0) {
   };
 }
 
-export = {
-  CR_ZONES,
-  assessAllPositions,
-  assessPosition,
-  checkTrendAlignment,
-  classifyCrZone,
-  classifyPriceRangeRatio,
-  computePriceRangeRatioPlan,
-  computeOrderWeightBias,
-  crWeight,
-  trendWeight,
-};
+export { CR_ZONES, assessAllPositions, assessPosition, checkTrendAlignment, classifyCrZone, classifyPriceRangeRatio, computePriceRangeRatioPlan, computeOrderWeightBias, crWeight, trendWeight }
+

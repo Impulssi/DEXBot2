@@ -70,12 +70,13 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, FEE_PARAMETERS, DEFAULT_CONFIG, GRID_LIMITS } = require('../../constants');
-const Format = require('../format');
-const { isValidNumber, toFiniteNumber, isNumeric } = Format;
-const Logger = require('../../logger');
+
+import { ORDER_TYPES, FEE_PARAMETERS, DEFAULT_CONFIG, GRID_LIMITS } from '../../constants';
+import * as Format from '../format';
+import Logger from '../../logger';
+import * as fundRegistry from '../../fund_registry';
+const { isValidNumber, toFiniteNumber } = Format;
 const mathLogger = new Logger('Math');
-const fundRegistry = require('../../fund_registry');
 
 const MAX_INT64 = 9223372036854775807;
 const MIN_INT64 = -9223372036854775808;
@@ -91,7 +92,7 @@ const MIN_INT64 = -9223372036854775808;
  * @param {*} value - Value to check
  * @returns {boolean} True if value is explicitly zero
  */
-function isExplicitZeroAllocation(value) {
+function isExplicitZeroAllocation(value: any) {
     if (typeof value === 'number') return value === 0;
     if (typeof value !== 'string') return false;
 
@@ -113,7 +114,7 @@ function isExplicitZeroAllocation(value) {
  * @param {*} v - Value to test
  * @returns {boolean} True if v is a string ending with '%'
  */
-function isPercentageString(v) {
+function isPercentageString(v: any) {
     return typeof v === 'string' && v.trim().endsWith('%');
 }
 
@@ -123,7 +124,7 @@ function isPercentageString(v) {
  * @param {*} value - Value to test
  * @returns {boolean} True if the value is a finite number greater than 0
  */
-function isPositiveNumber(value) {
+function isPositiveNumber(value: any) {
     const num = Number(value);
     return Number.isFinite(num) && num > 0;
 }
@@ -134,7 +135,7 @@ function isPositiveNumber(value) {
  * @param {*} value - Value to test
  * @returns {boolean} True if the value is a positive number or a percentage string like "25%"
  */
-function isPositiveNumberOrPercent(value) {
+function isPositiveNumberOrPercent(value: any) {
     if (isPositiveNumber(value)) return true;
     if (!isPercentageString(value)) return false;
     const percent = parseFloat(value.trim().slice(0, -1));
@@ -147,7 +148,7 @@ function isPositiveNumberOrPercent(value) {
  * @param {*} value - Value to test
  * @returns {boolean} True if the value is an integer greater than 0
  */
-function isPositiveInt(value) {
+function isPositiveInt(value: any) {
     return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
@@ -158,7 +159,7 @@ function isPositiveInt(value) {
  * @param {string} v - Percentage string (e.g., "50%")
  * @returns {number|null} Decimal form (e.g., 0.5) or null if invalid
  */
-function parsePercentageString(v) {
+function parsePercentageString(v: any) {
     if (!isPercentageString(v)) return null;
     const num = parseFloat(v.trim().slice(0, -1));
     return Number.isNaN(num) ? null : num / 100.0;
@@ -171,7 +172,7 @@ function parsePercentageString(v) {
  * @param {*} value - Number (100 = 100), "100%" (= 1.0), or "100" (= 100)
  * @returns {number} Decimal value, 0 if unparseable
  */
-function toDecimal(value) {
+function toDecimal(value: any) {
     if (typeof value === 'number') return value;
     if (typeof value === 'string') {
         const trimmed = value.trim();
@@ -194,7 +195,7 @@ function toDecimal(value) {
  * @param {string} [mode='min'] - "min" divides (price/multiplier), "max" multiplies (price*multiplier)
  * @returns {number|null} Resolved price or null if value is not a relative expression
  */
-function resolveRelativePrice(value, startPrice, mode = 'min') {
+function resolveRelativePrice(value: any, startPrice: any, mode: any = 'min') {
     if (typeof value === 'string') {
         if (/^[\s]*[0-9]+(?:\.[0-9]+)?x[\s]*$/i.test(value)) {
             const multiplier = parseFloat(value.trim().toLowerCase().slice(0, -1));
@@ -219,7 +220,7 @@ function resolveRelativePrice(value, startPrice, mode = 'min') {
  * @returns {Object} Summary object with chainFreeBuy, chainFreeSell, committedChainBuy, 
  *                   committedChainSell, freePlusLockedBuy, freePlusLockedSell, chainTotalBuy, chainTotalSell
  */
-function computeChainFundTotals(accountTotals, committedChain) {
+function computeChainFundTotals(accountTotals: any, committedChain: any) {
     const chainFreeBuy = toFiniteNumber(accountTotals?.buyFree);
     const chainFreeSell = toFiniteNumber(accountTotals?.sellFree);
     const committedChainBuy = toFiniteNumber(committedChain?.buy);
@@ -260,7 +261,7 @@ function computeChainFundTotals(accountTotals, committedChain) {
  * @param {number} precision - Asset precision (satoshis)
  * @returns {number} Quantized float value
  */
-function quantizeFloat(value, precision) {
+function quantizeFloat(value: any, precision: any) {
     return blockchainToFloat(floatToBlockchainInt(value, precision), precision);
 }
 
@@ -274,7 +275,7 @@ function quantizeFloat(value, precision) {
  * @param {number} precision - Asset precision (satoshis)
  * @returns {number} Normalized integer value
  */
-function normalizeInt(value, precision) {
+function normalizeInt(value: any, precision: any) {
     return floatToBlockchainInt(blockchainToFloat(value, precision), precision);
 }
 
@@ -282,7 +283,7 @@ function normalizeInt(value, precision) {
  * Fee cache local to math.js for getAssetFees.
  * Will be populated by system.js::initializeFeeCache.
  */
-let feeCache = {};
+let feeCache: Record<string, any> = {};
 
 /**
  * @private Set the fee cache (called by system.js::initializeFeeCache).
@@ -290,7 +291,7 @@ let feeCache = {};
  * @param {Object} cache - Fee cache object keyed by asset symbol
  * @returns {void}
  */
-function _setFeeCache(cache) { feeCache = cache; }
+function _setFeeCache(cache: any) { feeCache = cache; }
 
 /**
  * Get fee information for an asset.
@@ -303,7 +304,7 @@ function _setFeeCache(cache) { feeCache = cache; }
  * @returns {Object} Fee structure with create/update/net fees or net proceeds if amount provided
  * @throws {Error} If fees not cached (call initializeFeeCache first)
  */
-function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
+function getAssetFees(assetSymbol: any, assetAmount: any = null, isMaker: any = true) {
     const cachedFees = feeCache[assetSymbol];
     if (!cachedFees) {
         throw new Error(`Fees not cached for ${assetSymbol}. Call initializeFeeCache first.`);
@@ -387,7 +388,7 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
  * @param {Object} [activeOrders=null] - Active order counts {buy, sell} for BTS reservation calculation
  * @returns {number} Available funds for the side (0 if side invalid or insufficient funds)
  */
-function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders = null, configMinBtsValue = null, feeParams = null) {
+function calculateAvailableFundsValue(side: any, accountTotals: any, funds: any, assetA: any, assetB: any, activeOrders: any = null, configMinBtsValue: number | null = null, feeParams: any = null) {
     if (side !== 'buy' && side !== 'sell') return 0;
 
     const chainFree = toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree);
@@ -413,7 +414,7 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
         const targetSell = Math.max(0, toFiniteNumber(activeOrders?.sell, 1));
         const totalTargetOrders = targetBuy + targetSell;
         const formulaBudget = calculateOrderCreationFees(assetA, assetB, totalTargetOrders, btsReservationMultiplier);
-        const effectiveMin = (configMinBtsValue > 0) ? configMinBtsValue : formulaBudget;
+        const effectiveMin = (configMinBtsValue != null && configMinBtsValue > 0) ? configMinBtsValue : formulaBudget;
         const btsFree = toFiniteNumber(funds?.btsBalance?.free, 0);
         const btsDeficit = Math.max(0, effectiveMin - btsFree);
         if (btsDeficit > 0) {
@@ -442,9 +443,9 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
  * @param {Array<Object>} activeSells - Active sell orders with price property
  * @returns {{bestBuy: number|null, bestSell: number|null}} Best prices or null if no orders
  */
-function getGridBestPrices(activeBuys, activeSells) {
-    const bestBuy  = activeBuys.length  > 0 ? Math.max(...activeBuys.map(o => o.price))  : null;
-    const bestSell = activeSells.length > 0 ? Math.min(...activeSells.map(o => o.price)) : null;
+function getGridBestPrices(activeBuys: any, activeSells: any) {
+    const bestBuy  = activeBuys.length  > 0 ? Math.max(...activeBuys.map((o: any) => o.price))  : null;
+    const bestSell = activeSells.length > 0 ? Math.min(...activeSells.map((o: any) => o.price)) : null;
     return { bestBuy, bestSell };
 }
 
@@ -456,7 +457,7 @@ function getGridBestPrices(activeBuys, activeSells) {
  * @param {Array<Object>} activeSells - Active sell orders with price property
  * @returns {number} Spread percentage or 0 if insufficient data
  */
-function calculateSpreadFromOrders(activeBuys, activeSells) {
+function calculateSpreadFromOrders(activeBuys: any, activeSells: any) {
     const { bestBuy, bestSell } = getGridBestPrices(activeBuys, activeSells);
     if (bestBuy === null || bestSell === null || bestBuy === 0) return 0;
     return ((bestSell / bestBuy) - 1) * 100;
@@ -470,7 +471,7 @@ function calculateSpreadFromOrders(activeBuys, activeSells) {
  * @param {number} total - Total amount for percentage calculations
  * @returns {number} Resolved numeric value or 0 if uninterpretable
  */
-function resolveConfigValue(value, total) {
+function resolveConfigValue(value: any, total: any) {
     if (typeof value === 'number') return value;
     if (typeof value === 'string') {
         const p = parsePercentageString(value);
@@ -497,7 +498,7 @@ function resolveConfigValue(value, total) {
  * @param {'buy'|'sell'} side - Trade side
  * @returns {number} Resolved numeric value or 0 if uninterpretable
  */
-function resolveConfigValueWithRegistry(value, chainTotal, account, botName, side) {
+function resolveConfigValueWithRegistry(value: any, chainTotal: any, account: any, botName: any, side: any) {
     const effective = fundRegistry.getEffectiveAllocationSync(account, botName, side, chainTotal);
     if (effective !== null) return effective;
     return resolveConfigValue(value, chainTotal);
@@ -510,7 +511,7 @@ function resolveConfigValueWithRegistry(value, chainTotal, account, botName, sid
  * @param {boolean} [checkFree=true] - Check free balances if true, else check total balances
  * @returns {boolean} True if both buy and sell values are valid finite numbers
  */
-function hasValidAccountTotals(accountTotals, checkFree = true) {
+function hasValidAccountTotals(accountTotals: any, checkFree: any = true) {
     if (!accountTotals) return false;
     const buyKey = checkFree ? 'buyFree' : 'buy';
     const sellKey = checkFree ? 'sellFree' : 'sell';
@@ -531,7 +532,7 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
  * @returns {number} Float representation in human-readable units
  * @throws {Error} If precision is invalid
  */
-function blockchainToFloat(intValue, precision) {
+function blockchainToFloat(intValue: any, precision: any) {
     if (!isValidNumber(precision)) {
         throw new Error(`Invalid precision for blockchainToFloat: ${precision}`);
     }
@@ -552,7 +553,7 @@ function blockchainToFloat(intValue, precision) {
  * @returns {number} Blockchain integer representation (satoshi units)
  * @throws {Error} If precision is invalid
  */
-function floatToBlockchainInt(floatValue, precision) {
+function floatToBlockchainInt(floatValue: any, precision: any) {
     if (!isValidNumber(precision)) {
         throw new Error(`Invalid precision for floatToBlockchainInt: ${precision}`);
     }
@@ -577,7 +578,7 @@ function floatToBlockchainInt(floatValue, precision) {
  * @returns {number} Asset precision
  * @throws {Error} If precision missing for the required asset
  */
-function getPrecisionByOrderType(assets, orderType) {
+function getPrecisionByOrderType(assets: any, orderType: any) {
     const asset = orderType === ORDER_TYPES.SELL ? assets?.assetA : assets?.assetB;
     const side = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
 
@@ -598,7 +599,7 @@ function getPrecisionByOrderType(assets, orderType) {
  * @returns {number} Asset precision for the side
  * @throws {Error} If precision missing
  */
-function getPrecisionForSide(assets, side) {
+function getPrecisionForSide(assets: any, side: any) {
     const asset = side === 'buy' ? assets?.assetB : assets?.assetA;
     const sideUpper = side === 'buy' ? 'BUY' : 'SELL';
 
@@ -618,7 +619,7 @@ function getPrecisionForSide(assets, side) {
  * @returns {Object} Object with A and B precision properties
  * @throws {Error} If precision missing for either asset
  */
-function getPrecisionsForManager(assets) {
+function getPrecisionsForManager(assets: any) {
     if (typeof assets?.assetA?.precision !== 'number') {
         const errorMsg = `CRITICAL: Asset precision missing for assetA (${assets?.assetA?.symbol || '(unknown)'}). Cannot determine blockchain precision.`;
         mathLogger.error(`${errorMsg}`);
@@ -645,7 +646,7 @@ function getPrecisionsForManager(assets) {
  * @param {number} [factor=2] - Multiplier for slack (default 2)
  * @returns {number} Tolerance value (e.g., 2 * 10^-8 for 8-decimal precision)
  */
-function getPrecisionSlack(precision, factor = 2) {
+function getPrecisionSlack(precision: any, factor: any = 2) {
     return factor * Math.pow(10, -precision);
 }
 
@@ -697,7 +698,7 @@ function getPrecision(assets: any, { type, side, proceeds = false }: { type?: st
  * @returns {number|null} Price tolerance value or null if invalid inputs
  * @throws {Error} If assets missing or precisions invalid
  */
-function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null) {
+function calculatePriceTolerance(gridPrice: any, orderSize: any, orderType: any, assets: any = null) {
     if (!isValidNumber(gridPrice) || !isValidNumber(orderSize)) return null;
     if (!assets) throw new Error("CRITICAL: Assets object required for calculatePriceTolerance");
 
@@ -743,7 +744,7 @@ function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null)
  * @param {number} receivePrecision - Precision of receive asset
  * @returns {boolean} True if both amounts are valid and within limits
  */
-function validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecision, receivePrecision) {
+function validateOrderAmountsWithinLimits(amountToSell: any, minToReceive: any, sellPrecision: any, receivePrecision: any) {
     const sellPrecFloat = Math.pow(10, toFiniteNumber(sellPrecision));
     const receivePrecFloat = Math.pow(10, toFiniteNumber(receivePrecision));
 
@@ -773,7 +774,7 @@ function validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecis
  * @returns {number} Minimum order size in asset units
  * @throws {Error} If precision cannot be determined
  */
-function getMinOrderSize(orderType, assets, factor = 50) {
+function getMinOrderSize(orderType: any, assets: any, factor: any = 50) {
     const f = Number(factor);
     if (!f || !Number.isFinite(f) || f <= 0) return 0;
 
@@ -796,7 +797,7 @@ function getMinOrderSize(orderType, assets, factor = 50) {
  * @param {number} [dustThresholdPercent=5] - Dust threshold percentage (default 5%)
  * @returns {number} Dust factor (e.g., 0.05 for 5%)
  */
-function getDustThresholdFactor(dustThresholdPercent = 5) {
+function getDustThresholdFactor(dustThresholdPercent: any = 5) {
     return dustThresholdPercent / 100;
 }
 
@@ -808,7 +809,7 @@ function getDustThresholdFactor(dustThresholdPercent = 5) {
  * @param {number} [dustThresholdPercent=5] - Threshold percentage (default 5%)
  * @returns {number} Single dust threshold (0 if idealSize invalid)
  */
-function getSingleDustThreshold(idealSize, dustThresholdPercent = 5) {
+function getSingleDustThreshold(idealSize: any, dustThresholdPercent: any = 5) {
     if (!idealSize || idealSize <= 0) return 0;
     return idealSize * getDustThresholdFactor(dustThresholdPercent);
 }
@@ -822,7 +823,7 @@ function getSingleDustThreshold(idealSize, dustThresholdPercent = 5) {
  * @param {number} [dustThresholdPercent=5] - Threshold percentage (default 5%)
  * @returns {number} Double dust threshold (0 if idealSize invalid)
  */
-function getDoubleDustThreshold(idealSize, dustThresholdPercent = 5) {
+function getDoubleDustThreshold(idealSize: any, dustThresholdPercent: any = 5) {
     if (!idealSize || idealSize <= 0) return 0;
     return idealSize * getDustThresholdFactor(dustThresholdPercent) * 2;
 }
@@ -835,7 +836,7 @@ function getDoubleDustThreshold(idealSize, dustThresholdPercent = 5) {
  * @param {number} [minFactor=50] - Minimum size factor (default 50)
  * @returns {number} Minimum order size in asset units
  */
-function getMinAbsoluteOrderSize(orderType, assets, minFactor = 50) {
+function getMinAbsoluteOrderSize(orderType: any, assets: any, minFactor: any = 50) {
     return getMinOrderSize(orderType, assets, minFactor);
 }
 
@@ -851,11 +852,11 @@ function getMinAbsoluteOrderSize(orderType, assets, minFactor = 50) {
  * @param {number} [dustThresholdPercent=5] - Dust threshold percentage (default 5%)
  * @returns {Object} Validation result {isValid, reason, minAbsoluteSize, minDustSize}
  */
-function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSize = null, dustThresholdPercent = 5) {
+function validateOrderSize(orderSize: any, orderType: any, assets: any, minFactor: any = 50, idealSize: any = null, dustThresholdPercent: any = 5) {
      const orderSizeFloat = toFiniteNumber(orderSize);
      const minAbsoluteSize = getMinAbsoluteOrderSize(orderType, assets, minFactor);
      
-     let precision = null;
+     let precision: any = null;
      if (assets) {
          if ((orderType === ORDER_TYPES.SELL) && assets.assetA) precision = assets.assetA.precision;
          else if ((orderType === ORDER_TYPES.BUY) && assets.assetB) precision = assets.assetB.precision;
@@ -863,7 +864,7 @@ function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSi
       const displayPrecision = precision;
      
      if (orderSizeFloat < minAbsoluteSize) {
-         return { isValid: false, reason: `Order size (${Format.formatAmountByPrecision(orderSizeFloat, displayPrecision)}) below absolute minimum (${Format.formatAmountByPrecision(minAbsoluteSize, displayPrecision)})`, minAbsoluteSize, minDustSize: null };
+         return { isValid: false, reason: `Order size (${Format.formatAmountByPrecision(orderSizeFloat, displayPrecision)}) below absolute minimum (${Format.formatAmountByPrecision(minAbsoluteSize, displayPrecision)})`, minAbsoluteSize, minDustSize: null as any };
      }
 
      if (idealSize !== null && idealSize !== undefined && idealSize > 0) {
@@ -875,11 +876,11 @@ function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSi
 
      if (typeof precision === 'number') {
          if (floatToBlockchainInt(orderSizeFloat, precision) <= 0) {
-             return { isValid: false, reason: `Order size (${orderSizeFloat}) rounds to 0 on blockchain`, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null };
+             return { isValid: false, reason: `Order size (${orderSizeFloat}) rounds to 0 on blockchain`, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null as any };
          }
      }
 
-     return { isValid: true, reason: null, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null };
+     return { isValid: true, reason: null, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null as any };
 }
 
 // ================================================================================
@@ -900,7 +901,7 @@ function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSi
  * @param {number} [precision=null] - Asset precision; if provided, quantize to blockchain integers
  * @returns {Array<number>} Array of n allocation sizes
  */
-function allocateFundsByWeights(totalFunds, n, weight, incrementFactor, reverse = false, minSize = 0, precision = null) {
+function allocateFundsByWeights(totalFunds: any, n: any, weight: any, incrementFactor: any, reverse: any = false, _minSize: any = 0, precision: any = null) {
     if (n <= 0) return [];
     if (!Number.isFinite(totalFunds) || totalFunds <= 0) return new Array(n).fill(0);
 
@@ -912,7 +913,7 @@ function allocateFundsByWeights(totalFunds, n, weight, incrementFactor, reverse 
     }
 
     const sizes = new Array(n).fill(0);
-    const totalWeight = rawWeights.reduce((s, w) => s + w, 0) || 1;
+    const totalWeight = rawWeights.reduce((s: any, w: any) => s + w, 0) || 1;
 
     if (precision !== null && precision !== undefined) {
         const totalUnits = floatToBlockchainInt(totalFunds, precision);
@@ -957,12 +958,12 @@ function allocateFundsByWeights(totalFunds, n, weight, incrementFactor, reverse 
  * @param {number} [precisionB=null] - Precision for assetB (BUY asset)
  * @returns {Array<Object>} Orders array with size property added to each
  */
-function calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 0, minBuySize = 0, precisionA = null, precisionB = null) {
+function calculateOrderSizes(orders: any, config: any, sellFunds: any, buyFunds: any, minSellSize: any = 0, minBuySize: any = 0, precisionA: any = null, precisionB: any = null) {
     const { incrementPercent, weightDistribution: { sell: sellWeight, buy: buyWeight } } = config;
     const incrementFactor = incrementPercent / 100;
 
-    const sellOrders = orders.filter(o => o.type === ORDER_TYPES.SELL);
-    const buyOrders = orders.filter(o => o.type === ORDER_TYPES.BUY);
+    const sellOrders = orders.filter((o: any) => o.type === ORDER_TYPES.SELL);
+    const buyOrders = orders.filter((o: any) => o.type === ORDER_TYPES.BUY);
 
     const sellSizes = allocateFundsByWeights(sellFunds, sellOrders.length, sellWeight, incrementFactor, false, minSellSize, precisionA);
     const buySizes = allocateFundsByWeights(buyFunds, buyOrders.length, buyWeight, incrementFactor, true, minBuySize, precisionB);
@@ -970,7 +971,7 @@ function calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 
     const sellState = { sizes: sellSizes, index: 0 };
     const buyState = { sizes: buySizes, index: 0 };
 
-    return orders.map(order => {
+    return orders.map((order: any) => {
         let size = 0;
         if (order.type === ORDER_TYPES.SELL) {
             if (sellState.index >= sellState.sizes.length) throw new Error(`calculateOrderSizes: sell index ${sellState.index} out of bounds (len=${sellState.sizes.length})`);
@@ -997,7 +998,7 @@ function calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 
  * @param {number} [precision=null] - Asset precision for quantization
  * @returns {Array<number>} Array of order sizes
  */
-function calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderCount, orderType, config, minSize = 0, precision = null) {
+function calculateRotationOrderSizes(availableFunds: any, totalGridAllocation: any, orderCount: any, orderType: any, config: any, minSize: any = 0, precision: any = null) {
     if (orderCount <= 0) return [];
     const totalFunds = availableFunds + totalGridAllocation;
     if (!Number.isFinite(totalFunds) || totalFunds <= 0) return new Array(orderCount).fill(0);
@@ -1024,11 +1025,11 @@ function calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderC
  * @param {string} [sideName='unknown'] - Side name for logging (buy/sell)
  * @returns {number} RMS divergence metric (0 = perfect match, higher = more divergence)
  */
-function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, sideName = 'unknown') {
+function calculateGridSideDivergenceMetric(calculatedOrders: any, persistedOrders: any, _sideName: any = 'unknown') {
     if (!Array.isArray(calculatedOrders) || !Array.isArray(persistedOrders)) return 0;
     if (calculatedOrders.length === 0 && persistedOrders.length === 0) return 0;
 
-    const persistedMap = new Map(persistedOrders.filter(o => o.id).map(o => [o.id, o]));
+    const persistedMap = new Map(persistedOrders.filter((o: any) => o.id).map((o: any) => [o.id, o]));
     let sumSquaredDiff = 0;
     let matchCount = 0;
     let unmatchedCount = 0;
@@ -1055,7 +1056,7 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
     }
 
     for (const persOrder of persistedOrders) {
-        if (!calculatedOrders.some(c => c.id === persOrder.id)) {
+        if (!calculatedOrders.some((c: any) => c.id === persOrder.id)) {
             sumSquaredDiff += 1.0;
             unmatchedCount++;
         }
@@ -1079,7 +1080,7 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
  * @param {number} [feeMultiplier=BTS_RESERVATION_MULTIPLIER] - Multiplier for reservation (typically 5x)
  * @returns {number} Total fee amount (fallback BTS_FALLBACK_FEE if fee lookup fails; warning logged)
  */
-function calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier = FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER) {
+function calculateOrderCreationFees(assetA: any, assetB: any, totalOrders: any, feeMultiplier: any = FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER) {
     try {
         if (totalOrders > 0) {
             const btsFeeData = getAssetFees('BTS');
@@ -1103,7 +1104,7 @@ function calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier =
  * @param {Object} [logger=null] - Optional logger for logging deductions
  * @returns {Object} Updated funds object {buyFunds, sellFunds}
  */
-function deductOrderFeesFromFunds(buyFunds, sellFunds, fees, config, logger = null) {
+function deductOrderFeesFromFunds(buyFunds: any, sellFunds: any, fees: any, config: any, logger: any = null) {
     let finalBuy = buyFunds;
     let finalSell = sellFunds;
     if (fees > 0) {
@@ -1134,7 +1135,7 @@ function deductOrderFeesFromFunds(buyFunds, sellFunds, fees, config, logger = nu
  * @param {number} poolReserveIn - Pool reserve of input asset
  * @returns {number} Amount of input asset to sell
  */
-function calculateSwapInAmount(targetReceive, poolReserveOut, poolReserveIn) {
+function calculateSwapInAmount(targetReceive: any, poolReserveOut: any, poolReserveIn: any) {
     if (targetReceive <= 0 || poolReserveOut <= 0 || poolReserveIn <= 0) return 0;
     let effectiveTarget = targetReceive;
     if (effectiveTarget >= poolReserveOut * 0.5) {
@@ -1169,55 +1170,7 @@ function calculateGapSlots(incrementPercent: any, targetSpreadPercent: any, grid
     return Math.max(MIN_SPREAD_ORDERS, requiredSteps - 1);
 }
 
-export = {
-    calculateGapSlots,
-    isPercentageString,
-    isPositiveNumber,
-    isPositiveNumberOrPercent,
-    isPositiveInt,
-    parsePercentageString,
-    toDecimal,
-    resolveRelativePrice,
-    isExplicitZeroAllocation,
-    getPrecision,
-    computeChainFundTotals,
-    calculateAvailableFundsValue,
-    getGridBestPrices,
-    calculateSpreadFromOrders,
-    resolveConfigValue,
-    resolveConfigValueWithRegistry,
-    hasValidAccountTotals,
-    blockchainToFloat,
-    floatToBlockchainInt,
-    quantizeFloat,
-    normalizeInt,
-    getPrecisionByOrderType,
-    getPrecisionForSide,
-    getPrecisionsForManager,
-    getPrecisionSlack,
-    calculatePriceTolerance,
-    validateOrderAmountsWithinLimits,
-    getMinOrderSize,
-    getDustThresholdFactor,
-    getSingleDustThreshold,
-    getDoubleDustThreshold,
-    getMinAbsoluteOrderSize,
-    validateOrderSize,
-    getAssetFees,
-    allocateFundsByWeights,
-    calculateOrderSizes,
-    calculateRotationOrderSizes,
-    calculateGridSideDivergenceMetric,
-    calculateOrderCreationFees,
-    deductOrderFeesFromFunds,
-    calculateSwapInAmount,
-    _setFeeCache,
-    cloneWeightDistribution,
-    clamp,
-    roundTo,
-    fixedTo,
-    roundToDecimals
-};
+export { calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, deductOrderFeesFromFunds, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.
@@ -1259,7 +1212,7 @@ function roundToDecimals(value: number, decimals: number): number {
  * @param {number} max - Upper bound
  * @returns {number}
  */
-function clamp(value, min, max) {
+function clamp(value: any, min: any, max: any) {
     return Math.max(min, Math.min(max, value));
 }
 
@@ -1272,7 +1225,7 @@ function clamp(value, min, max) {
  * @param {Object|null} base - Fallback weights if primary is missing/invalid
  * @returns {{sell:number,buy:number}|null}
  */
-function cloneWeightDistribution(weightDistribution, base = null) {
+function cloneWeightDistribution(weightDistribution: any, base: any = null) {
     const source = (weightDistribution && typeof weightDistribution === 'object')
         ? weightDistribution
         : (base && typeof base === 'object' ? base : null);
@@ -1284,3 +1237,4 @@ function cloneWeightDistribution(weightDistribution, base = null) {
 
     return { sell, buy };
 }
+

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const { writeJSON } = require('../../modules/utils/fs_utils');
+import { writeJSON } from '../../modules/utils/fs_utils';
 
 /**
  * DEXBOT ACCOUNT DISCOVERY
@@ -41,14 +41,14 @@ const { writeJSON } = require('../../modules/utils/fs_utils');
  *   --help, -h         Show this help
  */
 
-const {
+import {
     kibanaSearch,
     buildOrderPriceQuery,
     buildTopSellerAccountsQuery,
     buildTopCancellerAccountsQuery,
     buildTopFilledAccountsQuery,
     DEFAULT_CONFIG,
-} = require('./kibana_bot_queries');
+} from './kibana_bot_queries';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -89,13 +89,16 @@ const ASSET_PRECISION = {
 };
 const DEFAULT_PRECISION = 8;
 
-function getPrec(id) { return ASSET_PRECISION[id] ?? DEFAULT_PRECISION; }
+function getPrec(id: string): number { return ASSET_PRECISION[id as keyof typeof ASSET_PRECISION] ?? DEFAULT_PRECISION; }
 
 // ─── CLI ──────────────────────────────────────────────────────────────────────
 
 function parseArgs() {
     const args = process.argv.slice(2);
-    const opts = {
+    const opts: {
+        days: number; minCreates: number; top: number; skipGrid: boolean;
+        cvThreshold: number; maxRetries: number; outputJson: string | null; verbose: boolean;
+    } = {
         days: 14, minCreates: 20, top: 30, skipGrid: false,
         cvThreshold: 0.35, maxRetries: 3, outputJson: null, verbose: false,
     };
@@ -143,11 +146,11 @@ Examples:
 
 // ─── Retry wrapper ────────────────────────────────────────────────────────────
 
-async function withRetry(fn, label, maxRetries = 3, baseDelayMs = 1000) {
+async function withRetry<T>(fn: () => Promise<T>, label: string, maxRetries = 3, baseDelayMs = 1000): Promise<T> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             return await fn();
-        } catch (e) {
+        } catch (e: any) {
             if (attempt < maxRetries) {
                 const delay = baseDelayMs * Math.pow(2, attempt - 1);
                 console.warn(`  [warn] ${label} attempt ${attempt}/${maxRetries} failed: ${e.message}`);
@@ -158,11 +161,12 @@ async function withRetry(fn, label, maxRetries = 3, baseDelayMs = 1000) {
             }
         }
     }
+    throw new Error('Unreachable');
 }
 
 // ─── Grid analysis helpers (self-contained, no external import) ───────────────
 
-function hitPrice(hit, sellPrec, recvPrec) {
+function hitPrice(hit: any, sellPrec: number, recvPrec: number): number | null {
     const op   = hit._source?.operation_history?.op_object;
     const sell = op?.amount_to_sell?.amount;
     const recv = op?.min_to_receive?.amount;
@@ -170,7 +174,7 @@ function hitPrice(hit, sellPrec, recvPrec) {
     return (recv / Math.pow(10, recvPrec)) / (sell / Math.pow(10, sellPrec));
 }
 
-function spacingStats(prices, cvThreshold = 0.35) {
+function spacingStats(prices: number[], cvThreshold = 0.35) {
     if (prices.length < 3) return { isGrid: false, score: 0, count: prices.length };
     const s = [...prices].sort((a, b) => a - b);
     const u = [s[0]];
@@ -178,7 +182,7 @@ function spacingStats(prices, cvThreshold = 0.35) {
         if (Math.abs((s[i] - s[i - 1]) / s[i - 1]) > 1e-5) u.push(s[i]);
     }
     if (u.length < 3) return { isGrid: false, score: 0, count: prices.length };
-    const lr   = [];
+    const lr: number[] = [];
     for (let i = 1; i < u.length; i++) lr.push(Math.log(u[i] / u[i - 1]));
     const mean = lr.reduce((a, b) => a + b, 0) / lr.length;
     const vari = lr.reduce((s, r) => s + (r - mean) ** 2, 0) / lr.length;
@@ -198,7 +202,7 @@ function spacingStats(prices, cvThreshold = 0.35) {
  * Session-aware grid spacing analysis.
  * Groups hits by 2-minute proximity, finds the best-scoring session.
  */
-function analyzeGrid(hits, sellPrec, recvPrec, cvThreshold = 0.35) {
+function analyzeGrid(hits: any[], sellPrec: number, recvPrec: number, cvThreshold = 0.35) {
     if (!hits || hits.length < 3) return { isGrid: false, score: 0, count: hits?.length ?? 0 };
     const SESSION_GAP = 2 * 60 * 1000;
 
@@ -207,21 +211,21 @@ function analyzeGrid(hits, sellPrec, recvPrec, cvThreshold = 0.35) {
         const t = h._source?.block_data?.block_time
             ? new Date(h._source.block_data.block_time).getTime() : null;
         return p && t ? { p, t } : null;
-    }).filter(Boolean).sort((a, b) => a.t - b.t);
+    }).filter((x): x is { p: number; t: number } => x !== null).sort((a, b) => a.t - b.t);
 
     if (entries.length < 3) return { isGrid: false, score: 0, count: entries.length };
 
-    const sessions = [[entries[0]]];
+    const sessions: { p: number; t: number }[][] = [[entries[0]]];
     for (let i = 1; i < entries.length; i++) {
         if (entries[i].t - entries[i - 1].t > SESSION_GAP) sessions.push([]);
         sessions[sessions.length - 1].push(entries[i]);
     }
 
-    let best = null;
+    let best: any = null;
     for (const sess of sessions) {
         if (sess.length < 4) continue;
         const stats = spacingStats(sess.map(e => e.p), cvThreshold);
-        if (!best || stats.score > best.score || (stats.score === best.score && stats.cv < best.cv)) {
+        if (!best || stats.score > best.score || (stats.score === best.score && (stats as any).cv < (best as any).cv)) {
             best = stats;
         }
     }
@@ -246,7 +250,7 @@ function analyzeBatching(hits: any[]) {
 
 // ─── DEXBot score ─────────────────────────────────────────────────────────────
 
-function dexScore(creates, fills, cancels, gridScore, maxBatch) {
+function dexScore(creates: number, fills: number, _cancels: number, gridScore: number, maxBatch: number): number {
     let s = 0;
     s += Math.round(gridScore * 0.4);                        // grid quality  (0–40)
     if (maxBatch >= 4)      s += 20;                         // batch size    (0–20)
@@ -259,11 +263,11 @@ function dexScore(creates, fills, cancels, gridScore, maxBatch) {
 
 // ─── Account resolution ───────────────────────────────────────────────────────
 
-async function resolveNames(ids) {
+async function resolveNames(ids: string[]): Promise<Record<string, string>> {
     const { createReadOnlyClient } = require('../../modules/bitshares-native');
     const client = createReadOnlyClient({ nodes: [BTS_NODE] });
 
-    const map = {};
+    const map: Record<string, any> = {};
     try {
         await client.connect();
         // BitShares db.get_objects accepts an array of IDs
@@ -279,11 +283,11 @@ async function resolveNames(ids) {
                 const assets = await client.db('lookup_asset_symbols', [[sym]]);
                 const a = Array.isArray(assets) ? assets[0] : null;
                 if (a?.id && !(a.id in ASSET_PRECISION)) {
-                    ASSET_PRECISION[a.id] = a.precision;
+                    (ASSET_PRECISION as Record<string, any>)[a.id] = a.precision;
                 }
             } catch (_) {}
         }
-    } catch (e) {
+    } catch (e: any) {
         console.warn(`  [warn] Name resolution failed: ${e.message}`);
     } finally {
         try { client.disconnect(); } catch (_) {}
@@ -313,7 +317,7 @@ async function run() {
 
     console.log('Phase 1: Querying Kibana for top active accounts...');
 
-    const [createRes, cancelRes, fillRes] = await Promise.all([
+    const [createRes, cancelRes, fillRes]: any[] = await Promise.all([
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopSellerAccountsQuery(lookbackH, 200, opts.minCreates)),
             'top-seller query'),
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopCancellerAccountsQuery(lookbackH, 200, 5)),
@@ -339,7 +343,6 @@ async function run() {
         console.log('');
         console.log('  No accounts found. Try a larger --days window or lower --min-creates.');
         if (opts.outputJson) {
-            const fs = require('fs');
             writeJSON(opts.outputJson, { results: [], note: 'No accounts found', opts });
             console.log(`  Wrote empty results to ${opts.outputJson}`);
         }
@@ -396,7 +399,7 @@ async function run() {
             const slice = results.slice(i, i + BATCH);
             process.stdout.write(`  [${i + 1}–${Math.min(i + BATCH, results.length)}/${results.length}] `);
 
-            const priceResults = await Promise.all(
+            const priceResults: any[] = await Promise.all(
                 slice.map(r => withRetry(
                     () => kibanaSearch(KIBANA_CFG, buildOrderPriceQuery(r.id, lookbackH, null, 200)),
                     `price-query for ${r.id}`
@@ -435,8 +438,8 @@ async function run() {
                 r.pairAssets = [...pairAssets];
 
                 r.gridScore  = grid.score;
-                r.impliedInc = grid.impliedIncrementPct ?? null;
-                r.cv         = grid.cv ?? null;
+                r.impliedInc = (grid as any).impliedIncrementPct ?? null;
+                r.cv         = (grid as any).cv ?? null;
                 r.maxBatch   = batch.maxBatch;
                 r.dexScore   = dexScore(r.creates, r.fills, r.cancels, grid.score, batch.maxBatch);
                 r.ordersFetched = hits.length;
@@ -445,7 +448,7 @@ async function run() {
 
                 if (opts.verbose && hits.length > 0) {
                     process.stdout.write(`\n  [verbose] ${r.id}: ${hits.length} orders (${buyHits.length} buy/${sellHits.length} sell), ` +
-                        `grid=${grid.score} cv=${grid.cv?.toFixed(4) ?? '?'} sessions=${grid.sessionCount}`);
+                        `grid=${grid.score} cv=${(grid as any).cv?.toFixed(4) ?? '?'} sessions=${(grid as any).sessionCount}`);
                     process.stdout.write(`\n`);
                 } else {
                     process.stdout.write('.');
@@ -502,7 +505,7 @@ async function run() {
         console.log(hdr);
         console.log(' ' + '─'.repeat(hdr.length - 1));
 
-        group.forEach((r, i) => {
+        group.forEach((r, _i) => {
             const rank    = String(results.indexOf(r) + 1).padStart(2);
             const name    = r.name.padEnd(22).slice(0, 22);
             const id      = r.id.padEnd(14);
@@ -541,7 +544,6 @@ async function run() {
     // ── Export JSON ────────────────────────────────────────────────────────────
 
     if (opts.outputJson) {
-        const fs = require('fs');
         const exportData = results.map(r => ({
             id:          r.id,
             name:        r.name,
@@ -566,7 +568,7 @@ async function run() {
     }
 }
 
-run().then(() => process.exit(0)).catch(e => {
+run().then(() => process.exit(0)).catch((e: any) => {
     console.error('\n[fatal]', e.message);
     if (process.env.DEBUG) console.error(e.stack);
     process.exit(1);

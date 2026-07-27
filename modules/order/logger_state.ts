@@ -92,7 +92,7 @@ class LoggerState {
      * @param {Object} current - Current state object
      * @returns {Object} { isNew: boolean, changes: Object }
      */
-    detectChanges(category, current) {
+    detectChanges(category: any, current: any) {
         const prev = this.previousState[category];
         if (!prev) {
             this.previousState[category] = { ...current };
@@ -111,7 +111,7 @@ class LoggerState {
      * @param {number} threshold - Threshold for significance
      * @returns {boolean} True if change is significant
      */
-    isSignificantChange(oldVal, newVal, threshold = 0) {
+    isSignificantChange(oldVal: any, newVal: any, threshold: any = 0) {
         if (!Number.isFinite(oldVal) || !Number.isFinite(newVal)) return true;
         return Math.abs(oldVal - newVal) > threshold;
     }
@@ -123,7 +123,7 @@ class LoggerState {
      * @param {string} type - Event type
      * @param {Object} data - Change data
      */
-    recordChange(timestamp, category, type, data) {
+    recordChange(timestamp: any, category: any, type: any, data: any) {
         this.changeHistory.push({ timestamp, category, type, data });
         if (this.changeHistory.length > this.maxHistory) {
             this.changeHistory.shift();
@@ -136,9 +136,9 @@ class LoggerState {
      * @param {number} count - Number of recent changes to return
      * @returns {Array} Recent changes
      */
-    getRecentChanges(category, count = 10) {
+    getRecentChanges(category: any, count: any = 10) {
         return this.changeHistory
-            .filter(c => c.category === category)
+            .filter((c: any) => c.category === category)
             .slice(-count);
     }
 
@@ -146,7 +146,7 @@ class LoggerState {
      * Clear state for a category (reset previous state)
      * @param {string} category - Category to reset
      */
-    reset(category) {
+    reset(category: any) {
         this.previousState[category] = null;
     }
 
@@ -158,8 +158,8 @@ class LoggerState {
      * @returns {Object} Object with keys that changed
      * @private
      */
-    _deepDiff(prev, current) {
-        const diff = {};
+    _deepDiff(prev: any, current: any) {
+        const diff: Record<string, any> = {};
 
         // Check all keys in current
         for (const key in current) {
@@ -179,4 +179,6 @@ class LoggerState {
     }
 }
 
-export = LoggerState;
+export default LoggerState
+
+module.exports = LoggerState

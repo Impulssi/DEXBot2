@@ -1,6 +1,8 @@
-const { getAsset, getBackingAsset, getBitassetData, getCallOrders, getObjects, listAssets } = require('./chain_queries');
-const { derivePoolPrice } = require('./liquidity_pools');
 
+
+import { getAsset, getBackingAsset, getBitassetData, getCallOrders, getObjects, listAssets } from './chain_queries';
+import { derivePoolPrice } from './liquidity_pools';
+import { clone } from './utils';
 const REFERENCE_SYMBOL = 'HONEST.MONEY';
 const CORE_SYMBOL = 'BTS';
 const DEFAULT_PREFIX = 'HONEST.';
@@ -22,7 +24,6 @@ const HARDCODED_HONEST_MONEY_BTS_POOL = {
   withdrawalFeePercent: 0
 };
 
-const { clone } = require('./utils');
 
 function isMpa(asset: any) {
   return Boolean(asset && asset.bitasset_data_id);
@@ -327,16 +328,5 @@ function createHonestEcosystemAdapter(options: Record<string, any> = {}) {
   };
 }
 
-export = {
-  CORE_SYMBOL,
-  DEFAULT_PREFIX,
-  REFERENCE_SYMBOL,
-  buildHonestEcosystemContext,
-  createHonestEcosystemAdapter,
-  getHardcodedHonestMoneyBridge,
-  loadHonestAssets,
-  isHardcodedHonestMoneyBtsPair,
-  resolveHardcodedHonestMoneyPrice,
-  resolveHonestPairContext,
-  resolveHonestPairPrice
-};
+export { CORE_SYMBOL, DEFAULT_PREFIX, REFERENCE_SYMBOL, buildHonestEcosystemContext, createHonestEcosystemAdapter, getHardcodedHonestMoneyBridge, loadHonestAssets, isHardcodedHonestMoneyBtsPair, resolveHardcodedHonestMoneyPrice, resolveHonestPairContext, resolveHonestPairPrice }
+

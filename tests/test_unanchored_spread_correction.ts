@@ -6,7 +6,7 @@ const { applyGridDivergenceCorrections } = require('../modules/order/utils/syste
 mathUtils.derivePrice = async () => 150; 
 
 // Mock lookupAsset to avoid blockchain connection
-mathUtils.lookupAsset = async (BitShares, sym) => {
+mathUtils.lookupAsset = async (_BitShares, sym) => {
     if (sym === 'BASE') return { id: '1.3.1', symbol: 'BASE', precision: 5 };
     if (sym === 'QUOTE') return { id: '1.3.2', symbol: 'QUOTE', precision: 5 };
     return null;
@@ -16,7 +16,7 @@ mathUtils.lookupAsset = async (BitShares, sym) => {
 mathUtils.derivePoolPrice = async () => 150; 
 
 const { OrderManager } = require('../modules/order/manager');
-const { grid: Grid } = require('../modules/order');
+
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 async function testUnanchoredSpreadCorrection() {

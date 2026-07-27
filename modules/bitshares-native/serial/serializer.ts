@@ -1,6 +1,7 @@
+
+import { getNodeRequire } from '../../env';
 'use strict';
 
-const { getNodeRequire } = require('../../env');
 const _require = getNodeRequire();
 let _Buffer: any;
 const Buffer = new Proxy({} as any, {
@@ -213,7 +214,7 @@ class BufferReader {
     }
 }
 
-interface SerializerInstance {
+export interface SerializerInstance {
     _name: string;
     _types: Record<string, SerialType>;
     _keys: string[];
@@ -307,4 +308,5 @@ function Serializer(operation_name: string, types: Record<string, SerialType>): 
     return s;
 }
 
-export = { Serializer, BufferWriter, BufferReader };
+export { Serializer, BufferWriter, BufferReader }
+

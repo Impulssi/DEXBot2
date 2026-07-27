@@ -23,6 +23,7 @@ async function testAccountSelection() {
     }
 
     const orders = require('../modules/chain_orders');
+    const { getErrorMessage } = require('../modules/utils/errors');
 
     try {
         console.log('Testing account order read for configured account...');
@@ -37,10 +38,10 @@ async function testAccountSelection() {
     } catch (error) {
         if (!STRICT_LIVE_TEST) {
             console.log('Skipping live account selection test: live connectivity not available.');
-            console.log('Error:', error.message || error);
+            console.log('Error:', getErrorMessage(error) || error);
             return;
         }
-        console.error('Test failed:', error.message);
+        console.error('Test failed:', getErrorMessage(error));
         process.exitCode = 1;
     } finally {
         clearTimeout(forceExit);

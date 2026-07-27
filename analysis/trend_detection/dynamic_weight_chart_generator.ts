@@ -1,12 +1,12 @@
+
+import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants';
+import { getAmaWarmupBars } from '../../market_adapter/core/strategies/ama';
+import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils';
 'use strict';
 
-const { DEFAULT_CONFIG, MARKET_ADAPTER } = require('../../modules/constants');
-const {
+import {
     buildKalmanVelocitySeries,
-} = require('./kalman_velocity_smoothing');
-const { getAmaWarmupBars } = require('../../market_adapter/core/strategies/ama');
-const { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } = require('../chart_utils');
-const { roundTo } = require('../../modules/utils/math_utils');
+} from './kalman_velocity_smoothing';
 
 function generateHTML(data, title = 'Dynamic Weight Research') {
     const results = data.allResults || [];
@@ -90,9 +90,10 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
     const signals            = results.map((r) => r.signal);
     const amaLabel           = data.amaKey || 'AMA3';
     const ama3Prices         = results.map((r) => r.ama3Price ?? null);
-    const amaErPeriod        = data.amaConfig?.erPeriod ?? MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY].erPeriod;
-    const amaSlowPeriod      = data.amaConfig?.slowPeriod ?? MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY].slowPeriod;
-    const amaFastPeriod      = data.amaConfig?.fastPeriod ?? MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY].fastPeriod;
+    const defaultAmaKey = MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS;
+    const amaErPeriod        = data.amaConfig?.erPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].erPeriod;
+    const amaSlowPeriod      = data.amaConfig?.slowPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].slowPeriod;
+    const amaFastPeriod      = data.amaConfig?.fastPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].fastPeriod;
     const amaErSmoothPeriod  = data.amaConfig?.erSmoothPeriod ?? 0;
     const amaWarmupBars      = getAmaWarmupBars(amaErPeriod, amaSlowPeriod, lookbackBars, amaFastPeriod, amaErSmoothPeriod);
     const amaSlopeReadyBars  = Math.ceil(amaErPeriod) + lookbackBars;
@@ -147,10 +148,10 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
 
     function buildPercentiles(arr, startIndex = 0) {
         const safeStartIndex = Math.max(0, Math.min(realBarCount, Math.ceil(startIndex)));
-        const sorted = [];
+        const sorted: number[] = [];
         for (let i = safeStartIndex; i < realBarCount; i++) { if (arr[i] != null) sorted.push(Math.abs(arr[i])); }
         sorted.sort((a, b) => a - b);
-        const pcts = [];
+        const pcts: number[] = [];
         for (let p = 0; p <= 100; p++) {
             const idx = Math.min(Math.floor(sorted.length * p / 100), sorted.length - 1);
             pcts.push(sorted[idx] || 0);
@@ -592,7 +593,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
             const mo = OUTPUT_CLAMP;
             const dw = currentDw;
             const lb = currentLookbackBars;
-            const amaErWarmup = Math.max(0, Number.isFinite(data.amaErPeriod) ? Math.ceil(data.amaErPeriod) : ${JSON.stringify(MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY].erPeriod)});
+            const amaErWarmup = Math.max(0, Number.isFinite(data.amaErPeriod) ? Math.ceil(data.amaErPeriod) : ${JSON.stringify(MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS].erPeriod)});
             const amaReadyBar = Math.max(lb, amaErWarmup + lb);
             const acl = currentAmaClipThreshold;
             const kcl = currentKalClipThreshold;
@@ -1457,4 +1458,5 @@ function applyParams(p, btn) {
 </html>`;
 }
 
-export = { generateHTML };
+export { generateHTML }
+

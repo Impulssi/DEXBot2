@@ -15,6 +15,7 @@
 
 const assert = require('assert');
 const { createSubscriptionManager } = require('../modules/bitshares-native/subscriptions');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const OP_FILL_ORDER = 4;
 const ALICE_ID = '1.2.100';
@@ -58,15 +59,15 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
             console.log(`  \u2713 ${name}`);
             passedTests++;
         } catch (err) {
-            console.log(`  \u2717 ${name}: ${err.message}`);
+            console.log(`  \u2717 ${name}: ${getErrorMessage(err)}`);
         }
     }
 
-    function assertDeepEquals(actual, expected, msg) {
+    function _assertDeepEquals(actual, expected, msg) {
         try {
             assert.deepStrictEqual(actual, expected);
         } catch (err) {
-            throw new Error(`${msg}: ${err.message}`);
+            throw new Error(`${msg}: ${getErrorMessage(err)}`);
         }
     }
 
@@ -274,7 +275,6 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
 
             // Give bootstrap time to settle, then send a notice
             await new Promise(resolve => setImmediate(resolve));
-            const bootstrapDeliveries = delivered.length;
             delivered.splice(0, delivered.length);
             historyCalls.length = 0;
 

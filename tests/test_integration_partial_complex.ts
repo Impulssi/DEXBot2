@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // Local implementation of counting logic
 function countOrders(orderType, ordersMap) {
@@ -318,8 +319,8 @@ async function testStartupDustNoForcedRebalance() {
         console.log('===================================================\n');
         process.exit(0);
     } catch (err) {
-        console.error('\n✗ Test FAILED:', err.message);
-        console.error(err.stack);
+        console.error('\n✗ Test FAILED:', getErrorMessage(err));
+        console.error((err as any).stack);
         process.exit(1);
     }
 })();

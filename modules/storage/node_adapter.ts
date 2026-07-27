@@ -17,21 +17,22 @@
  *   6. account_orders._persist        (writeFileSync + read-fsync + renameSync)
  */
 
-const { getNodeRequire } = require('../env');
+
+import { getNodeRequire } from '../env';
+import { path } from '../path_api';
+import { randomBytes } from '../crypto/sync';
+import { runtime } from '../runtime';
 const _require = getNodeRequire();
 let _fs: any;
 const fs = new Proxy({} as any, {
-    get(_, prop) {
+    get(_: any, prop: any) {
         if (!_fs && _require) _fs = _require('fs');
         return _fs ? _fs[prop] : undefined;
     }
 });
-const { path } = require('../path_api');
-const { randomBytes } = require('../crypto/sync');
-const { runtime } = require('../runtime');
 
 class NodeStorageAdapter {
-  readJSON(filePath) {
+  readJSON(filePath: any) {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
   }
 
@@ -81,7 +82,7 @@ class NodeStorageAdapter {
     }
   }
 
-  exists(path) {
+  exists(path: any) {
     return fs.existsSync(path);
   }
 
@@ -91,98 +92,100 @@ class NodeStorageAdapter {
     fs.mkdirSync(path, opts);
   }
 
-  unlink(path) {
+  unlink(path: any) {
     if (!path) return;
     try { fs.unlinkSync(path); } catch (_) {}
   }
 
-  readFile(path, encoding = 'utf8') {
+  readFile(path: any, encoding: any = 'utf8') {
     return fs.readFileSync(path, encoding);
   }
 
-  writeFile(path, data, options) {
+  writeFile(path: any, data: any, options: any) {
     fs.writeFileSync(path, data, options ?? 'utf8');
   }
 
-  rename(oldPath, newPath) {
+  rename(oldPath: any, newPath: any) {
     fs.renameSync(oldPath, newPath);
   }
 
-  stat(path) {
+  stat(path: any) {
     return fs.statSync(path);
   }
 
-  readdir(path) {
+  readdir(path: any) {
     return fs.readdirSync(path);
   }
 
-  open(path, flags, mode) {
+  open(path: any, flags: any, mode: any) {
     return fs.openSync(path, flags, mode);
   }
 
-  close(fd) {
+  close(fd: any) {
     fs.closeSync(fd);
   }
 
-  write(fd, buffer, position, encoding) {
+  write(fd: any, buffer: any, position: any, encoding: any) {
     fs.writeSync(fd, buffer, position, encoding);
   }
 
-  fsync(fd) {
+  fsync(fd: any) {
     fs.fsyncSync(fd);
   }
 
-  chmod(path, mode) {
+  chmod(path: any, mode: any) {
     fs.chmodSync(path, mode);
   }
 
-  realpath(path) {
+  realpath(path: any) {
     return fs.realpathSync(path);
   }
 
-  access(path, mode) {
+  access(path: any, mode: any) {
     return fs.accessSync(path, mode);
   }
 
-  utimes(path, atime, mtime) {
+  utimes(path: any, atime: any, mtime: any) {
     fs.utimesSync(path, atime, mtime);
   }
 
-  lstat(path) {
+  lstat(path: any) {
     return fs.lstatSync(path);
   }
 
-  rmdir(path) {
+  rmdir(path: any) {
     fs.rmdirSync(path);
   }
 
-  rm(path, options = {}) {
+  rm(path: any, options: any = {}) {
     fs.rmSync(path, options);
   }
 
-  mkdtemp(prefix) {
+  mkdtemp(prefix: any) {
     return fs.mkdtempSync(prefix);
   }
 
-  readlink(path) {
+  readlink(path: any) {
     return fs.readlinkSync(path);
   }
 
-  appendFile(path, data, options) {
+  appendFile(path: any, data: any, options: any) {
     fs.appendFileSync(path, data, options ?? 'utf8');
   }
 
-  async appendFileAsync(path, data, options) {
+  async appendFileAsync(path: any, data: any, options: any) {
     await fs.promises.appendFile(path, data, options ?? 'utf8');
   }
 
-  createReadStream(path) {
+  createReadStream(path: any) {
     return fs.createReadStream(path);
   }
 
-  createWriteStream(path) {
+  createWriteStream(path: any) {
     return fs.createWriteStream(path);
   }
 }
 
-export = NodeStorageAdapter;
+export default NodeStorageAdapter
+module.exports = NodeStorageAdapter
+

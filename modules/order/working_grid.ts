@@ -72,9 +72,10 @@
  * ===============================================================================
  */
 
-const { buildDelta, buildIndexes } = require('./utils/order');
-const { COW_PERFORMANCE } = require('../constants');
 
+
+import { buildDelta, buildIndexes } from './utils/order';
+import { COW_PERFORMANCE } from '../constants';
 class WorkingGrid {
     grid: Map<string, any>;
     modified: Set<string>;
@@ -292,10 +293,11 @@ class WorkingGrid {
 
         // Track the master version we've synced to so the commit-time version
         // check passes when the working grid has been kept up-to-date.
-        if (Number.isFinite(masterVersion)) {
-            this.baseVersion = masterVersion;
+        if (masterVersion != null && Number.isFinite(masterVersion)) {
+            this.baseVersion = masterVersion!;
         }
     }
 }
 
-export = { WorkingGrid };
+export { WorkingGrid }
+

@@ -18,6 +18,7 @@ if (process.env.RUN_LIVE_BITSHARES_TESTS !== '1') {
 }
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');
+const { getErrorMessage } = require('../modules/utils/errors');
 const { derivePrice } = require('../modules/order/utils/system');
 const Format = require('../modules/order/format');
 
@@ -164,7 +165,7 @@ async function testMarketPrice() {
                 }
             }
         } catch (err) {
-            console.log(`${colors.yellow}✗ Could not fetch detailed order book: ${err.message}${colors.reset}\n`);
+            console.log(`${colors.yellow}✗ Could not fetch detailed order book: ${getErrorMessage(err)}${colors.reset}\n`);
         }
 
          // Summary
@@ -181,8 +182,8 @@ async function testMarketPrice() {
         console.log(`\n${colors.green}✓ Test completed successfully${colors.reset}`);
 
     } catch (err) {
-        console.error(`${colors.red}✗ Error: ${err.message}${colors.reset}`);
-        console.error(err.stack);
+        console.error(`${colors.red}✗ Error: ${getErrorMessage(err)}${colors.reset}`);
+        console.error((err as any).stack);
         process.exit(1);
     }
 }

@@ -1,39 +1,12 @@
-const { createClawInfrastructure } = require('./claw_infra');
-const {
-  adjustMpaCollateral,
-  borrowMpa,
-  cancelLimitOrder,
-  createLimitOrder,
-  executeBatch,
-  getMpaPosition,
-  getOpenOrders,
-  repayMpaDebt,
-  buildUpdateLimitOrderOperation,
-  updateLimitOrder,
-  settleMpa
-} = require('./chain_actions');
-const {
-  buildCloseShortPlan,
-  buildOpenShortPlan,
-  buildTakeProfitPlan,
-  closeShortOnBts,
-  openShortOnBts,
-  placeTakeProfitBuyOrderOnBts
-} = require('./short_mpa_strategy');
-const { describeClawBridge } = require('./claw_manifest');
-const {
-  launcherRun,
-  launcherDrystart,
-  launcherReset,
-  launcherDisable,
-  launcherPm2Start,
-  launcherPm2Stop,
-  launcherPm2Delete,
-  launcherPm2Restart,
-} = require('./claw_launcher');
-const { runMemuCommand } = require('./memu_bridge');
 
-const { clone } = require('./utils');
+import { createClawInfrastructure } from './claw_infra';
+import { describeClawBridge } from './claw_manifest';
+import { runMemuCommand } from './memu_bridge';
+import { clone } from './utils';
+import { adjustMpaCollateral, borrowMpa, cancelLimitOrder, createLimitOrder, executeBatch, getMpaPosition, getOpenOrders, repayMpaDebt, buildUpdateLimitOrderOperation, updateLimitOrder, settleMpa } from './chain_actions.js';
+import { buildCloseShortPlan, buildOpenShortPlan, buildTakeProfitPlan, closeShortOnBts, openShortOnBts, placeTakeProfitBuyOrderOnBts } from './short_mpa_strategy.js';
+import { launcherRun, launcherDrystart, launcherReset, launcherDisable, launcherPm2Start, launcherPm2Stop, launcherPm2Delete, launcherPm2Restart } from './claw_launcher.js';
+
 
 import type { ClawBridgeOptions, Logger } from './types';
 
@@ -443,9 +416,5 @@ async function runClawCommand(command: string, options: ClawBridgeOptions = {}):
   }
 }
 
-export = {
-  createClawBridge,
-  describeClawBridge,
-  describeRuntimeManifest,
-  runClawCommand
-};
+export { createClawBridge, describeClawBridge, describeRuntimeManifest, runClawCommand }
+

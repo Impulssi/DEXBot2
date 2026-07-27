@@ -9,11 +9,12 @@
  * Usage: tsx scripts/analyze-git.ts
  */
 
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const Format = require('../modules/order/format');
-const { ensureDir } = require('../modules/utils/fs_utils');
+import { execSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { formatMetric2 } from '../modules/order/format.js';
+import { ensureDir } from '../modules/utils/fs_utils.js';
+import { getErrorMessage } from '../modules/utils/errors.js';
 
 /**
  * RepoAnalyzer Class
@@ -128,7 +129,7 @@ class RepoAnalyzer {
             );
 
             const lines = gitLog.split('\n');
-            let currentDate = null;
+            let currentDate: string | null = null;
             let commitCount = 0;
 
             for (const line of lines) {
@@ -221,7 +222,7 @@ class RepoAnalyzer {
 
             this.stats.commits = commitCount;
         } catch (err) {
-            console.error('Error analyzing git log:', (err as any).message);
+            console.error('Error analyzing git log:', getErrorMessage(err));
             process.exit(1);
         }
     }
@@ -297,7 +298,7 @@ class RepoAnalyzer {
          console.log('🎯 Add vs Delete Ratio:');
          console.log('─'.repeat(80));
          const ratio = (this.stats.totalAdded / Math.max(1, this.stats.totalDeleted));
-         console.log(`Ratio (Added/Deleted): ${Format.formatMetric2(ratio)}x`);
+         console.log(`Ratio (Added/Deleted): ${formatMetric2(ratio)}x`);
          console.log();
 
         // Daily stats summary
@@ -907,4 +908,4 @@ class RepoAnalyzer {
 const analyzer = new RepoAnalyzer();
 analyzer.analyzeGitLog();
 analyzer.generateCharts();
-export {};
+

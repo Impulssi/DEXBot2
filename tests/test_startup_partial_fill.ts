@@ -1,5 +1,4 @@
 const { OrderManager } = require('../modules/order/manager');
-const { floatToBlockchainInt } = require('../modules/order/utils/math');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 console.log('Running offline partial-fill unit test (syncing startup orders)...');
@@ -51,7 +50,7 @@ console.log('Running offline partial-fill unit test (syncing startup orders)...'
         console.log(`Initial state: ${mgr.orders.get(gridId).state}, size: ${mgr.orders.get(gridId).size}`);
 
         // Call synchronizeWithChain simulating startup sync
-        const result = await mgr.synchronizeWithChain(chainOrders, 'readOpenOrders');
+        await mgr.synchronizeWithChain(chainOrders, 'readOpenOrders');
 
         const updated = mgr.orders.get(gridId);
         console.log(`Updated state: ${updated.state}, size: ${updated.size}, orderId: ${updated.orderId}`);

@@ -71,7 +71,7 @@ async function testBootstrapPasswordTransfer() {
     try {
         bootstrap = await createPasswordBootstrapServer({ password: 'test-secret', timeoutMs: 1000 });
     } catch (error) {
-        if (error && error.code === 'EPERM') {
+        if (error && (error as any).code === 'EPERM') {
             console.log('Skipping bootstrap socket integration test under sandbox restrictions');
             return;
         }
@@ -105,7 +105,7 @@ async function testBootstrapSecretTransfer() {
     try {
         bootstrap = await createPasswordBootstrapServer({ secret, timeoutMs: 1000 });
     } catch (error) {
-        if (error && error.code === 'EPERM') {
+        if (error && (error as any).code === 'EPERM') {
             console.log('Skipping secret bootstrap socket integration test under sandbox restrictions');
             return;
         }
@@ -143,7 +143,7 @@ async function testStaleBootstrapDirsAreCleanedBeforeNewServer() {
         try {
             bootstrap = await createPasswordBootstrapServer({ password: 'test-secret', timeoutMs: 1000 });
         } catch (error) {
-            if (!error || error.code !== 'EPERM') throw error;
+            if (!error || (error as any).code !== 'EPERM') throw error;
         }
 
         assert.strictEqual(fs.existsSync(staleDir), false, 'stale bootstrap dir should be removed before creating a new server');

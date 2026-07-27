@@ -26,20 +26,13 @@
  * Same OHLCV format as kibana_source.ts for compatibility with candle_utils.
  */
 
+
+import { toIntervalLabel } from '../interval_utils';
+import { fetchKibanaCandles, fetchKibanaClosePrices } from './kibana_candles';
 'use strict';
 
-const { DEFAULT_CONFIG: BASE_CONFIG } = require('./kibana_client');
-const { toIntervalLabel } = require('../interval_utils');
-const { fetchKibanaCandles, fetchKibanaClosePrices } = require('./kibana_candles');
 
 const OP_FILL_ORDER = 4;
-
-const DEFAULT_CONFIG = {
-  ...BASE_CONFIG,
-  intervalSeconds: 3600,   // 1h candles
-  lookbackHours:   500,    // ~20 days
-  consolidateByTimestamp: true,
-};
 
 const FILL_FIELD_MAP = {
   soldAssetField: 'operation_history.op_object.pays.asset_id.keyword',
@@ -66,9 +59,9 @@ const FILL_FIELD_MAP = {
  * @param {Object|null} timeRange      – { gte, lte } ISO strings
  * @returns {Object} ES query object
  */
-function buildFillCandleQuery(soldAssetId, receivedAssetId, lookbackHours, intervalSeconds, timeRange = null) {
+function buildFillCandleQuery(soldAssetId: any, receivedAssetId: any, lookbackHours: any, intervalSeconds: any, timeRange: any = null) {
   const rangeValue = timeRange
-    ? { gte: timeRange.gte, lte: timeRange.lte }
+    ? { gte: (timeRange as any).gte, lte: (timeRange as any).lte }
     : { gte: `now-${lookbackHours}h`, lte: 'now' };
 
   return {
@@ -105,13 +98,13 @@ function buildFillCandleQuery(soldAssetId, receivedAssetId, lookbackHours, inter
 
 // ─── Bucket → Candle ─────────────────────────────────────────────────────────
 
-function bucketsToCandles(buckets, soldPrecision, receivedPrecision) {
+function bucketsToCandles(buckets: any, soldPrecision: any, receivedPrecision: any) {
   const soldScale = Math.pow(10, soldPrecision);
   const recvScale = Math.pow(10, receivedPrecision);
 
   return buckets
-    .filter((b) => b.sum_sold.value > 0 && b.sum_received.value > 0)
-    .map((b) => {
+    .filter((b: any) => b.sum_sold.value > 0 && b.sum_received.value > 0)
+    .map((b: any) => {
       const soldAmt = b.sum_sold.value / soldScale;
       const recvAmt = b.sum_received.value / recvScale;
       const vwap = recvAmt / soldAmt;
@@ -132,7 +125,7 @@ function bucketsToCandles(buckets, soldPrecision, receivedPrecision) {
  * @param {Object} [config]
  * @returns {Promise<Array>} OHLCV candles in B-per-A units
  */
-async function getMarketCandles(assetA, assetB, config = {}) {
+async function getMarketCandles(assetA: any, assetB: any, config: any = {}) {
   return fetchKibanaCandles({
     opType: OP_FILL_ORDER,
     fieldMap: FILL_FIELD_MAP,
@@ -150,7 +143,7 @@ async function getMarketCandles(assetA, assetB, config = {}) {
  * @param {Object} [config] – Optional configuration overrides
  * @returns {Promise<Object>} Parsed close price response
  */
-async function getMarketClosePrices(assetA, assetB, config = {}) {
+async function getMarketClosePrices(assetA: any, assetB: any, config: any = {}) {
   return fetchKibanaClosePrices({
     opType: OP_FILL_ORDER,
     fieldMap: FILL_FIELD_MAP,
@@ -170,17 +163,9 @@ async function getMarketClosePrices(assetA, assetB, config = {}) {
  * @param {Object} [config]
  * @returns {Promise<Array>} OHLCV candles (quote-per-base, e.g. HONEST.USD per BTS)
  */
-async function getMpaCandles(baseAsset, quoteAsset, config = {}) {
+async function getMpaCandles(baseAsset: any, quoteAsset: any, config: any = {}) {
   return getMarketCandles(baseAsset, quoteAsset, config);
 }
 
-export = {
-  // Primary API
-  getMarketCandles,
-  getMarketClosePrices,
-  getMpaCandles,
+export { getMarketCandles, getMarketClosePrices, getMpaCandles, buildFillCandleQuery, bucketsToCandles }
 
-  // Low-level (testing / custom queries)
-  buildFillCandleQuery,
-  bucketsToCandles,
-};

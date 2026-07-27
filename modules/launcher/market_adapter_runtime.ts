@@ -1,15 +1,16 @@
+
+import { getStorage } from '../storage';
+import { spawn } from 'node:child_process';
+import { buildScopedChildEnv } from './child_env';
+import { Config } from '../config';
+import { MARKET_ADAPTER } from '../constants';
+import { PATHS } from '../paths';
+import { readJSON, safeUnlink } from '../utils/fs_utils';
+import { getProcessDiscovery } from '../process_discovery';
 'use strict';
 
-const { getStorage } = require('../storage');
 const storage = getStorage();
-const { spawn } = require('child_process');
-const { buildScopedChildEnv } = require('./child_env');
-const { Config } = require('../config');
-const { MARKET_ADAPTER } = require('../constants');
-const { buildRuntimeScriptPath, SCRIPTS_ROOT: DEFAULT_CODE_ROOT } = require('./runtime_entry');
-const { PATHS } = require('../paths');
-const { readJSON, safeUnlink } = require('../utils/fs_utils');
-const { getProcessDiscovery } = require('../process_discovery');
+import { buildRuntimeScriptPath, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
 
 const DEFAULT_SCRIPT = buildRuntimeScriptPath(DEFAULT_CODE_ROOT, ['market_adapter', 'market_adapter']);
 const DEFAULT_STALE_LOCK_MS = (
@@ -237,14 +238,5 @@ function resetSharedMarketAdapterRuntime() {
     sharedRuntime = null;
 }
 
-export = {
-    createMarketAdapterRuntime,
-    getSharedMarketAdapterRuntime,
-    isLikelyAdapterRunning,
-    isLikelyMarketAdapterProcess,
-    isLockStale,
-    isProcessAlive,
-    loadLockInfo,
-    resetSharedMarketAdapterRuntime,
-    waitForChildExit,
-};
+export { createMarketAdapterRuntime, getSharedMarketAdapterRuntime, isLikelyAdapterRunning, isLikelyMarketAdapterProcess, isLockStale, isProcessAlive, loadLockInfo, resetSharedMarketAdapterRuntime, waitForChildExit }
+

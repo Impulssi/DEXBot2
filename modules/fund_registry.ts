@@ -1,8 +1,9 @@
-const { getStorage } = require('./storage');
+
+import { getStorage } from './storage';
+import { PATHS } from './paths';
+import { writeJSON, readJSON } from './utils/fs_utils';
+import AsyncLock from './order/async_lock';
 const storage = getStorage();
-const { PATHS } = require('./paths');
-const { writeJSON, readJSON } = require('./utils/fs_utils');
-const AsyncLock = require('./order/async_lock');
 
 const REGISTRY_FILE = PATHS.PROFILES.FUND_REGISTRY_JSON;
 
@@ -15,7 +16,7 @@ let _registry: any = null;
  * @param {*} value
  * @returns {number}
  */
-function _parsePercentage(value) {
+function _parsePercentage(value: any) {
     return require('./order/utils/math').toDecimal(value);
 }
 
@@ -247,15 +248,5 @@ function resetRegistry(): void {
     _saveRegistry();
 }
 
-export = {
-    registerAllocation,
-    registerCollateralAllocation,
-    releaseAllocation,
-    getEffectiveAllocationSync,
-    getEffectiveCollateralAllocationSync,
-    getTotalAllocatedPct,
-    getBotAllocationPct,
-    getRegisteredBots,
-    isSharedAccount,
-    resetRegistry
-};
+export { registerAllocation, registerCollateralAllocation, releaseAllocation, getEffectiveAllocationSync, getEffectiveCollateralAllocationSync, getTotalAllocatedPct, getBotAllocationPct, getRegisteredBots, isSharedAccount, resetRegistry }
+

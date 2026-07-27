@@ -1,5 +1,3 @@
-const { path } = require('../path_api');
-const { isDistRuntime: isDistCodeRoot } = require('../utils/build_dir');
 
 /**
  * Resolve the DEXBot2 project root from any directory path inside the
@@ -11,6 +9,9 @@ const { isDistRuntime: isDistCodeRoot } = require('../utils/build_dir');
  * across 40+ files as
  *     path.basename(dir) === BUILD_DIR ? path.dirname(dir) : dir
  */
+
+import { path } from '../path_api';
+import { isDistRuntime as isDistCodeRoot } from '../utils/build_dir';
 function resolveProjectRoot(dirPath: string): string {
     return isDistCodeRoot(dirPath) ? path.dirname(dirPath) : dirPath;
 }
@@ -53,10 +54,5 @@ function buildRuntimeScriptArgs({
     return ['--import', 'tsx', scriptPath, ...scriptArgs];
 }
 
-export = {
-    buildRuntimeScriptArgs,
-    buildRuntimeScriptPath,
-    isDistCodeRoot,
-    resolveProjectRoot,
-    SCRIPTS_ROOT,
-};
+export { buildRuntimeScriptArgs, buildRuntimeScriptPath, isDistCodeRoot, resolveProjectRoot, SCRIPTS_ROOT }
+

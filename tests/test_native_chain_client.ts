@@ -334,7 +334,7 @@ function testBroadcastProxy() {
             return;
         }
         console.error('\nChain client test FAILED:', formatError(e));
-        console.error(e.stack);
+        console.error((e as any).stack);
         process.exit(1);
         return;
     } finally {

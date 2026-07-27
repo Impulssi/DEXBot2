@@ -26,11 +26,11 @@
  *   Pass via config.apiKey (base64-encoded "id:key").
  */
 
-'use strict';
 
-const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = require('../core/kibana_client');
-const { fetchKibanaCandles, fetchKibanaClosePrices } = require('../core/kibana_candles');
-const { normalizePoolId } = require('../utils/chain');
+import { fetchKibanaCandles, fetchKibanaClosePrices } from '../core/kibana_candles';
+import { normalizePoolId } from '../utils/chain';
+import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from '../core/kibana_client.js';
+'use strict';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -86,7 +86,7 @@ async function discoverPoolAssets(poolId: any, config: any = {}) {
     const cfg      = { ...DEFAULT_CONFIG, ...config };
     const fullId   = normalizePoolId(poolId);
     const query    = buildDiscoveryQuery(fullId, cfg.lookbackHours);
-    const result   = await kibanaSearch(cfg, query);
+    const result   = await kibanaSearch(cfg, query) as any;
     const buckets  = result.aggregations?.sold_assets?.buckets ?? [];
     return buckets.map((b: any) => b.key);
 }
@@ -120,7 +120,7 @@ async function getLpCandlesForPool(poolId: any, assetA: any, assetB: any, config
         assetA,
         assetB,
         config,
-        poolId: fullId,
+        poolId: fullId as any,
     });
 }
 
@@ -145,12 +145,5 @@ async function getLpClosePricesForPool(poolId: any, assetA: any, assetB: any, co
     });
 }
 
-export = {
-    // Pool-centric API (preferred)
-    discoverPoolAssets,
-    getLpCandlesForPool,
-    getLpClosePricesForPool,
+export { discoverPoolAssets, getLpCandlesForPool, getLpClosePricesForPool, kibanaSearch }
 
-    // Low-level (testing / custom queries)
-    kibanaSearch,
-};

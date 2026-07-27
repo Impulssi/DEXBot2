@@ -1,6 +1,7 @@
+
+import { MARKET_ADAPTER } from '../../modules/constants';
 'use strict';
 
-const { MARKET_ADAPTER } = require('../../modules/constants');
 
 function normalizeAtrPeriod(period: any, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_DEFAULT) {
     const value = Number(period);
@@ -21,8 +22,5 @@ function normalizeVolatilityThreshold(value: any, defaultValue = MARKET_ADAPTER.
     return Number.isFinite(numeric) && numeric >= 0 ? numeric : defaultValue;
 }
 
-export = {
-    normalizeAtrPeriod,
-    normalizeMaxVolatilityOffset,
-    normalizeVolatilityThreshold,
-};
+export { normalizeAtrPeriod, normalizeMaxVolatilityOffset, normalizeVolatilityThreshold }
+

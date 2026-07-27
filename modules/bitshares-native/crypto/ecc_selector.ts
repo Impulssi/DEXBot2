@@ -1,6 +1,7 @@
+
+import { isBrowser } from '../../env';
 'use strict';
 
-const { isBrowser } = require('../../env');
 
 /**
  * ECC module selector — picks the browser-safe or Node implementation.
@@ -18,4 +19,6 @@ function getEcc(): any {
     return isBrowser() ? require('./ecc.browser') : require('./ecc');
 }
 
-module.exports = getEcc;
+export default getEcc
+module.exports = getEcc
+

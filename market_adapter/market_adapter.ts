@@ -1,4 +1,59 @@
 #!/usr/bin/env node
+
+import { path } from '../modules/path_api';
+import { getStorage } from '../modules/storage';
+import { parseJsonWithComments, sleep, ensureDir } from '../modules/order/utils/system';
+import { readGeneralSettings } from '../modules/general_settings';
+import { DEFAULT_CONFIG, MARKET_ADAPTER, NATIVE_CLIENT, API_LIMITS, TIMING } from '../modules/constants';
+import { normalizeBotEntry } from '../modules/bot_settings';
+import { calculateAMA } from './core/strategies/ama';
+import * as kibanaSource from './inputs/kibana_source';
+import * as kibanaMarketSource from './core/kibana_market_candles';
+import { tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles } from './candle_utils';
+import { toIntervalLabel } from './interval_utils';
+import { loadMarketProfiles } from '../analysis/tradingview/tradingview_uplot_chart_generator';
+import { writeJsonAtomic } from './utils/atomic_write';
+import { acquireFileLockSync, releaseFileLockSync } from './utils/file_lock';
+import { updateDynamicGridSnapshotSync } from './utils/dynamic_grid_snapshot';
+import { PATHS, getRecalculateTriggerFile } from '../modules/paths';
+import Logger from '../modules/logger';
+import { readJSON } from '../modules/utils/fs_utils';
+import { fixedTo, roundTo } from '../modules/utils/math_utils';
+import {
+    normalizeAtrPeriod,
+    normalizeMaxVolatilityOffset,
+    normalizeVolatilityThreshold,
+} from './core/config_normalizers.js';
+import {
+    resetMarketAdapterWhitelistCache,
+    isBotWhitelisted,
+    isBotDynamicWeightWhitelisted,
+    isBotAsymmetricBoundsWhitelisted,
+    isBotGridRangeScalingWhitelisted,
+} from '../modules/market_adapter_whitelist.js';
+import {
+    normalizeAssetSymbol,
+    normalizeMarketSource,
+    resolveMarketSourceForBot,
+    resolveBotContext,
+    isExactPair,
+    isSamePair,
+    isExactPairIds,
+    isSamePairIds,
+    getBitsharesClient,
+    setBitsharesClientForTests,
+} from './utils/chain.js';
+import {
+    normalizeNativeMarketHistoryCandles,
+} from './utils/native_history.js';
+import {
+    formatLogPercent,
+    buildWeightSummary,
+    buildDynamicWeightInputsLog,
+    buildDynamicWeightTuningLog,
+    buildAsymmetricBoundsLog,
+    buildStartupDefaultsLog,
+} from './log_format.js';
 'use strict';
 
 /**
@@ -13,66 +68,9 @@
  * No wallet keys/password/auth required (read-only chain + Kibana bootstrap).
  */
 
-const { path } = require('../modules/path_api');
-const { getStorage } = require('../modules/storage');
 const storage = getStorage();
 
-const { parseJsonWithComments, sleep, ensureDir } = require('../modules/order/utils/system');
-const { readGeneralSettings } = require('../modules/general_settings');
-const { DEFAULT_CONFIG, MARKET_ADAPTER, NATIVE_CLIENT, API_LIMITS, TIMING } = require('../modules/constants');
-const { createBotKey } = require('../modules/account_orders');
-const { normalizeBotEntry } = require('../modules/bot_settings');
-const { calculateAMA } = require('./core/strategies/ama');
-const {
-    normalizeAtrPeriod,
-    normalizeMaxVolatilityOffset,
-    normalizeVolatilityThreshold,
-} = require('./core/config_normalizers');
-const {
-    resetMarketAdapterWhitelistCache,
-    isBotWhitelisted,
-    isBotDynamicWeightWhitelisted,
-    isBotAsymmetricBoundsWhitelisted,
-    isBotGridRangeScalingWhitelisted,
-} = require('../modules/market_adapter_whitelist');
-const kibanaSource = require('./inputs/kibana_source');
-const kibanaMarketSource = require('./core/kibana_market_candles');
-const { tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles } = require('./candle_utils');
-const { toIntervalLabel } = require('./interval_utils');
-const {
-    normalizeAssetSymbol,
-    normalizeMarketSource,
-    hasNumericStartPrice,
-    resolveMarketSourceForBot,
-    resolveAsset,
-    findPoolByAssets,
-    resolveBotContext,
-    isExactPair,
-    isSamePair,
-    isExactPairIds,
-    isSamePairIds,
-    getBitsharesClient,
-    setBitsharesClientForTests,
-} = require('./utils/chain');
-const { loadMarketProfiles } = require('../analysis/tradingview/tradingview_uplot_chart_generator');
-const { writeJsonAtomic } = require('./utils/atomic_write');
-const { acquireFileLockSync, releaseFileLockSync } = require('./utils/file_lock');
-const { updateDynamicGridSnapshotSync } = require('./utils/dynamic_grid_snapshot');
-const {
-    normalizeNativeMarketHistoryCandles,
-} = require('./utils/native_history');
-const {
-    formatLogPercent,
-    buildWeightSummary,
-    buildDynamicWeightInputsLog,
-    buildDynamicWeightTuningLog,
-    buildAsymmetricBoundsLog,
-    buildStartupDefaultsLog,
-} = require('./log_format');
-
-const { PATHS, getRecalculateTriggerFile } = require('../modules/paths');
 const ROOT = PATHS.PROJECT_ROOT;
-const PROFILES_DIR = PATHS.PROFILES_DIR;
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const DATA_DIR = PATHS.MARKET_ADAPTER.DATA_DIR;
 const STATE_DIR = PATHS.MARKET_ADAPTER.STATE_DIR;
@@ -80,7 +78,6 @@ const STATE_FILE = PATHS.MARKET_ADAPTER.STATE_FILE;
 const CENTER_FILE = PATHS.MARKET_ADAPTER.CENTERS_FILE;
 const LOCK_FILE = PATHS.MARKET_ADAPTER.LOCK_FILE;
 const MARKET_ADAPTER_SOURCE = path.relative(PATHS.PROJECT_ROOT, __filename).replace(/^dist[\\\/]/, '');
-const MARKET_PROFILES_FILE = PATHS.PROFILES.MARKET_PROFILES_JSON;
 const MARKET_ADAPTER_SETTINGS_FILE = PATHS.PROFILES.MARKET_ADAPTER_SETTINGS_JSON;
 
 const LP_OP_TYPE = NATIVE_CLIENT.OPERATIONS.LIQUIDITY_POOL_EXCHANGE;
@@ -142,7 +139,7 @@ function loadMarketAdapterSettings() {
     }
 }
 
-function findPairForBot(bot, pairs) {
+function findPairForBot(bot: any, pairs: any[]) {
     if (!Array.isArray(pairs)) return null;
     const botAId = String(bot.assetAId || '');
     const botBId = String(bot.assetBId || '');
@@ -174,14 +171,14 @@ function findPairForBot(bot, pairs) {
     return fallbackMatch;
 }
 
-function assignPresent(target, source, keys) {
+function assignPresent(target: any, source: any, keys: string[]) {
     for (const key of keys) {
         if (source?.[key] != null) target[key] = source[key];
     }
     return target;
 }
 
-function applyAmaSlopeOverrides(target, overrides) {
+function applyAmaSlopeOverrides(target: any, overrides: any) {
     if (!overrides || typeof overrides !== 'object') return target;
     target.amaSlope = { ...(target.amaSlope || {}) };
     const previousLookbackBars = target.amaSlope.lookbackBars;
@@ -222,7 +219,7 @@ function applyAmaSlopeOverrides(target, overrides) {
     return target;
 }
 
-function applyKalmanSlopeOverrides(target, overrides) {
+function applyKalmanSlopeOverrides(target: any, overrides: any) {
     if (!overrides || typeof overrides !== 'object') return target;
     target.kalmanSlope = { ...(target.kalmanSlope || {}) };
     if (overrides.kalmanSlope && typeof overrides.kalmanSlope === 'object') {
@@ -278,7 +275,7 @@ function applyMarketAdapterOverrides(target: any, overrides: any, opts: { includ
     return target;
 }
 
-function resolveBotCfg(bot, globalCfg) {
+function resolveBotCfg(bot: any, globalCfg: any) {
     const settings = loadMarketAdapterSettings();
     if (!settings) return globalCfg;
 
@@ -314,7 +311,7 @@ const DEFAULT_AMA = MARKET_ADAPTER.AMAS.AMA3;
 const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
 const AMA_PRESET_KEYS = ['AMA1', 'AMA2', 'AMA3', 'AMA4'];
 
-function normalizeAmaPreset(raw) {
+function normalizeAmaPreset(raw: any) {
     const erPeriod = Number(raw?.erPeriod);
     const fastPeriod = Number(raw?.fastPeriod);
     const slowPeriod = Number(raw?.slowPeriod);
@@ -322,27 +319,27 @@ function normalizeAmaPreset(raw) {
     return { erPeriod, fastPeriod, slowPeriod };
 }
 
-function normalizeAmaKey(raw) {
+function normalizeAmaKey(raw: any) {
     const s = String(raw || '').trim().toLowerCase();
     if (!AMA_KEYWORDS.has(s)) return DEFAULT_AMA_KEY;
     if (s === 'ama') return DEFAULT_AMA_KEY;
     return s.toUpperCase();
 }
 
-function isAmaKeyword(raw) {
+function isAmaKeyword(raw: any) {
     const s = String(raw || '').trim().toLowerCase();
     return AMA_KEYWORDS.has(s);
 }
 
-function usesAmaGridPrice(bot) {
+function usesAmaGridPrice(bot: any) {
     return isAmaKeyword(bot?.gridPrice);
 }
 
-function usesOrderbookMarketSource(bot) {
+function usesOrderbookMarketSource(bot: any) {
     return resolveMarketSourceForBot(bot) === 'book';
 }
 
-function findAmaProfileForBot(bot, ctx = null) {
+function findAmaProfileForBot(bot: any, ctx: any) {
     const profiles = loadMarketProfiles()?.profiles || [];
     if (profiles.length === 0) return null;
 
@@ -353,7 +350,7 @@ function findAmaProfileForBot(bot, ctx = null) {
     if (!botAssetA && !ctxAssetAId) return null;
     if (!botAssetB && !ctxAssetBId) return null;
 
-    const matches = profiles.map((p) => {
+    const matches = profiles.map((p: any) => {
         const pA = p?.assetA;
         const pB = p?.assetB;
         const pAId = p?.assetAId;
@@ -370,27 +367,27 @@ function findAmaProfileForBot(bot, ctx = null) {
             ? 2
             : ((symmetricById || symmetricBySymbol) ? 1 : 0);
         return { profile: p, matchRank };
-    }).filter((entry) => entry.matchRank > 0);
+    }).filter((entry: any) => entry.matchRank > 0);
     if (matches.length === 0) return null;
 
-    const exactMatches = matches.filter((entry) => entry.matchRank === 2);
+    const exactMatches = matches.filter((entry: any) => entry.matchRank === 2);
     const matchedProfiles = (exactMatches.length > 0 ? exactMatches : matches)
-        .map((entry) => entry.profile);
+        .map((entry: any) => entry.profile);
 
-    const oneHour = matchedProfiles.filter((p) => Number(p?.intervalSeconds) === RUNTIME_DEFAULTS.intervalSeconds);
+    const oneHour = matchedProfiles.filter((p: any) => Number(p?.intervalSeconds) === RUNTIME_DEFAULTS.intervalSeconds);
     const candidates = oneHour.length > 0 ? oneHour : matchedProfiles;
-    return [...candidates].sort((a, b) => {
+    return [...candidates].sort((a: any, b: any) => {
         const aTs = Date.parse(String(a?.updatedAt || 0)) || 0;
         const bTs = Date.parse(String(b?.updatedAt || 0)) || 0;
         return bTs - aTs;
     })[0] || null;
 }
 
-function getAmaPresetForKey(key, profile = null) {
-    return normalizeAmaPreset(profile?.amas?.[key]) || normalizeAmaPreset(BUILTIN_AMAS[key]) || null;
+function getAmaPresetForKey(key: string, profile: any) {
+    return normalizeAmaPreset(profile?.amas?.[key]) || normalizeAmaPreset((BUILTIN_AMAS as Record<string, any>)[key]) || null;
 }
 
-function normalizeErSmoothPeriod(raw, fallback = 0) {
+function normalizeErSmoothPeriod(raw: any, fallback: any = 0) {
     const value = Number(raw);
     if (value === 0) return 0;
     if (Number.isFinite(value) && value >= 1) return value;
@@ -399,7 +396,7 @@ function normalizeErSmoothPeriod(raw, fallback = 0) {
     return Number.isFinite(fallbackValue) && fallbackValue >= 1 ? fallbackValue : 0;
 }
 
-function resolveErSmoothPeriodForBot(bot) {
+function resolveErSmoothPeriodForBot(bot: any) {
     const raw = (bot && typeof bot.ama === 'object' && bot.ama !== null) ? bot.ama : {};
     const globalErSmoothPeriod = normalizeErSmoothPeriod(MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD, 0);
     if (Object.prototype.hasOwnProperty.call(raw, 'erSmoothPeriod')) {
@@ -408,11 +405,11 @@ function resolveErSmoothPeriodForBot(bot) {
     return globalErSmoothPeriod;
 }
 
-function buildAmaComparisonPresets(bot, ctx = null) {
+function buildAmaComparisonPresets(bot: any, ctx: any) {
     const profile = findAmaProfileForBot(bot, ctx);
     const erSmoothPeriod = resolveErSmoothPeriodForBot(bot);
     return AMA_PRESET_KEYS
-        .map((key) => {
+        .map((key: any) => {
             const preset = getAmaPresetForKey(key, profile);
             if (!preset) return null;
             return {
@@ -426,7 +423,7 @@ function buildAmaComparisonPresets(bot, ctx = null) {
         .filter(Boolean);
 }
 
-function getAmaFromProfilesForBot(bot, ctx = null, cfg = null) {
+function getAmaFromProfilesForBot(bot: any, ctx: any, cfg: any) {
     const profile = findAmaProfileForBot(bot, ctx);
     if (!profile) return null;
 
@@ -439,8 +436,8 @@ function getAmaFromProfilesForBot(bot, ctx = null, cfg = null) {
             : (overrideDefaultAmaKey || normalizeAmaKey(profile?.defaultAma)));
     const selected = normalizeAmaPreset(profile?.amas?.[requestedKey])
         || normalizeAmaPreset(profile?.amas?.[overrideDefaultAmaKey || DEFAULT_AMA_KEY])
-        || getAmaPresetForKey(requestedKey)
-        || getAmaPresetForKey(overrideDefaultAmaKey || DEFAULT_AMA_KEY);
+        || getAmaPresetForKey(requestedKey, profile)
+        || getAmaPresetForKey(overrideDefaultAmaKey || DEFAULT_AMA_KEY, profile);
     if (!selected) return null;
 
     return {
@@ -451,7 +448,7 @@ function getAmaFromProfilesForBot(bot, ctx = null, cfg = null) {
     };
 }
 
-function sleepUntilAlignedBoundary(pollSeconds, referenceNowMs = Date.now(), nowMs = Date.now()) {
+function sleepUntilAlignedBoundary(pollSeconds: number, referenceNowMs: any = Date.now(), nowMs: any = Date.now()) {
     const intervalMs = Math.max(1, Math.floor(Number(pollSeconds) || 0)) * 1000;
     const bufferMs = 1000;
     const targetBoundaryMs = Math.floor(Number(referenceNowMs) / intervalMs) * intervalMs + intervalMs;
@@ -459,7 +456,7 @@ function sleepUntilAlignedBoundary(pollSeconds, referenceNowMs = Date.now(), now
     return Math.max(bufferMs, delayMs);
 }
 
-function withRetries(fn, attempts, baseDelayMs, label) {
+function withRetries(fn: () => Promise<any>, attempts: number, baseDelayMs: number, label: string) {
     return (async () => {
         let lastErr;
         for (let i = 0; i < attempts; i++) {
@@ -556,7 +553,7 @@ function parseArgs() {
     return validateConfig(merged);
 }
 
-function validateConfig(input) {
+function validateConfig(input: any) {
     const cfg = { ...DEFAULTS, ...input };
 
     if (!Number.isFinite(cfg.pollSeconds) || cfg.pollSeconds <= 0) throw new Error('--pollSeconds must be > 0');
@@ -581,7 +578,7 @@ function validateConfig(input) {
     return cfg;
 }
 
-function resolveDeltaThresholdPercentFromGeneralSettings(settings) {
+function resolveDeltaThresholdPercentFromGeneralSettings(settings: any) {
     const explicit = Number(settings?.MARKET_ADAPTER?.AMA_DELTA_THRESHOLD_PERCENT);
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
     return null;
@@ -601,18 +598,15 @@ function applyRuntimeDefaultsFromGeneralSettings(cfg: any, provided: { deltaThre
     return out;
 }
 
-const { createPm2AwareLogger } = require('../modules/logger');
-const { readJSON } = require('../modules/utils/fs_utils');
-const { fixedTo, roundTo } = require('../modules/utils/math_utils');
 const marketAdapterLogFile = path.join(PATHS.LOGS_DIR, 'market_adapter.log');
-const logger = createPm2AwareLogger('MarketAdapter', { quiet: DEFAULTS.quiet, logFile: marketAdapterLogFile });
+const logger = new Logger('MarketAdapter', { quiet: DEFAULTS.quiet, logFile: marketAdapterLogFile });
 
-function log(cfg, ...args) {
+function log(cfg: any, ...args: any[]) {
     logger.quiet = !!cfg?.quiet;
-    logger.info(...args);
+    (logger.info as any)(...args);
 }
 
-function write(cfg, text) {
+function write(cfg: any, text: string) {
     logger.quiet = !!cfg?.quiet;
     logger.raw(text);
 }
@@ -647,11 +641,11 @@ function loadActiveBots() {
     const raw = parseJsonWithComments(storage.readFile(BOTS_FILE));
     const bots = Array.isArray(raw?.bots) ? raw.bots : (Array.isArray(raw) ? raw : []);
     return bots
-        .map((b, i) => normalizeBotEntry(b, i))
-        .filter((b) => b.active);
+        .map((b: any, i: number) => normalizeBotEntry(b, i))
+        .filter((b: any) => b.active);
 }
 
-function loadJson(filePath, defaultValue) {
+function loadJson(filePath: string, defaultValue: any) {
     try {
         if (!storage.exists(filePath)) return defaultValue;
         return readJSON(filePath);
@@ -660,36 +654,36 @@ function loadJson(filePath, defaultValue) {
     }
 }
 
-function saveJson(filePath, data) {
+function saveJson(filePath: any, data: any) {
     writeJsonAtomic(filePath, data);
 }
 
-function parseChainTimeToMs(timeStr) {
+function parseChainTimeToMs(timeStr: any) {
     if (!timeStr) return Number.NaN;
     const s = String(timeStr);
     return Date.parse(s.endsWith('Z') ? s : `${s}Z`);
 }
 
-function candleFileForBot(botKey, intervalSeconds = RUNTIME_DEFAULTS.intervalSeconds) {
+function candleFileForBot(botKey: any, intervalSeconds: any = RUNTIME_DEFAULTS.intervalSeconds) {
     const label = intervalSeconds === RUNTIME_DEFAULTS.intervalSeconds
         ? RUNTIME_DEFAULTS.intervalLabel
         : toIntervalLabel(intervalSeconds);
     return path.join(DATA_DIR, `market_adapter_${botKey}_${label}.json`);
 }
 
-function calculateBotThreshold(cfg) {
+function calculateBotThreshold(cfg: any) {
     const value = Number(cfg?.deltaThresholdPercent);
     return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-function computeCandleStaleness(lastCandleTs, maxStaleHours) {
+function computeCandleStaleness(lastCandleTs: any, maxStaleHours: any) {
     const staleAgeMs = Number.isFinite(lastCandleTs) ? (Date.now() - lastCandleTs) : Number.POSITIVE_INFINITY;
     const staleData = staleAgeMs > (maxStaleHours * 3600 * 1000);
     const staleAgeHours = Number.isFinite(staleAgeMs) ? (staleAgeMs / 3600000) : null;
     return { staleData, staleAgeHours };
 }
 
-function resolveAmaForBot(bot, ctx = null, cfg = null) {
+function resolveAmaForBot(bot: any, ctx: any = null, cfg: any = null) {
     const raw = (bot && typeof bot.ama === 'object' && bot.ama !== null) ? bot.ama : {};
     const erSmoothPeriod = resolveErSmoothPeriodForBot(bot);
 
@@ -708,7 +702,7 @@ function resolveAmaForBot(bot, ctx = null, cfg = null) {
     };
 
     if (isAmaKeyword(bot?.gridPrice)) {
-        const preset = getAmaPresetForKey(normalizeAmaKey(bot.gridPrice));
+        const preset = getAmaPresetForKey(normalizeAmaKey(bot.gridPrice), null);
         if (preset) {
             if (!Number.isFinite(amaCfg.erPeriod)) amaCfg.erPeriod = preset.erPeriod;
             if (!Number.isFinite(amaCfg.fastPeriod)) amaCfg.fastPeriod = preset.fastPeriod;
@@ -727,16 +721,16 @@ function resolveAmaForBot(bot, ctx = null, cfg = null) {
     return amaCfg;
 }
 
-function pruneCandles(candles, keepCount) {
+function pruneCandles(candles: any, keepCount: any) {
     if (!Array.isArray(candles)) return [];
     if (candles.length <= keepCount) return candles;
     return candles.slice(candles.length - keepCount);
 }
 
-function calcAmaComparison(candles, bot = null, ctx = null) {
-    const closes = (candles || []).map((c) => Number(c?.[4])).filter((v) => Number.isFinite(v) && v > 0);
-    const out = [];
-    const presets = buildAmaComparisonPresets(bot, ctx);
+function calcAmaComparison(candles: any, bot: any = null, ctx: any = null) {
+    const closes = (candles || []).map((c: any) => Number(c?.[4])).filter((v: any) => Number.isFinite(v) && v > 0);
+    const out: any[] = [];
+    const presets: any[] = buildAmaComparisonPresets(bot, ctx);
 
     for (const p of presets) {
         const minNeeded = p.erPeriod + 1;
@@ -757,12 +751,12 @@ function calcAmaComparison(candles, bot = null, ctx = null) {
     return out;
 }
 
-async function fetchNativeTradesSince(poolId, sinceMs, pageLimit, maxPages) {
+async function fetchNativeTradesSince(poolId: any, sinceMs: any, pageLimit: any, maxPages: any) {
     const { BitShares } = getBitsharesClient();
-    const trades = [];
+    const trades: any[] = [];
     const seenSequences = new Set();
     let pages = 0;
-    let startSeq = null;
+    let startSeq: number | null = null;
     let hitOld = false;
 
     while (pages < maxPages) {
@@ -796,8 +790,8 @@ async function fetchNativeTradesSince(poolId, sinceMs, pageLimit, maxPages) {
             trades.push(trade);
         }
 
-        const last = page[page.length - 1];
-        const lastSeq = Number(last?.sequence);
+        const last: any = page[page.length - 1];
+        const lastSeq: any = Number(last?.sequence);
         if (!Number.isFinite(lastSeq) || lastSeq <= 1) break;
         if (hitOld) break;
         startSeq = lastSeq - 1;
@@ -810,7 +804,7 @@ async function fetchNativeTradesSince(poolId, sinceMs, pageLimit, maxPages) {
     };
 }
 
-function nativeHistoryRowToTrade(row) {
+function nativeHistoryRowToTrade(row: any) {
     const tsMs = parseChainTimeToMs(row?.time || row?.op?.block_time);
     if (!Number.isFinite(tsMs)) return null;
     const opPayload = Array.isArray(row?.op?.op) ? row.op.op[1] : null;
@@ -830,15 +824,15 @@ function nativeHistoryRowToTrade(row) {
     };
 }
 
-async function fetchNativeTradesUntilOverlap(poolId, overlapSequences, minOverlap, pageLimit, maxPages) {
+async function fetchNativeTradesUntilOverlap(poolId: any, overlapSequences: any, minOverlap: any, pageLimit: any, maxPages: any) {
     const { BitShares } = getBitsharesClient();
     const overlapSet = new Set((Array.isArray(overlapSequences) ? overlapSequences : [])
-        .map((v) => String(v))
-        .filter((v) => v !== ''));
-    const trades = [];
+        .map((v: any) => String(v))
+        .filter((v: any) => v !== ''));
+    const trades: any[] = [];
     const seenSequences = new Set();
     let pages = 0;
-    let startSeq = null;
+    let startSeq: number | null = null;
     let overlapCount = 0;
 
     if (overlapSet.size === 0) {
@@ -846,7 +840,7 @@ async function fetchNativeTradesUntilOverlap(poolId, overlapSequences, minOverla
     }
 
     while (pages < maxPages) {
-        const page = startSeq == null
+        const page: any = startSeq == null
             ? await BitShares.history.get_liquidity_pool_history(poolId, null, null, pageLimit, LP_OP_TYPE)
             : await BitShares.history.get_liquidity_pool_history_by_sequence(poolId, startSeq, null, pageLimit, LP_OP_TYPE);
 
@@ -878,8 +872,8 @@ async function fetchNativeTradesUntilOverlap(poolId, overlapSequences, minOverla
             }
         }
 
-        const last = page[page.length - 1];
-        const lastSeq = Number(last?.sequence);
+        const last: any = page[page.length - 1];
+        const lastSeq: any = Number(last?.sequence);
         if (!Number.isFinite(lastSeq) || lastSeq <= 1) break;
         startSeq = lastSeq - 1;
     }
@@ -929,7 +923,7 @@ async function fetchNativeMarketHistorySince(assetA: any, assetB: any, sinceMs: 
     return candles;
 }
 
-function writeGridResetTrigger(bot, payload) {
+function writeGridResetTrigger(bot: any, payload: any) {
     const triggerPath = getRecalculateTriggerFile(bot.botKey);
     const content = {
         createdAt: new Date().toISOString(),
@@ -963,7 +957,7 @@ function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
 } = {}) {
     try {
         const filePath = path.join(ORDERS_DIR, `${botKey}.dynamicgrid.json`);
-        const preserveGridResetMetadata = (target, snapshot) => {
+        const preserveGridResetMetadata = (target: any, snapshot: any) => {
             if (!snapshot?.lastGridResetAt) return target;
             const incomingResetMs = Date.parse(String(snapshot.lastGridResetAt));
             const currentResetMs = Date.parse(String(target.lastGridResetAt || ''));
@@ -988,7 +982,7 @@ function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
             }
             return target;
         };
-        const result = updateDynamicGridSnapshotSync(filePath, (previousSnapshot) => {
+        const result = updateDynamicGridSnapshotSync(filePath, (previousSnapshot: any) => {
             const amaCenterPrice = Number(options.amaCenterPrice);
             const resolvedGridCenterPrice = Number.isFinite(Number(gridCenterPrice))
                 ? roundTo(Number(gridCenterPrice), 1e8)
@@ -1035,14 +1029,12 @@ function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
     }
 }
 
-const {
+import {
     MarketAdapterService,
     AMA_SLOPE_PERCENT_MODE_PER_BAR,
-
     normalizeAmaSlopePercentMode,
-    normalizeAmaSlopeLookbackBars,
     convertSlopePercentToPerBar,
-} = require("./core/market_adapter_service");
+} from './core/market_adapter_service.js';
 const adapterService = new MarketAdapterService({
     resolveBotContext,
     resolveAmaForBot,
@@ -1075,7 +1067,7 @@ const adapterService = new MarketAdapterService({
     path,
 });
 
-async function processBot(bot, state, cfg, contextCache, hooks = {}) {
+async function processBot(bot: any, state: any, cfg: any, contextCache: any, hooks: any = {}) {
     return adapterService.processBot(bot, state, cfg, contextCache, hooks);
 }
 
@@ -1148,14 +1140,14 @@ function mergeGridResetMetadataFromDynamicGrid(state: any) {
     return state;
 }
 
-async function runOnce(cfg, state, contextCache) {
+async function runOnce(cfg: any, state: any, contextCache: any) {
     _resetCycleCache(); // reload settings and cached file-backed config once per cycle
     const startedAtMs = Date.now();
     const allBots = loadActiveBots();
-    const bots = allBots.filter((bot) => usesAmaGridPrice(bot));
+    const bots = allBots.filter((bot: any) => usesAmaGridPrice(bot));
     log(cfg, `Active bots: ${allBots.length} | AMA-grid bots: ${bots.length}`);
 
-    const results = [];
+    const results: any[] = [];
 
     for (const bot of bots) {
         const isDryRun = cfg.dryRun || (!cfg.whitelistAll && !isBotWhitelisted(bot.botKey));
@@ -1224,7 +1216,7 @@ async function runOnce(cfg, state, contextCache) {
                 log(cfg, '  No write pass: numeric startPrice disables market adapter fetch.');
             }
             if (Array.isArray(r.dryRunMessages)) {
-                r.dryRunMessages.forEach(msg => log(cfg, `  ${msg}`));
+                r.dryRunMessages.forEach((msg: any) => log(cfg, `  ${msg}`));
             }
             if (isOneHourResult && r.weights?.meta) {
                 const m = r.weights.meta;
@@ -1238,7 +1230,7 @@ async function runOnce(cfg, state, contextCache) {
                 log(cfg, `  Asymmetric bounds: ${buildAsymmetricBoundsLog(asymSource)}`);
             }
             if (Array.isArray(r.amaComparison) && r.amaComparison.length > 0) {
-                const parts = r.amaComparison.map((a) => {
+                const parts = r.amaComparison.map((a: any) => {
                     const val = Number.isFinite(a.value) ? a.value.toFixed(8) : 'n/a';
                     const erSmoothText = Number.isFinite(Number(a.erSmoothPeriod)) ? `/es${fixedTo(a.erSmoothPeriod, 0)}` : '';
                     return `${a.name}[${a.erPeriod}/${a.fastPeriod}/${a.slowPeriod}${erSmoothText}]=${val}`;
@@ -1278,16 +1270,16 @@ async function runOnce(cfg, state, contextCache) {
         durationMs: Date.now() - startedAtMs,
         totalActiveBots: allBots.length,
         processedBots: bots.length,
-        successBots: results.filter((r) => r.ok).length,
-        failedBots: results.filter((r) => !r.ok).length,
-        triggeredBots: results.filter((r) => r.ok && r.triggered).length,
-        staleBots: results.filter((r) => r.ok && r.staleData).length,
-        kibanaPatchedBots: results.filter((r) => r.ok && Number(r.kibanaGapRepairCount) > 0).length,
-        kibanaPatchedCandles: results.reduce((sum, r) => sum + (r.ok && Number.isFinite(r.kibanaGapRepairCount) ? r.kibanaGapRepairCount : 0), 0),
-        kibanaBackfilledBots: results.filter((r) => r.ok && Number(r.kibanaBackfillCount) > 0).length,
-        kibanaBackfilledCandles: results.reduce((sum, r) => sum + (r.ok && Number.isFinite(r.kibanaBackfillCount) ? r.kibanaBackfillCount : 0), 0),
-        unresolvedGapBots: results.filter((r) => r.ok && Number(r.unresolvedGapCount) > 0).length,
-        unresolvedGapCandles: results.reduce((sum, r) => sum + (r.ok && Number.isFinite(r.unresolvedGapCount) ? r.unresolvedGapCount : 0), 0),
+        successBots: results.filter((r: any) => r.ok).length,
+        failedBots: results.filter((r: any) => !r.ok).length,
+        triggeredBots: results.filter((r: any) => r.ok && r.triggered).length,
+        staleBots: results.filter((r: any) => r.ok && r.staleData).length,
+        kibanaPatchedBots: results.filter((r: any) => r.ok && Number(r.kibanaGapRepairCount) > 0).length,
+        kibanaPatchedCandles: results.reduce((sum: any, r: any) => sum + (r.ok && Number.isFinite(r.kibanaGapRepairCount) ? r.kibanaGapRepairCount : 0), 0),
+        kibanaBackfilledBots: results.filter((r: any) => r.ok && Number(r.kibanaBackfillCount) > 0).length,
+        kibanaBackfilledCandles: results.reduce((sum: any, r: any) => sum + (r.ok && Number.isFinite(r.kibanaBackfillCount) ? r.kibanaBackfillCount : 0), 0),
+        unresolvedGapBots: results.filter((r: any) => r.ok && Number(r.unresolvedGapCount) > 0).length,
+        unresolvedGapCandles: results.reduce((sum: any, r: any) => sum + (r.ok && Number.isFinite(r.unresolvedGapCount) ? r.unresolvedGapCount : 0), 0),
     };
     state.meta.metrics = metrics;
 
@@ -1300,7 +1292,7 @@ async function runOnce(cfg, state, contextCache) {
     return { results, metrics };
 }
 
-async function runOnceForAma(overrides = {}) {
+async function runOnceForAma(overrides: any = {}) {
     const provided = {
         deltaThresholdPercent: Object.prototype.hasOwnProperty.call(overrides, 'deltaThresholdPercent'),
     };
@@ -1320,7 +1312,7 @@ async function runOnceForAma(overrides = {}) {
         staleMs: Math.max(2, cfg.pollSeconds) * 1000 * 2,
     });
     try {
-        const { connectClient, disconnectClient } = getBitsharesClient();
+        const { connectClient } = getBitsharesClient();
         await connectClient();
         const state = loadJson(STATE_FILE, { meta: {}, bots: {} });
         const contextCache = new Map();
@@ -1371,7 +1363,7 @@ async function main() {
                     await connectClient();
                     lastErr = null;
                     break;
-                } catch (err) {
+                } catch (err: any) {
                     lastErr = err;
                     if (attempt < maxRetries) {
                         const delay = Math.min(1000 * Math.pow(2, attempt - 1), TIMING.RETRY_BACKOFF_CAP_MS);
@@ -1381,7 +1373,7 @@ async function main() {
                 }
             }
             if (lastErr) {
-                logger.error(`Fatal: BitShares connection failed after ${maxRetries} attempts: ${lastErr.message}`);
+                logger.error(`Fatal: BitShares connection failed after ${maxRetries} attempts: ${(lastErr as any).message}`);
                 return 1;
             }
         }
@@ -1427,41 +1419,12 @@ async function main() {
 
 if (require.main === module) {
     main()
-        .then((exitCode) => process.exit(Number.isInteger(exitCode) ? exitCode : 0))
-        .catch((err) => {
+        .then((exitCode: any) => process.exit(Number.isInteger(exitCode) ? exitCode : 0))
+        .catch((err: any) => {
             logger.error(`Fatal: ${err.message}`);
             process.exit(1);
         });
 }
 
-export = {
-    main,
-    runOnceForAma,
-    DEFAULT_AMA,
-    DEFAULTS,
-    calculateBotThreshold,
-    calcAmaComparison,
-    computeCandleStaleness,
-    normalizeMarketSource,
-    sleepUntilAlignedBoundary,
-    resolveAmaForBot,
-    resolveDeltaThresholdPercentFromGeneralSettings,
-    applyRuntimeDefaultsFromGeneralSettings,
-    resolveBotCfg,
-    usesAmaGridPrice,
-    usesOrderbookMarketSource,
-    isBotWhitelisted,
-    isBotDynamicWeightWhitelisted,
-    isBotAsymmetricBoundsWhitelisted,
-    isBotGridRangeScalingWhitelisted,
-    _resetCycleCache,
-    writeCenterSnapshot,
-    writeBotDynamicGrid,
-    writeGridResetTrigger,
-    mergeGridResetMetadataFromDynamicGrid,
-    normalizeNativeMarketHistoryCandles,
-    fetchNativeMarketHistorySince,
-    _setBitsharesClientForTests: setBitsharesClientForTests,
-    loadMarketAdapterSettings,
-    findPairForBot,
-};
+export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, calcAmaComparison, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, usesOrderbookMarketSource, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, isBotGridRangeScalingWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
+

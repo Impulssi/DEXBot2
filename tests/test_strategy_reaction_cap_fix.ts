@@ -1,6 +1,7 @@
 const assert = require('assert');
 const StrategyEngine = require('../modules/order/strategy');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 function buildSlots() {
     const slots = [];
@@ -74,7 +75,7 @@ async function run() {
         await strategy.processFillsOnly(malformedFills, new Set());
     } catch (err) {
         threw = true;
-        console.error('Unexpected error:', err.message);
+        console.error('Unexpected error:', getErrorMessage(err));
     }
 
     assert.strictEqual(threw, false, 'processFillsOnly should not throw on malformed fill types');

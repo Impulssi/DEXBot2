@@ -1,6 +1,6 @@
 'use strict';
 
-const { isBrowser } = require('./env');
+import { isBrowser } from './env';
 
 declare var window: any;
 
@@ -8,7 +8,7 @@ export interface Runtime {
   exit(code?: number): void;
   exitAfterStderrDrain(code: number): void;
   exitCode: number | undefined;
-  kill(pid: number, signal?: string): boolean;
+  kill(pid: number, signal?: string | number): boolean;
   onSignal(signal: string, handler: (...args: any[]) => void): void;
   offSignal(signal: string, handler: (...args: any[]) => void): void;
   readonly pid: number;
@@ -31,7 +31,7 @@ class NodeRuntime implements Runtime {
   }
   get exitCode(): number | undefined { return process.exitCode as number | undefined; }
   set exitCode(code: number | undefined) { (process as any).exitCode = code; }
-  kill(pid: number, signal?: string): boolean {
+  kill(pid: number, signal?: string | number): boolean {
     try {
       process.kill(pid, signal as any);
       return true;

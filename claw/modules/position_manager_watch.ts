@@ -1,17 +1,19 @@
-const { getStorage } = require('../../modules/storage');
+
+import { getStorage } from '../../modules/storage';
+import { path } from '../../modules/path_api';
+import { PATHS } from '../../modules/paths';
+import { PositionManager, DEFAULT_STATE_PATH } from './position_manager';
+import * as client from './bitshares_client';
+const { waitForConnected } = client;
+import { PIPELINE_TIMING } from '../../modules/constants';
+import { Config } from '../../modules/config';
+import { runtime } from '../../modules/runtime';
+import { clone } from './utils';
 const storage = getStorage();
-const { path } = require('../../modules/path_api');
-const { PATHS } = require('../../modules/paths');
-const { PositionManager, DEFAULT_STATE_PATH } = require('./position_manager');
-const { waitForConnected } = require('./bitshares_client');
-const { PIPELINE_TIMING } = require('../../modules/constants');
-const { Config } = require('../../modules/config');
-const { runtime } = require('../../modules/runtime');
 
 const DEFAULT_HEALTH_PATH = PATHS.CLAW.WATCHER_HEALTH_FILE;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES = 5;
 
-const { clone } = require('./utils');
 
 function parsePositionManagerWatchArgs(argv: string[] = [], env = runtime.env) {
   const options = {
@@ -237,14 +239,7 @@ async function runPositionManagerWatch(options: Record<string, any> = {}) {
   return watcher.start();
 }
 
-export = {
-  DEFAULT_HEALTH_PATH,
-  DEFAULT_MAX_CONSECUTIVE_FAILURES,
-  createPositionManagerWatcher,
-  parsePositionManagerWatchArgs,
-  runPositionManagerWatch,
-  main
-};
+export { DEFAULT_HEALTH_PATH, DEFAULT_MAX_CONSECUTIVE_FAILURES, createPositionManagerWatcher, parsePositionManagerWatchArgs, runPositionManagerWatch, main }
 
 if (typeof require !== 'undefined' && require.main === module) {
   main().catch((err) => {
@@ -252,3 +247,4 @@ if (typeof require !== 'undefined' && require.main === module) {
     runtime.exit(1);
   });
 }
+

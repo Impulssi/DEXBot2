@@ -53,37 +53,37 @@
  * ===============================================================================
  */
 
-const { BitShares } = require('./bitshares_client');
-const chainKeys = require('./chain_keys');
-const chainOrders = require('./chain_orders');
-const fundRegistry = require('./fund_registry');
-const {
+
+import * as client from './bitshares_client';
+const { BitShares } = client;
+import * as chainKeys from './chain_keys';
+import * as chainOrders from './chain_orders';
+import * as fundRegistry from './fund_registry';
+import * as DexbotFillRuntime from './dexbot_fill_runtime';
+import DexbotMaintenanceRuntime from './dexbot_maintenance_runtime';
+import * as DexbotStateRecovery from './dexbot_state_recovery';
+import * as DexbotStartupRuntime from './dexbot_startup_runtime';
+import CreditRuntime from './credit_runtime';
+import { PATHS } from './paths';
+import * as Format from './order/format';
+import cowRuntime from './dexbot_cow_runtime';
+import {
     ProcessedFillStore,
     PROCESSED_FILL_PERSISTENCE_MODES
-} = require('./order/processed_fill_store');
-const DexbotFillRuntime = require('./dexbot_fill_runtime');
-const DexbotMaintenanceRuntime = require('./dexbot_maintenance_runtime');
-const DexbotStateRecovery = require('./dexbot_state_recovery');
-const DexbotStartupRuntime = require('./dexbot_startup_runtime');
-const CreditRuntime = require('./credit_runtime');
-const {
+} from './order/processed_fill_store';
+import {
     TIMING,
     FILL_PROCESSING,
     DAEMON_CODES,
-} = require('./constants');
-const { PATHS } = require('./paths');
-const Format = require('./order/format');
-const cowRuntime = require('./dexbot_cow_runtime');
+} from './constants';
+import { normalizeBotEntry } from './bot_settings';
 
-function waitForConnected(...args) { return require('./bitshares_client').waitForConnected(...args); }
-function getKeyStore(...args) { return require('./key_store').getKeyStore(...args); }
-function hasExecutableActions(...args) { return require('./order/utils/validate').hasExecutableActions(...args); }
-function getRecalculateTriggerFile(...args) { return require('./paths').getRecalculateTriggerFile(...args); }
-function cloneWeightDistribution(...args) { return require('./order/utils/math').cloneWeightDistribution(...args); }
-function resolveBotRuntimeSettings(...args) { return require('./runtime_settings').resolveBotRuntimeSettings(...args); }
-
-const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
-const PROFILES_DIR = PATHS.PROFILES_DIR;
+function waitForConnected(...args: any) { return require('./bitshares_client').waitForConnected(...args); }
+function getKeyStore(...args: any) { return require('./key_store').getKeyStore(...args); }
+function hasExecutableActions(...args: any) { return require('./order/utils/validate').hasExecutableActions(...args); }
+function getRecalculateTriggerFile(...args: any) { return require('./paths').getRecalculateTriggerFile(...args); }
+function cloneWeightDistribution(...args: any) { return require('./order/utils/math').cloneWeightDistribution(...args); }
+function resolveBotRuntimeSettings(...args: any) { return require('./runtime_settings').resolveBotRuntimeSettings(...args); }
 
 class DEXBot {
     config: any;
@@ -141,7 +141,7 @@ class DEXBot {
     _reconnectUnregister: any;
     _credentialRecoveryDeferredTimer: any;
     _structuralGridResyncTimer: any;
-    _structuralGridResyncRunning: boolean;
+    _structuralGridResyncRunning: boolean = false;
     _dustHealthCheckTimer: any;
     _lastBroadcastHeartbeatAt: number | undefined;
     _lastDeferredDustCount: number;
@@ -153,7 +153,7 @@ class DEXBot {
      * @param {Object} options - Optional settings
      * @param {string} options.logPrefix - Prefix for console logs (e.g., "[bot.js]")
      */
-    constructor(config, options: { logPrefix?: string } = {}) {
+    constructor(config: any, options: { logPrefix?: string } = {}) {
         this._validateStartupConfig(config);
 
         this.config = config;
@@ -182,7 +182,7 @@ class DEXBot {
         this._processedFillStore = new ProcessedFillStore({
             batchMs: this._processedFillPersistBatchMs,
             batchSize: this._processedFillPersistBatchSize,
-            warn: (message) => this._warn(message)
+            warn: (message: any) => this._warn(message)
         });
         this._recentlyProcessedFills = this._processedFillStore.tracker;
         this._pendingProcessedFillWrites = this._processedFillStore.pendingWrites;
@@ -257,8 +257,8 @@ class DEXBot {
      * @throws {Error} If critical validation fails
      * @private
      */
-    _validateStartupConfig(config) {
-        const errors = [];
+    _validateStartupConfig(config: any) {
+        const errors: string[] = [];
 
         // Skip trading field validation in credit-only mode
         if (!config.creditOnly) {
@@ -288,7 +288,7 @@ class DEXBot {
 
         // Throw all validation errors at once
         if (errors.length > 0) {
-            throw new Error(`Config validation failed:\n${errors.map(e => `  - ${e}`).join('\n')}`);
+            throw new Error(`Config validation failed:\n${errors.map((e: any) => `  - ${e}`).join('\n')}`);
         }
     }
 
@@ -298,7 +298,7 @@ class DEXBot {
      * @param {string} [level='info'] - The log level ('debug', 'info', 'warn', 'error').
      * @private
      */
-    _log(msg, level = 'info') {
+    _log(msg: any, level: any = 'info') {
         if (level === 'warn') {
             this._warn(msg);
             return;
@@ -323,7 +323,7 @@ class DEXBot {
      * @param {string} msg - The message to log.
      * @private
      */
-    _warn(msg) {
+    _warn(msg: any) {
         const line = this.logPrefix ? `${this.logPrefix} ${msg}` : msg;
         const logger = this.manager?.logger;
         if (logger && typeof logger.log === 'function') {
@@ -370,7 +370,7 @@ class DEXBot {
      * @param {string} [reason='activity'] - Reason for activity
      * @returns {void}
      */
-    _markGridActivity(reason = 'activity') {
+    _markGridActivity(reason: any = 'activity') {
         return DexbotMaintenanceRuntime.markGridActivity(this, reason);
     }
 
@@ -379,7 +379,7 @@ class DEXBot {
      * @param {string} [reason='state recovery sync'] - Reason for recovery
      * @returns {Promise<void>}
      */
-    async _triggerStateRecoverySync(reason = 'state recovery sync') {
+    async _triggerStateRecoverySync(reason: any = 'state recovery sync') {
         return DexbotStateRecovery.triggerStateRecoverySync(this, reason);
     }
 
@@ -388,7 +388,7 @@ class DEXBot {
      * @param {string} flowContext - Description of the flow being aborted
      * @returns {Promise<boolean>} True if flow was aborted
      */
-    async _abortFlowIfIllegalState(flowContext) {
+    async _abortFlowIfIllegalState(flowContext: any) {
         return DexbotStateRecovery.abortFlowIfIllegalState(this, flowContext);
     }
 
@@ -399,7 +399,7 @@ class DEXBot {
      * @param {number} [opsCount=0] - Number of operations in the batch
      * @returns {Promise<Object>} Abort result object
      */
-    async _handleBatchHardAbort(err, phase = 'batch processing', opsCount = 0) {
+    async _handleBatchHardAbort(err: any, phase: any = 'batch processing', opsCount: any = 0) {
         return DexbotStateRecovery.handleBatchHardAbort(this, err, phase, opsCount);
     }
 
@@ -409,7 +409,7 @@ class DEXBot {
      * @param {string} [context='recoverable-grid-update'] - Context label for logging
      * @returns {Promise<number>} Number of updates applied
      */
-    async _applyRecoverableGridUpdates(updates, context = 'recoverable-grid-update') {
+    async _applyRecoverableGridUpdates(updates: any, context: any = 'recoverable-grid-update') {
         return DexbotStateRecovery.applyRecoverableGridUpdates(this, updates, context);
     }
 
@@ -419,7 +419,7 @@ class DEXBot {
      * @param {string} [reason='stale order cleanup'] - Reason for cleanup
      * @returns {Promise<{executed: boolean, hadRotation: boolean, stale: boolean, recoveredByVirtualization?: boolean}>}
      */
-    async _recoverExplicitStaleOrders(staleOrderIds, reason = 'stale order cleanup') {
+    async _recoverExplicitStaleOrders(staleOrderIds: any, reason: any = 'stale order cleanup') {
         return DexbotStateRecovery.recoverExplicitStaleOrders(this, staleOrderIds, reason);
     }
 
@@ -428,7 +428,7 @@ class DEXBot {
      * @param {Error} err - The size drift error
      * @returns {Promise<{executed: boolean, hadRotation: boolean, recoveredBySync: boolean, reason: string}>}
      */
-    async _recoverBatchSizeDrift(err, opContexts = []) {
+    async _recoverBatchSizeDrift(err: any, opContexts: any = []) {
         return DexbotStateRecovery.recoverBatchSizeDrift(this, err, opContexts);
     }
 
@@ -438,7 +438,7 @@ class DEXBot {
      * @param {Array<Object>} opContexts
      * @returns {string[]} Unique chain order IDs
      */
-    _extractSizeDriftOrderIds(opContexts) {
+    _extractSizeDriftOrderIds(opContexts: any) {
         return DexbotStateRecovery.extractSizeDriftOrderIds(opContexts);
     }
 
@@ -464,7 +464,7 @@ class DEXBot {
      * @param {'startup'|'recovery'} context - Controls log prefix.
      * @returns {Promise<boolean>} True if the snapshot was rejected (cleared).
      */
-    async _rejectCorruptedGridSnapshot(context) {
+    async _rejectCorruptedGridSnapshot(context: any) {
         return DexbotStateRecovery.rejectCorruptedGridSnapshot(this, context);
     }
 
@@ -475,7 +475,7 @@ class DEXBot {
      * @param {string[]} orderIds
      * @returns {Promise<boolean>} True if all affected orders were repaired
      */
-    async _targetedOrderRepair(orderIds) {
+    async _targetedOrderRepair(orderIds: any) {
         return DexbotStateRecovery.targetedOrderRepair(this, orderIds);
     }
 
@@ -503,7 +503,7 @@ class DEXBot {
      * @param {Object} [options={}] - Flush options
      * @returns {Promise<void>}
      */
-    async _flushProcessedFillPersistence(reason = 'manual', options = {}) {
+    async _flushProcessedFillPersistence(reason: any = 'manual', options: any = {}) {
         return DexbotFillRuntime.flushProcessedFillPersistence(this, reason, options);
     }
 
@@ -514,7 +514,7 @@ class DEXBot {
      * @param {Object} [options={}] - Flush options
      * @returns {Promise<void>}
      */
-    async _flushProcessedFillPersistenceForKeys(fillKeys, reason = 'manual-selected', options = {}) {
+    async _flushProcessedFillPersistenceForKeys(fillKeys: any, reason: any = 'manual-selected', options: any = {}) {
         return DexbotFillRuntime.flushProcessedFillPersistenceForKeys(this, fillKeys, reason, options);
     }
 
@@ -523,7 +523,7 @@ class DEXBot {
      * @param {string[]|Set<string>} fillKeys - Fill keys to discard
      * @returns {void}
      */
-    _discardPendingProcessedFillPersistence(fillKeys) {
+    _discardPendingProcessedFillPersistence(fillKeys: any) {
         return DexbotFillRuntime.discardPendingProcessedFillPersistence(this, fillKeys);
     }
 
@@ -532,11 +532,11 @@ class DEXBot {
      * @param {Object} fill - Fill event object
      * @returns {string|null} Fallback key or null
      */
-    _buildOrphanFillFallbackKey(fill) {
+    _buildOrphanFillFallbackKey(fill: any) {
         return DexbotFillRuntime.buildOrphanFillFallbackKey(this, fill);
     }
 
-    _isNewFillKey(fillKey, processedFillKeys, label = '', orderId = '') {
+    _isNewFillKey(fillKey: any, processedFillKeys: any, label: any = '', orderId: any = '') {
         const now = Date.now();
         if (this._recentlyQueuedFills.has(fillKey)) {
             const lastProcessed = this._recentlyQueuedFills.get(fillKey);
@@ -572,7 +572,7 @@ class DEXBot {
      * @param {boolean} [options.allowOrphanFallbackKey=false]
      * @returns {Promise<import('./types').ReplaySafeFillResult>}
      */
-    async _applyReplaySafeFillAccounting(fill, fillOp, {
+    async _applyReplaySafeFillAccounting(fill: any, fillOp: any, {
         missingKeyMessage,
         fallbackKeyMessage,
         replayMessage,
@@ -620,7 +620,7 @@ class DEXBot {
      * @param {string} [options.persistenceMode='batched']
      * @returns {Promise<import('./types').ReplaySafeFillResult>}
      */
-    async _applyReplaySafeTrackedFillAccounting(fill, fillOp, {
+    async _applyReplaySafeTrackedFillAccounting(fill: any, fillOp: any, {
         context,
         logger = this.manager?.logger,
         replayMessage,
@@ -650,7 +650,7 @@ class DEXBot {
      * @param {string} [options.persistenceMode='batched']
      * @returns {Promise<import('./types').ReplaySafeFillResult>}
      */
-    async _applyReplaySafeOrphanFillAccounting(fill, fillOp, {
+    async _applyReplaySafeOrphanFillAccounting(fill: any, fillOp: any, {
         context,
         logger = this.manager?.logger,
         replayMessage,
@@ -674,7 +674,7 @@ class DEXBot {
      * @param {string} [context='runtime'] - Context label for logging
      * @returns {import('./types').DynamicWeightRefreshResult|null}
      */
-    _refreshDynamicWeightDistribution(context = 'runtime') {
+    _refreshDynamicWeightDistribution(context: any = 'runtime') {
         return DexbotMaintenanceRuntime.refreshDynamicWeightDistribution(this, context);
     }
 
@@ -684,7 +684,7 @@ class DEXBot {
      * @param {Object} startupState - The startup state from _initializeStartupState.
      * @private
      */
-    async _finishStartupSequence(startupState) {
+    async _finishStartupSequence(startupState: any) {
         return DexbotStartupRuntime.finishStartupSequence(this, startupState);
     }
 
@@ -695,7 +695,7 @@ class DEXBot {
      * @returns {Function} Async callback for processing fills
      * @private
      */
-    _createFillCallback(chainOrders) {
+    _createFillCallback(chainOrders: any) {
         return DexbotFillRuntime.createFillCallback(this, chainOrders);
     }
 
@@ -705,7 +705,7 @@ class DEXBot {
      * @param {string} tag - Context label for logging
      * @returns {Promise<{syncResult: Object|null, aborted: boolean, hasUnmatched: number, openOrders: Array|null}>}
      */
-    async _syncOpenOrdersAndProcessFills(tag) {
+    async _syncOpenOrdersAndProcessFills(tag: any) {
         return DexbotMaintenanceRuntime.syncOpenOrdersAndProcessFills(this, tag);
     }
 
@@ -722,11 +722,11 @@ class DEXBot {
      * @returns {number} Delay in milliseconds before the next retry.
      * @private
      */
-    _computeFillConsumerBackoffMs(failures) {
+    _computeFillConsumerBackoffMs(failures: any) {
         return DexbotFillRuntime.computeFillConsumerBackoffMs(this, failures);
     }
 
-    _scheduleFillConsumerRestart(chainOrders) {
+    _scheduleFillConsumerRestart(chainOrders: any) {
         DexbotFillRuntime.scheduleFillConsumerRestart(this, chainOrders);
     }
 
@@ -743,7 +743,7 @@ class DEXBot {
      * @param {Object} chainOrders - Chain orders module for blockchain operations
      * @private
      */
-    async _consumeFillQueue(chainOrders) {
+    async _consumeFillQueue(chainOrders: any) {
         return DexbotFillRuntime.consumeFillQueue(this, chainOrders);
     }
 
@@ -764,7 +764,7 @@ class DEXBot {
      * @param {Object} chainOrders - Chain orders instance for broadcasting
      * @returns {Promise<void>}
      */
-    async _processFillsWithBootstrapMode(chainOrders) {
+    async _processFillsWithBootstrapMode(chainOrders: any) {
         return DexbotFillRuntime.processFillsWithBootstrapMode(this, chainOrders);
     }
 
@@ -773,7 +773,7 @@ class DEXBot {
      * @param {string} accountName - The name of the account to set up
      * @private
      */
-    async _setupAccountContext(accountName) {
+    async _setupAccountContext(accountName: any) {
         const accId = await chainOrders.resolveAccountId(accountName);
 
         if (!accId) {
@@ -796,7 +796,7 @@ class DEXBot {
      * @returns {Promise<void>}
      * @throws {Error} If initialization fails or preferredAccount is missing.
      */
-    async initialize(vaultSecret = null) {
+    async initialize(vaultSecret: any = null) {
         await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
         if (this.config && this.config.preferredAccount) {
             try {
@@ -852,7 +852,7 @@ class DEXBot {
      * @param {Array<Object>} orders - Array of order objects
      * @returns {Array<Array<Object>>} Grouped order arrays
      */
-    _buildOutsideInPairGroupsForOrders(orders) {
+    _buildOutsideInPairGroupsForOrders(orders: any) {
         return cowRuntime.buildOutsideInPairGroupsForOrders(orders);
     }
 
@@ -861,7 +861,7 @@ class DEXBot {
      * @param {Array<Object>} createEntries - Array of create entry objects with context.order
      * @returns {Array<Array<Object>>} Grouped entry arrays
      */
-    _buildOutsideInPairGroupsForCreateEntries(createEntries) {
+    _buildOutsideInPairGroupsForCreateEntries(createEntries: any) {
         return cowRuntime.buildOutsideInPairGroupsForCreateEntries(createEntries);
     }
 
@@ -879,7 +879,7 @@ class DEXBot {
      * @param {string} [warnContext=''] - Context for warning messages
      * @returns {Array} Array of operation result entries
      */
-    _extractOperationResults(result, warnContext = '') {
+    _extractOperationResults(result: any, warnContext: any = '') {
         return cowRuntime.extractOperationResults(result, warnContext, this.manager?.logger?.log?.bind(this.manager?.logger));
     }
 
@@ -890,7 +890,7 @@ class DEXBot {
      * @param {Array<Object>} opContexts - Operation context metadata aligned with operations.
      * @returns {Array<{index:number, ctx:Object}>} Missing create result contexts.
      */
-    _findMissingCreateResultContexts(operationResults, opContexts) {
+    _findMissingCreateResultContexts(operationResults: any, opContexts: any) {
         return cowRuntime.findMissingCreateResultContexts(operationResults, opContexts);
     }
 
@@ -905,7 +905,7 @@ class DEXBot {
      * @param {string} [reason] - Human-readable recovery context for logs.
      * @returns {Promise<void>}
      */
-    async _recoverAfterMissingCreateResults(reason = 'missing create operation results') {
+    async _recoverAfterMissingCreateResults(reason: any = 'missing create operation results') {
         return cowRuntime.recoverAfterMissingCreateResults(this, reason);
     }
 
@@ -916,7 +916,7 @@ class DEXBot {
      * @param {Object} recoveryResult - Result returned by manager.syncFromOpenOrders.
      * @returns {void}
      */
-    _preserveMissingCreateBlockersAfterRecovery(blockers, recoveryResult) {
+    _preserveMissingCreateBlockersAfterRecovery(blockers: any, recoveryResult: any) {
         return cowRuntime.preserveMissingCreateBlockersAfterRecovery(this, blockers, recoveryResult);
     }
 
@@ -931,7 +931,7 @@ class DEXBot {
      * @param {Array<{index:number, ctx:Object}>} missingCreateResults - Missing CREATE results.
      * @returns {void}
      */
-    _markMissingCreateResultsAsStructuralBlocker(missingCreateResults) {
+    _markMissingCreateResultsAsStructuralBlocker(missingCreateResults: any) {
         return cowRuntime.markMissingCreateResultsAsStructuralBlocker(this, missingCreateResults);
     }
 
@@ -941,7 +941,7 @@ class DEXBot {
      * @param {Object} order - Unmatched chain order or structural blocker.
      * @returns {string} Compact human-readable diagnostic.
      */
-    _formatUnmatchedChainOrderForLog(order) {
+    _formatUnmatchedChainOrderForLog(order: any) {
         return cowRuntime.formatUnmatchedChainOrderForLog(order);
     }
 
@@ -965,7 +965,7 @@ class DEXBot {
      * @param {Object} entry.finalInts - { amountToSell, minToReceive, ... } blockchain integers
      * @returns {void}
      */
-    _recordPendingBroadcast(entry) {
+    _recordPendingBroadcast(entry: any) {
         return cowRuntime.recordPendingBroadcast(this, entry);
     }
 
@@ -989,7 +989,7 @@ class DEXBot {
      * @param {string} slotId - The grid slot id (order.id) we expect this chain order to belong to
      * @returns {string|null} Fingerprint or null on bad input
      */
-    _buildChainOrderFingerprint(chainOrder, slotId) {
+    _buildChainOrderFingerprint(chainOrder: any, slotId: any) {
         return cowRuntime.buildChainOrderFingerprint(this, chainOrder, slotId);
     }
 
@@ -1004,7 +1004,7 @@ class DEXBot {
      * @param {Object} chainOrder
      * @returns {{side: string, assetA: string, assetB: string, sellInt: number, receiveInt: number}|null}
      */
-    _normalizeChainOrderForPendingMatch(chainOrder) {
+    _normalizeChainOrderForPendingMatch(chainOrder: any) {
         return cowRuntime.normalizeChainOrderForPendingMatch(this, chainOrder);
     }
 
@@ -1023,7 +1023,7 @@ class DEXBot {
      * @param {Object} planned - { sell, receive, orderType } integers from the planned op
      * @returns {Object|null} Matching chain order, or null
      */
-    _findChainOrderForSlot(chainOrders, slotId, planned) {
+    _findChainOrderForSlot(chainOrders: any, slotId: any, planned: any) {
         return cowRuntime.findChainOrderForSlot(this, chainOrders, slotId, planned);
     }
 
@@ -1053,11 +1053,11 @@ class DEXBot {
      * @param {Array<Object>} opContexts - Original opContexts from the failed batch
      * @returns {Promise<Object>} Result object compatible with batch return shape
      */
-    async _reconcileAfterUncertainBroadcast(err, opContexts, options: Record<string, any> = {}) {
+    async _reconcileAfterUncertainBroadcast(err: any, opContexts: any, options: Record<string, any> = {}) {
         return cowRuntime.reconcileAfterUncertainBroadcast(this, err, opContexts, options);
     }
 
-    async _reconcileAfterUncertainBroadcastImpl(err, opContexts, options) {
+    async _reconcileAfterUncertainBroadcastImpl(err: any, opContexts: any, options: any) {
         return cowRuntime.reconcileAfterUncertainBroadcastImpl(this, err, opContexts, options);
     }
     /**
@@ -1096,7 +1096,7 @@ class DEXBot {
      * @param {Array<Object>} opContexts - Operation contexts array
      * @returns {boolean} True if pair mode should be used
      */
-    _shouldExecuteCreatePairMode(opContexts) {
+    _shouldExecuteCreatePairMode(opContexts: any) {
         return cowRuntime.shouldExecuteCreatePairMode(this, opContexts);
     }
 
@@ -1109,7 +1109,7 @@ class DEXBot {
      * execution where earlier groups already committed). Re-broadcasting
      * the full operations array would duplicate those creates on chain.
      */
-    async _executeWithRetryOnUncertain(operations, opContexts) {
+    async _executeWithRetryOnUncertain(operations: any, opContexts: any) {
         return cowRuntime.executeWithRetryOnUncertain(this, operations, opContexts);
     }
 
@@ -1119,7 +1119,7 @@ class DEXBot {
      * @param {Array<Object>} opContexts - Array of operation context metadata (1:1 with operations)
      * @returns {Promise<{result: Object, opContexts: Array}>} Execution result with contexts
      */
-    async _executeOperationsWithStrategy(operations, opContexts) {
+    async _executeOperationsWithStrategy(operations: any, opContexts: any) {
         return cowRuntime.executeOperationsWithStrategy(this, operations, opContexts);
     }
 
@@ -1132,7 +1132,7 @@ class DEXBot {
      * @returns {Object} { isValid: boolean, summary: string }
      * @private
      */
-    _validateOperationFunds(operations, assetA, assetB) {
+    _validateOperationFunds(operations: any, assetA: any, assetB: any) {
         return cowRuntime.validateOperationFunds(this, operations, assetA, assetB);
     }
 
@@ -1142,7 +1142,7 @@ class DEXBot {
      * @param {number|null} [fallbackSize=null] - Fallback size if none found
      * @returns {number|null} Resolved size or null
      */
-    _resolveIdealSizeForValidation(orderLike, fallbackSize = null) {
+    _resolveIdealSizeForValidation(orderLike: any, fallbackSize: any = null) {
         return cowRuntime.resolveIdealSizeForValidation(this, orderLike, fallbackSize);
     }
 
@@ -1154,7 +1154,7 @@ class DEXBot {
      * @param {number|null} [fallbackSize=null] - Fallback ideal size
      * @returns {import('./types').OrderValidationResult}
      */
-    _validateOrderSizeForExecution(size, type, orderLike = null, fallbackSize = null) {
+    _validateOrderSizeForExecution(size: any, type: any, orderLike: any = null, fallbackSize: any = null) {
         return cowRuntime.validateOrderSizeForExecution(this, size, type, orderLike, fallbackSize);
     }
 
@@ -1164,7 +1164,7 @@ class DEXBot {
      * @param {string} [contextLabel='rebalance'] - Context label for logging
      * @returns {Promise<Object>} Batch execution result
      */
-    async _executeBatchIfNeeded(rebalanceResult, contextLabel = 'rebalance') {
+    async _executeBatchIfNeeded(rebalanceResult: any, contextLabel: any = 'rebalance') {
         if (!hasExecutableActions(rebalanceResult)) {
             this.manager?.logger?.log?.(`[COW] No actions needed for ${contextLabel}`, 'debug');
             // Clear REBALANCING state even when there are no actions to execute.
@@ -1211,7 +1211,7 @@ class DEXBot {
      * @param {Object} [options={}] - Passed through to processFilledOrders
      * @returns {{aborted: boolean}}
      */
-    async _processFillsWithBatching(fills, excl, contextLabel, options = {}) {
+    async _processFillsWithBatching(fills: any, excl: any, contextLabel: any, options: any = {}) {
         if (!fills || fills.length === 0) {
             return { aborted: false };
         }
@@ -1239,7 +1239,7 @@ class DEXBot {
                 const fillBatch = fills.slice(i, batchEnd);
                 i = batchEnd;
 
-                const batchIds = fillBatch.map(f => f.id).join(', ');
+                const batchIds = fillBatch.map((f: any) => f.id).join(', ');
                 const label = `${contextLabel} [${batchIds}]`;
                 managerLog(
                     `>>> Processing fill set ${label} (${i}/${totalFills})`,
@@ -1248,7 +1248,7 @@ class DEXBot {
 
                 let fullExcludeSet = excl || new Set();
                 if (!useUnifiedPlan) {
-                    const batchIdSet = new Set(fillBatch.map(f => f.id));
+                    const batchIdSet = new Set(fillBatch.map((f: any) => f.id));
                     fullExcludeSet = new Set(excl || []);
                     for (const other of fills) {
                         if (batchIdSet.has(other.id)) continue;
@@ -1301,7 +1301,7 @@ class DEXBot {
      * @param {string} reason - Reason for suspension
      * @returns {void}
      */
-    _suspendGridPersistenceForCredentialOutage(reason) {
+    _suspendGridPersistenceForCredentialOutage(reason: any) {
         if (typeof this.manager?.suspendGridPersistence === 'function') {
             this.manager.suspendGridPersistence(reason);
         }
@@ -1312,7 +1312,7 @@ class DEXBot {
      * @param {string} reason - Reason for resuming
      * @returns {void}
      */
-    _resumeGridPersistenceAfterCredentialRecovery(reason) {
+    _resumeGridPersistenceAfterCredentialRecovery(reason: any) {
         if (typeof this.manager?.resumeGridPersistence === 'function') {
             this.manager.resumeGridPersistence(reason);
         }
@@ -1324,7 +1324,7 @@ class DEXBot {
      * @returns {Promise<void>}
      * @throws {Error} With code CREDENTIAL_DAEMON_UNAVAILABLE if daemon is down
      */
-    async _ensureCredentialDaemonWritable(contextLabel = 'write batch') {
+    async _ensureCredentialDaemonWritable(contextLabel: any = 'write batch') {
         if (!this._isCredentialDaemonWriteRequired()) {
             return;
         }
@@ -1355,7 +1355,7 @@ class DEXBot {
      * @param {Error|*} err - Error to check
      * @returns {boolean}
      */
-    _isCredentialDaemonError(err) {
+    _isCredentialDaemonError(err: any) {
         if (!err) return false;
         if (err.code === DAEMON_CODES.CREDENTIAL_DAEMON_UNAVAILABLE) return true;
         const message = String(err.message || '');
@@ -1379,7 +1379,7 @@ class DEXBot {
                 );
                 this._credentialRecoveryDeferredTimer = setTimeout(() => {
                     this._credentialRecoveryDeferredTimer = null;
-                    this._runCredentialRecoveryAfterDaemonRestored().catch(err => {
+                    this._runCredentialRecoveryAfterDaemonRestored().catch((err: any) => {
                         this.manager?.logger?.log?.(`[CREDENTIAL] Deferred recovery failed: ${err.message}`, 'error');
                         if (this.manager) {
                             this.manager._recoveryState = { ...this.manager._recoveryState, lastFailureAt: Date.now() };
@@ -1486,7 +1486,7 @@ class DEXBot {
         };
 
         this._credentialDaemonWatchdogInterval = setInterval(() => {
-            probe().catch(err => {
+            probe().catch((err: any) => {
                 this.manager?.logger?.log?.(`[CREDENTIAL] Credential daemon watchdog error: ${err.message}`, 'warn');
             });
         }, intervalMs);
@@ -1514,7 +1514,7 @@ class DEXBot {
      * @param {Object} rebalanceResult - COW result containing workingGrid + actions.
      * @returns {Promise<Object>} The batch result.
      */
-    async updateOrdersOnChainBatch(rebalanceResult) {
+    async updateOrdersOnChainBatch(rebalanceResult: any) {
         if (!rebalanceResult || !rebalanceResult.workingGrid) {
             const reason = 'NON_COW_PAYLOAD';
             this.manager?.logger?.log?.(
@@ -1533,7 +1533,7 @@ class DEXBot {
      * @param {Object|Array} plan - Plan object or array of ordersToPlace
      * @returns {Promise<Object>} Batch execution result
      */
-    async updateOrdersOnChainPlan(plan) {
+    async updateOrdersOnChainPlan(plan: any) {
         const cowResult = this._buildCowResultFromPlan(plan);
         return await this._updateOrdersOnChainBatchCOW(cowResult);
     }
@@ -1543,7 +1543,7 @@ class DEXBot {
      * @param {Object|Array} plan - Plan object with ordersToPlace/ordersToRotate/ordersToUpdate/ordersToCancel, or array of ordersToPlace
      * @returns {Array<{type: string, id: string, order?: Object, orderId?: string, newSize?: number, newPrice?: number, newGridId?: string}>}
      */
-    _buildActionsFromPlan(plan) {
+    _buildActionsFromPlan(plan: any) {
         return cowRuntime.buildActionsFromPlan(this, plan);
     }
 
@@ -1552,7 +1552,7 @@ class DEXBot {
      * @param {Object|Array} plan - Plan object or array of ordersToPlace
      * @returns {{workingGrid: import('./types').WorkingGrid, workingIndexes: Object, workingBoundary: number, actions: Array}}
      */
-    _buildCowResultFromPlan(plan) {
+    _buildCowResultFromPlan(plan: any) {
         return cowRuntime.buildCowResultFromPlan(this, plan);
     }
 
@@ -1563,7 +1563,7 @@ class DEXBot {
      * @param {number} [skippedCount=0] - Count of skipped actions for logging
      * @returns {void}
      */
-    _restoreSkippedUpdateSlotsInWorkingGrid(workingGrid, skippedSlotIds, skippedCount = 0) {
+    _restoreSkippedUpdateSlotsInWorkingGrid(workingGrid: any, skippedSlotIds: any, skippedCount: any = 0) {
         return cowRuntime.restoreSkippedUpdateSlotsInWorkingGrid(this, workingGrid, skippedSlotIds, skippedCount);
     }
 
@@ -1574,11 +1574,11 @@ class DEXBot {
      * @returns {Promise<Object>} The batch result.
      * @private
      */
-    async _updateOrdersOnChainBatchCOW(cowResult) {
+    async _updateOrdersOnChainBatchCOW(cowResult: any) {
         return cowRuntime.updateOrdersOnChainBatchCOW(this, cowResult);
     }
 
-    async _processBatchResults(result, opContexts) {
+    async _processBatchResults(result: any, opContexts: any) {
         return cowRuntime.processBatchResults(this, result, opContexts);
     }
     /**
@@ -1589,7 +1589,7 @@ class DEXBot {
      * @returns {Promise<boolean>} True if resync succeeded
      * @private
      */
-    async _performGridResync(options = {}) {
+    async _performGridResync(options: any = {}) {
         return DexbotMaintenanceRuntime.performGridResync(this, options);
     }
 
@@ -1617,7 +1617,7 @@ class DEXBot {
      * @param {string|Object|Buffer} [vaultSecret=null] - The unlock secret.
      * @returns {Promise<void>}
      */
-    async start(vaultSecret = null) {
+    async start(vaultSecret: any = null) {
         await this.initialize(vaultSecret);
         await this._runStartupSequence();
     }
@@ -1628,7 +1628,7 @@ class DEXBot {
      * @param {string|Object} privateKey - Pre-decrypted private key or daemon signing token
      * @returns {Promise<void>}
      */
-    async startWithPrivateKey(privateKey) {
+    async startWithPrivateKey(privateKey: any) {
         // Initialize account data with provided private key
         await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
 
@@ -1726,7 +1726,7 @@ class DEXBot {
         return DexbotMaintenanceRuntime.stopBlockchainFetchInterval(this);
     }
 
-    async _releaseMarketAdapterRuntime(context = 'shutdown') {
+    async _releaseMarketAdapterRuntime(context: any = 'shutdown') {
         return DexbotMaintenanceRuntime.releaseMarketAdapterRuntime(this, this.config?.botKey || this.config?.name, context);
     }
 
@@ -1738,7 +1738,7 @@ class DEXBot {
         const lending = this.config?.debtPolicy?.lending;
         const enabledPolicy = Array.isArray(lending)
             && lending.length > 0
-            && lending.every((item) => typeof item?.collateralAsset === 'string' && item.collateralAsset.length > 0);
+            && lending.every((item: any) => typeof item?.collateralAsset === 'string' && item.collateralAsset.length > 0);
         if (!enabledPolicy) {
             this._creditRuntime = null;
             return null;
@@ -1784,7 +1784,7 @@ class DEXBot {
      * @param {Object} [options={}] - Maintenance options
      * @returns {Promise<*>} Maintenance result from runtime
      */
-    async _runCreditRuntimeMaintenance(context = 'periodic', options = {}) {
+    async _runCreditRuntimeMaintenance(context: any = 'periodic', options: any = {}) {
         const runtime = this._getCreditRuntime();
         if (!runtime) {
             return null;
@@ -1835,7 +1835,7 @@ class DEXBot {
         }
     }
 
-    async requestGridReset(reason = 'structural change', options: { refreshCenterPrice?: boolean; [key: string]: any } = {}) {
+    async requestGridReset(reason: any = 'structural change', options: { refreshCenterPrice?: boolean; [key: string]: any } = {}) {
         return DexbotMaintenanceRuntime.requestGridReset(this, reason, options);
     }
 
@@ -1882,7 +1882,7 @@ class DEXBot {
      * @param {Object} context - Maintenance context for logging.
      * @private
      */
-    async _executeMaintenanceLogic(context) {
+    async _executeMaintenanceLogic(context: any) {
         return DexbotMaintenanceRuntime.executeMaintenanceLogic(this, context);
     }
 
@@ -1894,7 +1894,7 @@ class DEXBot {
      * @returns {Promise<{cancelledCount: number, batchResult: {aborted: boolean}|null}>}
      * @private
      */
-    async _cancelDustOrders({ buy: buyDust = [], sell: sellDust = [] } = {}) {
+    async _cancelDustOrders({ buy: buyDust = [], sell: sellDust = [] }: any = {}) {
         return DexbotMaintenanceRuntime.cancelDustOrders(this, { buy: buyDust, sell: sellDust });
     }
 
@@ -1944,7 +1944,7 @@ class DEXBot {
      * @param {Object} options - Maintenance options
      * @private
      */
-    async _runGridMaintenance(context = 'periodic', options = {}) {
+    async _runGridMaintenance(context: any = 'periodic', options: any = {}) {
         return DexbotMaintenanceRuntime.runGridMaintenance(this, context, options);
     }
 
@@ -2061,7 +2061,7 @@ class DEXBot {
                 this._warn('Shutdown lock skipped: manager or fillProcessingLock unavailable');
             } else {
                 const shutdownLockTimeoutMs = this.config?.timing?.SYNC_LOCK_TIMEOUT_MS;
-                let shutdownLockTimer;
+                let shutdownLockTimer: any;
                 // AsyncLock starts the callback as soon as the lock is available,
                 // which can be a few ms after the timeout fires. Without this
                 // claim flag, the lock callback and the fallback path would both
@@ -2096,7 +2096,7 @@ class DEXBot {
                             }
                         }
                     }).then(() => 'acquired'),
-                    new Promise<string>((resolve) => {
+                    new Promise<string>((resolve: any) => {
                         shutdownLockTimer = setTimeout(() => {
                             // Claim the flush for the fallback path BEFORE the
                             // race resolves, so if the lock callback starts
@@ -2177,6 +2177,8 @@ class DEXBot {
     }
 }
 
-export = Object.assign(DEXBot, {
-    normalizeBotEntry: require('./bot_settings').normalizeBotEntry
-});
+(DEXBot as any).normalizeBotEntry = normalizeBotEntry;
+
+export default DEXBot
+
+module.exports = DEXBot

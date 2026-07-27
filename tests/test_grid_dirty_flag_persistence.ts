@@ -36,6 +36,7 @@ installBitsharesClientStub(bitsharesClientPath);
 
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 let testsComplete = false;
 process.on('unhandledRejection', (reason) => {
@@ -367,8 +368,8 @@ async function testMarkGridDirtyPublicMethod() {
         console.log('\n✓ All grid dirty-flag persistence tests passed!\n');
         process.exit(0);
     } catch (e) {
-        console.error('\n✗ Test failed:', e.message);
-        console.error(e.stack);
+        console.error('\n✗ Test failed:', getErrorMessage(e));
+        console.error((e as any).stack);
         process.exit(1);
     }
 })();

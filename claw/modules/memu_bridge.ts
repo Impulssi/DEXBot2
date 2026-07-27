@@ -1,9 +1,11 @@
-const { path } = require('../../modules/path_api');
-const { getStorage } = require('../../modules/storage');
+
+import { path } from '../../modules/path_api';
+import { getStorage } from '../../modules/storage';
+import { PATHS } from '../../modules/paths';
+import { runtime } from '../../modules/runtime';
+import { ensureDir, safeUnlink } from '../../modules/utils/fs_utils';
+import { Config } from '../../modules/config';
 const storage = getStorage();
-const { PATHS } = require('../../modules/paths');
-const { runtime } = require('../../modules/runtime');
-const { ensureDir, safeUnlink } = require('../../modules/utils/fs_utils');
 
 let _spawn: any;
 function getSpawn(): any {
@@ -21,7 +23,6 @@ function getSpawn(): any {
 }
 
 const DEFAULT_MEMU_DIR = PATHS.CLAW.MEMU_DIR;
-const { Config } = require('../../modules/config');
 const DEFAULT_PYTHON = Config.MEMU_PYTHON;
 
 function resolveMemuScript() {
@@ -496,10 +497,5 @@ async function runMemuCommand(command: string, options: Record<string, any> = {}
   }
 }
 
-export = {
-  createMemuBridge,
-  describeMemuBridge,
-  runMemuCommand,
-  resolveMemuScript,
-  DEFAULT_MEMU_DIR
-};
+export { createMemuBridge, describeMemuBridge, runMemuCommand, resolveMemuScript, DEFAULT_MEMU_DIR }
+

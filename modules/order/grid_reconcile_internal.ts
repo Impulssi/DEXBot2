@@ -5,14 +5,13 @@
  * All helpers are prefixed with _ and are NOT part of the public API.
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } = require('../constants');
-const { getMinAbsoluteOrderSize, getAssetFees, blockchainToFloat } = require('./utils/math');
-const { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults } = require('./utils/order');
-const { resolveAccountRef } = require('./utils/system');
-const Format = require('./format');
 
-const SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5;
 
+import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
+import { getMinAbsoluteOrderSize, getAssetFees, blockchainToFloat } from './utils/math';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults } from './utils/order';
+import { resolveAccountRef } from './utils/system';
+import * as Format from './format';
 /**
  * Count active orders on the grid for a given type.
  * @param {Object} manager - OrderManager instance.
@@ -67,16 +66,16 @@ function _getStartupSideComparators(orderType: any, assets: any): { sortUpdateCo
     const isSell = orderType === ORDER_TYPES.SELL;
 
     const sortUpdateComparator = isSell
-        ? (a, b) => (parseChainOrder(a, assets)?.price || 0) - (parseChainOrder(b, assets)?.price || 0)
-        : (a, b) => (parseChainOrder(b, assets)?.price || 0) - (parseChainOrder(a, assets)?.price || 0);
+        ? (a: any, b: any) => (parseChainOrder(a, assets)?.price || 0) - (parseChainOrder(b, assets)?.price || 0)
+        : (a: any, b: any) => (parseChainOrder(b, assets)?.price || 0) - (parseChainOrder(a, assets)?.price || 0);
 
     const sortExcessCancelComparator = isSell
-        ? (a, b) => (b.parsed.price || 0) - (a.parsed.price || 0)
-        : (a, b) => (a.parsed.price || 0) - (b.parsed.price || 0);
+        ? (a: any, b: any) => (b.parsed.price || 0) - (a.parsed.price || 0)
+        : (a: any, b: any) => (a.parsed.price || 0) - (b.parsed.price || 0);
 
     const sortMatchedCancelComparator = isSell
-        ? (a, b) => (b.price || 0) - (a.price || 0)
-        : (a, b) => (a.price || 0) - (b.price || 0);
+        ? (a: any, b: any) => (b.price || 0) - (a.price || 0)
+        : (a: any, b: any) => (a.price || 0) - (b.price || 0);
 
     return {
         sortUpdateComparator,
@@ -328,7 +327,7 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
     // synchronizeWithChain('cancelOrder') cannot release their commitment.
     if (releaseUntrackedFunds && manager.accountant && chainOrderObj) {
         const parsed = parseChainOrder(chainOrderObj, manager.assets);
-        if (parsed && parsed.size > 0) {
+        if (parsed && parsed.size != null && parsed.size > 0) {
             await manager.accountant.addToChainFree(parsed.type, parsed.size, 'startup-cancel-unmatched');
         }
     }
@@ -357,11 +356,11 @@ function _refreshStartupUpdatePlans(updatePlans: any, chainOpenOrders: any): any
     if (!Array.isArray(updatePlans) || updatePlans.length === 0) return [];
     const chainById = new Map(
         (Array.isArray(chainOpenOrders) ? chainOpenOrders : [])
-            .filter(o => o && o.id)
-            .map(o => [o.id, o])
+            .filter((o: any) => o && o.id)
+            .map((o: any) => [o.id, o])
     );
 
-    const refreshed = [];
+    const refreshed: any[] = [];
     for (const plan of updatePlans) {
         if (!plan?.chainOrderId || !plan?.gridOrder?.id) continue;
         const freshChainOrder = chainById.get(plan.chainOrderId);
@@ -420,7 +419,9 @@ async function _finalizeStartupUpdate({ manager, preparedUpdate }: { manager: an
     // the correct btsFeeState after a grid reset.
     // deferred_fee from chain is in raw satoshis (BTS precision 5).
     // The fee lifecycle operates in float BTS units, so convert here.
-    const rawDeferredFee = Format.toFiniteNumber(plan.chainOrderObj?.deferred_fee, null);
+    const rawDeferredFee = plan.chainOrderObj?.deferred_fee != null
+        ? Format.toFiniteNumber(plan.chainOrderObj?.deferred_fee, undefined)
+        : null;
     const deferredFeeFloat = rawDeferredFee !== null ? blockchainToFloat(rawDeferredFee, BTS_PRECISION) : null;
 
     const btsFeeData = getAssetFees('BTS');
@@ -458,7 +459,7 @@ async function _executeStartupUpdateBatch({
     }
 
     const logger = manager?.logger;
-    const prepared = [];
+    const prepared: any[] = [];
 
     for (const plan of updatePlans) {
         const preparedPlan = _prepareStartupUpdatePlan(plan, manager, logger);
@@ -487,7 +488,7 @@ async function _executeStartupUpdateBatch({
     }
 
     logger?.log?.(`Startup: Broadcasting update batch (${prepared.length} op${prepared.length > 1 ? 's' : ''})`, 'info');
-    await chainOrders.executeBatch(account, privateKey, prepared.map(p => p.op));
+    await chainOrders.executeBatch(account, privateKey, prepared.map((p: any) => p.op));
 
     for (const entry of prepared) {
         await _finalizeStartupUpdate({ manager, preparedUpdate: entry });
@@ -560,7 +561,7 @@ async function _executeStartupSequentialUpdateFallback({
     // Pre-filter: skip plans whose slots were already resolved by the recovery
     // sync that ran after the last failed batch attempt. This avoids flooding
     // the log with "slot already mapped" warnings for every plan.
-    const plans = updatePlans.filter(plan => {
+    const plans = updatePlans.filter((plan: any) => {
         const prepared = _prepareStartupUpdatePlan(plan, manager, logger);
         return prepared !== null;
     });
@@ -689,7 +690,7 @@ async function _executeStartupCreateGroupBatch({
     }
 
     const logger = manager?.logger;
-    const prepared = [];
+    const prepared: any[] = [];
 
     for (const plan of group) {
         const gridOrder = plan?.gridOrder;
@@ -738,7 +739,7 @@ async function _executeStartupCreateGroupBatch({
             'info'
         );
 
-        const batchResult = await chainOrders.executeBatch(account, privateKey, prepared.map(p => p.op));
+        const batchResult = await chainOrders.executeBatch(account, privateKey, prepared.map((p: any) => p.op));
         const opResults = _extractBatchOperationResults(batchResult);
         const btsFeeData = getAssetFees('BTS');
 
@@ -785,9 +786,9 @@ async function _executeStartupCreateGroupBatch({
 
 function _buildOutsideInCreateGroups(createPlans: any): any[] {
     return buildOutsideInPairGroups(createPlans, {
-        isValid: p => Boolean(p?.gridOrder),
-        getType: p => p.orderType,
-        getPrice: p => p.gridOrder?.price,
+        isValid: ((p: any) => p?.gridOrder != null) as unknown as BooleanConstructor,
+        getType: (p: any) => p.orderType,
+        getPrice: (p: any) => p.gridOrder?.price,
     });
 }
 
@@ -814,7 +815,7 @@ async function _executePlannedStartupCreates({
 
     for (let i = 0; i < groups.length; i++) {
         const group = groups[i];
-        const labels = group.map(p => `${p.orderType.toUpperCase()}:${p.gridOrder?.id}`).join(', ');
+        const labels = group.map((p: any) => `${p.orderType.toUpperCase()}:${p.gridOrder?.id}`).join(', ');
         logger?.log?.(`Startup: Create group ${i + 1}/${groups.length} (${labels})`, 'info');
 
         const canBatchCreate = typeof chainOrders?.buildCreateOrderOp === 'function' && typeof chainOrders?.executeBatch === 'function';
@@ -892,7 +893,7 @@ async function _reconcileStartupSide({
 
     const sortedUnmatched = unmatchedSideOrders.slice(0).sort(sortUpdateComparator);
     const updateCount = Math.min(sortedUnmatched.length, desiredSlots.length);
-    let cancelledIndex = null;
+    let cancelledIndex: number | null = null;
     let projectedSideBalance = Number(manager.accountTotals?.[balanceKey] || 0);
 
     logger?.log?.(
@@ -922,7 +923,7 @@ async function _reconcileStartupSide({
         const gridOrder = desiredSlots[i];
         const gridSize = Number(gridOrder.size) || 0;
         const parsedChain = parseChainOrder(chainOrder, manager.assets);
-        const currentSize = parsedChain ? parsedChain.size : 0;
+        const currentSize = parsedChain ? (parsedChain.size ?? 0) : 0;
         const sizeIncrease = Math.max(0, gridSize - currentSize);
         const currentAssetBalance = projectedSideBalance;
 
@@ -993,8 +994,8 @@ async function _reconcileStartupSide({
     let cancelCount = Math.max(0, chainCount - targetCount);
     if (cancelCount > 0) {
         const parsedUnmatched = processedUnmatched
-            .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-            .filter(x => x.parsed)
+            .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
+            .filter((x: any) => x.parsed)
             .sort(sortExcessCancelComparator);
 
         for (const x of parsedUnmatched) {
@@ -1020,7 +1021,7 @@ async function _reconcileStartupSide({
 
         if (cancelCount > 0) {
             const activeOrders = manager.getOrdersByTypeAndState(orderType, ORDER_STATES.ACTIVE)
-                .filter(o => o && o.orderId)
+                .filter((o: any) => o && o.orderId)
                 .sort(sortMatchedCancelComparator);
 
             for (const o of activeOrders) {
@@ -1042,14 +1043,5 @@ async function _reconcileStartupSide({
     };
 }
 
-module.exports = {
-    _countActiveOnGrid, _pickVirtualSlotsToActivate, _getStartupSideComparators,
-    _isGridEdgeFullyActive, _findLargestOrder, _cancelLargestOrder,
-    _createOrderFromGrid, _cancelChainOrder, _recoverStartupSyncFailure,
-    _refreshStartupUpdatePlans, _prepareStartupUpdatePlan, _finalizeStartupUpdate,
-    _executeStartupUpdateBatch, _executeStartupSingleUpdate,
-    _executeStartupSequentialUpdateFallback, _createStartupOrderWithHandling,
-    _extractBatchOperationResults, _resolveGroupRecovery,
-    _executeStartupCreateGroupBatch, _buildOutsideInCreateGroups,
-    _executePlannedStartupCreates, _reconcileStartupSide,
-};
+export { _countActiveOnGrid, _pickVirtualSlotsToActivate, _getStartupSideComparators, _isGridEdgeFullyActive, _findLargestOrder, _cancelLargestOrder, _createOrderFromGrid, _cancelChainOrder, _recoverStartupSyncFailure, _refreshStartupUpdatePlans, _prepareStartupUpdatePlan, _finalizeStartupUpdate, _executeStartupUpdateBatch, _executeStartupSingleUpdate, _executeStartupSequentialUpdateFallback, _createStartupOrderWithHandling, _extractBatchOperationResults, _resolveGroupRecovery, _executeStartupCreateGroupBatch, _buildOutsideInCreateGroups, _executePlannedStartupCreates, _reconcileStartupSide }
+

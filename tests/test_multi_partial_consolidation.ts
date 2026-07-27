@@ -2,6 +2,7 @@ const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { createTestLogger } = require('./helpers/silent_logger');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('='.repeat(70));
 console.log('Testing Multi-Partial Consolidation Rule (COW)');
@@ -106,8 +107,8 @@ async function testMultiPartialConsolidation() {
         console.log('='.repeat(70));
         process.exit(0);
     } catch (err) {
-        console.error('\n❌ Test failed:', err.message);
-        console.error(err.stack);
+        console.error('\n❌ Test failed:', getErrorMessage(err));
+        console.error((err as any).stack);
         process.exit(1);
     }
 })();

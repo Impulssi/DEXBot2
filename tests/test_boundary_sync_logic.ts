@@ -8,6 +8,7 @@ const { OrderManager } = require('../modules/order/manager');
 const Grid = require('../modules/order/grid');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 const { createTestLogger } = require('./helpers/silent_logger');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 function createMockManager(buyFunds = 10000, sellFunds = 100, startPrice = 100) {
     const manager = new OrderManager({
@@ -253,7 +254,7 @@ async function runTests() {
         console.log('\n✓ All boundary sync and startup integration tests passed!');
         process.exit(0);
     } catch (err) {
-        console.error('\n✗ Test failed:', err.message);
+        console.error('\n✗ Test failed:', getErrorMessage(err));
         process.exit(1);
     }
 }

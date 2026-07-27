@@ -20,7 +20,6 @@ const originalConsoleError = console.error;
 const monolithicPidPath = path.resolve(__dirname, '..', 'profiles', 'monolithic.pid');
 const monolithicCredPidPath = path.resolve(__dirname, '..', 'profiles', 'monolithic-cred.pid');
 const monolithicBotInfoPath = path.resolve(__dirname, '..', 'profiles', 'monolithic-bot.json');
-const botsFile = path.resolve(__dirname, '..', 'profiles', 'bots.json');
 
 const logs: any[] = [];
 const errors: any[] = [];
@@ -67,7 +66,7 @@ function installStubs() {
         },
     });
 
-    childProcess.spawn = (command, args, options) => {
+    childProcess.spawn = (_command, _args, _options) => {
         return makeFakeChild();
     };
 

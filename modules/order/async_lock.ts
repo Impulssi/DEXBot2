@@ -82,8 +82,9 @@
  * @class
  */
 
-const { getNodeRequire } = require('../env');
 
+
+import { getNodeRequire } from '../env';
 interface QueueItem<T = unknown> {
     callback: () => Promise<T>;
     cancelToken?: { isCancelled: boolean };
@@ -124,7 +125,6 @@ class AsyncLock {
     private _holding: boolean;
     private _generation: number;
     private _defaultTimeout: number | null;
-    private _level: number;
     private _onContention: (() => void) | null;
     private readonly _lockId: symbol;
 
@@ -134,7 +134,6 @@ class AsyncLock {
         this._holding = false;
         this._generation = 0;
         this._defaultTimeout = options.timeout || null;
-        this._level = options.level ?? 0;
         this._onContention = options.onContention || null;
         this._lockId = Symbol('AsyncLock');
     }
@@ -227,7 +226,7 @@ class AsyncLock {
         // Mark as locked to prevent concurrent processing
         this._locked = true;
 
-        const { callback, resolve, reject, cancelToken } = this._queue.shift();
+        const { callback, resolve, reject, cancelToken } = this._queue.shift()!;
 
         // If operation was cancelled while in queue, skip it
         if (cancelToken && cancelToken.isCancelled) {
@@ -303,7 +302,7 @@ class AsyncLock {
     clearQueue(): number {
         const count = this._queue.length;
         while (this._queue.length > 0) {
-            const { reject } = this._queue.shift();
+            const { reject } = this._queue.shift()!;
             reject(new Error('Lock queue cleared'));
         }
         return count;
@@ -336,7 +335,7 @@ class AsyncLock {
         this._generation++;
         this._holding = false;
         while (this._queue.length > 0) {
-            const { reject, timer } = this._queue.shift();
+            const { reject, timer } = this._queue.shift()!;
             if (timer) clearTimeout(timer);
             reject(new Error('Lock force-released'));
         }
@@ -345,4 +344,6 @@ class AsyncLock {
     }
 }
 
-export = AsyncLock;
+export default AsyncLock
+module.exports = AsyncLock
+

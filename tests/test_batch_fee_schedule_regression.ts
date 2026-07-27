@@ -10,27 +10,17 @@ if (typeof bsModule.setSuppressConnectionLog === 'function') {
 async function run() {
     console.log('Running batch fee schedule regression test...');
 
-    const originalGetAssetFees = mathUtils.getAssetFees;
-
     try {
         // Regression guard:
         // - getAssetFees('BTS') returns fee schedule (createFee/updateFee)
         // - getAssetFees('BTS', amount) returns proceeds projection (no createFee/updateFee)
         // _processBatchResults must use the fee schedule variant.
-        mathUtils.getAssetFees = (asset, amount = null) => {
-            if (asset !== 'BTS') return {};
-            if (amount !== null && amount !== undefined) {
-                return { netProceeds: 123.456, total: 123.456, refund: 0 };
+        mathUtils._setFeeCache({
+            BTS: {
+                limitOrderCreate: { bts: 0.06 },
+                limitOrderUpdate: { bts: 0.03 }
             }
-            return {
-                createFee: 0.06,
-                updateFee: 0.03,
-                makerNetFee: 0.006,
-                takerNetFee: 0.06,
-                netFee: 0.006,
-                total: 0.036
-            };
-        };
+        });
 
         let captured = null;
 
@@ -57,7 +47,7 @@ async function run() {
 
         console.log('✓ batch fee schedule regression test passed');
     } finally {
-        mathUtils.getAssetFees = originalGetAssetFees;
+        mathUtils._setFeeCache({});
     }
 }
 

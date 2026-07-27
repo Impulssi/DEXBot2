@@ -1,8 +1,10 @@
+
+import { NATIVE_CLIENT } from '../../constants';
+import { LRUCache } from '../lru_cache';
+import Logger from '../../logger';
+import { hasTxBuilderFeeCacheTtlSet, getTxBuilderFeeCacheTtl } from '../../config';
 'use strict';
 
-const { NATIVE_CLIENT } = require('../../constants');
-const { LRUCache } = require('../lru_cache');
-const Logger = require('../../logger');
 const txCacheLogger = new Logger('TxCache');
 
 const { TX_BUILDER } = NATIVE_CLIENT;
@@ -10,7 +12,6 @@ const { TX_BUILDER } = NATIVE_CLIENT;
 // Resolve fee cache TTL: env override > constants default
 function _resolveFeeCacheTtl(): number {
     try {
-        const { hasTxBuilderFeeCacheTtlSet, getTxBuilderFeeCacheTtl } = require('../../config');
         if (hasTxBuilderFeeCacheTtlSet()) {
             const v = getTxBuilderFeeCacheTtl();
             if (typeof v === 'number' && v > 0) return v;
@@ -70,10 +71,5 @@ function invalidateFees(): void {
     if (_feeCache) _feeCache.clear();
 }
 
-export = {
-    buildFeeCacheKey,
-    getFees,
-    setFees,
-    peekFees,
-    invalidateFees,
-};
+export { buildFeeCacheKey, getFees, setFees, peekFees, invalidateFees }
+

@@ -1,15 +1,10 @@
-const { BitShares } = require('./bitshares_client');
-const { executeOperations } = require('./chain_broadcast');
-const { loadDexbotOrderUtils, requireDexbot2Module, loadDexbotOrderConstants } = require('./dexbot_bridge');
-const {
-  getAsset,
-  getBackingAsset,
-  getFullAccount,
-  readOpenOrders,
-  resolveAccountId,
-  resolveAccountName
-} = require('./chain_queries');
-const { requireBtsBackedMpa, CORE_SYMBOL } = require('./mpa_utils');
+
+import * as client from './bitshares_client';
+const { BitShares } = client;
+import { executeOperations } from './chain_broadcast';
+import { loadDexbotOrderUtils, requireDexbot2Module, loadDexbotOrderConstants } from './dexbot_bridge';
+import { requireBtsBackedMpa, CORE_SYMBOL } from './mpa_utils';
+import { getAsset, getBackingAsset, getFullAccount, readOpenOrders, resolveAccountId, resolveAccountName } from './chain_queries.js';
 
 // Graphene protocol constant: operation type 4 = limit_order_create (fill events carry op[0] = 4 for matched orders)
 const FILL_ORDER_OPERATION_TYPE = 4;
@@ -352,21 +347,5 @@ async function listenForFills(accountNameOrId: any, callback: any) {
   };
 }
 
-export = {
-  adjustMpaCollateral,
-  borrowMpa,
-  buildBorrowMpaOperation,
-  buildCancelLimitOrderOperation,
-  buildCreateLimitOrderOperation,
-  buildUpdateLimitOrderOperation,
-  buildSettleMpaOperation,
-  cancelLimitOrder,
-  createLimitOrder,
-  executeBatch,
-  getMpaPosition,
-  getOpenOrders,
-  listenForFills,
-  repayMpaDebt,
-  updateLimitOrder,
-  settleMpa
-};
+export { adjustMpaCollateral, borrowMpa, buildBorrowMpaOperation, buildCancelLimitOrderOperation, buildCreateLimitOrderOperation, buildUpdateLimitOrderOperation, buildSettleMpaOperation, cancelLimitOrder, createLimitOrder, executeBatch, getMpaPosition, getOpenOrders, listenForFills, repayMpaDebt, updateLimitOrder, settleMpa }
+

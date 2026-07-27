@@ -1,6 +1,7 @@
+
+import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils';
 'use strict';
 
-const { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } = require('../chart_utils');
 
 /**
  * Build background-shading segments for a value array.
@@ -8,12 +9,12 @@ const { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT 
  * Returns an array of { from, to, color } objects (null-color segments omitted).
  */
 function buildSegments(values, greenFn, redFn) {
-    const segments = [];
-    let start = 0, color = null;
+    const segments: { from: number; to: number; color: string }[] = [];
+    let start = 0, color: string | null = null;
 
     for (let i = 0; i < values.length; i++) {
         const v = values[i];
-        let next = null;
+        let next: string | null = null;
         if (v != null) {
             if (greenFn(v))     next = 'rgba(46,160,67,0.13)';
             else if (redFn(v))  next = 'rgba(248,81,73,0.13)';
@@ -349,4 +350,5 @@ function generateRegimeHTML(data, title = 'Regime Analysis') {
 </html>`;
 }
 
-export = { generateRegimeHTML };
+export { generateRegimeHTML }
+

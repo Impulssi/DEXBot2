@@ -1,34 +1,36 @@
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { ensureDir } from '../modules/utils/fs_utils';
 'use strict';
 
 /**
  * Chart utilities for analysis HTML generators.
  */
 
-const fs = require('fs');
-const path = require('path');
-const { ensureDir } = require('../modules/utils/fs_utils');
 
-function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, (m) => ({
+function escapeHtml(str: string) {
+    const map: Record<string, string> = {
         '&': '&amp;',
         '<': '&lt;',
         '>': '&gt;',
         '"': '&quot;',
         "'": '&#039;',
-    }[m]));
+    };
+    return String(str).replace(/[&<>"']/g, (m: any) => map[m]);
 }
 
-function serializeJsonForScript(value) {
+function serializeJsonForScript(value: any) {
     return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
-function toEpochSeconds(ts, fallbackIdx) {
+function toEpochSeconds(ts: any, fallbackIdx: any) {
     const ms = new Date(ts).getTime();
     if (Number.isFinite(ms)) return Math.floor(ms / 1000);
     return fallbackIdx * 3600;
 }
 
-function writeChartFile(filePath, html) {
+function writeChartFile(filePath: any, html: any) {
     const chartDir = path.dirname(filePath);
     if (!fs.existsSync(chartDir)) ensureDir(chartDir);
     fs.writeFileSync(filePath, html, 'utf8');
@@ -138,10 +140,5 @@ function bindPan(chart) {
 }
 `;
 
-export = {
-    escapeHtml,
-    serializeJsonForScript,
-    toEpochSeconds,
-    writeChartFile,
-    UPLOT_SHARED_SCRIPT,
-};
+export { escapeHtml, serializeJsonForScript, toEpochSeconds, writeChartFile, UPLOT_SHARED_SCRIPT }
+

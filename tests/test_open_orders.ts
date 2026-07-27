@@ -5,6 +5,7 @@
  */
 
 const { BitShares } = require('../modules/bitshares_client');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const ACCOUNT_NAME = 'hanzac-si';
 
@@ -24,7 +25,7 @@ async function getAssetPrecision(assetId) {
         assetPrecisions[assetId] = asset.precision;
         return asset.precision;
     } catch (e) {
-        console.error(`Failed to get precision for ${assetId}:`, e.message);
+        console.error(`Failed to get precision for ${assetId}:`, getErrorMessage(e));
         return 5; // default
     }
 }

@@ -1,9 +1,10 @@
 /** Fill processing runtime - handles order fill events and replay-safe accounting */
-const { PROCESSED_FILL_PERSISTENCE_MODES } = require('./order/processed_fill_store');
-function buildFillKey(...args) { return require('./order/utils/order').buildFillKey(...args); }
-function correctAllPriceMismatches(...args) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
-function retryPersistenceIfNeeded(...args) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
-const { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } = require('./constants');
+
+import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store';
+import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants';
+function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
+function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
+function retryPersistenceIfNeeded(...args: any) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
 
 /**
  * Wire processed fill tracking into the manager and processed fill store.
@@ -11,7 +12,7 @@ const { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } = req
  * and the OrderManager's processed fill tracker.
  * @param {import('./dexbot_class').DEXBot} bot
  */
-function wireProcessedFillTracking(bot) {
+function wireProcessedFillTracking(bot: any) {
     if (!bot.manager) return;
 
     bot._processedFillStore.configure({
@@ -31,7 +32,7 @@ function wireProcessedFillTracking(bot) {
  * @param {Object} [options] - Flush options forwarded to ProcessedFillStore.flush
  * @returns {Promise<void>}
  */
-async function flushProcessedFillPersistence(bot, reason = 'manual', options = {}) {
+async function flushProcessedFillPersistence(bot: any, reason: any = 'manual', options: any = {}) {
     bot._processedFillStore.setShuttingDown(bot._shuttingDown);
     await bot._processedFillStore.flush(reason, options);
 }
@@ -44,7 +45,7 @@ async function flushProcessedFillPersistence(bot, reason = 'manual', options = {
  * @param {Object} [options] - Flush options forwarded to ProcessedFillStore.flushKeys
  * @returns {Promise<void>}
  */
-async function flushProcessedFillPersistenceForKeys(bot, fillKeys, reason = 'manual-selected', options = {}) {
+async function flushProcessedFillPersistenceForKeys(bot: any, fillKeys: any, reason: any = 'manual-selected', options: any = {}) {
     bot._processedFillStore.setShuttingDown(bot._shuttingDown);
     await bot._processedFillStore.flushKeys(fillKeys, reason, options);
 }
@@ -54,7 +55,7 @@ async function flushProcessedFillPersistenceForKeys(bot, fillKeys, reason = 'man
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {string[]|Set<string>} fillKeys - Fill keys to discard
  */
-function discardPendingProcessedFillPersistence(bot, fillKeys) {
+function discardPendingProcessedFillPersistence(bot: any, fillKeys: any) {
     bot._processedFillStore.discardKeys(fillKeys);
 }
 
@@ -65,7 +66,7 @@ function discardPendingProcessedFillPersistence(bot, fillKeys) {
  * @param {import('./types').FillEvent} fill - Raw fill event
  * @returns {string|null} Orphan fallback key or null if insufficient data
  */
-function buildOrphanFillFallbackKey(bot, fill) {
+function buildOrphanFillFallbackKey(bot: any, fill: any) {
     const fillOp = fill?.op?.[1];
     const orderId = fillOp?.order_id;
     const blockNum = fill?.block_num;
@@ -108,7 +109,7 @@ function buildOrphanFillFallbackKey(bot, fill) {
  * @param {boolean} [options.allowOrphanFallbackKey=false] - Allow degraded orphan fallback key
  * @returns {Promise<import('./types').ReplaySafeFillResult>}
  */
-async function applyReplaySafeFillAccounting(bot, fill, fillOp, {
+async function applyReplaySafeFillAccounting(bot: any, fill: any, fillOp: any, {
     missingKeyMessage,
     fallbackKeyMessage,
     replayMessage,
@@ -181,7 +182,7 @@ async function applyReplaySafeFillAccounting(bot, fill, fillOp, {
  * @param {string} [options.persistenceMode='batched'] - Processed fill persistence mode
  * @returns {Promise<import('./types').ReplaySafeFillResult>}
  */
-async function applyReplaySafeTrackedFillAccounting(bot, fill, fillOp, {
+async function applyReplaySafeTrackedFillAccounting(bot: any, fill: any, fillOp: any, {
     context,
     logger = bot.manager?.logger,
     replayMessage,
@@ -194,9 +195,9 @@ async function applyReplaySafeTrackedFillAccounting(bot, fill, fillOp, {
 } = {}) {
     return applyReplaySafeFillAccounting(bot, fill, fillOp, {
         logger,
-        missingKeyMessage: (op) => `[${context}] Missing fill history id for ${op.order_id}; deferring to open-orders sync`,
+        missingKeyMessage: (op: any) => `[${context}] Missing fill history id for ${op.order_id}; deferring to open-orders sync`,
         replayMessage,
-        errorMessage: (op, _fill, err) => `[${context}] Failed to process accounting for ${op.order_id}: ${err.message}`,
+        errorMessage: (op: any, _fill: any, err: any) => `[${context}] Failed to process accounting for ${op.order_id}: ${err.message}`,
         persistenceMode
     });
 }
@@ -214,7 +215,7 @@ async function applyReplaySafeTrackedFillAccounting(bot, fill, fillOp, {
  * @param {string} [options.persistenceMode='batched'] - Processed fill persistence mode
  * @returns {Promise<import('./types').ReplaySafeFillResult>}
  */
-async function applyReplaySafeOrphanFillAccounting(bot, fill, fillOp, {
+async function applyReplaySafeOrphanFillAccounting(bot: any, fill: any, fillOp: any, {
     context,
     logger = bot.manager?.logger,
     replayMessage,
@@ -227,10 +228,10 @@ async function applyReplaySafeOrphanFillAccounting(bot, fill, fillOp, {
 } = {}) {
     return applyReplaySafeFillAccounting(bot, fill, fillOp, {
         logger,
-        missingKeyMessage: (op) => `[${context}] Missing fill history id and orphan fallback key for ${op.order_id}; deferring to open-orders sync`,
-        fallbackKeyMessage: (op) => `[${context}] Missing fill history id for orphan fill ${op.order_id}; using degraded orphan replay key for proceeds-only accounting`,
+        missingKeyMessage: (op: any) => `[${context}] Missing fill history id and orphan fallback key for ${op.order_id}; deferring to open-orders sync`,
+        fallbackKeyMessage: (op: any) => `[${context}] Missing fill history id for orphan fill ${op.order_id}; using degraded orphan replay key for proceeds-only accounting`,
         replayMessage,
-        errorMessage: (op, _fill, err) => `[${context}] Failed to process accounting for ${op.order_id}: ${err.message}`,
+        errorMessage: (op: any, _fill: any, err: any) => `[${context}] Failed to process accounting for ${op.order_id}: ${err.message}`,
         persistenceMode,
         allowOrphanFallbackKey: true
     });
@@ -243,8 +244,8 @@ async function applyReplaySafeOrphanFillAccounting(bot, fill, fillOp, {
  * @param {Object} chainOrders - Chain orders module
  * @returns {Function} Async callback function accepting an array of fill events
  */
-function createFillCallback(bot, chainOrders) {
-    return async (fills) => {
+function createFillCallback(bot: any, chainOrders: any) {
+    return async (fills: any) => {
         if (bot._shuttingDown) {
             return;
         }
@@ -258,7 +259,7 @@ function createFillCallback(bot, chainOrders) {
             }
             bot._markGridActivity?.('fill queued');
             bot._incomingFillQueue.push(...fills);
-            bot._consumeFillQueue(chainOrders).catch(err => {
+            bot._consumeFillQueue(chainOrders).catch((err: any) => {
                 bot._warn(`Fill queue consume failed: ${err.message}`);
             });
         }
@@ -270,7 +271,7 @@ function createFillCallback(bot, chainOrders) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {number}
  */
-function maxConsecutiveFillConsumerFailures(bot) {
+function maxConsecutiveFillConsumerFailures(bot: any) {
     return bot.config.fillProcessing?.MAX_CONSECUTIVE_CONSUMER_FAILURES ?? FILL_PROCESSING.MAX_CONSECUTIVE_CONSUMER_FAILURES;
 }
 
@@ -283,7 +284,7 @@ function maxConsecutiveFillConsumerFailures(bot) {
  * @param {number} failures The current consecutive-failure count.
  * @returns {number} Delay in milliseconds before the next retry.
  */
-function computeFillConsumerBackoffMs(bot, failures) {
+function computeFillConsumerBackoffMs(bot: any, failures: any) {
     const fp = bot.config.fillProcessing || FILL_PROCESSING;
     const initial = fp.CONSUMER_BACKOFF_INITIAL_MS;
     const max = fp.CONSUMER_BACKOFF_MAX_MS;
@@ -298,7 +299,7 @@ function computeFillConsumerBackoffMs(bot, failures) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {Object} chainOrders - Chain orders module
  */
-function scheduleFillConsumerRestart(bot, chainOrders) {
+function scheduleFillConsumerRestart(bot: any, chainOrders: any) {
     const failures = bot._consecutiveConsumeFailures;
     if (failures >= maxConsecutiveFillConsumerFailures(bot)) {
         const backoffMs = computeFillConsumerBackoffMs(bot, failures);
@@ -319,7 +320,7 @@ function scheduleFillConsumerRestart(bot, chainOrders) {
         );
         setTimeout(() => {
             if (bot._shuttingDown) return;
-            bot._consumeFillQueue(chainOrders).catch(err => {
+            bot._consumeFillQueue(chainOrders).catch((err: any) => {
                 if (!bot._consumeFailureFirstAt) {
                     bot._consumeFailureFirstAt = Date.now();
                 }
@@ -346,7 +347,7 @@ function scheduleFillConsumerRestart(bot, chainOrders) {
         return;
     }
 
-    setImmediate(() => bot._consumeFillQueue(chainOrders).catch(err => {
+    setImmediate(() => bot._consumeFillQueue(chainOrders).catch((err: any) => {
         if (!bot._consumeFailureFirstAt) {
             bot._consumeFailureFirstAt = Date.now();
         }
@@ -367,12 +368,12 @@ function scheduleFillConsumerRestart(bot, chainOrders) {
  * @param {Object} chainOrders - Chain orders module for blockchain operations
  * @returns {Promise<void>}
  */
-async function processFillsWithBootstrapMode(bot, chainOrders) {
+async function processFillsWithBootstrapMode(bot: any, chainOrders: any) {
     if (bot._incomingFillQueue.length === 0) return;
 
     const startTime = Date.now();
     const fills = bot._incomingFillQueue.splice(0);
-    const validFills = [];
+    const validFills: any[] = [];
     const processedFillKeys = new Set();
     let requiresOpenOrdersSync = false;
 
@@ -381,7 +382,7 @@ async function processFillsWithBootstrapMode(bot, chainOrders) {
 
         const fillOp = fill.op[1];
         const gridOrder = bot.manager.orders.get(fillOp.order_id) ||
-            (Array.from(bot.manager.orders.values()) as any[]).find((o) => o.orderId === fillOp.order_id);
+            (Array.from(bot.manager.orders.values()) as any[]).find((o: any) => o.orderId === fillOp.order_id);
         if (!gridOrder) {
             let orphanFillKey = buildFillKey(fill);
 
@@ -411,7 +412,7 @@ async function processFillsWithBootstrapMode(bot, chainOrders) {
         try {
             const accountingResult = await bot._applyReplaySafeTrackedFillAccounting(fill, fillOp, {
                 context: 'BOOTSTRAP',
-                replayMessage: (op) => `[BOOTSTRAP] Replay detected for ${op.order_id}; skipping duplicate bootstrap rebalance`
+                replayMessage: (op: any) => `[BOOTSTRAP] Replay detected for ${op.order_id}; skipping duplicate bootstrap rebalance`
             });
             if (accountingResult.status === 'missing_key') {
                 requiresOpenOrdersSync = true;
@@ -435,7 +436,7 @@ async function processFillsWithBootstrapMode(bot, chainOrders) {
         const bootstrapChainOpenOrders = await chainOrders.readOpenOrders(bot.accountId);
         const syncResult = await bot.manager.syncFromOpenOrders(bootstrapChainOpenOrders);
         if (syncResult.filledOrders?.length > 0) {
-            const queuedOrderIds = new Set(validFills.map(fill => fill?.gridOrder?.orderId).filter(Boolean));
+            const queuedOrderIds = new Set(validFills.map((fill: any) => fill?.gridOrder?.orderId).filter(Boolean));
             for (const filledOrder of syncResult.filledOrders) {
                 if (!filledOrder?.orderId || queuedOrderIds.has(filledOrder.orderId)) continue;
                 validFills.push({ gridOrder: filledOrder });
@@ -451,7 +452,7 @@ async function processFillsWithBootstrapMode(bot, chainOrders) {
     try {
         bot._log(`[BOOTSTRAP] Processing ${validFills.length} fill(s) through standard pipeline`, 'info');
 
-        const filledOrders = validFills.map(f => f.gridOrder);
+        const filledOrders = validFills.map((f: any) => f.gridOrder);
         const result = await bot._processFillsWithBatching(
             filledOrders,
             new Set(),
@@ -464,7 +465,7 @@ async function processFillsWithBootstrapMode(bot, chainOrders) {
 
         bot._metrics.fillsProcessed += validFills.length;
         bot._metrics.fillProcessingTimeMs += Date.now() - startTime;
-    } catch (err) {
+    } catch (err: any) {
         bot._warn(`[BOOTSTRAP] Error processing fills: ${err.message}`);
         bot.manager.logger.log(`[BOOTSTRAP] Fill error: ${err.message}`, 'error');
     }
@@ -479,7 +480,7 @@ async function processFillsWithBootstrapMode(bot, chainOrders) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {Object} chainOrders - Chain orders module for blockchain operations
  */
-async function consumeFillQueue(bot, chainOrders) {
+async function consumeFillQueue(bot: any, chainOrders: any) {
     const resetFailureWatchdogIfSet = () => {
         if (bot._consecutiveConsumeFailures > 0 || bot._consumeFailureFirstAt > 0) {
             bot._consecutiveConsumeFailures = 0;
@@ -539,7 +540,7 @@ async function consumeFillQueue(bot, chainOrders) {
 
                 const allFills = bot._incomingFillQueue.splice(0);
 
-                const validFills = [];
+                const validFills: any[] = [];
                 const processedFillKeys = new Set();
                 pendingFillKeysForCurrentCycle = new Set();
                 let requiresOpenOrdersSync = false;
@@ -562,7 +563,7 @@ async function consumeFillQueue(bot, chainOrders) {
                         }
 
                         const gridOrder = bot.manager.orders.get(fillOp.order_id) ||
-            (Array.from(bot.manager.orders.values()) as any[]).find((o) => o.orderId === fillOp.order_id);
+            (Array.from(bot.manager.orders.values()) as any[]).find((o: any) => o.orderId === fillOp.order_id);
                         if (!gridOrder) {
                             const staleMarkedAt = bot._staleCleanedOrderIds.get(fillOp.order_id);
                             if (staleMarkedAt != null) {
@@ -589,7 +590,7 @@ async function consumeFillQueue(bot, chainOrders) {
                             bot.manager.logger.log(`[ORPHAN-FILL] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
                             const accountingResult = await bot._applyReplaySafeOrphanFillAccounting(fill, fillOp, {
                                 context: 'ORPHAN-FILL',
-                                replayMessage: (op) => `[ORPHAN-FILL] Replay detected for ${op.order_id}; skipping duplicate credit`
+                                replayMessage: (op: any) => `[ORPHAN-FILL] Replay detected for ${op.order_id}; skipping duplicate credit`
                             });
                             if (accountingResult.status === 'missing_key') {
                                 requiresOpenOrdersSync = true;
@@ -639,12 +640,12 @@ async function consumeFillQueue(bot, chainOrders) {
 
                 if (validFills.length === 0 && !requiresOpenOrdersSync) continue;
 
-                let allFilledOrders = [];
-                let ordersNeedingCorrection = [];
+                let allFilledOrders: any[] = [];
+                let ordersNeedingCorrection: any[] = [];
                 const fillMode = chainOrders.getFillProcessingMode();
 
-                const processValidFills = async (fillsToSync) => {
-                    let resolvedOrders = [];
+                const processValidFills = async (fillsToSync: any) => {
+                    let resolvedOrders: any[] = [];
                     if (fillMode === 'history') {
                         bot.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (history mode)`, 'info');
 
@@ -698,7 +699,7 @@ async function consumeFillQueue(bot, chainOrders) {
                 bot.manager.pauseFundRecalc();
                 try {
                     const fillsByBlock = new Map();
-                    const fillsWithoutBlock = [];
+                    const fillsWithoutBlock: any[] = [];
                     for (const fill of validFills) {
                         if (fill.block_num != null) {
                             const list = fillsByBlock.get(fill.block_num);
@@ -709,8 +710,8 @@ async function consumeFillQueue(bot, chainOrders) {
                         }
                     }
 
-                    const sortedBlocks = [...fillsByBlock.keys()].sort((a, b) => a - b);
-                    const accumulatedOrders = [];
+                    const sortedBlocks = [...fillsByBlock.keys()].sort((a: any, b: any) => a - b);
+                    const accumulatedOrders: any[] = [];
                     let anyRequiresSync = false;
                     const initialRequiresSync = requiresOpenOrdersSync;
                     for (const blockNum of sortedBlocks) {
@@ -762,7 +763,7 @@ async function consumeFillQueue(bot, chainOrders) {
                     );
                     let abortedFillCycle = result.aborted;
                     if (!abortedFillCycle) {
-                        const batchFillKeys = new Set(allFilledOrders.map(filledOrder => buildFillKey({
+                        const batchFillKeys = new Set(allFilledOrders.map((filledOrder: any) => buildFillKey({
                             orderId: filledOrder?.orderId,
                             blockNum: filledOrder?.blockNum,
                             historyId: filledOrder?.historyId
@@ -775,10 +776,10 @@ async function consumeFillQueue(bot, chainOrders) {
                         );
                     }
 
-                    const fullFillCount = allFilledOrders.filter(o =>
+                    const fullFillCount = allFilledOrders.filter((o: any) =>
                         o && o.isPartial !== true
                     ).length;
-                    const hasAnyFills = allFilledOrders.some(o => o);
+                    const hasAnyFills = allFilledOrders.some((o: any) => o);
                     const shouldRunPostFillChecks = !abortedFillCycle && fullFillCount > 0;
                     const shouldRunDustDetection = !abortedFillCycle && hasAnyFills;
 
@@ -823,7 +824,7 @@ async function consumeFillQueue(bot, chainOrders) {
                     try {
                         await bot.accountOrders.cleanOldProcessedFills(TIMING.FILL_RECORD_RETENTION_MS);
                         bot._fillCleanupCounter = 0;
-                    } catch (err) {
+                    } catch (err: any) {
                         bot.manager?.logger?.log(`Warning: Fill cleanup failed (will retry): ${err.message}`, 'warn');
                     }
                 }
@@ -855,7 +856,7 @@ async function consumeFillQueue(bot, chainOrders) {
             bot._consecutiveConsumeFailures = 0;
             bot._consumeFailureFirstAt = 0;
         });
-    } catch (err) {
+    } catch (err: any) {
         const isCredentialOutage = bot._isCredentialDaemonError(err);
         if (pendingFillKeysForCurrentCycle.size > 0) {
             const flushReason = isCredentialOutage
@@ -878,7 +879,7 @@ async function consumeFillQueue(bot, chainOrders) {
                     `[FILL-DEDUP] Persisted ${pendingFillKeysForCurrentCycle.size} verified processed-fill write(s) after fill cycle error${credentialSuffix}.`,
                     isCredentialOutage ? 'warn' : 'info'
                 );
-            } catch (flushErr) {
+            } catch (flushErr: any) {
                 bot.manager?.logger?.log?.(
                     `[FILL-DEDUP] Failed to persist verified fill keys during fill error handling: ${flushErr.message}`,
                     'warn'
@@ -899,19 +900,5 @@ async function consumeFillQueue(bot, chainOrders) {
     }
 }
 
-export = {
-    wireProcessedFillTracking,
-    flushProcessedFillPersistence,
-    flushProcessedFillPersistenceForKeys,
-    discardPendingProcessedFillPersistence,
-    buildOrphanFillFallbackKey,
-    applyReplaySafeFillAccounting,
-    applyReplaySafeTrackedFillAccounting,
-    applyReplaySafeOrphanFillAccounting,
-    createFillCallback,
-    maxConsecutiveFillConsumerFailures,
-    computeFillConsumerBackoffMs,
-    scheduleFillConsumerRestart,
-    consumeFillQueue,
-    processFillsWithBootstrapMode
-};
+export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, discardPendingProcessedFillPersistence, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, createFillCallback, maxConsecutiveFillConsumerFailures, computeFillConsumerBackoffMs, scheduleFillConsumerRestart, consumeFillQueue, processFillsWithBootstrapMode }
+

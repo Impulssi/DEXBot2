@@ -1,12 +1,13 @@
+
+import { NATIVE_CLIENT } from '../constants';
+import Logger from '../logger';
 'use strict';
 
-const { NATIVE_CLIENT } = require('../constants');
 const { SUBSCRIPTIONS, OPERATIONS } = NATIVE_CLIENT;
 
 const SUBSCRIBE_CALLBACK_ID = SUBSCRIPTIONS.CALLBACK_ID;
 const OP_FILL_ORDER = OPERATIONS.FILL_ORDER;
 
-const Logger = require('../logger');
 const subscriptionsLogger = new Logger('Subscriptions');
 
 function createSubscriptionManager(chainClient: any): any {
@@ -96,7 +97,7 @@ function createSubscriptionManager(chainClient: any): any {
     async function fetchFillHistoryEntries(accountId: string, cursorHistoryId: string, options: any = {}): Promise<any[]> {
         const fetchPage = getAccountHistoryFetcher();
 
-        const entries = [];
+        const entries: any[] = [];
         const seenIds = new Set();
         const cursorInstance = parseObjectIdInstance(cursorHistoryId);
         // Scan history using get_account_history (unfiltered, uses by_op index).
@@ -271,7 +272,7 @@ function createSubscriptionManager(chainClient: any): any {
         // The BitShares node sends full 1.11.x operation history objects in the
         // notice when a fill occurs. We pass them straight to callbacks — no
         // history scan, no cursor tracking needed for live fills.
-        const fillObjects: any[] = [];
+        const fillObjects: Array<{ type: string; op: any[]; block_num: any; trx_in_block: any; id: any; }> = [];
         for (const item of data) {
             if (!item || typeof item !== 'object') continue;
             const op = item.op;
@@ -307,7 +308,7 @@ function createSubscriptionManager(chainClient: any): any {
                 }
             }
             const now = Date.now();
-            const eligible: any[] = [];
+            const eligible: Array<{ active: any; lastDeliveredHistoryId: any; lastNoticeAt: any; accountName: any; accountId: any; _processingHistory: any; callbacks: any; onError: any; }> = [];
             for (const [, sub] of subscriptions) {
                 if (!sub.active) continue;
                 // Skip when the notice carries a 1.11.x id that this sub's cursor
@@ -437,7 +438,7 @@ function createSubscriptionManager(chainClient: any): any {
     async function processObjects(sub: any, data: any, options: any = {}): Promise<void> {
         if (!data || !Array.isArray(data)) return;
 
-        const noticeObjectIds = [];
+        const noticeObjectIds: string[] = [];
         for (const item of data) {
             if (!item) continue;
             const id = typeof item === 'object' ? item.id : item;
@@ -496,7 +497,7 @@ function createSubscriptionManager(chainClient: any): any {
                 : 'empty';
             subscriptionsLogger.debug(`processObjects: ${history.length} history entries for ${sub.accountName} range=${historyRange} cursor=${sub.lastDeliveredHistoryId}`);
 
-            const fills = [];
+            const fills: Array<{ type: string; op: any[]; block_num: any; trx_in_block: any; id: any; }> = [];
             for (const entry of history) {
                 if (!entry || !entry.op || !entry.id) continue;
                 const opData = entry.op;
@@ -515,7 +516,7 @@ function createSubscriptionManager(chainClient: any): any {
                 const fillIds = fills.map(f => f.id).join(', ');
                 const newCursor = history[history.length - 1]?.id || sub.lastDeliveredHistoryId;
                 subscriptionsLogger.info(`processObjects: dispatching ${fills.length} fill(s) to ${sub.callbacks.size} callback(s) for ${sub.accountName} cursor=${newCursor} fills=[${fillIds}]`);
-                const failed = [];
+                const failed: any[] = [];
                 for (const callback of sub.callbacks) {
                     try {
                         await Promise.resolve(callback(fills));
@@ -595,7 +596,7 @@ function createSubscriptionManager(chainClient: any): any {
      * every call, not just the current one.
      */
     async function refreshSubscriptions(): Promise<any[]> {
-        const failures = [];
+        const failures: { entry: any; err: any; }[] = [];
         ensureNoticeSubscription();
         await chainClient.db.call('set_subscribe_callback', [
             SUBSCRIBE_CALLBACK_ID,
@@ -664,7 +665,7 @@ function createSubscriptionManager(chainClient: any): any {
             healthCheckInProgress = true;
             try {
                 const now = Date.now();
-                const stale: any[] = [];
+                const stale: { entry: any; elapsed: number; }[] = [];
                 for (const [, entry] of subscriptions) {
                     if (!entry.active) continue;
                     if (entry.reconnecting) continue;
@@ -937,4 +938,5 @@ function createSubscriptionManager(chainClient: any): any {
     };
 }
 
-export = { createSubscriptionManager };
+export { createSubscriptionManager }
+

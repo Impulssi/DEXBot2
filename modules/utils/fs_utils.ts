@@ -6,9 +6,10 @@
  *   storage.readJSON(...) / storage.writeJSON(...) / storage.exists(...)
  */
 
-const { getStorage } = require('../storage');
 
-const storage = getStorage();
+
+import { getStorage } from '../storage';
+const storage: any = getStorage();
 
 function readJSON<T = any>(filePath: string): T {
     return storage.readJSON(filePath);
@@ -30,4 +31,5 @@ function exists(filePath: string): boolean {
     return storage.exists(filePath);
 }
 
-export = { readJSON, writeJSON, ensureDir, safeUnlink, exists };
+export { readJSON, writeJSON, ensureDir, safeUnlink, exists }
+

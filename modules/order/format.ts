@@ -18,12 +18,11 @@
  * TABLE OF CONTENTS (17 exported functions)
  * ===============================================================================
  *
- * SECTION 1: ASSET FORMATTING (5 functions)
+ * SECTION 1: ASSET FORMATTING (4 functions)
  *   1. formatAmount8(value) - Format to 8 decimals (blockchain standard)
  *   2. formatAmount(value, decimals) - Format with custom decimal places
  *   3. formatAmountByPrecision(value, precision) - Format using chain precision
- *   4. formatAmountStrict(value, precision) - Format using chain precision; returns 'N/A' if either arg is non-finite
- *   5. formatSizeByOrderType(value, orderType, assets) - Format order size by BUY/SELL asset precision
+ *   4. formatSizeByOrderType(value, orderType, assets) - Format order size by BUY/SELL asset precision
  *
  * SECTION 2: PRICE FORMATTING (3 functions)
  *   6. formatPrice(value) - Format to 8 decimals (maximum precision)
@@ -115,11 +114,6 @@ function formatSizeByOrderType(value: number, orderType: string, assets: { asset
  * @param {number} precision - Decimal precision
  * @returns {string} Formatted amount or 'N/A'
  */
-function formatAmountStrict(value: any, precision: any): string {
-	if (!Number.isFinite(Number(value)) || !Number.isFinite(Number(precision))) return 'N/A';
-	return formatAmountByPrecision(value, precision);
-}
-
 // ===============================================================================
 // SECTION 2: PRICE FORMATTING
 // ===============================================================================
@@ -202,6 +196,12 @@ function isNumeric(val: any): boolean {
 	return typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !Number.isNaN(Number(val)));
 }
 
+/**
+ * Safely convert a value to a finite number.
+ *
+ * IMPORTANT: passing `undefined` as defaultValue triggers the TS default of 0.
+ * Pass `null` explicitly to get `null` back for non-finite values.
+ */
 function toFiniteNumber(value: any, defaultValue: number = 0): number {
 	const num = Number(value);
 	return Number.isFinite(num) ? num : defaultValue;
@@ -230,30 +230,5 @@ function safeFormat(value: any, decimals: number, fallback: string = 'N/A'): str
 // EXPORTS
 // ===============================================================================
 
-export = {
-	// Asset formatting
-	formatAmount8,
-	formatAmount,
-	formatAmountByPrecision,
-	formatSizeByOrderType,
+export { formatAmount8, formatAmount, formatAmountByPrecision, formatSizeByOrderType, formatPrice, formatPrice6, formatPrice4, formatPercent2, formatPercent, formatRatio, formatMetric2, formatMetric5, isValidNumber, isNumeric, toFiniteNumber, safeFormat }
 
-	// Price formatting
-	formatPrice,
-	formatPrice6,
-	formatPrice4,
-
-	// Percentage formatting
-	formatPercent2,
-	formatPercent,
-
-	// Ratio/Metric formatting
-	formatRatio,
-	formatMetric2,
-	formatMetric5,
-
-	// Helper utilities
-	isValidNumber,
-	isNumeric,
-	toFiniteNumber,
-	safeFormat,
-};

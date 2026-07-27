@@ -1,13 +1,14 @@
+
+import { NATIVE_CLIENT } from '../../constants';
+import { ops as serialOps } from '../serial';
+import getEcc from '../crypto/ecc_selector';
+import Logger from '../../logger';
+import * as txCache from './tx_cache';
 'use strict';
 
-const { NATIVE_CLIENT } = require('../../constants');
 const { TRANSACTION, CHAIN } = NATIVE_CLIENT;
-const { ops: serialOps } = require('../serial');
-const getEcc = require('../crypto/ecc_selector');
 const { sha256, sign } = getEcc();
-const Logger = require('../../logger');
 const builderLogger = new Logger('TxBuilder');
-const txCache = require('./tx_cache');
 
 const MAX_TX_SIZE: number = TRANSACTION.MAX_SIZE_BYTES;
 const MAX_OPS_PER_TX: number = TRANSACTION.MAX_OPS_PER_TX;
@@ -239,14 +240,14 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
                 extensions: [],
             };
 
-            const buffer = (serialOps as SerialOps).transaction.toBuffer(txData);
+            const buffer = (serialOps as unknown as SerialOps).transaction.toBuffer(txData);
             assertTxSize(buffer);
             return buffer;
         },
 
         _buildSerializedOp(type: string, params: any): [number, any] {
             const typeId = OP_TYPE_IDS[type];
-            const serializer = (serialOps as SerialOps)[type];
+            const serializer = (serialOps as unknown as SerialOps)[type];
 
             if (typeId === undefined || !serializer) {
                 throw new Error(`Unknown operation type: ${type}`);
@@ -307,14 +308,14 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
                 signatures: [sig],
             };
 
-            const signedTx = (serialOps as SerialOps).signed_transaction.toBuffer(txData);
+            const signedTx = (serialOps as unknown as SerialOps).signed_transaction.toBuffer(txData);
             assertTxSize(signedTx);
 
             const txDataForJson = {
                 ...txData,
                 signatures: [sig.toString('hex')],
             };
-            const signedTxObject = (serialOps as SerialOps).signed_transaction.toObject(txDataForJson);
+            const signedTxObject = (serialOps as unknown as SerialOps).signed_transaction.toObject(txDataForJson);
 
             return {
                 signedTx,
@@ -339,10 +340,5 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
     return tx;
 }
 
-export = {
-    createTransactionBuilder,
-    TransactionTooLargeError,
-    BroadcastError,
-    MAX_TX_SIZE,
-    MAX_OPS_PER_TX,
-};
+export { createTransactionBuilder, TransactionTooLargeError, BroadcastError, MAX_TX_SIZE, MAX_OPS_PER_TX }
+

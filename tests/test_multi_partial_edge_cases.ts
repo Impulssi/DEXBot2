@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('='.repeat(80));
 console.log('Testing Multi-Partial Consolidation Edge Cases (COW)');
@@ -184,8 +185,8 @@ async function testLargeResidual() {
         console.log('='.repeat(80));
         process.exit(0);
     } catch (err) {
-        console.error('\n❌ Test failed:', err.message);
-        console.error(err.stack);
+        console.error('\n❌ Test failed:', getErrorMessage(err));
+        console.error((err as any).stack);
         process.exit(1);
     }
 })();

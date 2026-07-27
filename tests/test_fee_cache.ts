@@ -16,6 +16,7 @@ const { initializeFeeCache } = require('../modules/order/utils/system');
 const { getAssetFees } = require('../modules/order/utils/math');
 const Format = require('../modules/order/format');
 const { readJSON } = require('../modules/utils/fs_utils');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 async function main() {
     try {
@@ -69,7 +70,7 @@ async function main() {
                     console.log(`  ✓ Fees cached (test fee: ${Format.formatAmount8(testFee)} ${assetSymbol})`);
                 }
             } catch (error) {
-                console.log(`\n${assetSymbol}: ⚠ Failed to cache - ${error.message}`);
+                console.log(`\n${assetSymbol}: ⚠ Failed to cache - ${getErrorMessage(error)}`);
             }
         }
 
@@ -99,7 +100,7 @@ async function main() {
         console.log('\n' + '='.repeat(80) + '\n');
 
     } catch (error) {
-        console.error('Error:', error.message);
+        console.error('Error:', getErrorMessage(error));
         process.exit(1);
     } finally {
         if (BitShares.ws && BitShares.ws.isConnected) {

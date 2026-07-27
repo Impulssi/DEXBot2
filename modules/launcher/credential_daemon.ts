@@ -1,24 +1,25 @@
-const { path } = require('../path_api');
-const { getStorage } = require('../storage');
+
+import { path } from '../path_api';
+import { getStorage } from '../storage';
+import { spawn } from 'node:child_process';
+import * as chainKeys from '../chain_keys';
+import * as credentialPolicy from '../credential_policy';
+import { createPasswordBootstrapServer } from './credential_bootstrap';
+import { buildScopedChildEnv } from './child_env';
+import { Config } from '../config';
+import { PATHS } from '../paths';
+import { safeUnlink } from '../utils/fs_utils';
+import { readHeadlessPassword } from './headless_password';
+import { sleep } from '../order/utils/system';
 const storage = getStorage();
-const { spawn } = require('child_process');
 import type { StdioOptions } from 'child_process';
-const chainKeys = require('../chain_keys');
-const credentialPolicy = require('../credential_policy');
-const {
+import {
     assertPrivatePathSecurity,
     ensureCredentialRuntimeDirSync,
     getCredentialReadyFilePath,
     getCredentialSocketPath,
-} = require('../credential_runtime');
-const { createPasswordBootstrapServer } = require('./credential_bootstrap');
-const { buildScopedChildEnv } = require('./child_env');
-const { buildRuntimeScriptArgs, SCRIPTS_ROOT: DEFAULT_CODE_ROOT } = require('./runtime_entry');
-const { Config } = require('../config');
-const { PATHS } = require('../paths');
-const { safeUnlink } = require('../utils/fs_utils');
-const { readHeadlessPassword } = require('./headless_password');
-const { sleep } = require('../order/utils/system');
+} from '../credential_runtime';
+import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 
@@ -84,7 +85,7 @@ function createCredentialDaemonController({
         }
 
         await removeStaleDaemonFiles();
-        ensureCredentialRuntimeDirSync({ socketPath, readyFilePath, root });
+        ensureCredentialRuntimeDirSync({ socketPath, readyFilePath, root } as any);
         credentialPolicy.ensurePolicyConfig(path.join(root, 'profiles', 'daemon-policies.json'));
 
         let vaultSecret;
@@ -194,11 +195,5 @@ function createCredentialDaemonController({
     };
 }
 
-export = {
-    createCredentialDaemonController,
-    DEFAULT_ROOT: PATHS.PROJECT_ROOT,
-    DEFAULT_POLL_INTERVAL_MS,
-    DEFAULT_READY_FILE: getCredentialReadyFilePath({ root: PATHS.PROJECT_ROOT }),
-    DEFAULT_SOCKET_PATH: getCredentialSocketPath({ root: PATHS.PROJECT_ROOT }),
-    waitForExit,
-};
+export { createCredentialDaemonController, DEFAULT_POLL_INTERVAL_MS, waitForExit }
+

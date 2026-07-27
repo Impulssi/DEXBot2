@@ -4,6 +4,7 @@ const RUN_LIVE_TEST = process.env.RUN_LIVE_BITSHARES_TESTS === '1';
 const STRICT_LIVE_TEST = process.env.RUN_LIVE_BITSHARES_TESTS_STRICT === '1';
 const OVERALL_TIMEOUT_MS = Number(process.env.BITSHARES_SUBSCRIPTION_TEST_TIMEOUT_MS) || 10000;
 
+const { getErrorMessage } = require('../modules/utils/errors');
 const forceExit = setTimeout(() => {
     const message = `live subscription test timed out after ${OVERALL_TIMEOUT_MS}ms`;
     if (!STRICT_LIVE_TEST) {
@@ -36,8 +37,8 @@ const forceExit = setTimeout(() => {
             if (bot && bot.preferredAccount) TEST_ACCOUNT = bot.preferredAccount;
         } catch (e) {}
 
-        const unsubA = await orders.listenForFills(TEST_ACCOUNT, (fills) => { /* noop */ });
-        const unsubB = await orders.listenForFills(TEST_ACCOUNT, (fills) => { /* noop */ });
+        const unsubA = await orders.listenForFills(TEST_ACCOUNT, (_fills) => { /* noop */ });
+        const unsubB = await orders.listenForFills(TEST_ACCOUNT, (_fills) => { /* noop */ });
 
         console.log('subscribe returns:', typeof unsubA, typeof unsubB);
 
@@ -50,11 +51,11 @@ const forceExit = setTimeout(() => {
         clearTimeout(forceExit);
         if (!STRICT_LIVE_TEST) {
             console.log('Skipping live listenForFills subscription test: live connectivity not available.');
-            console.log('Error:', err.message || err);
+            console.log('Error:', getErrorMessage(err) || err);
             process.exit(0);
             return;
         }
-        console.error('subscribe/unsubscribe threw:', err.message || err);
+        console.error('subscribe/unsubscribe threw:', getErrorMessage(err) || err);
         process.exit(1);
         return;
     }

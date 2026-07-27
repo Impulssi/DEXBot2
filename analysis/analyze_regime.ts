@@ -18,21 +18,20 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
-'use strict';
+import { PATHS } from '../modules/paths';
 
-const path = require('path');
-const { PATHS } = require('../modules/paths');
-
-const { MARKET_ADAPTER }              = require('../modules/constants');
+import { MARKET_ADAPTER }              from '../modules/constants';
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
 const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
-const { HurstAnalyzer }               = require('./trend_detection/hurst_analyzer');
-const { PermutationEntropyAnalyzer }  = require('./trend_detection/permutation_entropy_analyzer');
-const { generateRegimeHTML }          = require('./trend_detection/regime_chart_generator');
-const { createSource }                = require('./price_sources');
-const { calculateAMA }                = require('../market_adapter/core/strategies/ama');
-const { writeChartFile }              = require('./chart_utils');
-const { getCandleClose }              = require('./math_utils');
+import { HurstAnalyzer }               from './trend_detection/hurst_analyzer';
+import { PermutationEntropyAnalyzer }  from './trend_detection/permutation_entropy_analyzer';
+import { generateRegimeHTML }          from './trend_detection/regime_chart_generator';
+import { createSource }                from './price_sources';
+import { calculateAMA }                from '../market_adapter/core/strategies/ama';
+import { writeChartFile }              from './chart_utils';
+import { getCandleClose }              from './math_utils';
+
+'use strict';
 
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -98,7 +97,7 @@ async function main() {
             window: config.peWindow,
         });
 
-        const allResults = [];
+        const allResults: any[] = [];
         for (let i = 0; i < candles.length; i++) {
             const { marketPrice, timestamp } = source.extractMarketPrice(candles[i]);
             const hurst = hurstAnalyzer.update(marketPrice);
@@ -123,7 +122,7 @@ async function main() {
         const closes    = candles.map(c => getCandleClose(c) ?? 0);
         const ama3Values = calculateAMA(closes, MARKET_ADAPTER.AMAS.AMA3);
         for (let i = 0; i < allResults.length; i++) {
-            allResults[i].ama3Price = ama3Values[i] ?? null;
+            (allResults[i] as any).ama3Price = ama3Values[i] ?? null;
         }
 
         // ── Print tail summary ───────────────────────────────────────────────
@@ -146,10 +145,10 @@ async function main() {
 
         if (!config.quiet) console.log(`[Regime] \u2713 Chart saved to ${config.chartFile}`);
 
-    } catch (err) {
-        console.error(`[Regime] Error: ${err.message}`);
+    } catch (err: unknown) {
+        console.error(`[Regime] Error: ${(err as any)?.message ?? err}`);
         process.exit(1);
     }
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+main().catch((err: unknown) => { console.error(err); process.exit(1); });

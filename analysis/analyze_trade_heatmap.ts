@@ -21,11 +21,12 @@
  *
  * Options — see --help for full list.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+import { calculateAMA } from '../market_adapter/core/strategies/ama';
+import { MARKET_ADAPTER } from '../modules/constants';
+
 'use strict';
-const fs = require('fs');
-const path = require('path');
-const { calculateAMA } = require('../market_adapter/core/strategies/ama');
-const { MARKET_ADAPTER } = require('../modules/constants');
 /**
  * Parse CLI arguments. Unknown flags are silently ignored.
  * Supports --flag value and --flag (boolean) conventions.
@@ -55,8 +56,8 @@ function parseArgs() {
         verbose: has('verbose'),
     };
 }
-const { calcStdDev } = require('./math_utils');
-const { ensureDir, readJSON } = require('../modules/utils/fs_utils');
+import { calcStdDev } from './math_utils';
+import { ensureDir, readJSON } from '../modules/utils/fs_utils';
 /**
  * Main entry point.
  * 1. Parse config, load candles, compute AMA
@@ -93,7 +94,7 @@ function main() {
         console.error('Invalid data: expected "candles" array');
         process.exit(1);
     }
-    const amaCfg = MARKET_ADAPTER.AMAS[cfg.ama];
+    const amaCfg = MARKET_ADAPTER.AMAS[cfg.ama as keyof typeof MARKET_ADAPTER.AMAS];
     if (!amaCfg) {
         console.error(`Unknown AMA preset: ${cfg.ama}. Choose: ${Object.keys(MARKET_ADAPTER.AMAS).join(', ')}`);
         process.exit(1);
@@ -107,7 +108,7 @@ function main() {
     }
     if (cfg.verbose) console.log(`Computing ${cfg.ama} on ${closes.length} candles (warmup=${cfg.warmup})...`);
     const amaValues = calculateAMA(closes, amaCfg);
-    const records = [];
+    const records: any[] = [];
     for (let i = cfg.warmup; i < closes.length; i++) {
         const ama = amaValues[i];
         if (!Number.isFinite(ama) || ama === 0) continue;
@@ -143,7 +144,7 @@ function main() {
     }
     const maxNegDev = leftBins * binSize;
     const maxPosDev = rightBins * binSize;
-    const binLabels = [];
+    const binLabels: string[] = [];
     for (let i = -leftBins; i <= rightBins; i++) {
         binLabels.push((i * binSize).toFixed(1));
     }
@@ -157,7 +158,7 @@ function main() {
     const minDate = new Date(minTs);
     const maxDate = new Date(maxTs);
     const sliceMonths = cfg.sliceMonths;
-    const slices = [];
+    const slices: any[] = [];
     let sliceStart = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
     while (sliceStart <= maxDate) {
         const sliceEnd = new Date(sliceStart);
@@ -195,7 +196,7 @@ function main() {
     const peakBinIdx = totalBins.indexOf(maxBinVol);
     const peakDev = binLabels[peakBinIdx];
     // Compute color cap from data: 95th percentile of slice-cell percentages
-    const allCellPcts = [];
+    const allCellPcts: number[] = [];
     for (let si = 0; si < slices.length; si++) {
         for (let bi = 0; bi < nBins; bi++) {
             if (sliceTotals[si] > 0) {

@@ -1,6 +1,6 @@
-const { hasProcess } = require('../../modules/env');
-const { Config } = require('../../modules/config');
-const { runtime } = require('../../modules/runtime');
+import { hasProcess } from '../../modules/env.js';
+import { Config } from '../../modules/config.js';
+import { runtime } from '../../modules/runtime.js';
 
 export function writeMessage(message: any) {
   if (!hasProcess()) {

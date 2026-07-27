@@ -14,6 +14,7 @@ if (process.env.RUN_LIVE_BITSHARES_TESTS !== '1') {
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');
 const { fixedTo } = require('../modules/utils/math_utils');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const colors = {
     reset: '\x1b[0m',
@@ -93,13 +94,13 @@ async function testAnyPair() {
                 console.log(`  Ticker latest: ${ticker.latest}`);
                 console.log(`  24h volume: ${ticker.base_volume}`);
             } catch (err) {
-                console.log(`  ${colors.red}Error: ${err.message}${colors.reset}`);
+                console.log(`  ${colors.red}Error: ${getErrorMessage(err)}${colors.reset}`);
             }
             console.log();
         }
 
     } catch (err) {
-        console.error(`${colors.red}Fatal error: ${err.message}${colors.reset}`);
+        console.error(`${colors.red}Fatal error: ${getErrorMessage(err)}${colors.reset}`);
         process.exit(1);
     }
 }

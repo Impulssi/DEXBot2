@@ -1,6 +1,7 @@
+
+import { MARKET_ADAPTER } from '../../../modules/constants';
 'use strict';
 
-const { MARKET_ADAPTER } = require('../../../modules/constants');
 
 /**
  * Kaufman's Adaptive Moving Average (KAMA/AMA).
@@ -152,8 +153,5 @@ function calculateAMA(closes: any, params: any) {
     return closes.map(price => indicator.update(price));
 }
 
-module.exports = {
-    AMA,
-    calculateAMA,
-    getAmaWarmupBars,
-};
+export { AMA, calculateAMA, getAmaWarmupBars }
+

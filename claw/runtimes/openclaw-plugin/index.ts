@@ -1,7 +1,8 @@
-const { definePluginEntry } = require("openclaw/plugin-sdk/plugin-entry");
-const { getClawToolCatalog } = require("../../modules/claw_catalog");
-const { runClawCommand } = require("../../modules/claw_bridge");
 
+
+import definePluginEntry from 'openclaw/plugin-sdk/plugin-entry';
+import { getClawToolCatalog } from '../../modules/claw_catalog';
+import { runClawCommand } from '../../modules/claw_bridge';
 function formatResult(result: any) {
   return JSON.stringify(result, null, 2);
 }
@@ -33,4 +34,5 @@ const plugin = definePluginEntry({
   }
 });
 
-export = plugin;
+export default plugin
+

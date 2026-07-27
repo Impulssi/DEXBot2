@@ -10,6 +10,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // ============================================================================
 // Mutation Detection Wrapper
@@ -418,8 +419,8 @@ try {
     process.exit(0);
     
 } catch (e) {
-    console.error('✗ Test failed:', e.message);
-    console.error(e.stack);
+    console.error('✗ Test failed:', getErrorMessage(e));
+    console.error((e as any).stack);
     process.exit(1);
 }
 })();

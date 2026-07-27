@@ -12,20 +12,20 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
-'use strict';
+import path from 'node:path';
+import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer';
+import { HurstAnalyzer } from './trend_detection/hurst_analyzer';
+import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer';
+import { generateHTML } from './trend_detection/dynamic_weight_chart_generator';
+import { createSource } from './price_sources';
+import { calculateAMA } from '../market_adapter/core/strategies/ama';
+import { computeAmaSlopeWeights } from '../market_adapter/core/strategies/ama_slope_model';
+import { MARKET_ADAPTER } from '../modules/constants';
+import { writeChartFile } from './chart_utils';
+import { getCandleClose } from './math_utils';
+import { resolveCandleFile, resolveAmaConfig, resolveAmaKey } from './bot_key_utils';
 
-const path = require('path');
-const { KalmanTrendAnalyzer } = require('./trend_detection/kalman_trend_analyzer');
-const { HurstAnalyzer } = require('./trend_detection/hurst_analyzer');
-const { PermutationEntropyAnalyzer } = require('./trend_detection/permutation_entropy_analyzer');
-const { generateHTML } = require('./trend_detection/dynamic_weight_chart_generator');
-const { createSource } = require('./price_sources');
-const { calculateAMA } = require('../market_adapter/core/strategies/ama');
-const { computeAmaSlopeWeights } = require('../market_adapter/core/strategies/ama_slope_model');
-const { MARKET_ADAPTER } = require('../modules/constants');
-const { writeChartFile } = require('./chart_utils');
-const { getCandleClose } = require('./math_utils');
-const { resolveCandleFile, resolveAmaConfig, resolveAmaKey } = require('./bot_key_utils');
+'use strict';
 
 const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 
@@ -138,7 +138,7 @@ async function main() {
             window: PE_CONFIG.window,
         });
 
-        const allResults = [];
+        const allResults: any[] = [];
         for (let i = 0; i < candles.length; i++) {
             const { marketPrice, timestamp } = source.extractMarketPrice(candles[i]);
             const result = analyzer.update(marketPrice);
@@ -146,8 +146,8 @@ async function main() {
             const pe    = peAnalyzer.update(marketPrice);
             result.timestamp = timestamp;
             result.price = marketPrice;
-            result.hurst = hurst.isReady ? hurst.hurst : null;
-            result.pe    = pe.isReady    ? pe.normalizedEntropy : null;
+            (result as any).hurst = hurst.isReady ? (hurst as any).hurst : null;
+            (result as any).pe    = pe.isReady    ? (pe as any).normalizedEntropy : null;
             allResults.push(result);
         }
 
@@ -173,13 +173,13 @@ async function main() {
                 maxVolatilityOffset: AMA_WEIGHT_CONFIG.maxVolatilityOffset,
             });
 
-            allResults[i].ama3Price = amaValues[i] ?? null;
-            allResults[i].atr = atr;
-            allResults[i].weightVariance = weightVariance;
-            allResults[i].amaSlopePct = weights.slopePct;
-            allResults[i].amaWeightReady = weights.isReady;
-            allResults[i].amaSlopeOffset = weights.slopeOffset;
-            allResults[i].amaSymmetricDelta = weights.symmetricDelta;
+            (allResults[i] as any).ama3Price = amaValues[i] ?? null;
+            (allResults[i] as any).atr = atr;
+            (allResults[i] as any).weightVariance = weightVariance;
+            (allResults[i] as any).amaSlopePct = weights.slopePct;
+            (allResults[i] as any).amaWeightReady = weights.isReady;
+            (allResults[i] as any).amaSlopeOffset = weights.slopeOffset;
+            (allResults[i] as any).amaSymmetricDelta = weights.symmetricDelta;
         }
 
         // ── Generate chart ───────────────────────────────────────────────────
@@ -220,10 +220,10 @@ async function main() {
         writeChartFile(config.chartFile, html);
 
         if (!config.quiet) console.log(`[DynamicWeight] ✓ Chart saved to ${config.chartFile}`);
-    } catch (err) {
-        console.error(`[DynamicWeight] Error: ${err.message}`);
+    } catch (err: unknown) {
+        console.error(`[DynamicWeight] Error: ${(err as any)?.message ?? err}`);
         process.exit(1);
     }
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+main().catch((err: unknown) => { console.error(err); process.exit(1); });

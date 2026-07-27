@@ -81,7 +81,7 @@ function detectMissingCandleTimestamps(candles: any, intervalSeconds = 3600) {
         return { gapCount: 0, missingTimestamps: [] };
     }
 
-    const missingTimestamps = [];
+    const missingTimestamps: any[] = [];
 
     for (let i = 1; i < sorted.length; i++) {
         const prevTs = sorted[i - 1][0];
@@ -125,7 +125,7 @@ function fillCandleGaps(candles: any, intervalSeconds: any, startTs: any = null,
     if (sorted.length === 0) {
         // If we have no data, we can't really fill unless we have a baseline price.
         if (options.baselinePrice != null && startTs != null && endTs != null) {
-            const filled = [];
+            const filled: any[] = [];
             let currentTs = Math.floor(Number(startTs) / bucketMs) * bucketMs;
             const finalTs = Math.floor(Number(endTs) / bucketMs) * bucketMs;
             const p = options.baselinePrice;
@@ -138,7 +138,7 @@ function fillCandleGaps(candles: any, intervalSeconds: any, startTs: any = null,
         return [];
     }
 
-    const filled = [];
+    const filled: any[] = [];
 
     // Determine absolute timeline range
     const firstKnownTs = sorted[0][0];
@@ -253,11 +253,5 @@ function mergeCandles(a: any, b: any, { onCollision }: any = {}) {
     return [...map.values()].sort((x, y) => x[0] - y[0]);
 }
 
-export = {
-    tradesToCandles,
-    detectMissingCandleTimestamps,
-    fillCandleGaps,
-    detectStaleTail,
-    pruneStaleTail,
-    mergeCandles,
-};
+export { tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles }
+

@@ -1,16 +1,25 @@
-const { BitShares } = require('./bitshares_client');
-const { getDexbot2Root, loadDexbotOrderSystemUtils, requireDexbot2Module } = require('./dexbot_bridge');
 
+
+import * as client from './bitshares_client';
+import { getDexbot2Root, loadDexbotOrderSystemUtils, requireDexbot2Module } from './dexbot_bridge';
 function getDexbotSystem() {
   return loadDexbotOrderSystemUtils();
+}
+
+function derivePoolPrice(assetA: any, assetB: any) {
+  return getDexbotSystem().derivePoolPrice(client.BitShares, assetA, assetB);
+}
+
+function derivePrice(assetA: any, assetB: any, mode: any) {
+  return getDexbotSystem().derivePrice(client.BitShares, assetA, assetB, mode);
 }
 
 function createDexbotPoolHelper() {
   const system = getDexbotSystem();
   return {
     cloneMap: system.cloneMap,
-    derivePoolPrice: (assetA: any, assetB: any) => system.derivePoolPrice(BitShares, assetA, assetB),
-    derivePrice: (assetA: any, assetB: any, mode: any) => system.derivePrice(BitShares, assetA, assetB, mode),
+    derivePoolPrice: (assetA: any, assetB: any) => system.derivePoolPrice(client.BitShares, assetA, assetB),
+    derivePrice: (assetA: any, assetB: any, mode: any) => system.derivePrice(client.BitShares, assetA, assetB, mode),
     deepFreeze: system.deepFreeze,
     loadAmaCenterSnapshot: system.loadAmaCenterSnapshot,
     loadAmaCenterPrice: system.loadAmaCenterPrice,
@@ -18,14 +27,5 @@ function createDexbotPoolHelper() {
   };
 }
 
-export = {
-  createDexbotPoolHelper,
-  derivePoolPrice: (assetA: any, assetB: any) => getDexbotSystem().derivePoolPrice(BitShares, assetA, assetB),
-  derivePrice: (assetA: any, assetB: any, mode: any) => getDexbotSystem().derivePrice(BitShares, assetA, assetB, mode),
-  deepFreeze: (...args: any[]) => getDexbotSystem().deepFreeze(...args),
-  getDexbot2Root,
-  loadAmaCenterSnapshot: (...args: any[]) => getDexbotSystem().loadAmaCenterSnapshot(...args),
-  loadAmaCenterPrice: (...args: any[]) => getDexbotSystem().loadAmaCenterPrice(...args),
-  lookupAsset: (...args: any[]) => getDexbotSystem().lookupAsset(...args),
-  requireDexbot2Module
-};
+export { derivePoolPrice, derivePrice, createDexbotPoolHelper, getDexbot2Root, requireDexbot2Module }
+

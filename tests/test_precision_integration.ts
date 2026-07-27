@@ -1,5 +1,6 @@
 const assert = require('assert');
 const utils = require('../modules/order/utils/math');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // Mock getAssetFees to ensure test can run without blockchain connection
 utils.getAssetFees = (asset, amount, isMaker = true) => {
@@ -234,8 +235,8 @@ async function testFullOrderLifecycle() {
         console.log('  ✅ Anchor & Refill strategy can handle any remaining partials');
         process.exit(0);
     } catch (err) {
-        console.error('\n❌ Integration test failed:', err.message);
-        console.error(err.stack);
+        console.error('\n❌ Integration test failed:', getErrorMessage(err));
+        console.error((err as any).stack);
         process.exit(1);
     }
 })();

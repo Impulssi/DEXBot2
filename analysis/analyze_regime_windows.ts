@@ -17,19 +17,18 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
-'use strict';
-
-const path = require('path');
-const { PATHS } = require('../modules/paths');
-const { HurstAnalyzer }              = require('./trend_detection/hurst_analyzer');
-const { PermutationEntropyAnalyzer } = require('./trend_detection/permutation_entropy_analyzer');
-const { MARKET_ADAPTER } = require('../modules/constants');
+import { PATHS } from '../modules/paths';
+import { HurstAnalyzer }              from './trend_detection/hurst_analyzer';
+import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer';
+import { MARKET_ADAPTER } from '../modules/constants';
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
 const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
-const { createSource }              = require('./price_sources');
-const { writeChartFile }            = require('./chart_utils');
-const { getCandleClose }            = require('./math_utils');
-const { roundTo } = require('../modules/utils/math_utils');
+import { createSource }              from './price_sources';
+import { writeChartFile }            from './chart_utils';
+import { getCandleClose }            from './math_utils';
+import { roundTo } from '../modules/utils/math_utils';
+
+'use strict';
 
 const HURST_CENTER   = HURST_CONFIG.window;
 const PE_CENTER      = PE_CONFIG.window;
@@ -40,7 +39,7 @@ function geoRange(center, factor, n) {
     const lo = center / factor;
     const hi = center * factor;
     const r  = Math.pow(hi / lo, 1 / (n - 1));
-    const vals = [];
+    const vals: number[] = [];
     for (let i = 0; i < n; i++) vals.push(lo * Math.pow(r, i));
     return vals;
 }
@@ -101,8 +100,8 @@ function scoreWindowPair(prices, hurstWindow, peWindow) {
     const hurstAnalyzer = new HurstAnalyzer({ window: hurstWindow, scales: HURST_SCALES });
     const peAnalyzer    = new PermutationEntropyAnalyzer({ m: PE_M, delay: PE_DELAY, window: peWindow });
 
-    const hArr = [];
-    const pArr = [];
+    const hArr: (number | null)[] = [];
+    const pArr: (number | null)[] = [];
 
     for (let i = 0; i < n; i++) {
         const h = hurstAnalyzer.update(prices[i]);
@@ -115,8 +114,7 @@ function scoreWindowPair(prices, hurstWindow, peWindow) {
     if (firstReady < 0) return null;
 
     const readyH = hArr.slice(firstReady);
-    const readyP = pArr.slice(firstReady);
-    const readyPrices = prices.slice(firstReady);
+    const readyP = pArr.slice(firstReady).filter((v): v is number => v !== null);
     const m = readyH.length;
     if (m < 50) return null;
 
@@ -209,7 +207,7 @@ function generateHeatmapHTML(results, hurstVals, peVals) {
     const minComposite = Math.min(...results.map(r => r.composite));
     const range = maxComposite - minComposite || 1;
 
-    const grid = {};
+    const grid: Record<string, typeof results[number]> = {};
     results.forEach(r => { grid[`${r.hurstWindow},${r.peWindow}`] = r; });
 
     const defaultH = HURST_CENTER;
@@ -423,7 +421,7 @@ async function main() {
 
         if (!config.quiet) console.log(`[RegimeWindows] ${prices.length} candles — running grid search...`);
 
-        const rawResults = [];
+        const rawResults: any[] = [];
         for (const hW of HURST_WINDOWS) {
             for (const pW of PE_WINDOWS) {
                 if (!config.quiet) process.stdout.write(`  H=${hW.toFixed(1)} PE=${pW.toFixed(1)} ... `);
@@ -449,10 +447,10 @@ async function main() {
 
         if (!config.quiet) console.log(`[RegimeWindows] ✓ Chart saved to ${config.chartFile}`);
 
-    } catch (err) {
-        console.error(`[RegimeWindows] Error: ${err.message}`);
+    } catch (err: unknown) {
+        console.error(`[RegimeWindows] Error: ${(err as any)?.message ?? err}`);
         process.exit(1);
     }
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+main().catch((err: unknown) => { console.error(err); process.exit(1); });

@@ -13,9 +13,11 @@
  *   Index:  bitshares-*  (time field: block_data.block_time)
  */
 
+
+import { getNodeRequire } from '../../modules/env';
+import { MARKET_ADAPTER } from '../../modules/constants';
 'use strict';
 
-const { getNodeRequire } = require('../../modules/env');
 const _require = getNodeRequire();
 let _https: any;
 const https = new Proxy({} as any, {
@@ -24,7 +26,6 @@ const https = new Proxy({} as any, {
         return _https ? _https[prop] : undefined;
     }
 });
-const { MARKET_ADAPTER } = require('../../modules/constants');
 
 const KIBANA_URL = 'https://kibana.bitshares.dev';
 const INDEX      = 'bitshares-*';
@@ -123,9 +124,5 @@ function kibanaSearch(config: any, esQuery: any) {
   });
 }
 
-export = {
-  DEFAULT_CONFIG,
-  INDEX,
-  KIBANA_URL,
-  kibanaSearch,
-};
+export { DEFAULT_CONFIG, INDEX, KIBANA_URL, kibanaSearch }
+

@@ -1,6 +1,10 @@
+
+import { getNodeRequire } from '../../env';
+import * as CC from './chain_constants';
+import { BufferWriter } from './serializer';
+import { OBJECT_TYPE } from './chain_constants';
 'use strict';
 
-const { getNodeRequire } = require('../../env');
 const _require = getNodeRequire();
 let _Buffer: any;
 const Buffer = new Proxy({} as any, {
@@ -10,9 +14,7 @@ const Buffer = new Proxy({} as any, {
     }
 });
 
-const CC = require('./chain_constants');
 
-const { BufferWriter } = require('./serializer');
 
 interface BufWriter {
     buf: Buffer;
@@ -51,9 +53,9 @@ interface BufReader {
     toString(encoding?: BufferEncoding): string;
 }
 
-const { RESERVED_SPACES, DB_MAX_INSTANCE_ID } = CC;
+const { RESERVED_SPACES } = CC;
 
-interface SerType {
+export interface SerType {
     fromByteBuffer(b: BufReader): any;
     appendByteBuffer(b: BufWriter, v: any): void;
     fromObject(v: any): any;
@@ -432,8 +434,7 @@ function fixedArrayType(count: number, st_operation: any): SerType {
 }
 
 function idType(reserved_spaces: any, object_type: any): SerType & { compare?: (a: any, b: any) => number } {
-    const { OBJECT_TYPE } = require('./chain_constants');
-    const objectTypeId = OBJECT_TYPE[object_type] != null ? OBJECT_TYPE[object_type] : object_type;
+    const objectTypeId = (OBJECT_TYPE as Record<string, number>)[object_type] != null ? (OBJECT_TYPE as Record<string, number>)[object_type] : object_type;
     return {
         fromByteBuffer(b: BufReader): any { return b.readVarint32(); },
         appendByteBuffer(b: BufWriter, v: any): void {
@@ -461,7 +462,7 @@ function idType(reserved_spaces: any, object_type: any): SerType & { compare?: (
     };
 }
 
-function getInstance(reserved_spaces: any, object_type: any, object: any): number {
+function getInstance(_reserved_spaces: any, _object_type: any, object: any): number {
     const parts = String(object).split('.');
     if (parts.length !== 3) throw new Error(`Invalid object ID: ${object}`);
     return parseInt(parts[2], 10);
@@ -826,35 +827,5 @@ const address_type: SerType = {
     },
 };
 
-export = {
-    void: void_type,
-    uint8,
-    uint16,
-    uint32,
-    varint32,
-    int64,
-    uint64,
-    varuint64,
-    string: string_type,
-    bytes: bytesType,
-    bool: bool_type,
-    array: arrayType,
-    time_point_sec,
-    set: setType,
-    fixed_array: fixedArrayType,
-    id_type: idType,
-    protocol_id_type: protocolIdType,
-    object_id_type,
-    vote_id,
-    optional: optionalType,
-    extension: extensionType,
-    static_variant: staticVariantType,
-    map: mapType,
-    public_key: public_key_type,
-    address: address_type,
-    future_extensions: void_type,
-    ObjectId,
-    sortOperation,
-    firstEl,
-    strCmp,
-};
+export { uint8, uint16, uint32, varint32, int64, uint64, varuint64, string_type as string, bytesType as bytes, bool_type as bool, arrayType as array, time_point_sec, setType as set, fixedArrayType as fixed_array, idType as id_type, protocolIdType as protocol_id_type, object_id_type, vote_id, optionalType as optional, extensionType as extension, staticVariantType as static_variant, mapType as map, public_key_type as public_key, address_type as address, void_type, void_type as future_extensions, ObjectId, sortOperation, firstEl, strCmp }
+

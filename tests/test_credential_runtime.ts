@@ -124,7 +124,7 @@ async function testSecurePathChecksRecognizePrivateFilesAndSockets() {
                 'daemon socket should pass the private-path check'
             );
         } catch (error) {
-            if (error && error.code === 'EPERM') {
+            if (error && (error as any).code === 'EPERM') {
                 console.log('Skipping socket security test under sandbox restrictions');
                 return;
             }

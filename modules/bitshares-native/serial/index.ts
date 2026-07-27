@@ -1,15 +1,10 @@
+
+import { Serializer, BufferWriter, BufferReader } from './serializer';
+import * as types from './types';
+import * as ops from './operations';
+import * as constants from './chain_constants';
 'use strict';
 
-const { Serializer, BufferWriter, BufferReader } = require('./serializer');
-const types = require('./types');
-const ops = require('./operations');
-const constants = require('./chain_constants');
 
-export = {
-    Serializer,
-    BufferWriter,
-    BufferReader,
-    types,
-    ops,
-    constants,
-};
+export { Serializer, BufferWriter, BufferReader, types, ops, constants }
+

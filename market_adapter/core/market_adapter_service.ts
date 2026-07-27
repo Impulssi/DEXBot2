@@ -1,32 +1,33 @@
+
+import { calculateATR } from './strategies/atr/calculator';
+import { normalizeMarketSource, hasNumericStartPrice, resolveMarketSourceForBot } from '../utils/chain';
+import { computeRegimeMultiplier } from './strategies/regime_gate';
+import { calculateAMA, getAmaWarmupBars } from './strategies/ama';
+import { KalmanTrendAnalyzer } from '../../analysis/trend_detection/kalman_trend_analyzer';
+import { adjustCollateralRatio } from './strategies/collateral_manager';
+import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants';
+import { resolveConfiguredPriceBound } from '../../modules/order/utils/order';
+import Logger from '../../modules/logger';
+import { roundTo } from '../../modules/utils/math_utils';
 'use strict';
 
-const { calculateATR } = require('./strategies/atr/calculator');
-const {
+import {
     computeAmaSlopeWeights,
     computeAverageAmaSlopePct,
-} = require('./strategies/ama_slope_model');
-const {
+} from './strategies/ama_slope_model.js';
+import {
     normalizeAtrPeriod,
     normalizeMaxVolatilityOffset,
     normalizeVolatilityThreshold,
-} = require('./config_normalizers');
-const { normalizeMarketSource, hasNumericStartPrice, resolveMarketSourceForBot } = require('../utils/chain');
-const { computeRegimeMultiplier } = require('./strategies/regime_gate');
-const { calculateAMA, getAmaWarmupBars } = require('./strategies/ama');
-const { KalmanTrendAnalyzer } = require('../../analysis/trend_detection/kalman_trend_analyzer');
-const {
+} from './config_normalizers.js';
+import {
     buildKalmanVelocitySeries,
     computeAbsolutePercentileThreshold,
-} = require('../../analysis/trend_detection/kalman_velocity_smoothing');
-const { adjustCollateralRatio } = require('./strategies/collateral_manager');
-const {
+} from '../../analysis/trend_detection/kalman_velocity_smoothing.js';
+import {
     resolveMaxAsymmetryFactor,
     computeAsymmetricBoundsMetrics,
-} = require('./asymmetric_bounds');
-const { DEFAULT_CONFIG, MARKET_ADAPTER } = require('../../modules/constants');
-const { resolveConfiguredPriceBound } = require('../../modules/order/utils/order');
-const Logger = require('../../modules/logger');
-const { roundTo } = require('../../modules/utils/math_utils');
+} from './asymmetric_bounds.js';
 const marketAdapterServiceLogger = new Logger('MarketAdapterService');
 
 const AMA_SLOPE_PERCENT_MODE_PER_BAR = 'perBar';
@@ -368,8 +369,8 @@ class MarketAdapterService {
         if (!Number.isFinite(base) || base <= 0) return centerPrice;
         try {
             const startPrice = Number.isFinite(ref) && ref > 0 ? ref : base;
-            const minP = resolveConfiguredPriceBound(bot?.minPrice, DEFAULT_CONFIG.minPrice, startPrice, 'min');
-            const maxP = resolveConfiguredPriceBound(bot?.maxPrice, DEFAULT_CONFIG.maxPrice, startPrice, 'max');
+            const minP = resolveConfiguredPriceBound(bot?.minPrice, DEFAULT_CONFIG.minPrice, startPrice, 'min') ?? 0;
+            const maxP = resolveConfiguredPriceBound(bot?.maxPrice, DEFAULT_CONFIG.maxPrice, startPrice, 'max') ?? 0;
             if (!Number.isFinite(minP) || !Number.isFinite(maxP)) return base;
             return Math.min(maxP, Math.max(minP, base));
         } catch (err: any) {
@@ -383,8 +384,8 @@ class MarketAdapterService {
             dynamicWeights?.maxAsymmetryFactor,
             MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR
         );
-        let minP = null;
-        let maxP = null;
+        let minP: number | null = null;
+        let maxP: number | null = null;
         try {
             minP = resolveConfiguredPriceBound(bot?.minPrice, DEFAULT_CONFIG.minPrice, centerPrice, 'min');
             maxP = resolveConfiguredPriceBound(bot?.maxPrice, DEFAULT_CONFIG.maxPrice, centerPrice, 'max');
@@ -450,7 +451,7 @@ class MarketAdapterService {
         };
     }
 
-    buildDefaultResult(bot: any, overrides: any = {}){
+    buildDefaultResult(_bot: any, overrides: any = {}){
         return {
             ok: true,
             dryRunMessages: [],
@@ -568,8 +569,8 @@ class MarketAdapterService {
 
     _computeDynamicWeights(params: any){
         const {
-            analysisCandles, closes, amaValues, amaWarmupBars, lookbackBars,
-            botAma, weightVariance, amaPrice, nowIso, cfg, bot, ctx, deps, atrPeriod
+            closes, amaValues, lookbackBars,
+            botAma, weightVariance, nowIso, cfg, bot, atrPeriod
         } = params;
 
         const clipPercentile = cfg.clipPercentile ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE;
@@ -591,12 +592,12 @@ class MarketAdapterService {
         if (clipPercentile > 0 && amaValues.length > amaSlopeReadyBars) {
             // AMA clip threshold from slope distribution — skip the ER window,
             // but do not require the full convergence-retention window.
-            const amaSlopes = [];
+            const amaSlopes: number[] = [];
             for (let i = amaSlopeReadyBars; i < amaValues.length; i++) {
                 const last = amaValues[i];
                 const past = amaValues[i - lookbackBars];
                 const slopePct = computeAverageAmaSlopePct(last, past, lookbackBars);
-                if (Number.isFinite(slopePct)) amaSlopes.push(Math.abs(slopePct));
+                if (Number.isFinite(slopePct)) amaSlopes.push(Math.abs(slopePct!));
             }
             if (amaSlopes.length > 0) {
                 const sorted = amaSlopes.sort((a, b) => a - b);
@@ -630,7 +631,7 @@ class MarketAdapterService {
             warmupBars: cfg.kalman?.warmupBars ?? 20,
         });
 
-        const kalmanHistory = [];
+        const kalmanHistory: any[] = [];
         for (const price of closes) {
             const kr = kalman.update(price);
             kalmanHistory.push(kr);
@@ -642,7 +643,7 @@ class MarketAdapterService {
         // Regime gate (Hurst + PE bilinear multiplier)
         const regimeSensitivity = cfg.regimeSensitivity ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_REGIME_SENSITIVITY;
         const absoluteThreshold = cfg.absoluteThreshold ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ABSOLUTE_THRESHOLD_DEFAULT;
-        let regimeResult = null;
+        let regimeResult: any = null;
         let regimeMultiplier = 1.0;
         const regimeMultipliers = new Array(closes.length).fill(1.0);
 
@@ -727,7 +728,7 @@ class MarketAdapterService {
                 if (!Number.isFinite(last) || !Number.isFinite(past) || past === 0) continue;
                 const sp = computeAverageAmaSlopePct(last, past, lookbackBars);
                 if (!Number.isFinite(sp)) continue;
-                const csp = Math.max(-amaClipThreshold, Math.min(amaClipThreshold, sp));
+                const csp = Math.max(-amaClipThreshold, Math.min(amaClipThreshold, sp!));
                 amaOffsets[i] = (!useNeutralZone || Math.abs(csp) >= nz)
                     ? Math.max(-mo, Math.min(mo, (csp / amaMaxS) * mo))
                     : 0;
@@ -817,7 +818,7 @@ class MarketAdapterService {
             confidence:     slopeResult.confidence,
             slopePct:       slopeResult.slopePct,
             slopeOffset:    slopeResult.slopeOffset,
-            rawSlopeOffset: slopeResult.rawSlopeOffset,
+            rawSlopeOffset: (slopeResult as any).rawSlopeOffset,
             amaSlopeGated,
             regimeMultiplier,
             symmetricDelta: slopeResult.symmetricDelta,
@@ -871,7 +872,7 @@ class MarketAdapterService {
                 confidence:              slopeResult.confidence,
                 slopePct:                slopeResult.slopePct,
                 slopeOffset:             slopeResult.slopeOffset,
-                rawSlopeOffset:          slopeResult.rawSlopeOffset,
+                rawSlopeOffset:          (slopeResult as any).rawSlopeOffset,
                 amaSlopeGated,
                 regimeMultiplier,
                 regimeSensitivity,
@@ -918,7 +919,7 @@ class MarketAdapterService {
             effectiveWeights: { sell: effectiveSell, buy: effectiveBuy },
             baseWeights:      { sell: staticSell,    buy: staticBuy },
             slopeOffset:      slopeResult.slopeOffset,
-            rawSlopeOffset:   slopeResult.rawSlopeOffset,
+            rawSlopeOffset:   (slopeResult as any).rawSlopeOffset,
             amaSlopeGated,
             volatilityPenalty: volPenalty,
             finalOffset:      finalOff,
@@ -1179,8 +1180,8 @@ class MarketAdapterService {
             let nativeLastTradeTs = Number.isFinite(existingMeta.nativeLastTradeTs)
                 ? existingMeta.nativeLastTradeTs
                 : null;
-            let nativeOverlapCount = null;
-            let nativePagesFetched = null;
+            let nativeOverlapCount: number | null = null;
+            let nativePagesFetched: number | null = null;
             // Policy:
             // - Trust native "no trades" directly for bounded runs up to this threshold.
             // - Only escalate to Kibana verification once a no-trade run exceeds it.
@@ -1298,7 +1299,7 @@ class MarketAdapterService {
                 if (needBootstrap) {
                     // Bootstrap: Kibana first (deep history), native as fallback
                     const kibanaLookbackHours = Math.max(cfg.bootstrapLookbackHours, analysisKeepCount * 2);
-                    let kibanaCandles = null;
+                    let kibanaCandles: any = null;
                     try {
                         kibanaCandles = await deps.withRetries(() => fetchKibanaCandles({
                             intervalSeconds: cfg.intervalSeconds,
@@ -1322,7 +1323,7 @@ class MarketAdapterService {
                             (analysisKeepCount * Math.max(Number(cfg.intervalSeconds) || 3600, 3600)) / 3600
                         );
                         const nativeStartMs = Math.max(0, nowMs - (nativeLookbackHours * 3600 * 1000));
-                        let nativeCandles = [];
+                        let nativeCandles: any[] = [];
                         try {
                             if (typeof deps.fetchNativeMarketHistorySince === 'function') {
                                 nativeCandles = await deps.withRetries(() => deps.fetchNativeMarketHistorySince(
@@ -1347,14 +1348,9 @@ class MarketAdapterService {
                     }
                 } else {
                     // Incremental: native fetch
-                    const nativeLookbackHours = Math.max(
-                        Number(cfg.bootstrapLookbackHours) || 0,
-                        Number(cfg.nativeBackfillHours) || 0,
-                        (analysisKeepCount * Math.max(Number(cfg.intervalSeconds) || 3600, 3600)) / 3600
-                    );
                     const lastTs = nextCandles[nextCandles.length - 1]?.[0] || 0;
                     const nativeStartMs = Math.max(0, lastTs - bucketMs);
-                    let nativeCandles = [];
+                    let nativeCandles: any[] = [];
                     try {
                         if (typeof deps.fetchNativeMarketHistorySince === 'function') {
                             nativeCandles = await deps.withRetries(() => deps.fetchNativeMarketHistorySince(
@@ -1380,10 +1376,10 @@ class MarketAdapterService {
                     const currentBucketStartMs = Math.floor(Number(nowMs) / bucketMs) * bucketMs;
                     const latestClosedBucketTs = currentBucketStartMs - bucketMs;
                     const earliestIncomingTs = nativeCandles.length > 0 ? nativeCandles[0][0] : null;
-                    const gapEndTs = Number.isFinite(earliestIncomingTs) && earliestIncomingTs > lastTs
+                    const gapEndTs: number | null = Number.isFinite(earliestIncomingTs) && earliestIncomingTs > lastTs
                         ? earliestIncomingTs
                         : latestClosedBucketTs + bucketMs;
-                    const gapBuckets = Number.isFinite(gapEndTs) && gapEndTs > lastTs
+                    const gapBuckets = gapEndTs !== null && gapEndTs > lastTs
                         ? Math.round((gapEndTs - lastTs) / bucketMs) - 1
                         : 0;
                     const maxNativeGapFill = Number.isFinite(cfg.maxNativeGapFillCandles)
@@ -1416,7 +1412,7 @@ class MarketAdapterService {
                 const lookbackHours = Math.max(cfg.bootstrapLookbackHours, analysisKeepCount * 2);
 
                 // ── Step 1: Kibana first (deep history, handles large candle requirements) ──
-                let kibanaCandles = null;
+                let kibanaCandles: any = null;
                 try {
                     kibanaCandles = await deps.withRetries(() => fetchKibanaCandles({
                         intervalSeconds: cfg.intervalSeconds,
@@ -1434,7 +1430,7 @@ class MarketAdapterService {
                     sourceLabel = 'kibana-bootstrap';
                 } else {
                     // ── Step 2: Kibana insufficient → fall back to native ──
-                    let nativeCandles = [];
+                    let nativeCandles: any[] = [];
                         try {
                             const sinceMs = Date.now() - (lookbackHours * 3600 * 1000);
                             const fetchResult = await deps.withRetries(
@@ -1496,8 +1492,8 @@ class MarketAdapterService {
 
                 try {
                     const knownSequences = new Set(nativeRecentTradeSequences.map((seq: any) => String(seq)));
-                    let fetchedTrades = [];
-                    let newTrades = [];
+                    let fetchedTrades: any[] = [];
+                    let newTrades: any[] = [];
                     let overlapUsed = false;
 
                     if (knownSequences.size >= 2 && typeof deps.fetchNativeTradesUntilOverlap === 'function') {
@@ -1614,7 +1610,7 @@ class MarketAdapterService {
 
             }
 
-            let kibanaGapRepairTimestamps = [];
+            let kibanaGapRepairTimestamps: any[] = [];
             let kibanaGapRepairAttempted = false;
             let gapAnalysis = typeof deps.detectMissingCandleTimestamps === 'function'
                 ? deps.detectMissingCandleTimestamps(nextCandles, cfg.intervalSeconds)
@@ -1782,25 +1778,25 @@ class MarketAdapterService {
             };
         };
 
-        let closedCandles = [];
-        let currentBucketStartMs = null;
-        let rawLastCandle = [0, 0, 0, 0, 0];
-        let rawLastCandleTs = null;
-        let latestClosedCandle = null;
-        let lastClosedCandleTs = null;
+        let closedCandles: any[] = [];
+        let currentBucketStartMs: number | null = null;
+        let rawLastCandle: any = [0, 0, 0, 0, 0];
+        let rawLastCandleTs: number | null = null;
+        let latestClosedCandle: any = null;
+        let lastClosedCandleTs: number | null = null;
         let botState: any = {};
         let previousClosedCandleTs = 0;
         let hasNewClosedCandle = false;
-        let consumedClosedCandleTs = null;
+        let consumedClosedCandleTs: number | null = null;
         let nextCandles = existingCandles;
         let sourceLabel = 'native-incremental';
         let kibanaGapRepairCount = 0;
         let kibanaBackfillCount = 0;
         let unresolvedGapCount = 0;
-        let nativeRecentTradeSequences = [];
-        let nativeLastTradeTs = null;
-        let nativeOverlapCount = null;
-        let nativePagesFetched = null;
+        let nativeRecentTradeSequences: any[] = [];
+        let nativeLastTradeTs: number | null = null;
+        let nativeOverlapCount: number | null = null;
+        let nativePagesFetched: number | null = null;
 
         const loadResult = await loadCandles();
         nextCandles = loadResult.nextCandles;
@@ -1874,7 +1870,7 @@ class MarketAdapterService {
         consumedClosedCandleTs = Number.isFinite(previousClosedCandleTs) && previousClosedCandleTs > 0
             ? previousClosedCandleTs
             : null;
-        hasNewClosedCandle = Number.isFinite(lastClosedCandleTs) && lastClosedCandleTs > previousClosedCandleTs;
+        hasNewClosedCandle = lastClosedCandleTs !== null && lastClosedCandleTs > previousClosedCandleTs;
 
         const candlePayload = {
             meta: {
@@ -2037,10 +2033,10 @@ class MarketAdapterService {
             warn(`${bot.botKey} is missing explicit weightDistribution; skipping dynamic volatility weights for this cycle.`);
         }
 
-        let slopeResult = null;
-        let amaSlope = null;
-        let weights = null;
-        let dynamicWeightsPayload = null;
+        let slopeResult: any = null;
+        let amaSlope: any = null;
+        let weights: any = null;
+        let dynamicWeightsPayload: any = null;
 
         if (shouldComputeDynamicWeightSignal) {
             const dwResult = this._computeDynamicWeights({
@@ -2377,7 +2373,7 @@ class MarketAdapterService {
             }
         }
 
-        if (Number.isFinite(lastClosedCandleTs) && lastClosedCandleTs > 0
+        if (lastClosedCandleTs !== null && lastClosedCandleTs > 0
                 && (!hasNewClosedCandle || !MarketAdapterService.isRetryableClosedCandleFailure(triggerSuppressedReason))) {
             consumedClosedCandleTs = lastClosedCandleTs;
         }
@@ -2537,10 +2533,5 @@ class MarketAdapterService {
     }
 }
 
-export = {
-    MarketAdapterService,
-    AMA_SLOPE_PERCENT_MODE_PER_BAR,
-    normalizeAmaSlopePercentMode,
-    normalizeAmaSlopeLookbackBars,
-    convertSlopePercentToPerBar,
-};
+export { MarketAdapterService, AMA_SLOPE_PERCENT_MODE_PER_BAR, normalizeAmaSlopePercentMode, normalizeAmaSlopeLookbackBars, convertSlopePercentToPerBar }
+

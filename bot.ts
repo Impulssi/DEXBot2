@@ -82,10 +82,10 @@ setupGracefulShutdown();
 // world-readable (would indicate a prior run with a permissive umask).
 if (typeof chainKeys.checkKeysFileSecurity === 'function') chainKeys.checkKeysFileSecurity();
 // Same migration-aware check for daemon-policies.json.
-const ROOT = PATHS.PROJECT_ROOT;
 if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPolicy.checkPolicyFileSecurity(PATHS.PROFILES.DAEMON_POLICIES_JSON);
-const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const launcherLogger = createPm2AwareLogger('bot.js');
+
+const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 
 // Get bot name from args or environment
 // Support both direct names (tsx bot.ts botname) and flag format (tsx bot.ts --botname)
@@ -179,14 +179,6 @@ async function getSigningSecretForAccount(accountName: string) {
           const { config: allBotsConfigData } = loadSettingsFile(PROFILES_BOTS_FILE);
           const allBotsConfig = resolveRawBotEntries(allBotsConfigData);
          
-         // Normalize all active bots with their correct indices in the unfiltered array
-         // CRITICAL: Index must be based on position in allBotsConfig, not in filtered array.
-         // The index is embedded in botKey (e.g., "bot-0", "bot-1"), determining file names.
-         // If index changes, the bot loses access to persisted state files.
-         const allActiveBots = allBotsConfig
-             .map((b: any, idx: number) => b.active !== false ? normalizeBotEntry(b, idx) : null)
-             .filter((b: any) => b !== null);
-
          // Find the current bot's index in the unfiltered bots.json array
          const botIndex = allBotsConfig.findIndex((b: any) => b.name === botName);
          if (botIndex === -1) {
@@ -203,7 +195,7 @@ async function getSigningSecretForAccount(accountName: string) {
          // Create and start bot with log prefix for [bot.js] context
           const bot = new DEXBot(normalizedConfig, { logPrefix: '[bot.js]' });
           const botCleanupName = `Bot: ${botName}`;
-          let botCleanupHandler = null;
+          let botCleanupHandler: (() => void) | null = null;
           try {
               // Register bot cleanup on shutdown
               botCleanupHandler = () => bot.shutdown();

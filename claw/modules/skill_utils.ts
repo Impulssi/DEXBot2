@@ -1,7 +1,7 @@
-const { getStorage } = require('../../modules/storage');
+import { getStorage } from '../../modules/storage/index.js';
 const storage = getStorage();
-const { path } = require('../../modules/path_api');
-const { PATHS } = require('../../modules/paths');
+import { path } from '../../modules/path_api.js';
+import { PATHS } from '../../modules/paths.js';
 const { version: DEXBOT_VERSION } = require(path.join(PATHS.PROJECT_ROOT, 'package.json'));
 
 export function normalizeRepoRoot(variableName: string, repoRoot?: string) {

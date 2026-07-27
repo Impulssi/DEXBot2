@@ -18,8 +18,12 @@ const DEFAULT_MAX_COLLATERAL_RATIO = 2.5;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15000;
 const CREDIT_FEE_RATE_DENOM = 1_000_000;
 
-function parseArgs(argv) {
-  const args = {
+function parseArgs(argv: string[]) {
+  const args: {
+    bot: string; account: string | null; asset: string | null; collateral: string | null;
+    thresholdHours: number; maxFeeRatePerDay: number; maxCollateralRatio: number | null;
+    connectTimeoutMs: number; autoRepay: number; help: boolean;
+  } = {
     bot: DEFAULT_BOT_NAME,
     account: null,
     asset: null,
@@ -90,39 +94,39 @@ Options:
 `);
 }
 
-function loadBot(botName) {
+function loadBot(botName: string) {
   const botsPath = PATHS.PROFILES.BOTS_JSON;
   const { config } = loadSettingsFile(botsPath, { silent: false, exitOnError: false });
   const entries = normalizeBotEntries(resolveRawBotEntries(config));
-  const bot = entries.find((entry) => entry.name === botName);
+  const bot = entries.find((entry: any) => entry.name === botName);
   if (!bot) {
     throw new Error(`Bot profile "${botName}" not found in ${botsPath}`);
   }
   return bot;
 }
 
-function amountToFloat(amount, asset) {
+function amountToFloat(amount: number | string, asset: any) {
   const value = Number(amount);
   const precision = Number(asset?.precision);
   if (!Number.isFinite(value) || !Number.isFinite(precision)) return null;
   return blockchainToFloat(value, precision);
 }
 
-function hoursUntil(isoTime) {
+function hoursUntil(isoTime: string | null | undefined): number | null {
   if (!isoTime) return null;
   const expiresAt = new Date(isoTime).getTime();
   if (!Number.isFinite(expiresAt)) return null;
   return (expiresAt - Date.now()) / 3600000;
 }
 
-function ceilToPrecision(value, precision) {
+function ceilToPrecision(value: number, precision: number | undefined): number {
   if (!Number.isFinite(value)) return value;
   const scale = 10 ** Math.max(0, Number(precision) || 0);
   return Math.ceil(value * scale) / scale;
 }
 
-function summarizeOperations(calls) {
-  return calls.flatMap((call) => (call.operations || []).map((op) => op.op_name));
+function summarizeOperations(calls: any[]) {
+  return calls.flatMap((call: any) => (call.operations || []).map((op: any) => op.op_name));
 }
 
 async function main() {
@@ -159,7 +163,7 @@ async function main() {
   if (!accountId) throw new Error(`Unable to resolve account: ${accountRef}`);
 
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-credit-renewal-'));
-  const dryRunCalls = [];
+  const dryRunCalls: any[] = [];
   const botConfig = {
     ...profileBot,
     preferredAccount: accountName || accountRef,
@@ -190,12 +194,12 @@ async function main() {
     account: { id: accountId, name: accountName || accountRef },
     accountId,
     privateKey: null,
-    _log: (message) => console.log(message),
-    _warn: (message) => console.warn(message),
+    _log: (message: string) => console.log(message),
+    _warn: (message: string) => console.warn(message),
   }, { stateDir });
 
   const originalExecuteOperations = runtime.executeOperations.bind(runtime);
-  runtime.executeOperations = async (operations, reason) => {
+  runtime.executeOperations = async (operations: any, reason: string) => {
     dryRunCalls.push({ reason, operations: JSON.parse(JSON.stringify(operations || [])) });
     return originalExecuteOperations(operations, reason);
   };
@@ -215,7 +219,7 @@ async function main() {
     }
 
     const offerById = new Map();
-    const enrichedDeals = await Promise.all(deals.map(async (deal) => {
+    const enrichedDeals = await Promise.all(deals.map(async (deal: any) => {
       const debtFloat = amountToFloat(deal.debtAmount, debtAsset);
       const collateralFloat = amountToFloat(deal.collateralAmount, collateralAsset);
       if (!offerById.has(deal.offerId)) {
@@ -245,11 +249,11 @@ async function main() {
       };
     }));
 
-    const currentDebt = enrichedDeals.reduce((sum, deal) => sum + (Number.isFinite(deal.debtFloat) ? deal.debtFloat : 0), 0);
-    const currentCollateral = enrichedDeals.reduce((sum, deal) => sum + (Number.isFinite(deal.collateralFloat) ? deal.collateralFloat : 0), 0);
-    const allowedOfferIds = Array.from(new Set(enrichedDeals.map((deal) => deal.offerId).filter(Boolean)));
+    const currentDebt = enrichedDeals.reduce((sum: any, deal: any) => sum + (Number.isFinite(deal.debtFloat) ? deal.debtFloat : 0), 0);
+    const currentCollateral = enrichedDeals.reduce((sum: any, deal: any) => sum + (Number.isFinite(deal.collateralFloat) ? deal.collateralFloat : 0), 0);
+    const allowedOfferIds = Array.from(new Set(enrichedDeals.map((deal: any) => deal.offerId).filter(Boolean)));
     const maxBorrowAmount = ceilToPrecision(currentDebt, debtAsset.precision);
-    const maxObservedCollateralRatio = enrichedDeals.reduce((max, deal) => (
+    const maxObservedCollateralRatio = enrichedDeals.reduce((max: any, deal: any) => (
       Number.isFinite(deal.collateralRatio) ? Math.max(max, deal.collateralRatio) : max
     ), 0);
     const effectiveMaxCollateralRatio = args.maxCollateralRatio || Math.max(
@@ -268,17 +272,17 @@ async function main() {
     await runtime.refreshState();
     const result = await runtime.runMaintenance('credit-renewal-test');
     const opNames = summarizeOperations(dryRunCalls);
-    const repayCount = opNames.filter((name) => name === 'credit_deal_repay').length;
-    const acceptCount = opNames.filter((name) => name === 'credit_offer_accept').length;
-    const standaloneAccept = dryRunCalls.some((call) => {
-      const names = (call.operations || []).map((op) => op.op_name);
+    const repayCount = opNames.filter((name: any) => name === 'credit_deal_repay').length;
+    const acceptCount = opNames.filter((name: any) => name === 'credit_offer_accept').length;
+    const standaloneAccept = dryRunCalls.some((call: any) => {
+      const names = (call.operations || []).map((op: any) => op.op_name);
       return names.includes('credit_offer_accept') && !names.includes('credit_deal_repay');
     });
     if (standaloneAccept) {
       throw new Error('Renew-only guard failed: dry-run attempted a standalone credit_offer_accept.');
     }
 
-    const dueDeals = enrichedDeals.filter((deal) => Number.isFinite(deal.hoursLeft) && deal.hoursLeft < args.thresholdHours);
+    const dueDeals = enrichedDeals.filter((deal: any) => Number.isFinite(deal.hoursLeft) && deal.hoursLeft < args.thresholdHours);
     if (dueDeals.length > 0 && repayCount < dueDeals.length) {
       throw new Error(`Renewal guard failed: ${dueDeals.length} due deal(s) but only ${repayCount} repay op(s).`);
     }
@@ -328,7 +332,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().catch((err: any) => {
   console.error(`credit renewal test failed: ${err.message}`);
   process.exitCode = 1;
 });

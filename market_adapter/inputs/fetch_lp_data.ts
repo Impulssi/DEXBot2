@@ -25,19 +25,22 @@
  *   Use --precA / --precB to override if needed.
  */
 
+
+import { path } from '../../modules/path_api';
+import { getStorage } from '../../modules/storage';
+import * as kibanaSource from './kibana_source';
+import { mergeCandles } from '../candle_utils';
+import { toIntervalLabel } from '../interval_utils';
+import { parseJsonWithComments } from '../../modules/order/utils/system';
+import { MARKET_ADAPTER } from '../../modules/constants';
+import { normalizePoolId, resolveAsset, findPoolByAssets } from '../utils/chain';
+import { writeJsonAtomic } from '../utils/atomic_write';
+import { readJSON } from '../../modules/utils/fs_utils';
+import { PATHS } from '../../modules/paths';
+import * as bitsharesClient from '../../modules/bitshares_client';
 'use strict';
 
-const { path } = require('../../modules/path_api');
-const { getStorage } = require('../../modules/storage');
 const storage = getStorage();
-const kibanaSource = require('./kibana_source');
-const { mergeCandles } = require('../candle_utils');
-const { toIntervalLabel } = require('../interval_utils');
-const { parseJsonWithComments } = require('../../modules/order/utils/system');
-const { MARKET_ADAPTER } = require('../../modules/constants');
-const { normalizePoolId, resolveAsset, findPoolByAssets } = require('../utils/chain');
-const { writeJsonAtomic } = require('../utils/atomic_write');
-const { readJSON } = require('../../modules/utils/fs_utils');
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -59,7 +62,6 @@ const FETCH_TIMEOUT_MS = MARKET_ADAPTER.KIBANA_REQUEST_TIMEOUT_MS;
 const FETCH_MAX_ATTEMPTS = MARKET_ADAPTER.RUNTIME_DEFAULTS.sourceRetries;
 const FETCH_MANIFEST_VERSION = 1;
 
-const { PATHS } = require('../../modules/paths');
 const PROJECT_ROOT = PATHS.PROJECT_ROOT;
 const BOTS_JSON = PATHS.PROFILES.BOTS_JSON;
 
@@ -68,10 +70,10 @@ const BOTS_JSON = PATHS.PROFILES.BOTS_JSON;
 function parseArgs() {
     const args   = process.argv.slice(2);
     const config = { ...DEFAULT_CONFIG };
-    let poolId   = null;   // null = auto-discover from bots.json
-    let botName  = null;
-    let precA    = null;   // null = auto from blockchain
-    let precB    = null;
+    let poolId: string | null = null;   // null = auto-discover from bots.json
+    let botName: string | null = null;
+    let precA: number | null = null;   // null = auto from blockchain
+    let precB: number | null = null;
 
     const intervalMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
 
@@ -82,7 +84,7 @@ function parseArgs() {
         switch (arg) {
             case '--bot':      botName                = val; i++; break;
             case '--pool':     poolId                 = val; i++; break;
-            case '--interval': config.intervalSeconds = intervalMap[val] ?? parseInt(val, 10); i++; break;
+            case '--interval': config.intervalSeconds = (intervalMap as Record<string, number>)[val] ?? parseInt(val, 10); i++; break;
             case '--lookback': config.lookbackHours   = parseInt(val.replace('h', ''), 10); i++; break;
             case '--chunkMonths': config.chunkMonths  = parseInt(val, 10); i++; break;
             case '--precA':    precA                  = parseInt(val, 10); i++; break;
@@ -99,7 +101,7 @@ function parseArgs() {
 
 // ─── Output path ──────────────────────────────────────────────────────────────
 
-function slugPart(value) {
+function slugPart(value: any) {
     return String(value || '')
         .trim()
         .toLowerCase()
@@ -107,43 +109,43 @@ function slugPart(value) {
         .replace(/^_+|_+$/g, '') || 'unknown';
 }
 
-function pairFolderName(assetA, assetB) {
+function pairFolderName(assetA: any, assetB: any) {
     return `${slugPart(assetA?.symbol)}_${slugPart(assetB?.symbol)}`;
 }
 
-function outputPath(poolId, intervalSeconds, assetA, assetB) {
+function outputPath(poolId: any, intervalSeconds: any, assetA: any, assetB: any) {
     const label = toIntervalLabel(intervalSeconds);
     const id  = String(poolId).replace('1.19.', '');
     const pairFolder = pairFolderName(assetA, assetB);
     return path.join(PROJECT_ROOT, 'market_adapter', 'data', 'lp', pairFolder, `lp_pool_${id}_${label}.json`);
 }
 
-function applyPrecisionOverrides(assetA, assetB, precA, precB) {
+function applyPrecisionOverrides(assetA: any, assetB: any, precA: any, precB: any) {
     return {
         assetA: precA != null ? { ...assetA, precision: precA } : assetA,
         assetB: precB != null ? { ...assetB, precision: precB } : assetB,
     };
 }
 
-function pairFolderPath(assetASymbol, assetBSymbol) {
+function pairFolderPath(assetASymbol: any, assetBSymbol: any) {
     return path.join(PROJECT_ROOT, 'market_adapter', 'data', 'lp', pairFolderName(
         { symbol: assetASymbol },
         { symbol: assetBSymbol }
     ));
 }
 
-function manifestPathFor(outPath) {
+function manifestPathFor(outPath: any) {
     return `${outPath}.fetch_manifest.json`;
 }
 
-function chunkPathFor(outPath, index, window) {
+function chunkPathFor(outPath: any, index: any, window: any) {
     const parsed = path.parse(outPath);
     const start = window.gte.slice(0, 10);
     const end = window.lte.slice(0, 10);
     return path.join(parsed.dir, `${parsed.name}.chunk_${String(index).padStart(2, '0')}_${start}_${end}${parsed.ext}`);
 }
 
-function addUtcMonths(date, months) {
+function addUtcMonths(date: any, months: any) {
     const result = new Date(date.getTime());
     const day = result.getUTCDate();
     result.setUTCDate(1);
@@ -157,7 +159,7 @@ function addUtcMonths(date, months) {
     return result;
 }
 
-function normalizeDateInput(raw, label) {
+function normalizeDateInput(raw: any, label: any) {
     const ms = Date.parse(String(raw || ''));
     if (!Number.isFinite(ms)) {
         throw new Error(`Invalid ${label} date: ${raw}`);
@@ -165,7 +167,7 @@ function normalizeDateInput(raw, label) {
     return new Date(ms);
 }
 
-function resolveChunkMonths(config) {
+function resolveChunkMonths(config: any) {
     const months = Number(config.chunkMonths);
     if (!Number.isFinite(months) || months <= 0) {
         throw new Error(`Invalid chunkMonths: ${config.chunkMonths}`);
@@ -173,7 +175,7 @@ function resolveChunkMonths(config) {
     return Math.max(1, Math.round(months));
 }
 
-function normalizeLookbackRange(config, nowMs = Date.now()) {
+function normalizeLookbackRange(config: any, nowMs: any = Date.now()) {
     const lookbackHours = Number(config.lookbackHours);
     if (!Number.isFinite(lookbackHours) || lookbackHours <= 0) {
         throw new Error(`Invalid lookbackHours: ${config.lookbackHours}`);
@@ -189,7 +191,7 @@ function normalizeLookbackRange(config, nowMs = Date.now()) {
     };
 }
 
-function buildFetchWindowsFromRange(timeRange, chunkMonths) {
+function buildFetchWindowsFromRange(timeRange: any, chunkMonths: any) {
     let start;
     let end;
 
@@ -200,7 +202,7 @@ function buildFetchWindowsFromRange(timeRange, chunkMonths) {
         throw new Error(`Invalid fetch range: ${start.toISOString()} must be earlier than ${end.toISOString()}`);
     }
 
-    const windows = [];
+    const windows: any[] = [];
     let cursor = start;
     while (cursor < end) {
         const next = addUtcMonths(cursor, chunkMonths);
@@ -215,7 +217,7 @@ function buildFetchWindowsFromRange(timeRange, chunkMonths) {
     return windows;
 }
 
-function loadManifest(manifestPath) {
+function loadManifest(manifestPath: any) {
     if (!storage.exists(manifestPath)) return null;
     try {
         return readJSON(manifestPath);
@@ -224,13 +226,13 @@ function loadManifest(manifestPath) {
     }
 }
 
-function loadCachedFetchContext(bot, intervalSeconds) {
+function loadCachedFetchContext(bot: any, intervalSeconds: any) {
     const dir = pairFolderPath(bot.assetA, bot.assetB);
     if (!storage.exists(dir)) return null;
 
     const label = toIntervalLabel(intervalSeconds);
     const manifestFiles = storage.readdir(dir)
-        .filter((name) => name.endsWith(`${label}.json.fetch_manifest.json`))
+        .filter((name: any) => name.endsWith(`${label}.json.fetch_manifest.json`))
         .sort();
 
     for (const file of manifestFiles) {
@@ -252,7 +254,7 @@ function loadCachedFetchContext(bot, intervalSeconds) {
     }
 
     const dataFiles = storage.readdir(dir)
-        .filter((name) => name.endsWith(`${label}.json`) && !name.includes('.chunk_') && !name.endsWith('.fetch_manifest.json'))
+        .filter((name: any) => name.endsWith(`${label}.json`) && !name.includes('.chunk_') && !name.endsWith('.fetch_manifest.json'))
         .sort();
 
     for (const file of dataFiles) {
@@ -278,11 +280,11 @@ function loadCachedFetchContext(bot, intervalSeconds) {
     return null;
 }
 
-function sameRequest(a, b) {
+function sameRequest(a: any, b: any) {
     return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function buildRequestKey(config, fullPoolId, assetA, assetB, timeRange, outPath) {
+function buildRequestKey(config: any, fullPoolId: any, assetA: any, assetB: any, timeRange: any, outPath: any) {
     const chunkMonths = resolveChunkMonths(config);
     return {
         pool: fullPoolId,
@@ -296,14 +298,14 @@ function buildRequestKey(config, fullPoolId, assetA, assetB, timeRange, outPath)
     };
 }
 
-function buildManifest(requestKey, windows, outPath) {
+function buildManifest(requestKey: any, windows: any, outPath: any) {
     return {
         version: FETCH_MANIFEST_VERSION,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         request: requestKey,
         status: 'in_progress',
-        windows: windows.map((window, idx) => ({
+        windows: windows.map((window: any, idx: any) => ({
             index: idx + 1,
             gte: window.gte,
             lte: window.lte,
@@ -318,12 +320,12 @@ function buildManifest(requestKey, windows, outPath) {
     };
 }
 
-function saveManifest(manifestPath, manifest) {
+function saveManifest(manifestPath: any, manifest: any) {
     manifest.updatedAt = new Date().toISOString();
     writeJsonAtomic(manifestPath, manifest);
 }
 
-function validateChunkFile(chunkFile, requestKey, windowEntry) {
+function validateChunkFile(chunkFile: any, requestKey: any, windowEntry: any) {
     if (!storage.exists(chunkFile)) return null;
     try {
         const parsed = readJSON(chunkFile);
@@ -346,7 +348,7 @@ function validateChunkFile(chunkFile, requestKey, windowEntry) {
     }
 }
 
-function persistChunkFile(chunkFile, requestKey, windowEntry, candles) {
+function persistChunkFile(chunkFile: any, requestKey: any, windowEntry: any, candles: any) {
     const payload = {
         meta: {
             fetchedAt: new Date().toISOString(),
@@ -368,7 +370,7 @@ function persistChunkFile(chunkFile, requestKey, windowEntry, candles) {
     writeJsonAtomic(chunkFile, payload);
 }
 
-function ensureManifest(config, fullPoolId, assetA, assetB, outPath, nowMs = Date.now()) {
+function ensureManifest(config: any, fullPoolId: any, assetA: any, assetB: any, outPath: any, nowMs: any = Date.now()) {
     const manifestPath = manifestPathFor(outPath);
     const existing = loadManifest(manifestPath);
     const chunkMonths = resolveChunkMonths(config);
@@ -409,9 +411,9 @@ function ensureManifest(config, fullPoolId, assetA, assetB, outPath, nowMs = Dat
     return { manifestPath, manifest, requestKey };
 }
 
-async function withTimeout(run, timeoutMs, description) {
+async function withTimeout(run: any, timeoutMs: any, description: any) {
     const controller = new AbortController();
-    let timeoutId = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let timedOut = false;
     const timeoutMessage = `${description} timed out after ${Math.round(timeoutMs / 1000)}s`;
 
@@ -432,14 +434,14 @@ async function withTimeout(run, timeoutMs, description) {
     }
 }
 
-async function fetchWindowCandles(fullPoolId, assetA, assetB, config, windowEntry, total) {
+async function fetchWindowCandles(fullPoolId: any, assetA: any, assetB: any, config: any, windowEntry: any, total: any) {
     const label = `${windowEntry.gte} → ${windowEntry.lte}`;
     let lastErr = null;
 
     for (let attempt = 1; attempt <= FETCH_MAX_ATTEMPTS; attempt++) {
         console.log(`  Chunk ${windowEntry.index}/${total}: ${label} (attempt ${attempt}/${FETCH_MAX_ATTEMPTS})`);
         try {
-            const candles = await withTimeout((signal) => kibanaSource.getLpCandlesForPool(fullPoolId, assetA, assetB, {
+            const candles = await withTimeout((signal: any) => kibanaSource.getLpCandlesForPool(fullPoolId, assetA, assetB, {
                     ...config,
                     timeout: FETCH_TIMEOUT_MS,
                     signal,
@@ -461,7 +463,7 @@ async function fetchWindowCandles(fullPoolId, assetA, assetB, config, windowEntr
     throw lastErr;
 }
 
-async function fetchCandlesSequentially(fullPoolId, assetA, assetB, config, outPath) {
+async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: any, config: any, outPath: any) {
     const { manifestPath, manifest, requestKey } = ensureManifest(config, fullPoolId, assetA, assetB, outPath);
     const total = manifest.windows.length;
     const chunkMonths = resolveChunkMonths(config);
@@ -505,7 +507,7 @@ async function fetchCandlesSequentially(fullPoolId, assetA, assetB, config, outP
         }
     }
 
-    let merged = [];
+    let merged: any[] = [];
     for (const windowEntry of manifest.windows) {
         const cached = validateChunkFile(windowEntry.file, requestKey, windowEntry);
         if (!cached) {
@@ -514,7 +516,7 @@ async function fetchCandlesSequentially(fullPoolId, assetA, assetB, config, outP
         merged = merged.length === 0
             ? cached.candles
             : mergeCandles(merged, cached.candles, {
-                onCollision: (existing, incoming) => incoming[5] > existing[5] ? incoming : existing,
+                onCollision: (existing: any, incoming: any) => incoming[5] > existing[5] ? incoming : existing,
             });
     }
 
@@ -532,7 +534,7 @@ function loadBotsJson() {
     return parseBotsConfig(storage.readFile(BOTS_JSON), BOTS_JSON);
 }
 
-function parseBotsConfig(raw, sourceLabel = BOTS_JSON) {
+function parseBotsConfig(raw: any, sourceLabel: any = BOTS_JSON) {
     const parsed = parseJsonWithComments(raw);
     const bots = Array.isArray(parsed?.bots) ? parsed.bots : (Array.isArray(parsed) ? parsed : null);
     if (!bots) {
@@ -544,13 +546,13 @@ function parseBotsConfig(raw, sourceLabel = BOTS_JSON) {
 /**
  * Pick a bot: by name if given, otherwise first active bot with startPrice: "pool".
  */
-function selectBot(bots, botName) {
+function selectBot(bots: any, botName: any) {
     if (botName) {
-        const bot = bots.find(b => b.name === botName);
+        const bot = bots.find((b: any) => b.name === botName);
         if (!bot) throw new Error(`Bot "${botName}" not found in bots.json`);
         return bot;
     }
-    const bot = bots.find(b => b.active && b.startPrice === 'pool');
+    const bot = bots.find((b: any) => b.active && b.startPrice === 'pool');
     if (!bot) throw new Error('No active pool-price bot found in bots.json. Use --bot NAME to specify one.');
     return bot;
 }
@@ -631,7 +633,6 @@ async function run() {
             console.log(`  Asset B: ${bot.assetB} → ${assetB.id} (precision ${assetB.precision})`);
             console.log(`  Pool:    ${fullPoolId}`);
         } else {
-            const bitsharesClient = require('../../modules/bitshares_client');
             const { waitForConnected } = bitsharesClient;
 
             // ── Step 1: Connect + resolve asset metadata ─────────────────────────
@@ -685,8 +686,8 @@ async function run() {
             fillGaps: false,
             fillGapsToRequestedRange: false,
         });
-        const volumeCandles = probeCandles.filter((c) => Number(c[5] || 0) > 0);
-        const nonFlatCandles = volumeCandles.filter((c) => c[1] !== c[2] || c[1] !== c[3] || c[1] !== c[4]);
+        const volumeCandles = probeCandles.filter((c: any) => Number(c[5] || 0) > 0);
+        const nonFlatCandles = volumeCandles.filter((c: any) => c[1] !== c[2] || c[1] !== c[3] || c[1] !== c[4]);
 
         console.log(`  Candles with trades in 48h: ${volumeCandles.length}`);
         console.log(`  Non-flat OHLC candles:     ${nonFlatCandles.length}`);
@@ -720,10 +721,10 @@ async function run() {
 
         const firstTs  = new Date(candles[0][0]).toISOString();
         const lastTs   = new Date(candles[candles.length - 1][0]).toISOString();
-        const closes   = candles.map(c => c[4]);
+        const closes   = candles.map((c: any) => c[4]);
         const minPrice = Math.min(...closes);
         const maxPrice = Math.max(...closes);
-        const avgPrice = closes.reduce((a, b) => a + b, 0) / closes.length;
+        const avgPrice = closes.reduce((a: any, b: any) => a + b, 0) / closes.length;
 
         console.log(`  Date range:  ${firstTs}  →  ${lastTs}`);
         console.log(`  Price range: ${minPrice.toFixed(8)} – ${maxPrice.toFixed(8)}`);
@@ -765,7 +766,7 @@ async function run() {
     };
 
     writeJsonAtomic(outPath, output);
-    const kb = (storage.stat(outPath).size / 1024).toFixed(1);
+    const kb = ((storage.stat(outPath) as any).size / 1024).toFixed(1);
     console.log(`  Saved: ${path.relative(process.cwd(), outPath)}  (${kb} KB)`);
 
     console.log('\nNext — chart it:');
@@ -773,17 +774,11 @@ async function run() {
 }
 
 if (require.main === module) {
-    run().catch((err) => {
+    run().catch((err: any) => {
         console.error('Fatal:', err);
         process.exit(1);
     });
 }
 
-export = {
-    applyPrecisionOverrides,
-    parseBotsConfig,
-    loadBotsJson,
-    loadCachedFetchContext,
-    selectBot,
-    outputPath,
-};
+export { applyPrecisionOverrides, parseBotsConfig, loadBotsJson, loadCachedFetchContext, selectBot, outputPath }
+

@@ -188,7 +188,7 @@ async function resolveBotContext(bot: any) {
 
     const marketSource = normalizeMarketSource(bot.startPrice) || 'pool';
 
-    let poolId = null;
+    let poolId: string | null = null;
     if (marketSource === 'pool') {
         poolId = bot.poolId
             ? normalizePoolId(bot.poolId)
@@ -198,19 +198,5 @@ async function resolveBotContext(bot: any) {
     return { assetA, assetB, poolId, marketSource, priceMode: 'book' };
 }
 
-export = {
-    resolveAsset,
-    findPoolByAssets,
-    normalizeAssetSymbol,
-    normalizeMarketSource,
-    normalizePoolId,
-    hasNumericStartPrice,
-    resolveMarketSourceForBot,
-    resolveBotContext,
-    isExactPair,
-    isSamePair,
-    isExactPairIds,
-    isSamePairIds,
-    getBitsharesClient,
-    setBitsharesClientForTests,
-};
+export { resolveAsset, findPoolByAssets, normalizeAssetSymbol, normalizeMarketSource, normalizePoolId, hasNumericStartPrice, resolveMarketSourceForBot, resolveBotContext, isExactPair, isSamePair, isExactPairIds, isSamePairIds, getBitsharesClient, setBitsharesClientForTests }
+

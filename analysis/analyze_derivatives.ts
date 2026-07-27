@@ -19,15 +19,15 @@
  *   analysis/charts/derivative_chart.html
  */
 
+
+import { PATHS } from '../modules/paths';
+import { DerivativeAnalyzer } from './trend_detection/derivative_analyzer';
+import { generateHTML } from './derivative_chart_generator';
+import { createSource } from './price_sources';
+import { findLatestLpData } from '../market_adapter/utils/data_discovery';
+import { writeChartFile } from './chart_utils';
 'use strict';
 
-const path = require('path');
-const { PATHS } = require('../modules/paths');
-const { DerivativeAnalyzer } = require('./trend_detection/derivative_analyzer');
-const { generateHTML }        = require('./derivative_chart_generator');
-const { createSource }        = require('./price_sources');
-const { findLatestLpData }    = require('../market_adapter/utils/data_discovery');
-const { writeChartFile }      = require('./chart_utils');
 
 interface SourceConfig {
     botKey: string;
@@ -41,7 +41,7 @@ interface SourceConfig {
 interface CliConfig {
     source: { type: string; config: SourceConfig };
     slowSmaPeriod: number;
-    fastSmaPeriod: number | null;
+    fastSmaPeriod: number | undefined;
     minBarsForConfirmation: number;
     macdFastPeriod: number;
     macdSlowPeriod: number;
@@ -75,7 +75,7 @@ function parseArgs(): CliConfig {
     const config: CliConfig = {
         source: { type: 'market_adapter', config: { botKey: '' } },
         slowSmaPeriod:        500,
-        fastSmaPeriod:        null,
+        fastSmaPeriod:        undefined,
         minBarsForConfirmation: 3,
         macdFastPeriod: 12,
         macdSlowPeriod: 26,
@@ -192,7 +192,7 @@ async function analyze(source: PriceSource, config: CliConfig): Promise<{
     config: {
         source: string;
         slowSmaPeriod: number;
-        fastSmaPeriod: number | null;
+        fastSmaPeriod: number | undefined;
         macdFastPeriod: number;
         macdSlowPeriod: number;
         macdSignalPeriod: number;
@@ -248,19 +248,19 @@ async function analyze(source: PriceSource, config: CliConfig): Promise<{
         minBarsForConfirmation: config.minBarsForConfirmation,
     });
 
-    const allResults = [];
+    const allResults: any[] = [];
     for (let i = 0; i < candles.length; i++) {
         const { marketPrice, timestamp } = source.extractMarketPrice(candles[i]);
         try {
             allResults.push(analyzer.update(marketPrice, timestamp));
-        } catch (err) {
-            throw new Error(`Failed at candle ${i}: ${err.message}`);
+        } catch (err: unknown) {
+            throw new Error(`Failed at candle ${i}: ${(err as any)?.message ?? err}`);
         }
     }
 
     const last = allResults[allResults.length - 1];
     if (!config.quiet) {
-        const parts = [];
+        const parts: string[] = [];
         if (config.slowSmaPeriod)    parts.push(`SMA(${config.slowSmaPeriod}): ${last.smaRawTrend} (${last.smaBarsInTrend} bars)`);
         if (config.fastSmaPeriod)    parts.push(`fastSMA(${config.fastSmaPeriod}): ${last.fastSmaRawTrend} (${last.fastSmaBarsInTrend} bars)`);
         parts.push(`MACD: ${last.macdTrend} hist=${last.macdHistogram}`);
@@ -322,14 +322,15 @@ async function main(): Promise<void> {
         writeChartFile(config.chartFile, html);
 
         if (!config.quiet) console.log(`[Analyzer] ✓ Chart saved to ${config.chartFile}`);
-    } catch (err) {
-        console.error(`[Analyzer] Error: ${err.message}`);
+    } catch (err: unknown) {
+        console.error(`[Analyzer] Error: ${(err as any)?.message ?? err}`);
         process.exit(1);
     }
 }
 
 if (require.main === module) {
-    main().catch(err => { console.error(err); process.exit(1); });
+    main().catch((err: unknown) => { console.error(err); process.exit(1); });
 }
 
-export = { analyze };
+export { analyze }
+

@@ -1,4 +1,5 @@
-const { roundTo } = require('../../modules/utils/math_utils');
+
+import { roundTo } from '../../modules/utils/math_utils';
 'use strict';
 
 /**
@@ -63,7 +64,7 @@ class EMA {
             this.value = this._sum / this.period;
             return this.value;
         }
-        this.value = price * this.multiplier + this.value * (1 - this.multiplier);
+        this.value = price * this.multiplier + this.value! * (1 - this.multiplier);
         return this.value;
     }
 
@@ -789,7 +790,6 @@ class DerivativeAnalyzer {
     _computeInterpretation(): string {
         const hist     = this.currMacd?.histogram ?? null;
         const macdLine = this.currMacd?.macd      ?? null;
-        const macdSig  = this.currMacd?.signal    ?? null;
         const prevHist     = this.prevMacd?.histogram ?? null;
         const prevMacdLine = this.prevMacd?.macd      ?? null;
         const rsi = this.currRsi;
@@ -1046,4 +1046,5 @@ class DerivativeAnalyzer {
     getUpdateCount(): number { return this.updateCount; }
 }
 
-export = { DerivativeAnalyzer };
+export { DerivativeAnalyzer }
+

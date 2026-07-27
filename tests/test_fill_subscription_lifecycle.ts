@@ -15,6 +15,7 @@
 
 const assert = require('assert');
 const { createSubscriptionManager } = require('../modules/bitshares-native/subscriptions');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 const OP_FILL_ORDER = 4;
 const ALICE_ID = '1.2.100';
@@ -75,7 +76,7 @@ function instance(id) {
             console.log(`  \u2713 ${name}`);
             passed++;
         }).catch(err => {
-            console.log(`  \u2717 ${name}: ${err.message || err}`);
+            console.log(`  \u2717 ${name}: ${getErrorMessage(err) || err}`);
         });
     }
 
@@ -89,7 +90,7 @@ function instance(id) {
         const a = Array.isArray(actual) ? actual.map(f => ({ id: f.id, op: f.op })) : actual;
         const e = Array.isArray(expected) ? expected.map(f => ({ id: f.id, op: f.op })) : expected;
         try { assert.deepStrictEqual(a, e); }
-        catch (err) { throw new Error(`${msg}: ${err.message}`); }
+        catch (err) { throw new Error(`${msg}: ${getErrorMessage(err)}`); }
     }
 
     console.log('=== Fill Subscription Lifecycle Test ===\n');
@@ -488,6 +489,6 @@ function instance(id) {
         process.exitCode = 1;
     }
 })().catch(err => {
-    console.error('Test suite error:', err.message || err);
+    console.error('Test suite error:', getErrorMessage(err) || err);
     process.exitCode = 1;
 });

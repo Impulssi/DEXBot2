@@ -19,7 +19,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-const { _setFeeCache } = require('../modules/order/utils/math');
+
 const chainOrders = require('../modules/chain_orders');
 
 function suppressNoise() {
@@ -58,7 +58,7 @@ function makeSellFillEvent(orderId, amountXrp, blockNum = 12345, historyId = '1.
     };
 }
 
-function makeBuyFillEvent(orderId, amountBts, blockNum = 12346, historyId = '1.11.999002') {
+function _makeBuyFillEvent(orderId, amountBts, blockNum = 12346, historyId = '1.11.999002') {
     return {
         block_num: blockNum,
         id: historyId,
@@ -71,7 +71,7 @@ function makeBuyFillEvent(orderId, amountBts, blockNum = 12346, historyId = '1.1
     };
 }
 
-function installBatchReadOrdersMock(mgr, mockImpl) {
+function installBatchReadOrdersMock(_mgr, mockImpl) {
     const original = chainOrders.batchReadOrders;
     chainOrders.batchReadOrders = mockImpl;
     return () => { chainOrders.batchReadOrders = original; };
@@ -133,7 +133,7 @@ async function testFullAndPartialMix() {
     const fill1 = makeSellFillEvent(orderId1, 1.0, 200, '1.11.2001');
     const fill2 = makeSellFillEvent(orderId2, 0.5, 200, '1.11.2002');
 
-    const result = await mgr.syncFromFillHistoryBatch([fill1, fill2], {
+    await mgr.syncFromFillHistoryBatch([fill1, fill2], {
         persistenceMode: 'batched'
     });
 
@@ -283,7 +283,7 @@ async function testAggregatedGhostOrderIds() {
     const fill1 = makeSellFillEvent(orderId1, 1.0, 700, '1.11.7001');
     const fill2 = makeSellFillEvent(orderId2, 1.0, 700, '1.11.7002');
 
-    const result = await mgr.syncFromFillHistoryBatch([fill1, fill2], {
+    await mgr.syncFromFillHistoryBatch([fill1, fill2], {
         persistenceMode: 'batched'
     });
 

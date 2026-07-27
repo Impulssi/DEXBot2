@@ -15,37 +15,37 @@ const fundRegistry = require('./fund_registry');
 const { BitShares } = require('./bitshares_client');
 const { BroadcastUncertainError } = require('./dexbot_credential_client');
 const { Config } = require('./config');
-function getNodeManager(...args) { return require('./bitshares_client').getNodeManager(...args); }
-function hasOpenOrdersSyncLoopMsSet(...args) { return require('./config').hasOpenOrdersSyncLoopMsSet(...args); }
-function getOpenOrdersSyncLoopMs(...args) { return require('./config').getOpenOrdersSyncLoopMs(...args); }
-function isGridBloated(...args) { return grid.isGridBloated(...args); }
-function isGridBloatGraceActive(...args) { return grid.isGridBloatGraceActive(...args); }
-function clearGridBloatFlag(...args) { return grid.clearGridBloatFlag(...args); }
-function loadGrid(...args) { return grid.loadGrid(...args); }
-function recalculateGrid(...args) { return grid.recalculateGrid(...args); }
-function buildRuntimeScriptPath(...args) { return require('./launcher/runtime_entry').buildRuntimeScriptPath(...args); }
-function isDistCodeRoot(...args) { return require('./launcher/runtime_entry').isDistCodeRoot(...args); }
-function applyGridDivergenceCorrections(...args) { return require('./order/utils/system').applyGridDivergenceCorrections(...args); }
-function loadAmaCenterSnapshot(...args) { return require('./order/utils/system').loadAmaCenterSnapshot(...args); }
-function sleep(...args) { return require('./order/utils/system').sleep(...args); }
-function parseJsonWithComments(...args) { return require('./order/utils/system').parseJsonWithComments(...args); }
-function isPm2Runtime(...args) { return require('./order/logger').isPm2Runtime(...args); }
-function getSharedMarketAdapterRuntime(...args) { return require('./launcher/market_adapter_runtime').getSharedMarketAdapterRuntime(...args); }
-function resetMarketAdapterWhitelistCache(...args) { return require('./market_adapter_whitelist').resetMarketAdapterWhitelistCache(...args); }
-function isBotDynamicWeightWhitelisted(...args) { return require('./market_adapter_whitelist').isBotDynamicWeightWhitelisted(...args); }
-function cloneWeightDistribution(...args) { return require('./order/utils/math').cloneWeightDistribution(...args); }
-function calculateOrderCreationFees(...args) { return require('./order/utils/math').calculateOrderCreationFees(...args); }
-function calculateSwapInAmount(...args) { return require('./order/utils/math').calculateSwapInAmount(...args); }
-function floatToBlockchainInt(...args) { return require('./order/utils/math').floatToBlockchainInt(...args); }
-function blockchainToFloat(...args) { return require('./order/utils/math').blockchainToFloat(...args); }
-function updateDynamicGridSnapshotSync(...args) { return require('../market_adapter/utils/dynamic_grid_snapshot').updateDynamicGridSnapshotSync(...args); }
-function reconcileGridOrders(...args) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
-function formatUnmatchedChainOrder(...args) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
-function getSideBudget(...args) { return require('./order/utils/order').getSideBudget(...args); }
-function correctAllPriceMismatches(...args) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
-function isOrderOnChain(...args) { return require('./order/utils/order').isOrderOnChain(...args); }
-function parseChainOrder(...args) { return require('./order/utils/order').parseChainOrder(...args); }
+function getNodeManager(...args: any) { return require('./bitshares_client').getNodeManager(...args); }
+function hasOpenOrdersSyncLoopMsSet(...args: any) { return require('./config').hasOpenOrdersSyncLoopMsSet(...args); }
+function getOpenOrdersSyncLoopMs(...args: any) { return require('./config').getOpenOrdersSyncLoopMs(...args); }
+function isGridBloated(...args: any) { return grid.isGridBloated(...args); }
+function isGridBloatGraceActive(...args: any) { return grid.isGridBloatGraceActive(...args); }
+function clearGridBloatFlag(...args: any) { return grid.clearGridBloatFlag(...args); }
+function recalculateGrid(...args: any) { return grid.recalculateGrid(...args); }
+function buildRuntimeScriptPath(...args: any) { return require('./launcher/runtime_entry').buildRuntimeScriptPath(...args); }
+function isDistCodeRoot(...args: any) { return require('./launcher/runtime_entry').isDistCodeRoot(...args); }
+function applyGridDivergenceCorrections(...args: any) { return require('./order/utils/system').applyGridDivergenceCorrections(...args); }
+function loadAmaCenterSnapshot(...args: any) { return require('./order/utils/system').loadAmaCenterSnapshot(...args); }
+function sleep(...args: any) { return require('./order/utils/system').sleep(...args); }
+function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
+function isPm2Runtime(...args: any) { return require('./order/logger').isPm2Runtime(...args); }
+function getSharedMarketAdapterRuntime(...args: any) { return require('./launcher/market_adapter_runtime').getSharedMarketAdapterRuntime(...args); }
+function resetMarketAdapterWhitelistCache(...args: any) { return require('./market_adapter_whitelist').resetMarketAdapterWhitelistCache(...args); }
+function isBotDynamicWeightWhitelisted(...args: any) { return require('./market_adapter_whitelist').isBotDynamicWeightWhitelisted(...args); }
+function cloneWeightDistribution(...args: any) { return require('./order/utils/math').cloneWeightDistribution(...args); }
+function calculateOrderCreationFees(...args: any) { return require('./order/utils/math').calculateOrderCreationFees(...args); }
+function calculateSwapInAmount(...args: any) { return require('./order/utils/math').calculateSwapInAmount(...args); }
+function floatToBlockchainInt(...args: any) { return require('./order/utils/math').floatToBlockchainInt(...args); }
+function blockchainToFloat(...args: any) { return require('./order/utils/math').blockchainToFloat(...args); }
+function updateDynamicGridSnapshotSync(...args: any) { return require('../market_adapter/utils/dynamic_grid_snapshot').updateDynamicGridSnapshotSync(...args); }
+function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
+function formatUnmatchedChainOrder(...args: any) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
+function getSideBudget(...args: any) { return require('./order/utils/order').getSideBudget(...args); }
+function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
+function isOrderOnChain(...args: any) { return require('./order/utils/order').isOrderOnChain(...args); }
+function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
 const { ensureDir, safeUnlink } = require('./utils/fs_utils');
+const { getErrorMessage } = require('./utils/errors');
 
 const CODE_ROOT = path.join(__dirname, '..');
 const PROFILES_DIR = PATHS.PROFILES_DIR;
@@ -94,7 +94,7 @@ const GRID_RESYNC_REASONS = Object.freeze({
  * @param {Object} bot - Bot configuration object
  * @returns {boolean} True if gridPrice starts with 'ama' (ama, ama1..ama4)
  */
-function usesAmaGridPrice(bot) {
+function usesAmaGridPrice(bot: any) {
     const gridPrice = String(bot?.gridPrice || '').trim().toLowerCase();
     return /^ama(?:[1-4])?$/.test(gridPrice);
 }
@@ -106,14 +106,14 @@ function usesAmaGridPrice(bot) {
  * @param {Object} config - Runtime bot configuration
  * @returns {Object|null} Matched bot entry or null
  */
-function findSnapshotBotForRuntimeConfig(snapshot, config) {
+function findSnapshotBotForRuntimeConfig(snapshot: any, config: any) {
     if (!snapshot || !Array.isArray(snapshot.activeBots) || !config) {
         return null;
     }
 
     const botKey = config.botKey ? String(config.botKey) : null;
     const name = config.name ? String(config.name) : null;
-    return snapshot.activeBots.find((bot) => {
+    return snapshot.activeBots.find((bot: any) => {
         if (!bot) return false;
         if (botKey && String(bot.botKey || '') === botKey) return true;
         if (name && String(bot.name || '') === name) return true;
@@ -127,7 +127,7 @@ function findSnapshotBotForRuntimeConfig(snapshot, config) {
  * @param {Object} config - Runtime bot configuration
  * @returns {boolean} True if the bot uses AMA grid pricing
  */
-function runtimeConfigNeedsMarketAdapter(snapshot, config) {
+function runtimeConfigNeedsMarketAdapter(snapshot: any, config: any) {
     const snapshotBot = findSnapshotBotForRuntimeConfig(snapshot, config);
     if (snapshotBot) {
         return usesAmaGridPrice(snapshotBot);
@@ -135,19 +135,19 @@ function runtimeConfigNeedsMarketAdapter(snapshot, config) {
     return usesAmaGridPrice(config);
 }
 
-function countLiveGridOrders(manager, type) {
+function countLiveGridOrders(manager: any, type: any) {
     if (!manager) return 0;
     const active = manager.getOrdersByTypeAndState?.(type, ORDER_STATES.ACTIVE) || [];
     const partial = manager.getOrdersByTypeAndState?.(type, ORDER_STATES.PARTIAL) || [];
-    return active.concat(partial).filter(o => o?.orderId).length;
+    return active.concat(partial).filter((o: any) => o?.orderId).length;
 }
 
-function getTargetActiveOrders(config, side) {
+function getTargetActiveOrders(config: any, side: any) {
     const configured = Number(config?.activeOrders?.[side]);
     return Math.max(0, Number.isFinite(configured) ? configured : 1);
 }
 
-function _hasBudgetForSide(manager, config, side) {
+function _hasBudgetForSide(manager: any, config: any, side: any) {
     try {
         const funds = manager?.getChainFundsSnapshot?.();
         if (!funds) return true;
@@ -161,14 +161,14 @@ function _hasBudgetForSide(manager, config, side) {
     } catch { return true; }
 }
 
-function getTargetedSyncReason(bot) {
+function getTargetedSyncReason(bot: any) {
     if (!bot.manager || bot.config?.dryRun) return null;
 
     const targetBuy = getTargetActiveOrders(bot.config, 'buy');
     const targetSell = getTargetActiveOrders(bot.config, 'sell');
     const liveBuy = countLiveGridOrders(bot.manager, ORDER_TYPES.BUY);
     const liveSell = countLiveGridOrders(bot.manager, ORDER_TYPES.SELL);
-    const shortfalls = [];
+    const shortfalls: string[] = [];
 
     if (liveBuy < targetBuy) {
         if (_hasBudgetForSide(bot.manager, bot.config, 'buy')) {
@@ -193,7 +193,7 @@ function getTargetedSyncReason(bot) {
     return null;
 }
 
-async function maybeRunTargetedDriftReconciliation(bot, context) {
+async function maybeRunTargetedDriftReconciliation(bot: any, context: any) {
     const trigger = getTargetedSyncReason(bot);
     if (!trigger) return false;
 
@@ -252,7 +252,7 @@ async function maybeRunTargetedDriftReconciliation(bot, context) {
         bot._lastTargetedDriftSyncAt = Date.now();
         await bot.manager.persistGrid?.();
         return true;
-    } catch (err) {
+    } catch (err: any) {
         bot._warn(`[TARGETED-SYNC] Failed during ${context}: ${err.message}`);
         return false;
     }
@@ -285,7 +285,7 @@ function loadBotsConfigSnapshot() {
     const fingerprint = createHash('sha1').update(raw).digest('hex');
     const parsed = parseJsonWithComments(raw);
     const bots = Array.isArray(parsed?.bots) ? parsed.bots.filter(Boolean) : [];
-    const activeBots = bots.filter((bot) => bot.active !== false);
+    const activeBots = bots.filter((bot: any) => bot.active !== false);
 
     return {
         exists: true,
@@ -302,7 +302,7 @@ function loadBotsConfigSnapshot() {
  * @returns {string[]} Array of process names
  * @throws {Error} If output cannot be parsed
  */
-function parsePm2JlistOutput(stdout) {
+function parsePm2JlistOutput(stdout: any) {
     const output = String(stdout || '').trim();
     if (!output) return [];
 
@@ -316,7 +316,7 @@ function parsePm2JlistOutput(stdout) {
         throw new Error('pm2 jlist output was not an array');
     }
 
-    return parsed.map((proc) => String(proc?.name || '')).filter(Boolean);
+    return parsed.map((proc: any) => String(proc?.name || '')).filter(Boolean);
 }
 
 /**
@@ -325,8 +325,8 @@ function parsePm2JlistOutput(stdout) {
  * @returns {Promise<{stdout: string, stderr: string}>} Command output
  * @throws {Error} If the command exits with non-zero code
  */
-function runPm2Command(args): Promise<{ stdout: string; stderr: string }> {
-    return new Promise((resolve, reject) => {
+function runPm2Command(args: any): Promise<{ stdout: string; stderr: string }> {
+    return new Promise((resolve: any, reject: any) => {
         const child = spawn('pm2', args, {
             stdio: 'pipe',
             shell: Config.PLATFORM === 'win32',
@@ -335,15 +335,15 @@ function runPm2Command(args): Promise<{ stdout: string; stderr: string }> {
         let stdout = '';
         let stderr = '';
 
-        child.stdout.on('data', (data) => {
+        child.stdout.on('data', (data: any) => {
             stdout += data.toString();
         });
 
-        child.stderr.on('data', (data) => {
+        child.stderr.on('data', (data: any) => {
             stderr += data.toString();
         });
 
-        child.on('close', (code) => {
+        child.on('close', (code: any) => {
             if (code === 0) {
                 resolve({ stdout, stderr });
                 return;
@@ -412,7 +412,7 @@ async function stopMarketAdapterPm2() {
  * @param {string} [context='periodic'] - Context label for logging
  * @returns {Promise<import('./types').MarketAdapterSyncResult>}
  */
-async function syncMarketAdapterOnPeriodicConfigCheck(bot, context = 'periodic') {
+async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = 'periodic') {
     if (bot._marketAdapterWatchdogInFlight) {
         return { skipped: true, reason: 'in-flight' };
     }
@@ -476,7 +476,7 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot, context = 'periodic')
             ? bot._stopMarketAdapterPm2.bind(bot)
             : stopMarketAdapterPm2;
 
-        let processNames = [];
+        let processNames: string[] = [];
         let pm2QueryFailed = false;
         try {
             processNames = await getPm2ProcessNamesFn();
@@ -489,7 +489,7 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot, context = 'periodic')
         // so we don't start the adapter for configured AMA bots that aren't running.
         const runningActiveBots = pm2QueryFailed
             ? snapshot.activeBots
-            : snapshot.activeBots.filter((b) => processNames.includes(b.name));
+            : snapshot.activeBots.filter((b: any) => processNames.includes(b.name));
         const needsAdapterForRunningBots = runningActiveBots.some(usesAmaGridPrice);
 
         if (!snapshot.exists || !needsAdapterForRunningBots) {
@@ -561,7 +561,7 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot, context = 'periodic')
  * @param {string} [context='runtime'] - Context label for logging
  * @returns {import('./types').DynamicWeightRefreshResult}
  */
-function refreshDynamicWeightDistribution(bot, context = 'runtime') {
+function refreshDynamicWeightDistribution(bot: any, context: any = 'runtime') {
     const baseWeights = cloneWeightDistribution(
         bot._baseWeightDistribution,
         bot.config?.weightDistribution || bot.manager?.config?.weightDistribution
@@ -578,7 +578,7 @@ function refreshDynamicWeightDistribution(bot, context = 'runtime') {
     const botKey = bot.config.botKey;
     let nextWeights = baseWeights;
     let source = 'static';
-    let snapshot = null;
+    let snapshot: any = null;
 
     // Re-read the shared whitelist on every refresh so live flag changes apply
     // without requiring a bot restart.
@@ -632,13 +632,13 @@ function refreshDynamicWeightDistribution(bot, context = 'runtime') {
  * @param {string} triggerFile - Path to the trigger file
  * @returns {import('./types').GridResyncMetadata} Parsed trigger metadata
  */
-function readTriggerMetadata(triggerFile) {
-    const manualTriggerMetadata = (payload = null) => ({
+function readTriggerMetadata(triggerFile: any) {
+    const manualTriggerMetadata = (payload: any = null) => ({
         ...buildGridResyncMetadata('manual_grid_resync'),
         payload,
     });
 
-    const marketAdapterTriggerMetadata = (payload) => {
+    const marketAdapterTriggerMetadata = (payload: any) => {
         const reason = String(payload?.reason || '').trim();
         return {
             ...buildGridResyncMetadata(reason || 'market_adapter_grid_resync'),
@@ -669,7 +669,7 @@ function readTriggerMetadata(triggerFile) {
  * @param {string} reason - Resync reason identifier (e.g. 'manual_grid_resync', 'rms_structural_grid_resync')
  * @returns {import('./types').GridResyncMetadata}
  */
-function buildGridResyncMetadata(reason) {
+function buildGridResyncMetadata(reason: any) {
     const resetSource = String(reason || '').trim() || 'dexbot_grid_resync';
     const defaults = {
         shouldRefreshCenterPrice: false,
@@ -685,7 +685,7 @@ function buildGridResyncMetadata(reason) {
     return {
         ...defaults,
         ...marketAdapterUnknown,
-        ...GRID_RESYNC_REASONS[resetSource],
+        ...((GRID_RESYNC_REASONS as Record<string, any>)[resetSource] || {}),
         resetSource,
     };
 }
@@ -695,7 +695,7 @@ function buildGridResyncMetadata(reason) {
  * @param {string|import('./types').GridResyncMetadata} reasonOrMetadata - Reason string or metadata object
  * @returns {import('./types').GridResyncOptions}
  */
-function buildGridResyncOptions(reasonOrMetadata) {
+function buildGridResyncOptions(reasonOrMetadata: any) {
     const metadata = typeof reasonOrMetadata === 'string'
         ? buildGridResyncMetadata(reasonOrMetadata)
         : reasonOrMetadata;
@@ -713,7 +713,7 @@ function buildGridResyncOptions(reasonOrMetadata) {
  * @param {string} botKey - Bot identifier key
  * @returns {boolean} True if promotion succeeded
  */
-function promoteAmaCenterSnapshotForGridReset(botKey) {
+function promoteAmaCenterSnapshotForGridReset(botKey: any) {
     if (!botKey) return false;
 
     // Full grid resets rebuild from the latest AMA center. The active grid
@@ -721,7 +721,7 @@ function promoteAmaCenterSnapshotForGridReset(botKey) {
     // AMA output remains intact in amaCenterPrice for diagnostics.
     const snapshotPath = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
     try {
-        const result = updateDynamicGridSnapshotSync(snapshotPath, (snapshot) => {
+        const result = updateDynamicGridSnapshotSync(snapshotPath, (snapshot: any) => {
             const amaCenterPrice = Number(snapshot?.amaCenterPrice);
             if (!Number.isFinite(amaCenterPrice) || amaCenterPrice <= 0) {
                 return { ok: false, write: false };
@@ -753,7 +753,7 @@ function promoteAmaCenterSnapshotForGridReset(botKey) {
  * @param {string} [options.resetSource] - Source label for the reset (defaults to 'dexbot_grid_resync')
  * @returns {boolean} True if metadata was written
  */
-function updateBotGridResetMetadata(botKey, options: { resetAt?: string; resetSource?: string } = {}) {
+function updateBotGridResetMetadata(botKey: any, options: { resetAt?: string; resetSource?: string } = {}) {
     if (!botKey) return false;
 
     const resetAt = options.resetAt || new Date().toISOString();
@@ -761,7 +761,7 @@ function updateBotGridResetMetadata(botKey, options: { resetAt?: string; resetSo
     const snapshotPath = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
 
     try {
-        const result = updateDynamicGridSnapshotSync(snapshotPath, (snapshot) => {
+        const result = updateDynamicGridSnapshotSync(snapshotPath, (snapshot: any) => {
             const gridCenterPrice = Number(snapshot?.gridCenterPrice ?? snapshot?.centerPrice);
             if (!Number.isFinite(gridCenterPrice) || gridCenterPrice <= 0) {
                 return { ok: false, write: false };
@@ -788,7 +788,7 @@ function updateBotGridResetMetadata(botKey, options: { resetAt?: string; resetSo
  * @param {import('./types').GridResyncOptions} [options] - Grid resync options
  * @returns {Promise<boolean>} True if resync succeeded
  */
-function performGridResync(bot, options: {
+function performGridResync(bot: any, options: {
     refreshCenterPrice?: boolean;
     centerRefreshContext?: string;
     centerRefreshLabel?: string;
@@ -819,7 +819,7 @@ function performGridResync(bot, options: {
                 const content = storage.readFile(PROFILES_BOTS_FILE);
                 const allBotsConfig = parseJsonWithComments(content).bots || [];
                 const myName = self.config.name;
-                const updatedBot = allBotsConfig.find(b => b.name === myName);
+                const updatedBot = allBotsConfig.find((b: any) => b.name === myName);
 
                 if (updatedBot) {
                     self._log(`Reloaded configuration for bot '${myName}'`);
@@ -912,7 +912,7 @@ function performGridResync(bot, options: {
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {Promise<boolean>} True if reset was handled successfully
  */
-async function handlePendingTriggerReset(bot) {
+async function handlePendingTriggerReset(bot: any) {
     if (!storage.exists(bot.triggerFile)) {
         return false;
     }
@@ -938,7 +938,7 @@ async function handlePendingTriggerReset(bot) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {Promise<void>}
  */
-async function setupTriggerFileDetection(bot) {
+async function setupTriggerFileDetection(bot: any) {
     if (bot._triggerWatcher && typeof bot._triggerWatcher.close === 'function') {
         bot._triggerWatcher.close();
         bot._triggerWatcher = null;
@@ -950,7 +950,7 @@ async function setupTriggerFileDetection(bot) {
     }
 
     try {
-        bot._triggerWatcher = fs.watch(PROFILES_DIR, (eventType, filename) => {
+        bot._triggerWatcher = fs.watch(PROFILES_DIR, (eventType: any, filename: any) => {
             try {
                 if (bot._shuttingDown) return;
 
@@ -973,7 +973,7 @@ async function setupTriggerFileDetection(bot) {
                                 if (!ok) {
                                     bot._warn('Runtime trigger reset failed; retaining existing grid state.');
                                 }
-                            }).catch(err => {
+                            }).catch((err: any) => {
                                 bot._warn(`Trigger reset lock error: ${err.message}`);
                                 bot.manager._recoveryState = { ...bot.manager._recoveryState, lastFailureAt: Date.now() };
                             });
@@ -995,7 +995,7 @@ async function setupTriggerFileDetection(bot) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {Promise<void>}
  */
-async function performPeriodicGridChecks(bot) {
+async function performPeriodicGridChecks(bot: any) {
     if (typeof bot._runGridMaintenance === 'function') {
         await bot._runGridMaintenance('periodic');
     } else {
@@ -1008,7 +1008,7 @@ async function performPeriodicGridChecks(bot) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {boolean} True if the sync loop is enabled in TIMING config
  */
-function isOpenOrdersSyncLoopEnabled(bot) {
+function isOpenOrdersSyncLoopEnabled(bot: any) {
     if (bot.config?.timing?.openOrdersSyncLoopEnabled !== undefined) {
         return !!bot.config.timing.openOrdersSyncLoopEnabled;
     }
@@ -1020,7 +1020,7 @@ function isOpenOrdersSyncLoopEnabled(bot) {
  * Periodically reads on-chain orders and synchronizes with the grid manager.
  * @param {import('./dexbot_class').DEXBot} bot
  */
-function startOpenOrdersSyncLoop(bot) {
+function startOpenOrdersSyncLoop(bot: any) {
     if (bot._mainLoopPromise) return;
 
     const hasEnvLoopDelay = hasOpenOrdersSyncLoopMsSet();
@@ -1073,7 +1073,7 @@ function startOpenOrdersSyncLoop(bot) {
 
             await sleep(loopDelayMs);
         }
-    })().catch(err => {
+    })().catch((err: any) => {
         bot._warn(`Open-orders sync loop failed: ${err && err.message ? err.message : err}`);
     }).finally(() => {
         bot._mainLoopPromise = null;
@@ -1085,7 +1085,7 @@ function startOpenOrdersSyncLoop(bot) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {Promise<void>}
  */
-async function stopOpenOrdersSyncLoop(bot) {
+async function stopOpenOrdersSyncLoop(bot: any) {
     bot._mainLoopActive = false;
     if (bot._mainLoopPromise) {
         await bot._mainLoopPromise;
@@ -1097,7 +1097,7 @@ async function stopOpenOrdersSyncLoop(bot) {
  * Periodically fetches account totals and syncs open orders from the blockchain.
  * @param {import('./dexbot_class').DEXBot} bot
  */
-function setupBlockchainFetchInterval(bot) {
+function setupBlockchainFetchInterval(bot: any) {
     let intervalMin = bot.config?.timing?.BLOCKCHAIN_FETCH_INTERVAL_MIN;
 
     // Use the per-instance override if set (e.g., from fund registry shared-account detection)
@@ -1116,7 +1116,7 @@ function setupBlockchainFetchInterval(bot) {
     }
 
     syncMarketAdapterOnPeriodicConfigCheck(bot, 'startup blockchain fetch setup')
-        .catch((err) => {
+        .catch((err: any) => {
             bot._warn(`Market adapter watchdog failed during startup blockchain fetch setup: ${err.message}`);
         });
 
@@ -1222,7 +1222,7 @@ function setupBlockchainFetchInterval(bot) {
  * Stop the periodic blockchain fetch interval.
  * @param {import('./dexbot_class').DEXBot} bot
  */
-function stopBlockchainFetchInterval(bot) {
+function stopBlockchainFetchInterval(bot: any) {
     if (bot._blockchainFetchInterval !== null && bot._blockchainFetchInterval !== undefined) {
         clearInterval(bot._blockchainFetchInterval);
         bot._blockchainFetchInterval = null;
@@ -1238,7 +1238,7 @@ function stopBlockchainFetchInterval(bot) {
  * @param {string} [context='shutdown'] - Context label for logging
  * @returns {Promise<import('./types').MarketAdapterReleaseResult>}
  */
-async function releaseMarketAdapterRuntime(bot, botId, context = 'shutdown') {
+async function releaseMarketAdapterRuntime(_bot: any, botId: any, context: any = 'shutdown') {
     if (isPm2Runtime()) {
         return { released: false, mode: 'pm2' };
     }
@@ -1265,7 +1265,7 @@ async function releaseMarketAdapterRuntime(bot, botId, context = 'shutdown') {
  * @param {string} [orderId] - Optional order ID for context-aware matching
  * @returns {boolean} True if the message indicates a nonexistent order
  */
-function isOrderDoesNotExistError(message, orderId) {
+function isOrderDoesNotExistError(message: any, orderId: any) {
     if (typeof message !== 'string' || message.length === 0) return false;
     const normalized = message.toLowerCase();
     if (/\border\b.*\bdoes not exist\b/i.test(message)) return true;
@@ -1285,7 +1285,7 @@ function isOrderDoesNotExistError(message, orderId) {
  * @param {Object} ctx - Bot context with _lastGridActivityAt and _incomingFillQueue
  * @returns {number} Remaining idle delay in ms (0 if bot is idle)
  */
-function getMaintenanceIdleDelayMs(ctx) {
+function getMaintenanceIdleDelayMs(ctx: any) {
     const settleDelayMs = Number.isFinite(TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
         ? Math.max(0, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
         : 6_000;
@@ -1305,7 +1305,7 @@ function getMaintenanceIdleDelayMs(ctx) {
  * @param {string} context - Context label for logging
  * @param {Object} [options] - Maintenance options forwarded to runGridMaintenance
  */
-function scheduleMaintenanceAfterIdle(ctx, context, options = {}) {
+function scheduleMaintenanceAfterIdle(ctx: any, context: any, options: any = {}) {
     if (!ctx || ctx._shuttingDown || ctx._maintenanceIdleTimer || !ctx.manager?._fillProcessingLock) return;
 
     const delayMs = getMaintenanceIdleDelayMs(ctx);
@@ -1319,7 +1319,7 @@ function scheduleMaintenanceAfterIdle(ctx, context, options = {}) {
         ctx._maintenanceIdleTimer = null;
         if (ctx._shuttingDown) return;
         ctx._runGridMaintenance(context, timerOptions)
-            .catch(err => {
+            .catch((err: any) => {
                 ctx._warn(`Deferred ${context} grid maintenance failed: ${err.message}`);
                 if (ctx.manager) {
                     ctx.manager._recoveryState = { ...ctx.manager._recoveryState, lastFailureAt: Date.now() };
@@ -1333,7 +1333,7 @@ function scheduleMaintenanceAfterIdle(ctx, context, options = {}) {
  * @param {Object} ctx - Bot context
  * @param {import('./types').GridResyncOptions} [options] - Grid resync options
  */
-function scheduleDeferredGridResync(ctx, options = {}) {
+function scheduleDeferredGridResync(ctx: any, options: any = {}) {
     if (
         !ctx ||
         ctx._shuttingDown ||
@@ -1365,7 +1365,7 @@ function scheduleDeferredGridResync(ctx, options = {}) {
                     : 'grid resync rejected or failed';
                 ctx._warn(`Deferred trigger reset blocked: ${reason}; retaining existing grid state.`);
             }
-        }).catch(err => {
+        }).catch((err: any) => {
             ctx._warn(`Deferred trigger reset lock error: ${err.message}`);
             if (ctx.manager) {
                 ctx.manager._recoveryState = { ...ctx.manager._recoveryState, lastFailureAt: Date.now() };
@@ -1382,7 +1382,7 @@ function scheduleDeferredGridResync(ctx, options = {}) {
  * @param {string} context - Context label for logging (e.g. 'periodic', 'dust-timer')
  * @returns {Promise<void>}
  */
-async function executeMaintenanceLogic(bot, context) {
+async function executeMaintenanceLogic(bot: any, context: any) {
     // Clear stale broadcast flag first so any downstream gating on
     // isBroadcastingActive() (e.g. recalculateFunds, BTS balance check)
     // sees the freshest state rather than a hung flag.
@@ -1468,7 +1468,7 @@ async function executeMaintenanceLogic(bot, context) {
             if (!assets) {
                 bot._log('[LIGHTWEIGHT-SYNC] Skipped: manager assets not available', 'debug');
             } else {
-                const chainOrdersCount = chainOpenOrdersResult.filter(o => parseChainOrder(o, assets) !== null).length;
+                const chainOrdersCount = chainOpenOrdersResult.filter((o: any) => parseChainOrder(o, assets) !== null).length;
                 const gridActive = Array.from(bot.manager.orders.values()).filter(
                     (o: any) => isOrderOnChain(o)
                 ).length;
@@ -1613,10 +1613,10 @@ async function executeMaintenanceLogic(bot, context) {
  * @param {import('./types').Order} order
  * @returns {Promise<*>} Result from chainOrders.cancelOrder
  */
-async function cancelOrderWithNodeFallback(bot, order) {
+async function cancelOrderWithNodeFallback(bot: any, order: any) {
     try {
         const nodeManager = getNodeManager();
-        const nodes = nodeManager.getHealthyNodes();
+        const nodes = nodeManager?.getHealthyNodes() ?? [];
         const fallbackNodes = nodes.length > 1 ? nodes.slice(1) : undefined;
         return await chainOrders.cancelOrder(
             bot.account, bot.privateKey, order.orderId,
@@ -1648,11 +1648,11 @@ async function cancelOrderWithNodeFallback(bot, order) {
  * @param {import('./types').Order[]} [options.sell=[]] - Sell-side dust orders
  * @returns {Promise<{cancelledCount: number, batchResult: {aborted: boolean}|null}>}
  */
-async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } = {}) {
+async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = [] }: any = {}) {
     const allDust = [...buyDust, ...sellDust];
     if (allDust.length === 0) return { cancelledCount: 0, batchResult: null };
 
-    const syntheticFills = [];
+    const syntheticFills: any[] = [];
     for (const order of allDust) {
         if (!order.orderId) continue;
         try {
@@ -1665,25 +1665,25 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
                 } else {
                     await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
                 }
-            } catch (refetchErr) {
-                bot._warn(`[DUST] Cancel succeeded but refetch failed for ${order.id} (${order.orderId}): ${refetchErr.message}`);
+            } catch (refetchErr: any) {
+                bot._warn(`[DUST] Cancel succeeded but refetch failed for ${(order as any).id} (${(order as any).orderId}): ${refetchErr.message}`);
             }
             syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
-            bot._log(`[DUST] Cancelled ${order.id} (${order.orderId}) size=${order.size}`, 'debug');
-        } catch (err) {
+            bot._log(`[DUST] Cancelled ${(order as any).id} (${(order as any).orderId}) size=${(order as any).size}`, 'debug');
+        } catch (err: any) {
             const errMsg = err?.message || '';
-            if (isOrderDoesNotExistError(errMsg, order.orderId)) {
+            if (isOrderDoesNotExistError(errMsg, (order as any).orderId)) {
                 syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
-                bot._log(`[DUST] Order ${order.id} (${order.orderId}) already gone from chain`, 'debug');
+                bot._log(`[DUST] Order ${(order as any).id} (${(order as any).orderId}) already gone from chain`, 'debug');
             } else {
-                bot._warn(`[DUST] Failed to cancel ${order.id} (${order.orderId}): ${errMsg}`);
+                bot._warn(`[DUST] Failed to cancel ${(order as any).id} (${(order as any).orderId}): ${errMsg}`);
             }
         }
     }
 
     if (syntheticFills.length === 0) return { cancelledCount: 0, batchResult: null };
     const result = await bot._processFillsWithBatching(
-        syntheticFills, new Set(), `dust cancel [${syntheticFills.map(o => o.id).join(', ')}]`
+        syntheticFills, new Set(), `dust cancel [${syntheticFills.map((o: any) => o.id).join(', ')}]`
     );
     if (!result.aborted) {
         await bot.manager.persistGrid();
@@ -1701,8 +1701,8 @@ async function cancelDustOrders(bot, { buy: buyDust = [], sell: sellDust = [] } 
  * @returns {Promise<void>}
  */
 async function runGridMaintenance(
-    bot,
-    context = 'periodic',
+    bot: any,
+    context: any = 'periodic',
     options: { skipIdle?: boolean } = {}
 ) {
     const skipIdle = options.skipIdle === true;
@@ -1749,7 +1749,7 @@ const _lastBtsAcquisitionTimestamps = new Map();
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {Promise<void>}
  */
-async function checkBtsBalanceAndAcquire(bot) {
+async function checkBtsBalanceAndAcquire(bot: any) {
     if (bot.config.dryRun) return;
     if (bot.config.assetA === 'BTS' || bot.config.assetB === 'BTS') return;
 
@@ -1810,7 +1810,7 @@ async function checkBtsBalanceAndAcquire(bot) {
  * @param {number} deficit - Amount of BTS needed (float)
  * @returns {Promise<void>}
  */
-async function acquireBts(bot, deficit) {
+async function acquireBts(bot: any, deficit: any) {
     if (deficit <= 0) return;
     const { BitShares } = require('./bitshares_client');
     if (!BitShares || !BitShares.db) return;
@@ -1821,14 +1821,14 @@ async function acquireBts(bot, deficit) {
         { id: bot.assets?.assetB?.id, free: bot.manager.accountTotals?.buyFree || 0, precision: bot.assets?.assetB?.precision, symbol: bot.config.assetB }
     ];
 
-    const candidates = [];
+    const candidates: any[] = [];
     for (const asset of assets) {
         if (!asset.id || asset.free <= 0) continue;
         try {
             const pools = await BitShares.db.get_liquidity_pools_by_both_assets(asset.id, coreAssetId);
-            const validPools = Array.isArray(pools) ? pools.filter(p => p?.id) : [];
+            const validPools = Array.isArray(pools) ? pools.filter((p: any) => p?.id) : [];
             const poolData = validPools.length
-                ? validPools.sort((a, b) => {
+                ? validPools.sort((a: any, b: any) => {
                     const getBtsBal = (p: any) => {
                         const isBts = String(p.asset_a ?? p.asset_ids?.[0] ?? '') === String(coreAssetId);
                         return Number(isBts ? (p.balance_a ?? 0) : (p.balance_b ?? 0));
@@ -1860,7 +1860,7 @@ async function acquireBts(bot, deficit) {
         return;
     }
 
-    candidates.sort((a, b) => a.priceImpact - b.priceImpact);
+    candidates.sort((a: any, b: any) => a.priceImpact - b.priceImpact);
     const best = candidates[0];
 
     const poolSlippageTolerance = bot.config?.feeParams?.POOL_SLIPPAGE_TOLERANCE;
@@ -1877,7 +1877,7 @@ async function acquireBts(bot, deficit) {
             return;
         }
     } catch (err) {
-        bot._log(`[BTS-ACQ] Swap broadcast failed: ${err.message}`, 'error');
+        bot._log(`[BTS-ACQ] Swap broadcast failed: ${getErrorMessage(err)}`, 'error');
         return;
     }
 
@@ -1899,7 +1899,7 @@ async function acquireBts(bot, deficit) {
  * Run a single dust health check cycle.
  * @param {import('./dexbot_class').DEXBot} bot
  */
-async function runDustHealthCheck(bot) {
+async function runDustHealthCheck(bot: any) {
     if (bot._shuttingDown || !bot.manager) return;
     try {
         const health = await bot.manager.checkGridHealth(
@@ -1926,7 +1926,7 @@ async function runDustHealthCheck(bot) {
                 });
             }
         }
-    } catch (err) {
+    } catch (err: any) {
         if (err?.message?.includes('Lock acquisition timeout')) {
             bot._warn('[DUST] Lock busy, skipping dust cancel this cycle (retry in 5 min)');
         } else {
@@ -1939,7 +1939,7 @@ async function runDustHealthCheck(bot) {
  * Set up the periodic dust health check interval.
  * @param {import('./dexbot_class').DEXBot} bot
  */
-function setupDustHealthCheckInterval(bot) {
+function setupDustHealthCheckInterval(bot: any) {
     bot._dustHealthCheckTimer = setInterval(() => {
         runDustHealthCheck(bot);
     }, TIMING.DUST_HEALTH_CHECK_INTERVAL_MS);
@@ -1955,7 +1955,7 @@ function setupDustHealthCheckInterval(bot) {
  * @param {{refreshCenterPrice?: boolean}} [options={}]
  * @returns {Promise<Object>}
  */
-async function requestGridReset(bot, reason = 'structural change', options: { refreshCenterPrice?: boolean } = {}) {
+async function requestGridReset(bot: any, reason: any = 'structural change', options: { refreshCenterPrice?: boolean } = {}) {
     if (!bot.manager || typeof bot._performGridResync !== 'function') {
         return { skipped: true, reason: 'grid resync unavailable' };
     }
@@ -1978,10 +1978,10 @@ async function requestGridReset(bot, reason = 'structural change', options: { re
  * Wire the structural grid resync request handler on the manager.
  * @param {import('./dexbot_class').DEXBot} bot
  */
-function wireStructuralGridResyncRequest(bot) {
+function wireStructuralGridResyncRequest(bot: any) {
     if (!bot.manager || bot.manager.requestStructuralGridResync) return;
 
-    bot.manager.requestStructuralGridResync = async (reason = 'structural recovery', details: { unmatchedChainOrders?: any[]; [key: string]: any } = {}) => {
+    bot.manager.requestStructuralGridResync = async (reason: any = 'structural recovery', details: { unmatchedChainOrders?: any[]; [key: string]: any } = {}) => {
         if (bot._shuttingDown) {
             return { skipped: true, reason: 'shutting down' };
         }
@@ -2034,7 +2034,7 @@ function wireStructuralGridResyncRequest(bot) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {Object}
  */
-function getPipelineSignals(bot) {
+function getPipelineSignals(bot: any) {
     bot.manager?._cleanExpiredLocks?.();
     return {
         incomingFillQueueLength: bot._incomingFillQueue.length,
@@ -2050,7 +2050,7 @@ function getPipelineSignals(bot) {
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {string} [reason='activity']
  */
-function markGridActivity(bot, reason = 'activity') {
+function markGridActivity(bot: any, reason: any = 'activity') {
     bot._lastGridActivityAt = Date.now();
     bot.manager?.logger?.log?.(`[MAINT-IDLE] Activity observed: ${reason}`, 'debug');
 }
@@ -2060,7 +2060,7 @@ function markGridActivity(bot, reason = 'activity') {
  * @param {import('./dexbot_class').DEXBot} bot
  * @returns {Object}
  */
-function getMetrics(bot) {
+function getMetrics(bot: any) {
     bot.manager?._cleanExpiredLocks?.();
     return {
         ...bot._metrics,
@@ -2079,7 +2079,7 @@ function getMetrics(bot) {
  * @param {string} tag - Context label for logging
  * @returns {Promise<Object>}
  */
-async function syncOpenOrdersAndProcessFills(bot, tag) {
+async function syncOpenOrdersAndProcessFills(bot: any, tag: any) {
     if (!bot.accountId || bot.config?.dryRun) {
         return { syncResult: null, aborted: false, hasUnmatched: 0, openOrders: null };
     }
@@ -2107,7 +2107,7 @@ async function syncOpenOrdersAndProcessFills(bot, tag) {
         }
         const hasUnmatched = syncResult?.unmatchedChainOrders?.length || 0;
         return { syncResult, aborted, hasUnmatched, openOrders };
-    } catch (err) {
+    } catch (err: any) {
         bot._warn(`[SYNC-CHAIN] Open-orders sync failed during ${tag}: ${err.message}`);
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }

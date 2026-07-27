@@ -11,6 +11,7 @@ const { OrderManager } = require('../modules/order/index');
 const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // Mock getAssetFees to prevent crashes during recalculateFunds
 const OrderUtils = require('../modules/order/utils/math');
@@ -213,7 +214,7 @@ async function runTests() {
                 receives: { asset_id: '1.3.0', amount: 250000 }
             });
         } catch (err) {
-            assert.fail('processFillAccounting should tolerate missing fee cache and continue: ' + err.message);
+            assert.fail('processFillAccounting should tolerate missing fee cache and continue: ' + getErrorMessage(err));
         }
 
         assert.strictEqual(manager.accountTotals.sell, sellTotalBefore + rawReceives, 'Sell total should credit raw proceeds when fee lookup fails');

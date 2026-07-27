@@ -35,24 +35,25 @@
 // SECTION 1: EXTERNAL DEPENDENCIES
 // ===============================================================================
 
-const {
+
+import * as Format from '../format';
+import {
     ORDER_STATES,
     ORDER_TYPES,
     COW_ACTIONS,
     GRID_LIMITS
-} = require('../../constants');
-const {
+} from '../../constants';
+import {
     floatToBlockchainInt,
     blockchainToFloat,
     getPrecisionSlack,
     getDoubleDustThreshold
-} = require('./math');
-const {
+} from './math';
+import {
     isOrderOnChain,
     isPhantomOrder,
     convertToSpreadPlaceholder
-} = require('./order');
-const Format = require('../format');
+} from './order';
 const { isValidNumber, toFiniteNumber } = Format;
 
 // Pre-computed valid sets
@@ -70,9 +71,9 @@ const VALID_ORDER_TYPES = new Set(Object.values(ORDER_TYPES));
  * @param {string} context - Operation context for error messages
  * @returns {Object} Validation result
  */
-function validateOrder(order, oldOrder = null, context = 'validate') {
-    const errors = [];
-    const warnings = [];
+function validateOrder(order: any, oldOrder: any = null, context: any = 'validate') {
+    const errors: any[] = [];
+    const warnings: any[] = [];
     let normalizedOrder = { ...(oldOrder || {}), ...order };
 
     if (!order || !order.id) {
@@ -146,7 +147,7 @@ function validateOrder(order, oldOrder = null, context = 'validate') {
     }
 
     return {
-        isValid: errors.length === 0 || !errors.some(e => e.isFatal),
+        isValid: errors.length === 0 || !errors.some((e: any) => e.isFatal),
         errors,
         warnings,
         normalizedOrder
@@ -159,7 +160,7 @@ function validateOrder(order, oldOrder = null, context = 'validate') {
  * @param {Object} accountTotals - Current account totals
  * @returns {Object} Validation result
  */
-function validateGridForPersistence(orders, accountTotals) {
+function validateGridForPersistence(orders: any, accountTotals: any) {
     for (const order of orders.values()) {
         if (isPhantomOrder(order)) {
             return {
@@ -241,7 +242,7 @@ function validateWorkingGridFunds(workingGrid: any, projectedFunds: any, precisi
             ? Number(projectedFunds.chainTotalSell)
             : toFiniteNumber(projectedFunds?.freeSell ?? projectedFunds?.chainFreeSell);
 
-    const shortfalls = [];
+    const shortfalls: any[] = [];
 
     const availableBuyInt = floatToBlockchainInt(availableBuy, buyPrecision);
     const availableSellInt = floatToBlockchainInt(availableSell, sellPrecision);
@@ -351,14 +352,14 @@ function checkFundDrift(orders: Map<string, any>, accountTotals: any, assets: an
  */
 function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, options: Record<string, any> = {}) {
     const { logger = null, dustThresholdPercent = 5 } = options;
-    const actions = [];
+    const actions: any[] = [];
     
-    const surplusesBuy = [];
-    const surplusesSell = [];
-    const holesBuy = [];
-    const holesSell = [];
+    const surplusesBuy: any[] = [];
+    const surplusesSell: any[] = [];
+    const holesBuy: any[] = [];
+    const holesSell: any[] = [];
 
-    const isCreateHealthy = (order) => {
+    const isCreateHealthy = (order: any) => {
         if (!order || order.size <= 0) return false;
         const idealSize = toFiniteNumber(order.idealSize || order.size);
         if (idealSize <= 0) return true;
@@ -435,7 +436,7 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
         }
     }
 
-    const cancelSurpluses = (surpluses) => {
+    const cancelSurpluses = (surpluses: any) => {
         for (const surplus of surpluses) {
             if (surplus.master.orderId) {
                 actions.push({ type: COW_ACTIONS.CANCEL, id: surplus.id, orderId: surplus.master.orderId, reason: 'surplus-no-rotation-target' });
@@ -443,8 +444,8 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
         }
     };
 
-    const pairRotations = (surpluses, holes) => {
-        const healthyHoles = holes.filter(hole => isCreateHealthy(hole.order));
+    const pairRotations = (surpluses: any, holes: any) => {
+        const healthyHoles = holes.filter((hole: any) => isCreateHealthy(hole.order));
 
         if (healthyHoles.length === 0) {
             // No viable rotation targets — cancel all unmatched surpluses
@@ -461,9 +462,9 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
 
         const isBuy = surpluses[0]?.master?.type === ORDER_TYPES.BUY;
 
-        healthyHoles.sort((a, b) => isBuy ? b.order.price - a.order.price : a.order.price - b.order.price);
+        healthyHoles.sort((a: any, b: any) => isBuy ? b.order.price - a.order.price : a.order.price - b.order.price);
 
-        surpluses.sort((a, b) => isBuy ? a.master.price - b.master.price : b.master.price - a.master.price);
+        surpluses.sort((a: any, b: any) => isBuy ? a.master.price - b.master.price : b.master.price - a.master.price);
 
         const rotationCount = Math.min(surpluses.length, healthyHoles.length);
         for (let i = 0; i < rotationCount; i++) {
@@ -516,12 +517,12 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
  * @param {Map} masterGrid - Current master grid
  * @returns {Array<Object>} Optimized action list
  */
-function optimizeRebalanceActions(actions, masterGrid) {
+function optimizeRebalanceActions(actions: any, masterGrid: any) {
     if (!Array.isArray(actions) || actions.length === 0) return [];
 
-    const creates = [];
-    const cancels = [];
-    const passthrough = [];
+    const creates: any[] = [];
+    const cancels: any[] = [];
+    const passthrough: any[] = [];
 
     for (const action of actions) {
         if (action?.type === COW_ACTIONS.CREATE) {
@@ -597,12 +598,12 @@ function optimizeRebalanceActions(actions, masterGrid) {
  * @param {Array} actions - Action list
  * @returns {Object} Summary counts
  */
-function summarizeActions(actions) {
+function summarizeActions(actions: any) {
     return {
         total: actions.length,
-        creates: actions.filter(a => a.type === COW_ACTIONS.CREATE).length,
-        cancels: actions.filter(a => a.type === COW_ACTIONS.CANCEL).length,
-        updates: actions.filter(a => a.type === COW_ACTIONS.UPDATE).length
+        creates: actions.filter((a: any) => a.type === COW_ACTIONS.CREATE).length,
+        cancels: actions.filter((a: any) => a.type === COW_ACTIONS.CANCEL).length,
+        updates: actions.filter((a: any) => a.type === COW_ACTIONS.UPDATE).length
     };
 }
 
@@ -612,7 +613,7 @@ function summarizeActions(actions) {
  * @param {import('./types').ReconcileResult} rebalanceResult - Rebalance result to check
  * @returns {boolean} True if actions array is non-empty
  */
-function hasExecutableActions(rebalanceResult) {
+function hasExecutableActions(rebalanceResult: any) {
     const actions = rebalanceResult?.actions;
     return Array.isArray(actions) && actions.length > 0;
 }
@@ -625,7 +626,7 @@ function hasExecutableActions(rebalanceResult) {
  * @param {Map} orders - Current order grid
  * @returns {{isValid: boolean, violations: Array<Object>}} Validation result with any violations
  */
-function validateCreateTargetSlots(actions, orders) {
+function validateCreateTargetSlots(actions: any, orders: any) {
     const safeActions = Array.isArray(actions) ? actions : [];
     const orderMap = orders instanceof Map ? orders : new Map();
     const releasedSlotIds = new Set();
@@ -646,7 +647,7 @@ function validateCreateTargetSlots(actions, orders) {
         }
     }
 
-    const violations = [];
+    const violations: any[] = [];
     for (const action of safeActions) {
         if (action?.type !== COW_ACTIONS.CREATE) continue;
 
@@ -680,7 +681,7 @@ function validateCreateTargetSlots(actions, orders) {
  * @param {Object} orderRef - Reference with id/orderId
  * @returns {boolean}
  */
-function actionMatchesOrder(action, orderRef) {
+function actionMatchesOrder(action: any, orderRef: any) {
     if (!action || !orderRef) return false;
     if (orderRef.orderId && action.orderId && String(orderRef.orderId) === String(action.orderId)) {
         return true;
@@ -696,9 +697,9 @@ function actionMatchesOrder(action, orderRef) {
  * @param {Object} orderRef - Reference with id/orderId
  * @returns {boolean}
  */
-function hasActionForOrder(actions, actionType, orderRef) {
+function hasActionForOrder(actions: any, actionType: any, orderRef: any) {
     if (!Array.isArray(actions)) return false;
-    return actions.some(action => {
+    return actions.some((action: any) => {
         if (actionType && action?.type !== actionType) return false;
         return actionMatchesOrder(action, orderRef);
     });
@@ -712,7 +713,7 @@ function hasActionForOrder(actions, actionType, orderRef) {
  * @param {Object} orderRef - Reference with id/orderId
  * @returns {number} Number of removed actions
  */
-function removeActionsForOrder(actions, actionType, orderRef) {
+function removeActionsForOrder(actions: any, actionType: any, orderRef: any) {
     if (!Array.isArray(actions)) return 0;
     let removed = 0;
     for (let i = actions.length - 1; i >= 0; i--) {
@@ -729,7 +730,7 @@ function removeActionsForOrder(actions, actionType, orderRef) {
  * @param {Array} [actions]
  * @returns {{slotIds: Set<string>, orderIds: Set<string>}}
  */
-function _buildUpdateSelectors(actions) {
+function _buildUpdateSelectors(actions: any) {
     const selectors = {
         slotIds: new Set(),
         orderIds: new Set()
@@ -753,7 +754,7 @@ function _buildUpdateSelectors(actions) {
  * @param {string} [id]
  * @returns {boolean}
  */
-function _hasExplicitUpdateForOrder(selectors, current, id) {
+function _hasExplicitUpdateForOrder(selectors: any, current: any, id: any) {
     if (!selectors) return false;
 
     if (id && selectors.slotIds.has(String(id))) {
@@ -772,7 +773,7 @@ function _hasExplicitUpdateForOrder(selectors, current, id) {
  * @param {string|null} resultOrderId
  * @returns {boolean}
  */
-function _isProjectionUnchanged(current, targetOrder, resultSize, resultState, resultOrderId) {
+function _isProjectionUnchanged(current: any, targetOrder: any, resultSize: any, resultState: any, resultOrderId: any) {
     if (current.price === targetOrder.price &&
         current.type === targetOrder.type &&
         current.state === resultState &&
@@ -865,8 +866,8 @@ function projectTargetToWorkingGrid(workingGrid: any, targetGrid: any, options: 
  * @param {Map} masterGrid - Master grid Map containing current order states
  * @returns {Array<Object>} State update objects for optimistic rendering
  */
-function buildStateUpdates(actions, masterGrid) {
-    const stateUpdates = [];
+function buildStateUpdates(actions: any, masterGrid: any) {
+    const stateUpdates: any[] = [];
 
     for (const action of actions) {
         if (action.type === COW_ACTIONS.CREATE) {
@@ -897,7 +898,7 @@ function buildStateUpdates(actions, masterGrid) {
  * @param {string} reason - Abort reason
  * @returns {Object} Aborted result object
  */
-function buildAbortedResult(reason) {
+function buildAbortedResult(reason: any) {
     return {
         actions: [],
         stateUpdates: [],
@@ -922,11 +923,11 @@ function buildSuccessResult({
     workingGrid,
     workingBoundary,
     planningDuration
-}) {
+}: any) {
     return {
         actions,
         stateUpdates,
-        hadRotation: actions.some(a => a.type === COW_ACTIONS.CREATE || a.type === COW_ACTIONS.UPDATE),
+        hadRotation: actions.some((a: any) => a.type === COW_ACTIONS.CREATE || a.type === COW_ACTIONS.UPDATE),
         workingGrid,
         workingIndexes: workingGrid.getIndexes(),
         workingBoundary,
@@ -943,7 +944,7 @@ function buildSuccessResult({
  */
 function evaluateCommit(workingGrid: any, options: any = {}) {
     const hasLock = typeof options === 'boolean' ? options : !!options?.hasLock;
-    const currentVersion = toFiniteNumber(options?.currentVersion, null);
+    const currentVersion = toFiniteNumber(options?.currentVersion, undefined);
     const masterGrid = typeof options === 'object' ? options.masterGrid : null;
 
     if (!workingGrid) {
@@ -1011,27 +1012,5 @@ function evaluateCommit(workingGrid: any, options: any = {}) {
 // EXPORTS
 // ===============================================================================
 
-export = {
-    // Validation
-    validateOrder,
-    validateGridForPersistence,
-    calculateRequiredFunds,
-    validateWorkingGridFunds,
-    checkFundDrift,
-    VALID_ORDER_STATES,
-    VALID_ORDER_TYPES,
+export { validateOrder, validateGridForPersistence, calculateRequiredFunds, validateWorkingGridFunds, checkFundDrift, VALID_ORDER_STATES, VALID_ORDER_TYPES, reconcileGrid, optimizeRebalanceActions, summarizeActions, hasExecutableActions, validateCreateTargetSlots, hasActionForOrder, removeActionsForOrder, projectTargetToWorkingGrid, buildStateUpdates, buildAbortedResult, buildSuccessResult, evaluateCommit }
 
-    // Grid reconciliation (COW pipeline)
-    reconcileGrid,
-    optimizeRebalanceActions,
-    summarizeActions,
-    hasExecutableActions,
-    validateCreateTargetSlots,
-    hasActionForOrder,
-    removeActionsForOrder,
-    projectTargetToWorkingGrid,
-    buildStateUpdates,
-    buildAbortedResult,
-    buildSuccessResult,
-    evaluateCommit
-};

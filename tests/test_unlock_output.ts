@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { EventEmitter } = require('events');
+
 const childProcess = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -253,7 +253,7 @@ async function runUnlockStart(args, startupGraceMs = 0) {
     try {
         await unlock.main({ argv: args, startupGraceMs });
     } catch (err) {
-        if (err && err.code === 'TEST_PROCESS_EXIT') {
+        if (err && (err as any).code === 'TEST_PROCESS_EXIT') {
             return;
         }
         throw err;

@@ -1,10 +1,8 @@
-'use strict';
-
-const { getStorage } = require('../../modules/storage');
+import { getStorage } from '../../modules/storage';
+import { readJSON, safeUnlink } from '../../modules/utils/fs_utils';
+import { getProcessDiscovery } from '../../modules/process_discovery';
+import { runtime } from '../../modules/runtime';
 const storage = getStorage();
-const { readJSON, safeUnlink } = require('../../modules/utils/fs_utils');
-const { getProcessDiscovery } = require('../../modules/process_discovery');
-const { runtime } = require('../../modules/runtime');
 
 function _lockOwnerId(): number | string {
     if (runtime.pid > 0) {
@@ -23,10 +21,6 @@ function loadLockInfo(lockPath: any) {
     } catch (_: any) {
         return {};
     }
-}
-
-function isProcessAlive(pid: any) {
-    return getProcessDiscovery().isAlive(pid);
 }
 
 function isLikelyMarketAdapterProcess(pid: any) {
@@ -48,7 +42,7 @@ function acquireFileLockSync(lockPath: any, opts: any = {}) {
                 pid: _lockOwnerId(),
                 createdAt: new Date(now).toISOString(),
             };
-            storage.writeFile(fd, `${JSON.stringify(payload, null, 2)}\n`);
+            storage.write(fd, `${JSON.stringify(payload, null, 2)}\n`);
             const heartbeatMs = Math.max(30000, Math.floor(staleMs / 2));
             const heartbeat = setInterval(() => {
                 try {
@@ -111,7 +105,7 @@ function acquirePathLockSync(filePath: any, opts: any = {}) {
         let fd: number | null = null;
         try {
             fd = storage.open(lockPath, 'wx');
-            storage.writeFile(fd, `${JSON.stringify({ pid: _lockOwnerId(), at: Date.now() })}\n`);
+            storage.write(fd, `${JSON.stringify({ pid: _lockOwnerId(), at: Date.now() })}\n`);
             return { fd, lockPath };
         } catch (err: any) {
             if (fd !== null) {
@@ -171,9 +165,4 @@ async function acquireFileLock(filePath: any, opts: any = {}) {
     throw new Error(`Could not acquire lock on ${filePath} within 5000ms`);
 }
 
-export = {
-    acquireFileLockSync,
-    releaseFileLockSync,
-    acquirePathLockSync,
-    acquireFileLock,
-};
+export { acquireFileLockSync, releaseFileLockSync, acquirePathLockSync, acquireFileLock };

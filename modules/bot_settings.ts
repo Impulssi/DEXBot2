@@ -1,11 +1,12 @@
-const { getStorage } = require('./storage');
+
+import { getStorage } from './storage';
+import { readBotsFileSync } from './bots_file_lock';
+import { parseJsonWithComments } from './order/utils/system';
+import { createBotKey } from './account_orders';
+import { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } from './order/utils/math';
+import { resolveMinCollateralIncreaseThreshold } from './cr_planner';
+import { writeJSON } from './utils/fs_utils';
 const storage = getStorage();
-const { readBotsFileSync } = require('./bots_file_lock');
-const { parseJsonWithComments } = require('./order/utils/system');
-const { createBotKey } = require('./account_orders');
-const { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } = require('./order/utils/math');
-const { resolveMinCollateralIncreaseThreshold } = require('./cr_planner');
-const { writeJSON } = require('./utils/fs_utils');
 
 function loadSettingsFile(filePath: string, { silent = false, exitOnError = true }: { silent?: boolean; exitOnError?: boolean } = {}): { config: any; filePath: string } {
     if (!storage.exists(filePath)) {
@@ -67,7 +68,7 @@ function selectActiveBotEntries(settings: any): any[] {
 
 
 function validateBotEntry(b: any, i: number, src: string): string | null {
-    const problems = [];
+    const problems: string[] = [];
     const isCreditOnly = b.creditOnly === true;
     const required = isCreditOnly ? [] : ['assetA', 'assetB', 'activeOrders', 'botFunds'];
     for (const k of required) {
@@ -326,15 +327,5 @@ function assertNoDuplicateBotKeys(entries: any[], sourceName: string): void {
     }
 }
 
-export = {
-    assertNoDuplicateBotKeys,
-    collectValidationIssues,
-    loadSettingsFile,
-    normalizeBotEntry,
-    normalizeBotEntries,
-    resolveRawBotEntries,
-    saveSettingsFile,
-    selectActiveBotEntries,
-    selectBotEntry,
-    validateBotEntry
-};
+export { assertNoDuplicateBotKeys, collectValidationIssues, loadSettingsFile, normalizeBotEntry, normalizeBotEntries, resolveRawBotEntries, saveSettingsFile, selectActiveBotEntries, selectBotEntry, validateBotEntry }
+

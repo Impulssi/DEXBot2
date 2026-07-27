@@ -1,12 +1,11 @@
+
+import { readJSON } from '../../modules/utils/fs_utils';
 'use strict';
 
 /**
  * Shared utilities for bot-fitting scripts.
  */
 
-const fs = require('fs');
-const path = require('path');
-const { readJSON } = require('../../modules/utils/fs_utils');
 
 function toCandles(arr) {
     return arr.map((c) => ({
@@ -24,7 +23,7 @@ function parseListOrRange(spec, fallback) {
     if (spec.includes(':')) {
         const [a, b, s] = spec.split(':').map(Number);
         if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(s) || s <= 0) return fallback;
-        const out = [];
+        const out: number[] = [];
         for (let v = a; v <= b + 1e-9; v += s) out.push(Number(v.toFixed(4)));
         return out;
     }
@@ -42,9 +41,5 @@ function fmt(x, d = 2) {
     return Number(x).toFixed(d);
 }
 
-export = {
-    toCandles,
-    parseListOrRange,
-    loadLpData,
-    fmt,
-};
+export { toCandles, parseListOrRange, loadLpData, fmt }
+

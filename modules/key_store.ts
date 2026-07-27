@@ -1,18 +1,19 @@
 'use strict';
 
-const chainKeys = require('./chain_keys');
-const credentialPolicy = require('./credential_policy');
-const credentialRuntime = require('./credential_runtime');
-const {
+import * as chainKeys from './chain_keys';
+import * as credentialPolicy from './credential_policy';
+import * as credentialRuntime from './credential_runtime';
+import {
     executeOperationsViaCredentialDaemon,
     BroadcastUncertainError,
-} = require('./dexbot_credential_client');
-const { DAEMON_ERRORS } = require('./constants');
-const { PATHS } = require('./paths');
-const { getStorage } = require('./storage');
+} from './dexbot_credential_client';
+import { DAEMON_ERRORS } from './constants';
+import { PATHS } from './paths';
+import { getStorage } from './storage';
+import { runtime } from './runtime';
+import { sleep } from './order/utils/system';
+
 const storage = getStorage();
-const { runtime } = require('./runtime');
-const { sleep } = require('./order/utils/system');
 
 export interface SigningResult {
     success: boolean;

@@ -40,16 +40,17 @@
  * ===============================================================================
  */
 
+
+import Logger from './logger';
+import { NODE_MANAGEMENT } from './constants';
+import { PATHS, getNodeBlacklistFile } from './paths';
+import { writeJsonFileAtomic } from './bots_file_lock';
+import { readJSON } from './utils/fs_utils';
 const _WebSocket = globalThis.WebSocket;
-const Logger = require('./logger');
-const { NODE_MANAGEMENT } = require('./constants');
-const { PATHS, getNodeBlacklistFile } = require('./paths');
-const { writeJsonFileAtomic } = require('./bots_file_lock');
-const { readJSON } = require('./utils/fs_utils');
-const {
+import {
     resolveHealthCacheFile,
     writeHealthCache,
-} = require('./node_health_cache');
+} from './node_health_cache';
 
 interface NodeManagerConfig {
     list?: string[];
@@ -193,7 +194,7 @@ class NodeManager {
      */
     private saveBlacklistState(): void {
         try {
-            const state = {};
+            const state: Record<string, any> = {};
             for (const stats of this.nodeStats.values()) {
                 if (stats.status === 'blacklisted') {
                     state[stats.url] = {
@@ -239,13 +240,13 @@ class NodeManager {
         this.logger.info(`Started monitoring ${this.config.list.length} nodes (interval: ${this.config.healthCheck.intervalMs}ms)`);
 
         // Initial check immediately
-        this.checkAllNodes().catch(err => {
+        this.checkAllNodes().catch((err: any) => {
             this.logger.warn(`Initial health check failed: ${err.message}`);
         });
 
         // Schedule periodic checks
         this.checkIntervalId = setInterval(() => {
-            this.checkAllNodes().catch(err => {
+            this.checkAllNodes().catch((err: any) => {
                 this.logger.warn(`Health check cycle failed: ${err.message}`);
             });
         }, this.config.healthCheck.intervalMs);
@@ -280,7 +281,7 @@ class NodeManager {
         this.checkAllNodesPromise = (async () => {
             const now = Date.now();
             const promises = Array.from(this.nodeStats.keys())
-                .filter(nodeUrl => {
+                .filter((nodeUrl: any) => {
                     const stats = this.nodeStats.get(nodeUrl);
                     if (stats?.status !== 'blacklisted') return true;
                     if (!stats.blacklistedAt) return false;
@@ -297,8 +298,8 @@ class NodeManager {
                     this.logger.info(`${nodeUrl.substring(0, 40)}... blacklist cooldown expired, re-enabling`);
                     return true;
                 })
-                .map(nodeUrl => {
-                    return this.checkNode(nodeUrl).catch(err => {
+                .map((nodeUrl: any) => {
+                    return this.checkNode(nodeUrl).catch((err: any) => {
                         // Don't throw, just log - one node failure shouldn't crash the check cycle
                         this.logger.debug(`Check failed for ${nodeUrl}: ${err.message}`);
                     });
@@ -417,10 +418,10 @@ class NodeManager {
      * @returns {Promise<WebSocket>} Connected WebSocket instance
      */
     connectWithTimeout(nodeUrl: string, timeoutMs: number): Promise<any> {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve: any, reject: any) => {
             let settled = false;
-            let ws = null;
-            const settle = (method, value) => {
+            let ws: any = null;
+            const settle = (method: any, value: any) => {
                 if (settled) return;
                 settled = true;
                 clearTimeout(timeout);
@@ -446,7 +447,7 @@ class NodeManager {
                     settle(resolve, ws);
                 };
 
-                ws.onerror = (err) => {
+                ws.onerror = (err: any) => {
                     settle(reject, new Error(`WebSocket error: ${err.message || 'Unknown'}`));
                 };
 
@@ -482,7 +483,7 @@ class NodeManager {
      * @returns {Promise<any>} RPC result
      */
     rpcCall(ws: any, method: string, params: any[], timeoutMs: number): Promise<any> {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve: any, reject: any) => {
             const requestId = Math.random().toString(36).substring(7);
             const request = {
                 jsonrpc: '2.0',
@@ -503,7 +504,7 @@ class NodeManager {
                 }
             }, timeoutMs);
 
-            ws.onmessage = (msg) => {
+            ws.onmessage = (msg: any) => {
                 try {
                     const data = JSON.parse(msg.data);
                     if (data.id === requestId && !isResolved) {
@@ -542,8 +543,8 @@ class NodeManager {
     getHealthyNodes(): string[] {
         const preferredNode = this.config.selection.preferredNode;
         const healthy = Array.from(this.nodeStats.values())
-            .filter(stat => stat.status === 'healthy' || stat.status === 'slow')
-            .sort((a, b) => {
+            .filter((stat: any) => stat.status === 'healthy' || stat.status === 'slow')
+            .sort((a: any, b: any) => {
                 if (preferredNode) {
                     const aPreferred = a.url === preferredNode && a.status === 'healthy';
                     const bPreferred = b.url === preferredNode && b.status === 'healthy';
@@ -555,7 +556,7 @@ class NodeManager {
                 }
                 return (a.latencyMs || Infinity) - (b.latencyMs || Infinity);
             })
-            .map(stat => stat.url);
+            .map((stat: any) => stat.url);
 
         return healthy.length > 0 ? healthy : [];
     }
@@ -672,7 +673,7 @@ class NodeManager {
      * @returns {Array<Object>} Array of node stats
      */
     getStats(): Array<{ url: string; status: string; latencyMs: number | null; failureCount: number; lastCheckTime: string | null; lastErrorMessage: string | null }> {
-        return Array.from(this.nodeStats.values()).map(stat => ({
+        return Array.from(this.nodeStats.values()).map((stat: any) => ({
             url: stat.url,
             status: stat.status,
             latencyMs: stat.latencyMs,
@@ -701,9 +702,9 @@ class NodeManager {
         }
 
         const bestNode = this.getBestNode();
-        const statsWithLatency = stats.filter(s => s.latencyMs !== null);
+        const statsWithLatency = stats.filter((s: any) => s.latencyMs !== null);
         const avgLatency = statsWithLatency.length > 0
-            ? Math.round(statsWithLatency.reduce((sum, s) => sum + s.latencyMs, 0) / statsWithLatency.length)
+            ? Math.round(statsWithLatency.reduce((sum: any, s: any) => sum + s.latencyMs, 0) / statsWithLatency.length)
             : null;
 
         return {
@@ -715,4 +716,6 @@ class NodeManager {
     }
 }
 
-export = NodeManager;
+export default NodeManager
+
+module.exports = NodeManager

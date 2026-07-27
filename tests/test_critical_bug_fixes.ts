@@ -2,6 +2,7 @@ const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { createOrderGrid } = require('../modules/order/grid');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('='.repeat(80));
 console.log('Testing Critical Bug Fixes (COW)');
@@ -136,8 +137,8 @@ async function testOrderStateTransitionStability() {
         console.log('='.repeat(80));
         process.exit(0);
     } catch (err) {
-        console.error('\n❌ Test failed:', err.message);
-        console.error(err.stack);
+        console.error('\n❌ Test failed:', getErrorMessage(err));
+        console.error((err as any).stack);
         process.exit(1);
     }
 })();

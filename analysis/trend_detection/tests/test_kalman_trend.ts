@@ -1,7 +1,7 @@
-'use strict';
+import assert from 'node:assert';
+import { KalmanTrendAnalyzer, KalmanFilter } from '../kalman_trend_analyzer';
 
-const assert = require('assert');
-const { KalmanTrendAnalyzer, KalmanFilter } = require('../kalman_trend_analyzer');
+'use strict';
 
 /**
  * Test Suite for Kalman Trend Detection
@@ -44,15 +44,14 @@ function testConstantTrendConvergence() {
     }
 
     // Velocity should be very close to 1.0
-    assert.ok(Math.abs(lastAnalysis.velocity - 1.0) < 0.05, `Velocity ${lastAnalysis.velocity} should be near 1.0`);
-    assert.strictEqual(lastAnalysis.trend, 'UP');
+    assert.ok(Math.abs(lastAnalysis!.velocity - 1.0) < 0.05, `Velocity ${lastAnalysis!.velocity} should be near 1.0`);
+    assert.strictEqual(lastAnalysis!.trend, 'UP');
 }
 
 function testNoiseFiltering() {
     console.log(' - Testing noise filtering (wicks)');
     const analyzer = new KalmanTrendAnalyzer({ rNoise: 10.0, qNoise: 0.01 }); // High R = ignore noise
 
-    let price = 100;
     // 50 steps of steady price
     for (let i = 0; i < 50; i++) analyzer.update(100);
 

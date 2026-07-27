@@ -1,12 +1,11 @@
 #!/usr/bin/env node
-'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const { spawnSync } = require('child_process');
-const { PATHS } = require('../modules/paths');
-const { Config } = require('../modules/config');
-const { readJSON } = require('../modules/utils/fs_utils');
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { PATHS } from '../modules/paths.js';
+import { Config } from '../modules/config.js';
+import { readJSON } from '../modules/utils/fs_utils.js';
 const nodeBin = process.execPath;
 
 function run(label: any, args: any, env: any = {}) {
@@ -58,4 +57,3 @@ run('Native ECC invariants', ['--import', 'tsx', 'tests/test_native_ecc.ts']);
 assertMainnetCorpusReport();
 
 console.log('\nNative release gates passed.');
-export {};

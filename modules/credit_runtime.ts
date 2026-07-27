@@ -1,44 +1,46 @@
+
+import { path } from './path_api';
+import { getStorage } from './storage';
+import * as client from './bitshares_client';
+const { BitShares, waitForConnected } = client;
+import * as chainOrders from './chain_orders';
+import { blockchainToFloat, floatToBlockchainInt, resolveConfigValue } from './order/utils/math';
+import { toFiniteNumber } from './order/format';
+import { createBotKey } from './account_orders';
+import * as fundRegistry from './fund_registry';
+import { writeJsonFileAtomic } from './bots_file_lock';
+import { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING } from './constants';
+import { roundToDecimals } from './order/utils/math';
+import { PATHS } from './paths';
+import { readJSON } from './utils/fs_utils';
+import _sysUtils = require('./order/utils/system');
+const { deriveLiquidityPoolTokenValue, ensureDir: ensureDirSync } = _sysUtils;
 'use strict';
 
-const { path } = require('./path_api');
-const { getStorage } = require('./storage');
 const storage = getStorage();
-const { BitShares, waitForConnected } = require('./bitshares_client');
-const chainOrders = require('./chain_orders');
-const { blockchainToFloat, floatToBlockchainInt, resolveConfigValue } = require('./order/utils/math');
-const { deriveLiquidityPoolTokenValue } = require('./order/utils/system');
-const { toFiniteNumber } = require('./order/format');
-const { createBotKey } = require('./account_orders');
-const fundRegistry = require('./fund_registry');
-const { writeJsonFileAtomic } = require('./bots_file_lock');
-const {
+import {
     buildCollateralFallbackPlan,
     buildDebtFirstCrPlan,
     resolveMinCollateralIncreaseThreshold,
     resolveTargetCollateralRatio,
-} = require('./cr_planner');
-const { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING } = require('./constants');
-const { roundToDecimals } = require('./order/utils/math');
-const { PATHS } = require('./paths');
-const { readJSON } = require('./utils/fs_utils');
+} from './cr_planner';
 
 const CREDIT_FEE_RATE_DENOM = 1_000_000;
 const ZERO_ASSET_ID = '1.3.0';
 const DEFAULT_STATE_DIR = PATHS.CREDIT_RUNTIME_DIR;
 const GRAPHENE_COLLATERAL_RATIO_DENOM = FEE_PARAMETERS.GRAPHENE_COLLATERAL_RATIO_DENOM;
 
-const { ensureDir: ensureDirSync } = require('./order/utils/system');
 
-function deepClone(value) {
+function deepClone(value: any): any {
     return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
-function positiveOrNull(value) {
-    const num = toFiniteNumber(value, null);
+function positiveOrNull(value: any): number | null {
+    const num = toFiniteNumber(value, undefined);
     return Number.isFinite(num) && num > 0 ? num : null;
 }
 
-function normalizeResolvedPriceResult(value, liveSource, missingSource) {
+function normalizeResolvedPriceResult(value: any, liveSource: any, missingSource: any): any {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
         const price = positiveOrNull(value.price);
         return {
@@ -55,7 +57,7 @@ function normalizeResolvedPriceResult(value, liveSource, missingSource) {
     };
 }
 
-function positiveOrPercentOrNull(value) {
+function positiveOrPercentOrNull(value: any): number | null {
     const numeric = positiveOrNull(value);
     if (numeric !== null) return numeric;
     if (typeof value !== 'string') return null;
@@ -65,20 +67,20 @@ function positiveOrPercentOrNull(value) {
     return Number.isFinite(percent) && percent > 0 ? percent / 100 : null;
 }
 
-function normalizeNumberArray(value) {
+function normalizeNumberArray(value: any): string[] {
     return Array.isArray(value)
-        ? value.map((item) => String(item)).filter(Boolean)
+        ? value.map((item: any) => String(item)).filter(Boolean)
         : [];
 }
 
-function toGrapheneCollateralRatio(value) {
+function toGrapheneCollateralRatio(value: any): number | null {
     const numeric = positiveOrNull(value);
     if (numeric === null) return null;
     const scaled = Math.round(numeric * GRAPHENE_COLLATERAL_RATIO_DENOM);
     return Number.isInteger(scaled) && scaled > 0 && scaled <= 0xffff ? scaled : null;
 }
 
-function getMapEntries(value) {
+function getMapEntries(value: any): any[] {
     if (value instanceof Map) return Array.from(value.entries());
     if (Array.isArray(value)) {
         if (value.length > 0 && typeof value[0] === 'object' && !Array.isArray(value[0]) && value[0] !== null && 'key' in value[0] && 'value' in value[0]) {
@@ -90,34 +92,30 @@ function getMapEntries(value) {
     return [];
 }
 
-function getPriceBaseAssetId(price) {
-    return price?.base?.asset_id || null;
-}
-
-function getPriceQuoteAssetId(price) {
+function getPriceQuoteAssetId(price: any): string | null {
     return price?.quote?.asset_id || null;
 }
 
-function toAmountObject(amount, assetId) {
+function toAmountObject(amount: any, assetId: any): any {
     return {
         amount,
         asset_id: assetId,
     };
 }
 
-function getChainAmountValue(value) {
+function getChainAmountValue(value: any): number {
     if (value && typeof value === 'object' && value.amount !== undefined) {
-        return toFiniteNumber(value.amount, null);
+        return toFiniteNumber(value.amount, undefined);
     }
-    return toFiniteNumber(value, null);
+    return toFiniteNumber(value, undefined);
 }
 
-function getAssetPrecision(asset) {
+function getAssetPrecision(asset: any): number | null {
     const precision = Number(asset?.precision);
     return Number.isFinite(precision) ? precision : null;
 }
 
-function blockchainAmountToFloat(value, asset) {
+function blockchainAmountToFloat(value: any, asset: any): number | null {
     const amount = getChainAmountValue(value);
     const precision = getAssetPrecision(asset);
     if (!Number.isFinite(amount) || precision === null) {
@@ -126,7 +124,7 @@ function blockchainAmountToFloat(value, asset) {
     return blockchainToFloat(amount, precision);
 }
 
-function isDeterministicMpaDebtBalanceError(err, plan) {
+function isDeterministicMpaDebtBalanceError(err: any, plan: any): boolean {
     const debtDelta = toFiniteNumber(plan?.debtDelta, 0);
     if (!Number.isFinite(debtDelta) || debtDelta >= 0) {
         return false;
@@ -136,12 +134,12 @@ function isDeterministicMpaDebtBalanceError(err, plan) {
         && (message.includes('balance') || message.includes('fund') || message.includes('mpa'));
 }
 
-function isMaxBorrowAmountError(err) {
+function isMaxBorrowAmountError(err: any): boolean {
     const message = String(err?.message || err || '');
     return /would exceed maxBorrowAmount/.test(message) || /exceeds maxBorrowAmountPerOperation/.test(message);
 }
 
-function normalizeCollateralMap(acceptableCollateral) {
+function normalizeCollateralMap(acceptableCollateral: any): Map<string, any> {
     const result = new Map();
     for (const [assetId, price] of getMapEntries(acceptableCollateral)) {
         if (!assetId || !price) continue;
@@ -150,7 +148,7 @@ function normalizeCollateralMap(acceptableCollateral) {
     return result;
 }
 
-function resolveAutoRepayValue(value) {
+function resolveAutoRepayValue(value: any): number {
     if (value === true) return 1;
     if (value === false || value === null || value === undefined) return 0;
     const num = Number(value);
@@ -161,7 +159,7 @@ function resolveAutoRepayValue(value) {
     return int;
 }
 
-function normalizeAmountSpec(spec) {
+function normalizeAmountSpec(spec: any): any {
     if (spec === null || spec === undefined) return null;
     if (typeof spec === 'number' || typeof spec === 'string') {
         return { amount: spec, assetId: null };
@@ -175,12 +173,12 @@ function normalizeAmountSpec(spec) {
     return null;
 }
 
-function isPercentageAmountSpec(spec) {
+function isPercentageAmountSpec(spec: any): boolean {
     const normalized = normalizeAmountSpec(spec);
     return typeof normalized?.amount === 'string' && normalized.amount.trim().endsWith('%');
 }
 
-function getAccountRef(bot) {
+function getAccountRef(bot: any): any {
     return bot?.accountId
         || bot?.account?.id
         || bot?.account?.name
@@ -188,7 +186,7 @@ function getAccountRef(bot) {
         || null;
 }
 
-function getAccountName(bot) {
+function getAccountName(bot: any): any {
     return bot?.account?.name
         || bot?.config?.preferredAccount
         || bot?.account?.id
@@ -196,11 +194,11 @@ function getAccountName(bot) {
         || null;
 }
 
-function snakeToCamel(method) {
+function snakeToCamel(method: any): string {
     return String(method || '').replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
 }
 
-function parseFullAccount(fullAccountResult) {
+function parseFullAccount(fullAccountResult: any): any {
     if (!Array.isArray(fullAccountResult) || fullAccountResult.length === 0) return null;
     const entry = fullAccountResult[0];
     if (Array.isArray(entry) && entry.length >= 2) {
@@ -209,14 +207,14 @@ function parseFullAccount(fullAccountResult) {
     return entry?.account || entry || null;
 }
 
-function parseCallOrders(accountObj) {
+function parseCallOrders(accountObj: any): any[] {
     if (!accountObj || typeof accountObj !== 'object') return [];
     if (Array.isArray(accountObj.call_orders)) return accountObj.call_orders;
     if (accountObj.account && Array.isArray(accountObj.account.call_orders)) return accountObj.account.call_orders;
     return [];
 }
 
-function parseDealSummary(deal) {
+function parseDealSummary(deal: any): any {
     if (!deal || typeof deal !== 'object') return null;
     return {
         id: deal.id,
@@ -233,7 +231,7 @@ function parseDealSummary(deal) {
     };
 }
 
-function parseCallOrderSummary(order) {
+function parseCallOrderSummary(order: any): any {
     if (!order || typeof order !== 'object') return null;
     return {
         id: order.id || null,
@@ -248,7 +246,7 @@ function parseCallOrderSummary(order) {
     };
 }
 
-function parseCreditOfferSummary(offer) {
+function parseCreditOfferSummary(offer: any): any {
     if (!offer || typeof offer !== 'object') return null;
     return {
         id: offer.id || null,
@@ -284,7 +282,7 @@ class CreditRuntime {
     _reborrowsInFlight: boolean;
     _splitInFlight: boolean;
 
-    constructor(bot, options = {}) {
+    constructor(bot: any, options: any = {}) {
         this.bot = bot || {};
         this.config = this.bot.config || {};
         this.options = options || {};
@@ -337,24 +335,24 @@ class CreditRuntime {
         const dp = this.debtPolicy;
         if (!dp) return false;
         if (!Array.isArray(dp.lending) || dp.lending.length === 0) return false;
-        return dp.lending.every((item) =>
+        return dp.lending.every((item: any) =>
             typeof item.collateralAsset === 'string' && item.collateralAsset.length > 0
         );
     }
 
-    _positionKey(debtAssetId, collateralAssetId) {
+    _positionKey(debtAssetId: any, collateralAssetId: any): string {
         return `${debtAssetId}:${collateralAssetId}`;
     }
 
-    _findLendingItemByType(type) {
+    _findLendingItemByType(type: any): any {
         const dp = this.debtPolicy;
         if (!Array.isArray(dp?.lending)) return null;
-        return dp.lending.find((item) => item.type === type) || null;
+        return dp.lending.find((item: any) => item.type === type) || null;
     }
 
-    async _findLendingItemForAsset(assetId, typeFilter) {
+    async _findLendingItemForAsset(assetId: any, typeFilter: any): Promise<any> {
         if (!assetId || !this.debtPolicy?.lending) return null;
-        for (const item of this.debtPolicy.lending) {
+        for (const item of (this.debtPolicy.lending as any[])) {
             if (typeFilter && item.type !== typeFilter) continue;
             let cached = this._assetCache.get(String(item.asset));
             if (!cached && item.asset) {
@@ -367,7 +365,7 @@ class CreditRuntime {
         return null;
     }
 
-    _stateWithDefaults(state = {}) {
+    _stateWithDefaults(state: any = {}): any {
         const merged = { ...this._createDefaultState(), ...deepClone(state || {}) };
         merged.activeDealIds = Array.isArray(merged.activeDealIds) ? merged.activeDealIds : [];
         merged.activeOfferIds = Array.isArray(merged.activeOfferIds) ? merged.activeOfferIds : [];
@@ -381,7 +379,7 @@ class CreditRuntime {
         return merged;
     }
 
-    async loadState({ forceReload = false } = {}) {
+    async loadState({ forceReload = false }: any = {}): Promise<any> {
         if (this._loaded && !forceReload) {
             return this.state;
         }
@@ -405,7 +403,7 @@ class CreditRuntime {
         return this.state;
     }
 
-    async persistState(reason = 'update') {
+    async persistState(reason: any = 'update'): Promise<any> {
         ensureDirSync(this.stateDir);
         this.state.updatedAt = new Date().toISOString();
         this.state.botKey = this.botKey;
@@ -421,12 +419,12 @@ class CreditRuntime {
         return this.state;
     }
 
-    async shutdown() {
+    async shutdown(): Promise<void> {
         if (!this._loaded) return;
         await this.persistState('shutdown');
     }
 
-    async _dbCall(method, args = []) {
+    async _dbCall(method: any, args: any[] = []) {
         await waitForConnected();
         if (!BitShares?.db) {
             throw new Error('BitShares DB client is unavailable');
@@ -443,19 +441,19 @@ class CreditRuntime {
         return BitShares.db.call(method, args);
     }
 
-    async _resolveAccountId(accountRef) {
+    async _resolveAccountId(accountRef: any): Promise<any> {
         if (!accountRef) return null;
         if (/^1\.2\.\d+$/.test(accountRef)) return accountRef;
         return chainOrders.resolveAccountId(accountRef);
     }
 
-    async _resolveAccountName(accountRef) {
+    async _resolveAccountName(accountRef: any): Promise<any> {
         if (!accountRef) return null;
         if (!/^1\.2\.\d+$/.test(accountRef)) return accountRef;
         return chainOrders.resolveAccountName(accountRef);
     }
 
-    async _getFullAccount(accountRef) {
+    async _getFullAccount(accountRef: any): Promise<any> {
         if (!accountRef) return null;
         if (this._fullAccountCache && this._fullAccountCache.ref === String(accountRef)) {
             return this._fullAccountCache.account;
@@ -466,14 +464,14 @@ class CreditRuntime {
         return account || null;
     }
 
-    async _resolveAsset(assetRef) {
+    async _resolveAsset(assetRef: any): Promise<any> {
         if (!assetRef) return null;
         const cacheKey = String(assetRef);
         if (this._assetCache.has(cacheKey)) {
             return this._assetCache.get(cacheKey);
         }
 
-        let asset = null;
+        let asset: any = null;
         if (/^1\.3\.\d+$/.test(cacheKey)) {
             const result = await this._dbCall('get_assets', [[cacheKey]]);
             asset = Array.isArray(result) ? result[0] : null;
@@ -495,7 +493,7 @@ class CreditRuntime {
         return asset;
     }
 
-    async _resolveBitassetData(assetRef) {
+    async _resolveBitassetData(assetRef: any): Promise<any> {
         const asset = await this._resolveAsset(assetRef);
         const bitassetDataId = asset?.bitasset_data_id || null;
         if (!bitassetDataId) return null;
@@ -512,7 +510,7 @@ class CreditRuntime {
         return bitassetData;
     }
 
-    _computeBtsPerDebt(settlementPrice, debtAsset, backingAsset) {
+    _computeBtsPerDebt(settlementPrice: any, debtAsset: any, backingAsset: any): number | null {
         const base = settlementPrice?.base;
         const quote = settlementPrice?.quote;
         if (!base || !quote || !debtAsset || !backingAsset) return null;
@@ -521,7 +519,7 @@ class CreditRuntime {
         const quoteAsset = quote.asset_id === debtAsset.id ? debtAsset : backingAsset;
         const baseAmount = blockchainAmountToFloat(base.amount, baseAsset);
         const quoteAmount = blockchainAmountToFloat(quote.amount, quoteAsset);
-        if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount) || baseAmount <= 0 || quoteAmount <= 0) {
+        if (baseAmount == null || quoteAmount == null || baseAmount <= 0 || quoteAmount <= 0) {
             return null;
         }
 
@@ -534,14 +532,14 @@ class CreditRuntime {
         return null;
     }
 
-    _normalizePolicyList(value) {
+    _normalizePolicyList(value: any): string[] {
         return normalizeNumberArray(value);
     }
 
-    _rebuildCreditTrackingFromPositions() {
-        const allActiveDealIds = [];
-        const allActiveOfferIds = [];
-        const allCreditDeals = [];
+    _rebuildCreditTrackingFromPositions(): void {
+        const allActiveDealIds: string[] = [];
+        const allActiveOfferIds: string[] = [];
+        const allCreditDeals: any[] = [];
         for (const pos of (Object.values(this.state.positions || {}) as any[])) {
             if (Array.isArray(pos.activeDealIds)) {
                 allActiveDealIds.push(...pos.activeDealIds);
@@ -558,7 +556,7 @@ class CreditRuntime {
         this.state.creditDeals = allCreditDeals;
     }
 
-    async _pruneCreditStateForPolicy(lendingItems = []) {
+    async _pruneCreditStateForPolicy(lendingItems: any[] = []) {
         const validCreditPositionKeys = new Set();
         for (const item of lendingItems) {
             if (item?.type !== 'creditOffer') continue;
@@ -579,7 +577,7 @@ class CreditRuntime {
         }
     }
 
-    async _resolveAmountToBlockchainInt(spec, asset, accountRef, { balanceField = 'total', referenceAmount = null, referenceLabel = 'available balance' } = {}) {
+    async _resolveAmountToBlockchainInt(spec: any, asset: any, accountRef: any, { balanceField = 'total', referenceAmount = null, referenceLabel = 'available balance' }: any = {}): Promise<any> {
         const normalized = normalizeAmountSpec(spec);
         if (!normalized || normalized.amount === null || normalized.amount === undefined) {
             return null;
@@ -589,7 +587,7 @@ class CreditRuntime {
         }
 
         const isPercent = typeof normalized.amount === 'string' && normalized.amount.trim().endsWith('%');
-        let total = null;
+        let total: number | null = null;
         if (isPercent) {
             if (Number.isFinite(referenceAmount)) {
                 total = Number(referenceAmount);
@@ -598,8 +596,8 @@ class CreditRuntime {
                     throw new Error(`Unable to resolve account for percentage amount on ${asset.id}`);
                 }
                 const balances = await chainOrders.getOnChainAssetBalances(accountRef, [asset.id]);
-                const balance = balances?.[String(asset.id)] || balances?.[String(asset.symbol)] || null;
-                total = toFiniteNumber(balance?.[balanceField], null);
+                const balance = (balances as Record<string, any>)?.[String(asset.id)] || (balances as Record<string, any>)?.[String(asset.symbol)] || null;
+                total = toFiniteNumber(balance?.[balanceField], undefined);
                 if (!Number.isFinite(total) || total < 0) {
                     throw new Error(`Unable to resolve ${referenceLabel} for ${asset.id}`);
                 }
@@ -613,7 +611,7 @@ class CreditRuntime {
         if (!Number.isFinite(resolved) || resolved <= 0) {
             return null;
         }
-        if (isPercent && resolved > total) {
+        if (isPercent && total !== null && resolved > total) {
             throw new Error(`Requested amount ${resolved} exceeds available ${balanceField} balance ${total} for ${asset.id}`);
         }
 
@@ -625,7 +623,7 @@ class CreditRuntime {
         return intValue;
     }
 
-    async _resolveLendingPolicyForOffer(offer) {
+    async _resolveLendingPolicyForOffer(offer: any): Promise<any> {
         const offerDebtAssetId = offer?.asset_type || null;
         if (!offerDebtAssetId || !this.debtPolicy?.lending) return null;
         for (const item of this.debtPolicy.lending) {
@@ -650,7 +648,7 @@ class CreditRuntime {
      * @param {boolean} [options.includeSource] - When true, returns { price, source } object
      * @returns {number|Object|null} Price number, { price, source } object, or null
      */
-    async _resolveMpaFeedPrice(debtAssetId, collateralAssetId, options: { includeSource?: boolean } = {}) {
+    async _resolveMpaFeedPrice(debtAssetId: any, collateralAssetId: any, options: { includeSource?: boolean } = {}): Promise<any> {
         if (!debtAssetId || !collateralAssetId) return null;
 
         const MPA_FEED_MAX_AGE_MS = require('./constants').TIMING.MPA_FEED_MAX_AGE_MS;
@@ -672,7 +670,7 @@ class CreditRuntime {
         }
 
         const feedPrice = this._computeBtsPerDebt(bitassetData?.current_feed?.settlement_price, debtAsset, collateralAsset);
-        if (Number.isFinite(feedPrice) && feedPrice > 0) {
+        if (feedPrice != null && Number.isFinite(feedPrice) && feedPrice > 0) {
             if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
             this.state.positions[posKey].mpaFeedPrice = feedPrice;
             this.state.positions[posKey].mpaFeedPriceAt = Date.now();
@@ -697,7 +695,7 @@ class CreditRuntime {
      * @param {boolean} [options.includeSource] - When true, returns { price, source } object
      * @returns {number|Object|null} Rate number, { price, source } object, or null
      */
-    async _resolveCreditConversionRate(lendingItem, debtAssetId, collateralAssetId, options: { includeSource?: boolean } = {}) {
+    async _resolveCreditConversionRate(lendingItem: any, debtAssetId: any, collateralAssetId: any, options: { includeSource?: boolean } = {}): Promise<any> {
         if (!debtAssetId || !collateralAssetId) return null;
 
         const CREDIT_RATE_MAX_AGE_MS = require('./constants').TIMING.CREDIT_RATE_MAX_AGE_MS;
@@ -753,7 +751,7 @@ class CreditRuntime {
                 const orientation = this._creditPriceOrientation(price, debtAsset, collateralAsset);
                 const baseAmount = blockchainAmountToFloat(price?.base, orientation === 'legacy-reversed' ? collateralAsset : debtAsset);
                 const quoteAmount = blockchainAmountToFloat(price?.quote, orientation === 'legacy-reversed' ? debtAsset : collateralAsset);
-                if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount) || baseAmount <= 0) continue;
+                if (baseAmount == null || quoteAmount == null || baseAmount <= 0) continue;
 
                 const rate = orientation === 'legacy-reversed'
                     ? quoteAmount / baseAmount
@@ -803,7 +801,7 @@ class CreditRuntime {
 
             let groupHasNoUsablePrice = false;
             const weightEntries = await Promise.all(
-                items.map(async (item) => {
+                items.map(async (item: any) => {
                     const ratio = item.outputWeight ?? item.ratio ?? 1;
                     const resolvedAsset = await this._resolveAsset(item.asset);
                     const assetId = resolvedAsset?.id ? String(resolvedAsset.id) : null;
@@ -892,7 +890,7 @@ class CreditRuntime {
         }
     }
 
-    _creditPriceOrientation(collateralPrice, debtAsset, collateralAsset) {
+    _creditPriceOrientation(collateralPrice: any, debtAsset: any, collateralAsset: any): string {
         const baseAssetId = String(collateralPrice?.base?.asset_id || '');
         const quoteAssetId = String(collateralPrice?.quote?.asset_id || '');
         const debtAssetId = String(debtAsset?.id || '');
@@ -902,9 +900,9 @@ class CreditRuntime {
         return 'core';
     }
 
-    _calculateBorrowAmountFromCollateral(collateralAmountInt, collateralPrice, debtAsset = null, collateralAsset = null) {
-        const baseAmount = toFiniteNumber(collateralPrice?.base?.amount, null);
-        const quoteAmount = toFiniteNumber(collateralPrice?.quote?.amount, null);
+    _calculateBorrowAmountFromCollateral(collateralAmountInt: any, collateralPrice: any, debtAsset: any = null, collateralAsset: any = null): number | null {
+        const baseAmount = toFiniteNumber(collateralPrice?.base?.amount, undefined);
+        const quoteAmount = toFiniteNumber(collateralPrice?.quote?.amount, undefined);
         if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount) || baseAmount <= 0 || quoteAmount <= 0) {
             return null;
         }
@@ -914,7 +912,7 @@ class CreditRuntime {
         return Math.floor((Number(collateralAmountInt) * baseAmount) / quoteAmount);
     }
 
-    _enforceMaxBorrowAmount(policy, borrowInt, debtAsset, options: Record<string, any> = {}) {
+    _enforceMaxBorrowAmount(policy: any, borrowInt: any, debtAsset: any, options: Record<string, any> = {}): void {
         const maxBorrowAmountValue = positiveOrNull(policy?.maxBorrowAmount);
         if (maxBorrowAmountValue === null) return;
         const borrowFloat = blockchainToFloat(borrowInt, debtAsset.precision);
@@ -926,10 +924,10 @@ class CreditRuntime {
         }
     }
 
-    _getCreditDebtForAsset(asset) {
+    _getCreditDebtForAsset(asset: any): number {
         const assetId = asset?.id || asset;
         const deals = Array.isArray(this.state?.creditDeals) ? this.state.creditDeals : [];
-        return deals.reduce((sum, deal) => {
+        return deals.reduce((sum: any, deal: any) => {
             if (String(deal?.debtAssetId) === String(assetId)) {
                 return sum + (blockchainAmountToFloat(deal?.debtAmount, asset) || 0);
             }
@@ -937,10 +935,10 @@ class CreditRuntime {
         }, 0);
     }
 
-    _getCreditCollateralForAsset(asset) {
+    _getCreditCollateralForAsset(asset: any): number {
         const assetId = asset?.id || asset;
         const deals = Array.isArray(this.state?.creditDeals) ? this.state.creditDeals : [];
-        return deals.reduce((sum, deal) => {
+        return deals.reduce((sum: any, deal: any) => {
             if (String(deal?.collateralAssetId) === String(assetId)) {
                 return sum + (blockchainAmountToFloat(deal?.collateralAmount, asset) || 0);
             }
@@ -948,7 +946,7 @@ class CreditRuntime {
         }, 0);
     }
 
-    async _getCollateralPercentageBase(accountId, assetId) {
+    async _getCollateralPercentageBase(accountId: any, assetId: any): Promise<any> {
         if (!accountId || !assetId) return null;
 
         const asset = await this._resolveAsset(assetId);
@@ -960,8 +958,8 @@ class CreditRuntime {
             this._fetchBorrowerDeals().catch(() => []),
         ]);
 
-        const balance = balances?.[String(assetId)] || balances?.[String(asset.symbol)] || null;
-        const onChainTotal = toFiniteNumber(balance?.total, null);
+        const balance = (balances as Record<string, any>)?.[String(assetId)] || (balances as Record<string, any>)?.[String(asset.symbol)] || null;
+        const onChainTotal = toFiniteNumber(balance?.total, undefined);
         if (!Number.isFinite(onChainTotal)) {
             return null;
         }
@@ -992,7 +990,7 @@ class CreditRuntime {
         return total;
     }
 
-    async _enforceMaxCollateralAmount(policy, collateralInt, collateralAsset, accountId, options: Record<string, any> = {}) {
+    async _enforceMaxCollateralAmount(policy: any, collateralInt: any, collateralAsset: any, accountId: any, options: Record<string, any> = {}): Promise<void> {
         const maxCollateralAmountValue = policy?.maxCollateralAmount;
         if (maxCollateralAmountValue == null) return;
         let limitFloat = positiveOrNull(maxCollateralAmountValue);
@@ -1015,7 +1013,7 @@ class CreditRuntime {
         }
     }
 
-    _calculateDailyFeeRate(offer) {
+    _calculateDailyFeeRate(offer: any): number {
         const feeRate = toFiniteNumber(offer?.fee_rate, 0) || 0;
         const maxDurationSeconds = toFiniteNumber(offer?.max_duration_seconds, 0) || 0;
         if (feeRate <= 0 || maxDurationSeconds <= 0) return 0;
@@ -1025,11 +1023,11 @@ class CreditRuntime {
         return flatFeePercent / durationDays;
     }
 
-    _getDefaultMaxFeeRatePerDay() {
+    _getDefaultMaxFeeRatePerDay(): number {
         return this.bot?.config?.feeParams?.DEFAULT_MAX_FEE_RATE_PER_DAY ?? FEE_PARAMETERS.DEFAULT_MAX_FEE_RATE_PER_DAY;
     }
 
-    _validateCreditPolicy(policy, offer, deal = null) {
+    _validateCreditPolicy(policy: any, offer: any, deal: any = null): any {
         if (!policy || typeof policy !== 'object') return { allow: false, reason: 'creditOffer policy missing' };
         const allowedOfferIds = this._normalizePolicyList(policy.allowedOfferIds);
         const maxFeeRatePerDay = positiveOrNull(policy.maxFeeRatePerDay) ?? this._getDefaultMaxFeeRatePerDay();
@@ -1065,7 +1063,7 @@ class CreditRuntime {
         return { allow: true, reason: null };
     }
 
-    async _calculateCollateralValueInDebtAsset(collateralAmountInt, collateralAsset, debtAsset, collateralPrice) {
+    async _calculateCollateralValueInDebtAsset(collateralAmountInt: any, collateralAsset: any, debtAsset: any, collateralPrice: any): Promise<any> {
         const collateralAmountFloat = blockchainToFloat(collateralAmountInt, collateralAsset.precision);
         if (!Number.isFinite(collateralAmountFloat) || collateralAmountFloat <= 0) {
             return null;
@@ -1073,7 +1071,7 @@ class CreditRuntime {
 
         if (collateralAsset?.for_liquidity_pool) {
             const valuePerShare = await deriveLiquidityPoolTokenValue(BitShares, collateralAsset.id, debtAsset.id);
-            if (!Number.isFinite(valuePerShare) || valuePerShare <= 0) {
+            if (valuePerShare == null || !Number.isFinite(valuePerShare) || valuePerShare <= 0) {
                 return null;
             }
             return collateralAmountFloat * valuePerShare;
@@ -1082,7 +1080,7 @@ class CreditRuntime {
         const orientation = this._creditPriceOrientation(collateralPrice, debtAsset, collateralAsset);
         const baseAmountFloat = blockchainAmountToFloat(collateralPrice?.base, orientation === 'legacy-reversed' ? collateralAsset : debtAsset);
         const quoteAmountFloat = blockchainAmountToFloat(collateralPrice?.quote, orientation === 'legacy-reversed' ? debtAsset : collateralAsset);
-        if (!Number.isFinite(baseAmountFloat) || !Number.isFinite(quoteAmountFloat) || baseAmountFloat <= 0 || quoteAmountFloat <= 0) {
+        if (baseAmountFloat == null || quoteAmountFloat == null || baseAmountFloat <= 0 || quoteAmountFloat <= 0) {
             return null;
         }
         if (orientation === 'legacy-reversed') {
@@ -1091,7 +1089,7 @@ class CreditRuntime {
         return (collateralAmountFloat * baseAmountFloat) / quoteAmountFloat;
     }
 
-    _calculateCreditOfferCollateralValueInDebtAsset(collateralAmountInt, collateralAsset, debtAsset, collateralPrice) {
+    _calculateCreditOfferCollateralValueInDebtAsset(collateralAmountInt: any, collateralAsset: any, debtAsset: any, collateralPrice: any): number | null {
         const collateralAmountFloat = blockchainToFloat(collateralAmountInt, collateralAsset.precision);
         if (!Number.isFinite(collateralAmountFloat) || collateralAmountFloat <= 0) {
             return null;
@@ -1100,7 +1098,7 @@ class CreditRuntime {
         const orientation = this._creditPriceOrientation(collateralPrice, debtAsset, collateralAsset);
         const baseAmountFloat = blockchainAmountToFloat(collateralPrice?.base, orientation === 'legacy-reversed' ? collateralAsset : debtAsset);
         const quoteAmountFloat = blockchainAmountToFloat(collateralPrice?.quote, orientation === 'legacy-reversed' ? debtAsset : collateralAsset);
-        if (!Number.isFinite(baseAmountFloat) || !Number.isFinite(quoteAmountFloat) || baseAmountFloat <= 0 || quoteAmountFloat <= 0) {
+        if (baseAmountFloat == null || quoteAmountFloat == null || baseAmountFloat <= 0 || quoteAmountFloat <= 0) {
             return null;
         }
         if (orientation === 'legacy-reversed') {
@@ -1109,7 +1107,7 @@ class CreditRuntime {
         return (collateralAmountFloat * baseAmountFloat) / quoteAmountFloat;
     }
 
-    async _fetchBorrowerDeals() {
+    async _fetchBorrowerDeals(): Promise<any[]> {
         if (this._borrowerDealsCache !== null) return this._borrowerDealsCache;
         const accountRef = getAccountRef(this.bot);
         if (!accountRef) return [];
@@ -1121,7 +1119,7 @@ class CreditRuntime {
         return normalized;
     }
 
-    async _fetchOwnedCreditOffers() {
+    async _fetchOwnedCreditOffers(): Promise<any[]> {
         const accountRef = getAccountRef(this.bot);
         if (!accountRef) {
             return [];
@@ -1132,7 +1130,7 @@ class CreditRuntime {
         return Array.isArray(offers) ? offers.map(parseCreditOfferSummary).filter(Boolean) : [];
     }
 
-    async _buildDebtSnapshot() {
+    async _buildDebtSnapshot(): Promise<any> {
         const snapshot: Record<string, any> = {
             assets: {},
             mpaCallOrders: Array.isArray(this.state.mpaCallOrders) ? this.state.mpaCallOrders : [],
@@ -1140,7 +1138,7 @@ class CreditRuntime {
             ownedCreditOffers: Array.isArray(this.state.ownedCreditOffers) ? this.state.ownedCreditOffers : [],
         };
 
-        const bump = (assetId, field, amount) => {
+        const bump = (assetId: any, field: any, amount: any): void => {
             if (!assetId || !Number.isFinite(amount) || amount === 0) return;
             const key = String(assetId);
             if (!snapshot.assets[key]) {
@@ -1185,7 +1183,7 @@ class CreditRuntime {
         return snapshot;
     }
 
-    async refreshMpaState(lendingItem) {
+    async refreshMpaState(lendingItem: any): Promise<any> {
         await this.loadState();
         if (!lendingItem || typeof lendingItem !== 'object') {
             throw new Error('refreshMpaState requires a lendingItem');
@@ -1214,7 +1212,7 @@ class CreditRuntime {
             String(entry?.call_price?.quote?.asset_id) === assetId
         );
 
-        const createEmptyState = (reason) => {
+        const createEmptyState = (reason: any): any => {
             const empty = {
                 activeCallOrderId: null,
                 mpaSelectionConflict: reason || null,
@@ -1257,8 +1255,8 @@ class CreditRuntime {
         const debtAmount = blockchainAmountToFloat(callOrder?.debt, debtAsset) || 0;
         const collateralAmount = blockchainAmountToFloat(callOrder?.collateral, collateralAsset) || 0;
         const collateralBalances = callOrderCollateralAssetId ? await chainOrders.getOnChainAssetBalances(accountRef, [callOrderCollateralAssetId]) : {};
-        const collateralBalance = callOrderCollateralAssetId ? (collateralBalances?.[String(callOrderCollateralAssetId)] || collateralBalances?.[String(collateralAsset?.symbol)] || null) : null;
-        let currentCollateralFundsTotal = toFiniteNumber(collateralBalance?.total, null);
+        const collateralBalance = callOrderCollateralAssetId ? ((collateralBalances as Record<string, any>)?.[String(callOrderCollateralAssetId)] || (collateralBalances as Record<string, any>)?.[String(collateralAsset?.symbol)] || null) : null;
+        let currentCollateralFundsTotal = toFiniteNumber(collateralBalance?.total, undefined);
 
         // Apply registry proportional split for shared-account credit bots
         if (currentCollateralFundsTotal !== null && callOrderCollateralAssetId) {
@@ -1271,11 +1269,11 @@ class CreditRuntime {
         }
 
         const feedPrice = this._computeBtsPerDebt(bitassetData?.current_feed?.settlement_price, debtAsset, collateralAsset);
-        if (Number.isFinite(feedPrice) && feedPrice > 0) {
+        if (feedPrice != null && Number.isFinite(feedPrice) && feedPrice > 0) {
             if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
             this.state.positions[posKey].mpaFeedPrice = feedPrice;
         }
-        const currentCollateralRatio = debtAmount > 0 && feedPrice > 0
+        const currentCollateralRatio = debtAmount > 0 && feedPrice != null && feedPrice > 0
             ? collateralAmount / (debtAmount * feedPrice)
             : null;
 
@@ -1300,7 +1298,7 @@ class CreditRuntime {
         return posState;
     }
 
-    async refreshCreditState(options: Record<string, any> = {}, lendingItem) {
+    async refreshCreditState(options: Record<string, any> = {}, lendingItem: any): Promise<any> {
         await this.loadState();
         if (!lendingItem || typeof lendingItem !== 'object') {
             throw new Error('refreshCreditState requires a lendingItem');
@@ -1353,7 +1351,7 @@ class CreditRuntime {
                 const orientation = this._creditPriceOrientation(price, debtAssetResolved, collateralAssetResolved);
                 const baseAmount = blockchainAmountToFloat(price?.base, orientation === 'legacy-reversed' ? collateralAssetResolved : debtAssetResolved);
                 const quoteAmount = blockchainAmountToFloat(price?.quote, orientation === 'legacy-reversed' ? debtAssetResolved : collateralAssetResolved);
-                if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount) || baseAmount <= 0) continue;
+                if (baseAmount == null || quoteAmount == null || baseAmount <= 0) continue;
                 const rate = orientation === 'legacy-reversed'
                     ? quoteAmount / baseAmount
                     : baseAmount / quoteAmount;
@@ -1365,7 +1363,7 @@ class CreditRuntime {
             }
         }
 
-        const activeDeals = [];
+        const activeDeals: any[] = [];
         for (const deal of normalizedDeals) {
             if (String(deal.debtAssetId) !== assetId) {
                 continue;
@@ -1389,7 +1387,7 @@ class CreditRuntime {
                 ...deal,
                 offerEnabled: !!offer?.enabled,
                 offerFeeRate: toFiniteNumber(offer?.fee_rate, deal.feeRate) || deal.feeRate,
-                offerMaxDurationSeconds: toFiniteNumber(offer?.max_duration_seconds, null),
+                offerMaxDurationSeconds: toFiniteNumber(offer?.max_duration_seconds, undefined),
                 canReborrow: !!offer?.enabled,
             });
         }
@@ -1411,7 +1409,7 @@ class CreditRuntime {
         return this.state;
     }
 
-    async refreshState() {
+    async refreshState(): Promise<any> {
         this._assetCache.clear();
         this._objectCache.clear();
         this._fullAccountCache = null;
@@ -1441,7 +1439,7 @@ class CreditRuntime {
         return this.persistState('refresh');
     }
 
-    async _buildMpaPlanFromState(lendingItem, assetId) {
+    async _buildMpaPlanFromState(lendingItem: any, assetId: any): Promise<any> {
         if (!lendingItem || typeof lendingItem !== 'object') {
             throw new Error('_buildMpaPlanFromState requires a lendingItem');
         }
@@ -1477,7 +1475,7 @@ class CreditRuntime {
         return plan;
     }
 
-    async buildMpaUpdateOperation(plan, options: Record<string, any> = {}, lendingItem, assetId) {
+    async buildMpaUpdateOperation(plan: any, options: Record<string, any> = {}, lendingItem: any, assetId: any): Promise<any> {
         if (!lendingItem || typeof lendingItem !== 'object') {
             throw new Error('buildMpaUpdateOperation requires a lendingItem');
         }
@@ -1540,7 +1538,7 @@ class CreditRuntime {
         };
     }
 
-    async buildCreditOfferAcceptOperation({ offer, borrowAmount, collateralAmount, autoRepay = false, specificPolicy = null, pendingRepayAmount = null, pendingReleaseCollateralAmount = null }: { offer?: any; borrowAmount?: any; collateralAmount?: any; autoRepay?: boolean; specificPolicy?: any; pendingRepayAmount?: any; pendingReleaseCollateralAmount?: any; } = {}) {
+    async buildCreditOfferAcceptOperation({ offer, borrowAmount, collateralAmount, autoRepay = false, specificPolicy = null, pendingRepayAmount = null, pendingReleaseCollateralAmount = null }: { offer?: any; borrowAmount?: any; collateralAmount?: any; autoRepay?: boolean; specificPolicy?: any; pendingRepayAmount?: any; pendingReleaseCollateralAmount?: any; } = {}): Promise<any> {
         let policy = specificPolicy;
         if (!policy) {
             const dp = this.debtPolicy;
@@ -1617,8 +1615,8 @@ class CreditRuntime {
             throw new Error('Unable to resolve collateral asset metadata for credit offer');
         }
 
-        let borrowInt = null;
-        let requiredCollateralInt = null;
+        let borrowInt: number | null = null;
+        let requiredCollateralInt: number | null = null;
         const requestedBorrowAmount = borrowAmount !== undefined && borrowAmount !== null
             ? positiveOrNull(borrowAmount)
             : null;
@@ -1641,7 +1639,7 @@ class CreditRuntime {
             requiredCollateralInt = collateralSpec?.amount !== null && collateralSpec?.amount !== undefined
                 ? await this._resolveAmountToBlockchainInt(collateralSpec, collateralAsset, accountId, { balanceField: 'total', referenceAmount: collateralReferenceAmount, referenceLabel: 'total collateral balance' })
                 : minimumCollateralInt;
-            if (Number.isFinite(minimumCollateralInt) && Number.isFinite(requiredCollateralInt) && requiredCollateralInt < minimumCollateralInt) {
+            if (minimumCollateralInt != null && requiredCollateralInt != null && requiredCollateralInt < minimumCollateralInt) {
                 throw new Error(`collateral amount ${requiredCollateralInt} is below required collateral ${minimumCollateralInt}`);
             }
         } else {
@@ -1650,25 +1648,25 @@ class CreditRuntime {
                 : null;
             requiredCollateralInt = await this._resolveAmountToBlockchainInt(collateralSpec, collateralAsset, accountId, { balanceField: 'total', referenceAmount: collateralReferenceAmount, referenceLabel: 'total collateral balance' });
             borrowInt = this._calculateBorrowAmountFromCollateral(requiredCollateralInt, collateralPrice, debtAsset, collateralAsset);
-            if (Number.isFinite(borrowInt) && borrowInt > 0) {
+            if (borrowInt != null && Number.isFinite(borrowInt) && borrowInt > 0) {
                 this._enforceMaxBorrowAmount(policy, borrowInt, debtAsset, { pendingRepayAmount });
             }
         }
 
         // Enforce per-operation borrow limit
         const maxPerOp = positiveOrNull(policy?.maxBorrowAmountPerOperation);
-        if (maxPerOp !== null && Number.isFinite(borrowInt) && borrowInt > 0) {
+        if (maxPerOp !== null && borrowInt != null && borrowInt > 0) {
             const borrowFloat = blockchainToFloat(borrowInt, debtAsset.precision);
             if (Number.isFinite(borrowFloat) && borrowFloat > maxPerOp) {
                 throw new Error(`borrowAmount ${borrowFloat} exceeds maxBorrowAmountPerOperation ${maxPerOp}`);
             }
         }
 
-        if (!Number.isFinite(requiredCollateralInt) || requiredCollateralInt <= 0) {
+        if (requiredCollateralInt == null || requiredCollateralInt <= 0) {
             throw new Error('Unable to determine collateral amount for credit offer');
         }
 
-        if (!Number.isFinite(borrowInt) || borrowInt <= 0) {
+        if (borrowInt == null || borrowInt <= 0) {
             throw new Error('Unable to determine borrow amount from collateral amount');
         }
 
@@ -1676,7 +1674,7 @@ class CreditRuntime {
             pendingReleaseCollateralAmount,
         });
 
-        const minDealAmount = toFiniteNumber(offerObj?.min_deal_amount, null);
+        const minDealAmount = toFiniteNumber(offerObj?.min_deal_amount, undefined);
         if (minDealAmount !== null && borrowInt < minDealAmount) {
             throw new Error(`borrowAmount ${borrowInt} is below min_deal_amount ${minDealAmount}`);
         }
@@ -1709,9 +1707,9 @@ class CreditRuntime {
         }
 
         const borrowAmountFloat = blockchainToFloat(borrowInt, debtAsset.precision);
-        const collateralValueInDebtAsset = await this._calculateCollateralValueInDebtAsset(requiredCollateralInt, collateralAsset, debtAsset, collateralPrice);
-        const offerCollateralValueInDebtAsset = this._calculateCreditOfferCollateralValueInDebtAsset(requiredCollateralInt, collateralAsset, debtAsset, collateralPrice);
-        if (!Number.isFinite(borrowAmountFloat) || borrowAmountFloat <= 0 || !Number.isFinite(collateralValueInDebtAsset) || collateralValueInDebtAsset <= 0 || !Number.isFinite(offerCollateralValueInDebtAsset) || offerCollateralValueInDebtAsset <= 0) {
+        const collateralValueInDebtAsset: any = await this._calculateCollateralValueInDebtAsset(requiredCollateralInt, collateralAsset, debtAsset, collateralPrice);
+        const offerCollateralValueInDebtAsset: any = this._calculateCreditOfferCollateralValueInDebtAsset(requiredCollateralInt, collateralAsset, debtAsset, collateralPrice);
+        if (collateralValueInDebtAsset == null || offerCollateralValueInDebtAsset == null || borrowAmountFloat <= 0 || collateralValueInDebtAsset <= 0 || offerCollateralValueInDebtAsset <= 0) {
             throw new Error(collateralAsset?.for_liquidity_pool
                 ? 'Unable to value liquidity pool collateral for credit offer'
                 : 'Unable to determine collateral value for credit offer');
@@ -1755,9 +1753,9 @@ class CreditRuntime {
         return op;
     }
 
-    _calculateRequiredCollateral(borrowAmountInt, collateralPrice, debtAsset = null, collateralAsset = null) {
-        const baseAmount = toFiniteNumber(collateralPrice?.base?.amount, null);
-        const quoteAmount = toFiniteNumber(collateralPrice?.quote?.amount, null);
+    _calculateRequiredCollateral(borrowAmountInt: any, collateralPrice: any, debtAsset: any = null, collateralAsset: any = null): number | null {
+        const baseAmount = toFiniteNumber(collateralPrice?.base?.amount, undefined);
+        const quoteAmount = toFiniteNumber(collateralPrice?.quote?.amount, undefined);
         if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount) || baseAmount <= 0 || quoteAmount <= 0) {
             return null;
         }
@@ -1767,7 +1765,7 @@ class CreditRuntime {
         return Math.ceil((Number(borrowAmountInt) * quoteAmount) / baseAmount);
     }
 
-    _calculateCreditFee(repayAmountInt, feeRate) {
+    _calculateCreditFee(repayAmountInt: any, feeRate: any): number {
         const repay = BigInt(Math.max(0, Math.trunc(Number(repayAmountInt))));
         const rate = BigInt(Math.max(0, Math.trunc(Number(feeRate))));
         const denom = BigInt(CREDIT_FEE_RATE_DENOM);
@@ -1775,7 +1773,7 @@ class CreditRuntime {
         return Number(((repay * rate) + denom - 1n) / denom);
     }
 
-    async buildCreditDealRepayOperation(deal, repayAmount) {
+    async buildCreditDealRepayOperation(deal: any, repayAmount: any): Promise<any> {
         const dealSummary = typeof deal === 'object' ? parseDealSummary(deal) : null;
         if (!dealSummary) {
             throw new Error('credit deal is required');
@@ -1814,7 +1812,7 @@ class CreditRuntime {
         };
     }
 
-    async buildCreditDealUpdateOperation(deal, autoRepay) {
+    async buildCreditDealUpdateOperation(deal: any, autoRepay: any): Promise<any> {
         const dealSummary = typeof deal === 'object' ? parseDealSummary(deal) : null;
         if (!dealSummary) {
             throw new Error('credit deal is required');
@@ -1837,7 +1835,7 @@ class CreditRuntime {
         };
     }
 
-    async executeOperations(operations, reason = 'credit runtime') {
+    async executeOperations(operations: any, reason: any = 'credit runtime'): Promise<any> {
         if (!Array.isArray(operations) || operations.length === 0) {
             return { skipped: true, reason: 'no operations', operations: [] };
         }
@@ -1857,7 +1855,7 @@ class CreditRuntime {
         return chainOrders.executeBatch(accountName, this.bot.privateKey, operations);
     }
 
-    async _checkGridMaintenanceAfterCreditUpdate(context = 'credit capital update', options: Record<string, any> = {}) {
+    async _checkGridMaintenanceAfterCreditUpdate(context: any = 'credit capital update', options: Record<string, any> = {}): Promise<any> {
         const manager = this.bot?.manager;
         if (!this.bot || !manager) {
             return { skipped: true, reason: 'grid maintenance unavailable' };
@@ -1885,7 +1883,7 @@ class CreditRuntime {
         }
     }
 
-    async openCreditPosition({ offer, borrowAmount, collateralAmount, autoRepay = false, reason = 'credit borrow' }) {
+    async openCreditPosition({ offer, borrowAmount, collateralAmount, autoRepay = false, reason = 'credit borrow' }: any = {}): Promise<any> {
         const offerObj = typeof offer === 'object' ? offer : await this._getOfferById(offer);
         let resolvedCollateral = collateralAmount;
         if (resolvedCollateral !== null && resolvedCollateral !== undefined && offerObj) {
@@ -1914,7 +1912,7 @@ class CreditRuntime {
         return result;
     }
 
-    async repayCreditDeal(deal, repayAmount, options: Record<string, any> = {}) {
+    async repayCreditDeal(deal: any, repayAmount: any, options: Record<string, any> = {}): Promise<any> {
         const dealSummary = typeof deal === 'object' ? parseDealSummary(deal) : await this._getDealById(deal);
         if (!dealSummary) {
             throw new Error('credit deal not found');
@@ -1930,7 +1928,7 @@ class CreditRuntime {
                 shouldAutoReborrow = false;
             }
         }
-        let deferredReborrowRequest = null;
+        let deferredReborrowRequest: any = null;
         let inlineReborrowPlanned = false;
 
         if (shouldAutoReborrow) {
@@ -2054,7 +2052,7 @@ class CreditRuntime {
         await this.refreshState();
         if (shouldAutoReborrow && !inlineReborrowPlanned && !sourceDealStillActive) {
             const reborrowOffer = await this._getOfferById(dealSummary.offerId);
-            const reborrowRequest = deferredReborrowRequest || {
+            const reborrowRequest: any = deferredReborrowRequest || {
                 sourceDealId: dealSummary.id,
                 offerId: dealSummary.offerId,
                 borrowAmount: options.reborrowAmount !== undefined && options.reborrowAmount !== null
@@ -2107,7 +2105,7 @@ class CreditRuntime {
         return result;
     }
 
-    queueReborrow(request) {
+    queueReborrow(request: any): void {
         if (!request || typeof request !== 'object') return;
         this.state.pendingReborrows = Array.isArray(this.state.pendingReborrows) ? this.state.pendingReborrows : [];
         this.state.pendingReborrows.push({
@@ -2125,14 +2123,14 @@ class CreditRuntime {
         this.state.reborrowPending = this.state.pendingReborrows.length > 0;
     }
 
-    _extractDealNumericId(id) {
+    _extractDealNumericId(id: any): number {
         if (!id) return 0;
         const parts = String(id).split('.');
         const num = Number(parts[parts.length - 1]);
         return Number.isFinite(num) ? num : 0;
     }
 
-    async _getOfferById(offerId) {
+    async _getOfferById(offerId: any): Promise<any> {
         if (!offerId) return null;
         const cacheKey = `offer:${offerId}`;
         const cached = this._objectCache.get(cacheKey);
@@ -2159,13 +2157,13 @@ class CreditRuntime {
         return offer;
     }
 
-    async _fetchCreditOffersByAsset(assetId) {
+    async _fetchCreditOffersByAsset(assetId: any): Promise<any[]> {
         if (!assetId) return [];
         try {
             const limit = 100;
-            const offers = [];
+            const offers: any[] = [];
             const seen = new Set();
-            let startId = null;
+            let startId: string | null = null;
             for (let pageCount = 0; pageCount < 50; pageCount++) {
                 const args = startId ? [assetId, limit, startId] : [assetId, limit];
                 const page = await this._dbCall('get_credit_offers_by_asset', args);
@@ -2188,7 +2186,7 @@ class CreditRuntime {
         }
     }
 
-    async _resolveFallbackAssetIds(policy, offer = null) {
+    async _resolveFallbackAssetIds(policy: any, offer: any = null): Promise<any> {
         const debtAsset = offer?.asset_type
             ? await this._resolveAsset(offer.asset_type)
             : await this._resolveAsset(policy?.asset);
@@ -2201,9 +2199,9 @@ class CreditRuntime {
         };
     }
 
-    async _selectFallbackCreditOffer({ debtAssetId, collateralAssetId, policy, borrowAmount, collateralAmount, autoRepay, pendingRepayAmount = null, pendingReleaseCollateralAmount, excludeOfferId = null }: { debtAssetId?: any; collateralAssetId?: any; policy?: any; borrowAmount?: any; collateralAmount?: any; autoRepay?: any; pendingRepayAmount?: any; pendingReleaseCollateralAmount?: any; excludeOfferId?: any; } = {}) {
+    async _selectFallbackCreditOffer({ debtAssetId, collateralAssetId, policy, borrowAmount, collateralAmount, autoRepay, pendingRepayAmount = null, pendingReleaseCollateralAmount, excludeOfferId = null }: { debtAssetId?: any; collateralAssetId?: any; policy?: any; borrowAmount?: any; collateralAmount?: any; autoRepay?: any; pendingRepayAmount?: any; pendingReleaseCollateralAmount?: any; excludeOfferId?: any; } = {}): Promise<any> {
         const offers = await this._fetchCreditOffersByAsset(debtAssetId);
-        const candidates = [];
+        const candidates: any[] = [];
         for (const offer of offers) {
             if (!offer?.id) continue;
             if (excludeOfferId && String(offer.id) === String(excludeOfferId)) continue;
@@ -2246,9 +2244,9 @@ class CreditRuntime {
         return candidates[0] || null;
     }
 
-    async _selectCreditOfferForIncrease({ debtAssetId, collateralAssetId, policy, collateralAmount, minCollateralIncrease = 0, remainingBorrowCapacity = null, autoRepay }: { debtAssetId?: any; collateralAssetId?: any; policy?: any; collateralAmount?: any; minCollateralIncrease?: number; remainingBorrowCapacity?: any; autoRepay?: any; } = {}) {
+    async _selectCreditOfferForIncrease({ debtAssetId, collateralAssetId, policy, collateralAmount, minCollateralIncrease = 0, remainingBorrowCapacity = null, autoRepay }: { debtAssetId?: any; collateralAssetId?: any; policy?: any; collateralAmount?: any; minCollateralIncrease?: number; remainingBorrowCapacity?: any; autoRepay?: any; } = {}): Promise<any> {
         const allowedOfferIds = this._normalizePolicyList(policy?.allowedOfferIds);
-        const offers = [];
+        const offers: any[] = [];
         const seen = new Set();
         const accountId = await this._resolveAccountId(getAccountRef(this.bot));
         const debtAsset = await this._resolveAsset(debtAssetId);
@@ -2280,7 +2278,7 @@ class CreditRuntime {
             }
         }
 
-        const candidates = [];
+        const candidates: any[] = [];
         for (const offer of offers) {
             if (!offer?.id) continue;
             if (String(offer.asset_type) !== String(debtAssetId)) continue;
@@ -2325,7 +2323,7 @@ class CreditRuntime {
                     }
                 }
 
-                let op = null;
+                let op: any = null;
                 try {
                     op = await this.buildCreditOfferAcceptOperation(acceptArgs);
                 } catch (err: any) {
@@ -2345,7 +2343,7 @@ class CreditRuntime {
                 }
                 const opBorrowAmount = blockchainAmountToFloat(op?.op_data?.borrow_amount, await this._resolveAsset(debtAssetId));
                 const opCollateralAmount = blockchainAmountToFloat(op?.op_data?.collateral, await this._resolveAsset(collateralAssetId));
-                if (!Number.isFinite(opBorrowAmount) || opBorrowAmount <= 0 || !Number.isFinite(opCollateralAmount) || opCollateralAmount <= 0) {
+                if (opBorrowAmount == null || opCollateralAmount == null || opBorrowAmount <= 0 || opCollateralAmount <= 0) {
                     continue;
                 }
                 const capped = opCollateralAmount < toFiniteNumber(collateralAmount?.amount ?? collateralAmount, 0);
@@ -2378,7 +2376,7 @@ class CreditRuntime {
         return candidates[0] || null;
     }
 
-    async _buildCreditIncreasePlan(lendingItem, assetId, posState) {
+    async _buildCreditIncreasePlan(lendingItem: any, assetId: any, posState: any): Promise<any> {
         if (!Object.prototype.hasOwnProperty.call(lendingItem, 'minCollateralIncreaseThreshold')) return null;
         const assignedCollateralBudget = positiveOrNull(posState?.assignedCollateralBudget);
         if (assignedCollateralBudget === null) return null;
@@ -2392,10 +2390,10 @@ class CreditRuntime {
         const collateralAsset = await this._resolveAsset(lendingItem.collateralAsset);
         if (!debtAsset || !collateralAsset) return null;
 
-        const currentDebtAmount = (posState.creditDeals || []).reduce((sum, deal) => {
+        const currentDebtAmount = (posState.creditDeals || []).reduce((sum: any, deal: any) => {
             return sum + (blockchainAmountToFloat(deal?.debtAmount, debtAsset) || 0);
         }, 0);
-        const currentCollateralAmount = (posState.creditDeals || []).reduce((sum, deal) => {
+        const currentCollateralAmount = (posState.creditDeals || []).reduce((sum: any, deal: any) => {
             return sum + (blockchainAmountToFloat(deal?.collateralAmount, collateralAsset) || 0);
         }, 0);
 
@@ -2428,7 +2426,7 @@ class CreditRuntime {
         };
     }
 
-    async _splitOversizedCreditDeals(lendingItem, assetId, posState, runtimeContext: Record<string, any> = {}) {
+    async _splitOversizedCreditDeals(lendingItem: any, assetId: any, posState: any, runtimeContext: Record<string, any> = {}): Promise<any> {
         const maxPerOp = positiveOrNull(lendingItem.maxBorrowAmountPerOperation);
         if (maxPerOp === null) return null;
 
@@ -2442,7 +2440,7 @@ class CreditRuntime {
         }
     }
 
-    async _doSplitOversizedCreditDeals(lendingItem, assetId, posState, runtimeContext: Record<string, any> = {}) {
+    async _doSplitOversizedCreditDeals(lendingItem: any, assetId: any, posState: any, _runtimeContext: Record<string, any> = {}): Promise<any> {
         const maxPerOp = positiveOrNull(lendingItem.maxBorrowAmountPerOperation);
         if (maxPerOp === null) return null;
 
@@ -2451,9 +2449,9 @@ class CreditRuntime {
         if (!debtAsset || !collateralAsset) return null;
 
         const deals = Array.isArray(posState?.creditDeals) ? posState.creditDeals : [];
-        const oversized = deals.filter((d) => {
+        const oversized = deals.filter((d: any) => {
             const debt = blockchainAmountToFloat(d?.debtAmount, debtAsset);
-            return Number.isFinite(debt) && debt > maxPerOp;
+            return debt != null && debt > maxPerOp;
         });
         if (oversized.length === 0) return null;
 
@@ -2479,16 +2477,16 @@ class CreditRuntime {
             let currentDeal = deal;
 
             const dealDebt = blockchainAmountToFloat(currentDeal.debtAmount, debtAsset);
-            if (!Number.isFinite(dealDebt) || dealDebt <= maxPerOp) continue;
+            if (dealDebt == null || dealDebt <= maxPerOp) continue;
 
             // Check min_deal_amount on the offer to avoid reborrows that would fail.
             // Note: _getOfferById caches the offer for the runtime lifetime — if the
             // offer's min_deal_amount changes on-chain mid-split, the guard uses the
             // stale cached value. Risk is low in practice (offers rarely change this).
             const dealOffer = await this._getOfferById(parseDealSummary(currentDeal)?.offerId);
-            const minDealAmount = toFiniteNumber(dealOffer?.min_deal_amount, null);
-            const numPieces = Math.ceil(dealDebt / maxPerOp);
-            const pieceAmount = roundToDecimals(dealDebt / numPieces, debtAsset.precision);
+            const minDealAmount = toFiniteNumber(dealOffer?.min_deal_amount, undefined);
+            const numPieces = Math.ceil((dealDebt as number) / maxPerOp);
+            const pieceAmount = roundToDecimals((dealDebt as number) / numPieces, debtAsset.precision);
             if (minDealAmount !== null && pieceAmount < blockchainToFloat(minDealAmount, debtAsset.precision)) {
                 this.warn(`credit runtime: cannot split deal ${dealId} — piece amount ${pieceAmount} below min_deal_amount ${blockchainToFloat(minDealAmount, debtAsset.precision)} for offer ${dealOffer?.id}`);
                 continue;
@@ -2519,7 +2517,7 @@ class CreditRuntime {
                 // Re-fetch deal from current state (may have been refreshed by repayCreditDeal)
                 const pos = this.state.positions?.[posKey];
                 const refreshed = Array.isArray(pos?.creditDeals)
-                    ? pos.creditDeals.find((d) => String(d.id) === dealId)
+                    ? pos.creditDeals.find((d: any) => String(d.id) === dealId)
                     : null;
                 if (!refreshed) {
                     this.warn(`credit runtime: deal ${dealId} (asset ${assetId}) vanished during restructure`);
@@ -2528,7 +2526,7 @@ class CreditRuntime {
                 currentDeal = refreshed;
 
                 const remaining = blockchainAmountToFloat(currentDeal.debtAmount, debtAsset);
-                if (!Number.isFinite(remaining) || remaining <= maxPerOp) break;
+                if (remaining == null || remaining <= maxPerOp) break;
 
                 const currentPiece = Math.min(pieceAmount, remaining - maxPerOp);
                 if (currentPiece <= 0) break;
@@ -2556,10 +2554,10 @@ class CreditRuntime {
         return null;
     }
 
-    async _getDealById(dealId) {
+    async _getDealById(dealId: any): Promise<any> {
         if (!dealId) return null;
         const deals = Array.isArray(this.state.creditDeals) ? this.state.creditDeals : [];
-        const fromState = deals.find((entry) => String(entry.id) === String(dealId));
+        const fromState = deals.find((entry: any) => String(entry.id) === String(dealId));
         if (fromState) return fromState;
         const accountRef = getAccountRef(this.bot);
         if (!accountRef) return null;
@@ -2569,7 +2567,7 @@ class CreditRuntime {
         return normalized.find((entry) => String(entry.id) === String(dealId)) || null;
     }
 
-    async processPendingReborrows() {
+    async processPendingReborrows(): Promise<any> {
         if (!Array.isArray(this.state.pendingReborrows) || this.state.pendingReborrows.length === 0) {
             return { processed: 0, remaining: 0 };
         }
@@ -2581,7 +2579,7 @@ class CreditRuntime {
         try {
             const onChainDeals = await this._fetchBorrowerDeals();
             const activeDealIds = new Set(onChainDeals.map((deal) => String(deal?.id)).filter(Boolean));
-            const nextQueue = [];
+            const nextQueue: any[] = [];
             let processed = 0;
 
             for (const request of this.state.pendingReborrows) {
@@ -2708,7 +2706,7 @@ class CreditRuntime {
         }
     }
 
-    async _runMpaMaintenance(context: any, options: Record<string, any>, lendingItem, assetId) {
+    async _runMpaMaintenance(context: any, _options: Record<string, any>, lendingItem: any, assetId: any): Promise<any> {
         if (!lendingItem || typeof lendingItem !== 'object') {
             throw new Error('_runMpaMaintenance requires a lendingItem');
         }
@@ -2724,8 +2722,8 @@ class CreditRuntime {
             return null;
         }
 
-        const executed = [];
-        let result = null;
+        const executed: { leg: string; operation: any; result: any; }[] = [];
+        let result: any = null;
 
         // Efficient path: Try combined operation first
         const combinedOp = await this.buildMpaUpdateOperation(plan, { leg: 'combined' }, lendingItem, assetId);
@@ -2807,7 +2805,7 @@ class CreditRuntime {
         return null;
     }
 
-    async _runCreditMaintenance(lendingItem, assetId, runtimeContext: Record<string, any> = {}) {
+    async _runCreditMaintenance(lendingItem: any, assetId: any, runtimeContext: Record<string, any> = {}): Promise<any> {
         if (!lendingItem || typeof lendingItem !== 'object') {
             throw new Error('_runCreditMaintenance requires a lendingItem');
         }
@@ -2836,7 +2834,7 @@ class CreditRuntime {
             this.warn(`credit runtime: deal restructuring failed: ${err.message}`);
         }
 
-        let activeDealIds = new Set((posState.creditDeals || []).map((d) => String(d?.id)).filter(Boolean));
+        let activeDealIds = new Set((posState.creditDeals || []).map((d: any) => String(d?.id)).filter(Boolean));
 
         for (const deal of (posState.creditDeals || [])) {
             if (!activeDealIds.has(String(deal?.id))) continue;
@@ -2847,16 +2845,16 @@ class CreditRuntime {
                     this.warn(`credit runtime: deal ${deal.id} expires in ${Math.round(timeLeft / 60000)}m; proactively repaying and reborrowing`);
                     const debtAsset = await this._resolveAsset(deal.debtAssetId);
                     const repayAmount = blockchainAmountToFloat(deal.debtAmount, debtAsset);
-                    if (!Number.isFinite(repayAmount) || repayAmount <= 0) {
+                    if (repayAmount == null || repayAmount <= 0) {
                         throw new Error(`unable to convert deal ${deal.id} debt amount for repay`);
                     }
                     const isCollateralMismatch = deal.collateralMismatch === true;
-                    let existingCollateralAmount = null;
+                    let existingCollateralAmount: number | null = null;
                     if (isCollateralMismatch) {
                         const accountRef = getAccountRef(this.bot);
                         const balances = await chainOrders.getOnChainAssetBalances(accountRef, [configuredCollateralAssetId]);
-                        const balance = balances?.[String(configuredCollateralAssetId)] || balances?.[String(configuredCollateralAsset?.symbol)] || null;
-                        const available = toFiniteNumber(balance?.total, null);
+                        const balance = (balances as Record<string, any>)?.[String(configuredCollateralAssetId)] || (balances as Record<string, any>)?.[String(configuredCollateralAsset?.symbol)] || null;
+                        const available = toFiniteNumber(balance?.total, undefined);
                         if (!Number.isFinite(available) || available <= 0) {
                             this.warn(`credit runtime: skipping collateral switch for deal ${deal.id} — no balance of new collateral ${configuredCollateralAssetId}`);
                             continue;
@@ -2865,7 +2863,7 @@ class CreditRuntime {
                     if (!isCollateralMismatch) {
                         const collateralAsset = await this._resolveAsset(deal.collateralAssetId);
                         existingCollateralAmount = blockchainAmountToFloat(deal.collateralAmount, collateralAsset);
-                        if (!Number.isFinite(existingCollateralAmount) || existingCollateralAmount <= 0) {
+                        if (existingCollateralAmount == null || existingCollateralAmount <= 0) {
                             throw new Error(`unable to convert deal ${deal.id} collateral amount for release`);
                         }
                     }
@@ -2874,11 +2872,11 @@ class CreditRuntime {
                     // any new deferred entry that repayCreditDeal itself may queue.
                     const staleSnapshot = Array.isArray(this.state.pendingReborrows)
                         ? this.state.pendingReborrows.filter(
-                            (r) => r.sourceDealId === String(deal.id)
+                            (r: any) => r.sourceDealId === String(deal.id)
                         )
                         : [];
                     const staleKeys = new Set(
-                        staleSnapshot.map((r) => `${r.sourceDealId}:${r.offerId}:${r.requestedAt}`)
+                        staleSnapshot.map((r: any) => `${r.sourceDealId}:${r.offerId}:${r.requestedAt}`)
                     );
 
                     await this.repayCreditDeal(deal, repayAmount, {
@@ -2897,7 +2895,7 @@ class CreditRuntime {
                     if (staleKeys.size > 0 && Array.isArray(this.state.pendingReborrows)) {
                         const before = this.state.pendingReborrows.length;
                         this.state.pendingReborrows = this.state.pendingReborrows.filter(
-                            (r) => !staleKeys.has(`${r.sourceDealId}:${r.offerId}:${r.requestedAt}`)
+                            (r: any) => !staleKeys.has(`${r.sourceDealId}:${r.offerId}:${r.requestedAt}`)
                         );
                         if (this.state.pendingReborrows.length < before) {
                             this.log(`credit runtime: pruned ${before - this.state.pendingReborrows.length} stale pending reborrow(s) for deal ${deal.id}`);
@@ -2908,7 +2906,7 @@ class CreditRuntime {
                     // re-read from fresh state for subsequent loop iterations
                     const refreshedPosState = this.state.positions[posKey];
                     if (refreshedPosState && Array.isArray(refreshedPosState.creditDeals)) {
-                        activeDealIds = new Set(refreshedPosState.creditDeals.map((d) => String(d?.id)).filter(Boolean));
+                        activeDealIds = new Set(refreshedPosState.creditDeals.map((d: any) => String(d?.id)).filter(Boolean));
                     } else {
                         activeDealIds.delete(String(deal.id));
                     }
@@ -2983,7 +2981,7 @@ class CreditRuntime {
         return null;
     }
 
-    async runMaintenance(context = 'periodic', options: Record<string, any> = {}) {
+    async runMaintenance(context: any = 'periodic', options: Record<string, any> = {}): Promise<any> {
         if (!this.isEnabled()) {
             return { skipped: true, reason: 'debt policy disabled' };
         }
@@ -2995,10 +2993,10 @@ class CreditRuntime {
         try {
             await this.refreshState();
 
-            const results = {
+            const results: Record<string, any> = {
                 context,
-                mpa: [],
-                credit: [],
+                mpa: [] as any[],
+                credit: [] as any[],
             };
 
             const dp = this.debtPolicy;
@@ -3024,7 +3022,7 @@ class CreditRuntime {
         }
     }
 
-    async runCreditWatchdog() {
+    async runCreditWatchdog(): Promise<any> {
         if (!this.isEnabled()) {
             return { skipped: true, reason: 'debt policy disabled' };
         }
@@ -3035,8 +3033,8 @@ class CreditRuntime {
         try {
             await this.refreshState();
 
-            const mpaResults = [];
-            const creditResults = [];
+            const mpaResults: any[] = [];
+            const creditResults: any[] = [];
 
             const dp = this.debtPolicy;
             for (const item of dp.lending) {
@@ -3074,9 +3072,9 @@ class CreditRuntime {
      * @param {Array<string>} assetIds - Asset IDs to look up
      * @returns {Object} mapping assetId -> total collateral float
      */
-    getCollateralOffsets(assetIds) {
-        const snapshot = this.state?.debtSnapshot?.assets || {};
-        const result = {};
+    getCollateralOffsets(assetIds: any) {
+        const snapshot: Record<string, any> = this.state?.debtSnapshot?.assets || {};
+        const result: Record<string, any> = {};
         for (const assetId of assetIds) {
             const key = String(assetId);
             const entry = snapshot[key];
@@ -3085,9 +3083,11 @@ class CreditRuntime {
         return result;
     }
 
-    getStateSnapshot() {
+    getStateSnapshot(): any {
         return deepClone(this.state);
     }
 }
 
-export = CreditRuntime;
+export default CreditRuntime
+
+module.exports = CreditRuntime

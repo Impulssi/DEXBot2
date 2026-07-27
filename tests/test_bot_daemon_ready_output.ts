@@ -188,7 +188,7 @@ require('../bot');
         process.exit(0);
     } catch (err) {
         restoreStubs();
-        process.stderr.write(`TEST FAILURE: ${err && err.stack ? err.stack : err}\n`);
+        process.stderr.write(`TEST FAILURE: ${err && (err as any).stack ? (err as any).stack : err}\n`);
         process.stderr.write(`LOGS: ${JSON.stringify(logs)}\n`);
         process.stderr.write(`WARNS: ${JSON.stringify(warns)}\n`);
         process.stderr.write(`ERRORS: ${JSON.stringify(errors)}\n`);

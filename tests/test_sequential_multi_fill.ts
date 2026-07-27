@@ -10,6 +10,7 @@ const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { initializeFeeCache } = require('../modules/order/utils/system');
 const Format = require('../modules/order/format');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // Mock BitShares for fee initialization
 const mockBitShares = {
@@ -138,8 +139,8 @@ async function testSequentialMultiFillProcessing() {
         console.log('='.repeat(80));
         process.exit(0);
     } catch (err) {
-        console.error('\n❌ Test FAILED:', err.message);
-        console.error(err.stack);
+        console.error('\n❌ Test FAILED:', getErrorMessage(err));
+        console.error((err as any).stack);
         process.exit(1);
     }
 })();

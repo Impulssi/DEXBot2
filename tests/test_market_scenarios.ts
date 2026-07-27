@@ -11,6 +11,7 @@ const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { initializeFeeCache } = require('../modules/order/utils/system');
 const { createTestLogger } = require('./helpers/silent_logger');
+const { getErrorMessage } = require('../modules/utils/errors');
 
 // --- Mock Environment ---
 const mockBitShares = {
@@ -248,8 +249,8 @@ async function runPartialHandlingScenario() {
         console.log('\n' + '='.repeat(50) + '\n✅ ALL MARKET SCENARIOS PASSED\n' + '='.repeat(50));
         process.exit(0);
     } catch (err) {
-        console.error('\n❌ Scenario test failed:', err.message);
-        console.error(err.stack);
+        console.error('\n❌ Scenario test failed:', getErrorMessage(err));
+        console.error((err as any).stack);
         process.exit(1);
     }
 })();

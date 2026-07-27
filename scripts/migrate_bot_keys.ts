@@ -1,3 +1,9 @@
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from '../modules/crypto/sync';
+import { PATHS } from '../modules/paths';
+import { readJSON, writeJSON } from '../modules/utils/fs_utils';
 'use strict';
 
 /**
@@ -9,15 +15,10 @@
  * Manual:  tsx scripts/migrate_bot_keys.ts
  */
 
-const fs = require('fs');
-const path = require('path');
-const { createHash } = require('../modules/crypto/sync');
-const { PATHS } = require('../modules/paths');
-const { readJSON, writeJSON } = require('../modules/utils/fs_utils');
 
 // --- helpers (duplicated from old code, needed to reconstruct old keys) ---
 
-function sanitizeKey(source) {
+function sanitizeKey(source: string | null | undefined): string {
     if (!source) return 'bot';
     return String(source)
         .trim()
@@ -26,7 +27,7 @@ function sanitizeKey(source) {
         .replace(/^-+|-+$/g, '') || 'bot';
 }
 
-function _stableBotId(entry) {
+function _stableBotId(entry: Record<string, any>) {
     const stable = {
         name: entry.name || '',
         preferredAccount: entry.preferredAccount || '',
@@ -36,7 +37,7 @@ function _stableBotId(entry) {
     return createHash('sha256').update(JSON.stringify(stable)).digest('hex').slice(0, 8);
 }
 
-function oldCreateBotKey(bot, index) {
+function oldCreateBotKey(bot: Record<string, any> | null | undefined, index: number): string {
     const identifier = bot && bot.name
         ? bot.name
         : bot && bot.assetA && bot.assetB
@@ -51,7 +52,7 @@ function oldCreateBotKey(bot, index) {
     return `${baseKey}-${index}`;
 }
 
-function newBotKey(bot) {
+function newBotKey(bot: Record<string, any> | null | undefined): string | null {
     if (bot && bot.name) {
         return sanitizeKey(bot.name);
     }
@@ -60,18 +61,7 @@ function newBotKey(bot) {
 
 // --- migration ---
 
-function migrateFile(oldPath, newPath, label) {
-    if (!fs.existsSync(oldPath)) return false;
-    if (fs.existsSync(newPath)) {
-        console.log(`  SKIP ${label}: target exists at ${path.basename(newPath)}`);
-        return false;
-    }
-    fs.renameSync(oldPath, newPath);
-    console.log(`  OK   ${label}: ${path.basename(oldPath)} → ${path.basename(newPath)}`);
-    return true;
-}
-
-function migrateJsonKeys(filePath, keyMap, description, silent = false) {
+function migrateJsonKeys(filePath: string, keyMap: Record<string, string>, description: string, silent = false): boolean {
     if (!fs.existsSync(filePath)) return false;
     const raw = readJSON(filePath);
     if (!raw) return false;
@@ -84,12 +74,12 @@ function migrateJsonKeys(filePath, keyMap, description, silent = false) {
     return false;
 }
 
-function rewriteKeys(obj, keyMap) {
+function rewriteKeys(obj: any, keyMap: Record<string, string>): any {
     if (!obj || typeof obj !== 'object') return obj;
     if (Array.isArray(obj)) {
-        return obj.map((item) => rewriteKeys(item, keyMap));
+        return obj.map((item: any) => rewriteKeys(item, keyMap));
     }
-    const result = {};
+    const result: Record<string, any> = {};
     let changed = false;
     for (const [k, v] of Object.entries(obj)) {
         const nk = keyMap[k] || k;
@@ -100,23 +90,23 @@ function rewriteKeys(obj, keyMap) {
     return changed ? result : obj;
 }
 
-function buildKeyMap(entries) {
-    const map = {};
+function buildKeyMap(entries: any[]): Record<string, string> {
+    const map: Record<string, string> = {};
     for (const [index, entry] of entries.entries()) {
         if (!entry.name) continue;
         const newKey = newBotKey(entry);
         const oldCandidates = computeOldKeys(entry, index);
         for (const oldKey of oldCandidates) {
             if (oldKey !== newKey && !map[oldKey]) {
-                map[oldKey] = newKey;
+                map[oldKey] = newKey!;
             }
         }
     }
     return map;
 }
 
-function computeOldKeys(botEntry, index) {
-    const candidates = [];
+function computeOldKeys(botEntry: Record<string, any>, index: number): string[] {
+    const candidates: string[] = [];
 
     // If the entry has a persisted id, compute the id-based old key
     if (botEntry.id) {
@@ -141,80 +131,7 @@ function computeOldKeys(botEntry, index) {
     return candidates;
 }
 
-function migrateBot(botEntry, index) {
-    const newKey = newBotKey(botEntry);
-    if (!newKey) {
-        console.log(`  SKIP bot[${index}] (unnamed) — key unchanged`);
-        return;
-    }
 
-    const name = botEntry.name || `bot-${index}`;
-
-    // Compute old keys (both patterns: with persisted id, and index-based fallback)
-    const oldCandidates = computeOldKeys(botEntry, index);
-
-    console.log(`\nBot "${name}":`);
-    console.log(`  new key: ${newKey}`);
-    console.log(`  old key candidates: ${oldCandidates.join(', ')}`);
-
-    // File types to migrate
-    const locations = [
-        { dir: PATHS.ORDERS_DIR, pattern: (k) => `${k}.json`, label: 'order file' },
-        { dir: PATHS.ORDERS_DIR, pattern: (k) => `${k}.dynamicgrid.json`, label: 'dynamic grid' },
-        { dir: PATHS.PROFILES_DIR, pattern: (k) => `recalculate.${k}.trigger`, label: 'trigger' },
-    ];
-
-    // Migrate known file patterns
-    for (const oldKey of oldCandidates) {
-        if (oldKey === newKey) continue;
-        for (const loc of locations) {
-            const oldPath = path.join(loc.dir, loc.pattern(oldKey));
-            const newPath = path.join(loc.dir, loc.pattern(newKey));
-            migrateFile(oldPath, newPath, loc.label);
-        }
-    }
-
-    // Migrate candle cache files: market_adapter/data/market_adapter_{oldKey}_*.json
-    const dataDir = PATHS.MARKET_ADAPTER.DATA_DIR;
-    if (fs.existsSync(dataDir)) {
-        for (const oldKey of oldCandidates) {
-            if (oldKey === newKey) continue;
-            const prefix = `market_adapter_${oldKey}_`;
-            const files = fs.readdirSync(dataDir)
-                .filter((f) => f.startsWith(prefix) && f.endsWith('.json'));
-            for (const file of files) {
-                const newFile = file.replace(prefix, `market_adapter_${newKey}_`);
-                const oldPath = path.join(dataDir, file);
-                const newPath = path.join(dataDir, newFile);
-                migrateFile(oldPath, newPath, `candle file "${file}"`);
-            }
-        }
-    }
-
-    // Migrate log files: profiles/logs/{oldKey}.log, {oldKey}-error.log
-    const logsDir = PATHS.LOGS_DIR;
-    if (fs.existsSync(logsDir)) {
-        for (const oldKey of oldCandidates) {
-            if (oldKey === newKey) continue;
-            for (const suffix of ['.log', '-error.log', '.log.gz', '-error.log.gz']) {
-                const oldPath = path.join(logsDir, `${oldKey}${suffix}`);
-                const newPath = path.join(logsDir, `${newKey}${suffix}`);
-                migrateFile(oldPath, newPath, `log "${suffix}"`);
-            }
-        }
-    }
-
-    // Migrate credit runtime state: profiles/credit_runtime/{oldKey}.json
-    const creditDir = PATHS.CREDIT_RUNTIME_DIR;
-    if (fs.existsSync(creditDir)) {
-        for (const oldKey of oldCandidates) {
-            if (oldKey === newKey) continue;
-            const oldPath = path.join(creditDir, `${oldKey}.json`);
-            const newPath = path.join(creditDir, `${newKey}.json`);
-            migrateFile(oldPath, newPath, 'credit state');
-        }
-    }
-}
 
 function runMigration(): string[] | null {
     const botsFile = PATHS.PROFILES.BOTS_JSON;
@@ -236,7 +153,7 @@ function runMigration(): string[] | null {
         let renamed = false;
         for (const oldKey of oldCandidates) {
             if (oldKey === newKey) continue;
-            const locations = [
+            const locations: { dir: string; pattern: (k: string) => string; label: string }[] = [
                 { dir: PATHS.ORDERS_DIR, pattern: (k: string) => `${k}.json`, label: 'order file' },
                 { dir: PATHS.ORDERS_DIR, pattern: (k: string) => `${k}.dynamicgrid.json`, label: 'dynamic grid' },
                 { dir: PATHS.PROFILES_DIR, pattern: (k: string) => `recalculate.${k}.trigger`, label: 'trigger' },
@@ -307,4 +224,5 @@ if (require.main === module) {
     }
 }
 
-export = { runMigration };
+export { runMigration }
+

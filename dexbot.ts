@@ -563,7 +563,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
             }
         }
 
-        const instances = [];
+        const instances: any[] = [];
         for (const entry of prepared) {
             if (!entry.active) {
                 continue;
@@ -824,7 +824,7 @@ async function handleCLICommands() {
             await resetBotByName(target === 'all' ? null : target);
             process.exit(0);
         case 'default': {
-            const { spawnSync } = require('child_process');
+            const { spawnSync } = require('child_process') as any as any;
             const resetScript = path.join(PATHS.PROJECT_ROOT, 'scripts', 'reset-settings.sh');
             const result = spawnSync('bash', [resetScript], {
                 cwd: PATHS.PROJECT_ROOT,
@@ -883,7 +883,7 @@ async function handleCLICommands() {
             process.exit(0);
             return true;
         case 'whitelist': {
-            const { spawnSync } = require('child_process');
+            const { spawnSync } = require('child_process') as any as any;
             const scriptArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
                 scriptSegments: ['scripts', 'generate_market_adapter_whitelist'],
@@ -901,7 +901,7 @@ async function handleCLICommands() {
             return true;
         }
         case 'order': {
-            const { spawnSync } = require('child_process');
+            const { spawnSync } = require('child_process') as any as any;
             const scriptArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
                 scriptSegments: ['scripts', 'analyze-orders'],
@@ -919,7 +919,7 @@ async function handleCLICommands() {
             return true;
         }
         case 'unlock': {
-            const { spawnSync } = require('child_process');
+            const { spawnSync } = require('child_process') as any as any;
             const unlockScript = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js');
             const unlockArgs = [unlockScript, ...cliArgs.slice(1)];
             const result = spawnSync(Config.EXEC_PATH, unlockArgs, {
@@ -933,7 +933,7 @@ async function handleCLICommands() {
         case 'clear-orders':
         case 'clear-market-adapter':
         case 'clear-all': {
-            const { spawnSync } = require('child_process');
+            const { spawnSync } = require('child_process') as any as any;
             const scriptMap: Record<string, string> = {
                 clear: 'clear-logs.sh',
                 'clear-orders': 'clear-orders.sh',
@@ -956,7 +956,7 @@ async function handleCLICommands() {
         case 'status': {
             console.log(`DEXBot2 v${Config.VERSION}`);
             console.log();
-            const { spawnSync, execSync } = require('child_process');
+            const { spawnSync, execSync } = require('child_process') as any as any;
             const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
             const SUPERVISOR_SOCK = PATHS.PROFILES.SUPERVISOR_SOCK;
             let unlockRunning = false;
@@ -1125,7 +1125,7 @@ async function bootstrap() {
     } catch (err: any) {
         if (err && (err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'EROFS')) {
             const { homedir } = require('os');
-            const { spawnSync: respawn } = require('child_process');
+            const { spawnSync: respawn } = require('child_process') as any as any;
             const fallbackDir = path.join(homedir(), '.config', 'dexbot2');
             console.log(`Config directory not writable at: ${PROFILES_DIR}`);
             console.log(`Auto-using ${fallbackDir} instead. Set DEXBOT_PROFILE_ROOT to override.\n`);

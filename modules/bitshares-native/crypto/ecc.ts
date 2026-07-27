@@ -1,7 +1,7 @@
 'use strict';
 
-const { createHash, createHmac, randomBytes: cryptoRandomBytes, createECDH, createPrivateKey } = require('../../crypto/sync');
-const { base58Encode: _base58Encode, base58Decode: _base58Decode } = require('../../utils/base58check');
+import { createHash, createHmac, randomBytes as cryptoRandomBytes, createECDH } from '../../crypto/sync';
+import { base58Encode as _base58Encode, base58Decode as _base58Decode } from '../../utils/base58check';
 
 interface EcPoint {
     x: bigint;
@@ -22,8 +22,6 @@ const secp256k1 = {
     b: BigInt(7),
 };
 
-const SEC1_DER_PREFIX = Buffer.from('302e0201010420', 'hex');
-const SEC1_DER_SUFFIX = Buffer.from('a00706052b8104000a', 'hex');
 const SECP256K1_BASE_POINT: EcPoint = {
     x: secp256k1.Gx,
     y: secp256k1.Gy,
@@ -57,15 +55,6 @@ function randomBytes(length: number): Buffer {
     return cryptoRandomBytes(length);
 }
 
-function privateKeyFromRaw(rawKey: Buffer): any {
-    const keyData = Buffer.concat([SEC1_DER_PREFIX, rawKey, SEC1_DER_SUFFIX]);
-    return createPrivateKey({
-        key: keyData,
-        format: 'der',
-        type: 'sec1',
-    });
-}
-
 function generatePrivateKey(): Buffer {
     let key: Buffer;
     do {
@@ -87,38 +76,6 @@ function privateKeyToPublicKey(rawKey: Buffer, compressed = true): Buffer {
     const ecdh = createECDH('secp256k1');
     ecdh.setPrivateKey(rawKey);
     return ecdh.getPublicKey(null, compressed ? 'compressed' : 'uncompressed');
-}
-
-function sigFromDer(derSig: Buffer): { r: Buffer; s: Buffer } {
-    if (derSig.length < 8 || derSig[0] !== 0x30) {
-        throw new Error('Invalid DER signature: missing sequence tag');
-    }
-    let offset = 2;
-    if (derSig[1] & 0x80) {
-        const lenBytes = derSig[1] & 0x7F;
-        if (lenBytes > 2) throw new Error('Invalid DER signature: length too large');
-        let seqLen = 0;
-        for (let i = 0; i < lenBytes; i++) {
-            seqLen = (seqLen << 8) | derSig[2 + i];
-        }
-        offset = 2 + lenBytes;
-    }
-    if (offset >= derSig.length || derSig[offset] !== 0x02) {
-        throw new Error('Invalid DER signature: missing r integer tag');
-    }
-    const rLen = derSig[offset + 1];
-    const rStart = offset + 2;
-    if (rStart + rLen > derSig.length) throw new Error('Invalid DER signature: r value truncated');
-    const r = derSig.slice(rStart, rStart + rLen);
-    const sTagOffset = rStart + rLen;
-    if (sTagOffset >= derSig.length || derSig[sTagOffset] !== 0x02) {
-        throw new Error('Invalid DER signature: missing s integer tag');
-    }
-    const sLen = derSig[sTagOffset + 1];
-    const sStart = sTagOffset + 2;
-    if (sStart + sLen > derSig.length) throw new Error('Invalid DER signature: s value truncated');
-    const s = derSig.slice(sStart, sStart + sLen);
-    return { r, s };
 }
 
 function bigIntFromBuffer(buf: Buffer): bigint {
@@ -571,31 +528,5 @@ function addressFromPublicKey(pubKeyBuf: Buffer, addressPrefix = 'BTS'): string 
     return addressPrefix + base58Encode(Buffer.concat([hash, checksum]));
 }
 
-export = {
-    sha256,
-    sha512,
-    ripemd160,
-    hash160,
-    hash256,
-    randomBytes,
-    generatePrivateKey,
-    isValidPrivateKey,
-    privateKeyToPublicKey,
-    sign,
-    verify,
-    recoverPublicKey,
-    wifEncode,
-    wifDecode,
-    normalizeBrainKey,
-    brainKeyToPrivateKey,
-    publicKeyToString,
-    addressFromPublicKey,
-    publicKeyFromBuffer,
-    base58Encode,
-    base58Decode,
-    base58CheckEncode,
-    base58CheckDecode,
-    buildSignatureDer,
-    buildPublicKeyDer,
-    secp256k1,
-};
+export { sha256, sha512, ripemd160, hash160, hash256, randomBytes, generatePrivateKey, isValidPrivateKey, privateKeyToPublicKey, sign, verify, recoverPublicKey, wifEncode, wifDecode, normalizeBrainKey, brainKeyToPrivateKey, publicKeyToString, addressFromPublicKey, publicKeyFromBuffer, base58Encode, base58Decode, base58CheckEncode, base58CheckDecode, buildSignatureDer, buildPublicKeyDer, secp256k1 }
+

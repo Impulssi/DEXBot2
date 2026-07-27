@@ -96,17 +96,19 @@
  * ===============================================================================
  */
 
-const { path } = require('./path_api');
-const { getStorage } = require('./storage');
-const storage = getStorage();
-const { ensureProfilesDirectory, readInput } = require('./order/utils/system');
-const { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER, MARKET_ADAPTER, NODE_MANAGEMENT, FILL_PROCESSING, PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE, COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER } = require('./constants');
-const { PATHS } = require('./paths');
-const { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } = require('./general_settings');
 
-const { parseJsonWithComments } = require('./order/utils/system');
-const { writeJSON } = require('./utils/fs_utils');
-const { assertNoDuplicateBotKeys } = require('./bot_settings');
+import { path } from './path_api';
+import { getStorage } from './storage';
+import { ensureProfilesDirectory, readInput } from './order/utils/system';
+import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER, MARKET_ADAPTER, NODE_MANAGEMENT, FILL_PROCESSING, PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE, COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER } from './constants';
+import { PATHS } from './paths';
+import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings';
+import { parseJsonWithComments } from './order/utils/system';
+import { writeJSON } from './utils/fs_utils';
+import { assertNoDuplicateBotKeys } from './bot_settings';
+import { mergeSettings } from './settings_merge';
+const storage = getStorage();
+
 
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
@@ -185,7 +187,6 @@ function loadGeneralSettings() {
         }
     });
 
-    const { mergeSettings } = require('./settings_merge');
     const merged = mergeSettings(settings, defaults);
 
     // MARKET_ADAPTER validation for AMA_DELTA_THRESHOLD_PERCENT
@@ -282,7 +283,7 @@ async function askRequiredString(promptText: string, defaultValue?: any): Promis
  * @param {string} defaultValue - The default value to use if input is empty.
  * @returns {Promise<string>} The user input.
  */
-async function askCronSchedule(promptText: string, defaultValue: string): Promise<any> {
+async function askCronSchedule(_promptText: string, defaultValue: string): Promise<any> {
     const current = parseCronToDelta(defaultValue);
 
     // Interval Prompt
@@ -397,30 +398,6 @@ async function askAssetB(promptText: string, defaultValue?: any, assetA?: string
 }
 
 /**
- * Prompts the user for a numeric value.
- * @param {string} promptText - The prompt text to display.
- * @param {number} [defaultValue] - The default value to use if input is empty.
- * @returns {Promise<number|string>} The numeric value or '\x1b' if ESC.
- */
-async function askNumber(promptText: string, defaultValue?: any): Promise<any> {
-    const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
-    const raw = (await readInput(`${promptText}${suffix}: `)).trim();
-    if (raw === '\x1b') return '\x1b';
-    if (raw === '') return defaultValue;
-    const parsed = Number(raw);
-    if (Number.isNaN(parsed)) {
-        console.log('Please enter a valid number.');
-        return askNumber(promptText, defaultValue);
-    }
-    // Validate that number is finite (not Infinity, -Infinity, or NaN)
-    if (!Number.isFinite(parsed)) {
-        console.log('Please enter a valid finite number.');
-        return askNumber(promptText, defaultValue);
-    }
-    return parsed;
-}
-
-/**
  * Prompts the user for a weight distribution value with a legend.
  * @param {string} promptText - The prompt text to display.
  * @param {number} [defaultValue] - The default value to use if input is empty.
@@ -485,11 +462,6 @@ function isMultiplierString(value: any): boolean {
  * @param {string} cron - The cron string to validate.
  * @returns {boolean} True if valid.
  */
-function isValidCron(cron: string): boolean {
-    const cronRegex = /^((\*(\/\d+)?)|(\d+(-\d+)?(,\d+(-\d+)?)*))( ((\*(\/\d+)?)|(\d+(-\d+)?(,\d+(-\d+)?)*))){4}$/;
-    return cronRegex.test(cron.trim());
-}
-
 /**
  * Converts a cron string to a readable format (days delta and time).
  * Only supports simple daily/multi-day patterns like "0 0 * /N * *".
@@ -1253,4 +1225,5 @@ async function main() {
     console.log('Botmanager closed!');
 }
 
-export = { main, normalizeBotDraft, parseJsonWithComments, parseCronToDelta, deltaToCron };
+export { main, normalizeBotDraft, parseJsonWithComments, parseCronToDelta, deltaToCron }
+
