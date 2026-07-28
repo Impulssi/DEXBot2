@@ -974,7 +974,11 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
         // Suppress invariant warnings during full resync
         manager.startBootstrap();
 
-        try {
+        // Total timeout across all steps — prevents indefinite hang even if
+        // an individual withBlockchainRetry step pins the event loop.
+        const totalTimeoutMs = PIPELINE_TIMING.TIMEOUT_MS * 2; // 10 min
+
+        const work = (async () => {
             manager.logger?.log?.('Starting full resync...', 'info');
 
             // #1: Initialize assets (returns immediately if already loaded)
@@ -1025,6 +1029,20 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
             }
 
             manager.logger?.log?.('Full resync complete.', 'info');
+        })();
+
+        try {
+            // Swallow late rejection if timeout wins the race
+            Promise.resolve(work).catch(() => {});
+            return await Promise.race([
+                work,
+                new Promise<void>((_, reject) => {
+                    setTimeout(
+                        () => reject(new Error(`recalculateGrid timed out after ${totalTimeoutMs}ms`)),
+                        totalTimeoutMs
+                    );
+                })
+            ]);
         } finally {
             manager.finishBootstrap();
         }
@@ -1993,7 +2011,29 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             const sellInBuyUnits = (Number.isFinite(marketPrice) && marketPrice > 0)
                 ? sellAvailable * marketPrice
                 : sellAvailable;
-            side = buyAvailable >= sellInBuyUnits ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+
+            // Determine market direction from current price vs grid center price.
+            // When the market is below the grid center, the bot should prefer SELL
+            // (to narrow the spread from above — sells are too high). When the market
+            // is above the grid center, prefer BUY (buys are too low). This prevents
+            // spread correction from placing orders on the retreating side, which would
+            // compound inventory in the wrong direction after a batch of fill-induced
+            // boundary shifts.
+            const centerPrice = manager._lastGridPricingContext?.startPrice
+                ?? Number(manager.config.startPrice)
+                ?? null;
+            const hasDirection = Number.isFinite(marketPrice)
+                && marketPrice > 0
+                && Number.isFinite(centerPrice)
+                && centerPrice > 0;
+
+            if (hasDirection && marketPrice < centerPrice) {
+                side = ORDER_TYPES.SELL;
+            } else if (hasDirection && marketPrice > centerPrice) {
+                side = ORDER_TYPES.BUY;
+            } else {
+                side = buyAvailable >= sellInBuyUnits ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+            }
         } else if (buyViable) {
             side = ORDER_TYPES.BUY;
         } else if (sellViable) {
@@ -2122,17 +2162,64 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             manager.logger?.log?.(`[SPREAD-CORRECTION] Identified partial order at ${edgePartial.price} for update`, 'debug');
         }
 
-        // Primary candidates: SPREAD-type slots adjacent to the gap.
+        // Boundary-correct type computation.  Used by both candidate pools below to ensure
+        // spread correction does not re-activate slots whose current boundary position
+        // places them on the wrong side or in the spread zone — doing so would compound
+        // inventory at prices where the bot already traded.
+        //
+        // The natural type of a slot is derived from its position in the price-sorted rail
+        // relative to boundaryIdx + gapSlots: indices in [0, boundaryIdx] are BUY, indices
+        // in [boundaryIdx + gapSlots + 1, N-1] are SELL, the middle band is SPREAD.
+        const allSlotsByPrice = allOrders
+            .filter((o: any) => o.price != null && Number.isFinite(o.price))
+            .sort((a: any, b: any) => a.price - b.price);
+        const slotIndexMap = new Map(allSlotsByPrice.map((o: any, i: number) => [o.id, i]));
+        const gapSlots = calculateGapSlots(
+            manager.config?.incrementPercent,
+            manager.config?.targetSpreadPercent,
+            manager.config?.gridLimits
+        );
+        const bIdx = manager.boundaryIdx ?? 0;
+        const buyEndIdx = bIdx;
+        const sellStartIdx = bIdx + Number(gapSlots) + 1;
+        const getSlotCorrectType = (slot: any): string => {
+            const idx = slotIndexMap.get(slot.id);
+            if (idx === undefined) return slot.type;
+            if (idx <= buyEndIdx) return ORDER_TYPES.BUY;
+            if (idx >= sellStartIdx) return ORDER_TYPES.SELL;
+            return ORDER_TYPES.SPREAD;
+        };
+
+        // Primary candidates: SPREAD-type slots adjacent to the gap.  Filter by
+        // boundary-correct type so a SPREAD slot that, after a boundary shift, now sits
+        // in the BUY or SELL zone is excluded — it would otherwise be placed on the
+        // correction side at a price the grid already considers the opposite side.
         const typedSpreadCandidates = allOrders
-            .filter((o: any) => o.type === ORDER_TYPES.SPREAD && isSlotAvailable(o))
+            .filter((o: any) =>
+                o.type === ORDER_TYPES.SPREAD
+                && isSlotAvailable(o)
+                && getSlotCorrectType(o) === railType
+            )
             .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price)
             .slice(0, missingSlots);
 
         // Secondary candidates: orphaned virtual slots of the correct side-type that have
         // lost their order (e.g. stale-cleaned after a race condition during a crash).
         // These sit inside the active window and are invisible to the SPREAD-type filter above.
+        //
+        // IMPORTANT: Filter by boundary-correct type so that filled-then-virtualized slots
+        // whose boundary position has moved into the spread or opposite zone are NOT
+        // re-activated on the stale side — doing so would compound inventory at prices
+        // where the bot already traded.  The boundary-correct type is computed from the
+        // current boundary index and the slot's price position in the sorted rail.
         const orphanedVirtualCandidates = allOrders
-            .filter((o: any) => o.type === railType && o.state === ORDER_STATES.VIRTUAL && !o.orderId && Number(o.size || 0) === 0)
+            .filter((o: any) =>
+                o.type === railType
+                && o.state === ORDER_STATES.VIRTUAL
+                && !o.orderId
+                && Number(o.size || 0) === 0
+                && getSlotCorrectType(o) === railType
+            )
             .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price)
             .slice(0, missingSlots);
 

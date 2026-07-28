@@ -49,6 +49,10 @@ async function testSpreadRedistributionFallback() {
         size: 0
     });
 
+    // Two buy slots above the spread-1 slot — boundary sits at index 2 so spread-1
+    // (price-sorted idx=2) computes as BUY under the boundary-correct type filter.
+    mgr.boundaryIdx = 2;
+
     // No free buy funds, all buy capital is committed on-chain.
     await mgr.setAccountTotals({ buy: 910, sell: 0, buyFree: 0, sellFree: 0 });
     await mgr.recalculateFunds();
