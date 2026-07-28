@@ -995,13 +995,10 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
             );
             if (!Array.isArray(chainOpenOrders)) return;
 
-            // CRITICAL: Filter out PARTIAL orders before synchronizing - they're from old grid
-            // and shouldn't be part of the fresh regenerated grid structure.
-            const activeOrders = chainOpenOrders.filter((o: any) => o.state !== ORDER_STATES.PARTIAL);
             await withBlockchainRetry(
-                () => manager.syncFromOpenOrders(activeOrders, { skipAccounting: true }),
+                () => manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true }),
                 'syncFromOpenOrders',
-                { logger: manager.logger }
+                manager.logger
             );
 
             manager.resetFunds();
