@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.2] - 2026-07-28 - Spread Correction Direction Bias Removal, Precision-Based Collision Guard, Stale-Node Defense Completion
+
+### 2026-07-28
+
+- **Fix**: remove direction bias from spread correction — `determineOrderSideByFunds` simplified to pure fund-based selection (no longer pins side=SELL when marketPrice < centerPrice, eliminating permanent starvation when the preferred side has no correctable slots). `checkSpreadCondition` gets a starvation fallback: retries the opposite side when `prepareSpreadCorrectionOrders` returns zero candidates before aborting. `prepareSpreadCorrectionOrders` now calls `syncBoundaryToFunds` under grid lock before computing `getSlotCorrectType`, preventing stale boundary-based misclassification of SPREAD candidates. Eliminates 5 complexity items — direction switch, `hasDirection` guard, `_lastGridPricingContext` read, config.startPrice center fallback, and startup edge case (`modules/order/grid.ts`).
+- **Fix**: replace hardcoded 1e-8 tolerance with precision-based `calculatePriceTolerance` in `validateCreateTargetSlots` same-batch duplicate check — near-miss duplicates within the asset precision window now caught consistently with the rest of the collision-detection pipeline (`modules/order/utils/validate.ts`).
+- **Fix**: complete stale-node defense rollout — `_initializeAssets` call sites (grid.ts:543, 670, 997) wrapped in `withBlockchainRetry` for 30s timeout / 3-retry / node-failover. `finishBootstrap()` moved into work's own `finally` block so it only fires when reconciliation completes, not when `Promise.race` settles. Added `_resyncAborted` flag checked at 9 await boundaries inside reconciliation work, preventing `resetFunds`/`persistGrid`/`initializeGrid`/`reconcileGridOrders` from mutating manager state after the caller's error path started recovery. Fixed `require()` consistency — both per-attempt and final failover paths now use optional chaining on `getNodeManager?.()` to handle the circular dependency (`modules/order/grid.ts`, `modules/order/utils/system.ts`).
+
 ## [1.4.1] - 2026-07-28 - Bot-Hang Prevention, Blockchain Retry Centralization, CREATE Guard Extension
 
 ### 2026-07-28
