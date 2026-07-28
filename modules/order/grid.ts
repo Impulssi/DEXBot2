@@ -151,7 +151,7 @@ import {
     calculateIdealBoundary,
     assignGridRoles
 } from './utils/order';
-import { derivePrice, loadAmaCenterPrice, loadAmaCenterSnapshot } from './utils/system';
+import { derivePrice, loadAmaCenterPrice, loadAmaCenterSnapshot, sleep } from './utils/system';
 import { getWhitelistFlags } from '../market_adapter_whitelist';
 
 import type { Order } from '../types.js';
@@ -959,6 +959,59 @@ export async function initializeGrid(manager: any): Promise<void> {
     }
 
     /**
+     * Retry a blockchain operation with timeout and node failover reporting.
+     * Reports each failure to the NodeManager so the node gets blacklisted
+     * after consecutive failures, triggering automatic failover.
+     */
+    const BLOCKCHAIN_OP_TIMEOUT_MS = 30000;
+    const BLOCKCHAIN_OP_MAX_RETRIES = 3;
+    const BLOCKCHAIN_OP_RETRY_DELAY_MS = 2000;
+
+    async function withBlockchainRetry<T>(
+        fn: () => Promise<T>,
+        label: string,
+        logger?: { log?: Function }
+    ): Promise<T> {
+        let lastError: any;
+
+        for (let attempt = 1; attempt <= BLOCKCHAIN_OP_MAX_RETRIES; attempt++) {
+            try {
+                return await Promise.race([
+                    fn(),
+                    new Promise<T>((_, reject) => {
+                        setTimeout(
+                            () => reject(new Error(`${label} timed out after ${BLOCKCHAIN_OP_TIMEOUT_MS}ms (attempt ${attempt}/${BLOCKCHAIN_OP_MAX_RETRIES})`)),
+                            BLOCKCHAIN_OP_TIMEOUT_MS
+                        );
+                    })
+                ]);
+            } catch (err: any) {
+                lastError = err;
+
+                // Report node failure so NodeManager can blacklist and trigger failover
+                try {
+                    const { getNodeManager } = require('../bitshares_client');
+                    const nodeManager = getNodeManager();
+                    const nodeUrl = nodeManager?.getBestNode?.();
+                    if (nodeUrl && typeof nodeManager.reportNodeFailure === 'function') {
+                        nodeManager.reportNodeFailure(nodeUrl, getErrorMessage(err), 'blockchain-op');
+                    }
+                } catch (_: any) { /* reporting errors are non-fatal */ }
+
+                if (attempt < BLOCKCHAIN_OP_MAX_RETRIES) {
+                    logger?.log?.(
+                        `${label} attempt ${attempt}/${BLOCKCHAIN_OP_MAX_RETRIES} failed: ${getErrorMessage(err)}. ` +
+                        `Retrying in ${BLOCKCHAIN_OP_RETRY_DELAY_MS}ms...`,
+                        'warn'
+                    );
+                    await sleep(BLOCKCHAIN_OP_RETRY_DELAY_MS);
+                }
+            }
+        }
+        throw new Error(`${label} failed after ${BLOCKCHAIN_OP_MAX_RETRIES} attempts: ${getErrorMessage(lastError)}`);
+    }
+
+    /**
      * Full grid resynchronization from blockchain state.
      * @param {import('./types').OrderManager} manager - The manager instance.
      * @param {Object} opts - Options for resynchronization.
@@ -975,32 +1028,37 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
         manager.startBootstrap();
 
         try {
-            // FIX: Use consistent optional chaining pattern for logger calls
             manager.logger?.log?.('Starting full resync...', 'info');
 
+            // #1: Initialize assets (returns immediately if already loaded)
             await manager._initializeAssets();
-            await manager.fetchAccountTotals();
 
-            const READ_OPEN_ORDERS_TIMEOUT_MS = 30000;
-            let _readOpenOrdersTimer: NodeJS.Timeout | undefined;
-            let chainOpenOrders: any[];
-            try {
-                chainOpenOrders = await Promise.race([
-                    readOpenOrdersFn(),
-                    new Promise((_: any, reject: any) => {
-                        _readOpenOrdersTimer = setTimeout(() => reject(new Error('readOpenOrders timeout')), READ_OPEN_ORDERS_TIMEOUT_MS);
-                    })
-                ]);
-            } finally {
-                clearTimeout(_readOpenOrdersTimer);
-            }
+            // #2: Fetch account totals with timeout + retry + node failover
+            await withBlockchainRetry(
+                () => manager.fetchAccountTotals(),
+                'fetchAccountTotals',
+                manager.logger
+            );
+
+            // #3: Read open orders with timeout + retry + node failover
+            const chainOpenOrders = await withBlockchainRetry(
+                () => readOpenOrdersFn(),
+                'readOpenOrders',
+                manager.logger
+            );
             if (!Array.isArray(chainOpenOrders)) return;
 
             // CRITICAL: Filter out PARTIAL orders before synchronizing - they're from old grid
             // and shouldn't be part of the fresh regenerated grid structure
             const activeOrders = chainOpenOrders.filter((o: any) => o.state !== ORDER_STATES.PARTIAL);
 
-            await manager.syncFromOpenOrders(activeOrders, { skipAccounting: true });
+            // #4: Sync from open orders with timeout + retry + node failover
+            await withBlockchainRetry(
+                () => manager.syncFromOpenOrders(activeOrders, { skipAccounting: true }),
+                'syncFromOpenOrders',
+                manager.logger
+            );
+
             manager.resetFunds();
 
             await manager.persistGrid();
@@ -1008,15 +1066,18 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
 
             const { reconcileGridOrders } = require('./grid_reconcile');
 
-            // FIX: Add error context for debugging grid recalculation issues
+            // #5: Reconcile grid orders with timeout + retry + node failover
             try {
-                await reconcileGridOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders });
+                await withBlockchainRetry(
+                    () => reconcileGridOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders }),
+                    'reconcileGridOrders',
+                    manager.logger
+                );
             } catch (err: any) {
                 manager.logger?.log?.(`Error during startup order reconciliation: ${getErrorMessage(err)}`, 'error');
                 throw new Error(`Grid recalculation failed during order reconciliation: ${getErrorMessage(err)}`);
             }
 
-            // FIX: Use consistent optional chaining pattern for logger calls
             manager.logger?.log?.('Full resync complete.', 'info');
         } finally {
             manager.finishBootstrap();
