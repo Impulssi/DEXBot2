@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1] - 2026-07-28 - Bot-Hang Prevention, Blockchain Retry Centralization, CREATE Guard Extension
+
+### 2026-07-28
+
+- **Fix**: prevent bot hangs via centralized timeout + node failover — after exhausting 3-attempt retry budget, `withBlockchainRetry` force-blacklists the stuck node and reconnects to a healthy one. All blockchain ops (fetchAccountTotals, readOpenOrders, syncFromOpenOrders, reconcileGridOrders) get automatic failover. Default `_fillProcessingLock` acquisition timeout (20s) prevents indefinite waits. `recalculateGrid` wrapped in 10-minute `Promise.race` ceiling (`modules/order/utils/system.ts`, `modules/order/manager.ts`, `modules/order/grid.ts`).
+- **Refactor**: centralize `withBlockchainRetry` into shared utility in `system.ts` — replaces local copy in `grid.ts` and inline `Promise.race` in `dexbot_startup_runtime.ts`, giving the startup path retries + node failover too (`modules/order/utils/system.ts`, `modules/order/grid.ts`, `modules/dexbot_startup_runtime.ts`).
+- **Fix**: prevent duplicate grid-level CREATEs via 4-layer validator guard — `validateCreateTargetSlots` extended with slot occupancy, master grid price collision, chain orphan collision, and same-batch duplicate detection. Also hardens `checkSpreadCondition` against TOCTOU between lock release and broadcast (`modules/order/utils/validate.ts`, `modules/order/grid.ts`, `modules/dexbot_cow_runtime.ts`).
+- **Fix**: prevent false-positive excess cancellation on fresh grid — guard `_reconcileStartupSide` cancelCount with `matchedOnGrid > 0` to avoid destroying legitimate orders when no grid slot yet assigned. Fix reconcile timeout death spiral by overriding timeout to 300s so Phase 2 batch creates finish in one shot (`modules/order/grid.ts`, `modules/order/grid_reconcile_internal.ts`).
+- **Fix**: prevent cross-side spread correction via boundary-correct type filter — hoist boundary computation before both candidate pools and filter `typedSpreadCandidates` by `getSlotCorrectType(o) === railType` to prevent activating a SPREAD slot on the wrong rail after fill-induced boundary shifts (`modules/order/grid.ts`).
+- **Fix**: remove dead PARTIAL filter in `recalculateGrid` (raw chain `limit_order` objects never have a `state` property) and fix `withBlockchainRetry` logger arg — pass `manager.logger` directly instead of `{ logger: manager.logger }` (`modules/order/grid.ts`).
+- **Fix**: cancel stale surplus orders after Phase 2 settles in reconcileGridOrders — new Phase 3 pass re-fetches chain orders and cancels any exceeding per-side target that are not tracked by any grid slot's `orderId`. Catches orphan orders whose ID was lost when the grid reinitialized mid-resync. Sorts by chain ID for deterministic cancel order (`modules/order/grid_reconcile.ts`).
+- **Test**: new `testNoExcessCancelWhenMatchedOnGridIsZero` regression test — fresh grid with `matchedOnGrid=0`, non-zero chainCount+targetCount asserts zero cancel calls (`tests/test_grid_reconcile_regressions.ts`).
+- **Test**: `testPhase3CancelsStaleSurplusUntrackedByGrid` — 7 chain sells, target 5, all-VIRTUAL grid with matchedOnGrid=0, verifies Phase 3 cancels exactly 2 untracked surplus and does NOT cancel any tracked order (`tests/test_grid_reconcile_regressions.ts`).
+- **Test**: 9 scenarios in `test_validate_create_target_slots.ts` covering all four guard layers, released slots, malformed chain candidates, and no-assets fallback (`tests/test_validate_create_target_slots.ts`).
+- **Chore**: update manifest versions to 1.4.1 across all package.json, lockfiles, plugin manifests, docs references (`package.json`, `package-lock.json`, `claw/package.json`, `claw/runtimes/openclaw-plugin/*.json`, `analysis/ama_fitting/package.json`, `claw/tests/test_claw_mcp_transport.ts`, `docs/README.md`, `docs/DEXBOT_COMPARISON.md`, `docs/FUND_MOVEMENT_AND_ACCOUNTING.md`, `docs/EVOLUTION.md`).
+
 ## [1.4.0] - 2026-07-27 - CJS-to-ESM Migration, Strict Mode Zero-Errors, Daemon-Signing Node Failover
 
 ### 2026-07-27
