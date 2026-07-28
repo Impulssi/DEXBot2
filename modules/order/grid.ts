@@ -1205,10 +1205,18 @@ export async function _recalculateGridOrderSizesFromBlockchain(manager: any, ord
         const ctx = await _getSizingContext(manager, sideName);
         if (!ctx) return collectActions ? { actions: [], changed: false } : undefined;
 
-        // Get ALL slots for this side, sorted for calculateRotationOrderSizes
+        // Get ALL slots for this side, sorted for calculateRotationOrderSizes.
         // SELL: sorted ASC (Market to Edge)
         // BUY: sorted ASC (Edge to Market)
-        const allSideSlots = (Array.from(manager.orders.values()) as Order[])
+        //
+        // When a working grid is available (COW mode), read types from it
+        // instead of manager.orders.  This ensures slots whose type changed
+        // due to a boundary shift (e.g. SPREAD→BUY) are included in the
+        // correct side's size calculation — using manager.orders here would
+        // filter by stale pre-shift types and miss the crossers, producing a
+        // budget allocation that doesn't match the post-shift grid structure.
+        const orderSource = collectActions ? workingGrid : manager.orders;
+        const allSideSlots = (Array.from(orderSource.values()) as Order[])
             .filter((o: any) => o.type === orderType)
             .sort((a: any, b: any) => a.price - b.price);
 
@@ -1343,7 +1351,29 @@ export async function updateGridFromBlockchainSnapshot(manager: any, orderType: 
         const allActions: any[] = [];
         let hasWorkingChanges = false;
 
-        // Calculate size updates for each side (via existing sizing function in COW mode)
+        const newBoundary = (overrideBoundaryIdx !== null) ? overrideBoundaryIdx : manager.boundaryIdx;
+
+        // REASSIGN SLOT TYPES FIRST when the boundary is shifting.
+        // _recalculateGridOrderSizesFromBlockchain needs to see the corrected
+        // types so that slots which cross the boundary (e.g. SPREAD→BUY) are
+        // included in the correct side's budget allocation.  Running assignGridRoles
+        // after the size calc means crossers keep their pre-shift sizes, producing
+        // an allocation that doesn't match the post-shift grid structure.
+        if (overrideBoundaryIdx !== null && overrideBoundaryIdx !== manager.boundaryIdx) {
+            const gapSlots = calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
+            const allSlots = (Array.from(workingGrid.values()) as Order[])
+                .filter((s: any) => s.price != null)
+                .sort((a: any, b: any) => a.price - b.price);
+            const updatedSlots = assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES, ORDER_STATES, { assignOnChain: true });
+            for (const slot of updatedSlots) {
+                workingGrid.set(slot.id, slot);
+            }
+            hasWorkingChanges = true;
+        }
+
+        // Calculate size updates for each side (via existing sizing function in COW mode).
+        // _recalculateGridOrderSizesFromBlockchain reads types from the working grid when
+        // one is passed, so boundary-crossing slots are now correctly classified.
         if (orderType === ORDER_TYPES.BUY || orderType === 'both') {
             const buyResult = await _recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.BUY, { workingGrid })!;
             allActions.push(...buyResult!.actions);
@@ -1353,22 +1383,6 @@ export async function updateGridFromBlockchainSnapshot(manager: any, orderType: 
             const sellResult = await _recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.SELL, { workingGrid })!;
             allActions.push(...sellResult!.actions);
             hasWorkingChanges = hasWorkingChanges || sellResult!.changed;
-        }
-
-        // If the boundary is shifting, reassign slot types in the WorkingGrid now.
-        // This ensures the COW commit delivers consistent types + boundaryIdx in one
-        // atomic operation — manager.boundaryIdx must not be touched before the commit.
-        const newBoundary = (overrideBoundaryIdx !== null) ? overrideBoundaryIdx : manager.boundaryIdx;
-        if (overrideBoundaryIdx !== null && overrideBoundaryIdx !== manager.boundaryIdx) {
-            const gapSlots = calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
-            const allSlots = (Array.from(workingGrid.values()) as Order[])
-                .filter((s: any) => s.price != null)
-                .sort((a: any, b: any) => a.price - b.price);
-            const updatedSlots = assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES, ORDER_STATES);
-            for (const slot of updatedSlots) {
-                workingGrid.set(slot.id, slot);
-            }
-            hasWorkingChanges = true;
         }
 
         // Return COW result only if there are changes
@@ -2186,23 +2200,15 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
         // 2. Fallback: Activate SPREAD slots at the edge (Lowest Spread for Buy / Highest Spread for Sell).
 
         const allOrders = Array.from(manager.orders.values()) as Order[];
-        let edgePartial: any = null;
-        const partials = allOrders
-            .filter((o: any) => o.type === railType && o.state === ORDER_STATES.PARTIAL)
-            .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
-        if (partials.length > 0) {
-            edgePartial = partials[0];
-            manager.logger?.log?.(`[SPREAD-CORRECTION] Identified partial order at ${edgePartial.price} for update`, 'debug');
-        }
 
-        // Boundary-correct type computation.  Used by both candidate pools below to ensure
-        // spread correction does not re-activate slots whose current boundary position
-        // places them on the wrong side or in the spread zone — doing so would compound
-        // inventory at prices where the bot already traded.
+        // Boundary-correct type computation — hoisted before edge-partial and
+        // candidate filters so all call sites (including the edge-partial filter
+        // which now uses getSlotCorrectType) can access it.
         //
-        // The natural type of a slot is derived from its position in the price-sorted rail
-        // relative to boundaryIdx + gapSlots: indices in [0, boundaryIdx] are BUY, indices
-        // in [boundaryIdx + gapSlots + 1, N-1] are SELL, the middle band is SPREAD.
+        // The natural type of a slot is derived from its position in the price-sorted
+        // rail relative to boundaryIdx + gapSlots: indices in [0, boundaryIdx] are
+        // BUY, indices in [boundaryIdx + gapSlots + 1, N-1] are SELL, the middle
+        // band is SPREAD.
         const allSlotsByPrice = allOrders
             .filter((o: any) => o.price != null && Number.isFinite(o.price))
             .sort((a: any, b: any) => a.price - b.price);
@@ -2231,6 +2237,18 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             if (idx >= sellStartIdx) return ORDER_TYPES.SELL;
             return ORDER_TYPES.SPREAD;
         };
+
+        let edgePartial: any = null;
+        const partials = allOrders
+            .filter((o: any) =>
+                getSlotCorrectType(o) === railType
+                && o.state === ORDER_STATES.PARTIAL
+            )
+            .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+        if (partials.length > 0) {
+            edgePartial = partials[0];
+            manager.logger?.log?.(`[SPREAD-CORRECTION] Identified partial order at ${edgePartial.price} for update`, 'debug');
+        }
 
         // Primary candidates: SPREAD-type slots adjacent to the gap.  Filter by
         // boundary-correct type so a SPREAD slot that, after a boundary shift, now sits
