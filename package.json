@@ -116,6 +116,7 @@
     "./dist/modules/paths.js": false,
     "./dist/modules/order/logger.js": false,
     "./dist/modules/order/export.js": false,
+    "./dist/modules/order/utils/withPoolRef.js": false,
     "./dist/modules/order/utils/system.js": false,
     "./dist/market_adapter/market_adapter.js": false,
     "./dist/market_adapter/lp_chart_runner.js": false,

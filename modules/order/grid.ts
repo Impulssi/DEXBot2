@@ -151,7 +151,8 @@ import {
     calculateIdealBoundary,
     assignGridRoles
 } from './utils/order';
-import { derivePrice, loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry, syncBoundaryToFunds } from './utils/system';
+import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry, syncBoundaryToFunds } from './utils/system';
+import { derivePriceWithPoolRef } from './utils/withPoolRef';
 import { getWhitelistFlags } from '../market_adapter_whitelist';
 
 import type { Order } from '../types.js';
@@ -692,7 +693,7 @@ export async function initializeGrid(manager: any): Promise<void> {
         if (typeof mpRaw !== 'number' || isNaN(mpRaw)) {
             try {
                 const { BitShares } = require('../bitshares_client');
-                const derived = await derivePrice(BitShares, manager.config.assetA, manager.config.assetB, manager.config.priceMode || 'auto');
+                const derived = await derivePriceWithPoolRef(BitShares, manager.config.assetA, manager.config.assetB, manager.config.priceMode || 'auto', manager.config.poolRef);
                 if (derived) {
                     manager.logger?.log?.(`[DIAGNOSTIC] initializeGrid: Derived new startPrice=${derived.toFixed(8)} (mode=${manager.config.priceMode || 'auto'})`, 'info');
                     manager.config.startPrice = Number(derived);
@@ -730,7 +731,7 @@ export async function initializeGrid(manager: any): Promise<void> {
         } else if (gpMode === 'pool' || gpMode === 'book') {
             try {
                 const { BitShares } = require('../bitshares_client');
-                const derived = await derivePrice(BitShares, manager.config.assetA, manager.config.assetB, gpMode);
+                const derived = await derivePriceWithPoolRef(BitShares, manager.config.assetA, manager.config.assetB, gpMode, manager.config.poolRef);
                 if (derived) {
                     gp = Number(derived);
                     gpSource = gpMode;

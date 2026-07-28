@@ -762,6 +762,29 @@ async function askStartPrice(promptText: string, defaultValue?: any): Promise<an
 }
 
 /**
+ * Prompts the user for an optional pool ID to pin price derivation.
+ * Enter a pool ID (e.g. 48 or 1.19.48) or leave blank to clear.
+ * @param {string} promptText - The prompt text to display.
+ * @param {string|null|undefined} [currentValue] - The current poolRef value.
+ * @returns {Promise<string|null|symbol>} Pool ID, null, or '\x1b' on ESC.
+ */
+async function askPoolRef(promptText: string, currentValue?: string | null | undefined): Promise<any> {
+    while (true) {
+        const suffix = currentValue ? ` [${currentValue}]` : ' [none]';
+        const raw = (await readInput(`${promptText}${suffix}: `)).trim();
+        if (raw === '\x1b') return '\x1b';
+        if (!raw) return currentValue || null;
+
+        const normalized = raw.startsWith('1.19.') ? raw : `1.19.${raw}`;
+        const parts = normalized.split('.');
+        if (parts.length === 3 && parts[0] === '1' && parts[1] === '19' && /^\d+$/.test(parts[2])) {
+            return normalized;
+        }
+        console.log('Invalid — enter a pool number (e.g. 48) or full ID (e.g. 1.19.48).');
+    }
+}
+
+/**
  * Prompts the user for the grid price mode (pool, book, ama, numeric, or startprice).
  * @param {string} promptText - The prompt text to display.
  * @param {string} [defaultValue] - The default value to use if input is empty.
@@ -830,7 +853,7 @@ async function promptBotData(base = {}) {
              console.log('\n\x1b[1m--- Bot Editor: ' + (data.name || 'New Bot') + ' ---\x1b[0m');
              console.log(`\x1b[1;33m1) Pair:\x1b[0m       \x1b[1;31m${data.assetA || '?'} / ${data.assetB || '?'} \x1b[0m`);
              console.log(`\x1b[1;33m2) Identity:\x1b[0m   \x1b[38;5;208mName:\x1b[0m ${data.name || '?'} , \x1b[38;5;208mAccount:\x1b[0m ${data.preferredAccount || '?'} , \x1b[38;5;208mActive:\x1b[0m ${data.active}, \x1b[38;5;208mDryRun:\x1b[0m ${data.dryRun}`);
-             console.log(`\x1b[1;33m3) Price:\x1b[0m      \x1b[38;5;208mRange:\x1b[0m [${data.minPrice} - ${data.maxPrice}], \x1b[38;5;208mStart:\x1b[0m ${data.startPrice}, \x1b[38;5;208mGrid:\x1b[0m ${data.gridPrice === null ? 'startPrice' : data.gridPrice}`);
+             console.log(`\x1b[1;33m3) Price:\x1b[0m      \x1b[38;5;208mRange:\x1b[0m [${data.minPrice} - ${data.maxPrice}], \x1b[38;5;208mStart:\x1b[0m ${data.startPrice}, \x1b[38;5;208mPool:\x1b[0m ${data.poolRef || 'none'}, \x1b[38;5;208mGrid:\x1b[0m ${data.gridPrice === null ? 'startPrice' : data.gridPrice}`);
              console.log(`\x1b[1;33m4) Grid:\x1b[0m       \x1b[38;5;208mWeights:\x1b[0m (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), \x1b[38;5;208mIncr:\x1b[0m ${data.incrementPercent}%, \x1b[38;5;208mSpread:\x1b[0m ${data.targetSpreadPercent}%`);
              console.log(`\x1b[1;33m5) Funding:\x1b[0m    \x1b[38;5;208mSell:\x1b[0m ${data.botFunds.sell}, \x1b[38;5;208mBuy:\x1b[0m ${data.botFunds.buy} | \x1b[38;5;208mOrders:\x1b[0m (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
              console.log('--------------------------------------------------');
@@ -881,11 +904,14 @@ async function promptBotData(base = {}) {
                 if (maxP === '\x1b') break;
                 const startP = await askStartPrice('startPrice (pool, book or A/B)', data.startPrice);
                 if (startP === '\x1b') break;
+                const poolR = await askPoolRef('poolRef (pinned pool ID for pool price)', data.poolRef);
+                if (poolR === '\x1b') break;
                 const gp = await askGridPriceMode('gridPrice (pool/book/ama/number/none)', data.gridPrice);
                 if (gp === '\x1b') break;
                 data.minPrice = minP;
                 data.maxPrice = maxP;
                 data.startPrice = startP;
+                data.poolRef = poolR || undefined;
                 data.gridPrice = gp;
                 showMenu = true;
                 break;
@@ -971,6 +997,7 @@ async function promptBotData(base = {}) {
         botFunds: data.botFunds,
         activeOrders: data.activeOrders,
         gridPrice: data.gridPrice,
+        poolRef: data.poolRef,
         debtPolicy: data.debtPolicy,
     };
 }

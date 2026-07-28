@@ -167,6 +167,16 @@ tsx market_adapter/market_adapter.ts --deltaPercent 2
 }
 ```
 
+**Optional: `poolRef`** — pin a specific pool ID for price derivation when using `startPrice: "pool"`. Set in `bots.json` alongside the bot entry:
+```json
+{
+  "name": "BTS-USDC",
+  "startPrice": "pool",
+  "poolRef": "1.19.48"
+}
+```
+The pool is fetched directly by ID, bypassing pool discovery. Useful when the trading pair has no native AMM pool. Accepts short form (`"48"`) or full form (`"1.19.48"`).
+
 **How this interacts with market profiles:**
 - `profiles/market_profiles.json` wins first for matched markets
 - `gridPrice: "ama"` uses the pair's `defaultAma`

@@ -1,6 +1,6 @@
 # DEXBot vs DEXBot2 — Detailed Comparison Report
 
-> **Date:** 2026-07-25 *(metrics refreshed against local source trees)*
+> **Date:** 2026-07-28 *(metrics refreshed against local source trees)*
 > **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.4.2).
 > **Audience:** Developers, contributors, and operators evaluating or migrating between the two projects.
 
@@ -39,14 +39,14 @@
 | **Release Track** | 1.0.0 | v1.4.2 |
 | **Language** | Python 3.6+ | TypeScript 5.x |
 | **Status** | Released 1.0.0, unmaintained | Active development |
-| **Last Repo Activity** | May 23, 2020 | 2026-07-25 |
+| **Last Repo Activity** | May 23, 2020 | 2026-07-28 |
 | **License** | MIT | MIT |
 | **Origin** | BitShares worker-proposal funded, Codaone Oy | Private rewrite by froooze |
 | **Primary Goal** | Multi-strategy, extensible trading framework | Hardened adaptive grid runtime with operator/AI tooling |
 | **Target Exchange** | BitShares DEX | BitShares DEX |
 | **Lines of Code** | ~10,846 Python LOC in `dexbot/` | Large TypeScript codebase; core runtime, adapter, analysis, Claw, and test modules |
 | **Source Files** | 72 Python files in `dexbot/` | ~490 TS files across the repo |
-| **Test Files** | 16 Python test files | 233 `test_*.ts` files (231 auto-discovered via `globSync`) |
+| **Test Files** | 16 Python test files | 231 `test_*.ts` files (231 auto-discovered via `globSync`) |
 
 ### Summary
 
@@ -347,7 +347,8 @@ workers:
   "targetSpreadPercent": 4,
   "weightDistribution": { "sell": 1, "buy": 1 },
   "botFunds": { "sell": "100%", "buy": "100%" },
-  "activeOrders": { "sell": 5, "buy": 5 }
+  "activeOrders": { "sell": 5, "buy": 5 },
+  "poolRef": "1.19.133"         // optional: pin a specific pool for price derivation
 }
 ```
 
@@ -783,11 +784,11 @@ Where:
 |---|---|---|
 | **Release Track** | 1.0.0 | v1.4.2 |
 | **Active Since** | ~2018 | December 2025 |
-| **Last Commit** | May 23, 2020 | 2026-07-25 |
-| **Total Commits** | 2281 | 1,857 at current HEAD |
+| **Last Commit** | May 23, 2020 | 2026-07-28 |
+| **Total Commits** | 2281 | 1,887 at current HEAD |
 | **Lines of Code** | ~10,846 Python LOC in `dexbot/` | Large TypeScript runtime + adapter + Claw + analysis + tests |
 | **Source Files** | 72 Python files in `dexbot/` | ~490 TS files across the repo |
-| **Test Files** | 16 Python test files | 233 `test_*.ts` files (231 auto-discovered via `globSync`) |
+| **Test Files** | 16 Python test files | 231 `test_*.ts` files (231 auto-discovered via `globSync`) |
 | **Documentation** | Sphinx docs + README | 50+ Markdown docs plus Claw skills/references |
 | **Strategies** | 3 + plugins | 1 |
 | **Max Concurrent Bots** | Many (one process) | Many (one monolithic process by default; per-bot via `--isolated`/PM2) |
@@ -921,4 +922,4 @@ The practical migration path is to treat DEXBot2 as a new runtime: recreate bot 
 
 ---
 
-*Report generated 2026-07-25. Metrics refreshed 2026-07-25 from local DEXBot-master and DEXBot2 source trees.*
+*Report generated 2026-07-28. Metrics refreshed 2026-07-28 from local DEXBot-master and DEXBot2 source trees.*

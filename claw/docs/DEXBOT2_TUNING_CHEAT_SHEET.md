@@ -187,6 +187,16 @@ AMA is the recentering mechanism.
 - `gridPrice: "pool"` or `gridPrice: "book"` centers the rebuilt grid on the live pair price instead
 - `gridPrice: null` falls back to the current `startPrice` reference
 
+### `poolRef`
+
+When using `startPrice: "pool"`, the bot discovers a pool matching your trading pair. If no such pool exists (e.g. a pair using a wrapped token without its own AMM pool), set `poolRef` to pin a proxy pool:
+
+```json
+"poolRef": "1.19.48"
+```
+
+The pool is fetched directly by ID (`get_objects`) — no discovery, no caching. Enter just the number (`"48"`) and the `1.19.` prefix is added automatically. Leave unset for normal discovery behavior.
+
 Practical interpretation:
 
 - if the market trends, AMA helps the bot stay centered

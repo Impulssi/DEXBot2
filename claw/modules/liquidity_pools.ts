@@ -6,20 +6,39 @@ function getDexbotSystem() {
   return loadDexbotOrderSystemUtils();
 }
 
-function derivePoolPrice(assetA: any, assetB: any) {
-  return getDexbotSystem().derivePoolPrice(client.BitShares, assetA, assetB);
+function derivePoolPrice(assetA: any, assetB: any, poolRef?: string | null) {
+  const system = getDexbotSystem();
+  if (poolRef) {
+    try {
+      const { withPoolRef: wrapWithPoolRef } = requireDexbot2Module('order/utils/withPoolRef') as any;
+      const override = wrapWithPoolRef(client.BitShares, poolRef);
+      if (override) return override.derivePoolPrice(assetA, assetB);
+    } catch (e: any) {
+      console.warn(`[liquidity-pools] derivePoolPrice with poolRef failed: ${e?.message || e}`);
+    }
+  }
+  return system.derivePoolPrice(client.BitShares, assetA, assetB);
 }
 
-function derivePrice(assetA: any, assetB: any, mode: any) {
-  return getDexbotSystem().derivePrice(client.BitShares, assetA, assetB, mode);
+function derivePrice(assetA: any, assetB: any, mode: any, poolRef?: string | null) {
+  const system = getDexbotSystem();
+  if (poolRef) {
+    try {
+      const { derivePriceWithPoolRef: wrapPriceWithPoolRef } = requireDexbot2Module('order/utils/withPoolRef') as any;
+      return wrapPriceWithPoolRef(client.BitShares, assetA, assetB, mode, poolRef);
+    } catch (e: any) {
+      console.warn(`[liquidity-pools] derivePrice with poolRef failed: ${e?.message || e}`);
+    }
+  }
+  return system.derivePrice(client.BitShares, assetA, assetB, mode);
 }
 
 function createDexbotPoolHelper() {
   const system = getDexbotSystem();
   return {
     cloneMap: system.cloneMap,
-    derivePoolPrice: (assetA: any, assetB: any) => system.derivePoolPrice(client.BitShares, assetA, assetB),
-    derivePrice: (assetA: any, assetB: any, mode: any) => system.derivePrice(client.BitShares, assetA, assetB, mode),
+    derivePoolPrice: (assetA: any, assetB: any, poolRef?: string | null) => derivePoolPrice(assetA, assetB, poolRef),
+    derivePrice: (assetA: any, assetB: any, mode: any, poolRef?: string | null) => derivePrice(assetA, assetB, mode, poolRef),
     deepFreeze: system.deepFreeze,
     loadAmaCenterSnapshot: system.loadAmaCenterSnapshot,
     loadAmaCenterPrice: system.loadAmaCenterPrice,

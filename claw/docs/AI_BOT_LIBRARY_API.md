@@ -290,6 +290,7 @@ type BotState = {
   minPrice?: string | number;
   maxPrice?: string | number;
   gridPrice?: string | number | null;
+  poolRef?: string;
   lastResetAt?: number;
   lastGridCenterPrice?: number;
 };

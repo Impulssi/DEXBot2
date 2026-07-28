@@ -990,6 +990,7 @@ export interface BotConfigEntry {
   activeOrders: { sell: number; buy: number };
   gridPrice: GridPriceSource;
   gridPriceOffsetPct?: number;
+  poolRef?: string;
   debtPolicy?: DebtPolicy;
   logging?: BotLoggingOverrides;
   gridLimits?: BotGridLimitsOverrides;

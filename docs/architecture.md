@@ -1050,7 +1050,7 @@ Every 4 hours (default `BLOCKCHAIN_FETCH_INTERVAL_MIN`), the bot performs the fo
 2.  **Memory Update**: It identifies its own configuration entry and updates its internal memory state (`this.config` and `manager.config`).
 3.  **Non-Disruptive Application**: The refresh is designed to be **passive**. It updates valuation anchors but does **not** trigger on-chain order movement automatically.
 
-### Configuration Authority: `startPrice`
+### Configuration Authority: `startPrice` / `poolRef`
 
 The `startPrice` parameter follows a strict hierarchy of authority:
 
@@ -1058,6 +1058,7 @@ The `startPrice` parameter follows a strict hierarchy of authority:
 |--------------|--------|----------|
 | **Numeric** | `bots.json` | **Single Source of Truth**. Blocks all auto-derivation. Used as a fixed anchor for valuation and grid resets. |
 | **"pool"** | Blockchain | Derived from current Liquidity Pool price during resets or 4h refresh cycles. |
+| **"pool" + poolRef** | Blockchain | Same as `"pool"`, but pool is fetched directly by ID (`get_objects`) bypassing discovery. Set `poolRef` in `bots.json` (e.g. `"1.19.48"`) to pin a proxy pool. |
 | **"book"** | Blockchain | Derived from current order book price during resets or 4h refresh cycles. |
 
 ---

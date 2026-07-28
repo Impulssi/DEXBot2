@@ -172,6 +172,7 @@ Configuration options from `dexbot bot`, stored in `profiles/bots.json`:
 | **`dryRun`** | boolean | Simulate orders without broadcasting |
 | **`preferredAccount`** | string | BitShares account name for trading |
 | **`startPrice`** | num \| str | Initial price and adapter candle source. Default `"pool"` uses liquidity-pool history; `"book"` uses order-book history; a number uses a fixed anchor. |
+| **`poolRef`** | string \| null | Optional pinned pool ID for `startPrice: "pool"`. Overrides pool discovery with a direct fetch (e.g. `"1.19.48"` or `"48"`). Useful when the trading pair has no native pool. Default `null`. |
 | **`minPrice`** | num \| str | Lower bound. Default `"2x"` means `gridPrice / 2` when AMA is active, otherwise `startPrice / 2`. |
 | **`maxPrice`** | num \| str | Upper bound. Default `"2x"` means `gridPrice * 2` when AMA is active, otherwise `startPrice * 2`. |
 | **`gridPrice`** | num \| str \| null | Grid reference. Use `"ama"` for the recommended AMA center; `null` falls back to `startPrice`; numeric values use that fixed value. |

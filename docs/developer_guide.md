@@ -995,6 +995,7 @@ The `startPrice` is the anchor for valuation (calculating the relative value of 
 2.  **"pool"**:
     *   The bot fetches the current BitShares Liquidity Pool price.
     *   Updated periodically every 4 hours.
+    *   Optional `poolRef` field pins the pool directly (e.g. `"poolRef": "1.19.48"`), bypassing pool discovery. Useful when the trading pair has no native pool — the bot prices from a proxy pool instead.
 
 3.  **"book"**:
     *   The bot derives the price from the current order book.
@@ -1378,6 +1379,23 @@ if (cachedPoolId.assets !== requestedAssets) {
 **Performance Impact**:
 - Eliminates redundant blockchain scans during startup and config refresh
 - Particularly effective during periodic 4-hour price refresh cycles
+
+### 5. **Pin a Pool with `poolRef`**
+
+When a trading pair has no native liquidity pool (e.g. `BTS/XBTSX.USDC`), set `poolRef` in `bots.json` to pin a proxy pool for price derivation:
+
+```json
+{
+  "name": "BTS-USDC",
+  "assetA": "BTS",
+  "assetB": "XBTSX.USDC",
+  "startPrice": "pool",
+  "poolRef": "1.19.48",
+  "gridPrice": "ama1"
+}
+```
+
+The decorator (`withPoolRef`) intercepts pool price queries and fetches the pinned pool directly by ID via `get_objects`, bypassing all discovery, caching, and the `poolIdCache`. The ID can be a full form (`"1.19.48"`) or a short suffix (`"48"`). When unset, the original discovery path runs unchanged — zero overhead.
 
 ---
 
