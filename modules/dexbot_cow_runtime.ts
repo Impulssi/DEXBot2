@@ -1318,12 +1318,29 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
         return { executed: true, hadRotation: false };
     }
 
-    const createSlotValidation = validateCreateTargetSlots(actions, bot.manager?.orders);
+    const chainOrderCandidates = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
+        ? bot.manager._lastUnmatchedChainOrders
+        : [];
+    const createSlotValidation = validateCreateTargetSlots(actions, bot.manager?.orders, bot.manager?.assets, chainOrderCandidates);
     if (!createSlotValidation.isValid) {
         for (const violation of createSlotValidation.violations) {
+            let reason: string;
+            switch (violation.reason) {
+                case 'price_collision':
+                    reason = `existing placed order ${violation.currentOrderId} at same price`;
+                    break;
+                case 'same_batch_price_collision':
+                    reason = `another CREATE in the same batch at same price`;
+                    break;
+                case 'chain_orphan_collision':
+                    reason = `unmatched on-chain order ${violation.currentOrderId} at same price`;
+                    break;
+                default:
+                    reason = `existing orderId=${violation.currentOrderId}`;
+            }
             bot.manager.logger.log(
-                `[COW] Rejecting CREATE for occupied slot ${violation.targetId}: ` +
-                `existing orderId=${violation.currentOrderId}, type=${violation.currentType}, state=${violation.currentState}`,
+                `[COW] Rejecting CREATE for slot ${violation.targetId}: ${reason} ` +
+                `(type=${violation.currentType}, state=${violation.currentState})`,
                 'error'
             );
         }
@@ -1559,22 +1576,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
 
                     const createPrice = effectiveOrder.price;
                     const createSize = effectiveOrder.size;
-                    const priceCollision = findPriceCollision(
-                        bot.manager.orders.values(),
-                        order.id,
-                        createPrice, createSize, order.type, bot.manager.assets,
-                        isOrderPlaced
-                    );
-                    if (priceCollision) {
-                        bot.manager.logger.log(
-                            `[COW] Skipping CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ` +
-                            `existing placed order ${priceCollision.id} (${priceCollision.orderId}) ` +
-                            `already at price ${Format.formatPrice6(priceCollision.price)}. ` +
-                            `The next reconcile cycle will resolve the mismatch.`,
-                            'warn'
-                        );
-                        continue;
-                    }
+
                     const batchCollision = findPriceCollision(
                         opContexts,
                         order.id,

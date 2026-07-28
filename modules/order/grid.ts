@@ -1049,10 +1049,8 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
             if (!Array.isArray(chainOpenOrders)) return;
 
             // CRITICAL: Filter out PARTIAL orders before synchronizing - they're from old grid
-            // and shouldn't be part of the fresh regenerated grid structure
+            // and shouldn't be part of the fresh regenerated grid structure.
             const activeOrders = chainOpenOrders.filter((o: any) => o.state !== ORDER_STATES.PARTIAL);
-
-            // #4: Sync from open orders with timeout + retry + node failover
             await withBlockchainRetry(
                 () => manager.syncFromOpenOrders(activeOrders, { skipAccounting: true }),
                 'syncFromOpenOrders',
@@ -1759,27 +1757,37 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                 // Instead of silently aborting, re-plan with fresh funds so the
                 // correction still applies on this cycle.  The pre-flight check
                 // still guards against placing orders based on stale fund snapshots.
-                const decision = determineOrderSideByFunds(manager, lastPrice);
-                if (decision.side) {
-                    correction = await prepareSpreadCorrectionOrders(manager, decision.side);
-                    if (correction && ((correction.ordersToPlace?.length || 0) + (correction.ordersToUpdate?.length || 0) > 0)) {
-                        fundSnapshot = currentFunds;
-                        manager.logger?.log?.(
-                            `[SPREAD] Fund state changed between lock release and broadcast — ` +
-                            `re-planned with updated funds: ${correction.ordersToPlace?.length || 0} creates, ` +
-                            `${correction.ordersToUpdate?.length || 0} updates`,
-                            'info'
-                        );
-                    } else {
-                        manager.logger?.log?.(
-                            `[SPREAD] Fund state changed; re-plan produced no viable orders. Skipping cycle.`,
-                            'warn'
-                        );
-                        return { ordersPlaced: 0, partialsMoved: 0 };
-                    }
-                } else {
+                // Re-acquire _gridLock for the re-plan to ensure consistent grid
+                // state (the lock is re-entrant for this call chain — the outer
+                // acquire's callback completed before we reach here, so there is
+                // no nested lock to recurse into).  If determineOrderSideByFunds
+                // or prepareSpreadCorrectionOrders grow to hold the lock for
+                // heavy work, hoist the result to avoid serial re-execution.
+                const rePlanResult: any = await manager._gridLock.acquire(async () => {
+                    const decision = determineOrderSideByFunds(manager, lastPrice);
+                    if (!decision.side) return { side: false };
+                    const c = await prepareSpreadCorrectionOrders(manager, decision.side);
+                    return { side: true, correction: c };
+                });
+                if (!rePlanResult.side) {
                     manager.logger?.log?.(
                         `[SPREAD] Fund state changed; no side has sufficient funds for re-plan. Skipping cycle.`,
+                        'warn'
+                    );
+                    return { ordersPlaced: 0, partialsMoved: 0 };
+                }
+                correction = rePlanResult.correction;
+                if (correction && ((correction.ordersToPlace?.length || 0) + (correction.ordersToUpdate?.length || 0) > 0)) {
+                    fundSnapshot = currentFunds;
+                    manager.logger?.log?.(
+                        `[SPREAD] Fund state changed between lock release and broadcast — ` +
+                        `re-planned with updated funds: ${correction.ordersToPlace?.length || 0} creates, ` +
+                        `${correction.ordersToUpdate?.length || 0} updates`,
+                        'info'
+                    );
+                } else {
+                    manager.logger?.log?.(
+                        `[SPREAD] Fund state changed; re-plan produced no viable orders. Skipping cycle.`,
                         'warn'
                     );
                     return { ordersPlaced: 0, partialsMoved: 0 };

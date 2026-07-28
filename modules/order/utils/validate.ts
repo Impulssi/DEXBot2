@@ -47,12 +47,14 @@ import {
     floatToBlockchainInt,
     blockchainToFloat,
     getPrecisionSlack,
-    getDoubleDustThreshold
+    getDoubleDustThreshold,
+    findPriceCollision
 } from './math';
 import {
     isOrderOnChain,
     isPhantomOrder,
-    convertToSpreadPlaceholder
+    convertToSpreadPlaceholder,
+    isOrderPlaced
 } from './order';
 const { isValidNumber, toFiniteNumber } = Format;
 
@@ -619,14 +621,24 @@ function hasExecutableActions(rebalanceResult: any) {
 }
 
 /**
- * Validate that CREATE actions target slots that are not already occupied on-chain.
- * Cancelled or rotation-released slots are considered free.
+ * Validate that CREATE actions target slots that are not already occupied on-chain
+ * and that no CREATE price collides with an existing placed order or unmatched
+ * on-chain order.  Checks four layers:
+ *   1. Slot occupancy — target grid slot already has a placed order
+ *   2. Master grid price collision — a placed order in the grid has the same price
+ *   3. Chain orphan collision — an unmatched on-chain order has the same price
+ *   4. Same-batch duplicate — two CREATEs in the same batch have identical prices
+ *
+ * Cancel and rotation-released slots are considered free.
  *
  * @param {Array<import('./types').CowAction>} actions - List of COW actions
  * @param {Map} orders - Current order grid
- * @returns {{isValid: boolean, violations: Array<Object>}} Validation result with any violations
+ * @param {Object|null} [assets=null] - Asset metadata for tolerance calculation
+ * @param {Array<Object>} [chainOrderCandidates=[]] - Unmatched on-chain orders
+ *   with {chainOrderId, price, size, type} to check beyond the grid
+ * @returns {{isValid: boolean, violations: Array<Object>}} Validation result
  */
-function validateCreateTargetSlots(actions: any, orders: any) {
+function validateCreateTargetSlots(actions: any, orders: any, assets: any = null, chainOrderCandidates: any[] = []) {
     const safeActions = Array.isArray(actions) ? actions : [];
     const orderMap = orders instanceof Map ? orders : new Map();
     const releasedSlotIds = new Set();
@@ -648,6 +660,8 @@ function validateCreateTargetSlots(actions: any, orders: any) {
     }
 
     const violations: any[] = [];
+    const createEntries: Array<{targetId: string, action: any, price: number, size: number, type: string}> = [];
+
     for (const action of safeActions) {
         if (action?.type !== COW_ACTIONS.CREATE) continue;
 
@@ -655,15 +669,105 @@ function validateCreateTargetSlots(actions: any, orders: any) {
         if (!targetId || releasedSlotIds.has(targetId)) continue;
 
         const current = orderMap.get(targetId);
-        if (!current) continue;
 
-        if (isOrderOnChain(current)) {
+        // isOrderOnChain already checks orderId is truthy
+        if (current && isOrderOnChain(current)) {
             violations.push({
                 targetId,
                 currentOrderId: current.orderId,
                 currentType: current.type,
-                currentState: current.state
+                currentState: current.state,
+                reason: 'slot_occupied'
             });
+        }
+
+        if (action.order?.price != null && action.order?.type != null) {
+            const liveSlot = orderMap.get(targetId);
+            const livePrice = liveSlot && Number.isFinite(Number(liveSlot.price))
+                ? Number(liveSlot.price)
+                : null;
+            const effectivePrice = livePrice !== null ? livePrice : Number(action.order.price);
+            createEntries.push({
+                targetId,
+                action,
+                price: effectivePrice,
+                size: Number(action.order.size || 0),
+                type: action.order.type,
+            });
+        }
+    }
+
+    if (assets && createEntries.length > 0) {
+        for (const entry of createEntries) {
+            const collision = findPriceCollision(
+                orderMap.values(),
+                entry.targetId,
+                entry.price, entry.size, entry.type, assets,
+                (o: any) => isOrderPlaced(o) && o.id !== entry.targetId
+            );
+            if (collision) {
+                violations.push({
+                    targetId: entry.targetId,
+                    currentOrderId: collision.orderId,
+                    currentType: entry.type,
+                    currentState: collision.state,
+                    reason: 'price_collision',
+                });
+            }
+        }
+
+        // Filter out malformed chain entries (missing chainOrderId); all production
+        // set sites guard this, but a defensive skip prevents crashes on
+        // unexpected data shapes during development or deserialization.
+        const validChainCandidates = chainOrderCandidates.length > 0
+            ? chainOrderCandidates.filter((u: any) => u.chainOrderId && typeof u.price === 'number')
+            : [];
+        if (validChainCandidates.length > 0) {
+            const mapped = validChainCandidates.map((u: any) => ({
+                id: u.chainOrderId,
+                price: u.price,
+                size: u.size || 0,
+                orderId: u.chainOrderId,
+            }));
+            for (const entry of createEntries) {
+                const chainCollision = findPriceCollision(
+                    mapped,
+                    entry.targetId,
+                    entry.price, entry.size, entry.type, assets,
+                    (item: any) => item.price != null
+                );
+                if (chainCollision) {
+                    violations.push({
+                        targetId: entry.targetId,
+                        currentOrderId: chainCollision.orderId,
+                        currentType: entry.type,
+                        currentState: 'CHAIN_ORPHAN',
+                        reason: 'chain_orphan_collision',
+                    });
+                }
+            }
+        }
+
+        // Exact-equality sanity net: same-batch CREATEs from the same calculation
+        // produce identical float prices.  1e-8 is far below any precision-based
+        // tolerance (calculatePriceTolerance returns ~1e-5 at minimum), so this
+        // strictly catches bit-identical duplicates — not near-matches.  Near-matches
+        // are caught by the tolerance-based findPriceCollision check below in the
+        // COW loop's batchCollision guard.
+        for (let i = 0; i < createEntries.length; i++) {
+            for (let j = i + 1; j < createEntries.length; j++) {
+                const a = createEntries[i];
+                const b = createEntries[j];
+                if (Math.abs(a.price - b.price) <= 1e-8) {
+                    violations.push({
+                        targetId: b.targetId,
+                        currentOrderId: null,
+                        currentType: b.type,
+                        currentState: 'CREATE',
+                        reason: 'same_batch_price_collision',
+                    });
+                }
+            }
         }
     }
 
