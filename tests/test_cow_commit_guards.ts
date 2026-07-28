@@ -746,6 +746,83 @@ async function testCredentialDaemonPreflightBlocksBroadcast() {
     console.log('✓ COW-COMMIT-010 passed');
 }
 
+async function testToleranceViolationFiltersCreatesOnly() {
+    console.log('\n[COW-COMMIT-011] tolerance violations filter only violating CREATEs, rest of batch proceeds...');
+
+    const masterOrders = new Map([
+        ['slot-1', createOrder('slot-1', { type: ORDER_TYPES.BUY, price: 1.0 })]
+    ]);
+    const { bot, manager } = createCowExecutionFixture(masterOrders);
+
+    const originalBuildCancel = chainOrders.buildCancelOrderOp;
+    const originalBuildCreate = chainOrders.buildCreateOrderOp;
+    const originalExecuteBatch = chainOrders.executeBatch;
+
+    let executeBatchOps: any[] = [];
+    let executeBatchCalls = 0;
+
+    chainOrders.buildCancelOrderOp = async () => ({ op_name: 'limit_order_cancel', op_data: {} });
+    chainOrders.buildCreateOrderOp = async (_account: any, _amountToSell: any, sellAssetId: string) => ({
+        op: {
+            op_name: 'limit_order_create',
+            op_data: { amount_to_sell: { amount: 100000, asset_id: sellAssetId } }
+        },
+        finalInts: { sell: 100000, receive: 10000000, sellAssetId, receiveAssetId: manager.assets.assetA.id }
+    });
+    chainOrders.executeBatch = async (_account: any, _key: any, ops: any[]) => {
+        executeBatchCalls += 1;
+        executeBatchOps = ops;
+        // Return operation_results with chain order IDs for each op so
+        // processBatchResults doesn't trip on missing IDs.
+        const chainOrderIdBase = 1000 + Math.floor(Math.random() * 1000);
+        return {
+            success: true,
+            operation_results: ops.map((_: any, i: number) => [null, `1.7.${chainOrderIdBase + i}`])
+        };
+    };
+
+    const logMessages: string[] = [];
+    manager.logger = {
+        log: (msg: string) => { logMessages.push(msg); },
+        logFundsStatus: () => {}
+    };
+
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 0 });
+
+    try {
+        const result = await bot._updateOrdersOnChainBatchCOW({
+            workingGrid,
+            workingIndexes: workingGrid.getIndexes(),
+            workingBoundary: 0,
+            actions: [
+                { type: COW_ACTIONS.CREATE, id: 'slot-2', order: { id: 'slot-2', type: ORDER_TYPES.BUY, price: 1.1, size: 10, state: ORDER_STATES.VIRTUAL, orderId: null } },
+                { type: COW_ACTIONS.CREATE, id: 'slot-3', order: { id: 'slot-3', type: ORDER_TYPES.BUY, price: 1.1, size: 10, state: ORDER_STATES.VIRTUAL, orderId: null } },
+                { type: COW_ACTIONS.CREATE, id: 'slot-4', order: { id: 'slot-4', type: ORDER_TYPES.BUY, price: 1.2, size: 10, state: ORDER_STATES.VIRTUAL, orderId: null } },
+                { type: COW_ACTIONS.CANCEL, id: 'slot-1', orderId: '1.7.100' }
+            ]
+        });
+
+        assert.strictEqual(result.executed, true, 'batch with filtered tolerance violations must still execute');
+        assert.strictEqual(executeBatchCalls, 1, 'executeBatch must be called exactly once');
+
+        // 3 ops: 2 CREATEs (slot-2, slot-4) + 1 CANCEL (slot-1).
+        // slot-3 CREATE was filtered out by same_batch_price_collision.
+        assert.strictEqual(executeBatchOps.length, 3,
+            `expected 3 broadcast ops (2 CREATEs + 1 CANCEL), got ${executeBatchOps.length}`);
+
+        const loggedFilter = logMessages.some((m: string) =>
+            /tolerance-violating CREATE\(s\)/.test(m)
+        );
+        assert.strictEqual(loggedFilter, true, 'should log tolerance-violating filter message');
+    } finally {
+        chainOrders.buildCancelOrderOp = originalBuildCancel;
+        chainOrders.buildCreateOrderOp = originalBuildCreate;
+        chainOrders.executeBatch = originalExecuteBatch;
+    }
+
+    console.log('✓ COW-COMMIT-011 passed');
+}
+
 async function run() {
     console.log('Running COW commit guard regression tests...');
     await testRejectsVersionMismatchWithoutCommit();
@@ -758,6 +835,7 @@ async function run() {
     await testNoPostBatchCacheDeductionForMixedCreates();
     await testNoPostBatchCacheDeductionForSizeUpdates();
     await testCredentialDaemonPreflightBlocksBroadcast();
+    await testToleranceViolationFiltersCreatesOnly();
     console.log('\n✓ All COW commit guard regression tests passed');
 }
 

@@ -763,12 +763,33 @@ function findPriceCollision(
         const price = item.price ?? item.order?.price;
         const size = item.size ?? item.order?.size ?? 0;
         if (price == null || targetPrice == null) continue;
-        const tolerance = calculatePriceTolerance(
+
+        // Compute tolerance for both the target order's type and the
+        // candidate item's type, then take the minimum (most conservative).
+        // Without this, a buy-vs-sell comparison where one side uses a
+        // precision-0 asset can produce tolerance > grid increment from
+        // the MIN_ORDER_SIZE_FACTOR=50 floor alone, causing adjacent grid
+        // levels to falsely collide (see validateCreateTargetSlots layer 2
+        // comment for the full analysis).
+        const toleranceTarget = calculatePriceTolerance(
             Math.min(price, targetPrice),
             Math.max(size, targetSize),
             targetType,
             assets
         );
+        let tolerance = toleranceTarget;
+        const itemType = item.type ?? item.order?.type;
+        if (toleranceTarget != null && itemType != null) {
+            const toleranceItem = calculatePriceTolerance(
+                Math.min(price, targetPrice),
+                Math.max(size, targetSize),
+                itemType,
+                assets
+            );
+            if (toleranceItem != null) {
+                tolerance = Math.min(toleranceTarget, toleranceItem);
+            }
+        }
         if (tolerance != null && Math.abs(price - targetPrice) <= tolerance) {
             return item;
         }

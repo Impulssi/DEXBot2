@@ -632,12 +632,18 @@ function hasExecutableActions(rebalanceResult: any) {
  *
  * Cancel and rotation-released slots are considered free.
  *
+ * Returns violating target IDs alongside violations so the caller can skip
+ * individual violating CREATEs instead of aborting the entire batch.  This
+ * prevents false-positive tolerance collisions (e.g. precision-0 assets
+ * where calculatePriceTolerance exceeds the grid increment) from killing
+ * all other CREATE/UPDATE/CANCEL actions in the same batch.
+ *
  * @param {Array<import('./types').CowAction>} actions - List of COW actions
  * @param {Map} orders - Current order grid
  * @param {Object|null} [assets=null] - Asset metadata for tolerance calculation
  * @param {Array<Object>} [chainOrderCandidates=[]] - Unmatched on-chain orders
  *   with {chainOrderId, price, size, type} to check beyond the grid
- * @returns {{isValid: boolean, violations: Array<Object>}} Validation result
+ * @returns {{isValid: boolean, violations: Array<Object>, violatingTargetIds: Set<string>}} Validation result
  */
 function validateCreateTargetSlots(actions: any, orders: any, assets: any = null, chainOrderCandidates: any[] = []) {
     const safeActions = Array.isArray(actions) ? actions : [];
@@ -749,21 +755,43 @@ function validateCreateTargetSlots(actions: any, orders: any, assets: any = null
             }
         }
 
-        // Same-batch price collision guard: use precision-based tolerance (same
-        // as findPriceCollision) instead of a hardcoded float threshold.
-        // This catches both bit-identical duplicates and near-matches within the
-        // asset precision tolerance window.
+        // Same-batch price collision guard: compute tolerance from both
+        // entries' types and take the minimum (most conservative).  This
+        // prevents asymmetry-based false positives where a buy CREATE and
+        // a sell CREATE at nearby-but-different prices use different
+        // orderSize terms and get unequal tolerances — the min ensures
+        // both comparisons agree.
+        //
+        // Without this, a low-precision asset (precision 0) can produce
+        // tolerance > grid increment (e.g. 0.02 * price for 50-unit
+        // MIN_ORDER_SIZE_FACTOR floor), causing adjacent grid levels to
+        // falsely collide and creating permanent grid-edge gaps.
         for (let i = 0; i < createEntries.length; i++) {
             for (let j = i + 1; j < createEntries.length; j++) {
                 const a = createEntries[i];
                 const b = createEntries[j];
-                const tolerance = calculatePriceTolerance(
+                const tolA = calculatePriceTolerance(
                     Math.min(a.price, b.price),
                     Math.max(a.size, b.size),
                     a.type,
                     assets
                 );
+                const tolB = calculatePriceTolerance(
+                    Math.min(a.price, b.price),
+                    Math.max(a.size, b.size),
+                    b.type,
+                    assets
+                );
+                const tolerance = (tolA != null && tolB != null)
+                    ? Math.min(tolA, tolB)
+                    : (tolA != null ? tolA : tolB);
                 if (tolerance != null && Math.abs(a.price - b.price) <= tolerance) {
+                    // Only b.targetId is flagged, not a.  This is intentional:
+                    // in any cluster of N duplicate-priced CREATEs, the
+                    // earliest-indexed entry (a) escapes flagging and all N-1
+                    // others land in violatingTargetIds.  The filter then
+                    // removes all flagged CREATEs, leaving exactly one (the
+                    // earliest) to proceed — no gap, no duplicate.
                     violations.push({
                         targetId: b.targetId,
                         currentOrderId: null,
@@ -776,9 +804,12 @@ function validateCreateTargetSlots(actions: any, orders: any, assets: any = null
         }
     }
 
+    const violatingTargetIds = new Set(violations.map(v => v.targetId));
+
     return {
         isValid: violations.length === 0,
-        violations
+        violations,
+        violatingTargetIds
     };
 }
 

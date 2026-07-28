@@ -1345,13 +1345,51 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
             );
         }
 
-        return {
-            executed: false,
-            aborted: true,
-            reason: 'CREATE_SLOT_OCCUPIED',
-            violations: createSlotValidation.violations,
-            hadRotation: false
-        };
+        // Differentiate violation types:
+        //   * slot_occupied — hard constraint, not a false positive (the
+        //     target slot literally has a placed order).  Abort the batch.
+        //   * price_collision / chain_orphan_collision / same_batch_price_collision
+        //     — tolerance-based; can false-positive on low-precision assets
+        //     where calculatePriceTolerance exceeds the grid increment.
+        //     Skip only the violating CREATEs so the rest of the batch
+        //     (valid CREATEs, CANCELs, UPDATEs) still proceeds.
+        const hasHardOccupiedViolation = createSlotValidation.violations.some(
+            (v: any) => v.reason === 'slot_occupied'
+        );
+
+        if (hasHardOccupiedViolation) {
+            return {
+                executed: false,
+                aborted: true,
+                reason: 'CREATE_SLOT_OCCUPIED',
+                violations: createSlotValidation.violations,
+                hadRotation: false
+            };
+        }
+
+        const violatingIds = createSlotValidation.violatingTargetIds;
+        const filteredActions = actions.filter((action: any) => {
+            if (action.type !== COW_ACTIONS.CREATE) return true;
+            const targetId = action.id || action.order?.id;
+            return !violatingIds.has(targetId);
+        });
+
+        actions.length = 0;
+        actions.push(...filteredActions);
+
+        // All violations at this point are tolerance-based; slot_occupied
+        // would have aborted above.
+        bot.manager.logger.log(
+            `[COW] Filtered ${createSlotValidation.violations.length} tolerance-violating CREATE(s); ` +
+            `${actions.length} action(s) remaining in batch`,
+            'warn'
+        );
+
+        if (!actions.some((action: any) => action.type === COW_ACTIONS.CREATE)) {
+            if (actions.length === 0) {
+                return { executed: false, hadRotation: false };
+            }
+        }
     }
 
     const hasCreateActions = actions.some((action: any) => action.type === COW_ACTIONS.CREATE);
