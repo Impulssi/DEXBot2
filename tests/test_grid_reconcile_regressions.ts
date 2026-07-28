@@ -251,6 +251,115 @@ async function testAttemptResumeAwaitsStoreGrid() {
     }
 }
 
+async function testPhase3CancelsStaleSurplusUntrackedByGrid() {
+    // Regression: after Phase 2 updates+creates settle, any stale chain order
+    // that exceeds the target per side AND is not tracked by the grid must be
+    // cancelled in Phase 3 — even when matchedOnGrid was 0 on a fresh grid.
+
+    const orders = new Map();
+    const chainOpenOrders: any[] = [];
+    let orderCounter = 100;
+    const sellPrices = [1010, 1020, 1030, 1040, 1050, 1060, 1070];
+
+    // 7 sell orders on chain, target is 5 → 2 surplus
+    for (const price of sellPrices) {
+        const id = `1.7.${orderCounter++}`;
+        chainOpenOrders.push({
+            id,
+            sell_price: { base: { amount: 100000, asset_id: '1.3.1' }, quote: { amount: Math.round(price * 100), asset_id: '1.3.0' } },
+            for_sale: 100000,
+        });
+    }
+
+    // Grid has 5 virtual sell slots (no orderIds) — simulates a fresh grid
+    // where the first 5 chain orders will be updated to these slots.
+    // The 6th and 7th chain orders are untracked surplus.
+    for (let i = 0; i < 5; i++) {
+        const price = 1000 + i * 10;
+        orders.set(`sell-${i}`, { id: `sell-${i}`, price, type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, orderId: '', size: 100 });
+    }
+
+    // Track which chain order IDs are returned by readOpenOrders at Phase 3.
+    // We return ALL original chain orders (the surplus ones haven't been
+    // cancelled yet from the perspective of the re-fetch).
+    let cancelCalls: string[] = [];
+    const chainOrders = {
+        updateOrder: async () => {},
+        buildUpdateOrderOp: async () => ({ op: { op_name: 'limit_order_update', op_data: { fee: { amount: 0, asset_id: '1.3.0' } } } }),
+        executeBatch: async () => ({ success: true, operation_results: [] }),
+        cancelOrder: async (account: any, privateKey: any, orderId: string) => { cancelCalls.push(orderId); },
+        createOrder: async () => [],
+        readOpenOrders: async () => chainOpenOrders,
+    };
+
+    const manager = {
+        orders,
+        logger: { log: () => {} },
+        assets: { assetA: { id: '1.3.1', precision: 5, symbol: 'XRP' }, assetB: { id: '1.3.0', precision: 5, symbol: 'BTS' } },
+        accountTotals: { sellFree: 10000, buyFree: 10000 },
+        getOrdersByTypeAndState: (type: any, state: any) => Array.from(orders.values()).filter((o: any) => o && o.type === type && o.state === state),
+        _gridLock: { acquire: async (fn: any) => await fn() },
+        synchronizeWithChain: async () => {},
+        _applySync: async (data: any) => {
+            // Simulate Phase 2 finalization: register the orderId on the grid slot
+            // so Phase 3 can distinguish tracked vs untracked orders.
+            if (data && data.gridOrderId && data.chainOrderId) {
+                const slot = orders.get(data.gridOrderId);
+                if (slot) {
+                    orders.set(data.gridOrderId, { ...slot, orderId: data.chainOrderId, state: ORDER_STATES.ACTIVE });
+                }
+            }
+        },
+        _applyOrderUpdate: async (order: any) => { orders.set(order.id, order); return true; },
+        accountant: { addToChainFree: async () => {} },
+    };
+
+    await reconcileGridOrders({
+        manager,
+        config: { activeOrders: { sell: 5, buy: 0 } },
+        account: 'acct',
+        privateKey: 'pk',
+        chainOrders,
+        chainOpenOrders,
+    });
+
+    // After Phase 2, 5 chain orders get updated to grid slots via _applySync
+    // (the mock now registers chainOrderId on the grid slot). Phase 3 re-fetches
+    // chain orders and must cancel exactly the 2 untracked surplus (7 > 5).
+    // The guard at matchedOnGrid=0 prevents Phase 1 from cancelling these;
+    // testNoExcessCancelWhenMatchedOnGridIsZero covers that separately.
+    assert.strictEqual(cancelCalls.length, 2,
+        `Phase 3 should cancel exactly 2 untracked surplus sells (got ${cancelCalls.length})`);
+
+    // Collect orderIds that Phase 2 registered on grid slots (tracked orders).
+    const gridTrackedIds = new Set<string>();
+    for (const order of manager.orders.values()) {
+        if (order.orderId) gridTrackedIds.add(order.orderId);
+    }
+
+    // The grid should track at most 5 orderIds (the target for sells).
+    // It may track fewer if some Phase 2 updates were skipped, but must
+    // not exceed the target.
+    assert.ok(gridTrackedIds.size <= 5,
+        `Grid should track at most 5 orderIds (got ${gridTrackedIds.size})`);
+
+    // Every cancelled order must be UNTRACKED by the grid — Phase 3 must
+    // NOT cancel orders that were successfully updated in Phase 2.
+    for (const cid of cancelCalls) {
+        assert.ok(!gridTrackedIds.has(cid),
+            `Phase 3 must NOT cancel tracked order ${cid}`);
+    }
+
+    // Every cancelled order must be a real chain order.
+    const chainOrderIdSet = new Set(chainOpenOrders.map((o: any) => o.id));
+    for (const cid of cancelCalls) {
+        assert.ok(chainOrderIdSet.has(cid),
+            `Cancelled order ${cid} must be one of the chain open orders`);
+    }
+
+    console.log('✅ Regression 6 passed: Phase 3 cancels stale surplus orders untracked by grid');
+}
+
 async function testNoExcessCancelWhenMatchedOnGridIsZero() {
     // Regression: When matchedOnGrid === 0 (fresh grid, all VIRTUAL),
     // _reconcileStartupSide must NOT cancel chain orders as "excess".
@@ -332,6 +441,7 @@ async function testNoExcessCancelWhenMatchedOnGridIsZero() {
     await testSkipUpdateWhenSlotAlreadyMapped();
     await testAttemptResumeAwaitsStoreGrid();
     await testNoExcessCancelWhenMatchedOnGridIsZero();
+    await testPhase3CancelsStaleSurplusUntrackedByGrid();
     console.log('\n✅ Startup reconcile regression tests passed!\n');
 })().catch((err) => {
     console.error('\n❌ STARTUP RECONCILE REGRESSION TEST FAILED:');

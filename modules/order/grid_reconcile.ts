@@ -436,10 +436,68 @@ async function reconcileGridOrders({
         try {
             const freshOpenOrders = await chainOrders.readOpenOrders(account);
             const freshParsed = (Array.isArray(freshOpenOrders) ? freshOpenOrders : [])
-                .map((co: any) => ({ parsed: parseChainOrder(co, manager.assets) }))
+                .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
                 .filter((x: any) => x.parsed);
-            finalChainSellCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).length;
-            finalChainBuyCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).length;
+
+            const gridOrderIds = new Set<string>();
+            for (const order of manager.orders.values()) {
+                if (order && order.orderId) gridOrderIds.add(order.orderId);
+            }
+
+            // Phase 3 assumes Phase 2 either registered all creates in
+            // manager.orders or the on-chain order was rolled back. An
+            // orphan (on chain but untracked) will be collected below as
+            // untracked surplus and cancelled — this is correct cleanup.
+            const staleSurplusCancels: Array<{ chainOrderObj: any; sideLabel: string }> = [];
+            for (const side of [ORDER_TYPES.SELL, ORDER_TYPES.BUY]) {
+                const targetCount = side === ORDER_TYPES.SELL ? targetSell : targetBuy;
+                let sideOrders = freshParsed.filter((x: any) => x.parsed.type === side);
+                const sideLabel = side === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
+
+                if (sideOrders.length > targetCount) {
+                    // Sort by chain ID for deterministic cancellation order.
+                    sideOrders = sideOrders.sort((a: any, b: any) =>
+                        (a.chain.id || '').localeCompare(b.chain.id || '')
+                    );
+                    let cancelLimit = sideOrders.length - targetCount;
+                    for (const so of sideOrders) {
+                        if (cancelLimit <= 0) break;
+                        if (!gridOrderIds.has(so.chain.id)) {
+                            staleSurplusCancels.push({ chainOrderObj: so.chain, sideLabel });
+                            cancelLimit--;
+                        }
+                    }
+                }
+            }
+
+            let cancelledSellCount = 0;
+            let cancelledBuyCount = 0;
+            if (staleSurplusCancels.length > 0) {
+                await manager._gridLock.acquire(async () => {
+                    for (const sc of staleSurplusCancels) {
+                        try {
+                            await _cancelChainOrder({
+                                chainOrders,
+                                account,
+                                privateKey,
+                                manager,
+                                chainOrderId: sc.chainOrderObj.id,
+                                dryRun,
+                                chainOrderObj: sc.chainOrderObj,
+                                releaseUntrackedFunds: true,
+                            });
+                            if (sc.sideLabel === 'SELL') cancelledSellCount++;
+                            else cancelledBuyCount++;
+                            logger?.log?.(`Startup: Cancelled stale surplus ${sc.sideLabel} order ${sc.chainOrderObj.id}`, 'info');
+                        } catch (e: any) {
+                            logger?.log?.(`Startup: Failed to cancel surplus ${sc.sideLabel} ${sc.chainOrderObj.id}: ${getErrorMessage(e)}`, 'warn');
+                        }
+                    }
+                });
+            }
+
+            finalChainSellCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).length - cancelledSellCount;
+            finalChainBuyCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).length - cancelledBuyCount;
         } catch (err: any) {
             logger?.log?.(`Startup: Failed to refresh final chain counts: ${getErrorMessage(err)}`, 'warn');
         }
