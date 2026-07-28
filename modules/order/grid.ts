@@ -541,7 +541,11 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
         if (!Array.isArray(grid)) return;
         return await manager._gridLock.acquire(async () => {
             try {
-                await manager._initializeAssets();
+                await withBlockchainRetry(
+                    () => manager._initializeAssets(),
+                    'initializeAssets',
+                    { logger: manager.logger }
+                );
             } catch (e: any) {
                 manager.logger?.log?.(`Asset initialization failed during grid load: ${getErrorMessage(e)}`, 'warn');
             }
@@ -663,7 +667,15 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
 export async function initializeGrid(manager: any): Promise<void> {
         if (!manager) throw new Error('initializeGrid requires a manager instance');
 
-        await manager._initializeAssets();
+        try {
+            await withBlockchainRetry(
+                () => manager._initializeAssets(),
+                'initializeAssets',
+                { logger: manager.logger }
+            );
+        } catch (e: any) {
+            manager.logger?.log?.(`Asset initialization failed during grid init: ${getErrorMessage(e)}`, 'warn');
+        }
 
         // FIX: Add explicit state validation to prevent cryptic errors later
         if (!manager.assets || !manager.assets.assetA || !manager.assets.assetB) {
@@ -977,75 +989,99 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
         // Total timeout across all steps — prevents indefinite hang even if
         // an individual withBlockchainRetry step pins the event loop.
         const totalTimeoutMs = PIPELINE_TIMING.TIMEOUT_MS * 2; // 10 min
+        let _resyncAborted = false;
 
         const work = (async () => {
-            manager.logger?.log?.('Starting full resync...', 'info');
-
-            // #1: Initialize assets (returns immediately if already loaded)
-            await manager._initializeAssets();
-
-            // #2: Fetch account totals with timeout + retry + node failover
-            await withBlockchainRetry(
-                () => manager.fetchAccountTotals(),
-                'fetchAccountTotals',
-                { logger: manager.logger }
-            );
-
-            // #3: Read open orders with timeout + retry + node failover
-            const chainOpenOrders = await withBlockchainRetry(
-                () => readOpenOrdersFn(),
-                'readOpenOrders',
-                { logger: manager.logger }
-            );
-            if (!Array.isArray(chainOpenOrders)) return;
-
-            await withBlockchainRetry(
-                () => manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true }),
-                'syncFromOpenOrders',
-                { logger: manager.logger }
-            );
-
-            manager.resetFunds();
-
-            await manager.persistGrid();
-            await initializeGrid(manager);
-
-            const { reconcileGridOrders } = require('./grid_reconcile');
-
-            // #5: Reconcile grid orders with timeout + retry + node failover
             try {
-                await withBlockchainRetry(
-                    () => reconcileGridOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders }),
-                    'reconcileGridOrders',
-                    // 5 min: Phase 2 of reconcile does sequential creates (~3s each);
-                    // the default 30s timeout would kill mid-batch and cause duplicate-
-                    // accumulation death spirals. PIPELINE_TIMING.TIMEOUT_MS gives enough
-                    // headroom for all pending creates+updates to finish in one shot.
-                    { logger: manager.logger, timeoutMs: PIPELINE_TIMING.TIMEOUT_MS }
-                );
-            } catch (err: any) {
-                manager.logger?.log?.(`Error during startup order reconciliation: ${getErrorMessage(err)}`, 'error');
-                throw new Error(`Grid recalculation failed during order reconciliation: ${getErrorMessage(err)}`);
-            }
+                manager.logger?.log?.('Starting full resync...', 'info');
+                if (_resyncAborted) return;
 
-            manager.logger?.log?.('Full resync complete.', 'info');
+                // #1: Initialize assets with timeout + retry + node failover
+                try {
+                    await withBlockchainRetry(
+                        () => manager._initializeAssets(),
+                        'initializeAssets',
+                        { logger: manager.logger }
+                    );
+                } catch (e: any) {
+                    manager.logger?.log?.(`Asset initialization failed during resync: ${getErrorMessage(e)}`, 'warn');
+                }
+                if (_resyncAborted) return;
+
+                // #2: Fetch account totals with timeout + retry + node failover
+                await withBlockchainRetry(
+                    () => manager.fetchAccountTotals(),
+                    'fetchAccountTotals',
+                    { logger: manager.logger }
+                );
+                if (_resyncAborted) return;
+
+                // #3: Read open orders with timeout + retry + node failover
+                const chainOpenOrders = await withBlockchainRetry(
+                    () => readOpenOrdersFn(),
+                    'readOpenOrders',
+                    { logger: manager.logger }
+                );
+                if (_resyncAborted) return;
+                if (!Array.isArray(chainOpenOrders)) return;
+
+                await withBlockchainRetry(
+                    () => manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true }),
+                    'syncFromOpenOrders',
+                    { logger: manager.logger }
+                );
+                if (_resyncAborted) return;
+
+                manager.resetFunds();
+
+                if (_resyncAborted) return;
+                await manager.persistGrid();
+                if (_resyncAborted) return;
+                await initializeGrid(manager);
+
+                if (_resyncAborted) return;
+                const { reconcileGridOrders } = require('./grid_reconcile');
+
+                // #5: Reconcile grid orders with timeout + retry + node failover
+                try {
+                    await withBlockchainRetry(
+                        () => reconcileGridOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders }),
+                        'reconcileGridOrders',
+                        // 5 min: Phase 2 of reconcile does sequential creates (~3s each);
+                        // the default 30s timeout would kill mid-batch and cause duplicate-
+                        // accumulation death spirals. PIPELINE_TIMING.TIMEOUT_MS gives enough
+                        // headroom for all pending creates+updates to finish in one shot.
+                        { logger: manager.logger, timeoutMs: PIPELINE_TIMING.TIMEOUT_MS }
+                    );
+                } catch (err: any) {
+                    manager.logger?.log?.(`Error during startup order reconciliation: ${getErrorMessage(err)}`, 'error');
+                    throw new Error(`Grid recalculation failed during order reconciliation: ${getErrorMessage(err)}`);
+                }
+                if (_resyncAborted) return;
+
+                manager.logger?.log?.('Full resync complete.', 'info');
+            } finally {
+                manager.finishBootstrap();
+            }
         })();
 
-        try {
-            // Swallow late rejection if timeout wins the race
-            Promise.resolve(work).catch(() => {});
-            return await Promise.race([
-                work,
-                new Promise<void>((_, reject) => {
-                    setTimeout(
-                        () => reject(new Error(`recalculateGrid timed out after ${totalTimeoutMs}ms`)),
-                        totalTimeoutMs
-                    );
-                })
-            ]);
-        } finally {
-            manager.finishBootstrap();
-        }
+        // Swallow late rejection if timeout wins the race
+        Promise.resolve(work).catch(() => {});
+        let timeoutId: any;
+        const result = await Promise.race([
+            work,
+            new Promise<void>((_, reject) => {
+                timeoutId = setTimeout(
+                    () => {
+                        _resyncAborted = true;
+                        reject(new Error(`recalculateGrid timed out after ${totalTimeoutMs}ms`));
+                    },
+                    totalTimeoutMs
+                );
+            })
+        ]);
+        clearTimeout(timeoutId);
+        return result;
     }
 
     /**

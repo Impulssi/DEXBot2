@@ -1328,7 +1328,7 @@ export async function withBlockchainRetry<T>(
             // Report node failure so NodeManager can blacklist and trigger failover
             try {
                 const { getNodeManager } = require('../../bitshares_client');
-                const nodeManager = getNodeManager();
+                const nodeManager = getNodeManager?.();
                 const nodeUrl = nodeManager?.getBestNode?.();
                 if (nodeUrl && typeof nodeManager.reportNodeFailure === 'function') {
                     nodeManager.reportNodeFailure(nodeUrl, getErrorMessage(err), 'blockchain-op');
