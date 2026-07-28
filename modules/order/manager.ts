@@ -348,7 +348,7 @@ class OrderManager {
         //   Level 4: _fundLock         (fund operations — innermost)
         // Note: AsyncLock IS re-entrant (acquire detects nested calls via _holding).
         this._divergenceLock = new AsyncLock({ level: 0 });
-        this._fillProcessingLock = new AsyncLock({ level: 1 });
+        this._fillProcessingLock = new AsyncLock({ level: 1, timeout: TIMING.SYNC_LOCK_TIMEOUT_MS });
         this._gridLock = new AsyncLock({
             level: 2,
             onContention: () => { this._metrics.gridLockContention++; }

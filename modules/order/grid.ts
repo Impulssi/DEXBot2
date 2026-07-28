@@ -1002,7 +1002,7 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
             await withBlockchainRetry(
                 () => manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true }),
                 'syncFromOpenOrders',
-                manager.logger
+                { logger: manager.logger }
             );
 
             manager.resetFunds();

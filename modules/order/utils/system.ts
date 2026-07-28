@@ -1278,6 +1278,10 @@ export async function withRetry<T>(fn: () => Promise<T>, options: { maxAttempts?
  * Reports each failure to NodeManager so the node gets blacklisted after
  * consecutive failures, triggering automatic failover to a healthy node.
  *
+ * After exhausting the retry budget, force-blacklists the current node and
+ * reconnects to a different healthy node, then makes one final attempt.
+ * This prevents the bot from hanging indefinitely on a stuck node.
+ *
  * Defaults: 30s timeout, 3 retries (PIPELINE_TIMING.RETRY_MAX_ATTEMPTS), 2s retry delay.
  * All configurable via options.
  *
@@ -1340,6 +1344,36 @@ export async function withBlockchainRetry<T>(
             }
         }
     }
+
+    // All retries exhausted — force-switch to a different node and retry once more
+    try {
+        const { getNodeManager, reconnectForCycle } = require('../../bitshares_client');
+        const nodeManager = getNodeManager?.();
+        const failedNode = nodeManager?.getBestNode?.();
+        if (failedNode && typeof nodeManager.blacklistNode === 'function') {
+            nodeManager.blacklistNode(failedNode);
+            logger?.log?.(
+                `${label}: blacklisted node ${failedNode.substring(0, 40)}... after ${maxRetries} failed attempts. Switching nodes...`,
+                'warn'
+            );
+        }
+        const reconnected = await reconnectForCycle(label + ' failover');
+        if (reconnected) {
+            logger?.log?.(`${label}: reconnected to different node. Retrying operation...`, 'warn');
+            const resultPromise = fn();
+            Promise.resolve(resultPromise).catch(() => {});
+            return await Promise.race([
+                resultPromise,
+                new Promise<T>((_, reject) => {
+                    setTimeout(
+                        () => reject(new Error(`${label} timed out after ${timeoutMs}ms (failover attempt)`)),
+                        timeoutMs
+                    );
+                })
+            ]);
+        }
+    } catch (_: any) { /* failover recovery errors are non-fatal — throw original error */ }
+
     throw new Error(`${label} failed after ${maxRetries} attempts: ${getErrorMessage(lastError)}`);
 }
 
