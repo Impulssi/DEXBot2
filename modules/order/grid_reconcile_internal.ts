@@ -1037,7 +1037,20 @@ async function _reconcileStartupSide({
         });
     }
 
-    let cancelCount = Math.max(0, chainCount - targetCount);
+    // Guard: when the matcher found zero active grid orders (matchedOnGrid === 0)
+    // AND we're actively scaling up (neededSlots > 0), the grid is freshly
+    // generated — all orders are VIRTUAL and every chain order appears
+    // "unmatched" only because no slot has been assigned yet. Cancelling here
+    // would remove legitimate live orders. Stale duplicates are caught by
+    // the SUSPECTED DUPLICATE detection in Phase 1 of reconcileGridOrders;
+    // any remaining unmatched will be handled by the next structural
+    // divergence cycle. Better to over-keep than to nuke on a false-positive.
+    // When targetCount is 0 or matchedOnGrid > 0 the existing cancel logic
+    // applies as before.
+    let cancelCount = 0;
+    if (matchedOnGrid > 0 || neededSlots === 0) {
+        cancelCount = Math.max(0, chainCount - targetCount);
+    }
     if (cancelCount > 0) {
         const parsedUnmatched = processedUnmatched
             .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))

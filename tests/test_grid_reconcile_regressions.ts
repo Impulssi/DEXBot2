@@ -251,12 +251,87 @@ async function testAttemptResumeAwaitsStoreGrid() {
     }
 }
 
+async function testNoExcessCancelWhenMatchedOnGridIsZero() {
+    // Regression: When matchedOnGrid === 0 (fresh grid, all VIRTUAL),
+    // _reconcileStartupSide must NOT cancel chain orders as "excess".
+    // Previously cancelCount = chainCount - targetCount would cancel
+    // legitimate orders that simply hadn't been matched yet.
+
+    const orders = new Map();
+    const chainOpenOrders = [];
+    const buyPrices = [1000, 990, 980, 970, 960];
+    const sellPrices = [1010, 1020, 1030, 1040, 1050];
+    let orderCounter = 1;
+
+    for (const price of sellPrices) {
+        const id = `1.7.${orderCounter++}`;
+        chainOpenOrders.push({
+            id,
+            sell_price: { base: { amount: 100000, asset_id: '1.3.1' }, quote: { amount: Math.round(price * 100), asset_id: '1.3.0' } },
+            for_sale: 100000,
+        });
+    }
+    for (const price of buyPrices) {
+        const id = `1.7.${orderCounter++}`;
+        chainOpenOrders.push({
+            id,
+            sell_price: { base: { amount: Math.round(price * 100), asset_id: '1.3.0' }, quote: { amount: 100000, asset_id: '1.3.1' } },
+            for_sale: 100000,
+        });
+    }
+
+    // Populate grid with VIRTUAL orders (no orderIds) — simulates fresh grid.
+    for (let i = 0; i < 10; i++) {
+        const price = 950 + i * 10;
+        orders.set(`slot-${i}`, { id: `slot-${i}`, price, type: i < 5 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, orderId: '', size: 100 });
+    }
+
+    let cancelCalls = 0;
+    const chainOrders = {
+        updateOrder: async () => {},
+        buildUpdateOrderOp: async () => ({ op: { op_name: 'limit_order_update', op_data: { fee: { amount: 0, asset_id: '1.3.0' } } } }),
+        executeBatch: async () => ({ success: true, operation_results: [] }),
+        cancelOrder: async () => { cancelCalls++; },
+        createOrder: async () => [],
+        readOpenOrders: async () => [],
+    };
+
+    const manager = {
+        orders,
+        logger: { log: () => {} },
+        assets: { assetA: { id: '1.3.1', precision: 5, symbol: 'XRP' }, assetB: { id: '1.3.0', precision: 5, symbol: 'BTS' } },
+        accountTotals: { sellFree: 10000, buyFree: 10000 },
+        getOrdersByTypeAndState: (type, state) => Array.from(orders.values()).filter(o => o && o.type === type && o.state === state),
+        _gridLock: { acquire: async (fn) => await fn() },
+        synchronizeWithChain: async () => {},
+        _applySync: async () => {},
+        _applyOrderUpdate: async (order) => { orders.set(order.id, order); return true; },
+        accountant: { addToChainFree: async () => {} },
+    };
+
+    await reconcileGridOrders({
+        manager,
+        config: { activeOrders: { sell: 5, buy: 5 } },
+        account: 'acct',
+        privateKey: 'pk',
+        chainOrders,
+        chainOpenOrders,
+    });
+
+    // matchedOnGrid was 0 (all VIRTUAL), so cancelCount should be 0.
+    // Any cancel call means the guard failed.
+    assert.strictEqual(cancelCalls, 0,
+        `matchedOnGrid=0 must not issue excess cancels (got ${cancelCalls})`);
+    console.log('✅ Regression 5 passed: no excess cancel when matchedOnGrid is zero (fresh grid)');
+}
+
 (async () => {
     console.log('\n========== STARTUP RECONCILE REGRESSION TESTS ==========\n');
     await testUnmatchedCancelReleasesFundsAndHandlesNullEntries();
     await testVerifiedAfterFailureRefetchesOpenOrders();
     await testSkipUpdateWhenSlotAlreadyMapped();
     await testAttemptResumeAwaitsStoreGrid();
+    await testNoExcessCancelWhenMatchedOnGridIsZero();
     console.log('\n✅ Startup reconcile regression tests passed!\n');
 })().catch((err) => {
     console.error('\n❌ STARTUP RECONCILE REGRESSION TEST FAILED:');

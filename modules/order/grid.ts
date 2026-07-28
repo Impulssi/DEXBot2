@@ -95,7 +95,7 @@
  * ===============================================================================
  */
 
-import { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, MARKET_ADAPTER } from '../constants';
+import { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, PIPELINE_TIMING, MARKET_ADAPTER } from '../constants';
 const { GRID_COMPARISON } = GRID_LIMITS;
 import * as Format from './format';
 import {
@@ -1016,7 +1016,11 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
                 await withBlockchainRetry(
                     () => reconcileGridOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders }),
                     'reconcileGridOrders',
-                    { logger: manager.logger }
+                    // 5 min: Phase 2 of reconcile does sequential creates (~3s each);
+                    // the default 30s timeout would kill mid-batch and cause duplicate-
+                    // accumulation death spirals. PIPELINE_TIMING.TIMEOUT_MS gives enough
+                    // headroom for all pending creates+updates to finish in one shot.
+                    { logger: manager.logger, timeoutMs: PIPELINE_TIMING.TIMEOUT_MS }
                 );
             } catch (err: any) {
                 manager.logger?.log?.(`Error during startup order reconciliation: ${getErrorMessage(err)}`, 'error');
