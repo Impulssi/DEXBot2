@@ -48,7 +48,8 @@ import {
     blockchainToFloat,
     getPrecisionSlack,
     getDoubleDustThreshold,
-    findPriceCollision
+    findPriceCollision,
+    calculatePriceTolerance
 } from './math';
 import {
     isOrderOnChain,
@@ -748,17 +749,21 @@ function validateCreateTargetSlots(actions: any, orders: any, assets: any = null
             }
         }
 
-        // Exact-equality sanity net: same-batch CREATEs from the same calculation
-        // produce identical float prices.  1e-8 is far below any precision-based
-        // tolerance (calculatePriceTolerance returns ~1e-5 at minimum), so this
-        // strictly catches bit-identical duplicates — not near-matches.  Near-matches
-        // are caught by the tolerance-based findPriceCollision check below in the
-        // COW loop's batchCollision guard.
+        // Same-batch price collision guard: use precision-based tolerance (same
+        // as findPriceCollision) instead of a hardcoded float threshold.
+        // This catches both bit-identical duplicates and near-matches within the
+        // asset precision tolerance window.
         for (let i = 0; i < createEntries.length; i++) {
             for (let j = i + 1; j < createEntries.length; j++) {
                 const a = createEntries[i];
                 const b = createEntries[j];
-                if (Math.abs(a.price - b.price) <= 1e-8) {
+                const tolerance = calculatePriceTolerance(
+                    Math.min(a.price, b.price),
+                    Math.max(a.size, b.size),
+                    a.type,
+                    assets
+                );
+                if (tolerance != null && Math.abs(a.price - b.price) <= tolerance) {
                     violations.push({
                         targetId: b.targetId,
                         currentOrderId: null,
