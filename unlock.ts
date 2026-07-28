@@ -57,6 +57,7 @@ import { isLikelyMarketAdapterProcess } from './modules/launcher/market_adapter_
 import { Config } from './modules/config';
 import { runMigration } from './scripts/migrate_bot_keys';
 import { getErrorMessage } from './modules/utils/errors';
+import { withTimeout } from './modules/order/utils/timeout';
 setUmask(0o077);
 
 const storage = getStorage();
@@ -947,10 +948,11 @@ if (isUnlockStartDirectRun) {
             const bot = botProcessRef.current;
             if (bot && !bot.killed) {
                 forwardSignal(bot, 'SIGTERM');
-                await Promise.race([
+                await withTimeout(
                     new Promise<void>((resolve) => bot.once('close', resolve)),
-                    new Promise<void>((resolve) => setTimeout(resolve, 10000)),
-                ]);
+                    LAUNCHER.MONOLITHIC.SHUTDOWN_GRACE_MS,
+                    { onTimeout: 'resolve', defaultValue: undefined as any }
+                );
             }
         });
     } else {

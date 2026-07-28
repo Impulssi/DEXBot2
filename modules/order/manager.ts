@@ -20,6 +20,7 @@
 
 
 import { persistGridSnapshot, deepFreeze, cloneMap } from './utils/system';
+import { withTimeout } from './utils/timeout';
 import { WorkingGrid } from './working_grid';
 import Logger from './logger';
 import AsyncLock from './async_lock';
@@ -581,15 +582,11 @@ class OrderManager {
 
         if (!waitPromise) return;
 
-        await Promise.race([
-            waitPromise,
-            new Promise<void>((resolve: any) => {
-                setTimeout(() => {
-                    this.logger.log('[FUND] Timeout waiting for account totals', 'warn');
-                    resolve();
-                }, timeoutMs);
-            })
-        ]);
+        await withTimeout(waitPromise, timeoutMs, {
+            onTimeout: 'resolve',
+            defaultValue: undefined as any,
+            onTimeoutCallback: () => this.logger.log('[FUND] Timeout waiting for account totals', 'warn'),
+        });
     }
 
     /**

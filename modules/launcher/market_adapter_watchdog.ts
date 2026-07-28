@@ -1,7 +1,7 @@
 
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
-import { MARKET_ADAPTER } from '../constants';
+import { LAUNCHER, MARKET_ADAPTER } from '../constants';
 import { Config } from '../config';
 import { PATHS } from '../paths';
 import { isLikelyMarketAdapterProcess, isLockStale } from './market_adapter_runtime';
@@ -12,6 +12,7 @@ import { getActiveAmaBotFingerprint } from './monolithic_runtime';
 
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
 import { getErrorMessage } from '../utils/errors';
+import { withTimeout } from '../order/utils/timeout';
 
 function createMarketAdapterWatchdog({
     codeRoot = DEFAULT_CODE_ROOT,
@@ -66,12 +67,13 @@ function createMarketAdapterWatchdog({
         try {
             _child.kill('SIGTERM');
         } catch (_) {}
-        const exited = await Promise.race([
+        const exited = await withTimeout(
             new Promise((resolve: any) => {
                 _child.once('close', () => resolve(true));
             }),
-            new Promise((resolve: any) => setTimeout(() => resolve(false), 5000)),
-        ]);
+            LAUNCHER.SUPERVISOR.SHUTDOWN_TIMEOUT_MS,
+            { onTimeout: 'resolve', defaultValue: false }
+        );
         if (!exited && _child && _child.exitCode == null) {
             try {
                 _child.kill('SIGKILL');

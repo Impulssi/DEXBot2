@@ -7,6 +7,7 @@ import LoggerState from './logger_state';
 import { LOGGING_CONFIG, ORDER_STATES, ORDER_TYPES } from '../constants';
 import { Config } from '../config';
 import { getErrorMessage } from '../utils/errors';
+import { withTimeout } from './utils/timeout';
 
 const storage = getStorage();
 
@@ -297,14 +298,7 @@ class Logger {
             }
             this._drainQueue();
         });
-        return Promise.race([
-            inner,
-            new Promise<void>((resolve) => {
-                setTimeout(() => {
-                    resolve();
-                }, timeoutMs);
-            })
-        ]);
+        return withTimeout(inner, timeoutMs, { onTimeout: 'resolve', defaultValue: undefined as any });
     }
 
     /**

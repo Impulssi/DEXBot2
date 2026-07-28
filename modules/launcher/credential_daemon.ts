@@ -1,5 +1,6 @@
 
 import { path } from '../path_api';
+import { LAUNCHER } from '../constants';
 import { getStorage } from '../storage';
 import { spawn } from 'node:child_process';
 import * as chainKeys from '../chain_keys';
@@ -11,6 +12,7 @@ import { PATHS } from '../paths';
 import { safeUnlink } from '../utils/fs_utils';
 import { readHeadlessPassword } from './headless_password';
 import { sleep } from '../order/utils/system';
+import { withTimeout } from '../order/utils/timeout';
 const storage = getStorage();
 import type { StdioOptions } from 'child_process';
 import {
@@ -158,10 +160,11 @@ function createCredentialDaemonController({
         if (!daemonProcess || daemonProcess.killed) return;
 
         forwardSignal('SIGTERM');
-        await Promise.race([
+        await withTimeout(
             daemonExitPromise || waitForExit(daemonProcess),
-            sleep(5000),
-        ]);
+            LAUNCHER.SUPERVISOR.SHUTDOWN_TIMEOUT_MS,
+            { onTimeout: 'resolve', defaultValue: undefined as any }
+        );
 
         safeUnlink(socketPath)
         safeUnlink(readyFilePath)

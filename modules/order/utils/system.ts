@@ -28,12 +28,13 @@
  * SECTION 4: GRID UTILITIES (1 function)
  *   - syncBoundaryToFunds(manager) - Sync boundary position to available funds
  *
- * SECTION 5: UI & INTERACTIVE UTILITIES (6 functions)
+ * SECTION 5: UI & INTERACTIVE UTILITIES (7 functions)
  *   - ensureProfilesDirectory(profilesDir) - Ensure profiles directory exists
  *   - sleep(ms) - Pause execution for specified duration
  *   - readInput(prompt, options) - Read user input from stdin
  *   - readPassword(prompt) - Read password with masked echo
  *   - withRetry(fn, options) - Execute async function with exponential backoff
+ *   - withTimeout(promise, timeoutMs, options) - defined in ./timeout
  *   - withBlockchainRetry(fn, label, options) - Blockchain op with timeout + retry + node failover
  *
  * SECTION 6: GENERAL UTILITIES (5 functions)
@@ -58,6 +59,7 @@ import Logger from '../../logger';
 import { runtime } from '../../runtime';
 import { ensureDir, readJSON } from '../../utils/fs_utils';
 import { getErrorMessage } from '../../utils/errors';
+import { withTimeout } from './timeout';
 const systemLogger = new Logger('System');
 
 function _debugLogAndNull(method: any, symA: any, symB: any) {
@@ -1308,20 +1310,16 @@ export async function withBlockchainRetry<T>(
     const logger = options?.logger;
     let lastError: any;
 
+    /** Run fn() with a timeout via shared withTimeout utility. */
+    function raceWithTimeout(attemptLabel: string): Promise<T> {
+        const p = fn();
+        Promise.resolve(p).catch(() => {});
+        return withTimeout(p, timeoutMs, { label: `${label} ${attemptLabel}` });
+    }
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            const resultPromise = fn();
-            // Swallow late unhandled rejections from the race loser
-            Promise.resolve(resultPromise).catch(() => {});
-            return await Promise.race([
-                resultPromise,
-                new Promise<T>((_, reject) => {
-                    setTimeout(
-                        () => reject(new Error(`${label} timed out after ${timeoutMs}ms (attempt ${attempt}/${maxRetries})`)),
-                        timeoutMs
-                    );
-                })
-            ]);
+            return await raceWithTimeout(`attempt ${attempt}/${maxRetries}`);
         } catch (err: any) {
             lastError = err;
 
@@ -1360,17 +1358,7 @@ export async function withBlockchainRetry<T>(
         const reconnected = await reconnectForCycle(label + ' failover');
         if (reconnected) {
             logger?.log?.(`${label}: reconnected to different node. Retrying operation...`, 'warn');
-            const resultPromise = fn();
-            Promise.resolve(resultPromise).catch(() => {});
-            return await Promise.race([
-                resultPromise,
-                new Promise<T>((_, reject) => {
-                    setTimeout(
-                        () => reject(new Error(`${label} timed out after ${timeoutMs}ms (failover attempt)`)),
-                        timeoutMs
-                    );
-                })
-            ]);
+            return await raceWithTimeout('failover attempt');
         }
     } catch (_: any) { /* failover recovery errors are non-fatal — throw original error */ }
 

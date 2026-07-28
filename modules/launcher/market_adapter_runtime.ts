@@ -3,10 +3,11 @@ import { getStorage } from '../storage';
 import { spawn } from 'node:child_process';
 import { buildScopedChildEnv } from './child_env';
 import { Config } from '../config';
-import { MARKET_ADAPTER } from '../constants';
+import { LAUNCHER, MARKET_ADAPTER } from '../constants';
 import { PATHS } from '../paths';
 import { readJSON, safeUnlink } from '../utils/fs_utils';
 import { getProcessDiscovery } from '../process_discovery';
+import { withTimeout } from '../order/utils/timeout';
 'use strict';
 
 const storage = getStorage();
@@ -147,10 +148,11 @@ function createMarketAdapterRuntime({
             child.kill('SIGTERM');
         } catch (_: any) {}
 
-        await Promise.race([
+        await withTimeout(
             childExitPromise || waitForChildExit(child).catch(() => 0),
-            new Promise((resolve) => setTimeout(resolve, 5000)),
-        ]);
+            LAUNCHER.SUPERVISOR.SHUTDOWN_TIMEOUT_MS,
+            { onTimeout: 'resolve', defaultValue: 0 }
+        );
 
         if (child && child.exitCode == null) {
             try {

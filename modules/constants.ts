@@ -1282,6 +1282,12 @@ let LAUNCHER = {
         // systems; 10s is a generous upper bound for slow disks or heavy
         // process state.
         DAEMON_SIGKILL_DEADLINE_MS: 10000,
+
+        // SHUTDOWN_GRACE_MS: Maximum time to wait for a child process to exit
+        // after sending SIGTERM during shutdown/cleanup. Covers bot processes
+        // and credential daemons; distinct from DAEMON_SIGKILL_DEADLINE_MS
+        // which is specific to the credential-daemon SIGKILL fallback path.
+        SHUTDOWN_GRACE_MS: 10000,
     },
 
     // SUPERVISOR: Centralized defaults for bot_supervisor.ts.
