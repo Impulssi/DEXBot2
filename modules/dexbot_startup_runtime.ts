@@ -14,6 +14,7 @@ import { getErrorMessage } from './utils/errors';
 const { OrderManager, grid: Grid } = orderModule;
 function initializeFeeCache(...args: any) { return require('./order/utils/system').initializeFeeCache(...args); }
 function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
+function withBlockchainRetry(...args: any) { return require('./order/utils/system').withBlockchainRetry(...args); }
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
@@ -21,6 +22,9 @@ const storage = getStorage();
 function attemptResumePersistedGridByPriceMatch(...args: any) { return require('./order/grid_reconcile').attemptResumePersistedGridByPriceMatch(...args); }
 function decideStartupGridAction(...args: any) { return require('./order/grid_reconcile').decideStartupGridAction(...args); }
 function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
+function botRetryLogger(bot: any): { log: Function } {
+    return { log: (msg: any) => bot._log(msg) };
+}
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 
 /**
@@ -389,7 +393,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 persistedGrid,
                 chainOpenOrders,
                 manager: bot.manager,
-                logger: { log: (msg: any) => bot._log(msg) },
+                logger: botRetryLogger(bot),
                 storeGrid: async (orders: any) => {
                     await bot.manager.persistGrid(orders);
                 },
@@ -495,22 +499,18 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 // Fetch fresh account totals BEFORE finishBootstrap so the drift
                 // check inside finishBootstrap uses accurate on-chain balances
                 // rather than the stale snapshot from initializeStartupState.
-                const FETCH_TIMEOUT_MS = 30000;
-                let _fetchTimeoutHandle: NodeJS.Timeout;
+                // Uses shared withBlockchainRetry for timeout + retry + node failover.
                 try {
-                    await Promise.race([
-                        bot.manager.fetchAccountTotals(),
-                        new Promise((_: any, reject: any) => {
-                            _fetchTimeoutHandle = setTimeout(() => reject(new Error('timeout')), FETCH_TIMEOUT_MS);
-                        })
-                    ]);
+                    await withBlockchainRetry(
+                        () => bot.manager.fetchAccountTotals(),
+                        'fetchAccountTotals',
+                        { logger: botRetryLogger(bot) }
+                    );
                 } catch (fetchErr: any) {
                     bot._log(
-                        `[STARTUP] [${bot.config?.botKey || 'unknown'}] fetchAccountTotals ${getErrorMessage(fetchErr) === 'timeout' ? 'timed out' : 'failed'} (${getErrorMessage(fetchErr)}). Continuing with cached account totals.`,
+                        `[STARTUP] [${bot.config?.botKey || 'unknown'}] fetchAccountTotals failed after retries: ${getErrorMessage(fetchErr)}. Continuing with cached account totals.`,
                         'warn'
                     );
-                } finally {
-                    clearTimeout(_fetchTimeoutHandle!);
                 }
 
                 bot.manager.finishBootstrap();

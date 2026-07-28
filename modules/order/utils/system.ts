@@ -28,12 +28,13 @@
  * SECTION 4: GRID UTILITIES (1 function)
  *   - syncBoundaryToFunds(manager) - Sync boundary position to available funds
  *
- * SECTION 5: UI & INTERACTIVE UTILITIES (5 functions)
+ * SECTION 5: UI & INTERACTIVE UTILITIES (6 functions)
  *   - ensureProfilesDirectory(profilesDir) - Ensure profiles directory exists
  *   - sleep(ms) - Pause execution for specified duration
  *   - readInput(prompt, options) - Read user input from stdin
  *   - readPassword(prompt) - Read password with masked echo
  *   - withRetry(fn, options) - Execute async function with exponential backoff
+ *   - withBlockchainRetry(fn, label, options) - Blockchain op with timeout + retry + node failover
  *
  * SECTION 6: GENERAL UTILITIES (5 functions)
  *   - resolveAccountRef(manager, account) - Resolve best account reference
@@ -1270,6 +1271,76 @@ export async function withRetry<T>(fn: () => Promise<T>, options: { maxAttempts?
         }
     }
     throw new Error(`${operationName} failed after ${maxAttempts} attempts`);
+}
+
+/**
+ * Execute a blockchain operation with timeout, retry, and node failover reporting.
+ * Reports each failure to NodeManager so the node gets blacklisted after
+ * consecutive failures, triggering automatic failover to a healthy node.
+ *
+ * Defaults: 30s timeout, 3 retries (PIPELINE_TIMING.RETRY_MAX_ATTEMPTS), 2s retry delay.
+ * All configurable via options.
+ *
+ * @param fn - Async function wrapping the blockchain operation
+ * @param label - Short human-readable label for error messages
+ * @param options.logger - Optional logger for retry warnings
+ * @param options.timeoutMs - Override timeout per attempt (default 30000)
+ * @param options.maxRetries - Override max retry count (default PIPELINE_TIMING.RETRY_MAX_ATTEMPTS)
+ * @param options.retryDelayMs - Override delay between retries (default 2000)
+ */
+export async function withBlockchainRetry<T>(
+    fn: () => Promise<T>,
+    label: string,
+    options?: {
+        logger?: { log?: Function } | null;
+        timeoutMs?: number;
+        maxRetries?: number;
+        retryDelayMs?: number;
+    }
+): Promise<T> {
+    const timeoutMs = options?.timeoutMs ?? 30000;
+    const maxRetries = options?.maxRetries ?? PIPELINE_TIMING.RETRY_MAX_ATTEMPTS;
+    const retryDelayMs = options?.retryDelayMs ?? 2000;
+    const logger = options?.logger;
+    let lastError: any;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const resultPromise = fn();
+            // Swallow late unhandled rejections from the race loser
+            Promise.resolve(resultPromise).catch(() => {});
+            return await Promise.race([
+                resultPromise,
+                new Promise<T>((_, reject) => {
+                    setTimeout(
+                        () => reject(new Error(`${label} timed out after ${timeoutMs}ms (attempt ${attempt}/${maxRetries})`)),
+                        timeoutMs
+                    );
+                })
+            ]);
+        } catch (err: any) {
+            lastError = err;
+
+            // Report node failure so NodeManager can blacklist and trigger failover
+            try {
+                const { getNodeManager } = require('../../bitshares_client');
+                const nodeManager = getNodeManager();
+                const nodeUrl = nodeManager?.getBestNode?.();
+                if (nodeUrl && typeof nodeManager.reportNodeFailure === 'function') {
+                    nodeManager.reportNodeFailure(nodeUrl, getErrorMessage(err), 'blockchain-op');
+                }
+            } catch (_: any) { /* reporting errors are non-fatal */ }
+
+            if (attempt < maxRetries) {
+                logger?.log?.(
+                    `${label} attempt ${attempt}/${maxRetries} failed: ${getErrorMessage(err)}. Retrying in ${retryDelayMs}ms...`,
+                    'warn'
+                );
+                await sleep(retryDelayMs);
+            }
+        }
+    }
+    throw new Error(`${label} failed after ${maxRetries} attempts: ${getErrorMessage(lastError)}`);
 }
 
 // ================================================================================
