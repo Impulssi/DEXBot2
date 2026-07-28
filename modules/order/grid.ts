@@ -151,7 +151,7 @@ import {
     calculateIdealBoundary,
     assignGridRoles
 } from './utils/order';
-import { derivePrice, loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system';
+import { derivePrice, loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry, syncBoundaryToFunds } from './utils/system';
 import { getWhitelistFlags } from '../market_adapter_whitelist';
 
 import type { Order } from '../types.js';
@@ -1730,8 +1730,25 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
             // Perform spread correction by placing orders on the chosen side.
             correction = await prepareSpreadCorrectionOrders(manager, decision.side);
             if (!correction) return false;
-            const placeCount = correction.ordersToPlace?.length || 0;
-            const updateCount = correction.ordersToUpdate?.length || 0;
+            let placeCount = correction.ordersToPlace?.length || 0;
+            let updateCount = correction.ordersToUpdate?.length || 0;
+
+            // STARVATION FALLBACK: If the selected side has no correctable slots (e.g.
+            // all SPREAD slots already filled or misaligned), try the opposite side.
+            if ((placeCount + updateCount) === 0) {
+                const oppositeSide = decision.side === ORDER_TYPES.BUY ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
+                manager.logger?.log?.(
+                    `[SPREAD] Side ${decision.side} produced zero candidates; ` +
+                    `trying opposite side ${oppositeSide}.`,
+                    'debug'
+                );
+                const oppositeCorrection = await prepareSpreadCorrectionOrders(manager, oppositeSide);
+                if (oppositeCorrection) {
+                    correction = oppositeCorrection;
+                    placeCount = correction.ordersToPlace?.length || 0;
+                    updateCount = correction.ordersToUpdate?.length || 0;
+                }
+            }
 
             // Capture fund snapshot under lock for pre-flight verification before broadcast
             fundSnapshot = _snapshotFundState(manager);
@@ -2048,28 +2065,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
                 ? sellAvailable * marketPrice
                 : sellAvailable;
 
-            // Determine market direction from current price vs grid center price.
-            // When the market is below the grid center, the bot should prefer SELL
-            // (to narrow the spread from above — sells are too high). When the market
-            // is above the grid center, prefer BUY (buys are too low). This prevents
-            // spread correction from placing orders on the retreating side, which would
-            // compound inventory in the wrong direction after a batch of fill-induced
-            // boundary shifts.
-            const centerPrice = manager._lastGridPricingContext?.startPrice
-                ?? Number(manager.config.startPrice)
-                ?? null;
-            const hasDirection = Number.isFinite(marketPrice)
-                && marketPrice > 0
-                && Number.isFinite(centerPrice)
-                && centerPrice > 0;
-
-            if (hasDirection && marketPrice < centerPrice) {
-                side = ORDER_TYPES.SELL;
-            } else if (hasDirection && marketPrice > centerPrice) {
-                side = ORDER_TYPES.BUY;
-            } else {
-                side = buyAvailable >= sellInBuyUnits ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-            }
+            side = buyAvailable >= sellInBuyUnits ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
         } else if (buyViable) {
             side = ORDER_TYPES.BUY;
         } else if (sellViable) {
@@ -2215,6 +2211,15 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             manager.config?.targetSpreadPercent,
             manager.config?.gridLimits
         );
+
+        // Sync boundary from current fund state to avoid stale boundaryIdx causing
+        // getSlotCorrectType to misclassify slots (e.g. after fills shifted the
+        // boundary but the COW commit hasn't updated it yet).  This is safe under
+        // the grid lock — no concurrent modifications can race with this read.
+        const boundarySync = syncBoundaryToFunds(manager);
+        if (boundarySync.changed && boundarySync.newIdx !== undefined) {
+            manager.boundaryIdx = boundarySync.newIdx;
+        }
         const bIdx = manager.boundaryIdx ?? 0;
         const buyEndIdx = bIdx;
         const sellStartIdx = bIdx + Number(gapSlots) + 1;
