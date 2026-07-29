@@ -1067,6 +1067,7 @@ function makeBot() {
         startBroadcasting: () => {},
         stopBroadcasting: () => {},
         _setRebalanceState: () => {},
+        _resetRebalanceStateToDepth: () => {},
         pauseFundRecalc: () => {},
         resumeFundRecalc: async () => {},
         _clearWorkingGridRef: () => {},

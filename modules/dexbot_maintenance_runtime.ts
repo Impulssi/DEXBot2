@@ -1165,7 +1165,7 @@ function setupBlockchainFetchInterval(bot: any) {
         // work, but the second tick would waste a syncMarketAdapter call
         // and a fetchAccountTotals call while waiting.
         if (bot._blockchainFetchInFlight) return;
-        bot._blockchainFetchInFlight = true;
+        bot._blockchainFetchInFlight++;
         try {
             try {
                 await syncMarketAdapterOnPeriodicConfigCheck(bot, 'periodic blockchain fetch');
@@ -1219,7 +1219,7 @@ function setupBlockchainFetchInterval(bot: any) {
                 bot._warn(`Error during periodic blockchain fetch: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`);
             }
         } finally {
-            bot._blockchainFetchInFlight = false;
+            bot._blockchainFetchInFlight--;
         }
     }, intervalMs);
     if (typeof bot._blockchainFetchInterval.unref === 'function') {
@@ -2015,7 +2015,7 @@ function wireStructuralGridResyncRequest(bot: any) {
             bot._structuralGridResyncTimer = null;
             if (bot._shuttingDown) return;
 
-            bot._structuralGridResyncRunning = true;
+            bot._structuralGridResyncRunning++;
             try {
                 const persistedResult = await bot._recoverFromPersistedGrid();
                 if (persistedResult.success) {
@@ -2036,7 +2036,7 @@ function wireStructuralGridResyncRequest(bot: any) {
             } catch (err: any) {
                 bot._warn(`[RECOVERY] Structural full grid resync failed: ${getErrorMessage(err)}`);
             } finally {
-                bot._structuralGridResyncRunning = false;
+                bot._structuralGridResyncRunning--;
                 if (bot.manager?._recoveryState) {
                     bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: false };
                 }
@@ -2057,8 +2057,8 @@ function getPipelineSignals(bot: any) {
     return {
         incomingFillQueueLength: bot._incomingFillQueue.length,
         shadowLocks: bot.manager?.shadowOrderIds?.size || 0,
-        batchInFlight: bot._batchInFlight,
-        recoveryInFlight: bot._recoverySyncInFlight,
+        batchInFlight: bot._batchInFlight > 0,
+        recoveryInFlight: bot._recoverySyncInFlight > 0,
         broadcasting: bot.manager?.isBroadcastingActive?.() || false
     };
 }

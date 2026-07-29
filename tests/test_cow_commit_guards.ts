@@ -127,6 +127,7 @@ function createCowExecutionFixture(masterOrders = new Map()) {
         lockOrders: () => {},
         unlockOrders: () => {},
         _setRebalanceState: () => {},
+        _resetRebalanceStateToDepth: () => {},
         startBroadcasting: () => {},
         stopBroadcasting: () => {},
         pauseFundRecalc: () => {},

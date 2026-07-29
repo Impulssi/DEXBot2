@@ -40,6 +40,7 @@ function makeBot() {
         resumeFundRecalc() { this._pauseFundRecalc = Math.max(0, this._pauseFundRecalc - 1); },
         _clearWorkingGridRef() {},
         _setRebalanceState() {},
+        _resetRebalanceStateToDepth() {},
         startBroadcasting() {},
         stopBroadcasting() {},
         lockOrders() {},

@@ -68,7 +68,7 @@ async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery 
         return;
     }
 
-    bot._recoverySyncInFlight = true;
+    bot._recoverySyncInFlight++;
     try {
         bot.manager.logger.log(`Triggering state recovery sync (${reason})...`, 'info');
         await bot.manager.fetchAccountTotals(bot.accountId);
@@ -78,7 +78,7 @@ async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery 
             await bot.manager.persistGrid();
         }
     } finally {
-        bot._recoverySyncInFlight = false;
+        bot._recoverySyncInFlight--;
     }
 }
 

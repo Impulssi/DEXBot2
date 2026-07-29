@@ -1723,7 +1723,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
     bot.manager.lockOrders(idsToLock);
 
     try {
-        bot._batchInFlight = true;
+        bot._batchInFlight++;
         bot._markGridActivity('batch start');
         bot.manager._setRebalanceState(REBALANCE_STATES.BROADCASTING);
         bot.manager.startBroadcasting();
@@ -2038,7 +2038,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
         }
 
         if (operations.length === 0) {
-            bot.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
+            bot.manager._resetRebalanceStateToDepth();
             return { executed: false, hadRotation: false };
         }
 
@@ -2047,7 +2047,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
 
         if (!validation.isValid) {
             bot.manager.logger.log(`Skipping batch broadcast: ${validation.violations!.length} fund violation(s) detected`, 'warn');
-            bot.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
+            bot.manager._resetRebalanceStateToDepth();
             return { executed: false, hadRotation: false };
         }
 
@@ -2076,7 +2076,6 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                         'error'
                     );
                     bot.manager._clearWorkingGridRef();
-                    bot.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
                     markMissingCreateResultsAsStructuralBlocker(bot, missingCreateResults);
                     await recoverAfterMissingCreateResults(bot, 'missing create operation results');
                     return {
@@ -2263,7 +2262,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
 
         throw err;
     } finally {
-        bot._batchInFlight = false;
+        bot._batchInFlight--;
         bot._markGridActivity('batch end');
         bot.manager.unlockOrders(idsToLock);
 

@@ -473,7 +473,7 @@ Where:
 | **Atomic State Commits** | No | Yes (COW pattern) |
 | **Stale State Detection** | No | Yes (version epochs) |
 | **Concurrent Fill Safety** | Partial | Yes (fill batching + COW) |
-| **Deadlock Prevention** | Basic | Formal lock hierarchy |
+| **Deadlock Prevention** | Basic | Documented lock hierarchy (convention-based, level unenforced at runtime) |
 | **Rapid-restart Protection** | No | Yes (Layer 1 + Layer 2) |
 | **Duplicate Fill Protection** | Basic | Persistent replay guards + race regression tests |
 

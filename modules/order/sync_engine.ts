@@ -69,7 +69,13 @@
  *
  * ===============================================================================
  *
- * LOCK HIERARCHY:
+ * GLOBAL LOCK HIERARCHY (see manager.ts:389 for canonical 5-level definition):
+ *   Level 0: _fillProcessingLock  →  Level 1: _divergenceLock  →  Level 2: _gridLock
+ *   →  Level 3: _syncLock  →  Level 4: _fundLock
+ * Acquire in ascending order only.  The sync engine's standard path violates this
+ * by acquiring _syncLock(3) before _gridLock(2) — see gridLockAlreadyHeld at line 345.
+ *
+ * SYNC-LOCAL HIERARCHY (nested inside _syncLock):
  * 1. _syncLock (AsyncLock): Ensures only one full-sync at a time
  * 2. Per-order locks (shadowOrderIds): Protect specific orders during sync
  * 3. Lock refresh mechanism: Prevents timeout during long reconciliation
@@ -340,6 +346,25 @@ class SyncEngine {
             return mgr._fillProcessingLock.acquire(async () => {
                 return this.syncFromOpenOrders(chainOrders, options);
             });
+        }
+
+        // CRITICAL: When _gridLock is already held, skip _syncLock entirely
+        // to prevent ABBA deadlock. The sync engine's standard lock order is:
+        //   _fillProcessingLock(0) → _syncLock(3) → _gridLock(2)
+        // which violates the canonical 0→1→2→3→4 hierarchy (grid↔sync inverted).
+        // The gridLockAlreadyHeld flag at line 627 only gates the backward
+        // _gridLock re-acquire, but _syncLock is still acquired first at line
+        // 371. If a concurrent caller holds _gridLock(2) (e.g. startup reconcile)
+        // and another holds _syncLock(3) (standard fill-context sync), they ABBA
+        // deadlock. By skipping _syncLock here when _gridLock is already held,
+        // we eliminate the inversion entirely.
+        //
+        // The _syncLock timeout/force-release protection is intentionally
+        // bypassed — _doSyncFromOpenOrders is purely in-memory reconciliation
+        // (chain data was fetched by the caller before acquiring _gridLock).
+        // No RPC, no I/O, no possibility of hanging on chain.
+        if (options?.gridLockAlreadyHeld) {
+            return this._doSyncFromOpenOrders(chainOrders, options);
         }
 
         const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS;

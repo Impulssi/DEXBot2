@@ -389,14 +389,18 @@ class OrderManager {
         // LOCK HIERARCHY (convention — not enforced at runtime to avoid false
         // positives from async contention and multi-bot sharing a process).
         // Acquire in ascending level order only:
-        //   Level 0: _divergenceLock   (divergence checks — outermost)
-        //   Level 1: _fillProcessingLock  (fill processing)
+        //   Level 0: _fillProcessingLock  (fill processing — outermost)
+        //   Level 1: _divergenceLock   (divergence checks)
         //   Level 2: _gridLock         (grid mutations)
         //   Level 3: _syncLock         (sync operations)
         //   Level 4: _fundLock         (fund operations — innermost)
         // Note: AsyncLock IS re-entrant (acquire detects nested calls via _holding).
-        this._divergenceLock = new AsyncLock({ level: 0 });
-        this._fillProcessingLock = new AsyncLock({ level: 1, timeout: TIMING.SYNC_LOCK_TIMEOUT_MS });
+        //
+        // WARNING: sync_engine.ts violates this hierarchy — its standard path
+        // acquires _syncLock(3) before _gridLock(2). The gridLockAlreadyHeld
+        // flag works around the resulting ABBA deadlock. See sync_engine.ts:345.
+        this._fillProcessingLock = new AsyncLock({ level: 0, timeout: TIMING.SYNC_LOCK_TIMEOUT_MS });
+        this._divergenceLock = new AsyncLock({ level: 1 });
         this._gridLock = new AsyncLock({
             level: 2,
             onContention: () => { this._metrics.gridLockContention++; }
@@ -456,12 +460,20 @@ class OrderManager {
 
     _clearWorkingGridRef() {
         this._currentWorkingGridStack.pop();
-        this._rebalanceState = REBALANCE_STATES.NORMAL;
+        this._rebalanceState = this._currentWorkingGridStack.length > 0
+            ? REBALANCE_STATES.REBALANCING
+            : REBALANCE_STATES.NORMAL;
     }
 
     _setRebalanceState(state: any) {
         this._rebalanceState = state;
         this.logger?.log(`[COW] Rebalance state: ${state}`, 'debug');
+    }
+
+    _resetRebalanceStateToDepth() {
+        this._rebalanceState = this._currentWorkingGridStack.length > 0
+            ? REBALANCE_STATES.REBALANCING
+            : REBALANCE_STATES.NORMAL;
     }
 
     /**

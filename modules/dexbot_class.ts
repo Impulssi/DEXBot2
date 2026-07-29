@@ -117,7 +117,7 @@ class DEXBot {
     _shuttingDown: boolean;
     _shutdownPromise: Promise<void> | null;
     _blockchainFetchInterval: any;
-    _blockchainFetchInFlight: boolean;
+    _blockchainFetchInFlight: number;
     _fillsUnsubscribe: any;
     _triggerWatcher: any;
     _triggerDebounceTimer: any;
@@ -127,8 +127,8 @@ class DEXBot {
     _mainLoopPromise: any;
     _creditRuntime: any;
     _creditWatchdogInterval: any;
-    _batchInFlight: boolean;
-    _recoverySyncInFlight: boolean;
+    _batchInFlight: number;
+    _recoverySyncInFlight: number;
     _lastTargetedDriftSyncAt: number;
     _lightweightSyncCheckAt: number;
     _targetedDriftSyncCooldownMs: number;
@@ -142,7 +142,7 @@ class DEXBot {
     _reconnectUnregister: any;
     _credentialRecoveryDeferredTimer: any;
     _structuralGridResyncTimer: any;
-    _structuralGridResyncRunning: boolean = false;
+    _structuralGridResyncRunning: number = 0;
     _dustHealthCheckTimer: any;
     _lastBroadcastHeartbeatAt: number | undefined;
     _lastDeferredDustCount: number;
@@ -217,7 +217,7 @@ class DEXBot {
 
         // Runtime handles for graceful lifecycle management
         this._blockchainFetchInterval = null;
-        this._blockchainFetchInFlight = false;
+        this._blockchainFetchInFlight = 0;
         this._fillsUnsubscribe = null;
         this._triggerWatcher = null;
         this._triggerDebounceTimer = null;
@@ -229,8 +229,8 @@ class DEXBot {
         this._creditWatchdogInterval = null;
 
         // Pipeline state flags (used by maintenance gating)
-        this._batchInFlight = false;
-        this._recoverySyncInFlight = false;
+        this._batchInFlight = 0;
+        this._recoverySyncInFlight = 0;
         this._lastTargetedDriftSyncAt = 0;
         this._lightweightSyncCheckAt = 0;
         this._targetedDriftSyncCooldownMs = this.config.timing.TARGETED_DRIFT_SYNC_COOLDOWN_MS;
@@ -1935,10 +1935,10 @@ class DEXBot {
      * This prevents grid modifications while fills/rotations/corrections are pending.
      * See _executeMaintenanceLogic documentation for detailed rationale.
      *
-     * LOCK ORDERING:
-     * - Canonical order: _fillProcessingLock → _divergenceLock
-     * - When called from post-fill context, fill lock is already held
-     * - When called from periodic context, both locks must be acquired
+     * LOCK ORDERING (see manager.ts:389 for full hierarchy):
+     * - Canonical: _fillProcessingLock(0) → _divergenceLock(1)
+     * - When called from post-fill context, Level 0 is already held
+     * - When called from periodic context, both levels 0→1 must be acquired
      * - Matches the order used in _consumeFillQueue to prevent deadlocks
      *
      * @param {string} context - Maintenance context for logging (e.g. 'startup', 'periodic', 'post-fill')

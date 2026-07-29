@@ -73,9 +73,9 @@ async function runTests() {
             _targetedDriftSyncCooldownMs: 60_000,
             _lastTargetedDriftSyncAt: 0,
             _incomingFillQueue: [],
-            _batchInFlight: true,
+            _batchInFlight: 1,
             _lightweightSyncCheckAt: Date.now(),
-            _recoverySyncInFlight: false,
+            _recoverySyncInFlight: 0,
             _dustSinceMap: new Map(),
             _getPipelineSignals: () => ({
                 incomingFillQueueLength: 0,

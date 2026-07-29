@@ -870,18 +870,32 @@ _finishStartupSequence()
 
 ### Lock Ordering for Deadlock Prevention
 
-**Critical Rule: Always acquire locks in canonical order**
+**Critical Rule: Always acquire locks in ascending level order**
+
+The canonical 5-level hierarchy (defined at `manager.ts:389`):
 
 ```
-_fillProcessingLock → _divergenceLock
+Level 0: _fillProcessingLock  (fill processing — outermost)
+Level 1: _divergenceLock      (divergence checks)
+Level 2: _gridLock            (grid mutations)
+Level 3: _syncLock            (sync operations)
+Level 4: _fundLock            (fund operations — innermost)
 ```
+
+All five locks live on the `OrderManager` instance. The `level` property is a
+convention marker — AsyncLock does not enforce it at runtime.
 
 **Why This Order?**
 
-- Fill processing is the most frequent operation (high contention)
-- Grid maintenance is less frequent but synchronous
-- By acquiring fill lock first, we ensure fills can't be blocked by slower divergence checks
-- Reverse order (divergence first) would create deadlock when fills arrive during maintenance
+- Fill processing (Level 0) is the most frequent operation (high contention) — outermost so it serializes all inner work
+- Grid maintenance (Level 2) and divergence checks (Level 1) are less frequent but must nest inside fill processing
+- Sync operations (Level 3) and fund operations (Level 4) are innermost, only acquired transiently
+- Acquiring in ascending order ensures no two callers can deadlock: if A holds level N and needs level M > N, and B holds level M and needs level N, both would have to acquire in reverse order — which the rule prevents
+
+**⚠️ Known exception**: The sync engine (`sync_engine.ts:371,630`) acquires
+`_syncLock(3)` before `_gridLock(2)` in its standard path. The
+`gridLockAlreadyHeld` flag works around the resulting ABBA deadlock — see
+`sync_engine.ts:345` for details.
 
 **Example: Safe Pattern**
 
@@ -906,7 +920,7 @@ async processFill(fill) {
 
 // ❌ WRONG: Would deadlock if fill arrives during divergence check
 async checkDivergence() {
-    await this._divergenceLock.acquire();  // This blocks fills!
+    await this._divergenceLock.acquire();  // Level 1 without Level 0!
     try {
         // ...
     }

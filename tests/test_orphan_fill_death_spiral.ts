@@ -469,21 +469,21 @@ async function runTests() {
     const fill = buildFill('1.11.801', '1.7.801', 600, 5000000, 500000);
 
     // Try processing while batch is in flight — should defer
-    bot._batchInFlight = true;
+    bot._batchInFlight = 1;
     bot._incomingFillQueue.push(fill);
     await bot._consumeFillQueue(makeChainOrdersStub());
 
     assert.strictEqual(bot._incomingFillQueue.length, 1,
       'Fill should remain queued when batch is in flight');
-    bot._batchInFlight = false;
+    bot._batchInFlight = 0;
 
     // Try processing while recovery sync is in flight
-    bot._recoverySyncInFlight = true;
+    bot._recoverySyncInFlight = 1;
     await bot._consumeFillQueue(makeChainOrdersStub());
 
     assert.strictEqual(bot._incomingFillQueue.length, 1,
       'Fill should remain queued when recovery sync is in flight');
-    bot._recoverySyncInFlight = false;
+    bot._recoverySyncInFlight = 0;
 
     // Now process normally — should drain
     await bot._consumeFillQueue(makeChainOrdersStub());

@@ -62,6 +62,7 @@ function createBatchManagerStub(overrides = {}) {
         lockOrders: () => {},
         unlockOrders: () => {},
         _setRebalanceState: () => {},
+        _resetRebalanceStateToDepth: () => {},
         startBroadcasting: () => {},
         stopBroadcasting: () => {},
         _clearWorkingGridRef: () => {},
@@ -152,8 +153,8 @@ async function testPipelineInFlightDefersMaintenance() {
     let capturedSignals = null;
 
     bot._incomingFillQueue.push({ id: 'fill-1' });
-    bot._batchInFlight = true;
-    bot._recoverySyncInFlight = true;
+    bot._batchInFlight = 1;
+    bot._recoverySyncInFlight = 1;
 
     bot.manager = {
         recalculateFunds: () => {},

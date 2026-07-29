@@ -47,6 +47,7 @@ const path = require('path');
 const { setCachedModule, restoreCachedModule } = require('./helpers/module_cache_stub');
 const { writeJsonFileAtomic, writeBotsFileWithLock } = require('../modules/bots_file_lock');
 const { readJSON } = require('../modules/utils/fs_utils');
+const AsyncLock = require('../modules/order/async_lock');
 
 const creditRuntimePath = path.resolve(__dirname, '../modules/credit_runtime.ts');
 const bitsharesClientPath = path.resolve(__dirname, '../modules/bitshares_client.ts');
@@ -589,6 +590,78 @@ async function testCreditRuntimePersistIsAtomic() {
 }
 
 // ---------------------------------------------------------------------------
+// RC-1B: Lock Hierarchy Violation — ABBA deadlock prevention
+// ---------------------------------------------------------------------------
+
+async function testGridLockSyncLockAbbaDeadlock() {
+    console.log(' - RC-1B: grid→sync ABBA deadlock prevention (gridLockAlreadyHeld skip)...');
+
+    // Build a minimal mock manager with real AsyncLock instances so the
+    // real SyncEngine.syncFromOpenOrders can execute its lock logic.
+    // Empty orders + empty chainOrders = no-op reconciliation that still
+    // exercises the gridLockAlreadyHeld early-return at sync_engine.ts:366.
+    const mgr: any = {
+        _syncLock: new AsyncLock({ level: 3 }),
+        _gridLock: new AsyncLock({ level: 2 }),
+        _fillProcessingLock: null,
+        _pauseFundRecalc: 0,
+        orders: new Map(),
+        shadowOrderIds: new Map(),
+        ordersNeedingPriceCorrection: [],
+        assets: {
+            assetA: { symbol: 'BTS', id: '1.3.0', precision: 5 },
+            assetB: { symbol: 'USD', id: '1.3.121', precision: 4 },
+        },
+        logger: { log: () => {} },
+        pauseFundRecalc() { this._pauseFundRecalc++; },
+        resumeFundRecalc() { this._pauseFundRecalc = Math.max(0, this._pauseFundRecalc - 1); },
+        lockOrders() {},
+        unlockOrders() {},
+    };
+
+    const SyncEngineModule = require('../modules/order/sync_engine');
+    const SyncEngine = SyncEngineModule.default || SyncEngineModule;
+    const syncEngine = new SyncEngine(mgr);
+
+    // Context B: hold _syncLock for 200ms (simulates a fill-context sync).
+    let syncLockReleased = false;
+    const contextB = mgr._syncLock.acquire(async () => {
+        await new Promise(r => setTimeout(r, 200));
+        syncLockReleased = true;
+    });
+
+    // Yield so B acquires _syncLock first.
+    await new Promise(r => setTimeout(r, 10));
+
+    // Context A: hold _gridLock, then call the REAL syncFromOpenOrders with
+    // gridLockAlreadyHeld=true. This must COMPLETE without waiting for B to
+    // release _syncLock because the early-return at sync_engine.ts:366-368
+    // skips _syncLock entirely.
+    let contextAElapsed = -1;
+    const contextA = mgr._gridLock.acquire(async () => {
+        const start = Date.now();
+        const result = await syncEngine.syncFromOpenOrders([], { gridLockAlreadyHeld: true });
+        contextAElapsed = Date.now() - start;
+        assert.ok(result && typeof result === 'object', 'syncFromOpenOrders should return a result');
+        assert.deepStrictEqual(result.filledOrders, [], 'no fills with empty chain orders');
+    });
+
+    // Both must complete within 2s (no deadlock). Without the gridLockAlreadyHeld
+    // skip (sync_engine.ts:366-368), Context A would queue on _syncLock held by B
+    // and time out — proving the test would fail if the fix were removed.
+    await Promise.race([
+        Promise.all([contextA, contextB]),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('DEADLOCK: contexts did not complete within 2s')), 2000)),
+    ]);
+
+    assert.strictEqual(syncLockReleased, true, 'Context B must complete');
+    assert.ok(contextAElapsed >= 0 && contextAElapsed < 100,
+        `Context A must complete quickly without _syncLock (took ${contextAElapsed}ms)`);
+
+    console.log('  PASS: gridLockAlreadyHeld skip works — real syncFromOpenOrders completed without acquiring _syncLock');
+}
+
+// ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
@@ -603,6 +676,7 @@ async function run() {
     await testWriteJsonFileAtomic();
     await testWriteBotsFileWithLockUsesAtomic();
     await testCreditRuntimePersistIsAtomic();
+    await testGridLockSyncLockAbbaDeadlock();
     console.log('\nAll race-condition fix regression tests passed');
 }
 

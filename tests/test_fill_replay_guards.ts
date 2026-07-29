@@ -77,14 +77,14 @@ async function runTests() {
         const fill = buildFill('1.11.776');
         const sellBefore = bot.manager.accountTotals.sell;
 
-        bot._batchInFlight = true;
+        bot._batchInFlight = 1;
         bot._incomingFillQueue.push(fill);
         await bot._consumeFillQueue({ getFillProcessingMode: () => 'history', buildCancelOrderOp: async () => ({}) });
 
         assert.strictEqual(bot._incomingFillQueue.length, 1, 'Active batch must leave queued fills untouched');
         assert.strictEqual(bot.manager.accountTotals.sell, sellBefore, 'Deferred fill must not credit proceeds yet');
 
-        bot._batchInFlight = false;
+        bot._batchInFlight = 0;
         await bot._consumeFillQueue({ getFillProcessingMode: () => 'history', buildCancelOrderOp: async () => ({}) });
 
         assert.strictEqual(bot._incomingFillQueue.length, 0, 'Queued fill should drain after batch clears');
