@@ -176,6 +176,8 @@ async function runTests() {
             config: { incrementPercent: 0.3, targetSpreadPercent: 1.5, gridLimits: {} },
             orders: new Map(),
             boundaryIdx: 5,
+            _setBoundary: (i: number) => { mgr.boundaryIdx = i; },
+            _restoreBoundary: (i: number) => { mgr.boundaryIdx = i; },
             logger: { log: () => {} },
             _gridLock: { acquire: async (fn: any) => fn() },
             _initializeAssets: async () => {},

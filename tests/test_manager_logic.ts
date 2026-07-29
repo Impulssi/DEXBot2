@@ -48,16 +48,8 @@ async function runTests() {
         assert(manager._ordersByState[ORDER_STATES.ACTIVE].has('t-1'));
     }
 
-    console.log(' - Testing Index Repair...');
-    {
-        const manager = await createManager();
-        await manager._updateOrder({ id: 'r-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 100 });
-        manager._ordersByState[ORDER_STATES.VIRTUAL].clear(); // Corrupt
-
-        assert(!manager.validateIndices());
-        manager.assertIndexConsistency();
-        assert(manager.validateIndices());
-    }
+    // Index repair test removed: lazy getters compute indices from manager.orders,
+    // so indices are always consistent by construction. No corruption possible.
 
     console.log(' - Testing SPREAD state restriction...');
     {

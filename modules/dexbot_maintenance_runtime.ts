@@ -1402,21 +1402,11 @@ async function executeMaintenanceLogic(bot: any, context: any) {
     await checkBtsBalanceAndAcquire(bot);
     bot.manager.clearStalePipelineOperations();
 
-    // Clear stale divergence flags before the pipeline check to break a self-blocking loop:
-    // checkAndUpdateGridIfNeeded / compareGrids may have set _gridSidesUpdated earlier in this
-    // tick (or in a previous tick that aborted before corrections ran), and applyGridDivergenceCorrections
-    // is the only consumer that clears it. If a prior tick set the flag but never reached the
-    // correction path, the flag persists and the next isPipelineEmpty sees it as a blockage,
-    // preventing the divergence section from running. Stale flags must be cleared here, BEFORE
-    // the pipeline check, so the divergence section can be entered.
-    const staleFlags = bot.manager._gridSidesUpdated?.size || 0;
-    if (staleFlags > 0) {
-        bot.manager._gridSidesUpdated.clear();
-        bot._log(
-            `[PIPELINE-CLEAR] Cleared ${staleFlags} stale _gridSidesUpdated flag(s) before ${context} pipeline check`,
-            'info'
-        );
-    }
+    // Clear divergence flags at the top of every tick so _gridSidesUpdated only
+    // carries flags set within the current tick's divergence detection. This replaces
+    // the old conditional stale-clear with an unconditional reset — clearing an empty
+    // Set is a no-op, and stale flags from aborted ticks never cross boundaries.
+    bot.manager._gridSidesUpdated?.clear();
 
     if (bot._maintenanceCooldownCycles > 0) {
         bot._maintenanceCooldownCycles--;
@@ -1548,6 +1538,13 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             const persistedGridData = bot.accountOrders.loadGrid(true) || [];
             const calculatedGrid = Array.from(bot.manager.orders.values());
 
+            // Clear divergence flags immediately before detection so _gridSidesUpdated
+            // only reflects sides flagged by monitorDivergence in this tick. The top-of-tick
+            // clear already handles stale flags from prior ticks; this second clear is a
+            // belt-and-suspenders guard against anything accidentally setting the flag
+            // between the top clear and here (nothing currently does).
+            bot.manager._gridSidesUpdated?.clear();
+
             const divergence = await grid.monitorDivergence(bot.manager, calculatedGrid, persistedGridData);
 
             if (divergence.needsUpdate) {
@@ -1565,11 +1562,6 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                     }
                     if (!ok) {
                         bot._warn(`RMS structural divergence full grid resync failed during ${context}; retaining existing grid state.`);
-                    }
-                    // Clear any ratio flags set by checkAndUpdateGridIfNeeded earlier in this tick,
-                    // since the resync already rebuilt the full grid.
-                    if (bot.manager._gridSidesUpdated?.size > 0) {
-                        bot.manager._gridSidesUpdated.clear();
                     }
                     return;
                 }

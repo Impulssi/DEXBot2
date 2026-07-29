@@ -812,6 +812,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
     // _commitWorkingGrid — never before the slot types are consistent.
     let resizeCowResult: any = null;
     let pendingBoundaryIdx = manager.boundaryIdx;
+    let hadBoundaryShift = false;
     if (manager._gridSidesUpdated && manager._gridSidesUpdated.size > 0) {
         const hasBuy = manager._gridSidesUpdated.has(ORDER_TYPES.BUY);
         const hasSell = manager._gridSidesUpdated.has(ORDER_TYPES.SELL);
@@ -822,12 +823,14 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                 : ORDER_TYPES.SELL;
 
         // If out-of-spread correction moves boundary, recompute both sides.
-        // Store the new index in pendingBoundaryIdx — do NOT touch manager.boundaryIdx
-        // here; updateGridFromBlockchainSnapshot will re-assign slot types in the
-        // WorkingGrid and _commitWorkingGrid will update manager.boundaryIdx atomically.
+        // syncBoundaryToFunds is a pure computation — it does NOT write
+        // manager.boundaryIdx.  We store the result in pendingBoundaryIdx
+        // so it flows through the COW pipeline to _commitWorkingGrid, where
+        // _setBoundary writes it atomically with manager.orders.
         const boundarySync = syncBoundaryToFunds(manager);
-        if (manager.outOfSpread > 0 && boundarySync.changed) {
-            pendingBoundaryIdx = boundarySync.newIdx;
+        hadBoundaryShift = boundarySync.changed;
+        if (hadBoundaryShift) {
+            pendingBoundaryIdx = boundarySync.newIdx!;
             resizeOrderType = 'both';
             manager._gridSidesUpdated.add(ORDER_TYPES.BUY);
             manager._gridSidesUpdated.add(ORDER_TYPES.SELL);
@@ -993,7 +996,6 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
 
     // Phase 3: Execute corrections via COW batch
     if (cowResult && !cowResult.aborted) {
-        const hadBoundaryShift = pendingBoundaryIdx !== manager.boundaryIdx;
         try {
             let result: any = null;
 
@@ -1022,8 +1024,14 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             
             if (result && result.executed) {
                 manager.logger.log(`[DIVERGENCE-COW] Successfully applied divergence corrections`, 'info');
-                manager.outOfSpread = 0;
                 manager._gridSidesUpdated.clear();
+                // NOTE: We do NOT reset manager.outOfSpread here — it's overwritten
+                // every tick by checkSpreadCondition (grid.ts:1691).  Resetting it
+                // here would be redundant 99% of the time, and would mask a stale-value
+                // window between this commit and the next checkSpreadCondition call
+                // for any code path that reads outOfSpread in between.  Currently no
+                // such path exists, but if one is added, the reader may see a stale
+                // count until the next checkSpreadCondition runs.
                 // Grid already persisted via _commitWorkingGrid in updateOrdersOnChainBatch
                 return { committed: true, boundaryChanged: hadBoundaryShift };
             } else {
@@ -1060,8 +1068,10 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
  * funds yield a mid-range result that, after clamping, equals the current
  * boundary and produces no change.
  *
- * No master-grid mutation is performed here; the caller is responsible for
- * updating manager.boundaryIdx and triggering the subsequent COW resize.
+ * NOTE: This is a pure computation — it does NOT mutate manager.boundaryIdx.
+ * Boundary writes are gated by _setBoundary() which enforces COW-commit-only
+ * mutation.  Callers must carry the result through the COW pipeline to
+ * _commitWorkingGrid for atomic commit alongside manager.orders.
  *
  * @param {Object} manager - OrderManager instance
  * @returns {{ changed: boolean, newIdx?: number }}

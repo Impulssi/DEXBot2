@@ -224,8 +224,67 @@ class OrderManager {
     _accountingFailureSignal: any;
     _recoveryStateValue: { phase: string; attemptCount: number; lastAttemptAt: number; inFlight: boolean; lastFailureAt: number; structuralResyncRequested?: boolean };
     _gridRegenStateValue: { buy: { armed: boolean; lastTriggeredAt: number }; sell: { armed: boolean; lastTriggeredAt: number } };
-    _ordersByState: Record<string, Set<string>>;
-    _ordersByType: Record<string, Set<string>>;
+    private _ordersByTypeCache: Record<string, Set<string>> | null = null;
+    private _ordersByStateCache: Record<string, Set<string>> | null = null;
+    private _ordersByTypeCacheVersion: number = -1;
+    private _ordersByStateCacheVersion: number = -1;
+
+    /**
+     * Lazy-compute order-IDs grouped by type.
+     *
+     * Cache is invalidated when _gridVersion changes (bumped on each COW
+     * commit).  The rebuild iterates this.orders (O(n) where n = total
+     * slot count) but is amortized O(1) across accesses within the same
+     * grid version — the cache is a derived snapshot, not a maintained
+     * index, so explicit mutation paths no longer update it.
+     *
+     * THE SETTER stores into cache only; it does NOT populate this.orders.
+     * Test mocks that assign _ordersByType directly are honored until the
+     * next grid-version bump triggers a full rebuild from the real orders.
+     */
+    get _ordersByType(): Record<string, Set<string>> {
+        if (this._ordersByTypeCache !== null && this._ordersByTypeCacheVersion === this._gridVersion) {
+            return this._ordersByTypeCache;
+        }
+        const byType: Record<string, Set<string>> = {};
+        for (const key of [ORDER_TYPES.BUY, ORDER_TYPES.SELL, ORDER_TYPES.SPREAD]) {
+            byType[key] = new Set();
+        }
+        for (const [id, o] of this.orders) {
+            if (byType[o.type]) byType[o.type].add(id);
+        }
+        this._ordersByTypeCache = byType;
+        this._ordersByTypeCacheVersion = this._gridVersion;
+        return byType;
+    }
+    set _ordersByType(val: Record<string, Set<string>>) {
+        this._ordersByTypeCache = val;
+        this._ordersByTypeCacheVersion = this._gridVersion;
+    }
+
+    /**
+     * Lazy-compute order-IDs grouped by state.  Same semantics as
+     * _ordersByType — see getter doc for details.
+     */
+    get _ordersByState(): Record<string, Set<string>> {
+        if (this._ordersByStateCache !== null && this._ordersByStateCacheVersion === this._gridVersion) {
+            return this._ordersByStateCache;
+        }
+        const byState: Record<string, Set<string>> = {};
+        for (const key of [ORDER_STATES.VIRTUAL, ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL]) {
+            byState[key] = new Set();
+        }
+        for (const [id, o] of this.orders) {
+            if (byState[o.state]) byState[o.state].add(id);
+        }
+        this._ordersByStateCache = byState;
+        this._ordersByStateCacheVersion = this._gridVersion;
+        return byState;
+    }
+    set _ordersByState(val: Record<string, Set<string>>) {
+        this._ordersByStateCache = val;
+        this._ordersByStateCacheVersion = this._gridVersion;
+    }
     targetSpreadCount: number;
     currentSpreadCount: number;
     outOfSpread: number;
@@ -311,19 +370,7 @@ class OrderManager {
             sell: { armed: true, lastTriggeredAt: 0 }
         };
 
-        // Index Sets use mutable mutation patterns controlled via _applyOrderUpdate
-        // These are private implementation details and must NOT be mutated directly
-        // All external code must go through the COW pipeline
-        this._ordersByState = {
-            [ORDER_STATES.VIRTUAL]: new Set(),
-            [ORDER_STATES.ACTIVE]: new Set(),
-            [ORDER_STATES.PARTIAL]: new Set()
-        };
-        this._ordersByType = {
-            [ORDER_TYPES.BUY]: new Set(),
-            [ORDER_TYPES.SELL]: new Set(),
-            [ORDER_TYPES.SPREAD]: new Set()
-        };
+
 
         this.resetFunds();
         this.btsBalance = { free: 0, total: 0, locked: 0 };
@@ -945,16 +992,6 @@ class OrderManager {
         const updatedOrder = deepFreeze({ ...nextOrder });
         const id = order.id;
 
-        Object.values(this._ordersByState).forEach((set: any) => set.delete(id));
-        Object.values(this._ordersByType).forEach((set: any) => set.delete(id));
-
-        if (this._ordersByState[updatedOrder.state]) {
-            this._ordersByState[updatedOrder.state].add(id);
-        }
-        if (this._ordersByType[updatedOrder.type]) {
-            this._ordersByType[updatedOrder.type].add(id);
-        }
-
         const newMap = cloneMap(this.orders);
         newMap.set(id, updatedOrder);
         this.orders = Object.freeze(newMap);
@@ -1185,6 +1222,15 @@ class OrderManager {
     }
 
     /**
+     * Validate all entries in this.orders for structural soundness.
+     *
+     * NOTE: Despite the name, this no longer validates "indices" —
+     * the lazy _ordersByType / _ordersByState caches are derived from
+     * this.orders on every grid-version bump and are guaranteed to be
+     * consistent by construction.  This method only checks that every
+     * Map entry is a well-formed order object (non-null, has state and
+     * type).  Remains useful as a startup/recovery sanity check.
+     *
      * @returns {boolean}
      */
     validateIndices() {
@@ -1201,34 +1247,7 @@ class OrderManager {
                 this.logger.log(`Index corruption: ${id} has no type`, 'error');
                 return false;
             }
-            if (!this._ordersByState[order.state]?.has(id)) {
-                this.logger.log(`Index mismatch: ${id} not in _ordersByState[${order.state}]`, 'error');
-                return false;
-            }
-            if (!this._ordersByType[order.type]?.has(id)) {
-                this.logger.log(`Index mismatch: ${id} not in _ordersByType[${order.type}]`, 'error');
-                return false;
-            }
         }
-
-        for (const [state, orderIds] of Object.entries(this._ordersByState)) {
-            for (const id of orderIds) {
-                if (!id || !this.orders.has(id)) {
-                    this.logger.log(`Index orphan: ${id} in _ordersByState[${state}] but not in orders Map`, 'error');
-                    return false;
-                }
-            }
-        }
-
-        for (const [type, orderIds] of Object.entries(this._ordersByType)) {
-            for (const id of orderIds) {
-                if (!id || !this.orders.has(id)) {
-                    this.logger.log(`Index orphan: ${id} in _ordersByType[${type}] but not in orders Map`, 'error');
-                    return false;
-                }
-            }
-        }
-
         return true;
     }
 
@@ -1236,49 +1255,41 @@ class OrderManager {
      * @returns {boolean}
      */
     assertIndexConsistency() {
-        if (!this.validateIndices()) {
-            this.logger.log('CRITICAL: Index corruption detected! Attempting repair...', 'error');
-            return this._repairIndices();
-        }
         return true;
     }
 
     _repairIndices() {
-        try {
-            const rebuiltByState = {
-                [ORDER_STATES.VIRTUAL]: new Set<string>(),
-                [ORDER_STATES.ACTIVE]: new Set<string>(),
-                [ORDER_STATES.PARTIAL]: new Set<string>()
-            };
-            const rebuiltByType = {
-                [ORDER_TYPES.BUY]: new Set<string>(),
-                [ORDER_TYPES.SELL]: new Set<string>(),
-                [ORDER_TYPES.SPREAD]: new Set<string>()
-            };
+        return true;
+    }
 
-            for (const [id, order] of this.orders) {
-                if (order && order.state && order.type) {
-                    rebuiltByState[order.state as keyof typeof rebuiltByState]?.add(id);
-                    rebuiltByType[order.type as keyof typeof rebuiltByType]?.add(id);
-                } else {
-                    this.logger.log(`Skipping corrupted order ${id} during index repair`, 'warn');
-                }
-            }
-
-            this._ordersByState = rebuiltByState;
-            this._ordersByType = rebuiltByType;
-
-            if (this.validateIndices()) {
-                this.logger.log('✓ Index repair successful', 'info');
-                return true;
-            }
-
-            this.logger.log('✗ Index repair failed - structure is damaged', 'error');
-            return false;
-        } catch (e: any) {
-            this.logger.log(`Index repair failed with exception: ${getErrorMessage(e)}`, 'error');
-            return false;
+    /**
+     * Write boundaryIdx under COW-commit-only discipline.
+     *
+     * Must only be called from within _commitWorkingGrid (which holds _gridLock).
+     * If called outside the commit path, logs a warning — the write still proceeds
+     * so a misbehaving caller doesn't silently lose the update, but the warning
+     * flags a violation of the COW boundary-write invariant.
+     */
+    _setBoundary(newIdx: number): void {
+        if (!this._gridLock?.isReentrant()) {
+            this.logger?.log?.(
+                `[COW] _setBoundary called outside _gridLock (boundary ${this.boundaryIdx} → ${newIdx}). ` +
+                `Boundary writes should only happen inside _commitWorkingGrid.`,
+                'warn'
+            );
         }
+        this.boundaryIdx = newIdx;
+    }
+
+    /**
+     * Restore boundaryIdx outside the COW commit path (startup, recovery,
+     * disk-load).  This is the same write as _setBoundary but without the
+     * lock-hold warning — loadGrid / initializeGrid are single-threaded at
+     * startup and the boundary is being restored from a known-good snapshot,
+     * not committed alongside order mutations.
+     */
+    _restoreBoundary(newIdx: number): void {
+        this.boundaryIdx = newIdx;
     }
 
     /**
@@ -1351,10 +1362,8 @@ class OrderManager {
         this._cleanExpiredLocks();
         const reasons: string[] = [];
 
-        // invariant: _gridSidesUpdated is pre-cleared by executeMaintenanceLogic
-        // before calling isPipelineEmpty (see modules/dexbot_maintenance_runtime.ts:1378).
-        // Any new caller must pre-clear or add its own gating to avoid a permanently
-        // blocked pipeline.
+        // _gridSidesUpdated is cleared at the top of every maintenance tick before
+        // divergence detection, so it cannot cause stale-side processing here.
         if (incomingFillQueueLength > 0) {
             reasons.push(`${incomingFillQueueLength} fills queued`);
         }
@@ -1592,7 +1601,7 @@ class OrderManager {
             }
 
             this.orders = Object.freeze(finalMap);
-            this.boundaryIdx = workingBoundary;
+            this._setBoundary(workingBoundary);
             this._gridVersion++;
             committed = true;
 
@@ -1607,17 +1616,7 @@ class OrderManager {
             this._committedOrderIds = newCommittedIds;
             this._committedOrderIdsBuiltAt = Date.now();
 
-            const freshIndexes = workingGrid.getIndexes();
-            this._ordersByState = {
-                [ORDER_STATES.VIRTUAL]: freshIndexes[ORDER_STATES.VIRTUAL] || new Set(),
-                [ORDER_STATES.ACTIVE]: freshIndexes[ORDER_STATES.ACTIVE] || new Set(),
-                [ORDER_STATES.PARTIAL]: freshIndexes[ORDER_STATES.PARTIAL] || new Set()
-            };
-            this._ordersByType = {
-                [ORDER_TYPES.BUY]: freshIndexes[ORDER_TYPES.BUY] || new Set(),
-                [ORDER_TYPES.SELL]: freshIndexes[ORDER_TYPES.SELL] || new Set(),
-                [ORDER_TYPES.SPREAD]: freshIndexes[ORDER_TYPES.SPREAD] || new Set()
-            };
+            // Index caches invalidated by _gridVersion bump above — lazy getters recompute from this.orders
         });
 
         if (!committed) {

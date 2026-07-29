@@ -516,18 +516,6 @@ export function createOrderGrid(config: any): any {
 function _clearOrderCachesLogic(manager: any): void {
         // Replace frozen master grid with fresh empty frozen Map (COW pattern)
         manager.orders = Object.freeze(new Map());
-        
-        // Clear index Sets with fresh empty Sets (mutable for _applyOrderUpdate)
-        if (manager._ordersByState) {
-            for (const key of Object.keys(manager._ordersByState)) {
-                manager._ordersByState[key] = new Set();
-            }
-        }
-        if (manager._ordersByType) {
-            for (const key of Object.keys(manager._ordersByType)) {
-                manager._ordersByType[key] = new Set();
-            }
-        }
     }
 
 
@@ -561,8 +549,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
 
             // Restore boundary index for StrategyEngine
             if (typeof boundaryIdx === 'number') {
-                manager.boundaryIdx = boundaryIdx;
-                // FIX: Use consistent optional chaining pattern for logger calls
+                manager._restoreBoundary(boundaryIdx);
                 manager.logger?.log?.(`Restored boundary index: ${boundaryIdx}`, 'info');
             }
 
@@ -893,7 +880,7 @@ export async function initializeGrid(manager: any): Promise<void> {
         // RC-8: Update boundary with notification to dependent systems
         // Persist master boundary for StrategyEngine
         if (manager.boundaryIdx !== boundaryIdx) {
-            manager.boundaryIdx = boundaryIdx;
+            manager._restoreBoundary(boundaryIdx);
             // RC-8: Notify StrategyEngine of boundary change (if method exists)
             if (typeof manager.notifyBoundaryUpdate === 'function') {
                 try {
@@ -1359,6 +1346,12 @@ export async function updateGridFromBlockchainSnapshot(manager: any, orderType: 
         // included in the correct side's budget allocation.  Running assignGridRoles
         // after the size calc means crossers keep their pre-shift sizes, producing
         // an allocation that doesn't match the post-shift grid structure.
+        //
+        // NOTE: syncBoundaryToFunds is a pure computation (no eager write), so
+        // manager.boundaryIdx still carries the pre-shift value here.  The
+        // overrideBoundaryIdx !== manager.boundaryIdx check correctly detects
+        // that a shift is needed.  The boundary is only written atomically
+        // inside _commitWorkingGrid via _setBoundary.
         if (overrideBoundaryIdx !== null && overrideBoundaryIdx !== manager.boundaryIdx) {
             const gapSlots = calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
             const allSlots = (Array.from(workingGrid.values()) as Order[])
@@ -1748,7 +1741,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
             if (!decision.side) return false;
 
             // Perform spread correction by placing orders on the chosen side.
-            correction = await prepareSpreadCorrectionOrders(manager, decision.side);
+            correction = await prepareSpreadCorrectionOrders(manager, decision.side, manager.outOfSpread);
             if (!correction) return false;
             let placeCount = correction.ordersToPlace?.length || 0;
             let updateCount = correction.ordersToUpdate?.length || 0;
@@ -1762,7 +1755,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                     `trying opposite side ${oppositeSide}.`,
                     'debug'
                 );
-                const oppositeCorrection = await prepareSpreadCorrectionOrders(manager, oppositeSide);
+                const oppositeCorrection = await prepareSpreadCorrectionOrders(manager, oppositeSide, manager.outOfSpread);
                 if (oppositeCorrection) {
                     correction = oppositeCorrection;
                     placeCount = correction.ordersToPlace?.length || 0;
@@ -1805,7 +1798,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                 const rePlanResult: any = await manager._gridLock.acquire(async () => {
                     const decision = determineOrderSideByFunds(manager, lastPrice);
                     if (!decision.side) return { side: false };
-                    const c = await prepareSpreadCorrectionOrders(manager, decision.side);
+                    const c = await prepareSpreadCorrectionOrders(manager, decision.side, manager.outOfSpread);
                     return { side: true, correction: c };
                 });
                 if (!rePlanResult.side) {
@@ -2183,7 +2176,7 @@ export async function calculateGeometricSizeForSpreadCorrection(manager: any, ta
      * @returns {Promise<import('./types').SpreadCorrectionResult>}
      * @throws {Error} If preferredSide is invalid.
      */
-export async function prepareSpreadCorrectionOrders(manager: any, preferredSide: any): Promise<any> {
+export async function prepareSpreadCorrectionOrders(manager: any, preferredSide: any, outOfSpread: number = 0): Promise<any> {
         // FIX: Validate preferredSide parameter to prevent silent logic errors
         if (preferredSide !== ORDER_TYPES.BUY && preferredSide !== ORDER_TYPES.SELL) {
             throw new Error(`Invalid preferredSide: ${preferredSide}. Must be '${ORDER_TYPES.BUY}' or '${ORDER_TYPES.SELL}'.`);
@@ -2193,7 +2186,7 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
         const ordersToUpdate: any[] = [];
         const railType = preferredSide;
         const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-        const configuredMissingSlots = Number(manager.outOfSpread || 0);
+        const configuredMissingSlots = Number(outOfSpread || 0);
         const missingSlots = configuredMissingSlots > 0
             ? Math.floor(configuredMissingSlots)
             : 1;
@@ -2225,10 +2218,9 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
         );
 
         // Compute boundary from current fund state for local slot classification.
-        // Use a local variable — do NOT mutate manager.boundaryIdx here.
-        // The boundary is only updated atomically through _commitWorkingGrid in the
-        // COW pipeline; mutating it outside the commit path creates inconsistencies
-        // between manager.boundaryIdx and manager.orders slot types.
+        // syncBoundaryToFunds is a pure computation — it does NOT mutate
+        // manager.boundaryIdx.  The boundary is only updated atomically through
+        // _commitWorkingGrid in the COW pipeline via _setBoundary.
         const boundarySync = syncBoundaryToFunds(manager);
         const bIdx = (boundarySync.changed && boundarySync.newIdx !== undefined)
             ? boundarySync.newIdx

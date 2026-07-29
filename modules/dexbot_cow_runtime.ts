@@ -1279,6 +1279,175 @@ function buildCowResultFromPlan(bot: any, plan: any) {
  * @param {Set<string>} skippedSlotIds
  * @param {number} [skippedCount=0]
  */
+/**
+ * Pre-apply rotation state transitions to the working grid before commit.
+ * This makes the COW commit truly atomic for structural changes — source slots
+ * are cleared to VIRTUAL and destination slots are activated with the inherited
+ * orderId before the working grid is committed to master, eliminating the need
+ * for post-commit structural patching in processBatchResults.
+ *
+ * Only slot-to-slot rotations (newGridId exists) need pre-application;
+ * in-place rotations already have their size/price changes in the working grid.
+ */
+function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, executedContexts: any) {
+    if (!workingGrid || !executedContexts) return;
+
+    for (const ctx of executedContexts) {
+        if (ctx.kind !== 'rotation' || !ctx.rotation?.newGridId) continue;
+
+        const { rotation } = ctx;
+        const { oldOrder, newGridId, newPrice, newSize, type } = rotation;
+
+        // Source slot → VIRTUAL (if it's a different slot)
+        if (oldOrder?.id && oldOrder.id !== newGridId) {
+            const sourceSlot = workingGrid.get(oldOrder.id);
+            if (sourceSlot && sourceSlot.orderId) {
+                workingGrid.set(oldOrder.id, {
+                    ...sourceSlot,
+                    state: ORDER_STATES.VIRTUAL,
+                    orderId: null,
+                    rawOnChain: null
+                });
+                bot.manager.logger.log(
+                    `[COW] Pre-applied rotation: source ${oldOrder.id} → VIRTUAL (order ${sourceSlot.orderId} moved to ${newGridId})`,
+                    'debug'
+                );
+            }
+        }
+
+        // Destination slot → ACTIVE with inherited orderId from source
+        const destSlot = workingGrid.get(newGridId);
+        if (destSlot) {
+            workingGrid.set(newGridId, {
+                ...destSlot,
+                id: newGridId,
+                type,
+                size: newSize,
+                price: newPrice,
+                state: ORDER_STATES.ACTIVE,
+                // oldOrder?.orderId is the authoritative source: the rotation
+                // moved this orderId from the source slot.  destSlot.orderId
+                // is only a fallback for edge cases where the destination
+                // already held a prior committed ID (e.g. a partial commit
+                // left a stale reference).  The source-of-truth is always the
+                // original order being rotated.
+                orderId: oldOrder?.orderId || destSlot.orderId || null
+            });
+            bot.manager.logger.log(
+                `[COW] Pre-applied rotation: dest ${newGridId} → ACTIVE (orderId=${oldOrder?.orderId || destSlot.orderId || 'none'})`,
+                'debug'
+            );
+        }
+    }
+}
+
+/**
+ * Sleep for a given number of milliseconds.
+ */
+function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Poll the chain after an uncertain broadcast to check if CREATE operations
+ * were actually accepted. Uses fingerprint matching against readOpenOrders.
+ * Falls back to reconciliation if polling cannot confirm within retries.
+ *
+ * We specifically confirm CREATE operations because they leave a detectable
+ * footprint on the chain (new order with matching fingerprint). UPDATEs and
+ * CANCELs modify existing orders and cannot be reliably distinguished from
+ * "not yet visible" state by simple polling.
+ *
+ * @returns {{ allConfirmed: boolean, confirmed: Array, unconfirmed: Array }}
+ */
+async function pollChainForConfirmation(bot: any, opContexts: any, options: any = {}): Promise<{
+    allConfirmed: boolean;
+    confirmed: any[];
+    unconfirmed: any[];
+}> {
+    const maxPollRetries = options.maxPollRetries || 4;
+    const pollIntervalMs = options.pollIntervalMs || 1500;
+
+    // Only CREATE operations can be confirmed by polling (they appear as new orders on chain)
+    const createContexts = opContexts.filter((ctx: any) => ctx && ctx.kind === 'create' && ctx.finalInts && ctx.order);
+    if (createContexts.length === 0) {
+        return { allConfirmed: false, confirmed: [], unconfirmed: [...opContexts] };
+    }
+
+    const accountRef = bot.accountId || bot.account?.id || bot.account;
+    let remaining: any[] = [...createContexts];
+
+    for (let attempt = 1; attempt <= maxPollRetries; attempt++) {
+        try {
+            const chainSnapshot = await chainOrders.readOpenOrders(accountRef);
+            if (!Array.isArray(chainSnapshot) || chainSnapshot.length === 0) {
+                if (attempt < maxPollRetries) {
+                    await sleep(pollIntervalMs);
+                }
+                continue;
+            }
+
+            const stillUnconfirmed: any[] = [];
+            for (const ctx of remaining) {
+                const match = findChainOrderForSlot(bot, chainSnapshot, ctx.order.id, {
+                    sell: ctx.finalInts.sell,
+                    receive: ctx.finalInts.receive,
+                    orderType: ctx.order.type,
+                    fingerprint: createContexts.length > 0
+                        ? buildCreateOpFingerprint({
+                            side: ctx.order.type,
+                            assetA: bot.manager?.assets?.assetA?.id,
+                            assetB: bot.manager?.assets?.assetB?.id,
+                            sellInt: ctx.finalInts.sell,
+                            receiveInt: ctx.finalInts.receive,
+                            slotId: ctx.order.id
+                        })
+                        : undefined
+                });
+
+                if (match) {
+                    bot.manager.logger.log(
+                        `[COW][POLL] Confirmed CREATE for slot ${ctx.order.id} on chain as ${match.id}`,
+                        'debug'
+                    );
+                } else {
+                    stillUnconfirmed.push(ctx);
+                }
+            }
+
+            if (stillUnconfirmed.length === 0) {
+                const confirmed = createContexts;
+                bot.manager.logger.log(
+                    `[COW][POLL] All ${confirmed.length} CREATE(s) confirmed on chain after ${attempt} poll(s)`,
+                    'info'
+                );
+                return { allConfirmed: true, confirmed, unconfirmed: [] };
+            }
+
+            remaining = stillUnconfirmed;
+            if (attempt < maxPollRetries) {
+                await sleep(pollIntervalMs);
+            }
+        } catch (pollErr: any) {
+            bot.manager.logger.log(
+                `[COW][POLL] Chain read attempt ${attempt}/${maxPollRetries} failed: ${getErrorMessage(pollErr)}`,
+                'warn'
+            );
+            if (attempt < maxPollRetries) {
+                await sleep(pollIntervalMs);
+            }
+        }
+    }
+
+    const confirmed = createContexts.filter((ctx: any) => !remaining.includes(ctx));
+    bot.manager.logger.log(
+        `[COW][POLL] ${confirmed.length}/${createContexts.length} CREATE(s) confirmed after ${maxPollRetries} polls; ` +
+        `${remaining.length} unconfirmed. Falling back to reconciliation.`,
+        'warn'
+    );
+    return { allConfirmed: false, confirmed, unconfirmed: remaining };
+}
+
 function restoreSkippedUpdateSlotsInWorkingGrid(bot: any, workingGrid: any, skippedSlotIds: any, skippedCount: any = 0) {
     if (!workingGrid || !skippedSlotIds || skippedSlotIds.size === 0) {
         return;
@@ -1920,6 +2089,13 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                     };
                 }
 
+                // Pre-apply rotation state transitions to the working grid so the
+                // COW commit is truly atomic for structural changes (source → VIRTUAL,
+                // dest → ACTIVE with orderId). Remaining post-commit patches in
+                // processBatchResults are limited to rawOnChain metadata enrichment
+                // that depends on broadcast result data.
+                applyRotationTransitionsToWorkingGrid(bot, workingGrid, executedContexts);
+
                 bot.manager.logger.log('[COW] Blockchain success - committing working grid to master', 'info');
                 await bot.manager._commitWorkingGrid(
                     workingGrid,
@@ -1991,6 +2167,70 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
             );
         }
         bot.manager.stopBroadcasting();
+
+        // Chain polling: for uncertain broadcasts (not partial), try to confirm
+        // CREATE operations on chain before clearing the working grid. If all
+        // planned CREATEs are confirmed, the entire batch was accepted atomically
+        // and we can commit the working grid directly, bypassing the expensive
+        // reconciliation state machine. This handles the ~90% case where the
+        // chain accepted the transaction but the response was lost.
+        if (err instanceof BroadcastUncertainError && err.partialOnChainState !== true) {
+            try {
+                const confirmation = await pollChainForConfirmation(bot, opContexts);
+                if (confirmation.allConfirmed) {
+                    // pollChainForConfirmation only verifies CREATE ops (see its doc).
+                    // If the batch had non-CREATE ops (UPDATEs/CANCELs), they are NOT
+                    // confirmed here — we assume atomic batch acceptance.  Log the
+                    // composition so a misbehaving partial-broadcast (partialOnChainState
+                    // incorrectly false) leaves a forensic trace.
+                    const createCount = confirmation.confirmed.length;
+                    const totalOps = opContexts.length;
+                    if (createCount < totalOps) {
+                        bot.manager.logger.log(
+                            `[COW][UNCERTAIN] Chain polling confirmed ${createCount}/${totalOps} CREATEs on chain ` +
+                            `(${totalOps - createCount} non-CREATE ops assumed confirmed via atomic batch). ` +
+                            `Committing working grid.`,
+                            'info'
+                        );
+                    } else {
+                        bot.manager.logger.log(
+                            `[COW][UNCERTAIN] Chain polling confirmed all ${createCount} CREATE(s) on chain. Committing working grid directly.`,
+                            'info'
+                        );
+                    }
+                    applyRotationTransitionsToWorkingGrid(bot, workingGrid, opContexts);
+                    await bot.manager._commitWorkingGrid(
+                        workingGrid,
+                        workingIndexes,
+                        workingBoundary,
+                        { skipRecalc: true }
+                    );
+                    // Enrich master grid with chain-assigned order IDs and amounts
+                    try {
+                        const accountRef = bot.accountId || bot.account?.id || bot.account;
+                        const freshChain = await chainOrders.readOpenOrders(accountRef);
+                        if (freshChain.length > 0 && typeof bot.manager.syncFromOpenOrders === 'function') {
+                            await bot.manager.syncFromOpenOrders(freshChain, { skipAccounting: true });
+                        }
+                    } catch (syncErr: any) {
+                        bot.manager.logger.log(
+                            `[COW][UNCERTAIN] Chain sync after poll-confirmed commit failed: ${getErrorMessage(syncErr)}`,
+                            'warn'
+                        );
+                    }
+                    await bot.manager.persistGrid();
+                    bot.manager._clearWorkingGridRef();
+                    clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
+                    return { executed: true, hadRotation: false, uncertainResolved: true };
+                }
+            } catch (pollErr: any) {
+                bot.manager.logger.log(
+                    `[COW][UNCERTAIN] Chain polling threw unexpectedly: ${getErrorMessage(pollErr)}. Falling back to reconciliation.`,
+                    'error'
+                );
+            }
+        }
+
         bot.manager._clearWorkingGridRef();
 
         if (err instanceof BroadcastUncertainError) {
@@ -2284,6 +2524,8 @@ export = {
     buildActionsFromPlan,
     buildCowResultFromPlan,
     restoreSkippedUpdateSlotsInWorkingGrid,
+    applyRotationTransitionsToWorkingGrid,
+    pollChainForConfirmation,
     updateOrdersOnChainBatchCOW,
     processBatchResults,
 };

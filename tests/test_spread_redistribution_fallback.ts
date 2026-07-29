@@ -64,8 +64,7 @@ async function testSpreadRedistributionFallback() {
     console.log('  ✓ Committed-inventory fallback selected BUY with zero free funds');
 
     console.log('  Scenario B: spread correction plans redistribution-funded actions');
-    mgr.outOfSpread = 1;
-    const correction = await Grid.prepareSpreadCorrectionOrders(mgr, ORDER_TYPES.BUY);
+    const correction = await Grid.prepareSpreadCorrectionOrders(mgr, ORDER_TYPES.BUY, 1);
 
     assert.strictEqual(correction.ordersToPlace.length, 1, 'Should create one spread correction slot');
     assert(correction.ordersToUpdate.some(u => u?.partialOrder?.id === 'buy-donor'), 'Should downsize donor to recover budget');

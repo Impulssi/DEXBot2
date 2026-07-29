@@ -152,7 +152,9 @@ async function testFailedCommitSignalsRetry() {
     assert(result.committed === false, `committed should be false, got ${result.committed}`);
     assert(result.boundaryChanged === true, `boundaryChanged should be true, got ${result.boundaryChanged}`);
 
-    // Assert 2: master is NOT patched — types remain stale
+    // Assert 2: master is NOT patched — types remain stale, and boundaryIdx
+    // is NOT eagerly written (syncBoundaryToFunds is a pure computation; writes
+    // only happen inside _commitWorkingGrid via _setBoundary).
     assert(manager.boundaryIdx === preBoundary,
         `boundary should NOT have changed (stays ${preBoundary}), got ${manager.boundaryIdx}`);
     const slot4 = manager.orders.get('slot-4');
