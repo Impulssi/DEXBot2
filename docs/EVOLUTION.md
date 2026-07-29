@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.3 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.4 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
@@ -176,11 +176,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.0 → v1.4.1 | 8 | withBlockchainRetry centralization + node failover, 4-layer duplicate CREATE guard, fresh-grid excess cancel fix, timeout death spiral fix, spread correction type filter, dead PARTIAL filter cleanup, Phase 3 stale surplus cancellation |
 | v1.4.1 → v1.4.2 | 3 | Spread correction direction bias removal, precision-based price collision guard, stale-node defense completion |
 | v1.4.2 → v1.4.3 | 5 | Boundary-shift state preservation across failed COW commits, SPREAD→BUY crosser handling, per-batch tolerance violation filter (no full abort), precision-0 tolerance overflow fix, poolRef pinned-pool price derivation, withTimeout utility extraction + circular dep fix |
+| v1.4.3 → v1.4.4 | 3 | COW invariant enforcement (retry on failed boundary-shift commit, no master patching), COW pipeline code review fixes, grid engine consolidation (deduplication, dead code removal, export cleanup) |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 29, 2026 (v1.4.3)
-**Total Commits**: 1,891
-**Date Range**: December 2, 2025 – July 28, 2026
+**Last Updated**: July 29, 2026 (v1.4.4)
+**Total Commits**: 1,895
+**Date Range**: December 2, 2025 – July 29, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

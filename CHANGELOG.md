@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.4] - 2026-07-29 - COW Invariant Enforcement, Grid Engine Consolidation
+
+### 2026-07-29
+
+- **Fix**: remove COW-invariant violating master patching — `applyGridDivergenceCorrections` now returns `{ committed, boundaryChanged }` instead of patching master directly. Caller schedules `setTimeout(0)` retry on failed boundary-shift commit, keeping master stale but consistent. Removed `_applyFallbackCowTypes` and both call sites. `prepareSpreadCorrectionOrders` uses local `bIdx` instead of writing `manager.boundaryIdx` directly. `computeSideIdeals` reads slot counts from `calculatedSnap` instead of re-reading `manager.orders` under lock (`modules/order/utils/system.ts`, `modules/dexbot_maintenance_runtime.ts`, `modules/order/grid.ts`).
+- **Fix**: COW pipeline code review fixes — 7 issues: added `_restoreBoundary` relaxed setter to eliminate startup `[COW]` warning noise; JSDoc for lazy cache getters/setters; forensic `createCount < totalOps` log in uncertain-broadcast handler; comment explaining `outOfSpread` non-reset in divergence corrections; test fix for grid bloat mock (`modules/dexbot_cow_runtime.ts`, `modules/dexbot_maintenance_runtime.ts`, `modules/order/manager.ts`, `modules/order/grid.ts`, `modules/order/utils/system.ts`).
+- **Refactor**: consolidate grid engine — `getBtsSide` utility replaces 8 identical ternaries; precision functions delegate to unified `getPrecision()`; `computeBtsFeeImpact` extracted as shared BTS deficit helper for accounting and sizing paths; `getSellStartIdx` replaces 4 instances of `boundaryIdx + gapSlots + 1`; dust thresholds use named `GRID_LIMITS` constants; exported ESM consistency across 5 modules; removed dead `validateIndices`/`assertIndexConsistency`/`_repairIndices` from manager; extracted `assertOrdersStructurallySound` for tests (`modules/order/accounting.ts`, `modules/order/grid.ts`, `modules/order/grid_reconcile.ts`, `modules/order/manager.ts`, `modules/order/utils/math.ts`, `modules/order/utils/order.ts`, `modules/order/utils/validate.ts`, `modules/order/strategy.ts`, `modules/order/sync_engine.ts`).
+- **Test**: replace `testFallbackCowTypes` with `testFailedCommitSignalsRetry` — asserts master NOT patched and correct return signal instead of post-patch state (`tests/test_fallback_cow_types_and_spread_crosser.ts`).
+- **Test**: test cleanup — removed stale `_repairIndices` references from COW mutation detection allowlists and console output in 3 test files; converted `test_sync_excess_orphan.ts` and `test_strategy_reaction_cap_fix.ts` from mixed/require to all-ESM (`tests/test_cow_index_mutation_detection.ts`, `tests/test_cow_set_mutation_report.ts`, `tests/test_cow_static_analysis.ts`, `tests/test_sync_excess_orphan.ts`, `tests/test_strategy_reaction_cap_fix.ts`).
+
 ## [1.4.3] - 2026-07-29 - Boundary-Shift Preservation, Tolerance Violation Filter, PoolRef Price Derivation
 
 ### 2026-07-29
