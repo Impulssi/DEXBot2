@@ -1,11 +1,12 @@
 /**
- * Test for _applyFallbackCowTypes after failed COW commit
- * and SPREAD→BUY crosser handling in applyGridDivergenceCorrections.
+ * Test for failed COW commit retry signaling and SPREAD→BUY crosser
+ * handling in applyGridDivergenceCorrections.
  *
  * These tests drive applyGridDivergenceCorrections with a fund-ratio
  * boundary shift and verify:
- *   1. After a failed commit, master types + boundary are updated from
- *      the working grid (no state lost).
+ *   1. After a failed commit, master is NOT patched (types stay stale),
+ *      and the function returns { committed: false, boundaryChanged: true }
+ *      so the caller can schedule a retry.
  *   2. A SPREAD slot with an on-chain order that the boundary shift
  *      reclassifies to BUY is correctly attributed to the BUY side and
  *      does NOT produce a spurious CREATE.
@@ -125,12 +126,12 @@ async function createBoundaryShiftFixture(sellFunds = 30, buyFunds = 5700) {
     return manager;
 }
 
-async function testFallbackCowTypes() {
-    console.log('\n=== Test 1: _applyFallbackCowTypes after failed COW commit ===\n');
+async function testFailedCommitSignalsRetry() {
+    console.log('\n=== Test 1: Failed commit returns { committed: false, boundaryChanged: true } ===\n');
 
     const manager = await createBoundaryShiftFixture();
 
-    // Pre-assert: master has stale SPREAD type for slot-4
+    // Pre-assert: master has stale SPREAD type for slot-4 (will NOT be patched)
     assert(manager.orders.get('slot-4').type === ORDER_TYPES.SPREAD,
         'Pre-condition: slot-4 is SPREAD in master');
     assert(manager.orders.get('slot-4').orderId === 'chain-4',
@@ -144,47 +145,37 @@ async function testFallbackCowTypes() {
     };
     const mockAccountOrders = { storeMasterGrid: async () => {} };
 
-    await applyGridDivergenceCorrections(manager, mockAccountOrders, 'bot-key', mockUpdateFn);
+    let result = await applyGridDivergenceCorrections(manager, mockAccountOrders, 'bot-key', mockUpdateFn);
 
-    // Assert 1: boundary updated
-    assert(manager.boundaryIdx !== preBoundary,
-        `boundary should have changed from ${preBoundary}`);
-    assert(manager.boundaryIdx === 4,
-        `boundary should be 4, got ${manager.boundaryIdx}`);
+    // Assert 1: function returned the correct signal
+    assert(result, 'Should return a result object');
+    assert(result.committed === false, `committed should be false, got ${result.committed}`);
+    assert(result.boundaryChanged === true, `boundaryChanged should be true, got ${result.boundaryChanged}`);
 
-    // Assert 2: slot-4 type reflects working grid (now BUY)
+    // Assert 2: master is NOT patched — types remain stale
+    assert(manager.boundaryIdx === preBoundary,
+        `boundary should NOT have changed (stays ${preBoundary}), got ${manager.boundaryIdx}`);
     const slot4 = manager.orders.get('slot-4');
-    assert(slot4.type === ORDER_TYPES.BUY,
-        `slot-4 should be BUY after fallback, got ${slot4.type}`);
+    assert(slot4.type === ORDER_TYPES.SPREAD,
+        `slot-4 should remain SPREAD (master not patched), got ${slot4.type}`);
 
-    // Assert 3: slot-5 (stayed SPREAD) unchanged
-    assert(manager.orders.get('slot-5').type === ORDER_TYPES.SPREAD,
-        'slot-5 should remain SPREAD');
-
-    // Assert 4: slot-0,1,2 (BUY) unchanged
+    // Assert 3: slot-0,1,2 (BUY) unchanged
     assert(manager.orders.get('slot-0').type === ORDER_TYPES.BUY, 'slot-0 still BUY');
     assert(manager.orders.get('slot-1').type === ORDER_TYPES.BUY, 'slot-1 still BUY');
     assert(manager.orders.get('slot-2').type === ORDER_TYPES.BUY, 'slot-2 still BUY');
 
-    // Assert 5: orderIds preserved (fallback does not touch them)
+    // Assert 4: orderIds preserved (nothing touched them)
     assert(manager.orders.get('slot-0').orderId === 'chain-0', 'slot-0 orderId preserved');
     assert(manager.orders.get('slot-4').orderId === 'chain-4', 'slot-4 orderId preserved');
 
-    // Assert 6: _ordersByType rebuilt correctly
-    const buyIds = Array.from(manager._ordersByType[ORDER_TYPES.BUY] || []);
-    assert(buyIds.includes('slot-4'), 'slot-4 should be in BUY index');
-    assert(!buyIds.includes('slot-5'), 'slot-5 should NOT be in BUY index');
-
-    // Assert 7: sizes unchanged
+    // Assert 5: sizes unchanged
     assert(manager.orders.get('slot-4').size === 100, 'slot-4 size unchanged');
     assert(manager.orders.get('slot-0').size === 100, 'slot-0 size unchanged');
 
-    console.log('  ✓ boundary updated', preBoundary, '→', manager.boundaryIdx);
-    console.log('  ✓ slot-4 type:', slot4.type);
-    console.log('  ✓ slot-5 type:', manager.orders.get('slot-5').type);
-    console.log('  ✓ orderIds preserved');
-    console.log('  ✓ _ordersByType rebuilt (slot-4 in BUY)');
-    console.log('  ✓ sizes untouched\n');
+    console.log('  ✓ returned { committed: false, boundaryChanged: true }');
+    console.log('  ✓ boundary unchanged:', manager.boundaryIdx, '(stays', preBoundary + ')');
+    console.log('  ✓ slot-4 type:', slot4.type, '(stale, not patched)');
+    console.log('  ✓ orderIds and sizes untouched\n');
 }
 
 async function testSpreadBuyCrosserNoSpuriousCreate() {
@@ -234,7 +225,8 @@ async function testSpreadBuyCrosserNoSpuriousCreate() {
     );
 
     // Use working-grid type for diagnostic (master still has stale SPREAD
-    // type because the mock does not call _commitWorkingGrid).
+    // type because the commit was not executed — intentionally, the retry
+    // approach leaves master untouched until the next attempt).
     const wgCrosserType = capturedCowResult.workingGrid.get('slot-4')?.type;
     console.log('  ✓ slot-4 in working grid as', wgCrosserType);
     console.log('  ✓ slot-4 CREATE actions:', createsForSlot4.length);
@@ -257,9 +249,9 @@ async function testSpreadBuyCrosserNoSpuriousCreate() {
 }
 
 async function main() {
-    await testFallbackCowTypes();
+    await testFailedCommitSignalsRetry();
     await testSpreadBuyCrosserNoSpuriousCreate();
-    console.log('✓ All fallback-COW-types and SPREAD→BUY crosser tests PASSED!\n');
+    console.log('✓ All commit-retry-signal and SPREAD→BUY crosser tests PASSED!\n');
 }
 
 if (require.main === module) {
@@ -269,4 +261,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { testFallbackCowTypes, testSpreadBuyCrosserNoSpuriousCreate };
+module.exports = { testFailedCommitSignalsRetry, testSpreadBuyCrosserNoSpuriousCreate };

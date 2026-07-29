@@ -1574,8 +1574,9 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                     return;
                 }
 
+                let dcResult;
                 try {
-                    await applyGridDivergenceCorrections(
+                    dcResult = await applyGridDivergenceCorrections(
                         bot.manager,
                         bot.accountOrders,
                         bot.config.botKey,
@@ -1586,16 +1587,29 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                 } catch (err: any) {
                     bot._warn(`Error applying divergence corrections during ${context}: ${getErrorMessage(err)}`);
                 }
+
+                // If divergence corrections failed with a pending boundary shift, retry
+                // immediately instead of patching master types.  The retry re-fetches
+                // blockchain state and re-derives the boundary with consistent data.
+                // Skip spread correction this tick — the retry will handle it.
+                if (dcResult && !dcResult.committed && dcResult.boundaryChanged) {
+                    bot._log(
+                        `[DIVERGENCE-COW] Commit failed with boundary shift; ` +
+                        `scheduling immediate retry instead of patching master`,
+                        'warn'
+                    );
+                    setTimeout(() => runGridMaintenance(bot, 'failed-commit-retry', { skipIdle: true }), 0);
+                } else {
+                    const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
+                    if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;
+                    if (spreadResult && spreadResult.ordersPlaced > 0) {
+                        bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
+                        await bot._persistAndRecoverIfNeeded();
+                    }
+                }
             }
         } catch (err: any) {
             bot._warn(`Error running divergence check during ${context}: ${getErrorMessage(err)}`);
-        }
-
-        const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
-        if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;
-        if (spreadResult && spreadResult.ordersPlaced > 0) {
-            bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
-            await bot._persistAndRecoverIfNeeded();
         }
     } else {
         const totalDust = (healthResult.buyDustOrders?.length || 0) + (healthResult.sellDustOrders?.length || 0);

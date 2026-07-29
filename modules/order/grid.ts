@@ -1473,9 +1473,14 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
         const computeSideIdeals = (activeOrders: any, type: any, ctx: any): any => {
             if (!manager || !ctx || ctx.budget <= 0 || activeOrders.length === 0) return activeOrders;
 
-            // Identify ALL slots currently assigned to this side.
-            // Ideal sizing must use the full slot count to determine geometric share per slot.
-            const sideSlots = (Array.from(manager.orders.values()) as Order[])
+            // Identify ALL slots currently assigned to this side from the calculated
+            // grid snapshot (not a fresh read from manager.orders).  Using the snapshot
+            // avoids TOCTOU races and ensures the slot classification is consistent with
+            // the grid state used for the RMS computation.  If a boundary shift is pending
+            // (set via _gridSidesUpdated but not yet committed through the COW pipeline),
+            // the types in manager.orders are stale — reading from the snapshot matches
+            // what the rest of the comparison sees.
+            const sideSlots = (calculatedSnap as any[])
                 .filter((o: any) => o.type === type)
                 .sort((a: any, b: any) => (a.price ?? 0) - (b.price ?? 0));
 
@@ -2219,15 +2224,15 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             manager.config?.gridLimits
         );
 
-        // Sync boundary from current fund state to avoid stale boundaryIdx causing
-        // getSlotCorrectType to misclassify slots (e.g. after fills shifted the
-        // boundary but the COW commit hasn't updated it yet).  This is safe under
-        // the grid lock — no concurrent modifications can race with this read.
+        // Compute boundary from current fund state for local slot classification.
+        // Use a local variable — do NOT mutate manager.boundaryIdx here.
+        // The boundary is only updated atomically through _commitWorkingGrid in the
+        // COW pipeline; mutating it outside the commit path creates inconsistencies
+        // between manager.boundaryIdx and manager.orders slot types.
         const boundarySync = syncBoundaryToFunds(manager);
-        if (boundarySync.changed && boundarySync.newIdx !== undefined) {
-            manager.boundaryIdx = boundarySync.newIdx;
-        }
-        const bIdx = manager.boundaryIdx ?? 0;
+        const bIdx = (boundarySync.changed && boundarySync.newIdx !== undefined)
+            ? boundarySync.newIdx
+            : (manager.boundaryIdx ?? 0);
         const buyEndIdx = bIdx;
         const sellStartIdx = bIdx + Number(gapSlots) + 1;
         const getSlotCorrectType = (slot: any): string => {

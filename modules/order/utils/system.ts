@@ -799,7 +799,7 @@ export async function retryPersistenceIfNeeded(manager: any): Promise<boolean> {
  * @param {Function} updateOrdersOnChainBatchFn - Batch update function for blockchain operations
  * @returns {Promise<void>}
  */
-export async function applyGridDivergenceCorrections(manager: any, accountOrders: any, _botKey: string, updateOrdersOnChainBatchFn: Function): Promise<void> {
+export async function applyGridDivergenceCorrections(manager: any, accountOrders: any, _botKey: string, updateOrdersOnChainBatchFn: Function): Promise<{ committed: boolean, boundaryChanged: boolean } | undefined> {
     if (!manager._gridLock) return;
     const { updateGridFromBlockchainSnapshot } = require('../grid');
     const { WorkingGrid } = require('../working_grid');
@@ -838,7 +838,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         } catch (err: any) {
             manager.logger?.log?.(`[DIVERGENCE-COW] Grid resize failed: ${getErrorMessage(err)}`, 'error');
             manager._gridSidesUpdated.clear();
-            return;
+            return undefined;
         }
     }
 
@@ -993,6 +993,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
 
     // Phase 3: Execute corrections via COW batch
     if (cowResult && !cowResult.aborted) {
+        const hadBoundaryShift = pendingBoundaryIdx !== manager.boundaryIdx;
         try {
             let result: any = null;
 
@@ -1024,75 +1025,22 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                 manager.outOfSpread = 0;
                 manager._gridSidesUpdated.clear();
                 // Grid already persisted via _commitWorkingGrid in updateOrdersOnChainBatch
+                return { committed: true, boundaryChanged: hadBoundaryShift };
             } else {
                 manager.logger.log(`[DIVERGENCE-COW] Divergence corrections not executed (working grid discarded)`, 'warn');
-                // Preserve boundary shift state even after a failed commit so downstream
-                // code (e.g., syncBoundaryToFunds → prepareSpreadCorrectionOrders) sees
-                // correct type assignments instead of stale pre-shift types.  The working
-                // grid already had its slot types reassigned by updateGridFromBlockchainSnapshot;
-                // we apply just the type+index changes to master without touching sizes or orderIds.
-                // Guard: pendingBoundaryIdx defaults to manager.boundaryIdx (line 814) and
-                // is only reassigned when outOfSpread>0 triggers syncBoundaryToFunds.  If
-                // no shift was computed the values are equal → false.  null/undefined also
-                // safely produce false because pendingBoundaryIdx is initialized from
-                // manager.boundaryIdx and only changed to boundarySync.newIdx (a number).
-                if (pendingBoundaryIdx !== manager.boundaryIdx && cowResult?.workingGrid) {
-                    _applyFallbackCowTypes(manager, cowResult.workingGrid, pendingBoundaryIdx);
-                }
                 manager._gridSidesUpdated.clear();
+                return { committed: false, boundaryChanged: hadBoundaryShift };
             }
         } catch (err: any) {
             manager.logger.log(`[DIVERGENCE-COW] Error executing divergence corrections: ${getErrorMessage(err)}`, 'error');
-            // Same guard as above — pendingBoundaryIdx is safe against null/undefined.
-            if (pendingBoundaryIdx !== manager.boundaryIdx && cowResult?.workingGrid) {
-                _applyFallbackCowTypes(manager, cowResult.workingGrid, pendingBoundaryIdx);
-            }
             manager._gridSidesUpdated.clear();
+            return { committed: false, boundaryChanged: hadBoundaryShift };
         }
     } else {
         // No actions needed or aborted
         manager._gridSidesUpdated.clear();
+        return undefined;
     }
-}
-
-/**
- * Apply type-only fallback commit from a working grid to master after a failed
- * COW divergence-correction commit.  Only slot types and the type index are
- * updated — order sizes, order IDs, and state remain unchanged.  This ensures
- * downstream code (e.g., syncBoundaryToFunds in prepareSpreadCorrectionOrders)
- * sees correct type assignments instead of stale pre-shift types, preventing
- * clamp-bound drift and missed spread-correction candidates.
- *
- * @param {Object} manager  - OrderManager instance
- * @param {import('../grid').WorkingGrid} workingGrid  - Working grid with correct types
- * @param {number} newBoundaryIdx  - The boundary index that was to be committed
- */
-function _applyFallbackCowTypes(manager: any, workingGrid: any, newBoundaryIdx: number) {
-    const rebuiltByType: Record<string, Set<string>> = {
-        [ORDER_TYPES.BUY]: new Set(),
-        [ORDER_TYPES.SELL]: new Set(),
-        [ORDER_TYPES.SPREAD]: new Set(),
-    };
-    const newOrders: Map<string, any> = new Map();
-    for (const [id, masterOrder] of manager.orders) {
-        const wSlot = workingGrid.get(id);
-        const updatedType = wSlot && wSlot.type !== masterOrder.type ? wSlot.type : masterOrder.type;
-        const order = updatedType !== masterOrder.type
-            ? Object.freeze({ ...masterOrder, type: updatedType })
-            : masterOrder;
-        newOrders.set(id, order);
-        if (rebuiltByType[order.type]) rebuiltByType[order.type].add(order.id);
-    }
-    manager.orders = Object.freeze(newOrders);
-    manager._ordersByType = rebuiltByType;
-    const prevBoundary = manager.boundaryIdx;
-    manager.boundaryIdx = newBoundaryIdx;
-    manager.logger?.log?.(
-        `[DIVERGENCE-COW] Applied type-only fallback: boundary ${prevBoundary} → ${newBoundaryIdx}` +
-        ` (${manager.orders.size} orders, ${rebuiltByType[ORDER_TYPES.BUY].size} BUY, ` +
-        `${rebuiltByType[ORDER_TYPES.SELL].size} SELL, ${rebuiltByType[ORDER_TYPES.SPREAD].size} SPREAD)`,
-        'info'
-    );
 }
 
 // ================================================================================
