@@ -395,7 +395,7 @@ function calculateAvailableFundsValue(side: any, accountTotals: any, funds: any,
     const chainFree = toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree);
     const virtualReservation = toFiniteNumber(side === 'buy' ? funds.virtual?.buy : funds.virtual?.sell);
     const btsFeesOwed = toFiniteNumber(funds.btsFeesOwed);
-    const btsSide = (assetA === 'BTS') ? 'sell' : (assetB === 'BTS') ? 'buy' : null;
+    const btsSide = getBtsSide(assetA, assetB);
 
     const btsReservationMultiplier = feeParams?.BTS_RESERVATION_MULTIPLIER ?? FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
 
@@ -415,26 +415,68 @@ function calculateAvailableFundsValue(side: any, accountTotals: any, funds: any,
         const targetSell = Math.max(0, toFiniteNumber(activeOrders?.sell, 1));
         const totalTargetOrders = targetBuy + targetSell;
         const formulaBudget = calculateOrderCreationFees(assetA, assetB, totalTargetOrders, btsReservationMultiplier);
-        const effectiveMin = (configMinBtsValue != null && configMinBtsValue > 0) ? configMinBtsValue : formulaBudget;
         const btsFree = toFiniteNumber(funds?.btsBalance?.free, 0);
-        const btsDeficit = Math.max(0, effectiveMin - btsFree);
-        if (btsDeficit > 0) {
-            const allocatedBuy = toFiniteNumber(funds?.allocated?.buy, 0);
-            const allocatedSell = toFiniteNumber(funds?.allocated?.sell, 0);
-            const totalFree = allocatedBuy + allocatedSell > 0
-                ? allocatedBuy + allocatedSell
-                : toFiniteNumber(accountTotals?.buyFree, 0) + toFiniteNumber(accountTotals?.sellFree, 0);
-            if (totalFree > 0) {
-                const sideFree = allocatedBuy + allocatedSell > 0
-                    ? (side === 'buy' ? allocatedBuy : allocatedSell)
-                    : toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree, 0);
-                const share = sideFree / totalFree;
-                return Math.max(0, chainFree - virtualReservation - btsDeficit * share);
-            }
-        }
+        const allocatedBuy = toFiniteNumber(funds?.allocated?.buy, 0);
+        const allocatedSell = toFiniteNumber(funds?.allocated?.sell, 0);
+        const totalFree = allocatedBuy + allocatedSell > 0
+            ? allocatedBuy + allocatedSell
+            : toFiniteNumber(accountTotals?.buyFree, 0) + toFiniteNumber(accountTotals?.sellFree, 0);
+        const sideFree = allocatedBuy + allocatedSell > 0
+            ? (side === 'buy' ? allocatedBuy : allocatedSell)
+            : toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree, 0);
+        const impact = computeBtsFeeImpact(false, formulaBudget, configMinBtsValue ?? 0, btsFree, sideFree, totalFree);
+        return Math.max(0, chainFree - virtualReservation - impact);
     }
 
     return Math.max(0, chainFree - virtualReservation - currentFeesOwed - btsFeesReservation);
+}
+
+/**
+ * Pure BTS fee impact calculation. Returns the amount to deduct from a side's
+ * budget due to BTS fee reservation — for BTS-holding sides the full formula
+ * budget, for non-BTS sides a proportional share of any BTS deficit.
+ *
+ * Used by both calculateAvailableFundsValue (accounting path) and
+ * adjustBudgetForBtsFees (sizing path) to eliminate logic drift.
+ */
+function computeBtsFeeImpact(
+    isBtsSide: boolean,
+    formulaBudget: number,
+    minBtsValue: number,
+    btsFree: number,
+    sideFree: number,
+    totalFree: number
+): number {
+    if (formulaBudget <= 0) return 0;
+    if (isBtsSide) return formulaBudget;
+    // totalFree <= 0: no funds to proportionally deduct from — return 0 so
+    // callers fall through to their own non-BTS-fee fallback (legacy path 2
+    // behavior).  The 0.5 equal-split fallback lives in adjustBudgetForBtsFees
+    // for path 1 compatibility only.
+    if (totalFree <= 0) return 0;
+
+    const effectiveMin = (minBtsValue > 0) ? minBtsValue : formulaBudget;
+    const btsDeficit = Math.max(0, effectiveMin - btsFree);
+    if (btsDeficit <= 0) return 0;
+
+    return btsDeficit * (sideFree / totalFree);
+}
+
+/**
+ * Adjust an allocated budget for BTS fee reservation.
+ * Uses computeBtsFeeImpact for proportional deduction; falls back to 0.5
+ * split when totalFree is exhausted (legacy sizing-path behavior).
+ */
+function adjustBudgetForBtsFees(allocated: any, isBtsSide: any, formulaBudget: any, minBtsValue: any, btsFree: any, sideFree: any, totalFree: any) {
+    if (allocated <= 0) return 0;
+    const impact = computeBtsFeeImpact(isBtsSide, formulaBudget, minBtsValue, btsFree, sideFree, totalFree);
+    if (impact > 0) return Math.max(0, allocated - impact);
+    if (isBtsSide) return Math.max(0, allocated - formulaBudget);
+    // Legacy fallback: 0.5 equal split when totalFree is exhausted
+    const effectiveMin = (minBtsValue > 0) ? minBtsValue : formulaBudget;
+    const btsDeficit = Math.max(0, effectiveMin - btsFree);
+    if (btsDeficit > 0) return Math.max(0, Math.min(allocated, allocated - btsDeficit * 0.5));
+    return allocated;
 }
 
 /**
@@ -580,16 +622,7 @@ function floatToBlockchainInt(floatValue: any, precision: any) {
  * @throws {Error} If precision missing for the required asset
  */
 function getPrecisionByOrderType(assets: any, orderType: any) {
-    const asset = orderType === ORDER_TYPES.SELL ? assets?.assetA : assets?.assetB;
-    const side = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
-
-    if (typeof asset?.precision !== 'number') {
-        const errorMsg = `CRITICAL: Asset precision missing for ${side} orders. Asset: ${asset?.symbol || '(unknown)'}. Cannot determine blockchain precision.`;
-        mathLogger.error(`${errorMsg}`);
-        throw new Error(errorMsg);
-    }
-
-    return asset.precision;
+    return getPrecision(assets, { type: orderType });
 }
 
 /**
@@ -601,16 +634,7 @@ function getPrecisionByOrderType(assets: any, orderType: any) {
  * @throws {Error} If precision missing
  */
 function getPrecisionForSide(assets: any, side: any) {
-    const asset = side === 'buy' ? assets?.assetB : assets?.assetA;
-    const sideUpper = side === 'buy' ? 'BUY' : 'SELL';
-
-    if (typeof asset?.precision !== 'number') {
-        const errorMsg = `CRITICAL: Asset precision missing for ${sideUpper} side. Asset: ${asset?.symbol || '(unknown)'}. Cannot determine blockchain precision.`;
-        mathLogger.error(`${errorMsg}`);
-        throw new Error(errorMsg);
-    }
-
-    return asset.precision;
+    return getPrecision(assets, { side });
 }
 
 /**
@@ -621,21 +645,9 @@ function getPrecisionForSide(assets: any, side: any) {
  * @throws {Error} If precision missing for either asset
  */
 function getPrecisionsForManager(assets: any) {
-    if (typeof assets?.assetA?.precision !== 'number') {
-        const errorMsg = `CRITICAL: Asset precision missing for assetA (${assets?.assetA?.symbol || '(unknown)'}). Cannot determine blockchain precision.`;
-        mathLogger.error(`${errorMsg}`);
-        throw new Error(errorMsg);
-    }
-
-    if (typeof assets?.assetB?.precision !== 'number') {
-        const errorMsg = `CRITICAL: Asset precision missing for assetB (${assets?.assetB?.symbol || '(unknown)'}). Cannot determine blockchain precision.`;
-        mathLogger.error(`${errorMsg}`);
-        throw new Error(errorMsg);
-    }
-
     return {
-        A: assets.assetA.precision,
-        B: assets.assetB.precision
+        A: getPrecision(assets, { type: ORDER_TYPES.SELL }),
+        B: getPrecision(assets, { type: ORDER_TYPES.BUY })
     };
 }
 
@@ -676,6 +688,16 @@ function getPrecision(assets: any, { type, side, proceeds = false }: { type?: st
         throw new Error(`CRITICAL: Precision missing for ${label} (${asset?.symbol || 'unknown'}).`);
     }
     return asset.precision;
+}
+
+/**
+ * Determine which side holds BTS for a trading pair.
+ * Returns ORDER_TYPES.SELL if assetA is BTS, ORDER_TYPES.BUY if assetB is BTS, null otherwise.
+ */
+function getBtsSide(assetA: string, assetB: string): string | null {
+    if (assetA === 'BTS') return ORDER_TYPES.SELL;
+    if (assetB === 'BTS') return ORDER_TYPES.BUY;
+    return null;
 }
 
 // ================================================================================
@@ -837,7 +859,7 @@ function validateOrderAmountsWithinLimits(amountToSell: any, minToReceive: any, 
  * @returns {number} Minimum order size in asset units
  * @throws {Error} If precision cannot be determined
  */
-function getMinOrderSize(orderType: any, assets: any, factor: any = 50) {
+function getMinOrderSize(orderType: any, assets: any, factor: any = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR) {
     const f = Number(factor);
     if (!f || !Number.isFinite(f) || f <= 0) return 0;
 
@@ -860,7 +882,7 @@ function getMinOrderSize(orderType: any, assets: any, factor: any = 50) {
  * @param {number} [dustThresholdPercent=5] - Dust threshold percentage (default 5%)
  * @returns {number} Dust factor (e.g., 0.05 for 5%)
  */
-function getDustThresholdFactor(dustThresholdPercent: any = 5) {
+function getDustThresholdFactor(dustThresholdPercent: any = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
     return dustThresholdPercent / 100;
 }
 
@@ -872,7 +894,7 @@ function getDustThresholdFactor(dustThresholdPercent: any = 5) {
  * @param {number} [dustThresholdPercent=5] - Threshold percentage (default 5%)
  * @returns {number} Single dust threshold (0 if idealSize invalid)
  */
-function getSingleDustThreshold(idealSize: any, dustThresholdPercent: any = 5) {
+function getSingleDustThreshold(idealSize: any, dustThresholdPercent: any = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
     if (!idealSize || idealSize <= 0) return 0;
     return idealSize * getDustThresholdFactor(dustThresholdPercent);
 }
@@ -886,7 +908,7 @@ function getSingleDustThreshold(idealSize: any, dustThresholdPercent: any = 5) {
  * @param {number} [dustThresholdPercent=5] - Threshold percentage (default 5%)
  * @returns {number} Double dust threshold (0 if idealSize invalid)
  */
-function getDoubleDustThreshold(idealSize: any, dustThresholdPercent: any = 5) {
+function getDoubleDustThreshold(idealSize: any, dustThresholdPercent: any = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
     if (!idealSize || idealSize <= 0) return 0;
     return idealSize * getDustThresholdFactor(dustThresholdPercent) * 2;
 }
@@ -899,7 +921,7 @@ function getDoubleDustThreshold(idealSize: any, dustThresholdPercent: any = 5) {
  * @param {number} [minFactor=50] - Minimum size factor (default 50)
  * @returns {number} Minimum order size in asset units
  */
-function getMinAbsoluteOrderSize(orderType: any, assets: any, minFactor: any = 50) {
+function getMinAbsoluteOrderSize(orderType: any, assets: any, minFactor: any = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR) {
     return getMinOrderSize(orderType, assets, minFactor);
 }
 
@@ -915,7 +937,7 @@ function getMinAbsoluteOrderSize(orderType: any, assets: any, minFactor: any = 5
  * @param {number} [dustThresholdPercent=5] - Dust threshold percentage (default 5%)
  * @returns {Object} Validation result {isValid, reason, minAbsoluteSize, minDustSize}
  */
-function validateOrderSize(orderSize: any, orderType: any, assets: any, minFactor: any = 50, idealSize: any = null, dustThresholdPercent: any = 5) {
+function validateOrderSize(orderSize: any, orderType: any, assets: any, minFactor: any = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR, idealSize: any = null, dustThresholdPercent: any = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
      const orderSizeFloat = toFiniteNumber(orderSize);
      const minAbsoluteSize = getMinAbsoluteOrderSize(orderType, assets, minFactor);
      
@@ -1171,10 +1193,11 @@ function deductOrderFeesFromFunds(buyFunds: any, sellFunds: any, fees: any, conf
     let finalBuy = buyFunds;
     let finalSell = sellFunds;
     if (fees > 0) {
-        if (config?.assetB === 'BTS') {
+        const btsOrderType = getBtsSide(config?.assetA, config?.assetB);
+        if (btsOrderType === ORDER_TYPES.BUY) {
             finalBuy = Math.max(0, buyFunds - fees);
             logger?.log?.(`Reduced available BTS (buy) funds by ${Format.formatAmount8(fees)}`, 'info');
-        } else if (config?.assetA === 'BTS') {
+        } else if (btsOrderType === ORDER_TYPES.SELL) {
             finalSell = Math.max(0, sellFunds - fees);
             logger?.log?.(`Reduced available BTS (sell) funds by ${Format.formatAmount8(fees)}`, 'info');
         }
@@ -1233,7 +1256,15 @@ function calculateGapSlots(incrementPercent: any, targetSpreadPercent: any, grid
     return Math.max(MIN_SPREAD_ORDERS, requiredSteps - 1);
 }
 
-export { calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, deductOrderFeesFromFunds, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+/**
+ * Calculate sell start index from boundary index and gap slots.
+ * sellStartIdx = boundaryIdx + gapSlots + 1
+ */
+function getSellStartIdx(boundaryIdx: any, gapSlots: any): number {
+    return Number(boundaryIdx ?? 0) + Number(gapSlots) + 1;
+}
+
+export { getBtsSide, getSellStartIdx, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, deductOrderFeesFromFunds, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.

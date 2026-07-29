@@ -103,7 +103,8 @@ import {
     floatToBlockchainInt,
     calculatePriceTolerance,
     getAssetFees,
-    getMinAbsoluteOrderSize
+    getMinAbsoluteOrderSize,
+    getBtsSide
 } from './utils/math';
 import {
     parseChainOrder,
@@ -1764,7 +1765,7 @@ class SyncEngine {
                     } else {
                         // CRITICAL: Even if order not in grid, the cancellation fee was still paid on blockchain
                         // Deduct it from account totals to prevent drift.
-                        const btsSide = (mgr.config.assetA === 'BTS') ? ORDER_TYPES.SELL : (mgr.config.assetB === 'BTS') ? ORDER_TYPES.BUY : null;
+                        const btsSide = getBtsSide(mgr.config?.assetA, mgr.config?.assetB);
                         if (btsSide && btsFeeData?.cancelFee > 0) {
                             await mgr.accountant.adjustTotalBalance(btsSide, -btsFeeData.cancelFee, 'cancel-order-unmatched-fee');
                         }
@@ -1968,5 +1969,3 @@ class SyncEngine {
 }
 
 export default SyncEngine
-
-module.exports = SyncEngine

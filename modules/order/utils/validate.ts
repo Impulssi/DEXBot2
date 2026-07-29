@@ -354,7 +354,7 @@ function checkFundDrift(orders: Map<string, any>, accountTotals: any, assets: an
  * @returns {Object} Reconciliation result with actions
  */
 function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, options: Record<string, any> = {}) {
-    const { logger = null, dustThresholdPercent = 5 } = options;
+    const { logger = null, dustThresholdPercent = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE } = options;
     const actions: any[] = [];
     
     const surplusesBuy: any[] = [];

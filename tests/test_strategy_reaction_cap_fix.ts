@@ -1,7 +1,7 @@
-const assert = require('assert');
-const StrategyEngine = require('../modules/order/strategy');
-const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-const { getErrorMessage } = require('../modules/utils/errors');
+import assert from 'assert';
+import StrategyEngine from '../modules/order/strategy';
+import { ORDER_TYPES, ORDER_STATES } from '../modules/constants';
+import { getErrorMessage } from '../modules/utils/errors';
 
 function buildSlots() {
     const slots = [];

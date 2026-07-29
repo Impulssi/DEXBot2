@@ -134,9 +134,11 @@ import {
     allocateFundsByWeights,
     calculateGapSlots as _mathGapSlots,
     findPriceCollision,
+    getBtsSide,
+    getSellStartIdx,
+    adjustBudgetForBtsFees,
 } from './utils/math';
 import {
-    adjustBudgetForBtsFees,
     filterOrdersByType,
     checkSizesBeforeMinimum,
     checkSizeThreshold,
@@ -297,7 +299,8 @@ export async function _getSizingContext(manager: any, side: any, { skipRecalc = 
             const targetBuy = Math.max(0, manager.config.activeOrders?.buy ?? 1);
             const targetSell = Math.max(0, manager.config.activeOrders?.sell ?? 1);
             const totalTarget = targetBuy + targetSell;
-            const isBtsSide = (isBuy && manager.config.assetB === 'BTS') || (!isBuy && manager.config.assetA === 'BTS');
+            const btsOrderType = getBtsSide(manager.config?.assetA, manager.config?.assetB);
+            const isBtsSide = isBuy ? (btsOrderType === ORDER_TYPES.BUY) : (btsOrderType === ORDER_TYPES.SELL);
             const formulaBudget = calculateOrderCreationFees(
                 manager.config.assetA,
                 manager.config.assetB,
@@ -564,7 +567,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                     manager.config?.gridLimits
                 );
                 const buyEndIdx = boundaryIdx;
-                const sellStartIdx = boundaryIdx + gapSlots + 1;
+                const sellStartIdx = getSellStartIdx(boundaryIdx, gapSlots);
                 let reassignCount = 0;
                 grid = grid.map((slot: any, i: any) => {
                     if (slot.state === ORDER_STATES.VIRTUAL && !slot.orderId) {
@@ -1703,7 +1706,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                 const gapSlots = calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
                 const railLen = allSlots.length;
                 const buyEndIdx = manager.boundaryIdx;
-                const sellStartIdx = manager.boundaryIdx + gapSlots + 1;
+                const sellStartIdx = getSellStartIdx(manager.boundaryIdx, gapSlots);
                 const buySideCount = Math.max(0, Math.min(railLen, buyEndIdx + 1));
                 const sellSideCount = Math.max(0, railLen - sellStartIdx);
 
@@ -2226,7 +2229,7 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             ? boundarySync.newIdx
             : (manager.boundaryIdx ?? 0);
         const buyEndIdx = bIdx;
-        const sellStartIdx = bIdx + Number(gapSlots) + 1;
+        const sellStartIdx = getSellStartIdx(bIdx, gapSlots);
         const getSlotCorrectType = (slot: any): string => {
             const idx = slotIndexMap.get(slot.id);
             if (idx === undefined) return slot.type;

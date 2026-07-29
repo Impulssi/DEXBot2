@@ -84,7 +84,8 @@ import {
     calculateAvailableFundsValue,
     getAssetFees,
     blockchainToFloat,
-    getPrecisionSlack
+    getPrecisionSlack,
+    getBtsSide
 } from './utils/math';
 import {
     PROCESSED_FILL_PERSISTENCE_MODES,
@@ -147,9 +148,7 @@ class Accountant {
     }
 
     _getBtsOrderType() {
-        const mgr = this.manager;
-        const btsSide = (mgr.config?.assetA === 'BTS') ? ORDER_TYPES.SELL : (mgr.config?.assetB === 'BTS') ? ORDER_TYPES.BUY : null;
-        return btsSide;
+        return getBtsSide(this.manager.config?.assetA, this.manager.config?.assetB);
     }
 
     _normalizeBtsFeeState(order: any) {
@@ -1150,7 +1149,7 @@ class Accountant {
         if (!mgr.funds || !mgr.funds.btsFeesOwed || mgr.funds.btsFeesOwed <= 0) return;
         if (!mgr.accountTotals) return;
 
-        const btsSide = (mgr.config.assetA === 'BTS') ? 'sell' : (mgr.config.assetB === 'BTS') ? 'buy' : null;
+        const btsSide = getBtsSide(mgr.config?.assetA, mgr.config?.assetB);
         const normalizedRequestedSide = (requestedSide === 'buy' || requestedSide === 'sell') ? requestedSide : null;
         let side = btsSide || normalizedRequestedSide;
 
@@ -1222,7 +1221,7 @@ class Accountant {
 
         // 2. Add Estimated BTS Fees (if BTS is one of the pairs)
         // Fees reduce the "Free" balance, so they compete with Order Capital
-        const btsSide = (mgr.config.assetA === 'BTS') ? 'sell' : (mgr.config.assetB === 'BTS') ? 'buy' : null;
+        const btsSide = getBtsSide(mgr.config?.assetA, mgr.config?.assetB);
         if (btsSide && mgr.funds.btsFeesOwed > 0) {
             if (btsSide === 'buy') requiredBuy += mgr.funds.btsFeesOwed;
             else requiredSell += mgr.funds.btsFeesOwed;
@@ -1421,5 +1420,3 @@ class Accountant {
 }
 
 export default Accountant
-
-module.exports = Accountant

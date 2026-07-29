@@ -327,9 +327,8 @@ try {
                         const lineNum = content.substring(0, match.index).split('\n').length;
                         const line = lines[lineNum - 1];
                         
-                        // Allow mutations in _applyOrderUpdate and _repairIndices
-                        if (line && !line.includes('_applyOrderUpdate') && 
-                            !line.includes('_repairIndices') &&
+                        // Allow mutations only in _applyOrderUpdate
+                        if (line && !line.includes('_applyOrderUpdate') &&
                             !line.includes('Object.values(this._ordersByState).forEach(set => set.delete(id))')) {
                             violations.push({
                                 file: filePath,

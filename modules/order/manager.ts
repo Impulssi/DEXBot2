@@ -1222,47 +1222,6 @@ class OrderManager {
     }
 
     /**
-     * Validate all entries in this.orders for structural soundness.
-     *
-     * NOTE: Despite the name, this no longer validates "indices" —
-     * the lazy _ordersByType / _ordersByState caches are derived from
-     * this.orders on every grid-version bump and are guaranteed to be
-     * consistent by construction.  This method only checks that every
-     * Map entry is a well-formed order object (non-null, has state and
-     * type).  Remains useful as a startup/recovery sanity check.
-     *
-     * @returns {boolean}
-     */
-    validateIndices() {
-        for (const [id, order] of this.orders) {
-            if (!order) {
-                this.logger.log(`Index corruption: ${id} exists in orders Map but is null/undefined`, 'error');
-                return false;
-            }
-            if (!order.state) {
-                this.logger.log(`Index corruption: ${id} has no state`, 'error');
-                return false;
-            }
-            if (!order.type) {
-                this.logger.log(`Index corruption: ${id} has no type`, 'error');
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * @returns {boolean}
-     */
-    assertIndexConsistency() {
-        return true;
-    }
-
-    _repairIndices() {
-        return true;
-    }
-
-    /**
      * Write boundaryIdx under COW-commit-only discipline.
      *
      * Must only be called from within _commitWorkingGrid (which holds _gridLock).

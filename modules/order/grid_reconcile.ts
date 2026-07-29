@@ -1,17 +1,17 @@
-const {
+import {
     _countActiveOnGrid, _cancelChainOrder, _recoverStartupSyncFailure,
     _refreshStartupUpdatePlans,
     _executeStartupUpdateBatch,
     _executeStartupSequentialUpdateFallback,
     _executePlannedStartupCreates, _reconcileStartupSide,
-} = require('./grid_reconcile_internal');
-const { ORDER_TYPES, ORDER_STATES } = require('../constants');
-const { calculatePriceTolerance } = require('./utils/math');
-const {
+} from './grid_reconcile_internal';
+import { ORDER_TYPES, ORDER_STATES } from '../constants';
+import { calculatePriceTolerance } from './utils/math';
+import {
     isOrderPlaced, parseChainOrder, isOrderOnChain,
-} = require('./utils/order');
-const Format = require('./format');
-const { getErrorMessage } = require('../utils/errors');
+} from './utils/order';
+import * as Format from './format';
+import { getErrorMessage } from '../utils/errors';
 const SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5;
 
 
@@ -25,7 +25,7 @@ const SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5;
  * @param {Function} params.storeGrid - Grid persistence callback
  * @returns {Promise<{resumed: boolean, matchedCount: number}>}
  */
-async function attemptResumePersistedGridByPriceMatch({
+export async function attemptResumePersistedGridByPriceMatch({
     manager,
     persistedGrid,
     chainOpenOrders,
@@ -88,7 +88,7 @@ async function attemptResumePersistedGridByPriceMatch({
  * @param {Function} [params.attemptResumeFn=attemptResumePersistedGridByPriceMatch] - Resume function
  * @returns {Promise<Object>} { shouldRegenerate, hasActiveMatch, resumedByPrice, matchedCount }
  */
-async function decideStartupGridAction({
+export async function decideStartupGridAction({
     persistedGrid,
     chainOpenOrders,
     manager,
@@ -143,7 +143,7 @@ async function decideStartupGridAction({
  * @param {Array<Object>} params.chainOpenOrders - On-chain open orders
  * @returns {Promise<Object>} Reconciliation result
  */
-async function reconcileGridOrders({
+export async function reconcileGridOrders({
     manager,
     config,
     account,
@@ -235,7 +235,7 @@ async function reconcileGridOrders({
         const activeGridOrders = (Array.from(manager.orders.values()) as any[]).filter((o: any) => o && o.orderId && isOrderPlaced(o));
         for (const u of unmatchedParsed) {
             const p = u.parsed!;
-            const desc = `Unmatched chain order: ${p.orderId} (${p.type === ORDER_TYPES.BUY ? 'BUY' : 'SELL'}), price=${Format.formatPrice6(p.price)}, size=${Format.formatSizeByOrderType(p.size, p.type, manager.assets)}`;
+            const desc = `Unmatched chain order: ${p.orderId} (${p.type === ORDER_TYPES.BUY ? 'BUY' : 'SELL'}), price=${Format.formatPrice6(p.price)}, size=${Format.formatSizeByOrderType(p.size ?? 0, p.type, manager.assets)}`;
             let nearest: any = null;
             for (const gridOrder of activeGridOrders) {
                 if (gridOrder.type !== p.type) continue;
@@ -512,8 +512,4 @@ async function reconcileGridOrders({
     return null;
 }
 
-export = {
-    reconcileGridOrders,
-    attemptResumePersistedGridByPriceMatch,
-    decideStartupGridAction,
-};
+

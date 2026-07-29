@@ -42,7 +42,6 @@ const mutationPatterns = [
 
 const approvedContextPatterns = [
     '_applyOrderUpdate',
-    '_repairIndices',
     '_clearOrderCachesLogic',
     'Object.values(this._ordersByState).forEach(set => set.delete(id))',
     'new Set(set)',  // Cloning pattern
@@ -148,7 +147,7 @@ if (violations.length === 0) {
     console.log('✓ NO VIOLATIONS FOUND\n');
     console.log('Summary:');
     console.log('  All direct mutations of _ordersByState and _ordersByType');
-    console.log('  are properly confined to _applyOrderUpdate() and _repairIndices().\n');
+    console.log('  are properly confined to _applyOrderUpdate().\n');
     console.log('COW Index Invariant Status: MAINTAINED ✓\n');
     console.log('This ensures:');
     console.log('  • Atomic state transitions (all-or-nothing)');

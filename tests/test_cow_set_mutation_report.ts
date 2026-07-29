@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
+import { assertOrdersStructurallySound } from './helpers/order_test_helpers';
 const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('=== COW Index Set Mutation Detection Report ===\n');
@@ -22,7 +23,6 @@ console.log('[ANALYSIS-1] Static Code Scanning for Direct Mutations...\n');
 const violations: any[] = [];
 const approvedPatterns = [
     '_applyOrderUpdate',
-    '_repairIndices',
     '_clearOrderCachesLogic',
     'test_',
     'repro_',
@@ -128,7 +128,7 @@ if (violations.length === 0) {
     console.log('✓ NO VIOLATIONS FOUND - COW Index Set invariant is maintained!\n');
     console.log('Summary:');
     console.log('  All direct mutations of _ordersByState and _ordersByType');
-    console.log('  are properly confined to _applyOrderUpdate() and _repairIndices().\n');
+    console.log('  are properly confined to _applyOrderUpdate().\n');
 } else {
     console.log(`✗ VIOLATIONS FOUND: ${violations.length} potential COW violations\n`);
     
@@ -250,9 +250,8 @@ async function runRuntimeVerification() {
     
     console.log('✓ [TEST-3] Type transition via _applyOrderUpdate is correct');
     
-    // Verify index consistency check
-    const isConsistent = manager.validateIndices();
-    assert(isConsistent, 'Indices should be consistent after all updates');
+    // Verify order Map consistency
+    assertOrdersStructurallySound(manager);
     
     console.log('✓ [TEST-4] Indices pass consistency validation');
     

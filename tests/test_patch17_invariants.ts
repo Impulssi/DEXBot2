@@ -1,3 +1,4 @@
+import { assertOrdersStructurallySound } from './helpers/order_test_helpers';
 const assert = require('assert');
 const DEXBot = require('../modules/dexbot_class');
 const { _getSizingContext, _recalculateGridOrderSizesFromBlockchain } = require('../modules/order/grid');
@@ -460,7 +461,8 @@ async function testSingleStaleCancelBatchUsesStaleOnlyFastPath() {
         assert.strictEqual(cleanedSlot.rawOnChain, null, 'Stale slot should clear rawOnChain metadata');
         assert.strictEqual(recoverySyncCalls, 0, 'Stale-only cancel race should not trigger recovery sync');
         assert.strictEqual(bot._staleCleanedOrderIds.has('1.7.999'), true, 'Stale order id should be tracked to avoid double-credit');
-        assert.strictEqual(bot.manager.validateIndices(), true, 'Stale cleanup should preserve manager indices');
+        // Stale cleanup should preserve manager index consistency
+        assertOrdersStructurallySound(bot.manager);
     } finally {
         chainOrders.executeBatch = originalExecuteBatch;
         chainOrders.buildCancelOrderOp = originalBuildCancelOrderOp;

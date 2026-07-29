@@ -728,9 +728,9 @@ function isOrderHealthy(size: any, type: any, assets: any, idealSize: any) {
         numericSize,
         type,
         assets,
-        50,
+        GRID_LIMITS.MIN_ORDER_SIZE_FACTOR,
         numericIdeal,
-        5
+        GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE
     ).isValid;
 }
 
@@ -825,7 +825,7 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
     const assignOnChain = options.assignOnChain === true;
     const getCurrentSlot = (typeof options.getCurrentSlot === 'function') ? options.getCurrentSlot : null;
     const buyEndIdx = boundaryIdx;
-    const sellStartIdx = boundaryIdx + gapSlots + 1;
+    const sellStartIdx = MathUtils.getSellStartIdx(boundaryIdx, gapSlots);
 
     return allSlots.map((slot: any, i: any) => {
         const liveSlot = getCurrentSlot ? (getCurrentSlot(slot.id) || slot) : slot;
@@ -1168,20 +1168,7 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
  * @returns {number} Budget adjusted for BTS fee reservation
  */
 function adjustBudgetForBtsFees(allocated: any, isBtsSide: any, formulaBudget: any, minBtsValue: any, btsFree: any, sideFree: any, totalFree: any) {
-    if (allocated <= 0) return 0;
-
-    if (isBtsSide) {
-        return Math.max(0, allocated - formulaBudget);
-    }
-
-    const effectiveMin = (minBtsValue > 0) ? minBtsValue : formulaBudget;
-    const btsDeficit = Math.max(0, effectiveMin - btsFree);
-    if (btsDeficit > 0) {
-        const share = totalFree > 0 ? sideFree / totalFree : 0.5;
-        return Math.max(0, Math.min(allocated, allocated - btsDeficit * share));
-    }
-
-    return allocated;
+    return MathUtils.adjustBudgetForBtsFees(allocated, isBtsSide, formulaBudget, minBtsValue, btsFree, sideFree, totalFree);
 }
 
 /**
@@ -1198,23 +1185,22 @@ function getSideBudget(side: any, funds: any, config: any, totalTarget: any) {
     const allocated = isBuy ? (funds.allocatedBuy || 0) : (funds.allocatedSell || 0);
     if (allocated <= 0) return 0;
 
-    const isBtsSide = (isBuy && config.assetB === 'BTS') || (!isBuy && config.assetA === 'BTS');
+    const btsOrderType = MathUtils.getBtsSide(config?.assetA, config?.assetB);
+    const isBtsSide = isBuy ? (btsOrderType === ORDER_TYPES.BUY) : (btsOrderType === ORDER_TYPES.SELL);
 
-    if (isBtsSide) {
-        const btsFees = MathUtils.calculateOrderCreationFees(
-            config.assetA, config.assetB, totalTarget,
-            config?.feeParams?.BTS_RESERVATION_MULTIPLIER ?? FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER
-        );
-        return Math.max(0, allocated - btsFees);
-    }
-
-    if (!funds.btsBalance) return allocated;
+    // Non-BTS side without btsBalance data: no fee adjustment to make.
+    if (!isBtsSide && !funds.btsBalance) return allocated;
 
     const btsReservationMultiplier = config?.feeParams?.BTS_RESERVATION_MULTIPLIER ?? FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
     const formulaBudget = MathUtils.calculateOrderCreationFees(
         config.assetA, config.assetB, totalTarget,
         btsReservationMultiplier
     );
+
+    if (isBtsSide) {
+        return adjustBudgetForBtsFees(allocated, true, formulaBudget, 0, 0, 0, 0);
+    }
+
     return adjustBudgetForBtsFees(
         allocated,
         false,

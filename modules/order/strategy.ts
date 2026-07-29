@@ -337,5 +337,3 @@ class StrategyEngine {
 }
 
 export default StrategyEngine
-
-module.exports = StrategyEngine
