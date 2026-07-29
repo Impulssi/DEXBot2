@@ -31,12 +31,14 @@ export async function attemptResumePersistedGridByPriceMatch({
     chainOpenOrders,
     logger,
     storeGrid,
+    boundaryIdx = null,
 }: {
     manager: any;
     persistedGrid: any[];
     chainOpenOrders: any[];
     logger: any;
     storeGrid: any;
+    boundaryIdx?: number | null;
 }) {
     if (!Array.isArray(persistedGrid) || persistedGrid.length === 0) return { resumed: false, matchedCount: 0 };
     if (!Array.isArray(chainOpenOrders) || chainOpenOrders.length === 0) return { resumed: false, matchedCount: 0 };
@@ -45,7 +47,7 @@ export async function attemptResumePersistedGridByPriceMatch({
     try {
         logger && logger.log && logger.log('No matching active order IDs found. Attempting to match by price...', 'info');
         const { loadGrid } = require('./grid');
-        await loadGrid(manager, persistedGrid);
+        await loadGrid(manager, persistedGrid, boundaryIdx);
         await manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', {});
 
         const matchedOrderIds = new Set(
@@ -94,6 +96,7 @@ export async function decideStartupGridAction({
     manager,
     logger,
     storeGrid,
+    boundaryIdx = null,
     attemptResumeFn = attemptResumePersistedGridByPriceMatch,
 }: {
     persistedGrid: any[];
@@ -101,6 +104,7 @@ export async function decideStartupGridAction({
     manager: any;
     logger: any;
     storeGrid: any;
+    boundaryIdx?: number | null;
     attemptResumeFn?: any;
 }) {
     const persisted = Array.isArray(persistedGrid) ? persistedGrid : [];
@@ -117,7 +121,7 @@ export async function decideStartupGridAction({
     }
 
     if (chain.length > 0) {
-        const resume = await attemptResumeFn({ manager, persistedGrid: persisted, chainOpenOrders: chain, logger, storeGrid });
+        const resume = await attemptResumeFn({ manager, persistedGrid: persisted, chainOpenOrders: chain, logger, storeGrid, boundaryIdx });
         return { shouldRegenerate: !resume.resumed, hasActiveMatch: false, resumedByPrice: !!resume.resumed, matchedCount: resume.matchedCount || 0 };
     }
 

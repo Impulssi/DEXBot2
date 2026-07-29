@@ -397,6 +397,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 storeGrid: async (orders: any) => {
                     await bot.manager.persistGrid(orders);
                 },
+                boundaryIdx: persistedBoundaryIdx,
                 attemptResumeFn: attemptResumePersistedGridByPriceMatch,
             });
             shouldRegenerate = decision.shouldRegenerate;

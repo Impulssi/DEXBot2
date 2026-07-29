@@ -289,6 +289,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
             gridOrderId: gridOrder.id,
             chainOrderId,
             isPartialPlacement: false,
+            expectedType: gridOrder.type,
             fee: btsFeeData.createFee
         }, 'createOrder', { gridLockAlreadyHeld: true });
     } else {
@@ -467,6 +468,7 @@ async function _finalizeStartupUpdate({ manager, preparedUpdate }: { manager: an
         gridOrderId: plan.gridOrder.id,
         chainOrderId: plan.chainOrderId,
         isPartialPlacement: false,
+        expectedType: plan.gridOrder.type,
         fee: btsFeeData.updateFee,
         skipAccounting: false,
         deferredFee: deferredFeeFloat,
@@ -830,6 +832,7 @@ async function _executeStartupCreateGroupBatch({
                 gridOrderId: plan.gridOrder.id,
                 chainOrderId,
                 isPartialPlacement: false,
+                expectedType: plan.gridOrder.type,
                 fee: btsFeeData.createFee
             }, 'createOrder', { gridLockAlreadyHeld: true });
         }

@@ -555,10 +555,12 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                 manager.logger?.log?.(`Restored boundary index: ${boundaryIdx}`, 'info');
             }
 
-            // Reassign slot types for virtual slots based on current boundary.
-            // Over time, boundary shifts leave stale SPREAD/BUY/SELL types on
-            // virtual slots that no longer match their position. Virtual slots
-            // have no on-chain commitment, so their type is safely corrected.
+            // Reassign slot types based on current boundary.
+            // Every slot's type must match its position in the price-sorted rail
+            // relative to the boundary + gapSlots.  Stale persisted types cause
+            // split spread zones and ILLEGAL_SPREAD_STATE errors.  The subsequent
+            // sync will detect type mismatches with chain orders (e.g. a BUY-zone
+            // slot holding a SELL chain order) and auto-cancel + recreate them.
             if (typeof boundaryIdx === 'number') {
                 const gapSlots = calculateGapSlots(
                     manager.config?.incrementPercent,
@@ -569,22 +571,20 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                 const sellStartIdx = getSellStartIdx(boundaryIdx, gapSlots);
                 let reassignCount = 0;
                 grid = grid.map((slot: any, i: any) => {
-                    if (slot.state === ORDER_STATES.VIRTUAL && !slot.orderId) {
-                        const correctType = (i <= buyEndIdx)
-                            ? ORDER_TYPES.BUY
-                            : (i >= sellStartIdx)
-                                ? ORDER_TYPES.SELL
-                                : ORDER_TYPES.SPREAD;
-                        if (slot.type !== correctType) {
-                            reassignCount++;
-                            return { ...slot, type: correctType };
-                        }
+                    const correctType = (i <= buyEndIdx)
+                        ? ORDER_TYPES.BUY
+                        : (i >= sellStartIdx)
+                            ? ORDER_TYPES.SELL
+                            : ORDER_TYPES.SPREAD;
+                    if (slot.type !== correctType) {
+                        reassignCount++;
+                        return { ...slot, type: correctType };
                     }
                     return slot;
                 });
                 if (reassignCount > 0) {
                     manager.logger?.log?.(
-                        `[GRID-LOAD] Reassigned ${reassignCount} stale virtual slot type(s) based on boundary ${boundaryIdx}`,
+                        `[GRID-TYPE-CORRECT] Reassigned ${reassignCount} stale slot type(s) based on boundary ${boundaryIdx}`,
                         'warn'
                     );
                 }
