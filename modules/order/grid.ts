@@ -1801,12 +1801,12 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                 || fundSnapshot.sellLocked !== currentFunds.sellLocked;
             if (fundChanged) {
                 // TOCTOU: fund state changed between lock release and broadcast.
-                // Pure re-plan with fresh funds — no lock needed because
-                // determineOrderSideByFunds and prepareSpreadCorrectionOrders
-                // are pure computations (no side effects, no lock acquisition).
-                // All lock-needing work (fund verification, grid reads) is
-                // done under the single outer acquire above; this re-plan
-                // runs after that lock was released.
+                // Lock-free re-plan — no _gridLock needed because the fund read
+                // (recalculateFunds) is serialized by _fundLock internally, and
+                // the remaining logic is read-only against COW-frozen state.
+                // All grid-lock-needing work (fund verification, grid reads) is
+                // done under the single outer acquire above; this re-plan runs
+                // after that lock was released.
                 // Refresh lastPrice from current grid state — the grid may
                 // have changed since function entry (TOCTOU).
                 const freshOnChain = _getOnChainOrders(manager);

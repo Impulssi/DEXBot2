@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.4 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.5 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 1,885+ commits over ~8 active months
+- **Growth Phase**: 1,899+ commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 234 automated test files
-- **Releases**: 85 release entries (v0.1.0 to v1.4.2)
+- **Releases**: 86 release entries (v0.1.0 to v1.4.5)
 
 ---
 
@@ -177,11 +177,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.1 → v1.4.2 | 3 | Spread correction direction bias removal, precision-based price collision guard, stale-node defense completion |
 | v1.4.2 → v1.4.3 | 5 | Boundary-shift state preservation across failed COW commits, SPREAD→BUY crosser handling, per-batch tolerance violation filter (no full abort), precision-0 tolerance overflow fix, poolRef pinned-pool price derivation, withTimeout utility extraction + circular dep fix |
 | v1.4.3 → v1.4.4 | 3 | COW invariant enforcement (retry on failed boundary-shift commit, no master patching), COW pipeline code review fixes, grid engine consolidation (deduplication, dead code removal, export cleanup) |
+| v1.4.4 → v1.4.5 | 2 | Code-review hardening: AsyncLock forceRelease safety, grid update fatal error guard, persist write failure handling, TOCTOU stale price fix, re-entrancy deadlock removal, circular dependency breakage, uncommitted boundary classification fix, dead code cleanup |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 29, 2026 (v1.4.4)
-**Total Commits**: 1,895
+**Last Updated**: July 29, 2026 (v1.4.5)
+**Total Commits**: 1,899
 **Date Range**: December 2, 2025 – July 29, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

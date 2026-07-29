@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.5] - 2026-07-29 - Code-Review Hardening: Lock Safety, Error Handling, Structural Integrity
+
+### 2026-07-29
+
+- **Fix**: AsyncLock forceRelease concurrent execution — defer `_locked=false` via `_orphaned` flag when a callback is executing; prevent new acquirers from entering while stale callback is still running; lock stays held until stale callback settles (`modules/order/async_lock.ts`).
+- **Fix**: applyGridUpdateBatch continues after fatal error — break loop on first false from `_applyOrderUpdate` (ILLEGAL_SPREAD_STATE) to prevent compounding an inconsistent grid (`modules/order/grid.ts`).
+- **Fix**: persistGrid discards write failure — check `persistGridSnapshot` return; preserve dirty flag on failure so `flushGridDirty` does not clear it (`modules/order/grid_reconcile_internal.ts`).
+- **Fix**: _createOrderFromGrid unsynchronized _applyOrderUpdate — wrap zero-slot transition in `_gridLock.acquire()` (`modules/order/manager.ts`).
+- **Fix**: _executeStartupUpdateBatch partial finalization — per-entry try/catch; stop on first finalization failure; remaining entries skipped for next full sync (`modules/order/grid_reconcile_internal.ts`).
+- **Fix**: _commitWorkingGrid returns true on recalc failure — re-throw `recalculateFunds` error so callers know commit is incomplete (`modules/order/manager.ts`).
+- **Fix**: checkSpreadCondition swallows all errors — log at error level instead of warn; track `lastFailureAt` in recovery state for monitoring; removed magic counter that could crash startup (`modules/order/manager.ts`).
+- **Fix**: stale lastPrice in TOCTOU re-plan path — refresh `lastPrice` from current grid state inside re-plan block to prevent stale data from biasing `determineOrderSideByFunds` (`modules/order/manager.ts`).
+- **Fix**: remove re-entrancy landmine — removed `_gridLock` re-acquire from TOCTOU re-plan path (pure computations, no lock needed); added early-return guard for absent lock (`modules/order/grid.ts`).
+- **Fix**: break circular dependency via inline `require` — `calculateGapSlots` uses `MathUtils` instead of `require('../grid')`; `updateGridFromBlockchainSnapshot` passes `applyGridDivergenceCorrections` as 5th parameter (`modules/order/utils/system.ts`).
+- **Fix**: uncommitted boundary for slot classification — `getSlotCorrectType` uses `manager.boundaryIdx` (committed value) instead of `syncBoundaryToFunds` speculative result; prevents classification against a boundary never persisted (`modules/order/grid.ts`).
+- **Fix**: remove dead `calculateGeometricSizeForSpreadCorrection` — no call sites; updated JSDoc TOC (`modules/order/grid.ts`).
+- **Fix**: replace stale FIX comments with implemented patterns — lock guard and blockchain-outside-lock pattern already in place (`modules/order/grid.ts`).
+- **Test**: update `test_async_lock_force_release.ts` for new forceRelease semantics (`tests/test_async_lock_force_release.ts`).
+- **Test**: add `accountOrders` mock to `test_grid_dirty_flag_persistence.ts` for real persist path coverage (`tests/test_grid_dirty_flag_persistence.ts`).
+- **Test**: update 4 test files + 4 mock stubs for 5-arg `updateGridFromBlockchainSnapshot` signature (`tests/test_cow_divergence_correction.ts`, `tests/test_dexbot_maintenance_runtime_dynamic_weights.ts`, `tests/test_maintenance_runtime_market_adapter_watchdog.ts`, `tests/test_fallback_cow_types_and_spread_crosser.ts`, `tests/test_unanchored_spread_correction.ts`).
+
 ## [1.4.4] - 2026-07-29 - COW Invariant Enforcement, Grid Engine Consolidation
 
 ### 2026-07-29
