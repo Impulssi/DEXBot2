@@ -7,6 +7,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { applyGridDivergenceCorrections } = require('../modules/order/utils/system');
+const { updateGridFromBlockchainSnapshot } = require('../modules/order/grid');
 const { ORDER_STATES, ORDER_TYPES, COW_ACTIONS } = require('../modules/constants');
 
 async function testCOWDivergenceCorrection() {
@@ -79,7 +80,7 @@ async function testCOWDivergenceCorrection() {
 
         const mockAccountOrders = { storeMasterGrid: async () => {} };
 
-        await applyGridDivergenceCorrections(manager, mockAccountOrders, 'bot-key', mockUpdateFn);
+        await applyGridDivergenceCorrections(manager, mockAccountOrders, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot);
 
         // Verify COW result structure
         assert(capturedCowResult, 'Should have COW result');
@@ -145,7 +146,7 @@ async function testCOWDivergenceCorrection() {
             return { executed: true };
         };
 
-        await applyGridDivergenceCorrections(manager, { storeMasterGrid: async () => {} }, 'bot-key', mockUpdateFn);
+        await applyGridDivergenceCorrections(manager, { storeMasterGrid: async () => {} }, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot);
 
         // Verify PARTIAL state is preserved
         const workingOrder = capturedCowResult.workingGrid.get('slot-5');
@@ -190,7 +191,7 @@ async function testCOWDivergenceCorrection() {
             return { executed: true };
         };
 
-        await applyGridDivergenceCorrections(manager, { storeMasterGrid: async () => {} }, 'bot-key', mockUpdateFn);
+        await applyGridDivergenceCorrections(manager, { storeMasterGrid: async () => {} }, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot);
 
         // Check that active orders got UPDATE actions
         const updateActions = capturedCowResult.actions.filter(a => a.type === COW_ACTIONS.UPDATE);
@@ -246,7 +247,7 @@ async function testCOWDivergenceCorrection() {
             return { executed: true };
         };
 
-        await applyGridDivergenceCorrections(manager, { storeMasterGrid: async () => {} }, 'bot-key', mockUpdateFn);
+        await applyGridDivergenceCorrections(manager, { storeMasterGrid: async () => {} }, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot);
 
         assert(capturedCowResult && Array.isArray(capturedCowResult.actions), 'Should have actions');
 

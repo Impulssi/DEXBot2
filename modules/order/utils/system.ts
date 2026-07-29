@@ -797,11 +797,15 @@ export async function retryPersistenceIfNeeded(manager: any): Promise<boolean> {
  * @param {Object} accountOrders - AccountOrders data accessor
  * @param {string} botKey - Bot identifier for persistence
  * @param {Function} updateOrdersOnChainBatchFn - Batch update function for blockchain operations
+ * @param {Function} updateGridFromBlockchainSnapshotFn - Grid resize function (injected to avoid circular dependency with grid.ts)
  * @returns {Promise<void>}
  */
-export async function applyGridDivergenceCorrections(manager: any, accountOrders: any, _botKey: string, updateOrdersOnChainBatchFn: Function): Promise<{ committed: boolean, boundaryChanged: boolean } | undefined> {
+export async function applyGridDivergenceCorrections(manager: any, accountOrders: any, _botKey: string, updateOrdersOnChainBatchFn: Function, updateGridFromBlockchainSnapshotFn: Function): Promise<{ committed: boolean, boundaryChanged: boolean } | undefined> {
     if (!manager._gridLock) return;
-    const { updateGridFromBlockchainSnapshot } = require('../grid');
+    if (typeof updateGridFromBlockchainSnapshotFn !== 'function') {
+        manager.logger?.log?.('[DIVERGENCE-COW] updateGridFromBlockchainSnapshotFn is not a function — aborting', 'error');
+        return undefined;
+    }
     const { WorkingGrid } = require('../working_grid');
     const { hasActionForOrder, removeActionsForOrder } = require('./validate');
 
@@ -837,7 +841,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         }
 
         try {
-            resizeCowResult = await updateGridFromBlockchainSnapshot(manager, resizeOrderType, true, pendingBoundaryIdx);
+            resizeCowResult = await updateGridFromBlockchainSnapshotFn(manager, resizeOrderType, true, pendingBoundaryIdx);
         } catch (err: any) {
             manager.logger?.log?.(`[DIVERGENCE-COW] Grid resize failed: ${getErrorMessage(err)}`, 'error');
             manager._gridSidesUpdated.clear();
@@ -1080,8 +1084,7 @@ export function syncBoundaryToFunds(manager: any): { changed: boolean; newIdx?: 
     const availA = (manager.funds?.available?.sell || 0);
     const availB = (manager.funds?.available?.buy || 0);
     const allSlots = (Array.from(manager.orders.values()) as any[]).sort((a: any, b: any) => a.price - b.price);
-    const { calculateGapSlots } = require('../grid');
-    const gapSlots = calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
+    const gapSlots = MathUtils.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
 
     // Determine the index range permitted by master-grid slot assignments.
     // Both virtual and active orders count: the boundary must stay strictly

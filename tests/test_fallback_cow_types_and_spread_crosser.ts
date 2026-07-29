@@ -15,6 +15,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { applyGridDivergenceCorrections } = require('../modules/order/utils/system');
+const { updateGridFromBlockchainSnapshot } = require('../modules/order/grid');
 const { ORDER_STATES, ORDER_TYPES, COW_ACTIONS } = require('../modules/constants');
 
 /**
@@ -145,7 +146,7 @@ async function testFailedCommitSignalsRetry() {
     };
     const mockAccountOrders = { storeMasterGrid: async () => {} };
 
-    let result = await applyGridDivergenceCorrections(manager, mockAccountOrders, 'bot-key', mockUpdateFn);
+    let result = await applyGridDivergenceCorrections(manager, mockAccountOrders, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot);
 
     // Assert 1: function returned the correct signal
     assert(result, 'Should return a result object');
@@ -192,7 +193,7 @@ async function testSpreadBuyCrosserNoSpuriousCreate() {
         return { executed: true };  // Success
     };
 
-    await applyGridDivergenceCorrections(manager, { storeMasterGrid: async () => {} }, 'bot-key', mockUpdateFn);
+    await applyGridDivergenceCorrections(manager, { storeMasterGrid: async () => {} }, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot);
 
     assert(capturedCowResult, 'Should have COW result');
     assert(Array.isArray(capturedCowResult.actions), 'Should have actions');

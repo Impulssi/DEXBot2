@@ -54,7 +54,7 @@ function loadRuntimeWithStubs({ marketAdapterRuntimeStub }: any = {}) {
     });
     setCachedModule(systemPath, {
         retryPersistenceIfNeeded: async () => {},
-        applyGridDivergenceCorrections: async () => {},
+        applyGridDivergenceCorrections: async (_1: any, _2: any, _3: any, _4: any, _5: any) => {},
         loadAmaCenterSnapshot: () => null,
         parseJsonWithComments: (text) => JSON.parse(text),
     });

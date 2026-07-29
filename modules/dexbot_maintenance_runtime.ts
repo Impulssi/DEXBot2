@@ -25,6 +25,7 @@ function recalculateGrid(...args: any) { return grid.recalculateGrid(...args); }
 function buildRuntimeScriptPath(...args: any) { return require('./launcher/runtime_entry').buildRuntimeScriptPath(...args); }
 function isDistCodeRoot(...args: any) { return require('./launcher/runtime_entry').isDistCodeRoot(...args); }
 function applyGridDivergenceCorrections(...args: any) { return require('./order/utils/system').applyGridDivergenceCorrections(...args); }
+function updateGridFromBlockchainSnapshot(...args: any) { return require('./order/grid').updateGridFromBlockchainSnapshot(...args); }
 function loadAmaCenterSnapshot(...args: any) { return require('./order/utils/system').loadAmaCenterSnapshot(...args); }
 function sleep(...args: any) { return require('./order/utils/system').sleep(...args); }
 function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
@@ -1572,7 +1573,8 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                         bot.manager,
                         bot.accountOrders,
                         bot.config.botKey,
-                        bot.updateOrdersOnChainBatch.bind(bot)
+                        bot.updateOrdersOnChainBatch.bind(bot),
+                        updateGridFromBlockchainSnapshot
                     );
                     if (await bot._abortFlowIfIllegalState(`${context} divergence correction`)) return;
                     bot._log(`Grid divergence corrections applied during ${context}`);

@@ -138,7 +138,7 @@ async function testPerformGridResyncAppliesVolatilityOnlyDynamicWeights() {
     });
     setCachedModule(systemPath, {
         retryPersistenceIfNeeded: async () => {},
-        applyGridDivergenceCorrections: async () => {},
+        applyGridDivergenceCorrections: async (_1: any, _2: any, _3: any, _4: any, _5: any) => {},
         loadAmaCenterSnapshot: () => ({
             centerPrice: 100,
             dynamicWeights: {
@@ -960,7 +960,7 @@ async function testRmsDivergenceRunsFullGridResync() {
     });
     setCachedModule(systemPath, {
         retryPersistenceIfNeeded: async () => {},
-        applyGridDivergenceCorrections: async () => {
+        applyGridDivergenceCorrections: async (_1: any, _2: any, _3: any, _4: any, _5: any) => {
             correctionCalled = true;
         },
         loadAmaCenterSnapshot: () => null,
@@ -1072,7 +1072,7 @@ async function testDexbotClassPerformGridResyncForwardsOptions() {
     setCachedModule(systemPath, {
         retryPersistenceIfNeeded: async () => {},
         initializeFeeCache: async () => {},
-        applyGridDivergenceCorrections: async () => {},
+        applyGridDivergenceCorrections: async (_1: any, _2: any, _3: any, _4: any, _5: any) => {},
         parseJsonWithComments: (text) => JSON.parse(text),
     });
     setCachedModule(validatePath, {

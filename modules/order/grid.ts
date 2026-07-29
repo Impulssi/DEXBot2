@@ -65,9 +65,8 @@
  *   21. getDustOrders(manager, partials, side) - Get all dust order IDs (public)
  *   22. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
  *
- * SPREAD CORRECTION (2 methods)
- *   23. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
- *   24. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
+ * SPREAD CORRECTION (1 method)
+ *   23. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
  *
  * DUST DETECTION (1 method - internal)
  *   25. _getDustOrders(manager, partials, type) - Internal dust detection helper
@@ -153,7 +152,7 @@ import {
     calculateIdealBoundary,
     assignGridRoles
 } from './utils/order';
-import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry, syncBoundaryToFunds } from './utils/system';
+import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system';
 import { derivePriceWithPoolRef } from './utils/withPoolRef';
 import { getWhitelistFlags } from '../market_adapter_whitelist';
 
@@ -1649,6 +1648,11 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
         let correction: any = null;
         let shouldApplyCorrection = false;
 
+        if (!manager._gridLock) {
+            manager.logger?.log?.('Spread check skipped: no grid lock available', 'warn');
+            return { ordersPlaced: 0, partialsMoved: 0 };
+        }
+
         // Derive current market price from the bot's own grid (no blockchain call needed).
         // Grid prices are in B/A format (e.g. BTS/XRP) so no inversion is required.
         // Mid between best bid and best ask is the most current price the bot has.
@@ -1659,7 +1663,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
             ? (bestBuy + bestSell) / 2
             : Number(manager.config.startPrice) || 0;
 
-        // FIX: Use optional chaining for lock - if no lock exists, execute synchronously
+        // Lock guard is handled at function entry — if _gridLock is absent we return early.
         let fundSnapshot: any = null;
 
         // Detect empty-side condition: when one side has zero on-chain orders,
@@ -1778,9 +1782,9 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
             return { ordersPlaced: 0, partialsMoved: 0 };
         }
 
-        // FIX: Apply blockchain operations OUTSIDE the lock to reduce lock contention
-        // The lock is only needed for fund verification; order placement doesn't need it
-        // Pre-flight fund verification to mitigate TOCTOU between lock release and broadcast
+        // Blockchain operations are intentionally OUTSIDE the lock to reduce lock contention.
+        // The lock is only needed for fund verification; order placement doesn't need it.
+        // Pre-flight fund verification mitigates TOCTOU between lock release and broadcast.
         if (shouldApplyCorrection && updateOrdersOnChainBatch && correction && fundSnapshot) {
             const currentFunds = _snapshotFundState(manager);
             const fundChanged = fundSnapshot.buyFree !== currentFunds.buyFree
@@ -1789,30 +1793,23 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                 || fundSnapshot.sellLocked !== currentFunds.sellLocked;
             if (fundChanged) {
                 // TOCTOU: fund state changed between lock release and broadcast.
-                // Instead of silently aborting, re-plan with fresh funds so the
-                // correction still applies on this cycle.  The pre-flight check
-                // still guards against placing orders based on stale fund snapshots.
-                // Re-acquire _gridLock for the re-plan to ensure consistent grid
-                // state (the lock is re-entrant for this call chain — the outer
-                // acquire's callback completed before we reach here, so there is
-                // no nested lock to recurse into).  If determineOrderSideByFunds
-                // or prepareSpreadCorrectionOrders grow to hold the lock for
-                // heavy work, hoist the result to avoid serial re-execution.
-                const rePlanResult: any = await manager._gridLock.acquire(async () => {
-                    const decision = determineOrderSideByFunds(manager, lastPrice);
-                    if (!decision.side) return { side: false };
-                    const c = await prepareSpreadCorrectionOrders(manager, decision.side, manager.outOfSpread);
-                    return { side: true, correction: c };
-                });
-                if (!rePlanResult.side) {
+                // Pure re-plan with fresh funds — no lock needed because
+                // determineOrderSideByFunds and prepareSpreadCorrectionOrders
+                // are pure computations (no side effects, no lock acquisition).
+                // All lock-needing work (fund verification, grid reads) is
+                // done under the single outer acquire above; this re-plan
+                // runs after that lock was released.
+                const rePlanDecision = determineOrderSideByFunds(manager, lastPrice);
+                if (!rePlanDecision.side) {
                     manager.logger?.log?.(
                         `[SPREAD] Fund state changed; no side has sufficient funds for re-plan. Skipping cycle.`,
                         'warn'
                     );
                     return { ordersPlaced: 0, partialsMoved: 0 };
                 }
-                correction = rePlanResult.correction;
-                if (correction && ((correction.ordersToPlace?.length || 0) + (correction.ordersToUpdate?.length || 0) > 0)) {
+                const rePlanCorrection = await prepareSpreadCorrectionOrders(manager, rePlanDecision.side, manager.outOfSpread);
+                if (rePlanCorrection && ((rePlanCorrection.ordersToPlace?.length || 0) + (rePlanCorrection.ordersToUpdate?.length || 0) > 0)) {
+                    correction = rePlanCorrection;
                     fundSnapshot = currentFunds;
                     manager.logger?.log?.(
                         `[SPREAD] Fund state changed between lock release and broadcast — ` +
@@ -2129,50 +2126,6 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
     }
 
     /**
-     * Calculate the geometric ideal size for a new order being placed during spread correction.
-     * @param {import('./types').OrderManager} manager - The manager instance.
-     * @param {import('./types').OrderType} targetType - The type of order being placed (ORDER_TYPES.BUY or ORDER_TYPES.SELL).
-     * @returns {Promise<number|null>} The calculated geometric size.
-     */
-export async function calculateGeometricSizeForSpreadCorrection(manager: any, targetType: any): Promise<any> {
-        const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-        // Count only on-chain orders (ACTIVE+PARTIAL) to avoid diluting the
-        // spread-correction order size across hundreds of virtual slots on a
-        // full-rail grid.  Virtual slots have their capital tracked separately
-        // in funds.virtual and should not compete for the free budget.
-        const slotsCount = (Array.from(manager.orders.values()) as Order[])
-            .filter((o: any) => o.type === targetType && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
-            .length + 1;
-
-        // Use centralized sizing context (respects botFunds % allocation)
-        const ctx = await _getSizingContext(manager, side);
-        if (!ctx || ctx.budget <= 0 || slotsCount < 1) return null;
-
-        // ALLOW slotsCount === 1 to enable spread correction even if a side is completely missing
-        const dummy = Array.from({ length: slotsCount }, () => ({ type: targetType }));
-        try {
-            const sized = calculateOrderSizes(
-                dummy,
-                manager.config,
-                side === 'sell' ? ctx.budget : 0,
-                side === 'buy' ? ctx.budget : 0,
-                0,
-                0,
-                ctx.precision,
-                ctx.precision
-            );
-            if (!Array.isArray(sized) || sized.length === 0) {
-                manager.logger?.log?.(`calculateOrderSizes returned invalid result for spread correction`, 'warn');
-                return null;
-            }
-            return side === 'sell' ? sized[0].size : sized[sized.length - 1].size;
-        } catch (e: any) {
-            manager.logger?.log?.(`Error calculating geometric size for spread correction: ${getErrorMessage(e)}`, 'warn');
-            return null;
-        }
-    }
-
-    /**
      * Prepares one or more orders to correct a wide spread.
      * @param {import('./types').OrderManager} manager - The OrderManager instance.
      * @param {string} preferredSide - The side to place the correction on (ORDER_TYPES.BUY/SELL).
@@ -2220,16 +2173,14 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             manager.config?.gridLimits
         );
 
-        // Compute boundary from current fund state for local slot classification.
-        // syncBoundaryToFunds is a pure computation — it does NOT mutate
-        // manager.boundaryIdx.  The boundary is only updated atomically through
-        // _commitWorkingGrid in the COW pipeline via _setBoundary.
-        const boundarySync = syncBoundaryToFunds(manager);
-        const bIdx = (boundarySync.changed && boundarySync.newIdx !== undefined)
-            ? boundarySync.newIdx
-            : (manager.boundaryIdx ?? 0);
-        const buyEndIdx = bIdx;
-        const sellStartIdx = getSellStartIdx(bIdx, gapSlots);
+        // Use the committed boundary for slot classification — never a speculative
+        // value from syncBoundaryToFunds that hasn't been persisted through the COW
+        // pipeline.  If the boundary shifts later via _commitWorkingGrid, the next
+        // spread correction cycle will re-classify with the updated committed value.
+        // This prevents TOCTOU-style inconsistency where slot types are chosen
+        // against a boundary that was never atomically committed to manager.orders.
+        const buyEndIdx = manager.boundaryIdx ?? 0;
+        const sellStartIdx = getSellStartIdx(manager.boundaryIdx, gapSlots);
         const getSlotCorrectType = (slot: any): string => {
             const idx = slotIndexMap.get(slot.id);
             if (idx === undefined) return slot.type;

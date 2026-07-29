@@ -1,6 +1,7 @@
 const assert = require('assert');
 const mathUtils = require('../modules/order/utils/math');
 const { applyGridDivergenceCorrections } = require('../modules/order/utils/system');
+const { updateGridFromBlockchainSnapshot } = require('../modules/order/grid');
 
 // Mock derivePrice to simulate market movement
 mathUtils.derivePrice = async () => 150; 
@@ -66,7 +67,7 @@ async function testUnanchoredSpreadCorrection() {
     // Mock accountOrders with storeMasterGrid to avoid errors during persistence
     const mockAccountOrders = { storeMasterGrid: async () => {} };
 
-    await applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn);
+    await applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot);
 
     // With 10000 BUY power vs ~100 SELL power, the buyValueRatio is ~0.5 (if price=100).
     // Wait, let's check the math:
@@ -78,7 +79,7 @@ async function testUnanchoredSpreadCorrection() {
      await mgr.recalculateFunds();
      mgr.outOfSpread = 2;
      mgr._gridSidesUpdated = new Set([ORDER_TYPES.BUY]);
-     await applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn);
+     await applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot);
 
     console.log(`  Updated boundaryIdx (100% BUY): ${mgr.boundaryIdx}`);
     
