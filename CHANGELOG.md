@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - **Fix**: AsyncLock nested re-entrancy — ALS store changed from single symbol to `Set<symbol>` so outer lock identity is preserved across nested acquisitions; prevents self-deadlock when `lockA` is held and `lockB` is acquired inside it (`modules/order/async_lock.ts`).
 - **Fix**: reassign slot types on grid load — all persisted slots are relabeled to match the current boundary + gapSlots on resume, preventing stale SPREAD/BUY/SELL types from causing ILLEGAL_SPREAD_STATE validation errors (`modules/order/grid.ts`, `modules/order/grid_reconcile.ts`, `modules/dexbot_startup_runtime.ts`).
 - **Test**: add nested multi-lock re-entrancy tests (A-in-B and A→B→C) to force-release test suite (`tests/test_async_lock_force_release.ts`).
+- **Fix**: replace single-value state fields with refcounts/stack for nesting safety — FileLock rewritten to use AsyncLock (was not re-entrant, deadlocked on nested call); `_bootstrapping` and `_broadcastingFlag` changed from `boolean` to refcount; `_currentWorkingGrid` changed from single ref to stack (`modules/bots_file_lock.ts`, `modules/order/manager.ts`).
 
 ## [1.4.5] - 2026-07-29 - Code-Review Hardening: Lock Safety, Error Handling, Structural Integrity
 

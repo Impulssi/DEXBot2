@@ -217,8 +217,8 @@ class OrderManager {
     strategy: any;
     sync: any;
     _rebalanceState: string;
-    _bootstrapping: boolean;
-    _broadcastingFlag: boolean;
+    _bootstrapping: number;
+    _broadcastingFlag: number;
     _broadcastingStartedAt: number;
     _illegalStateSignal: any;
     _accountingFailureSignal: any;
@@ -325,7 +325,7 @@ class OrderManager {
     _recentFillKeysSnapshot: Record<string, number> | null;
 
     _metrics: any;
-    _currentWorkingGrid: any;
+    private _currentWorkingGridStack: any[];
     _cowEngine: any;
     accountOrders: any;
     btsBalance: { free: number; total: number; locked: number };
@@ -353,8 +353,8 @@ class OrderManager {
         this.sync = new SyncEngine(this);
 
         this._rebalanceState = REBALANCE_STATES.NORMAL;
-        this._bootstrapping = false;
-        this._broadcastingFlag = false;
+        this._bootstrapping = 0;
+        this._broadcastingFlag = 0;
         this._broadcastingStartedAt = 0;
         this._illegalStateSignal = null;
         this._accountingFailureSignal = null;
@@ -434,9 +434,9 @@ class OrderManager {
             metricsStartTime: Date.now()
         };
 
-        this._bootstrapping = true;
+        this._bootstrapping = 1;
         this.logger?.log('[BOOTSTRAP] Started', 'debug');
-        this._currentWorkingGrid = null;
+        this._currentWorkingGridStack = [];
         this._cowEngine = null;
 
         this._cleanExpiredLocks();
@@ -455,7 +455,7 @@ class OrderManager {
     }
 
     _clearWorkingGridRef() {
-        this._currentWorkingGrid = null;
+        this._currentWorkingGridStack.pop();
         this._rebalanceState = REBALANCE_STATES.NORMAL;
     }
 
@@ -482,7 +482,7 @@ class OrderManager {
      * @returns {boolean}
      */
     isBootstrapping() {
-        return this._bootstrapping;
+        return this._bootstrapping > 0;
     }
 
     /**
@@ -490,7 +490,7 @@ class OrderManager {
      * @returns {boolean}
      */
     isBroadcastingActive() {
-        return this._broadcastingFlag;
+        return this._broadcastingFlag > 0;
     }
 
     /**
@@ -502,11 +502,14 @@ class OrderManager {
      * @returns {void}
      */
     _clearStaleBroadcastFlag() {
-        if (this._broadcastingFlag && this._broadcastingStartedAt > 0) {
+        if (this._broadcastingFlag > 0 && this._broadcastingStartedAt > 0) {
             const elapsed = Date.now() - this._broadcastingStartedAt;
             if (elapsed > 120000) {
                 this.logger?.log?.('[BROADCAST] Auto-clearing stale broadcast flag after 120s', 'warn');
-                this._broadcastingFlag = false;
+                // Hard-reset to 0 (not decrement) — this is a safety valve for
+                // a hung broadcast where stopBroadcasting() was never called.
+                // The caller is released from the refcount contract.
+                this._broadcastingFlag = 0;
                 this._broadcastingStartedAt = 0;
             }
         }
@@ -524,8 +527,10 @@ class OrderManager {
      * @returns {void}
      */
     startBootstrap() {
-        this._bootstrapping = true;
-        this.logger?.log('[BOOTSTRAP] Started', 'debug');
+        if (this._bootstrapping === 0) {
+            this.logger?.log('[BOOTSTRAP] Started', 'debug');
+        }
+        this._bootstrapping++;
     }
 
     /**
@@ -534,8 +539,11 @@ class OrderManager {
     finishBootstrap() {
         const result = { hadDrift: false, driftInfo: null };
 
-        if (this._bootstrapping) {
-            this._bootstrapping = false;
+        if (this._bootstrapping > 0) {
+            this._bootstrapping--;
+        }
+
+        if (this._bootstrapping === 0) {
             this.logger?.log('[BOOTSTRAP] Finished', 'debug');
 
             // Validate fund state at bootstrap completion - if drift exists here,
@@ -561,17 +569,23 @@ class OrderManager {
      * @returns {void}
      */
     startBroadcasting() {
-        this._broadcastingFlag = true;
-        this._broadcastingStartedAt = Date.now();
-        this.logger?.log?.('[BROADCAST] Flag set — fill processing will be deferred until stopBroadcasting()', 'debug');
+        if (this._broadcastingFlag === 0) {
+            this._broadcastingStartedAt = Date.now();
+        }
+        this._broadcastingFlag++;
+        this.logger?.log?.('[BROADCAST] Flag incremented — fill processing will be deferred until stopBroadcasting()', 'debug');
     }
 
     /**
      * @returns {void}
      */
     stopBroadcasting() {
-        this._broadcastingFlag = false;
-        this._broadcastingStartedAt = 0;
+        if (this._broadcastingFlag > 0) {
+            this._broadcastingFlag--;
+        }
+        if (this._broadcastingFlag === 0) {
+            this._broadcastingStartedAt = 0;
+        }
     }
 
     /**
@@ -1008,18 +1022,38 @@ class OrderManager {
         return true;
     }
 
+    /**
+     * Backward-compatible accessor for _currentWorkingGrid.
+     * Returns the top of the working grid stack (null if empty).
+     */
+    get _currentWorkingGrid(): any {
+        return this._peekWorkingGrid();
+    }
+
+    set _currentWorkingGrid(val: any) {
+        if (val !== null) {
+            this._currentWorkingGridStack.push(val);
+        }
+    }
+
+    _peekWorkingGrid(): any {
+        const stack = this._currentWorkingGridStack;
+        return stack.length > 0 ? stack[stack.length - 1] : null;
+    }
+
     _syncWorkingGridFromMasterMutation(orderId: any, context: any) {
-        if (!this._currentWorkingGrid || !this.isPlanningActive()) {
+        const wg = this._peekWorkingGrid();
+        if (!wg || !this.isPlanningActive()) {
             return;
         }
 
         try {
-            this._currentWorkingGrid.markStale(
+            wg.markStale(
                 `master mutation during ${(this._rebalanceState || '').toLowerCase()} (${context})`
             );
-            this._currentWorkingGrid.syncFromMaster(this.orders, orderId, this._gridVersion);
+            wg.syncFromMaster(this.orders, orderId, this._gridVersion);
         } catch (syncErr: any) {
-            this._currentWorkingGrid.markStale(`working-grid sync failure: ${getErrorMessage(syncErr)}`);
+            wg.markStale(`working-grid sync failure: ${getErrorMessage(syncErr)}`);
             this.logger.log(`[COW] Failed to sync working grid for order ${orderId}: ${getErrorMessage(syncErr)}`, 'warn');
         }
     }
@@ -1439,7 +1473,7 @@ class OrderManager {
             return result;
         }
 
-        this._currentWorkingGrid = result.workingGrid;
+        this._currentWorkingGridStack.push(result.workingGrid);
         return result;
     }
 

@@ -5,9 +5,9 @@
  * Prevents race conditions when multiple processes access file simultaneously.
  *
  * Locking Strategy:
- * - Mutex-based mechanism (exclusive access)
+ * - Re-entrant lock via AsyncLock (AsyncLocalStorage-based re-entrancy detection)
  * - Only one operation (read or write) at a time
- * - Queues operations during conflicts
+ * - Nested acquire from the same async context does not deadlock
  *
  * ===============================================================================
  * EXPORTS (4 functions)
@@ -41,6 +41,7 @@
 
 
 import { getStorage } from './storage';
+import AsyncLock from './order/async_lock';
 const storage = getStorage();
 
 /**
@@ -54,58 +55,20 @@ function writeJsonFileAtomic(targetPath: any, data: any) {
     storage.writeJSON(targetPath, data);
 }
 
-/**
- * Semaphore for synchronizing access to bots.json.
- * @class
- */
-class FileLock {
-    isLocked: boolean = false;
-    queue: Array<() => void> = [];
-
-    constructor() {
-    }
-
-    /**
-     * Acquires the lock. If already locked, waits in queue.
-     * @returns {Promise<void>}
-     */
-    async acquire() {
-        if (!this.isLocked) {
-            this.isLocked = true;
-            return;
-        }
-
-        await new Promise<void>((resolve: any) => {
-            this.queue.push(resolve);
-        });
-    }
-
-    /**
-     * Releases the lock and allows the next waiting operation to proceed.
-     */
-    release() {
-        const next = this.queue.shift();
-        if (next) {
-            next();
-        } else {
-            this.isLocked = false;
-        }
-    }
-}
-
-// Global lock instance for bots.json
-const botsFileLock = new FileLock();
+// Global re-entrant lock for bots.json file access.
+// Uses AsyncLock which supports nested acquire calls via
+// AsyncLocalStorage-based re-entrancy detection.
+const botsFileLock = new AsyncLock();
 
 /**
- * Safely read bots.json with lock protection
+ * Safely read bots.json with lock protection (re-entrant safe).
  * @param {string} botsJsonPath - Path to bots.json file
  * @param {Function} parseFunction - JSON parser function (e.g., parseJsonWithComments)
  * @returns {Promise<{content: string, config: Object}>} File content and parsed config
  * @throws {Error} If file doesn't exist or JSON is invalid
  */
 async function readBotsFileWithLock(botsJsonPath: any, parseFunction: any) {
-    await botsFileLock.acquire();
-    try {
+    return botsFileLock.acquire(async () => {
         if (!storage.exists(botsJsonPath)) {
             throw new Error(`bots.json not found at ${botsJsonPath}`);
         }
@@ -117,29 +80,24 @@ async function readBotsFileWithLock(botsJsonPath: any, parseFunction: any) {
 
         const config = parseFunction(content);
         return { content, config };
-    } finally {
-        botsFileLock.release();
-    }
+    });
 }
 
 /**
- * Safely write bots.json with lock protection
+ * Safely write bots.json with lock protection (re-entrant safe).
  * @param {string} botsJsonPath - Path to bots.json file
  * @param {Object} config - Configuration object to write
  * @returns {Promise<void>}
  * @throws {Error} If write fails
  */
 async function writeBotsFileWithLock(botsJsonPath: any, config: any) {
-    await botsFileLock.acquire();
-    try {
+    return botsFileLock.acquire(async () => {
         // Atomic write prevents readers (in this process or another) from
         // seeing a truncated file mid-write. The in-process semaphore here
         // serializes concurrent writers within the same process; the
         // tmp+rename is the cross-process safety net.
         writeJsonFileAtomic(botsJsonPath, config);
-    } finally {
-        botsFileLock.release();
-    }
+    });
 }
 
 /**
