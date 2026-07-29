@@ -202,6 +202,54 @@ async function runTests() {
         assert.strictEqual(result, 42, 'Lock usable after stale callback settles');
     }
 
+    // Test 7: Nested multi-lock re-entrancy
+    // With Set<symbol> in ALS: outer lock identity is preserved across
+    // a nested acquire of a different lock. Without the fix, the inner
+    // lock's _lockCtx.run overwrites the store and isReentrant() for
+    // the outer lock returns false.
+    console.log(' - Nested multi-lock re-entrancy (A in B)...');
+    {
+        const lockA = new AsyncLock();
+        const lockB = new AsyncLock();
+
+        await lockA.acquire(async () => {
+            await lockB.acquire(async () => {
+                assert.strictEqual(lockA.isReentrant(), true,
+                    'lockA must be re-entrant inside lockB (same async context)');
+                assert.strictEqual(lockB.isReentrant(), true,
+                    'lockB must be re-entrant inside itself');
+            });
+            assert.strictEqual(lockA.isReentrant(), true,
+                'lockA must be re-entrant after lockB returns');
+        });
+    }
+    // Test 8: Triple nesting (A→B→C) with middle lock released
+    console.log(' - Triple-nested re-entrancy (A→B→C)...');
+    {
+        const lockA = new AsyncLock();
+        const lockB = new AsyncLock();
+        const lockC = new AsyncLock();
+
+        await lockA.acquire(async () => {
+            await lockB.acquire(async () => {
+                await lockC.acquire(async () => {
+                    assert.strictEqual(lockA.isReentrant(), true,
+                        'lockA re-entrant in C');
+                    assert.strictEqual(lockB.isReentrant(), true,
+                        'lockB re-entrant in C');
+                    assert.strictEqual(lockC.isReentrant(), true,
+                        'lockC re-entrant in itself');
+                });
+                assert.strictEqual(lockA.isReentrant(), true,
+                    'lockA re-entrant after C returns');
+                assert.strictEqual(lockB.isReentrant(), true,
+                    'lockB re-entrant after C returns');
+            });
+            assert.strictEqual(lockA.isReentrant(), true,
+                'lockA re-entrant after B returns');
+        });
+    }
+
     console.log('\n✓ AsyncLock Force-Release tests passed!');
 }
 

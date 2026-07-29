@@ -67,9 +67,11 @@
  *
  * Re-entrancy detection uses AsyncLocalStorage (Node.js) to distinguish
  * truly nested calls (same async context) from separate concurrent
- * callers. If AsyncLocalStorage is unavailable in the current runtime
- * (e.g. a browser bundle shim), the lock falls back to a simpler
- * _holding flag that treats any concurrent call as re-entrant.
+ * callers. The store tracks a Set of all lock IDs held in the current
+ * async context chain, preserving outer lock identity across nested
+ * acquisitions. If AsyncLocalStorage is unavailable in the current
+ * runtime (e.g. a browser bundle shim), the lock falls back to a
+ * simpler _holding flag that treats any concurrent call as re-entrant.
  *
  * CRITICAL INVARIANTS:
  * - _locked = true ONLY if callback is currently executing
@@ -153,8 +155,8 @@ class AsyncLock {
         // context, run the callback directly. Uses AsyncLocalStorage (Node.js)
         // to distinguish truly nested calls from separate concurrent callers.
         // Falls back to _holding flag in environments without AsyncLocalStorage.
-        const contextId = _lockCtx ? _lockCtx.getStore() : undefined;
-        if (contextId === this._lockId || (!_lockCtx && this._holding)) {
+        const contextSet: Set<symbol> | undefined = _lockCtx ? _lockCtx.getStore() : undefined;
+        if ((contextSet && contextSet.has(this._lockId)) || (!_lockCtx && this._holding)) {
             return callback();
         }
 
@@ -162,7 +164,12 @@ class AsyncLock {
         const cancelToken = options.cancelToken;
 
         const wrappedCallback = _lockCtx
-            ? () => _lockCtx.run(this._lockId, callback)
+            ? () => {
+                const prevSet: Set<symbol> = _lockCtx.getStore() || new Set();
+                const newSet = new Set(prevSet);
+                newSet.add(this._lockId);
+                return _lockCtx.run(newSet, callback);
+              }
             : callback;
 
         return new Promise((resolve, reject) => {
@@ -293,7 +300,8 @@ class AsyncLock {
      */
     isReentrant(): boolean {
         if (_lockCtx) {
-            return _lockCtx.getStore() === this._lockId;
+            const store: Set<symbol> | undefined = _lockCtx.getStore();
+            return store ? store.has(this._lockId) : false;
         }
         return this._holding;
     }
