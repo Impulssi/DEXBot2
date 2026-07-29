@@ -1036,7 +1036,14 @@ class OrderManager {
             let allOk = true;
             for (const update of updates) {
                 const ok = await this._applyOrderUpdate(update, context, updateOptions);
-                if (ok === false) allOk = false;
+                if (ok === false) {
+                    allOk = false;
+                    // Stop on first fatal error (ILLEGAL_SPREAD_STATE).
+                    // Remaining valid updates will be reconciled on the
+                    // next sync cycle — safer than applying mutations on
+                    // top of an inconsistent grid state.
+                    break;
+                }
             }
             return allOk;
         });
@@ -1609,6 +1616,9 @@ class OrderManager {
         } catch (recalcErr: any) {
             this.logger.log(`[COW] Fund recalculation failed post-commit: ${getErrorMessage(recalcErr)}`, 'error');
             this._recoveryState = { ...this._recoveryState, lastFailureAt: Date.now() };
+            // Re-throw to signal callers that the commit is incomplete
+            // (grid state committed, but fund state is stale).
+            throw recalcErr;
         } finally {
             this._clearWorkingGridRef();
         }
@@ -1680,7 +1690,16 @@ class OrderManager {
             return validation;
         }
 
-        await persistGridSnapshot(this, this.accountOrders, snapshotOrders, recentFillKeys);
+        const persisted = await persistGridSnapshot(this, this.accountOrders, snapshotOrders, recentFillKeys);
+
+        if (persisted === false) {
+            this.logger.log(
+                `[PERSIST] Grid persistence FAILED (disk full / permissions / write error)`,
+                'error'
+            );
+            // Keep the dirty flag set so the next flush retries.
+            return { isValid: false, reason: 'persistence write failed', skipped: false, suspended: false };
+        }
 
         // On a successful live-grid persist (the default — no explicit
         // snapshotOrders was passed in), clear the dirty flag so that

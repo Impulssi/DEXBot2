@@ -63,6 +63,11 @@ function createFixture() {
     // gate to pass; otherwise the dirty-flag-clearing path is unreachable
     // in the test fixture.
     manager.accountTotals = { buyFree: 1000, sellFree: 1000, buy: 1000, sell: 1000 };
+    // accountOrders is required by persistGridSnapshot; provide a mock
+    // that succeeds so the dirty-flag-clearing path is exercised.
+    manager.accountOrders = {
+        storeMasterGrid: async () => {}
+    };
 
     const master = new Map([
         ['slot-1', {

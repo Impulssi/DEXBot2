@@ -1778,7 +1778,15 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
         try {
             shouldApplyCorrection = await manager._gridLock.acquire(executeSpreadCheck);
         } catch (err: any) {
-            manager.logger?.log?.(`Error checking spread condition: ${getErrorMessage(err)}`, 'warn');
+            manager.logger?.log?.(`Error checking spread condition: ${getErrorMessage(err)}`, 'error');
+            // Track failure in recovery state for external monitoring.
+            // Do NOT throw — the startup runtime path lacks a try/catch and
+            // a throw would crash startup. The error is symptom of a deeper
+            // issue (lock contention, grid inconsistency) that should be
+            // diagnosed separately.
+            if (manager._recoveryState) {
+                manager._recoveryState = { ...manager._recoveryState, lastFailureAt: Date.now() };
+            }
             return { ordersPlaced: 0, partialsMoved: 0 };
         }
 
@@ -1799,7 +1807,14 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                 // All lock-needing work (fund verification, grid reads) is
                 // done under the single outer acquire above; this re-plan
                 // runs after that lock was released.
-                const rePlanDecision = determineOrderSideByFunds(manager, lastPrice);
+                // Refresh lastPrice from current grid state — the grid may
+                // have changed since function entry (TOCTOU).
+                const freshOnChain = _getOnChainOrders(manager);
+                const freshBest = getGridBestPrices(freshOnChain.onChainBuys, freshOnChain.onChainSells);
+                const freshPrice = (freshBest.bestBuy !== null && freshBest.bestSell !== null)
+                    ? (freshBest.bestBuy + freshBest.bestSell) / 2
+                    : Number(manager.config.startPrice) || 0;
+                const rePlanDecision = determineOrderSideByFunds(manager, freshPrice);
                 if (!rePlanDecision.side) {
                     manager.logger?.log?.(
                         `[SPREAD] Fund state changed; no side has sufficient funds for re-plan. Skipping cycle.`,

@@ -127,6 +127,7 @@ class AsyncLock {
     private _defaultTimeout: number | null;
     private _onContention: (() => void) | null;
     private readonly _lockId: symbol;
+    private _orphaned: boolean;
 
     constructor(options: AsyncLockOptions = {}) {
         this._queue = [];
@@ -136,6 +137,7 @@ class AsyncLock {
         this._defaultTimeout = options.timeout || null;
         this._onContention = options.onContention || null;
         this._lockId = Symbol('AsyncLock');
+        this._orphaned = false;
     }
 
     /**
@@ -254,6 +256,16 @@ class AsyncLock {
             if (generation === this._generation) {
                 this._locked = false;
                 this._processQueue();
+            } else if (this._orphaned) {
+                // Stale callback finishing after forceRelease. The
+                // forceRelease deferred _locked = false to us via the
+                // _orphaned flag. Release the lock so queued callbacks
+                // can proceed. This prevents concurrent execution: the
+                // stale callback continues to hold _locked until it
+                // finishes, blocking any new acquirer.
+                this._orphaned = false;
+                this._locked = false;
+                this._processQueue();
             }
             // After a callback completes, if there are still queued items
             // (but the previous _locked=false path already called
@@ -325,6 +337,12 @@ class AsyncLock {
      * stale callback from interfering with a new acquirer that claimed
      * the lock after forceRelease.
      *
+     * CONCURRENT EXECUTION GUARD: If a callback is currently executing
+     * (_holding is true), forceRelease defers _locked = false to the
+     * stale callback's finally block via the _orphaned flag. This
+     * prevents a new acquirer from entering while the stale callback
+     * is still running, preserving mutual exclusion.
+     *
      * @returns {number} Count of cleared items
      */
     forceRelease(): number {
@@ -333,13 +351,23 @@ class AsyncLock {
         // finally block — it will see generation mismatch and skip
         // touching _locked / _processQueue.
         this._generation++;
+        const wasHolding = this._holding;
         this._holding = false;
         while (this._queue.length > 0) {
             const { reject, timer } = this._queue.shift()!;
             if (timer) clearTimeout(timer);
             reject(new Error('Lock force-released'));
         }
-        this._locked = false;
+        if (wasHolding) {
+            // A callback is currently executing — defer lock release to
+            // the stale callback's finally block, which detects the
+            // orphan state via generation mismatch + _orphaned flag and
+            // releases _locked when done. This prevents concurrent
+            // execution between the stale callback and a new acquirer.
+            this._orphaned = true;
+        } else {
+            this._locked = false;
+        }
         return count;
     }
 }

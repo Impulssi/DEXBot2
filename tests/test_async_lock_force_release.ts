@@ -11,7 +11,10 @@ function deferred() {
 async function runTests() {
     console.log('Running AsyncLock Force-Release Regression Tests...');
 
-    // Test 1: Stale callback must not steal lock from a new acquirer
+    // Test 1: Stale callback must not release lock held by new acquirer
+    // With the fix: forceRelease defers _locked=false to stale callback's
+    // finally block, preventing concurrent execution. B must queue until
+    // A finishes.
     console.log(' - Stale callback must not release lock held by new acquirer...');
     {
         const lock = new AsyncLock();
@@ -19,7 +22,7 @@ async function runTests() {
         const aRunning = deferred();
         let aCompleted = false;
         let bCompleted = false;
-        let bSeqAfterA = false;
+        let bStarted = false;
 
         const pA = lock.acquire(async () => {
             aRunning.resolve();
@@ -31,29 +34,36 @@ async function runTests() {
         await aRunning.promise;
         assert.strictEqual(lock.isLocked(), true, 'A must hold lock');
 
-        // Force-release while A is in-flight
+        // Force-release while A is in-flight — _locked stays true,
+        // _orphaned is set so A's finally releases when done.
         lock.forceRelease();
-        assert.strictEqual(lock.isLocked(), false, 'Lock must be free after forceRelease');
+        assert.strictEqual(lock.isLocked(), true, 'Lock stays locked while stale callback runs');
 
-        // B acquires immediately (lock was force-released)
+        // B tries to acquire — must queue because _locked is still true
         const bGate = deferred();
         const pB = lock.acquire(async () => {
-            // B is running, A's stale callback hasn't resolved yet
-            bSeqAfterA = aCompleted; // should be false
+            bStarted = true;
+            // A's stale callback has not completed yet since aGate hasn't resolved
+            // (B is still queued at this point)
             await bGate.promise;
             bCompleted = true;
         });
 
-        assert.strictEqual(lock.isLocked(), true, 'B must hold lock');
+        // B must still be queued (not started)
+        await new Promise(r => setTimeout(r, 5));
+        assert.strictEqual(bStarted, false, 'B must be queued, not running');
+        assert.strictEqual(lock.isLocked(), true, 'Lock still held by A');
 
-        // Now resolve A's stale callback — it should NOT touch _locked
+        // Now resolve A's stale callback — when A finishes, its finally
+        // detects _orphaned and releases _locked, allowing B to start
         aGate.resolve();
         await pA;
-
-        // A's stale callback completed — B must still hold the lock
-        assert.strictEqual(lock.isLocked(), true, 'Lock must still be held by B after stale A completes');
         assert.strictEqual(aCompleted, true, 'A must have completed');
-        assert.strictEqual(bSeqAfterA, false, 'B must have started before A completed');
+
+        // A has finished and released lock — B should now be executing
+        await new Promise(r => setTimeout(r, 5));
+        assert.strictEqual(bStarted, true, 'B must have started after A completed');
+        assert.strictEqual(lock.isLocked(), true, 'B must hold lock');
 
         // Now let B finish
         bGate.resolve();
@@ -145,8 +155,9 @@ async function runTests() {
         assert.strictEqual(result, 'works');
     }
 
-    // Test 6: forceRelease resets lock for new acquirer; stale callback is ignored
-    console.log(' - forceRelease rejects stale callback via generation guard...');
+    // Test 6: forceRelease while callback executing — must defer lock release
+    // to stale callback's finally block to prevent concurrent execution.
+    console.log(' - forceRelease defers _locked while callback is running...');
     {
         const lock = new AsyncLock();
         const gate = deferred();
@@ -159,25 +170,35 @@ async function runTests() {
         await new Promise(r => setTimeout(r, 10));
         assert.strictEqual(lock.isLocked(), true, 'A must hold lock');
 
-        // forceRelease while A is still running — increments generation,
-        // resets _locked, clears queue (re-entrant path prevents queueing,
-        // but generation guard protects stale finally).
+        // forceRelease while A is still running. Since _holding is true,
+        // _locked stays set (_orphaned = true) to prevent concurrent execution.
         lock.forceRelease();
-        assert.strictEqual(lock.isLocked(), false, 'Lock must be free after forceRelease');
+        assert.strictEqual(lock.isLocked(), true, 'Lock stays locked while stale callback runs');
 
-        // B acquires and completes normally (lock is reusable)
-        let result = await lock.acquire(async () => 99);
-        assert.strictEqual(result, 99, 'New acquire after forceRelease must succeed');
-        assert.strictEqual(lock.isLocked(), false, 'Lock free after B completes');
+        // B tries to acquire — must queue (lock still held by A)
+        let bDone = false;
+        const pB = lock.acquire(async () => {
+            bDone = true;
+            return 99;
+        });
+        await new Promise(r => setTimeout(r, 5));
+        assert.strictEqual(bDone, false, 'B must be queued, not running');
 
-        // Let A's stale callback finish — generation mismatch means its
-        // finally block skips _locked = false. Verify the lock is still free.
+        // Let A's stale callback finish — its finally detects _orphaned,
+        // releases _locked, and processes the queue (starting B).
         gate.resolve();
         await pA;
-        assert.strictEqual(lock.isLocked(), false, 'Lock still free after stale A completes');
+        await new Promise(r => setTimeout(r, 5));
+        assert.strictEqual(lock.isLocked(), false, 'Lock free after stale callback settles');
+
+        // B should have run and completed
+        const bResult = await pB;
+        assert.strictEqual(bResult, 99, 'B completes after A settles');
+        assert.strictEqual(bDone, true, 'B must have run');
+        assert.strictEqual(lock.isLocked(), false, 'Lock free after B completes');
 
         // Lock still usable after stale callback settles
-        result = await lock.acquire(async () => 42);
+        const result = await lock.acquire(async () => 42);
         assert.strictEqual(result, 42, 'Lock usable after stale callback settles');
     }
 

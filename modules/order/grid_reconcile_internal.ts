@@ -309,6 +309,19 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
             });
         } catch (syncErr: any) {
             logger?.log?.(`[_createOrderFromGrid] Recovery sync failed: ${getErrorMessage(syncErr)}`, 'error');
+            // Transition the slot to zero-size VIRTUAL to prevent duplicate
+            // creation on the next COW cycle. The orphaned chain order will
+            // be picked up by the next normal full sync.
+            // Note: caller does NOT hold _gridLock (Phase 2 runs outside lock),
+            // so we acquire it explicitly for the grid mutation.
+            try {
+                const zeroOrder = { ...gridOrder, state: ORDER_STATES.VIRTUAL, size: 0 };
+                await manager._gridLock.acquire(async () => {
+                    await manager._applyOrderUpdate(zeroOrder, 'createOrder-extraction-failure', { skipAccounting: true, fee: 0 });
+                });
+            } catch (zeroErr: any) {
+                logger?.log?.(`[_createOrderFromGrid] Failed to zero slot ${gridOrder.id}: ${getErrorMessage(zeroErr)}`, 'error');
+            }
         }
     }
 }
@@ -515,8 +528,22 @@ async function _executeStartupUpdateBatch({
     logger?.log?.(`Startup: Broadcasting update batch (${prepared.length} op${prepared.length > 1 ? 's' : ''})`, 'info');
     await chainOrders.executeBatch(account, privateKey, prepared.map((p: any) => p.op));
 
+    let finalizeFailed = false;
     for (const entry of prepared) {
-        await _finalizeStartupUpdate({ manager, preparedUpdate: entry });
+        if (finalizeFailed) {
+            logger?.log?.(`Startup: Skip finalize for ${entry.plan.gridOrder.id} due to prior finalization failure`, 'warn');
+            continue;
+        }
+        try {
+            await _finalizeStartupUpdate({ manager, preparedUpdate: entry });
+        } catch (finalizeErr: any) {
+            logger?.log?.(`Startup: Finalize failed for ${entry.plan.gridOrder.id}: ${getErrorMessage(finalizeErr)}`, 'error');
+            finalizeFailed = true;
+        }
+    }
+
+    if (finalizeFailed) {
+        logger?.log?.(`Startup: Batch broadcast succeeded but finalization incomplete — next full sync will reconcile`, 'warn');
     }
 
     return { executed: true, prepared: prepared.length, skipped: false };
