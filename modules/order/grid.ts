@@ -501,7 +501,7 @@ export function createOrderGrid(config: any): any {
             sell: gapSlots - Math.floor(gapSlots / 2)
         };
 
-        return { orders: updatedOrders, boundaryIdx, initialSpreadCount };
+        return { orders: updatedOrders, boundaryIdx, initialSpreadCount, gapSlots };
     }
 
     /**
@@ -567,6 +567,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                     manager.config?.targetSpreadPercent,
                     manager.config?.gridLimits
                 );
+                manager._gapSlots = gapSlots;
                 const buyEndIdx = boundaryIdx;
                 const sellStartIdx = getSellStartIdx(boundaryIdx, gapSlots);
                 let reassignCount = 0;
@@ -872,12 +873,13 @@ export async function initializeGrid(manager: any): Promise<void> {
             throw new Error(`Cannot initialize grid without account totals: ${getErrorMessage(e)}`);
         }
 
-        const { orders, boundaryIdx, initialSpreadCount } = createOrderGrid({
+        const { orders, boundaryIdx, initialSpreadCount, gapSlots } = createOrderGrid({
             ...manager.config,
             startPrice: gridStartPrice,
             minPrice: resolvedMinP,
             maxPrice: resolvedMaxP,
         });
+        manager._gapSlots = gapSlots;
 
         // RC-8: Update boundary with notification to dependent systems
         // Persist master boundary for StrategyEngine
@@ -1355,7 +1357,7 @@ export async function updateGridFromBlockchainSnapshot(manager: any, orderType: 
         // that a shift is needed.  The boundary is only written atomically
         // inside _commitWorkingGrid via _setBoundary.
         if (overrideBoundaryIdx !== null && overrideBoundaryIdx !== manager.boundaryIdx) {
-            const gapSlots = calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
+            const gapSlots = manager._gapSlots ?? calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
             const allSlots = (Array.from(workingGrid.values()) as Order[])
                 .filter((s: any) => s.price != null)
                 .sort((a: any, b: any) => a.price - b.price);
@@ -1707,7 +1709,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                 const allSlots = Array.from(manager.orders.values())
                     .filter((o: any) => o.price != null)
                     .sort((a: any, b: any) => a.price - b.price);
-                const gapSlots = calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
+                const gapSlots = manager._gapSlots ?? calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
                 const railLen = allSlots.length;
                 const buyEndIdx = manager.boundaryIdx;
                 const sellStartIdx = getSellStartIdx(manager.boundaryIdx, gapSlots);
@@ -2182,7 +2184,7 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             .filter((o: any) => o.price != null && Number.isFinite(o.price))
             .sort((a: any, b: any) => a.price - b.price);
         const slotIndexMap = new Map(allSlotsByPrice.map((o: any, i: number) => [o.id, i]));
-        const gapSlots = calculateGapSlots(
+        const gapSlots = manager._gapSlots ?? calculateGapSlots(
             manager.config?.incrementPercent,
             manager.config?.targetSpreadPercent,
             manager.config?.gridLimits

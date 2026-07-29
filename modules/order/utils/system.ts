@@ -1084,7 +1084,7 @@ export function syncBoundaryToFunds(manager: any): { changed: boolean; newIdx?: 
     const availA = (manager.funds?.available?.sell || 0);
     const availB = (manager.funds?.available?.buy || 0);
     const allSlots = (Array.from(manager.orders.values()) as any[]).sort((a: any, b: any) => a.price - b.price);
-    const gapSlots = MathUtils.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
+    const gapSlots = manager._gapSlots ?? MathUtils.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
 
     // Determine the index range permitted by master-grid slot assignments.
     // Both virtual and active orders count: the boundary must stay strictly

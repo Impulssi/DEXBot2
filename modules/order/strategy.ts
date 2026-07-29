@@ -220,7 +220,10 @@ class StrategyEngine {
         if (allSlots.length === 0) return { targetGrid: new Map(), boundaryIdx: currentBoundaryIdx };
 
         // 1. Determine new boundary based on fills (Boundary Crawl)
-        const gapSlots = calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
+        // Use the stored gapSlots from grid creation (always consistent with
+        // the grid geometry) instead of recomputing from live config which may
+        // have drifted if targetSpreadPercent or gridLimits changed.
+        const gapSlots = this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
         const newBoundaryIdx = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots);
 
         // 2. Assign Roles (Buy/Sell/Spread)

@@ -319,6 +319,7 @@ class OrderManager {
     _pendingBroadcasts: Map<any, any>;
     _committedOrderIds: Set<string>;
     _committedOrderIdsBuiltAt: number;
+    _gapSlots: number;
     _gridDirtyAt: number | null;
     _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
@@ -423,6 +424,7 @@ class OrderManager {
         this._pendingBroadcasts = new Map();
         this._committedOrderIds = new Set();
         this._committedOrderIdsBuiltAt = 0;
+        this._gapSlots = 0;
         this._gridDirtyAt = null;
         this._orphanFillsCreditedAt = null;
         this._pendingRecovery = null;
@@ -622,10 +624,27 @@ class OrderManager {
     }
 
     /**
+     * Computes committed amounts directly from the orders map to ensure the
+     * snapshot is internally consistent even when called inside a
+     * pauseFundRecalc region.  Normally recalculateFunds() keeps
+     * funds.committed.chain in sync, but when pauses are nested the cached
+     * value can lag behind the actual orders state (virtualized orders
+     * release committed capital via updateOptimisticFreeBalance without
+     * triggering a recalc).  Reading from the orders map avoids that race.
      * @returns {import('./types').ChainFundsSnapshot}
      */
     getChainFundsSnapshot() {
-        const totals = computeChainFundTotals(this.accountTotals, this.funds?.committed?.chain);
+        let committedBuy = 0, committedSell = 0;
+        for (const order of this.orders.values()) {
+            const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && !!order.orderId;
+            if (!isActive) continue;
+            const size = toFiniteNumber(order.size);
+            if (size <= 0) continue;
+            const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && order.price < this.config.startPrice);
+            if (isBuy) committedBuy += size;
+            else committedSell += size;
+        }
+        const totals = computeChainFundTotals(this.accountTotals, { buy: committedBuy, sell: committedSell });
         const allocatedBuy = toFiniteNumber(this.funds?.allocated?.buy, totals.chainTotalBuy);
         const allocatedSell = toFiniteNumber(this.funds?.allocated?.sell, totals.chainTotalSell);
         const btsBalance = (this.config.assetA !== 'BTS' && this.config.assetB !== 'BTS')
@@ -1007,12 +1026,18 @@ class OrderManager {
 
         // Apply phantom order auto-correction to the normalized order
         const phantomError = validation.errors.find((e: any) => e.code === 'PHANTOM_ORDER');
+        let accountingSkip = skipAccounting;
         if (phantomError && (phantomError as any).autoCorrect) {
             nextOrder = { ...nextOrder, ...(phantomError as any).autoCorrect };
+            // Phantom orders never had funds committed on-chain (no orderId).
+            // The auto-correction transitions ACTIVE/PARTIAL → VIRTUAL which
+            // updateOptimisticFreeBalance would treat as capital release,
+            // inflating accountTotals.  Skip capital commitment accounting.
+            accountingSkip = true;
         }
 
         if (this.accountant) {
-            await this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, normalizedFee, skipAccounting);
+            await this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, normalizedFee, accountingSkip);
         }
 
         const updatedOrder = deepFreeze({ ...nextOrder });

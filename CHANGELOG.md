@@ -14,6 +14,9 @@ All notable changes to this project will be documented in this file.
 - **Fix**: lock hierarchy ABBA deadlock — `syncFromOpenOrders` with `gridLockAlreadyHeld` now skips `_syncLock` entirely instead of queuing behind a concurrent `_syncLock` holder while holding `_gridLock`; `_doSyncFromOpenOrders` is called directly (in-memory only, no RPC) (`modules/order/sync_engine.ts`).
 - **Fix**: lock hierarchy documentation — corrected Level 0/1 labeling: `_fillProcessingLock` is outermost (Level 0), `_divergenceLock` is Level 1, matching all code paths; updated `manager.ts`, `dexbot_class.ts`, `sync_engine.ts`, `developer_guide.md`, `DEXBOT_COMPARISON.md`.
 - **Test**: add ABBA deadlock regression test (RC-1B) using real `SyncEngine.syncFromOpenOrders` with concurrent `_syncLock` holder (`tests/test_race_condition_fixes_batch1.ts`).
+- **Fix**: stale fund snapshot in COW plan — `getChainFundsSnapshot()` now computes committed amounts directly from the orders map instead of reading `funds.committed.chain` which went stale inside nested `pauseFundRecalc` regions, preventing double-counting of virtualized order capital (`modules/order/manager.ts`).
+- **Fix**: gap slot drift on rebalance — persisted `manager._gapSlots` from grid creation; all rebalance paths read stored value instead of recalculating from live config, preventing boundary/role mismatches when `targetSpreadPercent` or `gridLimits` change mid-cycle (`modules/order/grid.ts`, `modules/order/strategy.ts`, `modules/order/manager.ts`, `modules/order/utils/system.ts`).
+- **Fix**: phantom order fund inflation — skip capital commitment accounting when auto-correcting phantom orders (ACTIVE/PARTIAL with no `orderId` → VIRTUAL), preventing `addToChainFree` from inflating `accountTotals` with funds never committed on-chain (`modules/order/manager.ts`).
 
 ## [1.4.5] - 2026-07-29 - Code-Review Hardening: Lock Safety, Error Handling, Structural Integrity
 
