@@ -1427,6 +1427,7 @@ async function testRecoverFromPersistedGrid() {
     bot.manager.resumeRecalcLogging = () => {};
     bot.manager.funds = { btsFeesOwed: 0 };
     bot.manager.boundaryIdx = 0;
+    bot.manager._restoreBoundary = (idx: any) => { bot.manager.boundaryIdx = idx; };
 
     const persistedGrid = [
         { id: 'slot-1', type: 'buy', price: 0.04, size: 200, orderId: '1.7.111' },
@@ -1531,6 +1532,7 @@ async function testRecoverFromPersistedGridBloated() {
     bot.manager.resumeRecalcLogging = () => {};
     bot.manager.funds = { btsFeesOwed: 0 };
     bot.manager.boundaryIdx = 0;
+    bot.manager._restoreBoundary = (idx: any) => { bot.manager.boundaryIdx = idx; };
     bot.manager.config = {
         incrementPercent: 0.3,
         targetSpreadPercent: 0.6,
@@ -1619,6 +1621,7 @@ async function testRecoverFromPersistedGridUnmatchedRemain() {
     bot.manager.resumeRecalcLogging = () => {};
     bot.manager.funds = { btsFeesOwed: 0 };
     bot.manager.boundaryIdx = 0;
+    bot.manager._restoreBoundary = (idx: any) => { bot.manager.boundaryIdx = idx; };
     bot.manager.config = {
         incrementPercent: 0.3,
         targetSpreadPercent: 0.6,
