@@ -1232,6 +1232,15 @@ class DEXBot {
             this.manager.pauseFundRecalc();
         }
         try {
+            // Set cross-chunk boundary shift budget to prevent cumulative
+            // overreaction from burst fills. Inside try so finally cleans up
+            // even if pauseFundRecalc is not used or future code is added.
+            const activeSell = this.manager?.config?.activeOrders?.sell ?? 1;
+            const activeBuy = this.manager?.config?.activeOrders?.buy ?? 1;
+            const shiftBudget = Math.max(Math.floor(activeSell / 2), Math.floor(activeBuy / 2), 1);
+            if (this.manager?.config) {
+                this.manager.config._boundaryShiftBudget = shiftBudget;
+            }
             let i = 0;
             while (i < totalFills) {
                 const remaining = totalFills - i;
@@ -1272,6 +1281,9 @@ class DEXBot {
                 }
             }
         } finally {
+            if (this.manager?.config) {
+                delete this.manager.config._boundaryShiftBudget;
+            }
             if (typeof this.manager?.resumeFundRecalc === 'function') {
                 await this.manager.resumeFundRecalc();
             }

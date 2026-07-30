@@ -1137,16 +1137,38 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
          newBoundaryIdx = calculateIdealBoundary(allSlots, referencePrice, gapSlots);
     }
 
-    // Apply shift from fills
+    // Apply shift from fills with rate-limiting
+    let netShift = 0;
     for (const fill of fills) {
         const isShiftEligible =
             fill?.isPartial !== true ||
             fill?.isDelayedRotationTrigger === true;
 
         if (!isShiftEligible) continue;
-        if (fill.type === ORDER_TYPES.SELL) newBoundaryIdx++;
-        else if (fill.type === ORDER_TYPES.BUY) newBoundaryIdx--;
+        if (fill.type === ORDER_TYPES.SELL) netShift++;
+        else if (fill.type === ORDER_TYPES.BUY) netShift--;
     }
+
+    // Cap cumulative shift to prevent overreaction from burst fills.
+    // Uses a cross-chunk budget set by _processFillsWithBatching —
+    // each chunk consumes from the same pool so the total across all
+    // chunks never exceeds half the active window.
+    // Falls back to a per-call cap when no budget is set.
+    const budget = config._boundaryShiftBudget;
+    const fallbackCap = Math.max(
+        Math.floor((config.activeOrders?.sell ?? 1) / 2),
+        Math.floor((config.activeOrders?.buy ?? 1) / 2),
+        1
+    );
+    const cap = budget != null ? Math.min(Math.abs(budget), fallbackCap) : fallbackCap;
+    if (Math.abs(netShift) > cap) {
+        netShift = Math.sign(netShift) * cap;
+    }
+    if (budget != null) {
+        config._boundaryShiftBudget = budget - Math.abs(netShift);
+    }
+
+    newBoundaryIdx += netShift;
 
     // Clamp boundary
     return Math.max(0, Math.min(allSlots.length - 1, newBoundaryIdx));

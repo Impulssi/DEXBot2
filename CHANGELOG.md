@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [1.4.6] - 2026-07-29 - AsyncLock Nested Re-Entrancy Fix, Grid Type Reassignment
 
+### 2026-07-30
+
+- **Fix**: cross-chunk boundary shift cap — `deriveTargetBoundary` now computes a net shift and caps it at half the active window per `_processFillsWithBatching` call; a cross-chunk budget prevents cumulative overreaction from burst fills (e.g. 200 accumulated fills after reconnect no longer swing the boundary 200 slots). Budget is set inside the `try` block and cleaned up in `finally` to prevent stale-state leaks (`modules/dexbot_class.ts`, `modules/order/utils/order.ts`).
+
 ### 2026-07-29
 
 - **Fix**: AsyncLock nested re-entrancy — ALS store changed from single symbol to `Set<symbol>` so outer lock identity is preserved across nested acquisitions; prevents self-deadlock when `lockA` is held and `lockB` is acquired inside it (`modules/order/async_lock.ts`).
