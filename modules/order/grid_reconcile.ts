@@ -218,7 +218,7 @@ export async function reconcileGridOrders({
                         state: ORDER_STATES.VIRTUAL,
                         orderId: "",
                         rawOnChain: null
-                    }, 'startup-phantom');
+                    }, 'startup-phantom', { skipAccounting: true });
                 }
             }
         }
