@@ -55,12 +55,13 @@ async function runTests() {
 
         // Simulate a fill that leaves 0.00003 BTS (below minAbsoluteSize of 0.0005)
         const filledAmount = 249.27795; // Resulting in 0.00003 remainder
+        const orderId = '1.7.570062650';
 
         const fillEvent = {
             block_num: 123456,
             id: '1.11.999',
             op: [1, {
-                order_id: '1.7.570062650',
+                order_id: orderId,
                 pays: { amount: Math.round(filledAmount * 100000), asset_id: '1.3.0' }, // BTS units (Asset B)
                 receives: { amount: 1718, asset_id: '1.3.5537' }, // XRP units (Asset A)
                 is_maker: true
@@ -69,14 +70,16 @@ async function runTests() {
 
         const result = await manager.sync.syncFromFillHistory(fillEvent);
 
-        // Assertions
-        assert.strictEqual(result.partialFill, false, 'Should be treated as full fill despite non-zero remainder');
+        // Assertions: sub-minimum remnant is NOT treated as full fill — it goes through
+        // the "other-side rounds to 0" ghost path instead, which preserves orderId
+        // so the COW rotation cancels the chain order properly.
+        assert.strictEqual(result.partialFill, false, 'Ghost path should return partialFill=false (rotation trigger)');
         assert.strictEqual(result.filledOrders[0].isPartial, undefined, 'filledOrder should NOT be marked as partial to trigger rotation');
 
         const slot = manager.orders.get('slot-164');
-        assert.strictEqual(slot.state, ORDER_STATES.VIRTUAL, 'Remainder below minAbsoluteOrderSize should be treated as full fill (VIRTUAL)');
+        assert.strictEqual(slot.state, ORDER_STATES.PARTIAL, 'Ghost slot should remain PARTIAL to preserve orderId');
         assert.strictEqual(slot.size, 0, 'Ghost order slot size should be 0');
-        assert.strictEqual(slot.orderId, null, 'Ghost order slot should clear orderId on full fill');
+        assert.strictEqual(slot.orderId, orderId, 'Ghost slot must preserve orderId so COW cancels the chain order');
     }
 
     console.log('✓ Ghost order fix tests passed!');
