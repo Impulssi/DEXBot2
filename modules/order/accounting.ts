@@ -6,7 +6,7 @@
  * Exports a single Accountant class that manages all fund accounting operations.
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Accountant Class (18 methods)
+ * TABLE OF CONTENTS - Accountant Class (19 methods)
  * ===============================================================================
  *
  * CORE INITIALIZATION & RECALCULATION (2 methods)
@@ -18,7 +18,7 @@
  *      Called after any state change. Aggregates committed/available funds and triggers allocation.
  *
  * VERIFICATION & RECOVERY (3 methods - async, internal)
- *   4. _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) - Verify fund tracking invariants
+ *   4. _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell, actualBuy, actualSell) - Verify fund tracking invariants
  *   5. _performStateRecovery(mgr) - Centralized state recovery (fetch + sync + validate) (async, internal)
  *   6. _attemptFundRecovery(mgr, violationType) - Attempt immediate recovery from invariant violations (async, internal)
  *
@@ -26,25 +26,26 @@
  *   7. tryDeductFromChainFree(orderType, size, operation) - Atomically deduct from FREE portion
  *   8. addToChainFree(orderType, size, operation) - Add amount back to optimistic chainFree balance
  *
- * BALANCE ADJUSTMENTS (4 methods)
- *   9. adjustTotalBalance(orderType, delta, operation) - Adjust total and free balances
- *   10. _normalizeSideHint(sideHint) - Normalize side hint to standard key (internal)
- *   11. _resolveOrderSide(order, fallbackOrder, explicitSideHint) - Resolve order side (internal)
- *   12. updateOptimisticFreeBalance(oldOrder, newOrder, context, fee, skipAssetAccounting) - Update optimistic balance during transitions
+ * BALANCE ADJUSTMENTS (5 methods)
+ *   9. adjustTotalBalance(orderType, delta, operation) - Acquires _fundLock, adjusts total and free balances
+ *   10. _adjustTotalBalanceLocked(orderType, delta, operation) - PRIVATE: body of adjustTotalBalance, caller must hold _fundLock
+ *   11. _normalizeSideHint(sideHint) - Normalize side hint to standard key (internal)
+ *   12. _resolveOrderSide(order, fallbackOrder, explicitSideHint) - Resolve order side (internal)
+ *   13. updateOptimisticFreeBalance(oldOrder, newOrder, context, fee, skipAssetAccounting) - Update optimistic balance during transitions
  *
  * FEE MANAGEMENT (2 methods)
- *   13. deductBtsFees(requestedSide) - Deduct BTS fees using adjustTotalBalance with deferral strategy (async)
- *   14. _deductFeesFromProceeds(assetSymbol, rawAmount, isMaker) - Deduct fees from fill proceeds (internal)
+ *   14. deductBtsFees(requestedSide) - Deduct BTS fees using adjustTotalBalance with deferral strategy (async)
+ *   15. _deductFeesFromProceeds(assetSymbol, rawAmount, isMaker) - Deduct fees from fill proceeds (internal)
  *
  * FILL BALANCE TRACKING (1 method)
- *   15. recordFillBalances(paysAsset, paysAmount, receivesAsset, receivesAmount, context) - Record fill proceeds (async)
+ *   16. recordFillBalances(paysAsset, paysAmount, receivesAsset, receivesAmount, context) - Record fill proceeds (async)
  *
  * FILL PROCESSING (1 method)
- *   16. processFillAccounting(fillOp, fillKey, persistenceMode) - Process fund impact of order fill (atomically updates accountTotals)
+ *   17. processFillAccounting(fillOp, fillKey, persistenceMode) - Process fund impact of order fill (atomically updates accountTotals)
  *
  * RECOVERY & VALIDATION (2 methods)
- *   17. resetRecoveryState() - Reset recovery backoff and state
- *   18. validateTargetGrid(targetGrid, mgr) - Validate target grid fund requirements
+ *   18. resetRecoveryState() - Reset recovery backoff and state
+ *   19. validateTargetGrid(targetGrid, mgr) - Validate target grid fund requirements
  *
  * ===============================================================================
  * FUND STRUCTURE (managed by Accountant)
@@ -141,9 +142,9 @@ class Accountant {
      * @param {Array<{orderType: string, delta: number, operation: string}>} balanceAdjustments
      * @returns {void}
      */
-    _applyBalanceAdjustments(balanceAdjustments: any) {
+    async _applyBalanceAdjustments(balanceAdjustments: any) {
         for (const adjustment of balanceAdjustments) {
-            this.adjustTotalBalance(adjustment.orderType, adjustment.delta, adjustment.operation);
+            await this.adjustTotalBalance(adjustment.orderType, adjustment.delta, adjustment.operation);
         }
     }
 
@@ -415,7 +416,7 @@ class Accountant {
          }
 
         if (mgr._pauseFundRecalc === 0 && !mgr.isBootstrapping() && !mgr.isBroadcastingActive()) {
-            const snapshot = { chainFreeBuy, chainFreeSell, chainBuy, chainSell };
+            const snapshot = { chainFreeBuy, chainFreeSell, chainBuy, chainSell, actualBuy: mgr.accountTotals?.buy, actualSell: mgr.accountTotals?.sell };
 
             const runVerification = (nextSnapshot: any) => {
                 this._isVerifyingInvariants = true;
@@ -424,7 +425,9 @@ class Accountant {
                     nextSnapshot.chainFreeBuy,
                     nextSnapshot.chainFreeSell,
                     nextSnapshot.chainBuy,
-                    nextSnapshot.chainSell
+                    nextSnapshot.chainSell,
+                    nextSnapshot.actualBuy,
+                    nextSnapshot.actualSell
                 )
                     .catch((err: any) => {
                         mgr.logger?.log?.(`[RECOVERY] Verification error: ${getErrorMessage(err)}`, 'error');
@@ -465,7 +468,7 @@ class Accountant {
       * @returns {void}
       * @private
       */
-      async _verifyFundInvariants(mgr: any, chainFreeBuy: any, chainFreeSell: any, chainBuy: any, chainSell: any) {
+      async _verifyFundInvariants(mgr: any, chainFreeBuy: any, chainFreeSell: any, chainBuy: any, chainSell: any, actualBuy: any, actualSell: any) {
           const buyPrecision = mgr.assets?.assetB?.precision;
           const sellPrecision = mgr.assets?.assetA?.precision;
           if (!Number.isFinite(buyPrecision) || !Number.isFinite(sellPrecision)) {
@@ -496,9 +499,8 @@ class Accountant {
          // FORMULA: expectedBuy = chainFreeBuy + chainBuy (what we think we have)
          //          actualBuy = mgr.accountTotals.buy (what blockchain says)
          //          If |actualBuy - expectedBuy| > tolerance → fund tracking corruption detected
-         const expectedBuy = chainFreeBuy + chainBuy;
-         const actualBuy = mgr.accountTotals?.buy;
-         const diffBuy = Math.abs((actualBuy ?? expectedBuy) - expectedBuy);
+        const expectedBuy = chainFreeBuy + chainBuy;
+        const diffBuy = Math.abs((actualBuy ?? expectedBuy) - expectedBuy);
          const allowedBuyTolerance = Math.max(precisionSlackBuy, (actualBuy || expectedBuy) * effectivePercentTolerance);
 
         if (actualBuy !== null && actualBuy !== undefined && diffBuy > allowedBuyTolerance) {
@@ -514,7 +516,6 @@ class Accountant {
         }
 
         const expectedSell = chainFreeSell + chainSell;
-        const actualSell = mgr.accountTotals?.sell;
         const diffSell = Math.abs((actualSell ?? expectedSell) - expectedSell);
         const allowedSellTolerance = Math.max(precisionSlackSell, (actualSell || expectedSell) * effectivePercentTolerance);
 
@@ -926,24 +927,23 @@ class Accountant {
             // Determine orientation
             if (paysAsset === assetA) {
                 // Bot paid assetA (Selling assetA, buying assetB)
-                this.adjustTotalBalance(ORDER_TYPES.SELL, -paysAmount, `${context}-pays`);
-                this.adjustTotalBalance(ORDER_TYPES.BUY, receivesAmount, `${context}-receives`);
+                this._adjustTotalBalanceLocked(ORDER_TYPES.SELL, -paysAmount, `${context}-pays`);
+                this._adjustTotalBalanceLocked(ORDER_TYPES.BUY, receivesAmount, `${context}-receives`);
             } else {
                 // Bot paid assetB (Buying assetA, selling assetB)
-                this.adjustTotalBalance(ORDER_TYPES.BUY, -paysAmount, `${context}-pays`);
-                this.adjustTotalBalance(ORDER_TYPES.SELL, receivesAmount, `${context}-receives`);
+                this._adjustTotalBalanceLocked(ORDER_TYPES.BUY, -paysAmount, `${context}-pays`);
+                this._adjustTotalBalanceLocked(ORDER_TYPES.SELL, receivesAmount, `${context}-receives`);
             }
         });
     }
 
 
     /**
-     * Adjust both total and free balances (for fills, fees, deposits).
-     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
-     * @param {number} delta - Amount to adjust
-     * @param {string} operation - Context for logging
+     * PRIVATE: Must be called while holding _fundLock.
+     * Body of adjustTotalBalance; takes the lock externally for clean
+     * nesting in callers that already hold the lock (e.g. recordFillBalances).
      */
-    adjustTotalBalance(orderType: any, delta: any, operation: any) {
+    _adjustTotalBalanceLocked(orderType: any, delta: any, operation: any) {
         const mgr = this.manager;
         const isBuy = (orderType === ORDER_TYPES.BUY);
         const freeKey = isBuy ? 'buyFree' : 'sellFree';
@@ -965,6 +965,17 @@ class Accountant {
         if (mgr.logger && mgr.logger.level === 'debug') {
             mgr.logger.log(`[ACCOUNTING] ${totalKey} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> Total: ${Format.formatAmount8(mgr.accountTotals[totalKey])}, Free: ${Format.formatAmount8(mgr.accountTotals[freeKey])}`, 'debug');
         }
+    }
+
+    /**
+     * PUBLIC API: Acquires _fundLock.
+     * Adjust both total and free balances (for fills, fees, deposits).
+     * @returns {Promise<void>}
+     */
+    async adjustTotalBalance(orderType: any, delta: any, operation: any) {
+        await this.manager._fundLock.acquire(async () => {
+            this._adjustTotalBalanceLocked(orderType, delta, operation);
+        });
     }
 
     /**
@@ -1127,7 +1138,7 @@ class Accountant {
         if (btsOrderType) {
             const { balanceDelta } = this._resolveBtsFeeLifecycle(oldOrder, newOrder, context, fee);
             if (Math.abs(balanceDelta) > 0) {
-                this.adjustTotalBalance(btsOrderType, balanceDelta, `${context}-fee`);
+                await this.adjustTotalBalance(btsOrderType, balanceDelta, `${context}-fee`);
             }
         }
     }
@@ -1177,7 +1188,7 @@ class Accountant {
         }
 
         // FULL DEDUCTION from chainFree
-        this.adjustTotalBalance(orderType, -fees, 'bts-fee-settlement');
+        await this.adjustTotalBalance(orderType, -fees, 'bts-fee-settlement');
 
         if (mgr.logger && mgr.logger.level === 'debug') {
             mgr.logger.log(`[BTS-FEE] Settled: ${Format.formatAmount8(fees)} BTS`, 'debug');
@@ -1399,7 +1410,7 @@ class Accountant {
               }
           }
 
-          this._applyBalanceAdjustments(balanceAdjustments);
+          await this._applyBalanceAdjustments(balanceAdjustments);
 
           // Flush the queued dedup key now that balance adjustments succeeded.
           // For IMMEDIATE mode, this persists durably. For BATCHED mode, the
@@ -1413,7 +1424,7 @@ class Accountant {
                   // Roll back balance adjustments since the dedup key was not persisted.
                   // This keeps the invariant: dedup key persisted ⇔ balance adjustments applied.
                   for (const adj of balanceAdjustments) {
-                      this.adjustTotalBalance(adj.orderType, -adj.delta, 'rollback-' + adj.operation);
+                      await this.adjustTotalBalance(adj.orderType, -adj.delta, 'rollback-' + adj.operation);
                   }
                   processedFillStore.discard(fillKey, processedAt || Date.now());
                   throw err;

@@ -1901,7 +1901,7 @@ async function acquireBts(bot: any, deficit: any) {
 
     const orderType = (best.asset.id === bot.assets?.assetA?.id) ? 'sell' : 'buy';
     if (bot.manager.accountant) {
-        bot.manager.accountant.adjustTotalBalance(orderType, -best.sellAmount, 'bts-acquisition-swap-sell');
+        await bot.manager.accountant.adjustTotalBalance(orderType, -best.sellAmount, 'bts-acquisition-swap-sell');
     }
     // Do NOT optimistically bump btsBalance.free/total here. expectedReceive is
     // a pre-swap estimate and may diverge from the actual fill (slippage, fees,

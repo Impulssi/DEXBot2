@@ -473,7 +473,7 @@ if (entry) {
     _staleCleanedOrderIds.delete(orderId);
 }
 // Credit proceeds only if NOT protected above
-adjustTotalBalance(orderType, proceeds, `orphan-fill-${orderId}`);
+await adjustTotalBalance(orderType, proceeds, `orphan-fill-${orderId}`);
 ```
 
 #### Why This Works
@@ -811,7 +811,7 @@ This prevents the bug where `available = chainFree + required` created a tautolo
 
 ## 6. Safety & Invariants
 
-The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference. Invariants are checked by `_verifyFundInvariants()` (`modules/order/accounting.ts` line 486) after every blockchain sync cycle. When a violation is detected, the system logs a `CRITICAL` error and attempts automatic recovery via `manager.accountant.recalculateFunds()` (`modules/order/accounting.ts` line 352, delegated from `modules/order/manager.ts` line 802) — resetting internal state to match on-chain reality. If the grid lock is held (mid-rebalance), recovery is deferred until the lock is released. The bot continues operating throughout; it does **not** halt on invariant violations.
+The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference. Invariants are checked by `_verifyFundInvariants()` (`modules/order/accounting.ts` line 471) after every blockchain sync cycle. The verification reads from a snapshot captured under `_fundLock` — `actualBuy`/`actualSell` are captured at snapshot time, not read live outside the lock, closing a TOCTOU window. When a violation is detected, the system logs a `CRITICAL` error and attempts automatic recovery via `manager.accountant.recalculateFunds()` (`modules/order/accounting.ts` line 352, delegated from `modules/order/manager.ts` line 802) — resetting internal state to match on-chain reality. If the grid lock is held (mid-rebalance), recovery is deferred until the lock is released. The bot continues operating throughout; it does **not** halt on invariant violations.
 
 ### 6.1 The Equality Invariant
 Total funds on chain must equal free plus committed.
@@ -841,4 +841,4 @@ Two additional accounting hardening measures added in v1.2.1:
 **TOCTOU in `processFillAccounting`.** `_buildBtsDeferredRefundAdjustment` reads `btsFeeState` from `mgr.orders`, but the order lock was acquired after accounting ran. Fixed by acquiring the lock first, then running `processFillAccounting` under the lock. This fix was also ported to POST-RESET and BOOTSTRAP tracked-fill accounting paths.
 
 ---
-*Technical Reference for DEXBot2 v1.4.6 release*
+*Technical Reference for DEXBot2 v1.4.7 release*

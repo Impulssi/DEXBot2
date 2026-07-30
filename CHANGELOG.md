@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.7] - 2026-07-30 - Fund Accounting Race Hardening, Phantom-Order Startup Fix, Create-Cancel Loop Fix
+
+### 2026-07-30
+
+- **Fix**: verification snapshot captures `actualBuy`/`actualSell` at snapshot time under `_fundLock`; passes them to `_verifyFundInvariants` instead of reading `mgr.accountTotals` live outside the lock, closing the TOCTOU window between snapshot and verification (`modules/order/accounting.ts`).
+- **Fix**: `adjustTotalBalance` now acquires `_fundLock` internally, protecting `mgr.accountTotals` mutations from concurrent `recalculateFunds` reads across all callers; extracted `_adjustTotalBalanceLocked` sync helper so `recordFillBalances` (which already holds `_fundLock`) avoids 2 redundant nested acquires (`modules/order/accounting.ts`, `modules/dexbot_maintenance_runtime.ts`).
+- **Fix**: remove sub-minimum remnant orphan check in `_computeFillTransitionResult` — a fill leaving a sub-minimum remnant cleared the local slot while leaving the chain order alive as an untracked orphan; removal lets the existing ghost path preserve `orderId` as PARTIAL for proper COW clean-up (`modules/order/sync_engine.ts`, `tests/test_ghost_order_fix.ts`).
+- **Fix**: prevent fund inflation on startup phantom-order cleanup — `_applyOrderUpdate` during reconciliation's phantom sanitization was missing `{ skipAccounting: true }`, causing ACTIVE→VIRTUAL transitions to inflate ChainFree by the phantom order's size each restart (`modules/order/grid_reconcile.ts`).
+- **Fix**: create-cancel loop in Phase 3 grid reconciliation — Phase 2 now returns a `Set<string>` of created chain order IDs; batch path captures all IDs before `_applySync` (Phase A/B split); single-create path propagates ID even when `_applySync` throws; recovery sync fallback added (`modules/order/grid_reconcile.ts`, `modules/order/grid_reconcile_internal.ts`).
+- **Fix**: negative free balance ordering — MANUAL-queue balance adjustments before IMMEDIATE flush with rollback on flush failure, enforcing invariant: dedup key persisted ⇔ balance adjustments applied; `accountTotalsStale` flag triggers fresh chain-balance fetch when `_updateOrder` fails (`modules/order/accounting.ts`, `modules/order/sync_engine.ts`).
+- **Fix**: ghost order detection — explicit `isGhost: true` flag added; existing size≤0 && state===PARTIAL heuristic retained as fallback (`modules/order/sync_engine.ts`).
+- **Chore**: declare `accountTotalsStale` field in manager class to satisfy strict field convention (`modules/order/manager.ts`).
+- **Docs**: add `GRID_RECONCILE.md` — 3-phase startup reconciliation design doc covering Phase 1 (pure in-memory under `_gridLock`), Phase 2 (blockchain I/O outside lock), Phase 3 (stale surplus cleanup), edge cases, lock hierarchy reference, and cross-references to 10+ existing docs (`docs/GRID_RECONCILE.md`).
+
 ## [1.4.6] - 2026-07-29 - AsyncLock Nested Re-Entrancy Fix, Grid Type Reassignment
 
 ### 2026-07-30

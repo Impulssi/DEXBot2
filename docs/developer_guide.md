@@ -682,10 +682,10 @@ addToChainFree(orderType, size, operation)
 deductBtsFees(requestedSide)
 
 // Safety checks
-_verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell)
+_verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell, actualBuy, actualSell)
 ```
-
-**Fund Calculation Flow**:
+ 
+ **Fund Calculation Flow**:
 ```javascript
 // 1. Reset all fund pools
 resetFunds()
@@ -707,13 +707,13 @@ funds.available[side] = max(0,
     chainFree - virtual - btsFeesOwed - btsFeesReservation
 )
 
-// 4. Verify invariants
+// 4. Verify invariants (signature: mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell, actualBuy, actualSell)
 _verifyFundInvariants(...)
 ```
-
----
-
-### StrategyEngine (`modules/order/strategy.ts`)
+ 
+ ---
+ 
+ ### StrategyEngine (`modules/order/strategy.ts`)
 
 **Role**: Grid rebalancing and order rotation
 
@@ -892,6 +892,10 @@ convention marker — AsyncLock does not enforce it at runtime.
 - Sync operations (Level 2) are acquired before grid mutations — the timeout-protected lock is inner, so a stuck sync releases the outer lock
 - Grid mutations (Level 3) and fund operations (Level 4) are innermost
 - All paths follow the same order — the historical `gridLockAlreadyHeld` workaround flag has been eliminated
+
+**`adjustTotalBalance` Locking Contract** (v1.4.7):
+
+The public `adjustTotalBalance()` (Level 4) is now async and **acquires `_fundLock` internally**. Callers that already hold `_fundLock` (e.g. `recordFillBalances`) must use the private `_adjustTotalBalanceLocked()` sync helper instead to avoid redundant nested re-entrancy. Callers outside any `_fundLock` region (e.g. `_applyBalanceAdjustments`, fee settlement, rollback) should continue using `adjustTotalBalance()` with `await`.
 
 **Example: Safe Pattern**
 
@@ -1212,7 +1216,9 @@ manager.accountant._verifyFundInvariants(
     chainFreeBuy,
     chainFreeSell,
     chainBuy,
-    chainSell
+    chainSell,
+    mgr.accountTotals?.buy,
+    mgr.accountTotals?.sell
 );
 ```
 
@@ -1805,7 +1811,7 @@ If a test fails due to fund calculation issues:
 console.log('Fund state:', JSON.stringify(manager.funds, null, 2));
 
 // 2. Check invariants
-console.log('Invariants valid?', manager._verifyFundInvariants(
+console.log('Invariants valid?', manager.accountant._verifyFundInvariants(
     manager,
     ...values
 ));

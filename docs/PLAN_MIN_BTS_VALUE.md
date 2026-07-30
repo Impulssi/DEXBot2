@@ -331,7 +331,7 @@ async function acquireBts(deficit) {
         _lastBtsAcquisitionTimestamps.set(this.config.botKey || this.config.name, Date.now());
 
         // Optimistic balance update
-        this.manager.accountant.adjustTotalBalance(
+        await this.manager.accountant.adjustTotalBalance(
             best.asset.id === this.assets?.assetA?.id ? ORDER_TYPES.SELL : ORDER_TYPES.BUY,
             -best.sellAmount,
             'bts-acquisition-swap-sell'
