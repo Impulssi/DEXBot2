@@ -159,7 +159,8 @@ async function runTests() {
             { id: 'slot-1', type: 'sell',   state: 'virtual', price: 1.003, size: 0, orderId: '' },
             // Correctly typed BUY (should stay BUY)
             { id: 'slot-2', type: 'buy',    state: 'virtual', price: 1.006, size: 0, orderId: '' },
-            // Correct but on-chain (should NOT be changed)
+            // ACTIVE on-chain — type corrected to BUY by position;
+            // subsequent sync detects mismatch and cancels/recreates
             { id: 'slot-3', type: 'sell',   state: 'active',  price: 1.009, size: 10, orderId: '1.7.3' },
             // Boundary at 5, gapSlots=4 (for 0.3% inc, 1.5% target)
         // → buyEndIdx=5, sellStartIdx=10
@@ -207,8 +208,10 @@ async function runTests() {
         assert.strictEqual(getType('slot-1'), 'buy', 'slot-1 (index 1) should be BUY');
         // Slot-2: already BUY → should remain BUY
         assert.strictEqual(getType('slot-2'), 'buy', 'slot-2 should remain BUY');
-        // Slot-3: ACTIVE on-chain → must NOT change (stay SELL)
-        assert.strictEqual(getType('slot-3'), 'sell', 'slot-3 (active on-chain) must keep SELL');
+        // Slot-3: ACTIVE on-chain — type corrected to BUY because
+        // index 3 is within the BUY zone (boundary=5, gapSlots=4 → buyEndIdx=5).
+        // Subsequent sync detects the chain mismatch and cancels/recreates.
+        assert.strictEqual(getType('slot-3'), 'buy', 'slot-3 (active on-chain) corrected to BUY');
         // Slot-4: index 4 ≤ 5 → should be BUY (was SPREAD)
         assert.strictEqual(getType('slot-4'), 'buy', 'slot-4 (index 4) should be BUY');
         // Slot-5: index 5 ≤ 5 → should be BUY (was SELL)

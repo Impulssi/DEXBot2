@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### 2026-07-30
 
 - **Fix**: cross-chunk boundary shift cap — `deriveTargetBoundary` now computes a net shift and caps it at half the active window per `_processFillsWithBatching` call; a cross-chunk budget prevents cumulative overreaction from burst fills (e.g. 200 accumulated fills after reconnect no longer swing the boundary 200 slots). Budget is set inside the `try` block and cleaned up in `finally` to prevent stale-state leaks (`modules/dexbot_class.ts`, `modules/order/utils/order.ts`).
+- **Refactor**: extract cross-chunk budget from `config._boundaryShiftBudget` to `manager._boundaryShiftBudget` — passed as explicit parameter to `deriveTargetBoundary` which returns `{ boundaryIdx, remainingBudget }` instead of mutating config. Eliminates the config-as-runtime-state code smell (`modules/dexbot_class.ts`, `modules/order/strategy.ts`, `modules/order/utils/order.ts`).
+- **Docs**: document `loadGrid` side effects — type reassignment, `_gapSlots` mutation, phantom order sanitization (`modules/order/grid.ts`).
+- **Test**: fix stale `loadGrid` slot type reassignment assertion — slot-3 (ACTIVE on-chain) is now corrected to BUY by position; test expectation updated to match new behavior (`tests/test_grid_bloat.ts`).
 
 ### 2026-07-29
 

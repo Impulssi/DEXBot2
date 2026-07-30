@@ -178,12 +178,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.2 → v1.4.3 | 5 | Boundary-shift state preservation across failed COW commits, SPREAD→BUY crosser handling, per-batch tolerance violation filter (no full abort), precision-0 tolerance overflow fix, poolRef pinned-pool price derivation, withTimeout utility extraction + circular dep fix |
 | v1.4.3 → v1.4.4 | 3 | COW invariant enforcement (retry on failed boundary-shift commit, no master patching), COW pipeline code review fixes, grid engine consolidation (deduplication, dead code removal, export cleanup) |
 | v1.4.4 → v1.4.5 | 2 | Code-review hardening: AsyncLock forceRelease safety, grid update fatal error guard, persist write failure handling, TOCTOU stale price fix, re-entrancy deadlock removal, circular dependency breakage, uncommitted boundary classification fix, dead code cleanup |
-| v1.4.5 → v1.4.6 | 4 | AsyncLock ALS re-entrancy fix, grid type reassignment on load, 8 single-value fields hardened to refcounts/stacks, sync engine ABBA deadlock fix via gridLockAlreadyHeld skip, lock hierarchy Level 0/1 doc sync, nested re-entrancy + ABBA deadlock tests, stale COW fund snapshot fix, gapSlots persistence for rebalance consistency, phantom order fund inflation fix, cross-chunk boundary shift cap |
+| v1.4.5 → v1.4.6 | 8 | AsyncLock ALS re-entrancy fix, grid type reassignment on load, 8 single-value fields hardened to refcounts/stacks, sync engine ABBA deadlock fix via gridLockAlreadyHeld skip, lock hierarchy Level 0/1 doc sync, nested re-entrancy + ABBA deadlock tests, stale COW fund snapshot fix, gapSlots persistence for rebalance consistency, phantom order fund inflation fix, cross-chunk boundary shift cap, extract budget from config (code smell cleanup), loadGrid JSDoc side-effect documentation, stale test assertion fix |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: July 30, 2026 (v1.4.6)
-**Total Commits**: 1,906
+**Total Commits**: 1,908
 **Date Range**: December 2, 2025 – July 30, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

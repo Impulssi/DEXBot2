@@ -523,6 +523,14 @@ function _clearOrderCachesLogic(manager: any): void {
 
     /**
      * Restore a persisted grid snapshot onto a manager instance.
+     *
+     * Side effects on manager:
+     * - Reassigns all slot types to match current boundary + gapSlots
+     *   (fixes stale persisted types that cause ILLEGAL_SPREAD_STATE)
+     * - Sets `manager._gapSlots` to the computed gapSlots so strategy reads
+     *   the creation-time value instead of recomputing from live config
+     * - Sanitizes phantom orders (ACTIVE/PARTIAL without orderId → VIRTUAL)
+     *
      * @param {import('./types').OrderManager} manager - The manager instance.
      * @param {Array<import('./types').GridOrderSlot>} grid - The persisted grid array.
      * @param {number|null} [boundaryIdx=null] - The master boundary index.

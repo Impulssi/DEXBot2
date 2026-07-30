@@ -62,7 +62,7 @@
  *   - getOrderSize(order) - Extract order size with fallback
  *
  * SECTION 10: STRATEGY CALCULATIONS (3 functions)
- *   - deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots) - Derive boundary from fills
+ *   - deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget) - Derive boundary from fills (returns { boundaryIdx, remainingBudget })
  *   - getSideBudget(side, funds, config, totalTarget) - Calculate side budget after fees
  *   - calculateBudgetedSizes(slots, side, budget, weightDist, incrementPercent, assets) - Calculate budgeted sizes
  *
@@ -1128,7 +1128,7 @@ function buildDelta(masterGrid: any, workingGrid: any, options: any = {}) {
  * @param {number} gapSlots - Number of spread gap slots
  * @returns {number} New boundary index
  */
-function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any) {
+function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null): { boundaryIdx: number; remainingBudget: number } {
     let newBoundaryIdx = currentBoundaryIdx;
 
     // Initial recovery if boundary is undefined
@@ -1150,28 +1150,29 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     }
 
     // Cap cumulative shift to prevent overreaction from burst fills.
-    // Uses a cross-chunk budget set by _processFillsWithBatching —
-    // each chunk consumes from the same pool so the total across all
-    // chunks never exceeds half the active window.
+    // Uses a cross-chunk budget managed by the caller — each chunk
+    // consumes from the same pool so the total across all chunks
+    // never exceeds half the active window.
     // Falls back to a per-call cap when no budget is set.
-    const budget = config._boundaryShiftBudget;
     const fallbackCap = Math.max(
         Math.floor((config.activeOrders?.sell ?? 1) / 2),
         Math.floor((config.activeOrders?.buy ?? 1) / 2),
         1
     );
-    const cap = budget != null ? Math.min(Math.abs(budget), fallbackCap) : fallbackCap;
+    const effectiveBudget = crossChunkBudget ?? fallbackCap;
+    const cap = Math.min(Math.abs(effectiveBudget), fallbackCap);
     if (Math.abs(netShift) > cap) {
         netShift = Math.sign(netShift) * cap;
     }
-    if (budget != null) {
-        config._boundaryShiftBudget = budget - Math.abs(netShift);
-    }
+    const remainingBudget = effectiveBudget - Math.abs(netShift);
 
     newBoundaryIdx += netShift;
 
     // Clamp boundary
-    return Math.max(0, Math.min(allSlots.length - 1, newBoundaryIdx));
+    return {
+        boundaryIdx: Math.max(0, Math.min(allSlots.length - 1, newBoundaryIdx)),
+        remainingBudget,
+    };
 }
 
 /**
