@@ -870,7 +870,9 @@ function performGridResync(bot: any, options: {
                 config: self.config,
             });
 
-            self.manager.funds.btsFeesOwed = 0;
+            await self.manager._fundLock.acquire(async () => {
+                self.manager.funds.btsFeesOwed = 0;
+            });
             await self.manager.persistGrid();
             success = true;
             if (updateBotGridResetMetadata(self.config?.botKey, {

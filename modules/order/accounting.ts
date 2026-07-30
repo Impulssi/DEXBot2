@@ -1036,111 +1036,113 @@ class Accountant {
         const mgr = this.manager;
         if (!oldOrder || !newOrder) return;
 
-        // Ensure a mutable copy: _resolveBtsFeeLifecycle mutates btsFeeState on
-        // newOrder (line 230), but the caller may pass a frozen master-grid order.
-        if (Object.isFrozen(newOrder)) {
-            newOrder = { ...newOrder };
-        }
-
-        if (!skipAssetAccounting) {
-            const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
-            const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
-            const oldSize = toFiniteNumber(oldOrder.size);
-            const newSize = toFiniteNumber(newOrder.size);
-
-            // 1. Handle Capital Commitment (Moves between FREE and LOCKED)
-            // For COMMITMENT: Use GRID state (isActive), not blockchain ID
-            const oldGridCommitted = oldIsActive ? oldSize : 0;
-            const newGridCommitted = newIsActive ? newSize : 0;
-            const commitmentDelta = newGridCommitted - oldGridCommitted;
-            const newSideType = this._resolveOrderSide(newOrder, oldOrder);
-            const oldSideType = this._resolveOrderSide(oldOrder, newOrder);
-            const sideForPrecision = newSideType || oldSideType;
-
-            if (mgr.logger && mgr.logger.level === 'debug') {
-                mgr.logger.log(
-                    `[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, ` +
-                    `state=${oldOrder.state}->${newOrder.state}, ` +
-                    `size=${Format.formatSizeByOrderType(oldSize, sideForPrecision ?? '', mgr.assets)}->${Format.formatSizeByOrderType(newSize, sideForPrecision ?? '', mgr.assets)}, ` +
-                    `delta=${Format.formatSizeByOrderType(commitmentDelta, sideForPrecision ?? '', mgr.assets)}, context=${context}`,
-                    'debug'
-                );
+        return await mgr._fundLock.acquire(async () => {
+            // Ensure a mutable copy: _resolveBtsFeeLifecycle mutates btsFeeState on
+            // newOrder (line 230), but the caller may pass a frozen master-grid order.
+            if (Object.isFrozen(newOrder)) {
+                newOrder = { ...newOrder };
             }
 
-            if (commitmentDelta > 0) {
-                // Lock capital: move from Free to Committed
-                const commitmentSide = newSideType || newOrder.type;
-                const result = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
-                if (!result.ok) {
-                    const failure = {
-                        code: result.reason === 'stale' ? 'ACCOUNTING_STALE_ACCOUNT_TOTALS' : 'ACCOUNTING_COMMITMENT_FAILED',
-                        side: commitmentSide,
-                        amount: commitmentDelta,
-                        context,
-                        reason: result.reason,
-                        at: Date.now()
-                    };
-                    mgr._lastAccountingFailure = failure;
+            if (!skipAssetAccounting) {
+                const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
+                const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
+                const oldSize = toFiniteNumber(oldOrder.size);
+                const newSize = toFiniteNumber(newOrder.size);
 
-                    if (result.reason === 'stale') {
-                        mgr.logger?.log?.(
-                            `[ACCOUNTING] Stale accountTotals: skipping optimistic lock of ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Recovery scheduled.`,
-                            'warn'
-                        );
-                        // Schedule recovery but DON'T throw — staleness is transient.
-                        // The batch already confirmed on-chain; aborting the commit
-                        // would orphan a successful broadcast from the grid state.
-                    } else {
-                        mgr.logger?.log?.(
-                            `[ACCOUNTING] CRITICAL: Failed to lock ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Scheduling recovery.`,
-                            'error'
-                        );
+                // 1. Handle Capital Commitment (Moves between FREE and LOCKED)
+                // For COMMITMENT: Use GRID state (isActive), not blockchain ID
+                const oldGridCommitted = oldIsActive ? oldSize : 0;
+                const newGridCommitted = newIsActive ? newSize : 0;
+                const commitmentDelta = newGridCommitted - oldGridCommitted;
+                const newSideType = this._resolveOrderSide(newOrder, oldOrder);
+                const oldSideType = this._resolveOrderSide(oldOrder, newOrder);
+                const sideForPrecision = newSideType || oldSideType;
 
-                        if (mgr._throwOnIllegalState) {
-                            const err = new Error(
-                                `CRITICAL ACCOUNTING STATE: failed to lock ${Format.formatAmount8(commitmentDelta)} ${commitmentSide} during ${context}`
+                if (mgr.logger && mgr.logger.level === 'debug') {
+                    mgr.logger.log(
+                        `[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, ` +
+                        `state=${oldOrder.state}->${newOrder.state}, ` +
+                        `size=${Format.formatSizeByOrderType(oldSize, sideForPrecision ?? '', mgr.assets)}->${Format.formatSizeByOrderType(newSize, sideForPrecision ?? '', mgr.assets)}, ` +
+                        `delta=${Format.formatSizeByOrderType(commitmentDelta, sideForPrecision ?? '', mgr.assets)}, context=${context}`,
+                        'debug'
+                    );
+                }
+
+                if (commitmentDelta > 0) {
+                    // Lock capital: move from Free to Committed
+                    const commitmentSide = newSideType || newOrder.type;
+                    const result = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
+                    if (!result.ok) {
+                        const failure = {
+                            code: result.reason === 'stale' ? 'ACCOUNTING_STALE_ACCOUNT_TOTALS' : 'ACCOUNTING_COMMITMENT_FAILED',
+                            side: commitmentSide,
+                            amount: commitmentDelta,
+                            context,
+                            reason: result.reason,
+                            at: Date.now()
+                        };
+                        mgr._lastAccountingFailure = failure;
+
+                        if (result.reason === 'stale') {
+                            mgr.logger?.log?.(
+                                `[ACCOUNTING] Stale accountTotals: skipping optimistic lock of ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Recovery scheduled.`,
+                                'warn'
                             );
-                            (err as any).code = 'ACCOUNTING_COMMITMENT_FAILED';
-                            throw err;
+                            // Schedule recovery but DON'T throw — staleness is transient.
+                            // The batch already confirmed on-chain; aborting the commit
+                            // would orphan a successful broadcast from the grid state.
+                        } else {
+                            mgr.logger?.log?.(
+                                `[ACCOUNTING] CRITICAL: Failed to lock ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Scheduling recovery.`,
+                                'error'
+                            );
+
+                            if (mgr._throwOnIllegalState) {
+                                const err = new Error(
+                                    `CRITICAL ACCOUNTING STATE: failed to lock ${Format.formatAmount8(commitmentDelta)} ${commitmentSide} during ${context}`
+                                );
+                                (err as any).code = 'ACCOUNTING_COMMITMENT_FAILED';
+                                throw err;
+                            }
+                        }
+
+                        // Promote recovery from fire-and-forget to a stored promise.
+                        // Subsequent callers can await the in-flight recovery before
+                        // attempting new deductions, reducing redundant recovery cycles.
+                        if (!mgr._pendingRecovery) {
+                            mgr._pendingRecovery = this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure')
+                                .catch((err: any) => {
+                                    mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${getErrorMessage(err)}`, 'error');
+                                    mgr._recoveryState = { ...mgr._recoveryState, lastFailureAt: Date.now() };
+                                })
+                                .finally(() => {
+                                    mgr._pendingRecovery = null;
+                                });
+                        } else {
+                            mgr.logger?.log?.(
+                                `[ACCOUNTING] Recovery already in-flight; waiting for existing recovery to complete before retry deduction of ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide}`,
+                                'warn'
+                            );
                         }
                     }
-
-                    // Promote recovery from fire-and-forget to a stored promise.
-                    // Subsequent callers can await the in-flight recovery before
-                    // attempting new deductions, reducing redundant recovery cycles.
-                    if (!mgr._pendingRecovery) {
-                        mgr._pendingRecovery = this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure')
-                            .catch((err: any) => {
-                                mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${getErrorMessage(err)}`, 'error');
-                                mgr._recoveryState = { ...mgr._recoveryState, lastFailureAt: Date.now() };
-                            })
-                            .finally(() => {
-                                mgr._pendingRecovery = null;
-                            });
-                    } else {
-                        mgr.logger?.log?.(
-                            `[ACCOUNTING] Recovery already in-flight; waiting for existing recovery to complete before retry deduction of ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide}`,
-                            'warn'
-                        );
-                    }
+                } else if (commitmentDelta < 0) {
+                    // Release capital: move from Committed back to Free
+                    const releaseSide = oldSideType || oldOrder.type;
+                    await this.addToChainFree(releaseSide, Math.abs(commitmentDelta), `${context}`);
                 }
-            } else if (commitmentDelta < 0) {
-                // Release capital: move from Committed back to Free
-                const releaseSide = oldSideType || oldOrder.type;
-                await this.addToChainFree(releaseSide, Math.abs(commitmentDelta), `${context}`);
             }
-        }
 
-        // 2. Handle BTS blockchain fee lifecycle.
-        // BitShares stores create/update fees as order.deferred_fee and later
-        // refunds or charges that deferred fee on fill, update, or cancel.
-        const btsOrderType = this._getBtsOrderType();
-        if (btsOrderType) {
-            const { balanceDelta } = this._resolveBtsFeeLifecycle(oldOrder, newOrder, context, fee);
-            if (Math.abs(balanceDelta) > 0) {
-                await this.adjustTotalBalance(btsOrderType, balanceDelta, `${context}-fee`);
+            // 2. Handle BTS blockchain fee lifecycle.
+            // BitShares stores create/update fees as order.deferred_fee and later
+            // refunds or charges that deferred fee on fill, update, or cancel.
+            const btsOrderType = this._getBtsOrderType();
+            if (btsOrderType) {
+                const { balanceDelta } = this._resolveBtsFeeLifecycle(oldOrder, newOrder, context, fee);
+                if (Math.abs(balanceDelta) > 0) {
+                    await this.adjustTotalBalance(btsOrderType, balanceDelta, `${context}-fee`);
+                }
             }
-        }
+        });
     }
 
     /**
@@ -1187,15 +1189,15 @@ class Accountant {
             return;
         }
 
-        // FULL DEDUCTION from chainFree
-        await this.adjustTotalBalance(orderType, -fees, 'bts-fee-settlement');
+        // FULL DEDUCTION from chainFree + btsFeesOwed reset in one lock
+        await mgr._fundLock.acquire(async () => {
+            this._adjustTotalBalanceLocked(orderType, -fees, 'bts-fee-settlement');
+            mgr.funds.btsFeesOwed = 0;
+        });
 
         if (mgr.logger && mgr.logger.level === 'debug') {
             mgr.logger.log(`[BTS-FEE] Settled: ${Format.formatAmount8(fees)} BTS`, 'debug');
         }
-
-        // Reset fees after successful settlement
-        mgr.funds.btsFeesOwed = 0;
 
         // Recalculate funds to update all tracking metrics
         await mgr.recalculateFunds();

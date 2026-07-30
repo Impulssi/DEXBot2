@@ -5,6 +5,7 @@ const {
     attemptResumePersistedGridByPriceMatch,
 } = require('../modules/order/grid_reconcile');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const AsyncLock = require('../modules/order/async_lock');
 
 function createManager(overrides = {}) {
     const orders = new Map();
@@ -30,6 +31,7 @@ function createManager(overrides = {}) {
             return Array.from(orders.values()).filter(o => o && o.type === type && o.state === state);
         },
         _gridLock: { acquire: async (fn) => await fn() },
+        _fundLock: { acquire: async (fn) => await fn() },
         synchronizeWithChain: async () => {},
         _applySync: async () => {},
         _updateOrder: (order) => { orders.set(order.id, order); },
@@ -411,6 +413,7 @@ async function testNoExcessCancelWhenMatchedOnGridIsZero() {
         accountTotals: { sellFree: 10000, buyFree: 10000 },
         getOrdersByTypeAndState: (type, state) => Array.from(orders.values()).filter(o => o && o.type === type && o.state === state),
         _gridLock: { acquire: async (fn) => await fn() },
+        _fundLock: { acquire: async (fn) => await fn() },
         synchronizeWithChain: async () => {},
         _applySync: async () => {},
         _applyOrderUpdate: async (order) => { orders.set(order.id, order); return true; },
@@ -433,6 +436,82 @@ async function testNoExcessCancelWhenMatchedOnGridIsZero() {
     console.log('✅ Regression 5 passed: no excess cancel when matchedOnGrid is zero (fresh grid)');
 }
 
+// Regression 7: _fundLock serialization in the recalculateGrid wrap.
+// Uses a real AsyncLock (not a passthrough mock) to verify that concurrent
+// fund operations observe the post-resetFunds state only after the lock releases.
+async function testRecalculateGridFundLockSerialization() {
+    console.log(' - Regression 7: recalculateGrid _fundLock serializes concurrent fund operations...');
+
+    const settleQueue: Array<() => void> = [];
+    const waitForSettle = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+    // Manager with a real _fundLock so serialization is observable.
+    let accountTotals: any = { sellFree: 100, buyFree: 100 };
+    const manager = {
+        _fundLock: new AsyncLock({ level: 4 }),
+        funds: { btsFeesOwed: 50 },
+        accountTotals,
+        resetFunds: () => {
+            accountTotals.sellFree = 0;
+            accountTotals.buyFree = 0;
+            manager.funds.btsFeesOwed = 0;
+        },
+        persistGrid: async (_a?: any, _b?: any, _c?: any) => {},
+        logger: { log: () => {} },
+        accountOrders: { storeMasterGrid: async () => {} },
+        orders: new Map(),
+        config: { assetA: 'BTS', assetB: 'USD' },
+        assets: {},
+        boundaryIdx: null,
+        _lastGridPricingContext: null,
+        validateGridStateForPersistence: () => ({ isValid: true }),
+        _gridPersistenceSuspendedReason: null,
+        _gridDirtyAt: null,
+        _clearGridDirty: () => {},
+    };
+
+    // Context A: holds _fundLock for 200ms (simulating the recalculateGrid wrap).
+    let wrapReleased = false;
+    const contextA = manager._fundLock.acquire(async () => {
+        manager.resetFunds();
+        await new Promise(r => setTimeout(r, 200));
+        wrapReleased = true;
+    });
+
+    // Yield so A acquires _fundLock first.
+    await waitForSettle(10);
+
+    // Context B: tries to mutate accountTotals via _fundLock (simulating
+    // tryDeductFromChainFree or setAccountTotals). Should block until A releases.
+    let contextBElapsed = -1;
+    let observedBtsFeesOwed: any = null;
+    let observedSellFree: any = null;
+    const contextB = (async () => {
+        const start = Date.now();
+        await manager._fundLock.acquire(async () => {
+            observedBtsFeesOwed = manager.funds.btsFeesOwed;
+            observedSellFree = manager.accountTotals.sellFree;
+        });
+        contextBElapsed = Date.now() - start;
+    })();
+
+    // Both must complete within 2s (no deadlock).
+    await Promise.race([
+        Promise.all([contextA, contextB]),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('DEADLOCK: contexts did not complete within 2s')), 2000)),
+    ]);
+
+    assert.strictEqual(wrapReleased, true, 'Context A (wrap) must complete');
+    assert.strictEqual(contextBElapsed >= 150, true,
+        `Context B must wait for A to release _fundLock (took ${contextBElapsed}ms)`);
+
+    // Context B must observe the post-resetFunds state (zeroed), not the initial state.
+    assert.strictEqual(observedBtsFeesOwed, 0, 'Context B must see btsFeesOwed=0 (post-resetFunds)');
+    assert.strictEqual(observedSellFree, 0, 'Context B must see accountTotals.sellFree=0 (post-resetFunds)');
+
+    console.log('  PASS: _fundLock serialization verified');
+}
+
 (async () => {
     console.log('\n========== STARTUP RECONCILE REGRESSION TESTS ==========\n');
     await testUnmatchedCancelReleasesFundsAndHandlesNullEntries();
@@ -441,6 +520,7 @@ async function testNoExcessCancelWhenMatchedOnGridIsZero() {
     await testAttemptResumeAwaitsStoreGrid();
     await testNoExcessCancelWhenMatchedOnGridIsZero();
     await testPhase3CancelsStaleSurplusUntrackedByGrid();
+    await testRecalculateGridFundLockSerialization();
     console.log('\n✅ Startup reconcile regression tests passed!\n');
 })().catch((err) => {
     console.error('\n❌ STARTUP RECONCILE REGRESSION TEST FAILED:');

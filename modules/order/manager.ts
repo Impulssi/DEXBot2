@@ -808,7 +808,7 @@ class OrderManager {
                     );
                     this._pauseFundRecalc = 0;
                     this._pauseFundRecalcWatchdog = null;
-                    this._recalculateFunds().catch((err: any) => {
+                    this.recalculateFunds().catch((err: any) => {
                         this.logger?.log?.(`[MANAGER] Watchdog recalc failed: ${getErrorMessage(err)}`, 'error');
                     });
                 }
@@ -1740,7 +1740,7 @@ class OrderManager {
      *   swapping the live map and exposing it to concurrent readers.
      * @returns {Promise<import('./types').PersistenceValidationResult>}
      */
-    async persistGrid(snapshotOrders: any, recentFillKeys?: any) {
+    async persistGrid(snapshotOrders: any, recentFillKeys?: any, fundSnapshot?: { btsFeesOwed: number; accountTotals: any }) {
         if (this._gridPersistenceSuspendedReason) {
             this.logger.log(
                 `[PERSISTENCE-GATE] Skipping grid persistence while suspended: ${this._gridPersistenceSuspendedReason}`,
@@ -1758,7 +1758,7 @@ class OrderManager {
             return validation;
         }
 
-        const persisted = await persistGridSnapshot(this, this.accountOrders, snapshotOrders, recentFillKeys);
+        const persisted = await persistGridSnapshot(this, this.accountOrders, snapshotOrders, recentFillKeys, fundSnapshot);
 
         if (persisted === false) {
             this.logger.log(

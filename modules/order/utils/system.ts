@@ -717,7 +717,7 @@ export async function initializeFeeCache(botsConfig: any[], BitShares: any): Pro
  * @param {Object} accountOrders - AccountOrders data accessor
  * @returns {Promise<boolean>} True if persistence succeeded, false on error
  */
-export async function persistGridSnapshot(manager: any, accountOrders: any, snapshotOrders?: any[], recentFillKeys?: Record<string, number>): Promise<boolean> {
+export async function persistGridSnapshot(manager: any, accountOrders: any, snapshotOrders?: any[], recentFillKeys?: Record<string, number>, fundSnapshot?: { btsFeesOwed: number; accountTotals: any }): Promise<boolean> {
     if (!manager || !accountOrders) return false;
     try {
         const orders = Array.isArray(snapshotOrders)
@@ -746,16 +746,18 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
             : null;
 
         const fillKeys = recentFillKeys || manager._recentFillKeysSnapshot || undefined;
+        const btsFeesOwed = fundSnapshot?.btsFeesOwed ?? manager.funds.btsFeesOwed;
+        const accountTotals = (fundSnapshot?.accountTotals ?? manager.accountTotals) || null;
         await accountOrders.storeMasterGrid(
             orders,
-            manager.funds.btsFeesOwed,
+            btsFeesOwed,
             manager.boundaryIdx,
             manager.assets || null,
             {
                 persistedAt: new Date().toISOString(),
                 config: debugConfig,
-                accountTotals: manager.accountTotals || null,
-                btsBalance: btsBalance
+                accountTotals,
+                btsBalance
             },
             fillKeys
         );

@@ -552,10 +552,16 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
             // RC-2: Use logic helper
             _clearOrderCachesLogic(manager);
 
-            const savedBtsFeesOwed = manager.funds.btsFeesOwed;
-
-            manager.resetFunds();
-            manager.funds.btsFeesOwed = savedBtsFeesOwed;
+            // resetFunds under _fundLock only — no persistGrid needed (grid already
+            // on disk). For the resync variant see recalculateGrid (grid.ts:~1037)
+            // which snapshots fund values under lock and persists outside.
+            // Read btsFeesOwed inside the lock (before resetFunds) to avoid a TOCTOU
+            // with concurrent deductBtsFees (which also holds _fundLock).
+            await manager._fundLock.acquire(async () => {
+                const savedBtsFeesOwed = manager.funds.btsFeesOwed;
+                manager.resetFunds();
+                manager.funds.btsFeesOwed = savedBtsFeesOwed;
+            });
 
             // Restore boundary index for StrategyEngine
             if (typeof boundaryIdx === 'number') {
@@ -945,7 +951,9 @@ export async function initializeGrid(manager: any): Promise<void> {
         // RC-2: Wrap atomic changes in grid lock
         await manager._gridLock.acquire(async () => {
             _clearOrderCachesLogic(manager);
-            manager.resetFunds();
+            await manager._fundLock.acquire(async () => {
+                manager.resetFunds();
+            });
 
             manager.pauseRecalcLogging();
             manager.pauseFundRecalc();
@@ -1032,10 +1040,22 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
                 );
                 if (_resyncAborted) return;
 
-                manager.resetFunds();
+                // resetFunds under _fundLock + snapshot; persistGrid outside lock to
+                // avoid blocking concurrent fund operations (tryDeductFromChainFree,
+                // updateOptimisticFreeBalance, etc.) behind file I/O.  Same pattern as
+                // loadGrid (grid.ts:~557) except that path skips persistGrid.
+                let fundSnapshot!: { btsFeesOwed: number; accountTotals: any };
+                await manager._fundLock.acquire(async () => {
+                    manager.resetFunds();
+                    fundSnapshot = {
+                        btsFeesOwed: manager.funds.btsFeesOwed,
+                        accountTotals: manager.accountTotals
+                    };
+                });
 
                 if (_resyncAborted) return;
-                await manager.persistGrid();
+                await manager.persistGrid(undefined, undefined, fundSnapshot);
+
                 if (_resyncAborted) return;
                 await initializeGrid(manager);
 

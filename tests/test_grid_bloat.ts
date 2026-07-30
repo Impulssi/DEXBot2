@@ -181,6 +181,7 @@ async function runTests() {
             _restoreBoundary: (i: number) => { mgr.boundaryIdx = i; },
             logger: { log: () => {} },
             _gridLock: { acquire: async (fn: any) => fn() },
+            _fundLock: { acquire: async (fn: any) => fn() },
             _initializeAssets: async () => {},
             resetFunds: () => {},
             pauseRecalcLogging: () => {},

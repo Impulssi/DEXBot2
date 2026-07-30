@@ -184,6 +184,7 @@ async function testPerformGridResyncAppliesVolatilityOnlyDynamicWeights() {
             funds: { btsFeesOwed: 5 },
             startBootstrap: () => { startCalled = true; },
             finishBootstrap: () => { finishCalled = true; },
+            _fundLock: { acquire: async (fn: any) => fn() },
             persistGrid: async () => { persistCalled = true; },
         },
         _log: (msg) => logs.push(msg),
@@ -361,6 +362,7 @@ async function testManualTriggerResetRefreshesCenterPrice() {
             _fillProcessingLock: {
                 acquire: async (fn) => fn(),
             },
+            _fundLock: { acquire: async (fn: any) => fn() },
             startBootstrap: () => {},
             finishBootstrap: () => {},
             persistGrid: async () => {},
@@ -461,6 +463,7 @@ async function testManualTriggerResetKeepsOffsetWhenCenterAlreadyCurrent() {
             _fillProcessingLock: {
                 acquire: async (fn) => fn(),
             },
+            _fundLock: { acquire: async (fn: any) => fn() },
             startBootstrap: () => {},
             finishBootstrap: () => {},
             persistGrid: async () => {},
@@ -471,7 +474,6 @@ async function testManualTriggerResetKeepsOffsetWhenCenterAlreadyCurrent() {
         triggerFile,
         _log: () => {},
         _warn: () => {},
-        _performGridResync: async (options) => require(runtimePath).performGridResync(self, options),
     };
 
     try {
@@ -562,6 +564,7 @@ async function testMarketAdapterTriggerResetRefreshesAmaCenterPrice() {
             _fillProcessingLock: {
                 acquire: async (fn) => fn(),
             },
+            _fundLock: { acquire: async (fn: any) => fn() },
             startBootstrap: () => {},
             finishBootstrap: () => {},
             persistGrid: async () => {},
@@ -667,6 +670,7 @@ async function testMarketAdapterBootstrapTriggerResetRecordsBootstrapSource() {
             _fillProcessingLock: {
                 acquire: async (fn) => fn(),
             },
+            _fundLock: { acquire: async (fn: any) => fn() },
             startBootstrap: () => {},
             finishBootstrap: () => {},
             persistGrid: async () => {},
@@ -772,6 +776,7 @@ async function testMarketAdapterSlopeTriggerResetRecordsSlopeSource() {
             _fillProcessingLock: {
                 acquire: async (fn) => fn(),
             },
+            _fundLock: { acquire: async (fn: any) => fn() },
             startBootstrap: () => {},
             finishBootstrap: () => {},
             persistGrid: async () => {},

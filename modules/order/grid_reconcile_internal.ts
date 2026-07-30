@@ -401,7 +401,9 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
     if (releaseUntrackedFunds && manager.accountant && chainOrderObj) {
         const parsed = parseChainOrder(chainOrderObj, manager.assets);
         if (parsed && parsed.size != null && parsed.size > 0) {
-            await manager.accountant.addToChainFree(parsed.type, parsed.size, 'startup-cancel-unmatched');
+            await manager._fundLock.acquire(async () => {
+                await manager.accountant.addToChainFree(parsed.type, parsed.size, 'startup-cancel-unmatched');
+            });
         }
     }
 }
@@ -483,7 +485,9 @@ function _prepareStartupUpdatePlan(plan: any, manager: any, logger: any): any {
 async function _finalizeStartupUpdate({ manager, preparedUpdate }: { manager: any; preparedUpdate: any }): Promise<void> {
     const { plan, parsedChain } = preparedUpdate;
     if (parsedChain && parsedChain.size > 0 && manager.accountant) {
-        await manager.accountant.addToChainFree(plan.gridOrder.type, parsedChain.size, 'startup-align');
+        await manager._fundLock.acquire(async () => {
+            await manager.accountant.addToChainFree(plan.gridOrder.type, parsedChain.size, 'startup-align');
+        });
     }
 
     // Extract deferred_fee from the raw chain order object so the fee
