@@ -372,6 +372,18 @@ class SyncEngine {
                         ? mgr.ordersNeedingPriceCorrection.length
                         : 0;
 
+                    // If fill accounting applied balances but the order update
+                    // failed, flag forces a fresh chain-balance fetch to correct
+                    // the negative free balance before the next sync cycle.
+                    if (mgr.accountTotalsStale) {
+                        mgr.accountTotalsStale = false;
+                        try {
+                            await mgr.fetchAccountTotals(mgr.accountId || mgr.config?.accountId);
+                        } catch (fetchErr: any) {
+                            mgr.logger?.log?.(`[SYNC] Stale-totals refresh failed: ${getErrorMessage(fetchErr)}`, 'warn');
+                        }
+                    }
+
                     const innerResult: any = await this._doSyncFromOpenOrders(chainOrders, options);
 
                     // Re-check generation after sync completes: if forceRelease fired
@@ -783,7 +795,7 @@ class SyncEngine {
                 // this open-orders sync.
                 if (mgr._committedOrderIds?.has(gridOrder.orderId)) {
                     const commitAge = Date.now() - (mgr._committedOrderIdsBuiltAt || 0);
-                    const isGhost = gridOrder.size <= 0 && gridOrder.state === ORDER_STATES.PARTIAL;
+                    const isGhost = gridOrder.isGhost === true || (gridOrder.size <= 0 && gridOrder.state === ORDER_STATES.PARTIAL);
                     if (!isGhost && commitAge < TIMING.SYNC_LOCK_TIMEOUT_MS) {
                         continue;
                     }
@@ -1140,6 +1152,7 @@ class SyncEngine {
                     size: 0,
                     state: ORDER_STATES.PARTIAL,
                     orderId: ghostOrderId,
+                    isGhost: true,
                 };
             } else {
                 fullUpdate = convertToSpreadPlaceholder(matchedGridOrder);
@@ -1300,7 +1313,8 @@ class SyncEngine {
                         mgr.logger.log(`[SYNC] Ghost full fill for order ${orderId} (slot ${matchedGridOrder.id}): preserving orderId ${result.ghostOrderId} as PARTIAL to block duplicate CREATE.`, 'info');
                         const ghostOk = await mgr._updateOrder(result.ghostUpdate, 'handle-fill-ghost', { skipAccounting: false, fee: 0 });
                         if (ghostOk === false) {
-                            mgr.logger.log(`[SYNC] Failed to apply ghost fill state for order ${orderId}`, 'warn');
+                            mgr.logger.log(`[SYNC] Failed to apply ghost fill state for order ${orderId}; marking totals stale for next sync cycle`, 'warn');
+                            mgr.accountTotalsStale = true;
                         }
                         filledOrders.push(result.filledOrder);
                         return { filledOrders, updatedOrders, partialFill: false };
@@ -1308,7 +1322,8 @@ class SyncEngine {
                     mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
                     const fullOk = await mgr._updateOrder(result.fullUpdate, 'handle-fill-full', { skipAccounting: false, fee: 0 });
                     if (fullOk === false) {
-                        mgr.logger.log(`[SYNC] Failed to convert filled order ${orderId} to spread placeholder`, 'warn');
+                        mgr.logger.log(`[SYNC] Failed to convert filled order ${orderId} to spread placeholder; marking totals stale for next sync cycle`, 'warn');
+                        mgr.accountTotalsStale = true;
                     }
                     filledOrders.push(result.filledOrder);
                     return { filledOrders, updatedOrders, partialFill: false };
@@ -1316,7 +1331,8 @@ class SyncEngine {
                     mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${result.newSize}`, 'info');
                     const partialOk = await mgr._updateOrder(result.partialUpdate, 'handle-fill-partial', { skipAccounting: false, fee: 0 });
                     if (partialOk === false) {
-                        mgr.logger.log(`[SYNC] Failed to update partially filled order ${orderId}`, 'warn');
+                        mgr.logger.log(`[SYNC] Failed to update partially filled order ${orderId}; marking totals stale for next sync cycle`, 'warn');
+                        mgr.accountTotalsStale = true;
                     }
                     updatedOrders.push(result.partialUpdate);
                     filledOrders.push(result.filledOrder);
@@ -1557,7 +1573,8 @@ class SyncEngine {
                     });
                     const batchOk = await mgr.applyGridUpdateBatch(updateObjects, 'handle-fill-batch', { skipAccounting: false, fee: 0 });
                     if (batchOk === false) {
-                        mgr.logger.log('[SYNC] Batch grid update failed for some fills; next sync cycle will reconcile', 'warn');
+                        mgr.logger.log('[SYNC] Batch grid update failed for some fills; marking totals stale for next sync cycle', 'warn');
+                        mgr.accountTotalsStale = true;
                     }
                 }
 

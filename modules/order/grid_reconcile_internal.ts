@@ -230,8 +230,8 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
  * @param {boolean} params.dryRun - Whether to simulate.
  * @returns {Promise<void>}
  */
-async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun }: { chainOrders: any; account: any; privateKey: any; manager: any; gridOrder: any; dryRun: any; }): Promise<void> {
-    if (dryRun) return;
+async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun }: { chainOrders: any; account: any; privateKey: any; manager: any; gridOrder: any; dryRun: any; }): Promise<string | null> {
+    if (dryRun) return null;
 
     // ATOMIC RE-VERIFICATION: Ensure slot is still virtual and hasn't been filled by recovery sync.
     // This protects the same slot (own orderId). The collision check below protects
@@ -239,7 +239,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
     const currentSlot = manager.orders.get(gridOrder.id);
     if (currentSlot && currentSlot.orderId) {
         manager.logger?.log?.(`[_createOrderFromGrid] SKIP: Slot ${gridOrder.id} already has orderId ${currentSlot.orderId}`, 'warn');
-        return;
+        return null;
     }
 
     // Price collision guard: reject if another placed order already exists at this price level.
@@ -257,7 +257,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
             `collides with placed order ${priceCollision.id} (${priceCollision.orderId}) at ${Format.formatPrice6(priceCollision.price)}`,
             'warn'
         );
-        return;
+        return null;
     }
 
     const { amountToSell, sellAssetId, minToReceive, receiveAssetId } = buildCreateOrderArgs(
@@ -280,23 +280,56 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
     if (result && result.skipped) {
         const logger = manager && manager.logger;
         logger?.log?.(`[_createOrderFromGrid] Skipped slot ${gridOrder.id}: order amounts too small to place on-chain`, 'warn');
-        return;
+        return null;
     }
 
     const operationResults = extractBatchOperationResults(result) || [];
     const chainOrderId = operationResults[0] && operationResults[0][1];
 
     if (chainOrderId) {
-        const btsFeeData = getAssetFees('BTS');
+        // Capture chain order ID BEFORE _applySync, so even if _applySync
+        // fails (leaving the order unregistered in manager.orders), Phase 3
+        // will still know this order was legitimately created and avoid cancelling it.
+        const capturedId = chainOrderId;
 
-        // Centralized Fund Tracking: Use manager's sync core to handle state transition and fund deduction
-        await manager._applySync({
-            gridOrderId: gridOrder.id,
-            chainOrderId,
-            isPartialPlacement: false,
-            expectedType: gridOrder.type,
-            fee: btsFeeData.createFee
-        }, 'createOrder');
+        try {
+            const btsFeeData = getAssetFees('BTS');
+            await manager._applySync({
+                gridOrderId: gridOrder.id,
+                chainOrderId,
+                isPartialPlacement: false,
+                expectedType: gridOrder.type,
+                fee: btsFeeData.createFee
+            }, 'createOrder');
+        } catch (syncErr: any) {
+            const logger = manager && manager.logger;
+            logger?.log?.(
+                `[_createOrderFromGrid] _applySync failed after successful broadcast for ${capturedId}: ${getErrorMessage(syncErr)}`,
+                'error'
+            );
+            // Run recovery sync to register the orphaned order. If this also
+            // fails, the returned capturedId still prevents Phase 3 cancellation.
+            try {
+                const freshChainOrders = await chainOrders.readOpenOrders(
+                    resolveAccountRef(manager, account),
+                    TIMING.CONNECTION_TIMEOUT_MS
+                );
+                await manager.syncFromOpenOrders(freshChainOrders, {
+                    skipAccounting: false,
+                    source: 'createOrder-applySync-failure',
+                });
+            } catch (recoveryErr: any) {
+                logger?.log?.(
+                    `[_createOrderFromGrid] Recovery sync after _applySync failure also failed: ${getErrorMessage(recoveryErr)}`,
+                    'error'
+                );
+            }
+            // Return the captured ID regardless so Phase 3 knows this order was
+            // legitimately created and avoids cancelling it.
+            return capturedId;
+        }
+
+        return capturedId;
     } else {
         // CRITICAL FIX: Recovery sync if order extraction fails
         const logger = manager && manager.logger;
@@ -327,6 +360,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
             }
         }
     }
+    return null;
 }
 
 /**
@@ -684,9 +718,9 @@ async function _createStartupOrderWithHandling({
     orderLabel: any;
     dryRun: any;
     recovery: any;
-}): Promise<void> {
+}): Promise<string | null> {
     try {
-        await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
+        return await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
     } catch (err: any) {
         manager?.logger?.log?.(`Startup: Failed to create ${orderLabel}: ${getErrorMessage(err)}`, 'error');
 
@@ -700,6 +734,7 @@ async function _createStartupOrderWithHandling({
                 source: recovery.source,
                 });
         }
+        return null;
     }
 }
 
@@ -736,8 +771,8 @@ async function _executeStartupCreateGroupBatch({
     dryRun: any;
     groupIndex: any;
     totalGroups: any;
-}): Promise<void> {
-    if (!Array.isArray(group) || group.length === 0 || dryRun) return;
+}): Promise<string[]> {
+    if (!Array.isArray(group) || group.length === 0 || dryRun) return [];
     if (typeof chainOrders?.buildCreateOrderOp !== 'function' || typeof chainOrders?.executeBatch !== 'function') {
         throw new Error('chainOrders does not support batch create operations');
     }
@@ -799,13 +834,15 @@ async function _executeStartupCreateGroupBatch({
         prepared.push({ plan, op: buildResult.op });
     }
 
-    if (prepared.length === 0) return;
+    if (prepared.length === 0) return [];
 
     const recovery = _resolveGroupRecovery(
         group,
         `Startup: Triggering recovery sync after create group ${groupIndex + 1}/${totalGroups} failure`,
         'startupCreateGroupFailure'
     );
+
+    const createdOrderIds: string[] = [];
 
     try {
         logger?.log?.(
@@ -817,6 +854,10 @@ async function _executeStartupCreateGroupBatch({
         const opResults = _extractBatchOperationResults(batchResult);
         const btsFeeData = getAssetFees('BTS');
 
+        // Phase A: Extract ALL chain order IDs from batch results first, capturing
+        // every on-chain ID before any _applySync call. This ensures createdOrderIds
+        // is complete even if a subsequent _applySync throws mid-loop.
+        const batchResults: Array<{ chainOrderId: string | null; plan: any }> = [];
         let missingChainOrderId = false;
         for (let i = 0; i < prepared.length; i++) {
             const chainOrderId = opResults[i] && opResults[i][1];
@@ -824,8 +865,16 @@ async function _executeStartupCreateGroupBatch({
             if (!chainOrderId) {
                 logger?.log?.(`Startup: create result missing chainOrderId for ${plan.orderLabel}`, 'error');
                 missingChainOrderId = true;
-                continue;
+            } else {
+                createdOrderIds.push(chainOrderId);
             }
+            batchResults.push({ chainOrderId, plan });
+        }
+
+        // Phase B: Register each created order with the manager. All IDs are
+        // already in createdOrderIds, so _applySync failures won't lose them.
+        for (const { chainOrderId, plan } of batchResults) {
+            if (!chainOrderId) continue;
 
             await manager._applySync({
                 gridOrderId: plan.gridOrder.id,
@@ -857,6 +906,8 @@ async function _executeStartupCreateGroupBatch({
             source: recovery.source,
         });
     }
+
+    return createdOrderIds;
 }
 
 function _buildOutsideInCreateGroups(createPlans: any): any[] {
@@ -881,10 +932,11 @@ async function _executePlannedStartupCreates({
     privateKey: any;
     manager: any;
     dryRun: any;
-}): Promise<void> {
+}): Promise<Set<string>> {
     const logger = manager?.logger;
     const groups = _buildOutsideInCreateGroups(createPlans);
-    if (groups.length === 0) return;
+    const createdOrderIds = new Set<string>();
+    if (groups.length === 0) return createdOrderIds;
 
     logger?.log?.(`Startup: Executing ${createPlans.length} planned create(s) in ${groups.length} outside->center group(s)`, 'info');
 
@@ -895,7 +947,7 @@ async function _executePlannedStartupCreates({
 
         const canBatchCreate = typeof chainOrders?.buildCreateOrderOp === 'function' && typeof chainOrders?.executeBatch === 'function';
         if (group.length > 1 && canBatchCreate) {
-            await _executeStartupCreateGroupBatch({
+            const batchIds = await _executeStartupCreateGroupBatch({
                 group,
                 chainOrders,
                 account,
@@ -905,6 +957,7 @@ async function _executePlannedStartupCreates({
                 groupIndex: i,
                 totalGroups: groups.length,
                 });
+            for (const id of batchIds) createdOrderIds.add(id);
             continue;
         }
 
@@ -913,7 +966,7 @@ async function _executePlannedStartupCreates({
         }
 
         for (const plan of group) {
-            await _createStartupOrderWithHandling({
+            const chainOrderId = await _createStartupOrderWithHandling({
                 chainOrders,
                 account,
                 privateKey,
@@ -923,8 +976,11 @@ async function _executePlannedStartupCreates({
                 dryRun,
                 recovery: plan.recovery,
                 });
+            if (chainOrderId) createdOrderIds.add(chainOrderId);
         }
     }
+
+    return createdOrderIds;
 }
 
 async function _reconcileStartupSide({

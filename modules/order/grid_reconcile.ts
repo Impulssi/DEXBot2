@@ -444,8 +444,9 @@ export async function reconcileGridOrders({
         }
     }
 
+    const phase2CreatedOrderIds = new Set<string>();
     if (!dryRun && plannedCreates.length > 0) {
-        await _executePlannedStartupCreates({
+        const createdIds = await _executePlannedStartupCreates({
             createPlans: plannedCreates,
             chainOrders,
             account,
@@ -453,6 +454,9 @@ export async function reconcileGridOrders({
             manager,
             dryRun,
         });
+        for (const id of createdIds) {
+            phase2CreatedOrderIds.add(id);
+        }
     }
 
     let finalChainSellCount = chainSellCount;
@@ -468,11 +472,12 @@ export async function reconcileGridOrders({
             for (const order of manager.orders.values()) {
                 if (order && order.orderId) gridOrderIds.add(order.orderId);
             }
-
-            // Phase 3 assumes Phase 2 either registered all creates in
-            // manager.orders or the on-chain order was rolled back. An
-            // orphan (on chain but untracked) will be collected below as
-            // untracked surplus and cancelled — this is correct cleanup.
+            // Merge any chain order IDs Phase 2 successfully created on-chain
+            // (even if _applySync failed to register them in manager.orders).
+            // This prevents Phase 3 from cancelling legitimately created orders.
+            for (const id of phase2CreatedOrderIds) {
+                gridOrderIds.add(id);
+            }
             const staleSurplusCancels: Array<{ chainOrderObj: any; sideLabel: string }> = [];
             for (const side of [ORDER_TYPES.SELL, ORDER_TYPES.BUY]) {
                 const targetCount = side === ORDER_TYPES.SELL ? targetSell : targetBuy;

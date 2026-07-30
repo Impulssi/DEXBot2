@@ -1383,37 +1383,53 @@ class Accountant {
 
           const processedFillStore = this.manager.processedFillStore;
 
-         // Record/queue the dedup key before applying balance adjustments. In
-         // immediate mode this is durable before funds move; batched/manual modes
-         // still preserve the existing deferred flush behavior for batch commit.
-         if (fillKey && processedFillStore) {
-             try {
-                 await processedFillStore.persist(fillKey, processedAt || Date.now(), { mode: persistenceMode });
-             } catch (err: any) {
-                 if (persistenceMode === PROCESSED_FILL_PERSISTENCE_MODES.IMMEDIATE) {
-                     // Clean up any pending write that the flush error handler re-queued.
-                     processedFillStore.discard(fillKey, processedAt || Date.now());
-                     throw err;
-                 }
-                 mgr.logger?.log?.(
-                     `[FILL-DEDUP] Failed to persist fill ${fillKey}: ${getErrorMessage(err)}`,
-                     'warn'
-                 );
-             }
-         }
+          // Queue the dedup key before applying balance adjustments. This ensures
+          // persist failures are caught before any balance mutation. The queue entry
+          // is flushed only after balance adjustments succeed below.
+          if (fillKey && processedFillStore) {
+              try {
+                  // Queue without flush — flush follows after balance adjustments succeed.
+                  await processedFillStore.persist(fillKey, processedAt || Date.now(), { mode: PROCESSED_FILL_PERSISTENCE_MODES.MANUAL });
+              } catch (err: any) {
+                  mgr.logger?.log?.(
+                      `[FILL-DEDUP] Failed to queue fill ${fillKey}: ${getErrorMessage(err)}`,
+                      'warn'
+                  );
+                  return false;
+              }
+          }
 
-         this._applyBalanceAdjustments(balanceAdjustments);
+          this._applyBalanceAdjustments(balanceAdjustments);
 
-         if (fillKey) {
-             tracker.set(fillKey, processedAt || Date.now());
-             // Prune entries beyond the retention horizon to prevent unbounded growth.
-             if (tracker.size > 500) {
-                 const cutoff = (processedAt || Date.now()) - TIMING.FILL_RECORD_RETENTION_MS;
-                 for (const [k, ts] of tracker) {
-                     if (ts < cutoff) tracker.delete(k);
-                 }
-             }
-         }
+          // Flush the queued dedup key now that balance adjustments succeeded.
+          // For IMMEDIATE mode, this persists durably. For BATCHED mode, the
+          // key remains queued for the caller's batch flush.
+          if (fillKey && processedFillStore) {
+              try {
+                  if (persistenceMode === PROCESSED_FILL_PERSISTENCE_MODES.IMMEDIATE) {
+                      await processedFillStore.flush('fill-persist', { throwOnError: true });
+                  }
+              } catch (err: any) {
+                  // Roll back balance adjustments since the dedup key was not persisted.
+                  // This keeps the invariant: dedup key persisted ⇔ balance adjustments applied.
+                  for (const adj of balanceAdjustments) {
+                      this.adjustTotalBalance(adj.orderType, -adj.delta, 'rollback-' + adj.operation);
+                  }
+                  processedFillStore.discard(fillKey, processedAt || Date.now());
+                  throw err;
+              }
+          }
+
+          if (fillKey) {
+              tracker.set(fillKey, processedAt || Date.now());
+              // Prune entries beyond the retention horizon to prevent unbounded growth.
+              if (tracker.size > 500) {
+                  const cutoff = (processedAt || Date.now()) - TIMING.FILL_RECORD_RETENTION_MS;
+                  for (const [k, ts] of tracker) {
+                      if (ts < cutoff) tracker.delete(k);
+                  }
+              }
+          }
 
          return true;
     }

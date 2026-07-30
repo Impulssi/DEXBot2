@@ -295,6 +295,7 @@ class OrderManager {
     _accountTotalsPromise: any;
     _accountTotalsResolve: any;
     _isFetchingTotals: boolean;
+    accountTotalsStale: boolean;
     ordersNeedingPriceCorrection: any[];
     shadowOrderIds: Map<any, any>;
     processedFillTracker: Map<any, any>;
@@ -382,6 +383,7 @@ class OrderManager {
         this._accountTotalsPromise = null;
         this._accountTotalsResolve = null;
         this._isFetchingTotals = false;
+        this.accountTotalsStale = false;
         this.ordersNeedingPriceCorrection = [];
         this.shadowOrderIds = new Map();
         this.processedFillTracker = new Map();
