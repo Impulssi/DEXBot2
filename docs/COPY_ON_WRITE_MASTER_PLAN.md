@@ -388,7 +388,7 @@ During Rebalance**.
 
 1. **Accountant Dry-Run:** `Accountant.validateTargetGrid(targetMap)` verifies that the entire proposed grid fits within `Liquid + CurrentOrderValue` *before* broadcasting.
 2. **Atomic Transaction Semantics:** Large boundary shifts (>5 slots) are inherently safe because the COW pattern only commits after successful blockchain confirmation. If market volatility causes rapid shifts during planning, the working grid is simply discarded and replanning occurs on the next cycle.
-3. **Resync on Error:** If any blockchain action fails (e.g., "Insufficient funds"), the bot discards the working grid and triggers `grid_reconcile.ts` for a fresh blockchain sync.
+3. **Resync on Error:** If any blockchain action fails (e.g., "Insufficient funds"), the bot discards the working grid and triggers `grid_reconcile.ts` for a fresh blockchain sync ([GRID_RECONCILE.md](GRID_RECONCILE.md)).
 
 ## Backward Compatibility
 

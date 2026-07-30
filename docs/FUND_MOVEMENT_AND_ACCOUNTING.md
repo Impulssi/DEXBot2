@@ -829,7 +829,7 @@ A violation here means the grid has allocated more capital than actually exists 
 To prevent "Time-of-Check to Time-of-Use" errors:
 1.  **Locking:** `AsyncLock` (re-entrant) prevents concurrent updates to the same order. Nested `acquire()` from the same execution context runs the callback directly instead of queueing, eliminating the `fillLockAlreadyHeld` parameter that previously threaded through 25+ call sites.
 2.  **Atomic Deduct:** `tryDeductFromChainFree` checks *and* subtracts in a single synchronous step.
-3.  **Bootstrapping:** Fills arriving during startup (`isBootstrapping=true`) are queued until the grid is fully reconciled.
+3.  **Bootstrapping:** Fills arriving during startup (`isBootstrapping=true`) are queued until the grid is fully reconciled ([GRID_RECONCILE.md](GRID_RECONCILE.md)).
 
 ### 6.4 Stale Accounting & Fee Over-Credit Guards (v1.2.1)
 Two additional accounting hardening measures added in v1.2.1:

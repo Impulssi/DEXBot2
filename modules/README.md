@@ -82,7 +82,7 @@ modules/
 │   ├── strategy.ts                grid rebalancing, consolidation, rotation
 │   ├── accounting.ts              fund tracking, fee accounting
 │   ├── sync_engine.ts             blockchain sync, fill detection, reconciliation
-│   ├── grid_reconcile.ts          startup grid reconciliation
+│   ├── grid_reconcile.ts          startup grid reconciliation ([doc](../../docs/GRID_RECONCILE.md))
 │   ├── grid_reconcile_internal.ts  internal grid reconciliation helpers
 │   ├── index.ts                   barrel export
 │   ├── logger.ts                  order-scoped logging

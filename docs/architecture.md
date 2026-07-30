@@ -990,7 +990,7 @@ graph TB
 
 ## Concurrency & Locking
 
-The system uses order-level locks to prevent race conditions during async operations.
+The system uses order-level locks to prevent race conditions during async operations. For the reconciler-specific lock hierarchy and the historical `_syncLock`/`_gridLock` swap, see [GRID_RECONCILE.md](GRID_RECONCILE.md#lock-hierarchy).
 
 ### Lock Mechanism
 

@@ -56,7 +56,7 @@ The bot executes the reset through `_performGridResync()`:
 3. Reload this bot's entry from `profiles/bots.json`.
 4. For full-recenter reset reasons, refresh `gridCenterPrice` in
    `<botKey>.dynamicgrid.json` from the latest `amaCenterPrice` before rebuilding.
-5. Call `Grid.recalculateGrid()` using fresh open orders from chain.
+5. Call `Grid.recalculateGrid()` using fresh open orders from chain (this is runtime resync, not startup reconcile — see [GRID_RECONCILE.md](GRID_RECONCILE.md)).
 6. Reset fee-debt bookkeeping, persist the rebuilt grid, record actual reset
    metadata in `dynamicgrid.json`, and remove the trigger file.
 

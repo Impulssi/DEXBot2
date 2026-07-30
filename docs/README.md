@@ -181,5 +181,5 @@ While these docs explain the *why*, the *how* lives in the code. See the full [m
 - **`modules/order/utils/order.ts`**: Order state predicates, grid indexing, reconciliation helpers, delta building, index utilities
 - **`modules/order/utils/validate.ts`**: Order validation, grid reconciliation, COW action building
 - **`modules/order/utils/system.ts`**: System utilities, price derivation, fill deduplication
-- **`modules/order/grid_reconcile.ts`**: Startup grid reconciliation and offline fill detection
+- **`modules/order/grid_reconcile.ts`**: Startup grid reconciliation and offline fill detection ([GRID_RECONCILE.md](GRID_RECONCILE.md))
 - **`modules/credential_policy.ts`**: Signing policy validation and operation allowlists

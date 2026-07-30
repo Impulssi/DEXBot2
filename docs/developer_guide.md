@@ -1523,7 +1523,7 @@ console.log('Locked?', manager.isOrderLocked(order.id));
 - `accounting.ts` - Fund tracking
 - `strategy.ts` - Rebalancing logic
 - `grid.ts` - Grid creation
-- `grid_reconcile.ts` - Startup grid reconciliation
+- `grid_reconcile.ts` - Startup grid reconciliation ([docs](GRID_RECONCILE.md))
 - `grid_reconcile_internal.ts` - Internal grid reconciliation helpers
 - `sync_engine.ts` - Blockchain sync
 - `logger.ts` - Order logging
@@ -1659,7 +1659,7 @@ const async function runTests() {
 | `tests/test_accounting_logic.ts` | Fund tracking, fees, precision |
 | `tests/test_grid_logic.ts` | Grid creation, sizing, divergence |
 | `tests/test_manager_logic.ts` | State machine, indexing |
-| `tests/test_sync_logic.ts` | Blockchain reconciliation |
+| `tests/test_sync_logic.ts` | Blockchain reconciliation | Startup reconcile is `tests/test_grid_reconcile*.ts` |
 
 ### Adding Tests for Fund-Related Features
 

@@ -274,7 +274,7 @@ Price Scale (geometric, e.g. 0.4% increments):
 - **Ghost order prevention**: robust full-fill detection
 - **Version epoch tracking**: stale working grids detected and aborted
 - **Processed fill store**: persistent dedupe layer for replay-safe accounting
-- **Startup reconciliation**: detects existing, orphaned, partial, and missing orders before normal trading resumes
+- **Startup reconciliation**: detects existing, orphaned, partial, and missing orders before normal trading resumes ([GRID_RECONCILE.md](GRID_RECONCILE.md))
 
 ### Order Management Comparison
 

@@ -245,7 +245,7 @@ Prefix tags used in log messages to help operators identify event types. To find
 | `[BTS-FEE]` | `order/accounting.ts` | BTS fee deferred accounting |
 | `[SPREAD-CORRECTION]` | `order/grid.ts` | Partial order spread correction |
 | `[STRATEGY]` | `order/strategy.ts` | Fee event cache and strategy decisions |
-| `[RECONCILE]` | `order/utils/validate.ts` | Grid reconciliation (dust, invariant) |
+| `[RECONCILE]` | `order/utils/validate.ts` | Grid reconciliation ([GRID_RECONCILE.md](GRID_RECONCILE.md)) |
 | `[TRANSPORT]` | `bitshares-native/transport.ts` | WebSocket keep-alive and reconnect |
 
 ---
