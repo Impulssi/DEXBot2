@@ -392,21 +392,17 @@ class OrderManager {
         // Acquire in ascending level order only:
         //   Level 0: _fillProcessingLock  (fill processing — outermost)
         //   Level 1: _divergenceLock   (divergence checks)
-        //   Level 2: _gridLock         (grid mutations)
-        //   Level 3: _syncLock         (sync operations)
+        //   Level 2: _syncLock         (sync operations — timeout-protected)
+        //   Level 3: _gridLock         (grid mutations)
         //   Level 4: _fundLock         (fund operations — innermost)
         // Note: AsyncLock IS re-entrant (acquire detects nested calls via _holding).
-        //
-        // WARNING: sync_engine.ts violates this hierarchy — its standard path
-        // acquires _syncLock(3) before _gridLock(2). The gridLockAlreadyHeld
-        // flag works around the resulting ABBA deadlock. See sync_engine.ts:345.
         this._fillProcessingLock = new AsyncLock({ level: 0, timeout: TIMING.SYNC_LOCK_TIMEOUT_MS });
         this._divergenceLock = new AsyncLock({ level: 1 });
+        this._syncLock = new AsyncLock({ level: 2 });
         this._gridLock = new AsyncLock({
-            level: 2,
+            level: 3,
             onContention: () => { this._metrics.gridLockContention++; }
         });
-        this._syncLock = new AsyncLock({ level: 3 });
         this._fundLock = new AsyncLock({ level: 4, timeout: 30000 });
 
         this._recentlyRotatedOrderIds = new Set();
@@ -907,15 +903,14 @@ class OrderManager {
      * @param {string} src - Source identifier
      * @returns {Promise<import('./types').SyncResult>}
      */
-    async synchronizeWithChain(data: any, src: any, options: any = {}) {
-        // _gridLock acquisition is delegated to sync.synchronizeWithChain itself.
-        // createOrder / cancelOrder acquire it inline; readOpenOrders and
-        // periodicBlockchainFetch acquire it inside syncFromOpenOrders.
-        return await this._applySync(data, src, options);
+    async synchronizeWithChain(data: any, src: any) {
+        // Lock delegation: createOrder/cancelOrder acquire _gridLock internally;
+        // readOpenOrders/periodicBlockchainFetch acquire _syncLock → _gridLock.
+        return await this._applySync(data, src);
     }
 
-    async _applySync(data: any, src: any, options: any = {}) {
-        return await this.sync.synchronizeWithChain(data, src, options);
+    async _applySync(data: any, src: any) {
+        return await this.sync.synchronizeWithChain(data, src);
     }
 
     async _initializeAssets() {

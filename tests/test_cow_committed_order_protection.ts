@@ -79,7 +79,7 @@ async function runTests() {
         });
         manager._committedOrderIds.add('1.7.103');
         manager._committedOrderIdsBuiltAt = Date.now();
-        const result = await manager.synchronizeWithChain([], 'readOpenOrders', {});
+        const result = await manager.synchronizeWithChain([], 'readOpenOrders');
         const order = manager.orders.get('slot-4');
         assert.strictEqual(order.state, ORDER_STATES.ACTIVE, 'Committed order should remain ACTIVE via synchronizeWithChain readOpenOrders');
     }
@@ -93,7 +93,7 @@ async function runTests() {
         });
         manager._committedOrderIds.add('1.7.104');
         manager._committedOrderIdsBuiltAt = Date.now();
-        const result = await manager.synchronizeWithChain([], 'readOpenOrders', {});
+        const result = await manager.synchronizeWithChain([], 'readOpenOrders');
         const order = manager.orders.get('slot-5');
         assert.strictEqual(order.state, ORDER_STATES.ACTIVE, 'Committed order should remain ACTIVE — protection is always on for snapshot syncs');
     }

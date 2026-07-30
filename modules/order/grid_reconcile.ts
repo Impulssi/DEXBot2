@@ -48,7 +48,7 @@ export async function attemptResumePersistedGridByPriceMatch({
         logger && logger.log && logger.log('No matching active order IDs found. Attempting to match by price...', 'info');
         const { loadGrid } = require('./grid');
         await loadGrid(manager, persistedGrid, boundaryIdx);
-        await manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders', {});
+        await manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
         const matchedOrderIds = new Set(
             (Array.from(manager.orders.values()) as any[])
@@ -198,9 +198,9 @@ export async function reconcileGridOrders({
     const chainBuys = parsedChain.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).map((x: any) => x.chain);
     const chainSells = parsedChain.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).map((x: any) => x.chain);
 
-    // PHASE 1: In-memory reconciliation under lock (compute + individual quick cancels)
-    // Blockchain-heavy batch operations (updates, creates, readOpenOrders) are deferred
-    // to Phase 2 to minimize lock contention.
+    // PHASE 1: In-memory reconciliation under lock — pure planning, no blockchain I/O.
+    // All cancellations are collected into plannedCancels and executed in Phase 2.
+    // This keeps the lock hierarchy clean (no _gridLock held across sync calls).
     const phase1Result = await manager._gridLock.acquire(async () => {
         if (typeof manager._applyOrderUpdate !== 'function') {
             throw new Error('manager._applyOrderUpdate is required for startup reconciliation');
@@ -235,6 +235,7 @@ export async function reconcileGridOrders({
             .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
             .filter((x: any) => x.parsed);
 
+        const plannedCancels: any[] = [];
         const cancelledDuplicateIds = new Set<string>();
         const activeGridOrders = (Array.from(manager.orders.values()) as any[]).filter((o: any) => o && o.orderId && isOrderPlaced(o));
         for (const u of unmatchedParsed) {
@@ -261,31 +262,17 @@ export async function reconcileGridOrders({
                     `looseTolerance=${Format.formatPrice6(nearest.looseTolerance)})`,
                     'error'
                 );
-                if (!dryRun) {
-                    try {
-                        await _cancelChainOrder({
-                            chainOrders,
-                            account,
-                            privateKey,
-                            manager,
-                            chainOrderId: p.orderId,
-                            dryRun,
-                            chainOrderObj: u.chain,
-                            releaseUntrackedFunds: true,
-                        });
-                        cancelledDuplicateIds.add(p.orderId);
-                        logger?.log?.(
-                            `Cancelled unmatched duplicate chain order ${p.orderId} at price ${Format.formatPrice6(p.price)} — ` +
-                            `stale dust remnant duplicate of grid ${nearest.gridOrder.id} (${nearest.gridOrder.orderId})`,
-                            'warn'
-                        );
-                    } catch (cancelErr: any) {
-                        logger?.log?.(
-                            `Failed to cancel duplicate chain order ${p.orderId}: ${getErrorMessage(cancelErr)}`,
-                            'error'
-                        );
-                    }
-                }
+                // Queue duplicate for Phase 2 cancellation instead of executing under lock
+                cancelledDuplicateIds.add(p.orderId);
+                plannedCancels.push({
+                    chainOrderId: p.orderId,
+                    chainOrderObj: u.chain,
+                    releaseUntrackedFunds: true,
+                });
+                logger?.log?.(
+                    `Queued duplicate chain order ${p.orderId} for cancellation (Phase 2)`,
+                    'warn'
+                );
             } else if (nearest) {
                 logger?.log?.(
                     `${desc}; nearest active same-side grid ${nearest.gridOrder.id} ` +
@@ -325,6 +312,8 @@ export async function reconcileGridOrders({
             dryRun,
             plannedCreates,
             plannedUpdates,
+            plannedCancels,
+            planOnly: true,
         });
 
         const buyResult = await _reconcileStartupSide({
@@ -339,15 +328,47 @@ export async function reconcileGridOrders({
             dryRun,
             plannedCreates,
             plannedUpdates,
+            plannedCancels,
+            planOnly: true,
         });
 
-        return { plannedCreates, plannedUpdates, chainSellCount: sellResult.chainCount, chainBuyCount: buyResult.chainCount };
+        return { plannedCreates, plannedUpdates, plannedCancels, chainSellCount: sellResult.chainCount, chainBuyCount: buyResult.chainCount };
     });
 
-    // PHASE 2: Blockchain operations outside lock (batch updates, creates, read)
+    // PHASE 2: Blockchain operations outside lock (batch updates, creates, cancels, read)
     // These are the heavy operations that would block all other grid operations
-    // if held under _gridLock.
-    const { plannedCreates, plannedUpdates, chainSellCount, chainBuyCount } = phase1Result;
+    // if held under _gridLock. All lock acquisitions here follow the canonical
+    // hierarchy (fillProcessingLock → syncLock → gridLock → fundLock).
+    const { plannedCreates, plannedUpdates, plannedCancels, chainSellCount, chainBuyCount } = phase1Result;
+
+    // Execute planned cancellations (duplicates, edge, excess) outside lock.
+    // Each _cancelChainOrder call acquires _gridLock internally via synchronizeWithChain.
+    if (!dryRun && plannedCancels.length > 0) {
+        logger?.log?.(`Startup: Executing ${plannedCancels.length} queued cancellations (Phase 2)`, 'info');
+        for (const cancelPlan of plannedCancels) {
+            try {
+                await _cancelChainOrder({
+                    chainOrders,
+                    account,
+                    privateKey,
+                    manager,
+                    chainOrderId: cancelPlan.chainOrderId,
+                    dryRun,
+                    chainOrderObj: cancelPlan.chainOrderObj,
+                    releaseUntrackedFunds: cancelPlan.releaseUntrackedFunds,
+                });
+                logger?.log?.(
+                    `Startup: Cancelled queued order ${cancelPlan.chainOrderId} (Phase 2)`,
+                    'info'
+                );
+            } catch (cancelErr: any) {
+                logger?.log?.(
+                    `Startup: Failed to cancel queued order ${cancelPlan.chainOrderId}: ${getErrorMessage(cancelErr)}`,
+                    'error'
+                );
+            }
+        }
+    }
 
     if (!dryRun && plannedUpdates.length > 0) {
         let updatePlans = plannedUpdates;
@@ -477,27 +498,25 @@ export async function reconcileGridOrders({
             let cancelledSellCount = 0;
             let cancelledBuyCount = 0;
             if (staleSurplusCancels.length > 0) {
-                await manager._gridLock.acquire(async () => {
-                    for (const sc of staleSurplusCancels) {
-                        try {
-                            await _cancelChainOrder({
-                                chainOrders,
-                                account,
-                                privateKey,
-                                manager,
-                                chainOrderId: sc.chainOrderObj.id,
-                                dryRun,
-                                chainOrderObj: sc.chainOrderObj,
-                                releaseUntrackedFunds: true,
-                            });
-                            if (sc.sideLabel === 'SELL') cancelledSellCount++;
-                            else cancelledBuyCount++;
-                            logger?.log?.(`Startup: Cancelled stale surplus ${sc.sideLabel} order ${sc.chainOrderObj.id}`, 'info');
-                        } catch (e: any) {
-                            logger?.log?.(`Startup: Failed to cancel surplus ${sc.sideLabel} ${sc.chainOrderObj.id}: ${getErrorMessage(e)}`, 'warn');
-                        }
+                for (const sc of staleSurplusCancels) {
+                    try {
+                        await _cancelChainOrder({
+                            chainOrders,
+                            account,
+                            privateKey,
+                            manager,
+                            chainOrderId: sc.chainOrderObj.id,
+                            dryRun,
+                            chainOrderObj: sc.chainOrderObj,
+                            releaseUntrackedFunds: true,
+                        });
+                        if (sc.sideLabel === 'SELL') cancelledSellCount++;
+                        else cancelledBuyCount++;
+                        logger?.log?.(`Startup: Cancelled stale surplus ${sc.sideLabel} order ${sc.chainOrderObj.id}`, 'info');
+                    } catch (e: any) {
+                        logger?.log?.(`Startup: Failed to cancel surplus ${sc.sideLabel} ${sc.chainOrderObj.id}: ${getErrorMessage(e)}`, 'warn');
                     }
-                });
+                }
             }
 
             finalChainSellCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).length - cancelledSellCount;

@@ -872,13 +872,13 @@ _finishStartupSequence()
 
 **Critical Rule: Always acquire locks in ascending level order**
 
-The canonical 5-level hierarchy (defined at `manager.ts:389`):
+The canonical 5-level hierarchy (defined at `manager.ts`):
 
 ```
 Level 0: _fillProcessingLock  (fill processing — outermost)
 Level 1: _divergenceLock      (divergence checks)
-Level 2: _gridLock            (grid mutations)
-Level 3: _syncLock            (sync operations)
+Level 2: _syncLock            (sync operations — timeout-protected)
+Level 3: _gridLock            (grid mutations)
 Level 4: _fundLock            (fund operations — innermost)
 ```
 
@@ -888,14 +888,10 @@ convention marker — AsyncLock does not enforce it at runtime.
 **Why This Order?**
 
 - Fill processing (Level 0) is the most frequent operation (high contention) — outermost so it serializes all inner work
-- Grid maintenance (Level 2) and divergence checks (Level 1) are less frequent but must nest inside fill processing
-- Sync operations (Level 3) and fund operations (Level 4) are innermost, only acquired transiently
-- Acquiring in ascending order ensures no two callers can deadlock: if A holds level N and needs level M > N, and B holds level M and needs level N, both would have to acquire in reverse order — which the rule prevents
-
-**⚠️ Known exception**: The sync engine (`sync_engine.ts:371,630`) acquires
-`_syncLock(3)` before `_gridLock(2)` in its standard path. The
-`gridLockAlreadyHeld` flag works around the resulting ABBA deadlock — see
-`sync_engine.ts:345` for details.
+- Divergence checks (Level 1) nest inside fill processing
+- Sync operations (Level 2) are acquired before grid mutations — the timeout-protected lock is inner, so a stuck sync releases the outer lock
+- Grid mutations (Level 3) and fund operations (Level 4) are innermost
+- All paths follow the same order — the historical `gridLockAlreadyHeld` workaround flag has been eliminated
 
 **Example: Safe Pattern**
 

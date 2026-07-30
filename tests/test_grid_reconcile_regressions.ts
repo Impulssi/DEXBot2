@@ -140,7 +140,6 @@ async function testVerifiedAfterFailureRefetchesOpenOrders() {
     assert.strictEqual(syncCalls, 1, 'Fallback cancel should trigger a fresh open-order sync');
     assert.deepStrictEqual(syncPayload, [], 'Fallback sync should use the refetched open-order snapshot');
     assert.strictEqual(syncSource, 'cancelOrder', 'Fallback sync should preserve cancelOrder source');
-    assert.strictEqual(syncOptions?.gridLockAlreadyHeld, true, 'Fallback sync should reuse the caller-held grid lock');
     assert.strictEqual(manager.accountTotals.sellFree, 11, 'Fallback sync should still release unmatched funds');
     console.log('✅ Regression 1b passed: verifiedAfterFailure cancel refetches open orders before sync');
 }

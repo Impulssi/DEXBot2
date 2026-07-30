@@ -166,7 +166,7 @@ function _findLargestOrder(unmatchedOrders: any, updateCount: any): { order: any
  * @returns {Promise<{gridIndex: number, gridOrder: Object}|null>} Grid slot info or null
  * @private
  */
-async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, unmatchedOrders, updateCount, orderType, dryRun }: { chainOrders: any; account: any; privateKey: any; manager: any; unmatchedOrders: any; updateCount: any; orderType: any; dryRun: any; }): Promise<{ index: number; orderType: any } | null> {
+async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, unmatchedOrders, updateCount, orderType, dryRun, planOnly = false }: { chainOrders: any; account: any; privateKey: any; manager: any; unmatchedOrders: any; updateCount: any; orderType: any; dryRun: any; planOnly?: boolean; }): Promise<{ index: number; orderType: any; chainOrderObj?: any } | null> {
     if (dryRun) return null;
     if (!Array.isArray(unmatchedOrders) || unmatchedOrders.length === 0) return null;
 
@@ -184,6 +184,12 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
         `Grid edge detected: cancelling largest order ${orderId} (size ${originalSize}) to free up funds`,
         'info'
     );
+
+    if (planOnly) {
+        // In planOnly mode, return the index and chain order info so the caller
+        // can plan the replacement create. Actual cancellation happens in Phase 2.
+        return { index: largestIndex, orderType, chainOrderObj: largestOrder };
+    }
 
     try {
         // Cancel the largest order on blockchain and release untracked funds.
@@ -284,14 +290,13 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         const btsFeeData = getAssetFees('BTS');
 
         // Centralized Fund Tracking: Use manager's sync core to handle state transition and fund deduction
-        // CRITICAL: Use _applySync (lock-free) since caller holds _gridLock
         await manager._applySync({
             gridOrderId: gridOrder.id,
             chainOrderId,
             isPartialPlacement: false,
             expectedType: gridOrder.type,
             fee: btsFeeData.createFee
-        }, 'createOrder', { gridLockAlreadyHeld: true });
+        }, 'createOrder');
     } else {
         // CRITICAL FIX: Recovery sync if order extraction fails
         const logger = manager && manager.logger;
@@ -301,12 +306,9 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
                 resolveAccountRef(manager, account),
                 TIMING.CONNECTION_TIMEOUT_MS
             );
-            // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
-            // Orphan order requires fund deduction to prevent phantom capital
             await manager.syncFromOpenOrders(freshChainOrders, {
                 skipAccounting: false,
                 source: 'chainOrderIdExtractionFailure',
-                gridLockAlreadyHeld: true,
             });
         } catch (syncErr: any) {
             logger?.log?.(`[_createOrderFromGrid] Recovery sync failed: ${getErrorMessage(syncErr)}`, 'error');
@@ -355,11 +357,9 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
         await manager.syncFromOpenOrders(freshChainOrders, {
             skipAccounting: false,
             source: 'cancelOrder',
-            gridLockAlreadyHeld: true,
         });
     } else {
-        // CRITICAL: Use _applySync (lock-free) since caller holds _gridLock
-        await manager._applySync({ orderId: chainOrderId }, 'cancelOrder', { gridLockAlreadyHeld: true });
+        await manager._applySync({ orderId: chainOrderId }, 'cancelOrder');
     }
 
     // Unmatched chain orders are not represented as ACTIVE/PARTIAL grid slots, so
@@ -382,7 +382,6 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
         await manager.syncFromOpenOrders(freshChainOrders, {
             skipAccounting: false,
             source,
-            gridLockAlreadyHeld: true,
         });
         return freshChainOrders;
     } catch (syncErr: any) {
@@ -472,7 +471,7 @@ async function _finalizeStartupUpdate({ manager, preparedUpdate }: { manager: an
         fee: btsFeeData.updateFee,
         skipAccounting: false,
         deferredFee: deferredFeeFloat,
-    }, 'createOrder', { gridLockAlreadyHeld: true });
+    }, 'createOrder');
 }
 
 async function _executeStartupUpdateBatch({
@@ -834,7 +833,7 @@ async function _executeStartupCreateGroupBatch({
                 isPartialPlacement: false,
                 expectedType: plan.gridOrder.type,
                 fee: btsFeeData.createFee
-            }, 'createOrder', { gridLockAlreadyHeld: true });
+            }, 'createOrder');
         }
 
         if (missingChainOrderId) {
@@ -940,6 +939,8 @@ async function _reconcileStartupSide({
     dryRun,
     plannedCreates,
     plannedUpdates,
+    plannedCancels,
+    planOnly = false,
 }: {
     orderType: any;
     targetCount: any;
@@ -952,6 +953,8 @@ async function _reconcileStartupSide({
     dryRun: any;
     plannedCreates: any;
     plannedUpdates: any;
+    plannedCancels: any[];
+    planOnly?: boolean;
 }): Promise<{ chainCount: any }> {
     const logger = manager?.logger;
     const sideUpper = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
@@ -988,8 +991,18 @@ async function _reconcileStartupSide({
             updateCount,
             orderType,
             dryRun,
+            planOnly,
         });
-        if (cancelInfo) cancelledIndex = cancelInfo.index;
+        if (cancelInfo) {
+            cancelledIndex = cancelInfo.index;
+            if (planOnly && cancelInfo.chainOrderObj) {
+                plannedCancels.push({
+                    chainOrderId: cancelInfo.chainOrderObj.id,
+                    chainOrderObj: cancelInfo.chainOrderObj,
+                    releaseUntrackedFunds: true,
+                });
+            }
+        }
     }
 
     for (let i = 0; i < updateCount; i++) {
@@ -1087,41 +1100,61 @@ async function _reconcileStartupSide({
             .filter((x: any) => x.parsed)
             .sort(sortExcessCancelComparator);
 
-        for (const x of parsedUnmatched) {
-            if (cancelCount <= 0) break;
-            logger?.log?.(`Startup: Cancelling excess ${sideUpper} chain order ${x.chain.id}`, 'info');
-            try {
-                await _cancelChainOrder({
-                    chainOrders,
-                    account,
-                    privateKey,
-                    manager,
-                    chainOrderId: x.chain.id,
-                    chainOrderObj: x.chain,
-                    releaseUntrackedFunds: true,
-                    dryRun,
-                });
-                logger?.log?.(`Startup: Successfully cancelled excess ${sideUpper} order ${x.chain.id}`, 'info');
-                cancelCount--;
-            } catch (err: any) {
-                logger?.log?.(`Startup: Failed to cancel ${sideUpper} ${x.chain.id}: ${getErrorMessage(err)}`, 'error');
+        if (planOnly) {
+            // In planOnly mode, record the cancellations for Phase 2 execution.
+            // This prevents blockchain I/O inside _gridLock (Level 3).
+            if (cancelCount > 0) {
+                logger?.log?.(
+                    `Startup: ${sideUpper} excess ${cancelCount} order(s) queued for cancellation (Phase 2)`,
+                    'info'
+                );
+                for (const x of parsedUnmatched) {
+                    if (cancelCount <= 0) break;
+                    plannedCancels.push({
+                        chainOrderId: x.chain.id,
+                        chainOrderObj: x.chain,
+                        releaseUntrackedFunds: true,
+                    });
+                    cancelCount--;
+                }
             }
-        }
-
-        if (cancelCount > 0) {
-            const activeOrders = manager.getOrdersByTypeAndState(orderType, ORDER_STATES.ACTIVE)
-                .filter((o: any) => o && o.orderId)
-                .sort(sortMatchedCancelComparator);
-
-            for (const o of activeOrders) {
+        } else {
+            for (const x of parsedUnmatched) {
                 if (cancelCount <= 0) break;
-                logger?.log?.(`Startup: Cancelling excess matched ${sideUpper} ${o.orderId} (grid ${o.id})`, 'warn');
+                logger?.log?.(`Startup: Cancelling excess ${sideUpper} chain order ${x.chain.id}`, 'info');
                 try {
-                    await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun, chainOrderObj: o });
-                    logger?.log?.(`Startup: Successfully cancelled excess matched ${sideUpper} order ${o.orderId} (grid ${o.id})`, 'info');
+                    await _cancelChainOrder({
+                        chainOrders,
+                        account,
+                        privateKey,
+                        manager,
+                        chainOrderId: x.chain.id,
+                        chainOrderObj: x.chain,
+                        releaseUntrackedFunds: true,
+                        dryRun,
+                    });
+                    logger?.log?.(`Startup: Successfully cancelled excess ${sideUpper} order ${x.chain.id}`, 'info');
                     cancelCount--;
                 } catch (err: any) {
-                    logger?.log?.(`Startup: Failed to cancel matched ${sideUpper} ${o.orderId}: ${getErrorMessage(err)}`, 'error');
+                    logger?.log?.(`Startup: Failed to cancel ${sideUpper} ${x.chain.id}: ${getErrorMessage(err)}`, 'error');
+                }
+            }
+
+            if (cancelCount > 0) {
+                const activeOrders = manager.getOrdersByTypeAndState(orderType, ORDER_STATES.ACTIVE)
+                    .filter((o: any) => o && o.orderId)
+                    .sort(sortMatchedCancelComparator);
+
+                for (const o of activeOrders) {
+                    if (cancelCount <= 0) break;
+                    logger?.log?.(`Startup: Cancelling excess matched ${sideUpper} ${o.orderId} (grid ${o.id})`, 'warn');
+                    try {
+                        await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun, chainOrderObj: o });
+                        logger?.log?.(`Startup: Successfully cancelled excess matched ${sideUpper} order ${o.orderId} (grid ${o.id})`, 'info');
+                        cancelCount--;
+                    } catch (err: any) {
+                        logger?.log?.(`Startup: Failed to cancel matched ${sideUpper} ${o.orderId}: ${getErrorMessage(err)}`, 'error');
+                    }
                 }
             }
         }

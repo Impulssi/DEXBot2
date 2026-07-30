@@ -8,10 +8,11 @@
  *         runCreditWatchdog, and vice versa, so an urgent watchdog
  *         tick is never starved by a long grid maintenance pass.
  *         (modules/credit_runtime.ts, modules/dexbot_class.ts:4666)
- *   RC-2: synchronizeWithChain('createOrder'|'cancelOrder') acquires _gridLock
- *         inside the sync_engine, defense-in-depth even when callers bypass
- *         the manager wrapper. Internal callers in reconcileGridOrders pass
- *         { gridLockAlreadyHeld: true } to avoid deadlock.
+ *   RC-2: Lock hierarchy corrected — _syncLock(2) acquired before _gridLock(3)
+ *         in all paths. The gridLockAlreadyHeld workaround flag and its 8 call
+ *         sites are eliminated. Phase 1 of grid reconciliation does pure
+ *         in-memory planning under _gridLock; blockchain I/O is deferred to
+ *         Phase 2 where locks acquire in canonical order.
  *         (modules/order/sync_engine.ts, modules/order/manager.ts,
  *          modules/order/grid_reconcile.ts)
  *   RC-3: storeGrid callback persists its snapshot via the new optional
@@ -593,21 +594,22 @@ async function testCreditRuntimePersistIsAtomic() {
 // RC-1B: Lock Hierarchy Violation — ABBA deadlock prevention
 // ---------------------------------------------------------------------------
 
-async function testGridLockSyncLockAbbaDeadlock() {
-    console.log(' - RC-1B: grid→sync ABBA deadlock prevention (gridLockAlreadyHeld skip)...');
+async function testGridLockSyncLockCorrectOrder() {
+    console.log(' - RC-1B: Lock hierarchy — sync(2)→grid(3) order prevents ABBA deadlock...');
 
     // Build a minimal mock manager with real AsyncLock instances so the
     // real SyncEngine.syncFromOpenOrders can execute its lock logic.
-    // Empty orders + empty chainOrders = no-op reconciliation that still
-    // exercises the gridLockAlreadyHeld early-return at sync_engine.ts:366.
+    // After the refactor the canonical order is:
+    //   _fillProcessingLock(0) → _syncLock(2) → _gridLock(3) → _fundLock(4)
     const mgr: any = {
-        _syncLock: new AsyncLock({ level: 3 }),
-        _gridLock: new AsyncLock({ level: 2 }),
+        _syncLock: new AsyncLock({ level: 2 }),
+        _gridLock: new AsyncLock({ level: 3 }),
         _fillProcessingLock: null,
         _pauseFundRecalc: 0,
         orders: new Map(),
         shadowOrderIds: new Map(),
         ordersNeedingPriceCorrection: [],
+        _syncGeneration: 0,
         assets: {
             assetA: { symbol: 'BTS', id: '1.3.0', precision: 5 },
             assetB: { symbol: 'USD', id: '1.3.121', precision: 4 },
@@ -633,32 +635,32 @@ async function testGridLockSyncLockAbbaDeadlock() {
     // Yield so B acquires _syncLock first.
     await new Promise(r => setTimeout(r, 10));
 
-    // Context A: hold _gridLock, then call the REAL syncFromOpenOrders with
-    // gridLockAlreadyHeld=true. This must COMPLETE without waiting for B to
-    // release _syncLock because the early-return at sync_engine.ts:366-368
-    // skips _syncLock entirely.
+    // Context A: call syncFromOpenOrders normally (no gridLockAlreadyHeld).
+    // With the corrected hierarchy, syncFromOpenOrders acquires _syncLock(2)
+    // → _gridLock(3). Since B holds _syncLock, A waits — no deadlock because
+    // A does not hold _gridLock when calling syncFromOpenOrders.
+    let contextAStart = 0;
     let contextAElapsed = -1;
-    const contextA = mgr._gridLock.acquire(async () => {
-        const start = Date.now();
-        const result = await syncEngine.syncFromOpenOrders([], { gridLockAlreadyHeld: true });
-        contextAElapsed = Date.now() - start;
+    const contextA = (async () => {
+        contextAStart = Date.now();
+        const result = await syncEngine.syncFromOpenOrders([], {});
+        contextAElapsed = Date.now() - contextAStart;
         assert.ok(result && typeof result === 'object', 'syncFromOpenOrders should return a result');
         assert.deepStrictEqual(result.filledOrders, [], 'no fills with empty chain orders');
-    });
+    })();
 
-    // Both must complete within 2s (no deadlock). Without the gridLockAlreadyHeld
-    // skip (sync_engine.ts:366-368), Context A would queue on _syncLock held by B
-    // and time out — proving the test would fail if the fix were removed.
+    // Both must complete within 2s (no deadlock). Context A waits for _syncLock
+    // so it naturally finishes after Context B (not before).
     await Promise.race([
         Promise.all([contextA, contextB]),
         new Promise((_, reject) => setTimeout(() => reject(new Error('DEADLOCK: contexts did not complete within 2s')), 2000)),
     ]);
 
     assert.strictEqual(syncLockReleased, true, 'Context B must complete');
-    assert.ok(contextAElapsed >= 0 && contextAElapsed < 100,
-        `Context A must complete quickly without _syncLock (took ${contextAElapsed}ms)`);
+    assert.ok(contextAElapsed >= 150,
+        `Context A must wait for Context B to release _syncLock (took ${contextAElapsed}ms)`);
 
-    console.log('  PASS: gridLockAlreadyHeld skip works — real syncFromOpenOrders completed without acquiring _syncLock');
+    console.log('  PASS: syncFromOpenOrders correctly waits for _syncLock — no deadlock');
 }
 
 // ---------------------------------------------------------------------------
@@ -676,7 +678,7 @@ async function run() {
     await testWriteJsonFileAtomic();
     await testWriteBotsFileWithLockUsesAtomic();
     await testCreditRuntimePersistIsAtomic();
-    await testGridLockSyncLockAbbaDeadlock();
+    await testGridLockSyncLockCorrectOrder();
     console.log('\nAll race-condition fix regression tests passed');
 }
 

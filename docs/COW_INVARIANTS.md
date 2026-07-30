@@ -265,7 +265,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 - `INV-BROADCAST-002` Deadlock-free reconcile after uncertain broadcast
   - `_reconcileAfterUncertainBroadcast` does not need a `fillLockAlreadyHeld` flag because `AsyncLock` is re-entrant — a second `acquire()` from within the same execution context runs the callback directly instead of queueing.
-  - The `gridLockAlreadyHeld` flag (a separate grid-level gate) is kept only for `syncFromOpenOrders` / `_applySync` caller-skip semantics and is not replaced by lock-level reentrancy.
+  - The `gridLockAlreadyHeld` flag has been eliminated — the lock hierarchy was corrected so that `_syncLock(2)` is acquired before `_gridLock(3)` in all paths.
 
 ## Change Policy
 

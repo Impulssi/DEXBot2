@@ -69,11 +69,10 @@
  *
  * ===============================================================================
  *
- * GLOBAL LOCK HIERARCHY (see manager.ts:389 for canonical 5-level definition):
- *   Level 0: _fillProcessingLock  →  Level 1: _divergenceLock  →  Level 2: _gridLock
- *   →  Level 3: _syncLock  →  Level 4: _fundLock
- * Acquire in ascending order only.  The sync engine's standard path violates this
- * by acquiring _syncLock(3) before _gridLock(2) — see gridLockAlreadyHeld at line 345.
+ * GLOBAL LOCK HIERARCHY (see manager.ts for canonical 5-level definition):
+ *   Level 0: _fillProcessingLock  →  Level 1: _divergenceLock  →  Level 2: _syncLock
+ *   →  Level 3: _gridLock  →  Level 4: _fundLock
+ * Acquire in ascending order only.
  *
  * SYNC-LOCAL HIERARCHY (nested inside _syncLock):
  * 1. _syncLock (AsyncLock): Ensures only one full-sync at a time
@@ -348,25 +347,6 @@ class SyncEngine {
             });
         }
 
-        // CRITICAL: When _gridLock is already held, skip _syncLock entirely
-        // to prevent ABBA deadlock. The sync engine's standard lock order is:
-        //   _fillProcessingLock(0) → _syncLock(3) → _gridLock(2)
-        // which violates the canonical 0→1→2→3→4 hierarchy (grid↔sync inverted).
-        // The gridLockAlreadyHeld flag at line 627 only gates the backward
-        // _gridLock re-acquire, but _syncLock is still acquired first at line
-        // 371. If a concurrent caller holds _gridLock(2) (e.g. startup reconcile)
-        // and another holds _syncLock(3) (standard fill-context sync), they ABBA
-        // deadlock. By skipping _syncLock here when _gridLock is already held,
-        // we eliminate the inversion entirely.
-        //
-        // The _syncLock timeout/force-release protection is intentionally
-        // bypassed — _doSyncFromOpenOrders is purely in-memory reconciliation
-        // (chain data was fetched by the caller before acquiring _gridLock).
-        // No RPC, no I/O, no possibility of hanging on chain.
-        if (options?.gridLockAlreadyHeld) {
-            return this._doSyncFromOpenOrders(chainOrders, options);
-        }
-
         const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS;
         const forceReleaseMs = TIMING.SYNC_LOCK_FORCE_RELEASE_AGE_MS;
         let timedOut = false;
@@ -634,11 +614,7 @@ class SyncEngine {
                 }
             };
 
-            if (options?.gridLockAlreadyHeld) {
-                await runReconciliation();
-            } else {
-                await mgr._gridLock.acquire(runReconciliation);
-            }
+            await mgr._gridLock.acquire(runReconciliation);
         } finally {
             clearInterval(lockRefreshTimer);
             // Unlock after reconciliation completes
@@ -1657,10 +1633,9 @@ class SyncEngine {
      *
      * @param {Object} chainData - Chain event data
      * @param {string} source - Source identifier ('createOrder', 'cancelOrder', 'readOpenOrders', etc.)
-     * @param {Object} [options] - Sync options forwarded to open-order reconciliation
      * @returns {Promise<Object>} { newOrders, ordersNeedingCorrection }
      */
-    async synchronizeWithChain(chainData: any, source: string, options: Record<string, any> = {}) {
+    async synchronizeWithChain(chainData: any, source: string) {
         const mgr = this.manager;
         if (!mgr.assets) return { newOrders: [], ordersNeedingCorrection: [] };
 
@@ -1730,14 +1705,7 @@ class SyncEngine {
                         mgr.unlockOrders([gridOrderId]);
                     }
                 };
-                // CRITICAL: serialize with concurrent _applyOrderUpdate on the global
-                // _ordersByState / _ordersByType Sets and the frozen manager.orders Map.
-                // Internal callers that already hold _gridLock (e.g. reconcileGridOrders)
-                // opt out via { gridLockAlreadyHeld: true } to avoid deadlock with the
-                // non-reentrant AsyncLock.
-                if (options?.gridLockAlreadyHeld) {
-                    await runCreate();
-                } else if (mgr._gridLock && typeof mgr._gridLock.acquire === 'function') {
+                if (mgr._gridLock && typeof mgr._gridLock.acquire === 'function') {
                     await mgr._gridLock.acquire(runCreate);
                 } else {
                     throw new Error('synchronizeWithChain(createOrder): _gridLock is missing — cannot proceed without lock');
@@ -1796,10 +1764,7 @@ class SyncEngine {
                         }
                     }
                 };
-                // CRITICAL: same _gridLock rationale as the createOrder case above.
-                if (options?.gridLockAlreadyHeld) {
-                    await runCancel();
-                } else if (mgr._gridLock && typeof mgr._gridLock.acquire === 'function') {
+                if (mgr._gridLock && typeof mgr._gridLock.acquire === 'function') {
                     await mgr._gridLock.acquire(runCancel);
                 } else {
                     throw new Error('synchronizeWithChain(cancelOrder): _gridLock is missing — cannot proceed without lock');
