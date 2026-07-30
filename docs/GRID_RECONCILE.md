@@ -29,42 +29,44 @@ Phase 2 and 3 both respect the `dryRun` flag: when true, no on-chain mutations a
 `targetCount` (per side, `targetSell`/`targetBuy`) is sourced from bot config and determines how many active orders each side should maintain. The internal `planOnly` flag controls whether `_reconcileStartupSide` records plans for Phase 2 or executes inline — Phase 1 always calls with `planOnly=true`.
 
 ```
-Grid generated
-      │
-      ▼
+                    Grid generated
+                            │
+                            ▼
 ┌──────────────────────────────────────────────────────┐
 │  PHASE 1: Planning (under _gridLock)                 │
-│  • Sanitize phantom orders (ACTIVE/PARTIAL without  │
+│                                                      │
+│  • Sanitize phantom orders (ACTIVE/PARTIAL without   │
 │    on-chain orderId → VIRTUAL, skip accounting)      │
 │  • Detect suspected duplicates (within 5× price      │
-│    tolerance of active grid slot) → queue for cancel │
+│    tolerance) → queue for cancel                     │
 │  • Per-side: match unmatched chain orders to virtual │
-│    grid slots → plan updates                          │
+│    grid slots → plan updates                         │
 │  • Detect grid-edge lockup → plan largest-order      │
-│    cancel to free funds                               │
-│  • Detect excess chain orders → plan cancels          │
-│  • No on-chain RPC calls inside this phase            │
+│    cancel to free funds                              │
+│  • Detect excess chain orders → plan cancels         │
+│  • No on-chain RPC calls inside this phase           │
 └──────────────────────┬───────────────────────────────┘
-                        │ returns { plannedCreates, plannedUpdates, plannedCancels }
-                        ▼
+                       │ returns { plannedCreates, plannedUpdates, plannedCancels }
+                       ▼
 ┌──────────────────────────────────────────────────────┐
 │  PHASE 2: Execution (outside _gridLock)              │
 │                                                      │
-│  1. Cancellations — duplicates, edge releases,      │
+│  1. Cancellations — duplicates, edge releases,       │
 │     excess chain orders                              │
-│  2. Updates — batch (3 retries), then sequential    │
+│  2. Updates — batch (3 retries), then sequential     │
 │     fallback with per-failure recovery sync          │
-│  3. Creates — outside-in pairing (outermost grid    │
-│     slots first, BUY desc, SELL asc), batched where │
+│  3. Creates — outside-in pairing (outermost grid     │
+│     slots first, BUY desc, SELL asc), batched where  │
 │     BitShares DEX supports batch creates             │
 └──────────────────────┬───────────────────────────────┘
-                        ▼
+                       ▼
 ┌──────────────────────────────────────────────────────┐
 │  PHASE 3: Stale Surplus Cleanup                      │
+│                                                      │
 │  • Re-fetch chain state after Phase 2                │
 │  • Cancel orders exceeding per-side target that      │
 │    are NOT tracked by any grid slot's orderId        │
-│  • Catches orphans lost during grid reinitialization │
+│  • Catch orphans lost during grid reinitialization   │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -106,7 +108,7 @@ Each sub-phase releases `_gridLock` before starting and re-acquires it per opera
 
 **`grid_reconcile.ts:458-527`** (guarded by `if (!dryRun)` at line 460)
 
-Re-fetch all open orders from chain. Per side: count orders exceeding `targetCount` that no grid slot tracks via `orderId`. Cancel only these untracked surplus orders. Catches orphans from grid reinitialization — orders that ended up on-chain but have no corresponding grid slot.
+Re-fetch all open orders from chain. Per side: count orders exceeding `targetCount` that no grid slot tracks via `orderId`. Cancel only these untracked surplus orders. Catch orphans from grid reinitialization — orders that ended up on-chain but have no corresponding grid slot.
 
 ### Partial Failure State
 
@@ -128,7 +130,7 @@ if (matchedOnGrid > 0 || neededSlots === 0) {
 }
 ```
 
-When `matchedOnGrid === 0` AND scaling up (`neededSlots > 0`), excess cancellation is skipped — the guard covers both the fresh-grid scenario and the scale-down case (`neededSlots === 0`). Suspected duplicate detection still catches real duplicates; remainder handled by the next Root Mean Square (RMS) divergence cycle.
+When `matchedOnGrid === 0` AND scaling up (`neededSlots > 0`), excess cancellation is skipped — the guard covers both the fresh-grid scenario and the scale-down case (`neededSlots === 0`). Suspected duplicate detection still catches real duplicates; remainder is handled by the next Root Mean Square (RMS) divergence cycle.
 
 ### Grid-Edge Lockup
 
@@ -174,7 +176,7 @@ Acquire in ascending level order only. AsyncLock is re-entrant (nested `acquire(
 
 ### Historical Correction (1.4.6)
 
-Before 1.4.6, `_syncLock` was Level 3 and `_gridLock` Level 2, causing ABBA deadlock when reconcile needed `_gridLock` (old Level 2) while holding `_syncLock` (old Level 3). The workaround flag `gridLockAlreadyHeld` patched 8 call sites.
+Before 1.4.6, `_syncLock` was Level 3 and `_gridLock` was Level 2, causing ABBA deadlock when reconcile needed `_gridLock` (old Level 2) while holding `_syncLock` (old Level 3). The workaround flag `gridLockAlreadyHeld` patched 8 call sites.
 
 Commit `705cde9c` fixed it: swapped levels (`_syncLock → 2`, `_gridLock → 3`), eliminated the flag, and restructured Phase 1 to be pure in-memory so no RPC calls run under `_gridLock` ([`developer_guide.md` §Startup Sequence](developer_guide.md#startup-sequence--lock-ordering)).
 
