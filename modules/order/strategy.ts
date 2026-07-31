@@ -129,7 +129,8 @@ class StrategyEngine {
                         { skipAccounting: false, fee: 0 }
                     );
                     if (ok === false) {
-                        mgr.logger.log(`[STRATEGY] Failed to virtualize filled slot ${filledOrder.id}`, 'warn');
+                        mgr.logger.log(`[STRATEGY] Failed to virtualize filled slot ${filledOrder.id}; marking totals stale for next sync cycle`, 'warn');
+                        mgr.accountTotalsStale = true;
                     }
                 }
             }

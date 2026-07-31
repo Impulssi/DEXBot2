@@ -357,7 +357,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
         }
 
         await bot.manager._fundLock.acquire(async () => {
-            bot.manager.resetFunds();
+            await bot.manager.resetFunds();
             if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
                 bot.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
             }

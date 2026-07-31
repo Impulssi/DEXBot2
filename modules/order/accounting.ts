@@ -332,7 +332,19 @@ class Accountant {
     async recalculateFunds() {
          const mgr = this.manager;
          if (mgr._pauseFundRecalc > 0) return;
-         if (!mgr.funds) this.resetFunds();
+         if (!mgr.funds) {
+             // Lazy funds init mutates mgr.funds wholesale, so run it under
+             // _fundLock when available (reentrant when the caller already
+             // holds it, e.g. manager.recalculateFunds). Guards the direct
+             // accountant.recalculateFunds() path against unlocked mutation.
+             if (mgr._fundLock) {
+                 await mgr._fundLock.acquire(async () => {
+                     this.resetFunds();
+                 });
+             } else {
+                 this.resetFunds();
+             }
+         }
 
          // Sync btsBalance from manager into funds for non-BTS pairs
          if (mgr.btsBalance) {
@@ -1158,9 +1170,9 @@ class Accountant {
     async deductBtsFees(requestedSide: any = null) {
         const mgr = this.manager;
 
-        // Early returns for no work needed
-        if (!mgr.funds || !mgr.funds.btsFeesOwed || mgr.funds.btsFeesOwed <= 0) return;
-        if (!mgr.accountTotals) return;
+        // Early returns for no work needed (existence checks only — value reads
+        // happen inside _fundLock below so overlapping calls cannot double-deduct)
+        if (!mgr.funds || !mgr.accountTotals) return;
 
         const btsSide = getBtsSide(mgr.config?.assetA, mgr.config?.assetB);
         const normalizedRequestedSide = (requestedSide === 'buy' || requestedSide === 'sell') ? requestedSide : null;
@@ -1176,28 +1188,32 @@ class Accountant {
 
         if (!side) return;
 
-        const fees = mgr.funds.btsFeesOwed;
-        const orderType = (side === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-        const freeKey = (side === 'buy') ? 'buyFree' : 'sellFree';
-        const chainFree = mgr.accountTotals[freeKey] || 0;
-
-        // SUFFICIENCY CHECK: Defer if insufficient funds
-        if (chainFree < fees) {
-            if (mgr.logger && mgr.logger.level === 'debug') {
-                mgr.logger.log(`[BTS-FEE] Deferring settlement: need ${Format.formatAmount8(fees)}, have ${Format.formatAmount8(chainFree)}`, 'debug');
-            }
-            return;
-        }
-
-        // FULL DEDUCTION from chainFree + btsFeesOwed reset in one lock
+        // ATOMIC: read btsFeesOwed + sufficiency check + deduction + reset in one
+        // lock. Two overlapping calls then serialize: the second sees fees=0 and
+        // no-ops instead of double-deducting a stale amount.
         await mgr._fundLock.acquire(async () => {
+            const fees = mgr.funds.btsFeesOwed;
+            if (!fees || fees <= 0) return;
+
+            const orderType = (side === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+            const freeKey = (side === 'buy') ? 'buyFree' : 'sellFree';
+            const chainFree = mgr.accountTotals[freeKey] || 0;
+
+            // SUFFICIENCY CHECK: Defer if insufficient funds
+            if (chainFree < fees) {
+                if (mgr.logger && mgr.logger.level === 'debug') {
+                    mgr.logger.log(`[BTS-FEE] Deferring settlement: need ${Format.formatAmount8(fees)}, have ${Format.formatAmount8(chainFree)}`, 'debug');
+                }
+                return;
+            }
+
             this._adjustTotalBalanceLocked(orderType, -fees, 'bts-fee-settlement');
             mgr.funds.btsFeesOwed = 0;
-        });
 
-        if (mgr.logger && mgr.logger.level === 'debug') {
-            mgr.logger.log(`[BTS-FEE] Settled: ${Format.formatAmount8(fees)} BTS`, 'debug');
-        }
+            if (mgr.logger && mgr.logger.level === 'debug') {
+                mgr.logger.log(`[BTS-FEE] Settled: ${Format.formatAmount8(fees)} BTS`, 'debug');
+            }
+        });
 
         // Recalculate funds to update all tracking metrics
         await mgr.recalculateFunds();

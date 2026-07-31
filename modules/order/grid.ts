@@ -559,7 +559,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
             // with concurrent deductBtsFees (which also holds _fundLock).
             await manager._fundLock.acquire(async () => {
                 const savedBtsFeesOwed = manager.funds.btsFeesOwed;
-                manager.resetFunds();
+                await manager.resetFunds();
                 manager.funds.btsFeesOwed = savedBtsFeesOwed;
             });
 
@@ -949,10 +949,10 @@ export async function initializeGrid(manager: any): Promise<void> {
         }
 
         // RC-2: Wrap atomic changes in grid lock
-        await manager._gridLock.acquire(async () => {
+            await manager._gridLock.acquire(async () => {
             _clearOrderCachesLogic(manager);
             await manager._fundLock.acquire(async () => {
-                manager.resetFunds();
+                await manager.resetFunds();
             });
 
             manager.pauseRecalcLogging();
@@ -1046,7 +1046,7 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
                 // loadGrid (grid.ts:~557) except that path skips persistGrid.
                 let fundSnapshot!: { btsFeesOwed: number; accountTotals: any };
                 await manager._fundLock.acquire(async () => {
-                    manager.resetFunds();
+                    await manager.resetFunds();
                     fundSnapshot = {
                         btsFeesOwed: manager.funds.btsFeesOwed,
                         accountTotals: manager.accountTotals

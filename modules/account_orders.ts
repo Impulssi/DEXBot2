@@ -730,7 +730,8 @@ class AccountOrders {
       state: state,
       price: Number.isFinite(priceValue) ? priceValue : 0,
       size: Number.isFinite(sizeValue) ? sizeValue : 0,
-      orderId
+      orderId,
+      isGhost: order.isGhost === true
     };
 
     return serialized;

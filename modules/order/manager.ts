@@ -374,7 +374,9 @@ class OrderManager {
 
 
 
-        this.resetFunds();
+        // Sync reset — _fundLock is not created until later in the constructor,
+        // and no concurrent access exists during construction.
+        this.accountant.resetFunds();
         this.btsBalance = { free: 0, total: 0, locked: 0 };
         this.targetSpreadCount = 0;
         this.currentSpreadCount = 0;
@@ -601,20 +603,29 @@ class OrderManager {
     }
 
     /**
-     * @returns {void}
+     * Reset funds structure to zeroed values. Acquires _fundLock so the
+     * wholesale funds replacement cannot race with concurrent fund mutations
+     * (deductBtsFees, tryDeductFromChainFree, updateOptimisticFreeBalance).
+     * @returns {Promise<void>}
      */
-    resetFunds() {
-        return this.accountant.resetFunds();
+    async resetFunds() {
+        return await this._fundLock.acquire(async () => {
+            return this.accountant.resetFunds();
+        });
     }
 
     async _deductFromChainFree(orderType: any, size: any, operation: any) {
         if (!this.accountant) return;
-        return await this.accountant.tryDeductFromChainFree(orderType, size, operation);
+        return await this._fundLock.acquire(async () => {
+            return await this.accountant.tryDeductFromChainFree(orderType, size, operation);
+        });
     }
 
     async _addToChainFree(orderType: any, size: any, operation: any) {
         if (!this.accountant) return;
-        return await this.accountant.addToChainFree(orderType, size, operation);
+        return await this._fundLock.acquire(async () => {
+            return await this.accountant.addToChainFree(orderType, size, operation);
+        });
     }
 
     _getGridTotal(side: any) {
@@ -704,7 +715,7 @@ class OrderManager {
 
     async _setAccountTotals(totals: any) {
         this.accountTotals = { ...(this.accountTotals || {}), ...totals, _lastFetchedAt: Date.now() };
-        if (!this.funds) this.resetFunds();
+        if (!this.funds) await this.resetFunds();
 
         await this._recalculateFunds();
 
@@ -1758,7 +1769,21 @@ class OrderManager {
             return validation;
         }
 
-        const persisted = await persistGridSnapshot(this, this.accountOrders, snapshotOrders, recentFillKeys, fundSnapshot);
+        // Capture fund state under _fundLock so the persisted snapshot is
+        // internally consistent even when fills/fee settlement mutate
+        // accountTotals concurrently (same TOCTOU fixed for recalculateGrid
+        // at grid.ts:~1047). An explicit fundSnapshot (recalculateGrid) is
+        // kept as an override — the caller captured it under the same lock
+        // right after resetFunds.
+        let effectiveFundSnapshot = fundSnapshot;
+        if (!effectiveFundSnapshot) {
+            effectiveFundSnapshot = await this._fundLock.acquire(async () => ({
+                btsFeesOwed: this.funds.btsFeesOwed,
+                accountTotals: this.accountTotals,
+            }));
+        }
+
+        const persisted = await persistGridSnapshot(this, this.accountOrders, snapshotOrders, recentFillKeys, effectiveFundSnapshot);
 
         if (persisted === false) {
             this.logger.log(
