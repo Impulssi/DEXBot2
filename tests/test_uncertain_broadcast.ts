@@ -1151,9 +1151,11 @@ async function testExecuteWithRetryOnUncertainRetriesOnce() {
             () => bot._executeWithRetryOnUncertain([], []),
             (err) => {
                 assert(err instanceof BroadcastUncertainError, 'must throw BroadcastUncertainError');
-                // opContexts=[] carries no CREATEs to verify absence for, so the
-                // batch must NOT be re-broadcast — an uncertain broadcast may
-                // have landed and a blind retry would duplicate on-chain orders.
+                // opContexts=[] carries no operations to verify absence for (and
+                // the verification read fails in this environment anyway), so
+                // the batch must NOT be re-broadcast — an uncertain broadcast
+                // may have landed and a blind retry would duplicate on-chain
+                // orders.
                 assert.strictEqual(callCount, 1, 'must NOT re-broadcast without verified absence');
                 return true;
             }
@@ -1301,6 +1303,216 @@ async function testExecuteWithRetryOnTruncatedRead() {
         chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
     }
     console.log('✓ UNC-013d passed');
+}
+
+// ── Per-kind retry verification: CANCEL ─────────────────────────────────
+// A cancel's absence on chain means the cancel LANDED — re-broadcasting is a
+// guaranteed failure, so it must defer. An order still present means the
+// cancel never landed — retry is safe.
+async function testRetryVerificationForCancelLandedDefers() {
+    console.log('\n[UNC-013h] _executeWithRetryOnUncertain does NOT re-broadcast a CANCEL whose order is absent (cancel landed)...');
+    const bot = makeBot();
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    let callCount = 0;
+
+    const cancelCtx = { kind: 'cancel', order: { id: 'slot-sell-1', orderId: '1.7.500', type: 'sell' } };
+
+    chainOrders.executeBatch = async () => {
+        callCount++;
+        throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013h', timeoutMs: 30000 });
+    };
+    // The cancelled order is ABSENT from a live non-empty snapshot → the cancel
+    // landed → re-broadcasting would fail (order does not exist) → defer.
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.401', 'buy', 4000000, 80000000)],
+        truncated: false
+    });
+
+    try {
+        await assert.rejects(
+            () => bot._executeWithRetryOnUncertain([{ op_name: 'limit_order_cancel' }], [cancelCtx]),
+            (err) => {
+                assert(err instanceof BroadcastUncertainError, 'must throw BroadcastUncertainError');
+                assert.strictEqual(callCount, 1, 'must NOT re-broadcast a cancel that already landed');
+                return true;
+            }
+        );
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+    }
+    console.log('✓ UNC-013h passed');
+}
+
+async function testRetryVerificationForCancelStillPresentRetries() {
+    console.log('\n[UNC-013i] _executeWithRetryOnUncertain retries a CANCEL whose order is still present (never landed)...');
+    const bot = makeBot();
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    let callCount = 0;
+
+    const cancelCtx = { kind: 'cancel', order: { id: 'slot-sell-1', orderId: '1.7.500', type: 'sell' } };
+
+    chainOrders.executeBatch = async () => {
+        callCount++;
+        if (callCount === 1) {
+            throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013i', timeoutMs: 30000 });
+        }
+        return { success: true, operation_results: [] };
+    };
+    // The cancelled order is STILL on chain → the cancel never landed →
+    // re-broadcasting the identical cancel is safe.
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.500', 'sell', 100000000, 5000000)],
+        truncated: false
+    });
+
+    try {
+        const result = await bot._executeWithRetryOnUncertain([{ op_name: 'limit_order_cancel' }], [cancelCtx]);
+        assert.ok(result?.result?.success, 'retry after verified-unlanded cancel must succeed');
+        assert.strictEqual(callCount, 2, 'must re-broadcast exactly once when the order is still present');
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+    }
+    console.log('✓ UNC-013i passed');
+}
+
+// ── Per-kind retry verification: UPDATE (limit_order_update is a DELTA) ──
+// Re-broadcasting a landed update double-applies the size change, so a retry
+// is only safe when the chain order provably still matches the pre-update
+// cache the delta was built from. Any other state defers.
+function makeUpdateCtx(chainOrderId: any, cachedRaw: any) {
+    return {
+        kind: 'size-update',
+        updateInfo: {
+            partialOrder: { id: 'slot-sell-1', orderId: chainOrderId, type: 'sell', rawOnChain: cachedRaw },
+            newSize: 5
+        },
+        finalInts: { sell: 50000000, receive: 2500000 }
+    };
+}
+
+async function testRetryVerificationForUpdateUnchangedRetries() {
+    console.log('\n[UNC-013j] _executeWithRetryOnUncertain retries an UPDATE whose chain order is provably unchanged (delta re-apply is safe)...');
+    const bot = makeBot();
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    let callCount = 0;
+
+    const cachedRaw = {
+        id: '1.7.600',
+        for_sale: '100000000',
+        sell_price: { base: { amount: '100000000', asset_id: '1.3.0' }, quote: { amount: '5000000', asset_id: '1.3.121' } }
+    };
+    const updateCtx = makeUpdateCtx('1.7.600', cachedRaw);
+
+    chainOrders.executeBatch = async () => {
+        callCount++;
+        if (callCount === 1) {
+            throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013j', timeoutMs: 30000 });
+        }
+        return { success: true, operation_results: [] };
+    };
+    // Chain order matches the pre-update cache exactly → the update never
+    // applied → re-applying the identical delta reaches the same target.
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.600', 'sell', 100000000, 5000000)],
+        truncated: false
+    });
+
+    try {
+        const result = await bot._executeWithRetryOnUncertain([{ op_name: 'limit_order_update' }], [updateCtx]);
+        assert.ok(result?.result?.success, 'retry after verified-unchanged update must succeed');
+        assert.strictEqual(callCount, 2, 'must re-broadcast exactly once when the order is provably unchanged');
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+    }
+    console.log('✓ UNC-013j passed');
+}
+
+async function testRetryVerificationForUpdateLandedDefers() {
+    console.log('\n[UNC-013k] _executeWithRetryOnUncertain does NOT re-broadcast an UPDATE that already applied (delta would double-apply)...');
+    const bot = makeBot();
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    let callCount = 0;
+
+    const cachedRaw = {
+        id: '1.7.600',
+        for_sale: '100000000',
+        sell_price: { base: { amount: '100000000', asset_id: '1.3.0' }, quote: { amount: '5000000', asset_id: '1.3.121' } }
+    };
+    const updateCtx = makeUpdateCtx('1.7.600', cachedRaw);
+
+    chainOrders.executeBatch = async () => {
+        callCount++;
+        throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013k', timeoutMs: 30000 });
+    };
+    // Chain order shows the TARGET state (finalInts) → the update landed →
+    // re-broadcasting the delta would double-apply the size change → defer.
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.600', 'sell', 50000000, 2500000)],
+        truncated: false
+    });
+
+    try {
+        await assert.rejects(
+            () => bot._executeWithRetryOnUncertain([{ op_name: 'limit_order_update' }], [updateCtx]),
+            (err) => {
+                assert(err instanceof BroadcastUncertainError, 'must throw BroadcastUncertainError');
+                assert.strictEqual(callCount, 1, 'must NOT re-broadcast an update that already applied');
+                return true;
+            }
+        );
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+    }
+    console.log('✓ UNC-013k passed');
+}
+
+async function testRetryVerificationForUpdateMissingDefers() {
+    console.log('\n[UNC-013l] _executeWithRetryOnUncertain does NOT re-broadcast an UPDATE whose order is missing from the snapshot (ambiguous)...');
+    const bot = makeBot();
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    let callCount = 0;
+
+    const cachedRaw = {
+        id: '1.7.600',
+        for_sale: '100000000',
+        sell_price: { base: { amount: '100000000', asset_id: '1.3.0' }, quote: { amount: '5000000', asset_id: '1.3.121' } }
+    };
+    const updateCtx = makeUpdateCtx('1.7.600', cachedRaw);
+
+    chainOrders.executeBatch = async () => {
+        callCount++;
+        throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013l', timeoutMs: 30000 });
+    };
+    // The order is missing entirely — it may have filled or been cancelled
+    // concurrently; a re-applied delta on a vanished order cannot be verified.
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.401', 'buy', 4000000, 80000000)],
+        truncated: false
+    });
+
+    try {
+        await assert.rejects(
+            () => bot._executeWithRetryOnUncertain([{ op_name: 'limit_order_update' }], [updateCtx]),
+            (err) => {
+                assert(err instanceof BroadcastUncertainError, 'must throw BroadcastUncertainError');
+                assert.strictEqual(callCount, 1, 'must NOT re-broadcast an update whose order is missing (ambiguous)');
+                return true;
+            }
+        );
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+    }
+    console.log('✓ UNC-013l passed');
 }
 
 async function testExecuteWithRetrySkipsPartialOnChainState() {
@@ -1490,6 +1702,11 @@ async function main() {
     await testExecuteWithRetryOnVerifiedAbsence();
     await testExecuteWithRetryOnLandedCreate();
     await testExecuteWithRetryOnTruncatedRead();
+    await testRetryVerificationForCancelLandedDefers();
+    await testRetryVerificationForCancelStillPresentRetries();
+    await testRetryVerificationForUpdateUnchangedRetries();
+    await testRetryVerificationForUpdateLandedDefers();
+    await testRetryVerificationForUpdateMissingDefers();
     await testExecuteWithRetrySkipsPartialOnChainState();
     await testStartupCreateDeferredOnTruncatedRead();
     await testStartupCreateRetriesOnAuthoritativeAbsence();

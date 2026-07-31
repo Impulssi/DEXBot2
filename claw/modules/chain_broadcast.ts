@@ -10,12 +10,13 @@ import { getCredentialReadyFilePath } from '../../modules/credential_runtime';
 import { readJSON } from '../../modules/utils/fs_utils';
 import { runtime } from '../../modules/runtime';
 const storage = getStorage();
-import { isCredentialDaemonReady, DEFAULT_BROADCAST_TIMEOUT_MS, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, waitForCredentialDaemon } from './dexbot_credential_client.js';
+import { isCredentialDaemonReady, DEFAULT_BROADCAST_TIMEOUT_MS, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, waitForCredentialDaemon, BroadcastUncertainError } from './dexbot_credential_client.js';
 import { getErrorMessage } from '../../modules/utils/errors';
 
 // Lazy-load DEXBot2 modules
 let chainKeys: any = null;
 let credentialPolicy: any = null;
+let broadcastFailureClassifier: any = null;
 
 function getChainKeys() {
   if (!chainKeys) chainKeys = requireDexbot2Module('modules/chain_keys.js');
@@ -25,6 +26,48 @@ function getChainKeys() {
 function getCredentialPolicy() {
   if (!credentialPolicy) credentialPolicy = requireDexbot2Module('modules/credential_policy.js');
   return credentialPolicy;
+}
+
+function getBroadcastFailureClassifier() {
+  if (!broadcastFailureClassifier) {
+    const mod = requireDexbot2Module('modules/broadcast_failure.js');
+    broadcastFailureClassifier = (mod && typeof mod.classifyBroadcastFailure === 'function')
+      ? mod.classifyBroadcastFailure
+      : (mod && typeof mod.default === 'function' ? mod.default : null);
+  }
+  return broadcastFailureClassifier;
+}
+
+/**
+ * Classify a direct-key broadcast failure so callers never blindly re-issue
+ * an operation whose broadcast may have landed. Mirrors the credential-daemon
+ * classification: 'uncertain' becomes a typed BroadcastUncertainError (the
+ * same type the daemon path produces), 'retryable'/'definite' propagate as-is.
+ * @param {Error} err - The raw broadcast error
+ * @param {Array} ops - The operations that were broadcast
+ * @param {string|null} accountName - Account the broadcast was for
+ * @param {Object} options - Broadcast options (batchId etc.)
+ * @returns {Error} The classified error to throw
+ */
+function classifyClawBroadcastError(err: any, ops: any[], accountName: string | null, options: Record<string, any> = {}) {
+  try {
+    const classifier = getBroadcastFailureClassifier();
+    if (classifier && classifier(err) === 'uncertain') {
+      return new BroadcastUncertainError(
+        `Claw direct-key broadcast uncertain (may have landed): ${getErrorMessage(err)}`,
+        {
+          operations: ops,
+          accountName,
+          batchId: options.batchId || null,
+          payload: null,
+          timeoutMs: null,
+        }
+      );
+    }
+  } catch (_) {
+    // Classification is best-effort — fall through to the original error.
+  }
+  return err;
 }
 
 function _sendSighupToDaemon() {
@@ -215,7 +258,15 @@ async function executeOperations(operations: any, options: Record<string, any> =
     tx[op.op_name](op.op_data);
   }
 
-  const result = await tx.broadcast();
+  // Direct-key broadcasts must be classified: a timeout/drop here surfaces as
+  // a plain Error unless wrapped, inviting callers to blindly re-issue the
+  // operations (duplicate orders). 'uncertain' maps to BroadcastUncertainError.
+  let result: any;
+  try {
+    result = await tx.broadcast();
+  } catch (err: any) {
+    throw classifyClawBroadcastError(err, ops, resolveAccountName(options), options);
+  }
   const operationResults =
     (result && Array.isArray(result.operation_results) && result.operation_results) ||
     (result && result.trx && Array.isArray(result.trx.operation_results) && result.trx.operation_results) ||
@@ -291,7 +342,11 @@ async function broadcastOperation(operation: any, options: Record<string, any> =
   }
 
   const client = await getSigningClient(options);
-  return client.broadcast(operation);
+  try {
+    return await client.broadcast(operation);
+  } catch (err: any) {
+    throw classifyClawBroadcastError(err, [operation], resolveAccountName(options), options);
+  }
 }
 
 export { broadcastOperation, createSigningClient, createSigningClientFromCredentialDaemon, executeOperations, getSigningClient, resolveAccountName }

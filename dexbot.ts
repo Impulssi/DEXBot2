@@ -919,12 +919,23 @@ async function handleCLICommands() {
             // help`...). Previously the subcommand was silently dropped and the
             // full-setup path ran, so `dexbot pm2 start X` started ALL bots and
             // `dexbot pm2 stop X` no-oped into a full setup.
-            const pm2Script = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
-            const pm2Args = [pm2Script, ...cliArgs.slice(1)];
+            // buildRuntimeScriptArgs resolves the pm2 entry point for both
+            // runtime layouts: dist/pm2.js when compiled, pm2.ts via tsx in
+            // source mode (a hard-coded dist path would silently fail to spawn
+            // under `tsx dexbot.ts pm2 ...`).
+            const pm2Args = buildRuntimeScriptArgs({
+                codeRoot: __dirname,
+                scriptSegments: ['pm2'],
+                scriptArgs: cliArgs.slice(1),
+            });
             const result = spawnSync(Config.EXEC_PATH, pm2Args, {
                 cwd: PATHS.PROJECT_ROOT,
                 stdio: 'inherit',
             });
+            if (result.error) {
+                console.error(`pm2: ${result.error.message}`);
+                process.exit(1);
+            }
             process.exit(result.status ?? 0);
             return true;
         }

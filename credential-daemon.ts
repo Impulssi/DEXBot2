@@ -463,9 +463,18 @@ function buildUncertainError(accountName: any, startedAt: number, detail: string
  * same operation.
  */
 let broadcastChain: Promise<any> = Promise.resolve();
-function serializeBroadcast<T>(fn: () => Promise<T>): Promise<T> {
+function serializeBroadcast<T>(fn: () => Promise<T>, getWork?: () => Promise<unknown>): Promise<T> {
     const run = broadcastChain.then(fn, fn);
-    broadcastChain = run.then(() => undefined, () => undefined);
+    // The chain must wait for the WORK to settle, not the deadline-raced
+    // result: a deadline-aborted broadcast keeps running in the background
+    // (the guard only aborts it at its next checkpoint), and starting the
+    // next queued broadcast while that zombie still touches the shared
+    // _nativeChainClient would stomp its node pinning / transport state.
+    // getWork() is consulted AFTER run settles, when the zombie (if any) is
+    // known; the transport disconnect + guard checkpoints terminate it fast,
+    // so the queue wait stays well inside the next request's inner deadline.
+    broadcastChain = Promise.resolve(getWork ? run.then(() => getWork(), () => getWork()) : run)
+        .then(() => undefined, () => undefined);
     return run;
 }
 
@@ -496,6 +505,12 @@ function createBroadcastGuard(accountName: any, startedAt: number, deadlineMs: n
     return {
         isFired: () => fired,
         promise,
+        // The candidate in play when the guard fires, set by the broadcast
+        // work loop (null until a candidate is attempted, or for a queued
+        // deadline that never started). The request handler echoes it in the
+        // BROADCAST_DEADLINE reply so the bot blames the node that actually
+        // caused the outcome — never its original preference blindly.
+        currentNode: null as string | null,
         fire: (reason: string) => {
             if (fired) return;
             fired = true;
@@ -612,11 +627,15 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
         // pool shrinks until it is empty.
         let candidates = buildCandidatePool();
 
-        // candidates[0] is always the next fresh node: every rotation pushes
-        // the exhausted node onto the ledger and rebuilds the pool, so the
-        // pool shrinks until it is empty.
+        // The candidate in play when the deadline fires, exposed to the
+        // request handler (via the guard) so the BROADCAST_DEADLINE reply can
+        // name the node that actually caused it — never the bot's original
+        // preference, which may be innocent after daemon-side rotation.
+        if (opts.guard) opts.guard.currentNode = null;
+
         while (candidates.length > 0) {
             const candidate = candidates[0];
+            if (opts.guard) opts.guard.currentNode = candidate;
             for (let attempt = 1; attempt <= attemptsPerNode; attempt++) {
                 // Abort as soon as the guard fired (inner deadline won the
                 // race, or the requesting socket died): the bot has been told
@@ -749,13 +768,23 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
         throw lastErr;
     })();
 
+    // Expose the WORK promise (not the deadline-raced result) to the broadcast
+    // queue: serializeBroadcast chains the next queued broadcast on it, so a
+    // deadline-aborted zombie cannot overlap the next broadcast on the shared
+    // transport. The handler reads it back via opts.workRef.
+    if (opts.workRef && typeof opts.workRef === 'object') {
+        opts.workRef.work = work;
+    }
+
     try {
         return await Promise.race([work, deadlinePromise]);
     } finally {
         guard.clearTimer();
         if (guard.isFired()) {
             // The guard won while the broadcast may still be in flight —
-            // drop the connection so the next request starts clean.
+            // drop the connection so the next request starts clean. The
+            // transport abort also kills any in-flight connect handshake, so
+            // the zombie cannot resurrect a connection afterwards.
             try { _nativeChainClient.disconnect(); } catch (_) {}
         }
         // Prune stale signing clients on every broadcast, not just on cache
@@ -1199,21 +1228,25 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
                     const broadcastStartedAt = Date.now();
                     const broadcastGuard = createBroadcastGuard(accountName, broadcastStartedAt, resolveInnerDeadlineMs());
                     activeGuards.add(broadcastGuard);
+                    const broadcastWorkRef: { work: Promise<unknown> | null } = { work: null };
                     let signResult: any;
                     try {
-                        signResult = await serializeBroadcast(() => broadcastWithDeadline(
-                            accountName, privateKey,
-                            (client: any) => client.broadcast(operation),
-                            broadcastNodeUrl,
-                            { guard: broadcastGuard, startedAt: broadcastStartedAt }
-                        ));
+                        signResult = await serializeBroadcast(
+                            () => broadcastWithDeadline(
+                                accountName, privateKey,
+                                (client: any) => client.broadcast(operation),
+                                broadcastNodeUrl,
+                                { guard: broadcastGuard, startedAt: broadcastStartedAt, workRef: broadcastWorkRef }
+                            ),
+                            () => broadcastWorkRef.work || Promise.resolve()
+                        );
                     } catch (broadcastErr: any) {
                         if (broadcastErr && broadcastErr.code === DAEMON_CODES.BROADCAST_DEADLINE) {
                             appendAuditLog({
                                 event: 'sign_timeout',
                                 accountName,
                                 sessionId,
-                                nodeUrl: broadcastNodeUrl,
+                                nodeUrl: broadcastGuard.currentNode || broadcastNodeUrl,
                                 opCount: 1,
                                 opTypes: [operation && operation.op_name].filter(Boolean),
                                 ageMs: broadcastErr.ageMs,
@@ -1224,11 +1257,17 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
                             });
                             // Tell the bot the chain state is uncertain so it
                             // can run the recovery path (read chain, match by
-                            // fingerprint, adopt or discard).
+                            // fingerprint, adopt or discard). Name the node
+                            // actually in play at the deadline (the bot's
+                            // preferred node may be innocent after daemon-side
+                            // rotation, and a queued deadline involves none).
                             return sendError(
                                 socket,
                                 'chain status uncertain after inner deadline',
-                                DAEMON_CODES.BROADCAST_DEADLINE
+                                DAEMON_CODES.BROADCAST_DEADLINE,
+                                broadcastGuard.currentNode
+                                    ? { nodeUrl: broadcastGuard.currentNode }
+                                    : {}
                             );
                         }
                         throw broadcastErr;
@@ -1320,21 +1359,25 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
                     const broadcastStartedAt = Date.now();
                     const broadcastGuard = createBroadcastGuard(accountName, broadcastStartedAt, resolveInnerDeadlineMs());
                     activeGuards.add(broadcastGuard);
+                    const broadcastWorkRef: { work: Promise<unknown> | null } = { work: null };
                     let signResult: any;
                     try {
-                        signResult = await serializeBroadcast(() => broadcastWithDeadline(
-                            accountName, privateKey,
-                            (client: any) => executeOperationsWithClient(client, operations),
-                            broadcastNodeUrl,
-                            { guard: broadcastGuard, startedAt: broadcastStartedAt }
-                        ));
+                        signResult = await serializeBroadcast(
+                            () => broadcastWithDeadline(
+                                accountName, privateKey,
+                                (client: any) => executeOperationsWithClient(client, operations),
+                                broadcastNodeUrl,
+                                { guard: broadcastGuard, startedAt: broadcastStartedAt, workRef: broadcastWorkRef }
+                            ),
+                            () => broadcastWorkRef.work || Promise.resolve()
+                        );
                     } catch (broadcastErr: any) {
                         if (broadcastErr && broadcastErr.code === DAEMON_CODES.BROADCAST_DEADLINE) {
                             appendAuditLog({
                                 event: 'sign_timeout',
                                 accountName,
                                 sessionId,
-                                nodeUrl: broadcastNodeUrl,
+                                nodeUrl: broadcastGuard.currentNode || broadcastNodeUrl,
                                 opCount: operations.length,
                                 opTypes: operations.map((o: any) => o && o.op_name).filter(Boolean),
                                 ageMs: broadcastErr.ageMs,
@@ -1346,7 +1389,10 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
                             return sendError(
                                 socket,
                                 'chain status uncertain after inner deadline',
-                                DAEMON_CODES.BROADCAST_DEADLINE
+                                DAEMON_CODES.BROADCAST_DEADLINE,
+                                broadcastGuard.currentNode
+                                    ? { nodeUrl: broadcastGuard.currentNode }
+                                    : {}
                             );
                         }
                         throw broadcastErr;
@@ -1391,16 +1437,18 @@ function sendSuccess(socket: any, data: any) {
 
 /**
  * Send error response to client.
- * 
+ *
  * @param {net.Socket} socket - Client socket
  * @param {string} message - Error message
  * @param {number} code - Error code
+ * @param {Object} [extra] - Extra fields merged into the response (e.g. nodeUrl)
  */
-function sendError(socket: any, message: string, code: string | null = null) {
+function sendError(socket: any, message: string, code: string | null = null, extra: Record<string, any> = {}) {
     const response = JSON.stringify({
         success: false,
         error: message,
-        ...(code ? { code } : {})
+        ...(code ? { code } : {}),
+        ...extra
     });
     socket.write(response + '\n');
     socket.end();

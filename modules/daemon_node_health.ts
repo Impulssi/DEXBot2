@@ -99,6 +99,11 @@ export function createNodeHealthLedger(options: NodeHealthLedgerOptions = {}): N
             const cacheOptions = options.healthCacheFile ? { healthCacheFile: options.healthCacheFile } : {};
             const cache = readHealthCache(cacheOptions);
             if (!cache || !Array.isArray(cache.nodes)) return;
+            // No-op when the node is already absent: an unlocked read-modify-
+            // write clobbers any concurrent fresh health-check write with the
+            // stale snapshot it read, so only rewrite the file when the
+            // exclusion actually changes something.
+            if (!cache.nodes.some((n) => n && n.url === nodeUrl)) return;
             const remaining = cache.nodes
                 .filter((n) => !n || n.url !== nodeUrl)
                 .map((n) => ({

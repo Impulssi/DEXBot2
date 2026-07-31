@@ -1169,12 +1169,30 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
                 // first entries omitted) may omit the order without it being
                 // cancelled, so absence is not authoritative there either.
                 const stillPresent = Array.isArray(openOrders) && openOrders.some((order: any) => String(order?.id ?? '') === String(orderId));
-                if (!stillPresent && !truncated && Array.isArray(openOrders) && openOrders.length > 0) {
+                let confirmedAbsent = !stillPresent && !truncated && Array.isArray(openOrders) && openOrders.length > 0;
+                if (!confirmedAbsent && !truncated && !stillPresent && Array.isArray(openOrders) && openOrders.length === 0) {
+                    // An EMPTY account snapshot is ambiguous by itself (the node
+                    // may be lagging behind the broadcast), but a direct
+                    // get_objects probe of the order id is authoritative: the
+                    // object store returns null for ids that no longer exist.
+                    // This resolves the genuinely-empty account case (the
+                    // cancelled order was the account's only order) without
+                    // trusting a lagging node's empty window.
+                    try {
+                        const probe = await readSingleOrder(String(orderId), TIMING.CONNECTION_TIMEOUT_MS);
+                        if (probe === null) confirmedAbsent = true;
+                    } catch (_: any) {
+                        // Probe failed — the snapshot remains ambiguous; fall
+                        // through to the original error.
+                    }
+                }
+                if (confirmedAbsent) {
                     // The cancellation is confirmed landed (authoritative
-                    // non-empty, non-truncated read shows the order gone) —
-                    // arm the own-cancel marker exactly like the success paths
-                    // above, or a later fill artifact for this order would not
-                    // be skipped (dexbot_fill_runtime.ts wasRecentlyOwnCancelled).
+                    // non-empty, non-truncated read — or a direct object probe —
+                    // shows the order gone) — arm the own-cancel marker exactly
+                    // like the success paths above, or a later fill artifact for
+                    // this order would not be skipped
+                    // (dexbot_fill_runtime.ts wasRecentlyOwnCancelled).
                     recordOwnCancel(orderId);
                     chainOrdersLogger.info(`Order ${orderId} cancellation confirmed after broadcast failure`);
                     return { success: true, orderId, verified: true, verifiedAfterFailure: true };

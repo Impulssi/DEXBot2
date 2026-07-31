@@ -72,7 +72,18 @@ async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery 
     try {
         bot.manager.logger.log(`Triggering state recovery sync (${reason})...`, 'info');
         await bot.manager.fetchAccountTotals(bot.accountId);
-        const openOrders = await chainOrders.readOpenOrders(bot.accountId);
+        const openOrdersRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
+        // Truncated-read guard: syncing on a partial get_full_accounts window
+        // would virtualize live ACTIVE slots (pass-1 phantom cleanup) and let
+        // the next cycle re-create them as duplicates. Defer to a clean read.
+        if (openOrdersRead.truncated) {
+            bot.manager.logger.log(
+                '[RECOVERY] Open-order read TRUNCATED during state recovery sync; deferring sync (partial snapshot would virtualize live slots)',
+                'warn'
+            );
+            return;
+        }
+        const openOrders = openOrdersRead.orders;
         await bot.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
         if (typeof bot.manager.persistGrid === 'function') {
             await bot.manager.persistGrid();

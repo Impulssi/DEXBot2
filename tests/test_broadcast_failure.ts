@@ -79,6 +79,57 @@ async function main() {
         'definite',
         'chain config errors must be definite'
     );
+    // ── deterministic build errors: definite (never blacklist healthy nodes) ─
+    // These fail identically on every node; classifying them retryable made the
+    // daemon rotate through all healthy nodes, reporting each rotation as a
+    // failure and blacklisting healthy nodes over a broadcast that never left
+    // the machine.
+    assert.strictEqual(
+        classifyBroadcastFailure({ code: 'TX_TOO_LARGE', message: 'Max operations per tx exceeded' }),
+        'definite',
+        'TX_TOO_LARGE (deterministic build error) must be definite'
+    );
+    assert.strictEqual(
+        classifyBroadcastFailure({ message: 'Operation must have op_name and op_data' }),
+        'definite',
+        'invalid op shape (deterministic build error) must be definite'
+    );
+    assert.strictEqual(
+        classifyBroadcastFailure({ message: 'Each operation requires op_name and op_data' }),
+        'definite',
+        'daemon-side op validation (deterministic build error) must be definite'
+    );
+    assert.strictEqual(
+        classifyBroadcastFailure({ message: 'Max operations per tx exceeded' }),
+        'definite',
+        'max-ops-per-tx (deterministic build error) must be definite'
+    );
+    assert.strictEqual(
+        classifyBroadcastFailure({ message: 'accountName is required' }),
+        'definite',
+        'missing account (deterministic build error) must be definite'
+    );
+    assert.strictEqual(
+        classifyBroadcastFailure({ message: 'Transaction builder does not support limit_order_bogus' }),
+        'definite',
+        'unsupported op builder (deterministic build error) must be definite'
+    );
+    // ── node-dependent build failures: still retryable (can succeed elsewhere) ─
+    assert.strictEqual(
+        classifyBroadcastFailure({ message: 'Failed to fetch required fees from chain' }),
+        'retryable',
+        'fee-schedule fetch failure (node-dependent) must remain retryable'
+    );
+    assert.strictEqual(
+        classifyBroadcastFailure({ message: 'Failed to fetch reference block from node' }),
+        'retryable',
+        'reference-block fetch failure (node-dependent) must remain retryable'
+    );
+    assert.strictEqual(
+        classifyBroadcastFailure({ message: 'Signing client has been disposed' }),
+        'retryable',
+        'disposed signing client (transient) must remain retryable'
+    );
     assert.strictEqual(classifyBroadcastFailure(null), 'definite', 'null error must be definite');
     assert.strictEqual(classifyBroadcastFailure(undefined), 'definite', 'undefined error must be definite');
 

@@ -1194,30 +1194,41 @@ function setupBlockchainFetchInterval(bot: any) {
                     let chainOpenOrders = [];
                     if (!bot.config.dryRun) {
                         try {
-                            chainOpenOrders = await chainOrders.readOpenOrders(bot.accountId);
-                            const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'periodicBlockchainFetch');
+                            const chainRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
+                            // Truncated-read guard: a partial get_full_accounts
+                            // window would make synchronizeWithChain's pass-1
+                            // virtualize live ACTIVE slots that are simply missing
+                            // from the window (then re-create them as duplicates).
+                            // Defer the sync to a clean read; fills are still
+                            // caught by subscription events and the next cycle.
+                            if (chainRead.truncated) {
+                                bot._log('[PERIODIC-SYNC] Open-order read TRUNCATED (account exceeds the get_full_accounts window); deferring sync this cycle', 'warn');
+                            } else {
+                                chainOpenOrders = chainRead.orders;
+                                const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'periodicBlockchainFetch');
 
-                            if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
-                                bot._log(`Periodic sync: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
-                                bot._markGridActivity?.('periodic sync fill rebalance');
-                                const batchResult = await bot._processFillsWithBatching(
-                                    syncResult.filledOrders, new Set(), 'periodic sync fill rebalance'
-                                );
-                                if (!batchResult?.aborted) {
-                                    await bot.manager.persistGrid();
+                                if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
+                                    bot._log(`Periodic sync: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
+                                    bot._markGridActivity?.('periodic sync fill rebalance');
+                                    const batchResult = await bot._processFillsWithBatching(
+                                        syncResult.filledOrders, new Set(), 'periodic sync fill rebalance'
+                                    );
+                                    if (!batchResult?.aborted) {
+                                        await bot.manager.persistGrid();
+                                    }
                                 }
-                            }
 
-                            if (syncResult.unmatchedChainOrders && syncResult.unmatchedChainOrders.length > 0) {
-                                const sample = syncResult.unmatchedChainOrders
-                                    .slice(0, 3)
-                                    .map(formatUnmatchedChainOrder)
-                                    .join(' | ');
-                                bot._log(
-                                    `Periodic sync: ${syncResult.unmatchedChainOrders.length} chain order(s) not in grid ` +
-                                    `(surplus/divergence)${sample ? `: ${sample}` : ''}`,
-                                    'warn'
-                                );
+                                if (syncResult.unmatchedChainOrders && syncResult.unmatchedChainOrders.length > 0) {
+                                    const sample = syncResult.unmatchedChainOrders
+                                        .slice(0, 3)
+                                        .map(formatUnmatchedChainOrder)
+                                        .join(' | ');
+                                    bot._log(
+                                        `Periodic sync: ${syncResult.unmatchedChainOrders.length} chain order(s) not in grid ` +
+                                        `(surplus/divergence)${sample ? `: ${sample}` : ''}`,
+                                        'warn'
+                                    );
+                                }
                             }
                         } catch (err: any) {
                             bot._warn(`Error reading open orders during periodic fetch: ${getErrorMessage(err)}`);
@@ -1478,31 +1489,40 @@ async function executeMaintenanceLogic(bot: any, context: any) {
     ) {
         bot._lightweightSyncCheckAt = Date.now();
         try {
-            const chainOpenOrdersResult = await chainOrders.readOpenOrders(bot.accountId);
-            const assets = bot.manager?.assets;
-            if (!assets) {
-                bot._log('[LIGHTWEIGHT-SYNC] Skipped: manager assets not available', 'debug');
+            const chainOpenOrdersRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
+            // Truncated-read guard: a partial window undercounts the chain
+            // order count, which would fabricate a divergence and trigger a
+            // full synchronizeWithChain on a partial snapshot (pass-1 phantom
+            // virtualization). Defer to a clean read.
+            if (chainOpenOrdersRead.truncated) {
+                bot._log('[LIGHTWEIGHT-SYNC] Open-order read TRUNCATED; skipping consistency check (partial snapshot cannot drive count comparisons)', 'warn');
             } else {
-                const chainOrdersCount = chainOpenOrdersResult.filter((o: any) => parseChainOrder(o, assets) !== null).length;
-                const gridActive = Array.from(bot.manager.orders.values()).filter(
-                    (o: any) => isOrderOnChain(o)
-                ).length;
-                const diff = Math.abs(chainOrdersCount - gridActive);
-                if (diff > 2) {
-                    bot._log(
-                        `[LIGHTWEIGHT-SYNC] Order count mismatch: chain=${chainOrdersCount}, grid=${gridActive} ` +
-                        `(diff=${diff}). Triggering targeted sync to reconcile.`,
-                        'warn'
-                    );
-                    if (bot.manager?.synchronizeWithChain) {
-                        await bot.manager.synchronizeWithChain(chainOpenOrdersResult, 'readOpenOrders');
+                const chainOpenOrdersResult = chainOpenOrdersRead.orders;
+                const assets = bot.manager?.assets;
+                if (!assets) {
+                    bot._log('[LIGHTWEIGHT-SYNC] Skipped: manager assets not available', 'debug');
+                } else {
+                    const chainOrdersCount = chainOpenOrdersResult.filter((o: any) => parseChainOrder(o, assets) !== null).length;
+                    const gridActive = Array.from(bot.manager.orders.values()).filter(
+                        (o: any) => isOrderOnChain(o)
+                    ).length;
+                    const diff = Math.abs(chainOrdersCount - gridActive);
+                    if (diff > 2) {
+                        bot._log(
+                            `[LIGHTWEIGHT-SYNC] Order count mismatch: chain=${chainOrdersCount}, grid=${gridActive} ` +
+                            `(diff=${diff}). Triggering targeted sync to reconcile.`,
+                            'warn'
+                        );
+                        if (bot.manager?.synchronizeWithChain) {
+                            await bot.manager.synchronizeWithChain(chainOpenOrdersResult, 'readOpenOrders');
+                        }
+                    } else if (diff > 0) {
+                        bot._log(
+                            `[LIGHTWEIGHT-SYNC] Order count mismatch: chain=${chainOrdersCount}, grid=${gridActive} ` +
+                            `(diff=${diff}). Minor divergence — expected during normal operation.`,
+                            'debug'
+                        );
                     }
-                } else if (diff > 0) {
-                    bot._log(
-                        `[LIGHTWEIGHT-SYNC] Order count mismatch: chain=${chainOrdersCount}, grid=${gridActive} ` +
-                        `(diff=${diff}). Minor divergence — expected during normal operation.`,
-                        'debug'
-                    );
                 }
             }
         } catch (e: any) {
@@ -2164,7 +2184,16 @@ async function syncOpenOrdersAndProcessFills(bot: any, tag: any) {
         return { syncResult: null, aborted: false, hasUnmatched: 0, openOrders: null };
     }
     try {
-        let openOrders = await chainOrders.readOpenOrders(bot.accountId);
+        const openOrdersRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
+        // Truncated-read guard: syncing on a partial get_full_accounts window
+        // would virtualize live ACTIVE slots (pass-1 phantom cleanup) and
+        // re-create them as duplicates. Defer to a clean read — fill
+        // subscription events keep the bot responsive in the meantime.
+        if (openOrdersRead.truncated) {
+            bot._log(`[SYNC-CHAIN] Open-order read TRUNCATED during ${tag}; deferring sync to a non-truncated cycle`, 'warn');
+            return { syncResult: null, aborted: false, hasUnmatched: 0, openOrders: null };
+        }
+        let openOrders = openOrdersRead.orders;
         const syncResult = await bot.manager.synchronizeWithChain(
             openOrders,
             'readOpenOrders'
@@ -2179,8 +2208,13 @@ async function syncOpenOrdersAndProcessFills(bot: any, tag: any) {
                 `${tag} sync-fill`
             );
             if (!batchResult?.aborted) {
-                openOrders = await chainOrders.readOpenOrders(bot.accountId);
-                await bot.manager.synchronizeWithChain(openOrders, 'readOpenOrders');
+                const reRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
+                if (reRead.truncated) {
+                    bot._log(`[SYNC-CHAIN] Post-fill re-read TRUNCATED during ${tag}; skipping second sync (partial snapshot cannot drive pass-1 cleanup)`, 'warn');
+                } else {
+                    openOrders = reRead.orders;
+                    await bot.manager.synchronizeWithChain(openOrders, 'readOpenOrders');
+                }
             } else {
                 aborted = true;
             }

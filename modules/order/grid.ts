@@ -607,16 +607,20 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                         // grid and its chain order orphaned. Keep the stored
                         // BUY/SELL rail type (the subsequent sync's pass-1
                         // type-mismatch handling cancels/recreates a genuinely
-                        // wrong side), or resolve a stale SPREAD type by the
-                        // price-vs-startPrice convention used by the funds check.
+                        // wrong side), or resolve a stale SPREAD type by the slot
+                        // index vs the boundary (the same convention the whole
+                        // correction block uses). The price-vs-startPrice
+                        // convention is NOT usable here: startPrice may still be
+                        // the string "pool"/"book" (price modes are only coerced
+                        // to a number by initializeGrid), which makes every
+                        // comparison false and wrongly resolves below-center
+                        // slots to SELL.
                         if (newType === ORDER_TYPES.SPREAD
                             && slot.orderId
                             && (slot.state === ORDER_STATES.ACTIVE || slot.state === ORDER_STATES.PARTIAL)) {
                             newType = (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)
                                 ? slot.type
-                                : (slot.price < manager.config?.startPrice
-                                    ? ORDER_TYPES.BUY
-                                    : ORDER_TYPES.SELL);
+                                : (i <= buyEndIdx ? ORDER_TYPES.BUY : ORDER_TYPES.SELL);
                         }
                         reassignCount++;
                         return { ...slot, type: newType };

@@ -1,15 +1,18 @@
 /**
  * Tests for the COW stale-placement guard (boundary-based).
  *
- * The guard's veto line is the PLAN'S OWN targetBoundary, not the last
- * same-side fill slot: deriveTargetBoundary caps the net boundary shift, so
- * after a burst the last fill can sit ABOVE the plan's legitimate re-place
- * levels — a fill-slot veto would drop those valid placements (one-cycle
- * deferral). Comparing against the boundary only vetoes genuinely
- * cross-spread placements (a CREATE/UPDATE/ROTATE targeting a slot the plan
- * assigns to the opposite side). Slot ids are compared within the plan's own
- * grid generation, so a recenter between the fill capture and the plan cannot
- * skew the comparison.
+ * The guard's veto line is the PLAN'S OWN targetBoundary — and only that:
+ * the plan's slots are derived from the same target grid, so a stale plan's
+ * placements cross its own boundary while legitimate re-placements never do.
+ * Slot ids are compared within the plan's own grid generation, so a recenter
+ * between the fill capture and the plan cannot skew the comparison.
+ *
+ * Fill-based veto lines (last same-side OR opposite-side fill) are NOT used:
+ * after a burst the fills sit beyond the plan's legitimate re-place levels
+ * (the boundary shift is capped), so any fill comparison can veto valid
+ * placements — including the strategy's own rotations. Without a plan
+ * boundary (hand-built plans) nothing is vetoed: fill evidence is not a
+ * reliable veto line.
  */
 const assert = require('assert');
 const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub');
@@ -166,27 +169,39 @@ async function testOppositeSideFillDoesNotVeto() {
 }
 
 async function testFillSlotFallbackWithoutBoundary() {
-    console.log('\n[COW-SLOT-GUARD-005] without a plan boundary, the last same-side fill slot is the veto line (fallback)...');
+    console.log('\n[COW-SLOT-GUARD-005] without a plan boundary, nothing is vetoed — fill evidence is not a reliable veto line...');
 
-    // boundaryIdx null forces the fill-slot fallback: last SELL fill at slot 5,
-    // so SELL placements below 5 are dropped, at/above kept.
-    const target = createTargetMap([[2, ORDER_TYPES.SELL], [4, ORDER_TYPES.SELL], [5, ORDER_TYPES.SELL], [6, ORDER_TYPES.SELL]]);
-    const { result } = await runPlan(target, [{ id: 'slot-5', type: ORDER_TYPES.SELL, price: PRICES[5], size: 50 }], {}, null);
+    // boundaryIdx null: fill evidence (same-side AND opposite-side) must NOT
+    // veto placements. After a burst the fills sit beyond the plan's legit
+    // re-place levels (the boundary shift is capped), and the strategy's own
+    // rotations (e.g. a partial SELL moved into a slot below the last BUY
+    // fill after the boundary crawled left) are legitimate — so no fill
+    // comparison may drop them.
+    const target = createTargetMap([[0, ORDER_TYPES.SELL], [1, ORDER_TYPES.SELL], [2, ORDER_TYPES.SELL], [3, ORDER_TYPES.SELL], [4, ORDER_TYPES.SELL], [5, ORDER_TYPES.SELL], [6, ORDER_TYPES.SELL]]);
+    const { result } = await runPlan(
+        target,
+        [
+            { id: 'slot-2', type: ORDER_TYPES.BUY, price: PRICES[2], size: 50 },
+            { id: 'slot-5', type: ORDER_TYPES.SELL, price: PRICES[5], size: 50 }
+        ],
+        {},
+        null
+    );
 
     assert.strictEqual(result.aborted, false, 'plan must not abort');
-    assert.deepStrictEqual(placementIds(result), ['slot-5', 'slot-6'], 'slots 2,4 (below fill slot 5) must be dropped via fill-slot fallback');
+    assert.deepStrictEqual(placementIds(result), ['slot-0', 'slot-1', 'slot-2', 'slot-3', 'slot-4', 'slot-5', 'slot-6'], 'without a plan boundary no placement may be vetoed (fills are not a reliable veto line)');
 
     console.log('✓ COW-SLOT-GUARD-005 passed');
 }
 
 async function testPriceFallbackForNonSlotFillIds() {
-    console.log('\n[COW-SLOT-GUARD-006] without a boundary and without fill slot ids, price comparison is the fallback...');
+    console.log('\n[COW-SLOT-GUARD-006] without a boundary and without fill slot ids, no price-based veto applies...');
 
-    const target = createTargetMap([[2, ORDER_TYPES.SELL], [4, ORDER_TYPES.SELL], [5, ORDER_TYPES.SELL]]);
-    const { result } = await runPlan(target, [{ id: 'orphan-fill-1', type: ORDER_TYPES.SELL, price: PRICES[4], size: 50 }], {}, null);
+    const target = createTargetMap([[1, ORDER_TYPES.SELL], [2, ORDER_TYPES.SELL], [3, ORDER_TYPES.SELL]]);
+    const { result } = await runPlan(target, [{ id: 'orphan-fill-1', type: ORDER_TYPES.BUY, price: PRICES[2], size: 50 }], {}, null);
 
     assert.strictEqual(result.aborted, false, 'plan must not abort');
-    assert.deepStrictEqual(placementIds(result), ['slot-4', 'slot-5'], 'slot-2 (below fill price) must be dropped via price fallback');
+    assert.deepStrictEqual(placementIds(result), ['slot-1', 'slot-2', 'slot-3'], 'without a plan boundary, fill prices must not veto placements');
 
     console.log('✓ COW-SLOT-GUARD-006 passed');
 }

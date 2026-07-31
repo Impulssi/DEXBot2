@@ -302,6 +302,36 @@ function clearPendingBroadcasts(pendingBroadcasts: any) {
 }
 
 /**
+ * Drop only the pending-broadcast entries for the given CREATE slots.
+ *
+ * Used by the re-plan path: the original plan's ops are abandoned with its
+ * working grid, so their pending entries must not trip the recursion's own
+ * pending-broadcast guard. Entries recorded by an EARLIER unresolved batch
+ * (different slots) are KEPT — clearing them here would let the fresh plan
+ * re-create slots whose earlier uncertain broadcast may have landed
+ * (duplicate orders). The batch-entry guard only fires for batches WITH
+ * CREATE actions, so a create-less batch can reach the re-plan path while
+ * earlier entries are still live.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} actions - The abandoned batch's actions (COW_ACTIONS)
+ */
+function clearPendingBroadcastsForSlots(bot: any, actions: any) {
+    if (!(bot.manager?._pendingBroadcasts instanceof Map) || !Array.isArray(actions)) return;
+    const slotIds = new Set(
+        actions
+            .filter((a: any) => a?.type === COW_ACTIONS.CREATE)
+            .map((a: any) => a?.id)
+            .filter(Boolean)
+    );
+    if (slotIds.size === 0) return;
+    for (const [fp, entry] of bot.manager._pendingBroadcasts) {
+        if (entry?.slotId && slotIds.has(entry.slotId)) {
+            bot.manager._pendingBroadcasts.delete(fp);
+        }
+    }
+}
+
+/**
  * Build a fingerprint for an on-chain order so it can be matched against
  * the pending-broadcast cache.
  * @param {import('./dexbot_class').DEXBot} bot
@@ -642,11 +672,20 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
                     }
                 }
                 discarded = remainingDiscarded;
-            } catch {
+            } catch (reReadErr: any) {
                 bot.manager.logger.log(
-                    '[COW][UNCERTAIN] Fresh chain read for late adoption failed; proceeding with original discard decisions.',
+                    `[COW][UNCERTAIN] Fresh chain read for late adoption FAILED (${getErrorMessage(reReadErr)}); ` +
+                    `keeping pending-broadcast protection and requesting structural resync ` +
+                    `(absence is not authoritative on a failed re-read)`,
                     'warn'
                 );
+                if (typeof bot.manager.requestStructuralGridResync === 'function') {
+                    await bot.manager.requestStructuralGridResync(
+                        'uncertain broadcast — failed re-read for discarded creates',
+                        { batchId: err?.batchId || null }
+                    );
+                }
+                return { executed: false, hadRotation: false, uncertain: true, ambiguousRead: true };
             }
         }
     }
@@ -953,9 +992,23 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                 && !err.partialOnChainState
                 && attempt <= MAX_RETRIES;
             if (isRetriable) {
-                const createContexts = opContexts.filter(
-                    (ctx: any) => ctx?.kind === 'create' && ctx?.finalInts && ctx?.order
-                );
+                // Verify per operation kind before re-broadcasting:
+                //  - CREATE:  the batch's creates absent from a live snapshot →
+                //             never transmitted → retry safe. Matched → landed.
+                //  - CANCEL:  the order STILL PRESENT → the cancel never landed
+                //             → retry safe. Order ABSENT from a live snapshot →
+                //             the cancel landed → re-broadcasting is a guaranteed
+                //             failure (order does not exist) → defer.
+                //  - UPDATE (size-update / rotation): limit_order_update ops are
+                //             DELTAS, so a landed broadcast double-applies the
+                //             size change on re-broadcast. Retry only when the
+                //             chain order is provably UNCHANGED from the
+                //             pre-update cache (update never applied); any other
+                //             state (target applied, partially filled after a
+                //             landed update, or the order missing) is ambiguous
+                //             → defer.
+                // A truncated or empty read is never authoritative (nodes lag /
+                // get_full_accounts caps the window) → defer.
                 let absence: 'absent' | 'landed' | 'unknown' = 'unknown';
                 try {
                     const accountRef = bot.accountId || bot.account?.id || bot.account;
@@ -963,23 +1016,66 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                     const freshChain = freshRead.orders;
                     if (Array.isArray(freshChain) && freshChain.length > 0) {
                         absence = 'absent';
-                        for (const ctx of createContexts) {
-                            const match = findChainOrderForSlot(bot, freshChain, ctx.order.id, {
-                                sell: ctx.finalInts.sell,
-                                receive: ctx.finalInts.receive,
-                                orderType: ctx.order.type,
-                                fingerprint: buildCreateOpFingerprint({
-                                    side: ctx.order.type,
-                                    assetA: bot.manager?.assets?.assetA?.id,
-                                    assetB: bot.manager?.assets?.assetB?.id,
-                                    sellInt: ctx.finalInts.sell,
-                                    receiveInt: ctx.finalInts.receive,
-                                    slotId: ctx.order.id
-                                })
-                            });
-                            if (match) {
-                                absence = 'landed';
-                                break;
+                        for (const ctx of opContexts) {
+                            if (!ctx) continue;
+                            if (ctx.kind === 'create') {
+                                if (!ctx.finalInts || !ctx.order) continue;
+                                const match = findChainOrderForSlot(bot, freshChain, ctx.order.id, {
+                                    sell: ctx.finalInts.sell,
+                                    receive: ctx.finalInts.receive,
+                                    orderType: ctx.order.type,
+                                    fingerprint: buildCreateOpFingerprint({
+                                        side: ctx.order.type,
+                                        assetA: bot.manager?.assets?.assetA?.id,
+                                        assetB: bot.manager?.assets?.assetB?.id,
+                                        sellInt: ctx.finalInts.sell,
+                                        receiveInt: ctx.finalInts.receive,
+                                        slotId: ctx.order.id
+                                    })
+                                });
+                                if (match) {
+                                    absence = 'landed';
+                                    break;
+                                }
+                            } else if (ctx.kind === 'cancel') {
+                                const chainOrderId = ctx.order?.orderId;
+                                if (!chainOrderId) {
+                                    absence = 'unknown';
+                                    break;
+                                }
+                                // Absent from a live snapshot → the cancel landed.
+                                if (!freshChain.some((o: any) => String(o?.id ?? '') === String(chainOrderId))) {
+                                    absence = 'landed';
+                                    break;
+                                }
+                            } else if (ctx.kind === 'size-update' || ctx.kind === 'rotation') {
+                                const chainOrderId = ctx.kind === 'size-update'
+                                    ? ctx.updateInfo?.partialOrder?.orderId
+                                    : ctx.rotation?.oldOrder?.orderId;
+                                const cachedRaw = ctx.kind === 'size-update'
+                                    ? ctx.updateInfo?.partialOrder?.rawOnChain
+                                    : ctx.rotation?.oldOrder?.rawOnChain;
+                                if (!chainOrderId) {
+                                    absence = 'unknown';
+                                    break;
+                                }
+                                const chainOrder = freshChain.find(
+                                    (o: any) => String(o?.id ?? '') === String(chainOrderId)
+                                );
+                                if (!chainOrder) {
+                                    // Missing: filled/cancelled concurrently — ambiguous.
+                                    absence = 'unknown';
+                                    break;
+                                }
+                                if (!chainOrderUnchangedFromCache(chainOrder, cachedRaw)) {
+                                    // Landed (target applied) or partially filled
+                                    // after a landed update — re-applying the delta
+                                    // would overshoot. Defer.
+                                    absence = 'unknown';
+                                    break;
+                                }
+                                // Provably unchanged → the update never applied →
+                                // re-applying the identical delta is safe.
                             }
                         }
                     }
@@ -999,7 +1095,7 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
 
                 if (absence === 'absent') {
                     bot.manager.logger.log(
-                        `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}); verified absent on chain, retrying...`,
+                        `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}); verified unapplied on chain, retrying...`,
                         'warn'
                     );
                     await bot._ensureCredentialDaemonWritable('COW batch retry');
@@ -1008,7 +1104,7 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
 
                 bot.manager.logger.log(
                     `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}); ` +
-                    `${absence === 'landed' ? 'create(s) confirmed landed on chain' : 'chain state unverifiable (empty/truncated/lagging read)'} — ` +
+                    `${absence === 'landed' ? 'operation(s) confirmed applied on chain' : 'chain state unverifiable (empty/truncated/lagging read)'} — ` +
                     `deferring to post-broadcast reconciliation (no blind re-broadcast)`,
                     'warn'
                 );
@@ -1017,6 +1113,29 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
             throw err;
         }
     }
+}
+
+/**
+ * Whether a chain order still matches the cached pre-update state the
+ * limit_order_update delta was built from. Only a provably-unchanged order
+ * makes a re-broadcast of the identical delta safe (it applies to the same
+ * base). Any other state (target applied, filled, resized) must defer.
+ * @param {Object} chainOrder - Raw chain order object (get_full_accounts)
+ * @param {Object|null} cachedRaw - The rawOnChain cache captured at build time
+ * @returns {boolean}
+ */
+function chainOrderUnchangedFromCache(chainOrder: any, cachedRaw: any) {
+    if (!chainOrder || !cachedRaw) return false;
+    const base = chainOrder.sell_price?.base;
+    const quote = chainOrder.sell_price?.quote;
+    const cachedBase = cachedRaw.sell_price?.base?.amount;
+    const cachedQuote = cachedRaw.sell_price?.quote?.amount;
+    const cachedForSale = cachedRaw.for_sale;
+    if (base === undefined || quote === undefined) return false;
+    if (cachedForSale === undefined || cachedBase === undefined || cachedQuote === undefined) return false;
+    return String(base.amount ?? '') === String(cachedBase)
+        && String(quote.amount ?? '') === String(cachedQuote)
+        && String(chainOrder.for_sale ?? '') === String(cachedForSale);
 }
 
 /**
@@ -1834,8 +1953,18 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         );
         try {
             const accountRef = bot.account;
-            const freshSnapshot = await chainOrders.readOpenOrders(accountRef);
-            if (freshSnapshot && freshSnapshot.length > 0) {
+            const freshRead = await chainOrders.readOpenOrdersWithMeta(accountRef);
+            // Truncated-read guard: a partial get_full_accounts window omits the
+            // freshest orders; syncing on it would virtualize live slots and
+            // re-create duplicates. Defer the adoption to a clean read — the
+            // unmatched orders keep blocking CREATEs until then.
+            if (freshRead.truncated) {
+                bot.manager.logger.log(
+                    '[COW] Post-guard chain snapshot TRUNCATED; skipping adoption sync (partial snapshot would virtualize live slots) — unmatched chain orders keep blocking CREATEs',
+                    'warn'
+                );
+            } else if (freshRead.orders && freshRead.orders.length > 0) {
+                const freshSnapshot = freshRead.orders;
                 const syncResult = await bot.manager.syncFromOpenOrders(freshSnapshot, {
                     // Accounting enabled: the adopted chain orders were never
                     // registered in master (they are unmatched/orphan), so the
@@ -2337,13 +2466,17 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 if (replanned && !replanned.aborted) {
                     if (hasExecutableActions(replanned)) {
                         // The original plan's ops are abandoned with its working
-                        // grid; drop their pending-broadcast entries too, or the
+                        // grid; drop THEIR pending-broadcast entries only, or the
                         // recursion's own pending-broadcast guard would reject
-                        // the fresh plan's CREATEs. Safe to clear all: any prior
-                        // entries would have aborted this batch at the guard.
-                        if (bot.manager?._pendingBroadcasts instanceof Map) {
-                            clearPendingBroadcasts(bot.manager._pendingBroadcasts);
-                        }
+                        // the fresh plan's CREATEs. Entries from an earlier
+                        // unresolved batch are deliberately KEPT: the entry
+                        // guard only covers CREATE batches, so a create-less
+                        // batch can reach this path while earlier entries are
+                        // still live — clearing them here would let the fresh
+                        // plan re-create slots whose earlier broadcast may
+                        // have landed (duplicate orders). The recursion's
+                        // guard will then abort + reconcile instead.
+                        clearPendingBroadcastsForSlots(bot, cowResult.actions);
                         return await updateOrdersOnChainBatchCOW(bot, replanned, {
                             replanDepth: replanDepth + 1
                         });
@@ -2356,9 +2489,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         bot.manager._clearWorkingGridRef();
                         replanned._workingGridPushed = false;
                     }
-                    if (bot.manager?._pendingBroadcasts instanceof Map) {
-                        clearPendingBroadcasts(bot.manager._pendingBroadcasts);
-                    }
+                    clearPendingBroadcastsForSlots(bot, cowResult.actions);
                     bot.manager.logger.log(
                         '[COW] Re-plan produced no executable actions; grid is already consistent post-fills, skipping stale plan',
                         'info'
@@ -2824,24 +2955,61 @@ async function persistGridAndClearPendingBroadcasts(bot: any, logPrefix: string)
 async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
     if (!bot.manager?.accountant || !Array.isArray(contexts) || contexts.length === 0) return;
     const btsFeeData = getAssetFeesSafe('BTS');
+    const btsSide = (typeof bot.manager.accountant._getBtsOrderType === 'function')
+        ? bot.manager.accountant._getBtsOrderType()
+        : null;
 
     for (const ctx of contexts) {
-        if (ctx?.kind !== 'create') continue;
-        const slot = ctx.order?.id ? bot.manager.orders.get(ctx.order.id) : null;
-        if (!slot?.orderId) continue;
-        try {
-            await bot.manager.synchronizeWithChain({
-                gridOrderId: ctx.order.id,
-                chainOrderId: slot.orderId,
-                isPartialPlacement: false,
-                expectedType: ctx.order.type,
-                fee: btsFeeData?.createFee || 0,
-            }, 'createOrder');
-        } catch (feeErr: any) {
-            bot.manager.logger.log(
-                `[COW] Adoption fee accounting failed for create slot ${ctx.order.id}: ${getErrorMessage(feeErr)}`,
-                'warn'
-            );
+        if (ctx?.kind === 'create') {
+            const slot = ctx.order?.id ? bot.manager.orders.get(ctx.order.id) : null;
+            if (!slot?.orderId) continue;
+            try {
+                await bot.manager.synchronizeWithChain({
+                    gridOrderId: ctx.order.id,
+                    chainOrderId: slot.orderId,
+                    isPartialPlacement: false,
+                    expectedType: ctx.order.type,
+                    fee: btsFeeData?.createFee || 0,
+                }, 'createOrder');
+            } catch (feeErr: any) {
+                bot.manager.logger.log(
+                    `[COW] Adoption fee accounting failed for create slot ${ctx.order.id}: ${getErrorMessage(feeErr)}`,
+                    'warn'
+                );
+            }
+        } else if (ctx?.kind === 'cancel') {
+            // The cancel landed but the commit was refused / the adoption path
+            // bypassed processBatchResults. Master still holds the slot; the
+            // next sync's phantom cleanup releases its commitment with fee 0 —
+            // charge the cancel fee here so the optimistic BTS balance reflects
+            // the on-chain cost exactly once (mirrors the sync's
+            // 'cancel-order-unmatched-fee' pattern; the deferred-fee refund is
+            // reconciled by the next sync's fill/cancel processing).
+            if (btsSide && btsFeeData?.cancelFee > 0) {
+                try {
+                    await bot.manager.accountant.adjustTotalBalance(btsSide, -btsFeeData.cancelFee, 'cancel-adopt-fee');
+                } catch (feeErr: any) {
+                    bot.manager.logger.log(
+                        `[COW] Adoption fee accounting failed for cancel ${ctx.order?.orderId}: ${getErrorMessage(feeErr)}`,
+                        'warn'
+                    );
+                }
+            }
+        } else if (ctx?.kind === 'size-update' || ctx?.kind === 'rotation') {
+            // Same reasoning as cancels: the update landed but its fee was never
+            // charged on this path; the next sync's size reconciliation applies
+            // the chain state without an update fee (fee 0), so charge it once
+            // here to prevent optimistic BTS drift.
+            if (btsSide && btsFeeData?.updateFee > 0) {
+                try {
+                    await bot.manager.accountant.adjustTotalBalance(btsSide, -btsFeeData.updateFee, 'update-adopt-fee');
+                } catch (feeErr: any) {
+                    bot.manager.logger.log(
+                        `[COW] Adoption fee accounting failed for update ${ctx.kind === 'size-update' ? ctx.updateInfo?.partialOrder?.orderId : ctx.rotation?.oldOrder?.orderId}: ${getErrorMessage(feeErr)}`,
+                        'warn'
+                    );
+                }
+            }
         }
     }
 }

@@ -135,6 +135,11 @@ function createTransport(config: TransportConfig = {}) {
     let pendingRequests = new Map<string, PendingRequest>();
     let onMessageHandlers: Array<(params: any) => void> = [];
     let status: TransportStatus = 'closed';
+    // In-flight connect handshakes (connectOne sockets not yet assigned to ws).
+    // disconnect() closes them so a concurrent connect sweep (e.g. a
+    // deadline-aborted broadcast's reconnect racing the next request) cannot
+    // leave a zombie handshake that later assigns itself as the active socket.
+    const connectingSockets = new Set<WebSocketLike>();
 
     function setStatus(newStatus: TransportStatus): void {
         if (status !== newStatus) {
@@ -230,21 +235,26 @@ function createTransport(config: TransportConfig = {}) {
         return new Promise((resolve, reject) => {
             try {
                 const socket = new (getWebSocketConstructor())(url);
+                connectingSockets.add(socket);
                 const timer = setTimeout(() => {
+                    connectingSockets.delete(socket);
                     try { socket.close(); } catch (_: any) {}
                     reject(new ConnectionError(`handshake timeout ${connectTimeoutMs}ms for ${url}`));
                 }, connectTimeoutMs);
 
                 socket.onopen = () => {
+                    connectingSockets.delete(socket);
                     clearTimeout(timer);
                     resolve(socket);
                 };
                 socket.onerror = (evt: any) => {
+                    connectingSockets.delete(socket);
                     clearTimeout(timer);
                     const msg = evt && evt.message ? evt.message : 'WebSocket connection error';
                     reject(new ConnectionError(msg));
                 };
                 socket.onclose = (evt: any) => {
+                    connectingSockets.delete(socket);
                     clearTimeout(timer);
                     reject(new ConnectionError(`handshake closed code=${evt.code} for ${url}`));
                 };
@@ -464,6 +474,14 @@ function createTransport(config: TransportConfig = {}) {
             try { ws.close(); } catch (_: any) {}
             ws = null;
         }
+        // Abort any in-flight connect handshakes: ws is only assigned after a
+        // handshake completes, so closing ws alone cannot reach them. A zombie
+        // handshake that later assigns itself would resurrect a connection the
+        // caller explicitly tore down (deadline aborts, node rotation).
+        for (const socket of connectingSockets) {
+            try { socket.close(); } catch (_: any) {}
+        }
+        connectingSockets.clear();
         nodeUrl = null;
         setStatus('closed');
     }

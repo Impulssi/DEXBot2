@@ -383,7 +383,14 @@ async function finishStartupSequence(bot: any, startupState: any) {
             throw new Error('Cannot start bot without a resolved account ID');
         }
 
-        const chainOpenOrders = bot.config.dryRun ? [] : await chainOrders.readOpenOrders(bot.accountId);
+        const startupChainRead = bot.config.dryRun
+            ? { orders: [] as any[], truncated: false }
+            : await chainOrders.readOpenOrdersWithMeta(bot.accountId);
+        const chainOpenOrders = startupChainRead.orders;
+        const chainReadTruncated = !!startupChainRead.truncated;
+        if (chainReadTruncated) {
+            bot._log('[STARTUP] Open-order read TRUNCATED (account exceeds the get_full_accounts window); chain-touching startup steps deferred — the sync loop will reconcile on a clean read', 'warn');
+        }
 
         let shouldRegenerate = false;
         if (!persistedGrid || persistedGrid.length === 0) {
@@ -438,7 +445,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 if (shouldRegenerate) {
                     await bot.manager._initializeAssets();
 
-                    if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
+                    if (!chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
                         bot._log('Generating new grid and syncing with existing on-chain orders...');
                         await Grid.initializeGrid(bot.manager);
                         await bot.manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true });
@@ -452,46 +459,70 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         });
 
                         await bot._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (regenerated grid)');
-                    } else {
+                    } else if (!chainReadTruncated) {
                         bot._log('Generating new grid and placing initial orders on-chain...');
                         await bot.placeInitialOrders();
+                    } else {
+                        // Truncated snapshot: the account MAY have live orders
+                        // outside the window. Placing initial orders or adopting
+                        // from the partial snapshot could duplicate them — defer
+                        // both to the sync loop's clean-read reconciliation.
+                        bot._log('[STARTUP] Skipping initial placement/adoption: truncated snapshot is ambiguous — the next sync cycle will reconcile the grid', 'warn');
                     }
                     await bot._persistAndRecoverIfNeeded();
                 } else {
                     bot._log('Found active session. Loading and syncing existing grid.');
                     await Grid.loadGrid(bot.manager, persistedGrid, persistedBoundaryIdx);
                     let startupChainOpenOrders = chainOpenOrders;
-                    const syncResult = await bot.manager.syncFromOpenOrders(startupChainOpenOrders, { skipAccounting: true });
+                    if (chainReadTruncated) {
+                        // Sync on a partial window would virtualize live ACTIVE
+                        // slots (pass-1 phantom cleanup) and re-create them as
+                        // duplicates — defer to the sync loop's clean reads.
+                        bot._log('[STARTUP] Skipping syncFromOpenOrders: truncated snapshot would virtualize live slots; deferring to the sync loop', 'warn');
+                    } else {
+                        const syncResult = await bot.manager.syncFromOpenOrders(startupChainOpenOrders, { skipAccounting: true });
 
-                    if (syncResult.ordersNeedingCorrection?.length > 0) {
-                        await correctAllPriceMismatches(
-                            bot.manager, bot.account, bot.privateKey, chainOrders
-                        );
-                    }
+                        if (syncResult.ordersNeedingCorrection?.length > 0) {
+                            await correctAllPriceMismatches(
+                                bot.manager, bot.account, bot.privateKey, chainOrders
+                            );
+                        }
 
-                    if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
-                        bot._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
-                        const batchResult = await bot._processFillsWithBatching(
-                            syncResult.filledOrders, new Set(), 'startup sync fill rebalance',
-                            { skipAccountTotalsUpdate: true }
-                        );
+                        if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
+                            bot._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
+                            const batchResult = await bot._processFillsWithBatching(
+                                syncResult.filledOrders, new Set(), 'startup sync fill rebalance',
+                                { skipAccountTotalsUpdate: true }
+                            );
 
-                        if (!batchResult?.aborted) {
-                            startupChainOpenOrders = await chainOrders.readOpenOrders(bot.accountId);
-                            await bot.manager.synchronizeWithChain(startupChainOpenOrders, 'readOpenOrders');
+                            if (!batchResult?.aborted) {
+                                const reRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
+                                if (reRead.truncated) {
+                                    bot._log('[STARTUP] Post-fill re-read TRUNCATED; skipping second sync (partial snapshot cannot drive pass-1 cleanup)', 'warn');
+                                } else {
+                                    startupChainOpenOrders = reRead.orders;
+                                    await bot.manager.synchronizeWithChain(startupChainOpenOrders, 'readOpenOrders');
+                                }
+                            }
                         }
                     }
 
-                    const rebalanceResult = await reconcileGridOrders({
-                        manager: bot.manager,
-                        config: bot.config,
-                        account: bot.account,
-                        privateKey: bot.privateKey,
-                        chainOrders,
-                        chainOpenOrders: startupChainOpenOrders,
-                    });
+                    if (chainReadTruncated) {
+                        // Same reasoning: reconcile on a partial snapshot could
+                        // cancel/adopt against an incomplete view of the chain.
+                        bot._log('[STARTUP] Skipping startup reconcile: truncated snapshot — deferring to the sync loop', 'warn');
+                    } else {
+                        const rebalanceResult = await reconcileGridOrders({
+                            manager: bot.manager,
+                            config: bot.config,
+                            account: bot.account,
+                            privateKey: bot.privateKey,
+                            chainOrders,
+                            chainOpenOrders: startupChainOpenOrders,
+                        });
 
-                    await bot._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (loaded grid)');
+                        await bot._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (loaded grid)');
+                    }
 
                     await bot._persistAndRecoverIfNeeded();
 

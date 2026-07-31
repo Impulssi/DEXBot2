@@ -1110,9 +1110,30 @@ function sendDaemonRequest(requestType: any, accountName: any, timeout: any = TI
 
         socket.on('end', () => {
             clearTimeout(timer);
-            if (!settled && !responseBuffer.trim()) {
+            if (!settled) {
                 settled = true;
-                reject(new Error('Daemon closed connection unexpectedly'));
+                if (responseBuffer.trim()) {
+                    // The daemon closed the socket without a trailing newline.
+                    // A complete buffered line is a valid response; a partial
+                    // line means the daemon was killed mid-write — either way
+                    // the request MUST settle (a truncated stream must not
+                    // leave the caller hanging forever — mirrors
+                    // dexbot_credential_client.ts).
+                    try {
+                        const parsed = JSON.parse(responseBuffer);
+                        if (extractResult) {
+                            resolve(extractResult(parsed));
+                        } else if (parsed.success) {
+                            resolve(parsed);
+                        } else {
+                            reject(new Error(parsed.error || `Daemon ${label} failed`));
+                        }
+                        return;
+                    } catch {
+                        // fall through to the rejection below
+                    }
+                }
+                reject(new Error(`Daemon ${label} closed connection unexpectedly`));
             }
         });
     });

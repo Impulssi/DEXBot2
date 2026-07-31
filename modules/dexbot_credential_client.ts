@@ -45,8 +45,10 @@ interface CredentialClientOptions {
      */
     fallbackNodes?: string[];
     /**
-     * Fired with the node actually used (options.nodeUrl) when a broadcast
-     * ends uncertain (BROADCAST_DEADLINE / outer timeout). Never fired for
+     * Fired with the node the daemon reports as in play when a broadcast ends
+     * uncertain (BROADCAST_DEADLINE / outer timeout). The daemon echoes the
+     * node actually used in the typed reply; without a daemon-reported node
+     * (queued deadline, never-started work) nothing is fired. Never fires for
      * fallback nodes or when no nodeUrl was requested.
      */
     onNodeFailed?: (nodeUrl: string) => void;
@@ -65,6 +67,8 @@ interface CredentialDaemonResponse {
     code?: string;
     raw?: any;
     operation_results?: any[];
+    /** Node reported by the daemon as in play at the failure (typed replies). */
+    nodeUrl?: string | null;
 }
 
 interface RequestPayload {
@@ -294,10 +298,19 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
         }
         : {};
 
+    // The node the daemon reports as in play when an uncertain outcome occurs
+    // (BROADCAST_DEADLINE reply carries nodeUrl when determinable). options.nodeUrl
+    // is only the bot's PREFERRED node — the daemon may have rotated after
+    // pre-transmit failures, and a deadline fired while queued involves no node.
+    let daemonNodeUrl: string | null = null;
+
     try {
         const response = await sendCredentialDaemonRequest(socketPath, payload, timeoutMs, meta);
         if (response.success) {
             return response;
+        }
+        if (typeof response?.nodeUrl === 'string' && response.nodeUrl) {
+            daemonNodeUrl = response.nodeUrl;
         }
         const errMsg = response.error || 'Unknown credential daemon error';
         const errCode = response.code || null;
@@ -328,8 +341,13 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
         throw new Error(errMsg);
     } catch (err) {
         if (err instanceof BroadcastUncertainError) {
-            if (typeof options.onNodeFailed === 'function' && nodeUrl) {
-                options.onNodeFailed(nodeUrl);
+            // Blame the node the daemon reported (the one actually in play at
+            // the deadline), never the bot's original preference blindly: the
+            // daemon may have rotated, and a queued deadline involves no node.
+            // Without a daemon-reported node, nothing is reported (the daemon's
+            // own ledger already records rotation failures).
+            if (typeof options.onNodeFailed === 'function' && daemonNodeUrl) {
+                options.onNodeFailed(daemonNodeUrl);
             }
             // NEVER re-send ops whose outcome is unknown: the broadcast may
             // have landed, and re-sending duplicates on-chain orders (the

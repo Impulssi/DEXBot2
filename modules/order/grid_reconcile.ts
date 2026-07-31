@@ -541,6 +541,12 @@ export async function reconcileGridOrders({
                             `Startup: Failed to adopt landed order ${co.id} into slot ${candidate?.id}: ${getErrorMessage(adoptErr)}`,
                             'warn'
                         );
+                        // The order IS on chain (Phase-2 uncertain-landed). Even
+                        // though the slot registration failed, the ID must still
+                        // be protected from the same pass's surplus-cancel —
+                        // mirror the capturedId protection of _createOrderFromGrid.
+                        // The next sync loop's orphan adoption registers it.
+                        gridOrderIds.add(co.id);
                     }
                 }
                 const staleSurplusCancels: Array<{ chainOrderObj: any; sideLabel: string }> = [];

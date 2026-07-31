@@ -1,5 +1,5 @@
 
-import { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, DEFAULT_BROADCAST_TIMEOUT_MS, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon } from '../../modules/dexbot_credential_client.js';
+import { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, DEFAULT_BROADCAST_TIMEOUT_MS, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon, BroadcastUncertainError } from '../../modules/dexbot_credential_client.js';
 
 function getSocketPath(options: Record<string, any> = {}) {
   return options.socketPath || DEFAULT_SOCKET_PATH;
@@ -52,4 +52,4 @@ function broadcastOperationViaCredentialDaemon(accountName: any, operation: any,
   });
 }
 
-export { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, DEFAULT_BROADCAST_TIMEOUT_MS, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon }
+export { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, DEFAULT_BROADCAST_TIMEOUT_MS, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon, BroadcastUncertainError }

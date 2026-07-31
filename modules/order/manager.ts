@@ -184,22 +184,24 @@ class COWRebalanceEngine {
         // boundary.
         // A plan built on stale market data would place an order that crosses
         // the current spread and fills immediately; defer it to the next cycle.
-        // - The reference is the PLAN'S OWN targetBoundary, not the last
-        //   same-side fill slot: deriveTargetBoundary caps the net boundary
-        //   shift, so after a burst (e.g. SELL fills 5,6,7 with cap=1 the
-        //   boundary only reaches slot 6) the last fill sits ABOVE the plan's
-        //   legitimate re-place levels — a fill-slot veto would drop those
-        //   valid placements. Comparing against the boundary only vetoes
-        //   genuinely cross-spread placements (an UPDATE/ROTATE keeping an
-        //   order in a slot the plan now assigns to the opposite side).
+        // - The reference is the PLAN'S OWN targetBoundary — and ONLY that:
+        //   the plan's slots are derived from the same target grid, so a stale
+        //   plan's placements cross its own boundary while legitimate
+        //   re-placements never do (the boundary is capped, the fills are not).
+        // - Fill-based veto lines (last same-side OR opposite-side fill) are
+        //   deliberately NOT used: after a burst the fills sit beyond the
+        //   plan's legitimate re-place levels (e.g. SELL fills 5,6,7 with cap=1
+        //   moves the boundary only to slot 6), so ANY fill comparison can veto
+        //   valid placements — including the strategy's own rotations (a
+        //   partial SELL rotated into a slot below the last BUY fill after the
+        //   boundary crawled left). The guard is therefore "inert" for
+        //   boundary-consistent engine output by construction.
+        // - When no plan boundary is available (hand-built plans), nothing is
+        //   vetoed — fill evidence is not a reliable veto line.
         // - Slot ids are compared within the plan's own grid generation
         //   (targetBoundary and target slots are both from the current plan),
         //   so a recenter between the fill capture and the plan cannot skew
         //   the comparison.
-        // - The last same-side shift-eligible fill slot is kept only as a
-        //   fallback when the plan boundary is unavailable; partial fills
-        //   (without delayed-rotation trigger) never moved the boundary, so
-        //   their level is not a valid cross-check.
         // - Both CREATE and UPDATE actions are guarded: the cancel/create
         //   optimization can convert the same logical placement into an UPDATE
         //   op (target slot = newGridId), which the CREATE-only check would
@@ -209,48 +211,17 @@ class COWRebalanceEngine {
         const planBoundary = (targetBoundary !== null && targetBoundary !== undefined && Number.isFinite(Number(targetBoundary)))
             ? Number(targetBoundary)
             : null;
-        const eligibleFills = (Array.isArray(fills) ? fills : []).filter(
-            (f: any) => f?.isPartial !== true || f?.isDelayedRotationTrigger === true
-        );
-        const lastBuyFill = [...eligibleFills].reverse().find((f: any) => f?.type === ORDER_TYPES.BUY);
-        const lastSellFill = [...eligibleFills].reverse().find((f: any) => f?.type === ORDER_TYPES.SELL);
-        const lastBuyFillSlot = lastBuyFill ? parseSlotIndex(lastBuyFill?.id) : null;
-        const lastSellFillSlot = lastSellFill ? parseSlotIndex(lastSellFill?.id) : null;
-        const lastBuyFillPrice = lastBuyFill ? toFiniteNumber(lastBuyFill?.price) : NaN;
-        const lastSellFillPrice = lastSellFill ? toFiniteNumber(lastSellFill?.price) : NaN;
-        if (planBoundary !== null
-            || lastBuyFillSlot !== null || lastSellFillSlot !== null
-            || Number.isFinite(lastBuyFillPrice) || Number.isFinite(lastSellFillPrice)) {
+        if (planBoundary !== null) {
             const before = optimizedActions.length;
             const guarded = optimizedActions.filter((a: any) => {
                 const isPlacement = a?.type === COW_ACTIONS.CREATE || a?.type === COW_ACTIONS.UPDATE;
                 if (!isPlacement) return true;
                 const targetSlot = parseSlotIndex(a?.newGridId ?? a?.id);
+                if (targetSlot === null) return true;
                 if (a?.order?.type === ORDER_TYPES.BUY) {
-                    if (planBoundary !== null && targetSlot !== null) {
-                        if (targetSlot > planBoundary) {
-                            this.logger?.log(
-                                `[COW] Dropping stale-slot BUY ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} > plan boundary ${planBoundary}`,
-                                'warn'
-                            );
-                            return false;
-                        }
-                        return true;
-                    }
-                    if (lastBuyFillSlot !== null && targetSlot !== null) {
-                        if (targetSlot > lastBuyFillSlot) {
-                            this.logger?.log(
-                                `[COW] Dropping stale-slot BUY ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} > last BUY fill slot ${lastBuyFillSlot}`,
-                                'warn'
-                            );
-                            return false;
-                        }
-                        return true;
-                    }
-                    const targetPrice = toFiniteNumber(a?.newPrice ?? a?.order?.price);
-                    if (Number.isFinite(lastBuyFillPrice) && Number.isFinite(targetPrice) && targetPrice > lastBuyFillPrice) {
+                    if (targetSlot > planBoundary) {
                         this.logger?.log(
-                            `[COW] Dropping stale-price BUY ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: price=${targetPrice} > last BUY fill=${lastBuyFillPrice}`,
+                            `[COW] Dropping stale-slot BUY ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} > plan boundary ${planBoundary}`,
                             'warn'
                         );
                         return false;
@@ -258,30 +229,9 @@ class COWRebalanceEngine {
                     return true;
                 }
                 if (a?.order?.type === ORDER_TYPES.SELL) {
-                    if (planBoundary !== null && targetSlot !== null) {
-                        if (targetSlot < planBoundary) {
-                            this.logger?.log(
-                                `[COW] Dropping stale-slot SELL ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} < plan boundary ${planBoundary}`,
-                                'warn'
-                            );
-                            return false;
-                        }
-                        return true;
-                    }
-                    if (lastSellFillSlot !== null && targetSlot !== null) {
-                        if (targetSlot < lastSellFillSlot) {
-                            this.logger?.log(
-                                `[COW] Dropping stale-slot SELL ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} < last SELL fill slot ${lastSellFillSlot}`,
-                                'warn'
-                            );
-                            return false;
-                        }
-                        return true;
-                    }
-                    const targetPrice = toFiniteNumber(a?.newPrice ?? a?.order?.price);
-                    if (Number.isFinite(lastSellFillPrice) && Number.isFinite(targetPrice) && targetPrice < lastSellFillPrice) {
+                    if (targetSlot < planBoundary) {
                         this.logger?.log(
-                            `[COW] Dropping stale-price SELL ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: price=${targetPrice} < last SELL fill=${lastSellFillPrice}`,
+                            `[COW] Dropping stale-slot SELL ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} < plan boundary ${planBoundary}`,
                             'warn'
                         );
                         return false;
@@ -1770,11 +1720,19 @@ class OrderManager {
         // acquire/rejection path escaped without popping, leaving the marker
         // true and the grid's entry on the stack for the outer catch — an
         // unmatched pop in disguise that would steal a nested grid's entry.
+        // The pop is additionally identity-checked: plan-path grids
+        // (updateOrdersOnChainPlan, local-only divergence commits) were never
+        // pushed, so popping unconditionally would steal a NESTED grid's
+        // stack entry. Pushed grids are always at the top at commit time
+        // (LIFO), so the check is a no-op for them.
         let popped = false;
         const releaseStackEntry = () => {
             if (popped) return;
             popped = true;
-            this._clearWorkingGridRef();
+            const stack = this._currentWorkingGridStack;
+            if (stack.length > 0 && stack[stack.length - 1] === workingGrid) {
+                this._clearWorkingGridRef();
+            }
         };
 
         try {

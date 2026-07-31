@@ -655,8 +655,8 @@ class Accountant {
             );
             return {
                 isValid: false,
+                deferred: true,
                 reason: `Recovery sync skipped: ${freshRead.truncated ? 'truncated' : 'empty'} chain read is ambiguous (node may be lagging); deferring to next reconcile cycle`,
-                structuralGridResyncRequired: true,
             };
         }
         // Recovery runs after fetchAccountTotals() has refreshed authoritative balances
@@ -789,6 +789,23 @@ class Accountant {
 
           try {
               const validation = await this._performStateRecovery(mgr);
+
+              if (validation?.deferred) {
+                  // Ambiguous (empty/truncated) chain read: the recovery was
+                  // DEFERRED, not failed. Roll back the attempt increment so an
+                  // ambiguous snapshot can never burn the attempt budget toward
+                  // MAX_RECOVERY_ATTEMPTS (which blocks all CREATEs until the
+                  // next fill/sync cycle), and skip the structural resync — a
+                  // full grid reset driven by an ambiguous read would
+                  // virtualize live slots via pass-1 phantom cleanup.
+                  state.attemptCount = Math.max(0, state.attemptCount - 1);
+                  state.lastFailureAt = 0;
+                  mgr.logger?.log?.(
+                      `[RECOVERY] State recovery deferred (${validation.reason}); attempt not counted`,
+                      'warn'
+                  );
+                  return false;
+              }
 
               if (validation.isValid) {
                   mgr.logger?.log?.('[RECOVERY] State recovery succeeded', 'info');
@@ -1208,6 +1225,8 @@ class Accountant {
 
         if (!side) return;
 
+        let settled = false;
+
         // ATOMIC: read btsFeesOwed + sufficiency check + deduction + reset in one
         // lock. Two overlapping calls then serialize: the second sees fees=0 and
         // no-ops instead of double-deducting a stale amount.
@@ -1229,14 +1248,19 @@ class Accountant {
 
             this._adjustTotalBalanceLocked(orderType, -fees, 'bts-fee-settlement');
             mgr.funds.btsFeesOwed = 0;
+            settled = true;
 
             if (mgr.logger && mgr.logger.level === 'debug') {
                 mgr.logger.log(`[BTS-FEE] Settled: ${Format.formatAmount8(fees)} BTS`, 'debug');
             }
         });
 
-        // Recalculate funds to update all tracking metrics
-        await mgr.recalculateFunds();
+        // Recalculate funds only when something was actually settled — the
+        // no-op calls (no fees owed, or deferred for insufficient funds) skip
+        // the full grid iteration.
+        if (settled) {
+            await mgr.recalculateFunds();
+        }
     }
 
     /**

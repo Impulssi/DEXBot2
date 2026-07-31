@@ -127,6 +127,7 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
     const weightFiles = withDynamicWeightFiles(botKey);
     const originalListenForFills = chainOrders.listenForFills;
     const originalReadOpenOrders = chainOrders.readOpenOrders;
+    const originalReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const originalLoadGrid = gridStub.loadGrid;
 
     try {
@@ -141,6 +142,7 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
 
         chainOrders.listenForFills = async () => async () => {};
         chainOrders.readOpenOrders = async () => [];
+        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
         gridStub.loadGrid = async () => {
             loadGridCalls++;
         };
@@ -234,6 +236,7 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
     } finally {
         chainOrders.listenForFills = originalListenForFills;
         chainOrders.readOpenOrders = originalReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
         gridStub.loadGrid = originalLoadGrid;
         weightFiles.cleanup();
     }
