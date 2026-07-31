@@ -208,6 +208,7 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
                 isLocked: () => false,
                 getQueueLength: () => 0,
             },
+            _fundLock: { acquire: async (fn) => await fn() },
             syncFromOpenOrders: async () => ({
                 filledOrders: [{
                     id: 'slot-174',

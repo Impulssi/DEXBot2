@@ -356,10 +356,12 @@ async function finishStartupSequence(bot: any, startupState: any) {
             return;
         }
 
-        bot.manager.resetFunds();
-        if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
-            bot.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
-        }
+        await bot.manager._fundLock.acquire(async () => {
+            bot.manager.resetFunds();
+            if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
+                bot.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
+            }
+        });
         if (bot.config.assetA !== 'BTS' && bot.config.assetB !== 'BTS') {
             if (persistedBtsBalance && typeof persistedBtsBalance === 'object') {
                 bot.manager.btsBalance = {
@@ -418,12 +420,16 @@ async function finishStartupSequence(bot: any, startupState: any) {
 
         if (!shouldRegenerate) {
             if (persistedBtsFeesOwed > 0) {
-                bot.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
+                await bot.manager._fundLock.acquire(async () => {
+                    bot.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
+                });
                 bot._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
             }
         } else {
             bot._log(`ℹ Grid regenerating - resetting BTS fees to clean state`);
-            bot.manager.funds.btsFeesOwed = 0;
+            await bot.manager._fundLock.acquire(async () => {
+                bot.manager.funds.btsFeesOwed = 0;
+            });
         }
 
         await bot.manager._fillProcessingLock.acquire(async () => {
