@@ -334,19 +334,16 @@ function clearPendingBroadcastsForSlots(bot: any, actions: any) {
 
 /**
  * Pop a pushed working-grid stack entry exactly once, guarded on the push
- * marker. Results that were never pushed (aborted plans, no-trigger
- * processFilledOrders outputs, updateOrdersOnChainPlan cowResults,
+ * marker (manager-owned discipline — see OrderManager._pushWorkingGridRef /
+ * _popWorkingGridRef). Results that were never pushed (aborted plans,
+ * no-trigger processFilledOrders outputs, updateOrdersOnChainPlan cowResults,
  * reconcileGridOrders null results) leave the stack untouched — an unmatched
- * pop could steal a nested grid's entry. Clears the marker so a later throw
- * in the same frame cannot pop a second time.
+ * pop could steal a nested grid's entry.
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {Object} cowResult - Rebalance/COW result carrying _workingGridPushed
  */
 function popPushedWorkingGrid(bot: any, cowResult: any) {
-    if (cowResult?._workingGridPushed === true) {
-        bot.manager?._clearWorkingGridRef?.();
-        cowResult._workingGridPushed = false;
-    }
+    bot.manager?._popWorkingGridRef?.(cowResult);
 }
 
 /**
@@ -988,16 +985,97 @@ function shouldExecuteCreatePairMode(_bot: any, opContexts: any) {
 }
 
 /**
+ * Verify one op context against a fresh chain snapshot for pre-retry
+ * re-broadcast safety. Verdicts per kind (see the kind-specific verifiers):
+ *  - 'absent'  → provably never transmitted → retry safe
+ *  - 'landed'  → provably applied on chain → must defer
+ *  - 'unknown' → chain state unverifiable → must defer
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array} freshChain - Non-empty, non-truncated chain snapshot
+ * @param {Object} ctx - Operation context (kind: create/cancel/size-update/rotation)
+ * @returns {'absent' | 'landed' | 'unknown'}
+ */
+function verifyOpAgainstChain(bot: any, freshChain: any[], ctx: any): 'absent' | 'landed' | 'unknown' {
+    if (ctx.kind === 'create') return verifyCreateAbsent(bot, freshChain, ctx);
+    if (ctx.kind === 'cancel') return verifyCancelLanded(freshChain, ctx);
+    if (ctx.kind === 'size-update' || ctx.kind === 'rotation') return verifyUpdateUnapplied(freshChain, ctx);
+    return 'unknown';
+}
+
+/**
+ * CREATE verify: 'absent' only when the batch's creates are found NOWHERE in
+ * the snapshot (fingerprint/near-match) — never transmitted → retry safe.
+ * Any match means the broadcast landed ('landed'). A create without
+ * fingerprint data cannot match anything, so it is treated as absent
+ * (original semantics).
+ */
+function verifyCreateAbsent(bot: any, freshChain: any[], ctx: any): 'absent' | 'landed' | 'unknown' {
+    if (!ctx.finalInts || !ctx.order) return 'absent';
+    const match = findChainOrderForSlot(bot, freshChain, ctx.order.id, {
+        sell: ctx.finalInts.sell,
+        receive: ctx.finalInts.receive,
+        orderType: ctx.order.type,
+        fingerprint: buildCreateOpFingerprint({
+            side: ctx.order.type,
+            assetA: bot.manager?.assets?.assetA?.id,
+            assetB: bot.manager?.assets?.assetB?.id,
+            sellInt: ctx.finalInts.sell,
+            receiveInt: ctx.finalInts.receive,
+            slotId: ctx.order.id
+        })
+    });
+    return match ? 'landed' : 'absent';
+}
+
+/**
+ * CANCEL verify: the order still present → the cancel never landed ('absent',
+ * retry safe). Absent from a live snapshot → the cancel landed ('landed').
+ * No orderId → unverifiable ('unknown').
+ */
+function verifyCancelLanded(freshChain: any[], ctx: any): 'absent' | 'landed' | 'unknown' {
+    const chainOrderId = ctx.order?.orderId;
+    if (!chainOrderId) return 'unknown';
+    if (!freshChain.some((o: any) => String(o?.id ?? '') === String(chainOrderId))) {
+        return 'landed';
+    }
+    return 'absent';
+}
+
+/**
+ * UPDATE verify (size-update/rotation): limit_order_update ops are DELTAS, so
+ * a landed broadcast double-applies the size change on re-broadcast. Retry
+ * ('absent') only when the chain order is provably UNCHANGED from the
+ * pre-update cache (the update never applied). Target applied, partially
+ * filled after a landed update, or the order missing (filled/cancelled
+ * concurrently) → 'unknown' (defer).
+ */
+function verifyUpdateUnapplied(freshChain: any[], ctx: any): 'absent' | 'landed' | 'unknown' {
+    const chainOrderId = ctx.kind === 'size-update'
+        ? ctx.updateInfo?.partialOrder?.orderId
+        : ctx.rotation?.oldOrder?.orderId;
+    const cachedRaw = ctx.kind === 'size-update'
+        ? ctx.updateInfo?.partialOrder?.rawOnChain
+        : ctx.rotation?.oldOrder?.rawOnChain;
+    if (!chainOrderId) return 'unknown';
+    const chainOrder = freshChain.find(
+        (o: any) => String(o?.id ?? '') === String(chainOrderId)
+    );
+    if (!chainOrder) return 'unknown';
+    if (!chainOrderUnchangedFromCache(chainOrder, cachedRaw)) return 'unknown';
+    return 'absent';
+}
+
+/**
  * Execute operations with retry on BroadcastUncertainError.
  *
  * Never re-broadcasts blindly: an uncertain broadcast may have landed, and
  * re-sending the same ops would duplicate on-chain orders. A retry is only
  * allowed on AUTHORITATIVE ABSENCE — a successful non-empty, non-truncated
- * chain read that contains none of the batch's CREATEs (fingerprint/
- * near-match). An empty read (node may be lagging), a truncated read
- * (get_full_accounts capped the result set; fresh creates sort last and are
- * the first entries omitted), or any matched CREATE defers to the
- * post-broadcast reconciliation machinery (pollChainForConfirmation +
+ * chain read where every op verifies 'absent' (see verifyOpAgainstChain). An
+ * empty read (node may be lagging), a truncated read (get_full_accounts
+ * capped the result set; fresh creates sort last and are the first entries
+ * omitted), or any 'landed'/'unknown' verdict defers to the post-broadcast
+ * reconciliation machinery (pollChainForConfirmation +
  * reconcileAfterUncertainBroadcast), which verifies inclusion and adopts
  * landed orders before the next cycle.
  * @param {import('./dexbot_class').DEXBot} bot
@@ -1015,23 +1093,11 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                 && !err.partialOnChainState
                 && attempt <= MAX_RETRIES;
             if (isRetriable) {
-                // Verify per operation kind before re-broadcasting:
-                //  - CREATE:  the batch's creates absent from a live snapshot →
-                //             never transmitted → retry safe. Matched → landed.
-                //  - CANCEL:  the order STILL PRESENT → the cancel never landed
-                //             → retry safe. Order ABSENT from a live snapshot →
-                //             the cancel landed → re-broadcasting is a guaranteed
-                //             failure (order does not exist) → defer.
-                //  - UPDATE (size-update / rotation): limit_order_update ops are
-                //             DELTAS, so a landed broadcast double-applies the
-                //             size change on re-broadcast. Retry only when the
-                //             chain order is provably UNCHANGED from the
-                //             pre-update cache (update never applied); any other
-                //             state (target applied, partially filled after a
-                //             landed update, or the order missing) is ambiguous
-                //             → defer.
-                // A truncated or empty read is never authoritative (nodes lag /
-                // get_full_accounts caps the window) → defer.
+                // Verify per operation kind against a live snapshot before
+                // re-broadcasting (see verifyOpAgainstChain): only a provably
+                // unapplied batch may be retried; a truncated or empty read is
+                // never authoritative (nodes lag / get_full_accounts caps the
+                // window) → defer.
                 let absence: 'absent' | 'landed' | 'unknown' = 'unknown';
                 try {
                     const accountRef = bot.accountId || bot.account?.id || bot.account;
@@ -1041,64 +1107,10 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                         absence = 'absent';
                         for (const ctx of opContexts) {
                             if (!ctx) continue;
-                            if (ctx.kind === 'create') {
-                                if (!ctx.finalInts || !ctx.order) continue;
-                                const match = findChainOrderForSlot(bot, freshChain, ctx.order.id, {
-                                    sell: ctx.finalInts.sell,
-                                    receive: ctx.finalInts.receive,
-                                    orderType: ctx.order.type,
-                                    fingerprint: buildCreateOpFingerprint({
-                                        side: ctx.order.type,
-                                        assetA: bot.manager?.assets?.assetA?.id,
-                                        assetB: bot.manager?.assets?.assetB?.id,
-                                        sellInt: ctx.finalInts.sell,
-                                        receiveInt: ctx.finalInts.receive,
-                                        slotId: ctx.order.id
-                                    })
-                                });
-                                if (match) {
-                                    absence = 'landed';
-                                    break;
-                                }
-                            } else if (ctx.kind === 'cancel') {
-                                const chainOrderId = ctx.order?.orderId;
-                                if (!chainOrderId) {
-                                    absence = 'unknown';
-                                    break;
-                                }
-                                // Absent from a live snapshot → the cancel landed.
-                                if (!freshChain.some((o: any) => String(o?.id ?? '') === String(chainOrderId))) {
-                                    absence = 'landed';
-                                    break;
-                                }
-                            } else if (ctx.kind === 'size-update' || ctx.kind === 'rotation') {
-                                const chainOrderId = ctx.kind === 'size-update'
-                                    ? ctx.updateInfo?.partialOrder?.orderId
-                                    : ctx.rotation?.oldOrder?.orderId;
-                                const cachedRaw = ctx.kind === 'size-update'
-                                    ? ctx.updateInfo?.partialOrder?.rawOnChain
-                                    : ctx.rotation?.oldOrder?.rawOnChain;
-                                if (!chainOrderId) {
-                                    absence = 'unknown';
-                                    break;
-                                }
-                                const chainOrder = freshChain.find(
-                                    (o: any) => String(o?.id ?? '') === String(chainOrderId)
-                                );
-                                if (!chainOrder) {
-                                    // Missing: filled/cancelled concurrently — ambiguous.
-                                    absence = 'unknown';
-                                    break;
-                                }
-                                if (!chainOrderUnchangedFromCache(chainOrder, cachedRaw)) {
-                                    // Landed (target applied) or partially filled
-                                    // after a landed update — re-applying the delta
-                                    // would overshoot. Defer.
-                                    absence = 'unknown';
-                                    break;
-                                }
-                                // Provably unchanged → the update never applied →
-                                // re-applying the identical delta is safe.
+                            const verdict = verifyOpAgainstChain(bot, freshChain, ctx);
+                            if (verdict !== 'absent') {
+                                absence = verdict;
+                                break;
                             }
                         }
                     }
@@ -1777,6 +1789,150 @@ function restoreSkippedUpdateSlotsInWorkingGrid(bot: any, workingGrid: any, skip
 }
 
 /**
+ * Bounded re-plan for a stale pre-broadcast plan (regression-safe policy).
+ *
+ * Policy (bounded re-plan + proceed):
+ *   * First staleness hit → re-plan ONCE from fresh master using the same
+ *     fills; the recursion re-runs this guard against the fresh plan. A
+ *     re-plan with no executable actions means the grid is already consistent
+ *     post-fills — the stale plan must NOT ship.
+ *   * Still stale (master kept mutating), or no fill context to re-plan with
+ *     → PROCEED with the plan anyway and request a structural resync. Never
+ *     hard-abort on staleness: an abort would silently drop the fill set that
+ *     triggered this rebalance (_processFillsWithBatching only hard-aborts on
+ *     illegal-state or accounting failures), and the post-broadcast commit
+ *     guard + chain adoption below close any residual divergence.
+ *
+ * Stack discipline: the original plan's grid is popped before the fresh
+ * re-plan pushes (LIFO order); when the re-plan fails/aborts, the original
+ * grid is pushed back (marker restored) so the later commit/catch pop sites
+ * release exactly the entry they were pushed with, instead of underflowing
+ * or stealing a nested grid's entry.
+ *
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object} cowResult - The stale plan result
+ * @param {number} replanDepth - Recursion depth (0 = first attempt)
+ * @param {Object} preBroadcastGuard - The failed evaluateCommit result
+ * @returns {Promise<{handled: boolean, result?: Object}>} handled=true when the
+ *   batch was resolved by the re-plan (fresh plan executed, or stale plan
+ *   skipped as already-consistent); handled=false when the caller must proceed
+ *   with the original plan.
+ */
+async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, preBroadcastGuard: any): Promise<{ handled: boolean; result?: any }> {
+    const canReplan = replanDepth < STALE_PLAN_REPLAN_LIMIT
+        && Array.isArray(cowResult.fills) && cowResult.fills.length > 0;
+    if (!canReplan) {
+        bot.manager.logger.log(
+            `[COW] Plan stale pre-broadcast (${preBroadcastGuard.reason}); ` +
+            (replanDepth >= STALE_PLAN_REPLAN_LIMIT
+                ? 'still stale after re-plan — proceeding with plan (commit guard + chain adoption close divergence)'
+                : 'no fill context for re-plan — proceeding with plan (commit guard + chain adoption close divergence)'),
+            'warn'
+        );
+        await requestStructuralResync(
+            bot,
+            'plan stale pre-broadcast (proceeding with plan)',
+            { reason: preBroadcastGuard.reason }
+        );
+        return { handled: false };
+    }
+
+    bot.manager.logger.log(
+        `[COW] Plan stale pre-broadcast (${preBroadcastGuard.reason}); re-planning once from fresh master`,
+        'warn'
+    );
+
+    // Abandon the original plan's working grid: it can no longer commit. Pop
+    // it so the rebalance stack stays balanced — the fresh plan's grid (pushed
+    // by performSafeRebalance below) is popped by the recursion's own
+    // commit/cleanup path. Guarded on the push marker (plan-path calls never
+    // pushed a grid); the marker is cleared so a later throw in this frame
+    // (e.g. the recursion) cannot pop the entry a second time.
+    const hadPushedGrid = cowResult?._workingGridPushed === true;
+    popPushedWorkingGrid(bot, cowResult);
+
+    let replanned: any = null;
+    try {
+        // Restore the boundary-shift budget consumed by the abandoned plan:
+        // it was built from the same fills and never shipped, so the re-plan
+        // must derive from the FULL batch budget — not the leftover. Without
+        // the restore, each stale-plan re-plan spends the budget twice and
+        // drifts conservative (boundary under-shift).
+        if ((bot.manager as any)?._boundaryShiftBudgetBase != null) {
+            (bot.manager as any)._boundaryShiftBudget = (bot.manager as any)._boundaryShiftBudgetBase;
+        }
+        if (typeof bot.manager.performSafeRebalance === 'function') {
+            replanned = await bot.manager.performSafeRebalance(
+                cowResult.fills,
+                cowResult.excludeIds || new Set()
+            );
+        }
+    } catch (replanErr: any) {
+        bot.manager.logger.log(
+            `[COW] Re-plan failed: ${getErrorMessage(replanErr)}; proceeding with original plan`,
+            'warn'
+        );
+    }
+
+    if (replanned && !replanned.aborted) {
+        if (hasExecutableActions(replanned)) {
+            // The original plan's ops are abandoned with its working grid;
+            // drop THEIR pending-broadcast entries only, or the recursion's
+            // own pending-broadcast guard would reject the fresh plan's
+            // CREATEs. Entries from an earlier unresolved batch are
+            // deliberately KEPT: the entry guard only covers CREATE batches,
+            // so a create-less batch can reach this path while earlier
+            // entries are still live — clearing them here would let the fresh
+            // plan re-create slots whose earlier broadcast may have landed
+            // (duplicate orders). The recursion's guard will then abort +
+            // reconcile instead.
+            clearPendingBroadcastsForSlots(bot, cowResult.actions);
+            return {
+                handled: true,
+                result: await updateOrdersOnChainBatchCOW(bot, replanned, {
+                    replanDepth: replanDepth + 1
+                }),
+            };
+        }
+        // Re-plan confirms the grid is already consistent post-fills; the
+        // stale original plan must NOT ship. Pop the fresh plan's grid too
+        // (it was never committed).
+        popPushedWorkingGrid(bot, replanned);
+        clearPendingBroadcastsForSlots(bot, cowResult.actions);
+        bot.manager.logger.log(
+            '[COW] Re-plan produced no executable actions; grid is already consistent post-fills, skipping stale plan',
+            'info'
+        );
+        return { handled: true, result: { executed: false, hadRotation: false, skippedStalePlan: true } };
+    }
+
+    // Re-plan failed or aborted — the original plan proceeds after all. Its
+    // grid was popped above to keep the stack LIFO-balanced for the fresh
+    // plan; push it back (marker restored) so the broadcast commit / catch
+    // pop sites release exactly the entry they were pushed with, instead of
+    // underflowing or stealing a nested grid's entry.
+    if (hadPushedGrid && cowResult.workingGrid) {
+        if (typeof bot.manager._pushWorkingGridRef === 'function') {
+            bot.manager._pushWorkingGridRef(cowResult.workingGrid, cowResult);
+        } else {
+            bot.manager._currentWorkingGridStack?.push?.(cowResult.workingGrid);
+            bot.manager._resetRebalanceStateToDepth?.();
+            cowResult._workingGridPushed = true;
+        }
+    }
+    bot.manager.logger.log(
+        '[COW] Re-plan unavailable; proceeding with original plan (commit guard + chain adoption close divergence)',
+        'warn'
+    );
+    await requestStructuralResync(
+        bot,
+        're-plan unavailable (proceeding with original plan)',
+        { reason: preBroadcastGuard.reason }
+    );
+    return { handled: false };
+}
+
+/**
  * COW broadcast: Execute blockchain operations and commit working grid on success.
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {Object} cowResult
@@ -2400,128 +2556,15 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         // NOTE: the commit-time evaluateCommit also rejects empty deltas; here
         // (pre-broadcast) that case is already covered by the operations.length
         // guard above, so only staleness and version-mismatch are checked.
-        //
-        // Regression-safe policy (bounded re-plan + proceed):
-        //   * First staleness hit → re-plan ONCE from fresh master using the
-        //     same fills; the recursion re-runs this guard against the fresh
-        //     plan. A re-plan with no executable actions means the grid is
-        //     already consistent post-fills — the stale plan must NOT ship.
-        //   * Still stale (master kept mutating), or no fill context to re-plan
-        //     with → PROCEED with the plan anyway and request a structural
-        //     resync. Never hard-abort on staleness: an abort would silently
-        //     drop the fill set that triggered this rebalance
-        //     (_processFillsWithBatching only hard-aborts on illegal-state or
-        //     accounting failures), and the post-broadcast commit guard +
-        //     chain adoption below close any residual divergence.
         const preBroadcastGuard = evaluateCommit(workingGrid, {
             hasLock: false,
             currentVersion: bot.manager._gridVersion
         });
         if (!preBroadcastGuard.canCommit) {
-            const canReplan = replanDepth < STALE_PLAN_REPLAN_LIMIT
-                && Array.isArray(cowResult.fills) && cowResult.fills.length > 0;
-            if (canReplan) {
-                bot.manager.logger.log(
-                    `[COW] Plan stale pre-broadcast (${preBroadcastGuard.reason}); re-planning once from fresh master`,
-                    'warn'
-                );
-                // Abandon the original plan's working grid: it can no longer
-                // commit. Pop it so the rebalance stack stays balanced — the
-                // fresh plan's grid (pushed by performSafeRebalance below) is
-                // popped by the recursion's own commit/cleanup path. Guarded on
-                // the push marker (plan-path calls never pushed a grid). The
-                // marker is cleared so a later throw in this frame (e.g. the
-                // recursion) cannot pop the entry a second time.
-                const hadPushedGrid = cowResult?._workingGridPushed === true;
-                popPushedWorkingGrid(bot, cowResult);
-                let replanned: any = null;
-                try {
-                    // Restore the boundary-shift budget consumed by the abandoned
-                    // plan: it was built from the same fills and never shipped, so
-                    // the re-plan must derive from the FULL batch budget — not the
-                    // leftover. Without the restore, each stale-plan re-plan spends
-                    // the budget twice and drifts conservative (boundary under-shift).
-                    if ((bot.manager as any)?._boundaryShiftBudgetBase != null) {
-                        (bot.manager as any)._boundaryShiftBudget = (bot.manager as any)._boundaryShiftBudgetBase;
-                    }
-                    if (typeof bot.manager.performSafeRebalance === 'function') {
-                        replanned = await bot.manager.performSafeRebalance(
-                            cowResult.fills,
-                            cowResult.excludeIds || new Set()
-                        );
-                    }
-                } catch (replanErr: any) {
-                    bot.manager.logger.log(
-                        `[COW] Re-plan failed: ${getErrorMessage(replanErr)}; proceeding with original plan`,
-                        'warn'
-                    );
-                }
-                if (replanned && !replanned.aborted) {
-                    if (hasExecutableActions(replanned)) {
-                        // The original plan's ops are abandoned with its working
-                        // grid; drop THEIR pending-broadcast entries only, or the
-                        // recursion's own pending-broadcast guard would reject
-                        // the fresh plan's CREATEs. Entries from an earlier
-                        // unresolved batch are deliberately KEPT: the entry
-                        // guard only covers CREATE batches, so a create-less
-                        // batch can reach this path while earlier entries are
-                        // still live — clearing them here would let the fresh
-                        // plan re-create slots whose earlier broadcast may
-                        // have landed (duplicate orders). The recursion's
-                        // guard will then abort + reconcile instead.
-                        clearPendingBroadcastsForSlots(bot, cowResult.actions);
-                        return await updateOrdersOnChainBatchCOW(bot, replanned, {
-                            replanDepth: replanDepth + 1
-                        });
-                    }
-                    // Re-plan confirms the grid is already consistent
-                    // post-fills; the stale original plan must NOT ship.
-                    // Pop the fresh plan's grid too (it was never committed).
-                    popPushedWorkingGrid(bot, replanned);
-                    clearPendingBroadcastsForSlots(bot, cowResult.actions);
-                    bot.manager.logger.log(
-                        '[COW] Re-plan produced no executable actions; grid is already consistent post-fills, skipping stale plan',
-                        'info'
-                    );
-                    return { executed: false, hadRotation: false, skippedStalePlan: true };
-                }
-                // Re-plan failed or aborted — the original plan proceeds after
-                // all. Its grid was popped above to keep the stack LIFO-balanced
-                // for the fresh plan; push it back (marker restored) so the
-                // broadcast commit / catch pop sites release exactly the entry
-                // they were pushed with, instead of underflowing or stealing a
-                // nested grid's entry.
-                if (hadPushedGrid && cowResult.workingGrid) {
-                    if (typeof bot.manager._restoreWorkingGridRef === 'function') {
-                        bot.manager._restoreWorkingGridRef(cowResult.workingGrid);
-                    } else {
-                        bot.manager._currentWorkingGridStack?.push?.(cowResult.workingGrid);
-                        bot.manager._resetRebalanceStateToDepth?.();
-                    }
-                    cowResult._workingGridPushed = true;
-                }
-                bot.manager.logger.log(
-                    '[COW] Re-plan unavailable; proceeding with original plan (commit guard + chain adoption close divergence)',
-                    'warn'
-                );
-                await requestStructuralResync(
-                    bot,
-                    're-plan unavailable (proceeding with original plan)',
-                    { reason: preBroadcastGuard.reason }
-                );
-            } else {
-                bot.manager.logger.log(
-                    `[COW] Plan stale pre-broadcast (${preBroadcastGuard.reason}); ` +
-                    (replanDepth >= STALE_PLAN_REPLAN_LIMIT
-                        ? 'still stale after re-plan — proceeding with plan (commit guard + chain adoption close divergence)'
-                        : 'no fill context for re-plan — proceeding with plan (commit guard + chain adoption close divergence)'),
-                    'warn'
-                );
-                await requestStructuralResync(
-                    bot,
-                    'plan stale pre-broadcast (proceeding with plan)',
-                    { reason: preBroadcastGuard.reason }
-                );
+            // Bounded re-plan + proceed — policy documented on replanStaleBatch.
+            const replan = await replanStaleBatch(bot, cowResult, replanDepth, preBroadcastGuard);
+            if (replan.handled) {
+                return replan.result;
             }
             // Fall through: proceed with the current plan (bounded policy).
         }
@@ -2571,22 +2614,17 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 applyRotationTransitionsToWorkingGrid(bot, workingGrid, executedContexts);
 
                 bot.manager.logger.log('[COW] Blockchain success - committing working grid to master', 'info');
-                let commitOk: boolean;
-                try {
-                    commitOk = await bot.manager._commitWorkingGrid(
-                        workingGrid,
-                        workingIndexes,
-                        workingBoundary,
-                        { skipRecalc: true }
-                    );
-                } finally {
-                    // _commitWorkingGrid releases the stack entry on every
-                    // settle path (return or throw). Clear the push marker so
-                    // the batch catch below cannot pop a second time for the
-                    // same grid when a later step (e.g. processBatchResults)
-                    // throws after a successful commit.
-                    cowResult._workingGridPushed = false;
-                }
+                // _commitWorkingGrid releases the stack entry on every settle
+                // path (return or throw) and clears the push marker via
+                // options.result, so a later throw in this frame (e.g.
+                // processBatchResults after a successful commit) cannot pop a
+                // second time for the same grid in the batch catch below.
+                const commitOk: boolean = await bot.manager._commitWorkingGrid(
+                    workingGrid,
+                    workingIndexes,
+                    workingBoundary,
+                    { skipRecalc: true, result: cowResult }
+                );
                 if (!commitOk) {
                     // Master changed during broadcast (e.g. a fill landed and was
                     // processed concurrently) so the commit was refused. The batch
@@ -2714,21 +2752,16 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         );
                     }
                     applyRotationTransitionsToWorkingGrid(bot, workingGrid, opContexts);
-                    let pollCommitOk: boolean;
-                    try {
-                        pollCommitOk = await bot.manager._commitWorkingGrid(
-                            workingGrid,
-                            workingIndexes,
-                            workingBoundary,
-                            { skipRecalc: true }
-                        );
-                    } finally {
-                        // Same exactly-once marker discipline as the success
-                        // path: _commitWorkingGrid pops on every settle path,
-                        // so a later throw here must not pop again in the
-                        // batch catch below.
-                        cowResult._workingGridPushed = false;
-                    }
+                    // Same exactly-once discipline as the success path:
+                    // _commitWorkingGrid pops on every settle path and clears
+                    // the push marker via options.result, so a later throw here
+                    // must not pop again in the batch catch below.
+                    const pollCommitOk: boolean = await bot.manager._commitWorkingGrid(
+                        workingGrid,
+                        workingIndexes,
+                        workingBoundary,
+                        { skipRecalc: true, result: cowResult }
+                    );
                     if (!pollCommitOk) {
                         // Master moved while polling — same recovery as the
                         // refused-commit path: adopt from chain, keep pending

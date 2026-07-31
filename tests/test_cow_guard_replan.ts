@@ -57,13 +57,15 @@ function createVirtualCreateAction(id, price) {
  * Fixture for the pre-broadcast stale-plan guard (bounded re-plan).
  *
  * Mirrors the real manager's stack contract: performSafeRebalance pushes a
- * fresh working grid onto _currentWorkingGridStack, _commitWorkingGrid pops
- * the top once on every terminal path, and _restoreWorkingGridRef pushes a
- * previously popped grid back (bounded re-plan fall-through). Tests must
- * push the stale plan's grid before invoking the batch executor, exactly as
- * the real flow does. The pop spy THROWS on a pop from an empty stack so an
- * unmatched pop (the pre-fix double-pop imbalance) fails the test instead
- * of being absorbed as a benign underflow.
+ * fresh working grid onto _currentWorkingGridStack (via _pushWorkingGridRef,
+ * which also sets the result's push marker), _commitWorkingGrid releases the
+ * top once on every terminal path and clears the marker via options.result,
+ * and _pushWorkingGridRef pushes a previously popped grid back (bounded
+ * re-plan fall-through). Tests must push the stale plan's grid before
+ * invoking the batch executor, exactly as the real flow does. The pop spy
+ * THROWS on a pop from an empty stack so an unmatched pop (the pre-fix
+ * double-pop imbalance) fails the test instead of being absorbed as a benign
+ * underflow.
  */
 function createGuardFixture(masterOrders = new Map()) {
     const bot = new DEXBot({
@@ -106,9 +108,12 @@ function createGuardFixture(masterOrders = new Map()) {
         stopBroadcasting: () => {},
         pauseFundRecalc: () => {},
         resumeFundRecalc: async () => {},
-        _commitWorkingGrid: async () => {
+        _commitWorkingGrid: async (_wg: any, _idx: any, _boundary: any, options: any) => {
             counters.commitCalls += 1;
             manager._clearWorkingGridRef();
+            // Mirrors the real contract: the commit releases the stack entry
+            // and clears the push marker (options.result) on every settle path.
+            if (options?.result) options.result._workingGridPushed = false;
             return true;
         },
         persistGrid: async () => {},
@@ -119,9 +124,16 @@ function createGuardFixture(masterOrders = new Map()) {
             }
             manager._currentWorkingGridStack.pop();
         },
-        _restoreWorkingGridRef: (workingGrid: any) => {
+        _pushWorkingGridRef: (workingGrid: any, result: any) => {
             counters.restoreCalls += 1;
             manager._currentWorkingGridStack.push(workingGrid);
+            if (result) result._workingGridPushed = true;
+        },
+        _popWorkingGridRef: (result: any) => {
+            if (result && result._workingGridPushed === true) {
+                manager._clearWorkingGridRef();
+                result._workingGridPushed = false;
+            }
         },
         requestStructuralGridResync: async () => {
             counters.resyncCalls += 1;

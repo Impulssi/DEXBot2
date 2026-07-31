@@ -85,6 +85,53 @@ function parseSlotIndex(id: any): number | null {
     const idx = parseInt(match[1], 10);
     return Number.isFinite(idx) ? idx : null;
 }
+
+/**
+ * Stale-placement veto: whether a placement action crosses the plan's own
+ * boundary and would fill immediately on stale market data.
+ * - BUY create/update targeting a slot ABOVE the boundary is dropped; SELL
+ *   create/update targeting a slot BELOW the boundary is dropped. Strict
+ *   comparison: a placement AT the boundary is kept (the boundary slot is
+ *   the spread, which reconcile never targets).
+ * - The reference is the PLAN'S OWN targetBoundary — and ONLY that: the
+ *   plan's slots derive from the same target grid, so a stale plan's
+ *   placements cross its own boundary while legitimate re-placements never
+ *   do (the boundary is capped, the fills are not). Fill-based veto lines
+ *   are deliberately NOT used — after a burst the fills sit beyond the
+ *   plan's legitimate re-place levels (e.g. SELL fills 5,6,7 with cap=1
+ *   moves the boundary only to slot 6), so ANY fill comparison can veto
+ *   valid placements, including the strategy's own rotations (a partial
+ *   SELL rotated into a slot below the last BUY fill after the boundary
+ *   crawled left). The guard is therefore "inert" for boundary-consistent
+ *   engine output by construction.
+ * - Slot ids are compared within the plan's own grid generation
+ *   (targetBoundary and target slots are both from the current plan), so a
+ *   recenter between the fill capture and the plan cannot skew the
+ *   comparison. Both CREATE and UPDATE actions are guarded: the
+ *   cancel/create optimization can convert the same logical placement into
+ *   an UPDATE op (target slot = newGridId), which the CREATE-only check
+ *   would have missed.
+ * - When no plan boundary is available (hand-built plans), nothing is
+ *   vetoed — fill evidence is not a reliable veto line. Non-placement
+ *   actions and non-grid-slot targets are never vetoed.
+ * @param {Object} action - COW action
+ * @param {number} planBoundary - The plan's target boundary slot index
+ * @returns {string|null} Drop reason for the log, or null to keep the action
+ */
+function stalePlacementDropReason(action: any, planBoundary: number): string | null {
+    const isPlacement = action?.type === COW_ACTIONS.CREATE || action?.type === COW_ACTIONS.UPDATE;
+    if (!isPlacement) return null;
+    const targetSlot = parseSlotIndex(action?.newGridId ?? action?.id);
+    if (targetSlot === null) return null;
+    const kindWord = action.type === COW_ACTIONS.UPDATE ? 'update' : 'create';
+    if (action?.order?.type === ORDER_TYPES.BUY && targetSlot > planBoundary) {
+        return `BUY ${kindWord} for slot ${action.id}: slot ${targetSlot} > plan boundary ${planBoundary}`;
+    }
+    if (action?.order?.type === ORDER_TYPES.SELL && targetSlot < planBoundary) {
+        return `SELL ${kindWord} for slot ${action.id}: slot ${targetSlot} < plan boundary ${planBoundary}`;
+    }
+    return null;
+}
 //
 // COPY-ON-WRITE (COW) PATTERN FOR SAFE REBALANCING
 //
@@ -179,64 +226,19 @@ class COWRebalanceEngine {
 
         const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid);
 
-        // Stale-placement guard: drop BUY create/update targeting a slot ABOVE
-        // the boundary, and SELL create/update targeting a slot BELOW the
-        // boundary.
-        // A plan built on stale market data would place an order that crosses
-        // the current spread and fills immediately; defer it to the next cycle.
-        // - The reference is the PLAN'S OWN targetBoundary — and ONLY that:
-        //   the plan's slots are derived from the same target grid, so a stale
-        //   plan's placements cross its own boundary while legitimate
-        //   re-placements never do (the boundary is capped, the fills are not).
-        // - Fill-based veto lines (last same-side OR opposite-side fill) are
-        //   deliberately NOT used: after a burst the fills sit beyond the
-        //   plan's legitimate re-place levels (e.g. SELL fills 5,6,7 with cap=1
-        //   moves the boundary only to slot 6), so ANY fill comparison can veto
-        //   valid placements — including the strategy's own rotations (a
-        //   partial SELL rotated into a slot below the last BUY fill after the
-        //   boundary crawled left). The guard is therefore "inert" for
-        //   boundary-consistent engine output by construction.
-        // - When no plan boundary is available (hand-built plans), nothing is
-        //   vetoed — fill evidence is not a reliable veto line.
-        // - Slot ids are compared within the plan's own grid generation
-        //   (targetBoundary and target slots are both from the current plan),
-        //   so a recenter between the fill capture and the plan cannot skew
-        //   the comparison.
-        // - Both CREATE and UPDATE actions are guarded: the cancel/create
-        //   optimization can convert the same logical placement into an UPDATE
-        //   op (target slot = newGridId), which the CREATE-only check would
-        //   have missed.
-        // - Strict comparison: a placement AT the boundary is kept — the
-        //   boundary slot is the spread, which reconcile never targets.
+        // Stale-placement guard: drop placements crossing the plan's own
+        // boundary (see stalePlacementDropReason) — defer them to the next
+        // cycle instead of filling immediately.
         const planBoundary = (targetBoundary !== null && targetBoundary !== undefined && Number.isFinite(Number(targetBoundary)))
             ? Number(targetBoundary)
             : null;
         if (planBoundary !== null) {
             const before = optimizedActions.length;
             const guarded = optimizedActions.filter((a: any) => {
-                const isPlacement = a?.type === COW_ACTIONS.CREATE || a?.type === COW_ACTIONS.UPDATE;
-                if (!isPlacement) return true;
-                const targetSlot = parseSlotIndex(a?.newGridId ?? a?.id);
-                if (targetSlot === null) return true;
-                if (a?.order?.type === ORDER_TYPES.BUY) {
-                    if (targetSlot > planBoundary) {
-                        this.logger?.log(
-                            `[COW] Dropping stale-slot BUY ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} > plan boundary ${planBoundary}`,
-                            'warn'
-                        );
-                        return false;
-                    }
-                    return true;
-                }
-                if (a?.order?.type === ORDER_TYPES.SELL) {
-                    if (targetSlot < planBoundary) {
-                        this.logger?.log(
-                            `[COW] Dropping stale-slot SELL ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} < plan boundary ${planBoundary}`,
-                            'warn'
-                        );
-                        return false;
-                    }
-                    return true;
+                const dropReason = stalePlacementDropReason(a, planBoundary);
+                if (dropReason) {
+                    this.logger?.log(`[COW] Dropping stale-slot ${dropReason}`, 'warn');
+                    return false;
                 }
                 return true;
             });
@@ -557,17 +559,54 @@ class OrderManager {
     }
 
     /**
-     * Push a previously popped working grid back onto the rebalance stack.
-     * Used by the COW batch executor's bounded re-plan path: the original
-     * grid is popped before the fresh re-plan pushes (LIFO order), and when
-     * the re-plan fails/aborts the original plan proceeds — its grid must be
-     * restored so the later commit/catch pop sites release exactly the entry
-     * that was pushed, instead of underflowing or stealing a nested entry.
-     * @param {Object} workingGrid - The working grid to restore on the stack
+     * Push a working grid onto the rebalance stack (LIFO), set the state to
+     * REBALANCING, and — when a result object is provided — mark it as pushed
+     * so pop sites can release exactly the entry this push created. This is
+     * the only place a grid may be pushed; all releases go through
+     * _popWorkingGridRef (marker-guarded, early-return sites) or
+     * _releaseWorkingGridRef (identity-checked, commit sites).
+     * @param {Object} workingGrid - The working grid to push
+     * @param {Object} [result] - Result object to carry the push marker on
      */
-    _restoreWorkingGridRef(workingGrid: any) {
+    _pushWorkingGridRef(workingGrid: any, result: any = null) {
         this._currentWorkingGridStack.push(workingGrid);
         this._rebalanceState = REBALANCE_STATES.REBALANCING;
+        if (result) {
+            result._workingGridPushed = true;
+        }
+        return result;
+    }
+
+    /**
+     * Pop the stack entry owned by a result, exactly once (marker-guarded).
+     * Results that were never pushed (aborted plans, no-trigger
+     * processFilledOrders outputs, updateOrdersOnChainPlan cowResults,
+     * reconcileGridOrders null results) leave the stack untouched — an
+     * unmatched pop could steal a nested grid's entry. Clears the marker so
+     * a later throw in the same frame cannot pop a second time.
+     * @param {Object} [result] - Result object carrying the push marker
+     */
+    _popWorkingGridRef(result: any = null) {
+        if (result && result._workingGridPushed === true) {
+            this._clearWorkingGridRef();
+            result._workingGridPushed = false;
+        }
+    }
+
+    /**
+     * Release the stack entry for a grid after its commit settles, exactly
+     * once per commit invocation. Identity-checked: plan-path grids
+     * (updateOrdersOnChainPlan, local-only divergence commits) were never
+     * pushed, so popping unconditionally would steal a NESTED grid's stack
+     * entry. Pushed grids are always at the top at commit time (LIFO), so
+     * the check is a no-op for them.
+     * @param {Object} workingGrid - The committed working grid
+     */
+    _releaseWorkingGridRef(workingGrid: any) {
+        const stack = this._currentWorkingGridStack;
+        if (stack.length > 0 && stack[stack.length - 1] === workingGrid) {
+            this._clearWorkingGridRef();
+        }
     }
 
     _setRebalanceState(state: any) {
@@ -1629,12 +1668,7 @@ class OrderManager {
             return result;
         }
 
-        this._currentWorkingGridStack.push(result.workingGrid);
-        // Marker so pop sites (dexbot_class._executeBatchIfNeeded, COW batch
-        // executor early returns) can tell a pushed grid from results that were
-        // never pushed (no-trigger processFilledOrders, updateOrdersOnChainPlan,
-        // reconcileGridOrders) and avoid unmatched pops.
-        result._workingGridPushed = true;
+        this._pushWorkingGridRef(result.workingGrid, result);
         return result;
     }
 
@@ -1713,25 +1747,19 @@ class OrderManager {
         let comparePrecisions: any;
         let skipRecalc = false;
         // Exactly-once stack-release contract: every settle path (return or
-        // throw) pops the working-grid stack entry exactly one time. Callers
-        // rely on this: the COW batch executor clears its _workingGridPushed
-        // marker once _commitWorkingGrid settles, so its catch block cannot
-        // pop a second time for the same grid. Previously the _gridLock
-        // acquire/rejection path escaped without popping, leaving the marker
-        // true and the grid's entry on the stack for the outer catch — an
-        // unmatched pop in disguise that would steal a nested grid's entry.
-        // The pop is additionally identity-checked: plan-path grids
-        // (updateOrdersOnChainPlan, local-only divergence commits) were never
-        // pushed, so popping unconditionally would steal a NESTED grid's
-        // stack entry. Pushed grids are always at the top at commit time
-        // (LIFO), so the check is a no-op for them.
+        // throw) releases the working-grid stack entry exactly one time via
+        // _releaseWorkingGridRef (identity-checked, so plan-path grids that
+        // were never pushed leave the stack untouched). When the caller passes
+        // its result object (options.result), the push marker is cleared too —
+        // the batch executor's catch block then cannot pop a second time for
+        // the same grid.
         let popped = false;
         const releaseStackEntry = () => {
             if (popped) return;
             popped = true;
-            const stack = this._currentWorkingGridStack;
-            if (stack.length > 0 && stack[stack.length - 1] === workingGrid) {
-                this._clearWorkingGridRef();
+            this._releaseWorkingGridRef(workingGrid);
+            if (options?.result) {
+                options.result._workingGridPushed = false;
             }
         };
 

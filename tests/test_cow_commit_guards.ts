@@ -214,7 +214,13 @@ async function testExecuteBatchIfNeededSkipsEmptyActions() {
         logger: {
             log: (msg, level) => logs.push({ msg: String(msg), level })
         },
-        _clearWorkingGridRef: () => { clearWorkingGridCalls++; }
+        _clearWorkingGridRef: () => { clearWorkingGridCalls++; },
+        _popWorkingGridRef: (result: any) => {
+            if (result && result._workingGridPushed === true) {
+                bot.manager._clearWorkingGridRef();
+                result._workingGridPushed = false;
+            }
+        }
     };
 
     let batchCalls = 0;
