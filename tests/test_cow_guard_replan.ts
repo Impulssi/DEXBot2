@@ -188,7 +188,8 @@ async function testStalePlanReplansOnceAndExecutes() {
             workingGrid: freshWG,
             workingIndexes: freshWG.getIndexes(),
             workingBoundary: 0,
-            actions: [createVirtualCreateAction('slot-2', 1.1)]
+            actions: [createVirtualCreateAction('slot-2', 1.1)],
+            _workingGridPushed: true
         };
     };
 
@@ -199,7 +200,8 @@ async function testStalePlanReplansOnceAndExecutes() {
             workingBoundary: 0,
             actions: [createVirtualCreateAction('slot-2', 1.1)],
             fills,
-            excludeIds: new Set(['slot-1'])
+            excludeIds: new Set(['slot-1']),
+            _workingGridPushed: true
         });
 
         assert.strictEqual(result.executed, true, 'fresh plan must execute');
@@ -238,7 +240,8 @@ async function testReplanWithNoActionsSkipsStalePlan() {
             workingGrid: freshWG,
             workingIndexes: freshWG.getIndexes(),
             workingBoundary: 0,
-            actions: []
+            actions: [],
+            _workingGridPushed: true
         };
     };
 
@@ -248,7 +251,8 @@ async function testReplanWithNoActionsSkipsStalePlan() {
             workingIndexes: staleWG.getIndexes(),
             workingBoundary: 0,
             actions: [createVirtualCreateAction('slot-2', 1.1)],
-            fills: [{ id: 'fill-1', type: ORDER_TYPES.BUY, price: 0.99, size: 5 }]
+            fills: [{ id: 'fill-1', type: ORDER_TYPES.BUY, price: 0.99, size: 5 }],
+            _workingGridPushed: true
         });
 
         assert.strictEqual(result.executed, false, 'stale plan must not ship');
@@ -282,7 +286,8 @@ async function testStaleAtReplanLimitProceedsWithResync() {
             workingGrid: staleWG,
             workingIndexes: staleWG.getIndexes(),
             workingBoundary: 0,
-            actions: [createVirtualCreateAction('slot-2', 1.1)]
+            actions: [createVirtualCreateAction('slot-2', 1.1)],
+            _workingGridPushed: true
         }, { replanDepth: 1 });
 
         assert.strictEqual(result.executed, true, 'bounded policy proceeds with the plan');
@@ -322,7 +327,8 @@ async function testReplanThrowProceedsWithResync() {
             workingIndexes: staleWG.getIndexes(),
             workingBoundary: 0,
             actions: [createVirtualCreateAction('slot-2', 1.1)],
-            fills: [{ id: 'fill-1', type: ORDER_TYPES.BUY, price: 0.99, size: 5 }]
+            fills: [{ id: 'fill-1', type: ORDER_TYPES.BUY, price: 0.99, size: 5 }],
+            _workingGridPushed: true
         });
 
         assert.strictEqual(result.executed, true, 'bounded policy proceeds with the original plan');

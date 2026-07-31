@@ -1173,7 +1173,14 @@ class DEXBot {
             // if the engine returns an empty actions list (not aborted), the state
             // would otherwise remain stuck at REBALANCING permanently, blocking
             // all subsequent fill processing and rebalance attempts.
-            this.manager?._clearWorkingGridRef?.();
+            // Pop only when the working grid was actually pushed: results that
+            // were never pushed (aborted results, no-trigger processFilledOrders
+            // outputs, updateOrdersOnChainPlan cowResults, reconcileGridOrders
+            // null results) must NOT pop the stack — an unmatched pop could steal
+            // a nested grid's entry.
+            if (rebalanceResult?._workingGridPushed === true) {
+                this.manager?._clearWorkingGridRef?.();
+            }
             // Persist master grid mutations that may have occurred outside COW
             // broadcast (e.g., partial-fill size updates applied directly by the
             // sync engine). Without this, a partial fill that does not trigger a

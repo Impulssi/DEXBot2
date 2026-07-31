@@ -505,6 +505,28 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
         return { executed: false, hadRotation: false, uncertain: true };
     }
 
+    // 1.5. Empty-read guard: an empty snapshot is ambiguous — the account is
+    // either genuinely empty or the node is lagging behind the just-broadcast
+    // transaction. Treating every pending broadcast as discarded would clear
+    // the pending-broadcast protection and let the next cycle re-CREATE slots
+    // whose orders may actually be on chain (duplicate orders). Keep the
+    // protection and let the structural resync adopt any landed orders.
+    if (chainSnapshot.length === 0 && pending.length > 0) {
+        bot.manager.logger.log(
+            `[COW][UNCERTAIN] Empty chain read for ${pending.length} pending broadcast(s); ` +
+            `keeping pending-broadcast protection and requesting structural resync ` +
+            `(node may be lagging; no discard decisions made)`,
+            'warn'
+        );
+        if (typeof bot.manager.requestStructuralGridResync === 'function') {
+            await bot.manager.requestStructuralGridResync(
+                'uncertain broadcast — empty chain read',
+                { batchId: err?.batchId || null }
+            );
+        }
+        return { executed: false, hadRotation: false, uncertain: true, ambiguousRead: true };
+    }
+
     const adopted: { entry: any; match: any; }[] = [];
     let discarded: any[] = [];
 
@@ -871,6 +893,14 @@ function shouldExecuteCreatePairMode(_bot: any, opContexts: any) {
 
 /**
  * Execute operations with retry on BroadcastUncertainError.
+ *
+ * Never re-broadcasts blindly: an uncertain broadcast may have landed, and
+ * re-sending the same ops would duplicate on-chain orders. A retry is only
+ * allowed on AUTHORITATIVE ABSENCE — a successful non-empty chain read that
+ * contains none of the batch's CREATEs. An empty read (node may be lagging)
+ * or any matched CREATE defers to the post-broadcast reconciliation machinery
+ * (pollChainForConfirmation + reconcileAfterUncertainBroadcast), which
+ * verifies inclusion and adopts landed orders before the next cycle.
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {Array} operations
  * @param {Array} opContexts
@@ -886,28 +916,58 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                 && !err.partialOnChainState
                 && attempt <= MAX_RETRIES;
             if (isRetriable) {
-                bot.manager.logger.log(
-                    `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}), retrying...`,
-                    'warn'
+                const createContexts = opContexts.filter(
+                    (ctx: any) => ctx?.kind === 'create' && ctx?.finalInts && ctx?.order
                 );
-                await bot._ensureCredentialDaemonWritable('COW batch retry');
-
+                let absence: 'absent' | 'landed' | 'unknown' = 'unknown';
                 try {
                     const accountRef = bot.accountId || bot.account?.id || bot.account;
                     const freshChain = await chainOrders.readOpenOrders(accountRef);
-                    if (freshChain.length > 0 && bot.manager?.syncFromOpenOrders) {
-                        await bot.manager.syncFromOpenOrders(freshChain, {
-                            skipAccounting: true,
-                        });
+                    if (Array.isArray(freshChain) && freshChain.length > 0) {
+                        absence = 'absent';
+                        for (const ctx of createContexts) {
+                            const match = findChainOrderForSlot(bot, freshChain, ctx.order.id, {
+                                sell: ctx.finalInts.sell,
+                                receive: ctx.finalInts.receive,
+                                orderType: ctx.order.type,
+                                fingerprint: buildCreateOpFingerprint({
+                                    side: ctx.order.type,
+                                    assetA: bot.manager?.assets?.assetA?.id,
+                                    assetB: bot.manager?.assets?.assetB?.id,
+                                    sellInt: ctx.finalInts.sell,
+                                    receiveInt: ctx.finalInts.receive,
+                                    slotId: ctx.order.id
+                                })
+                            });
+                            if (match) {
+                                absence = 'landed';
+                                break;
+                            }
+                        }
                     }
-                } catch (syncErr: any) {
+                } catch (verifyErr: any) {
                     bot.manager.logger.log(
-                        `[COW] Pre-retry sync failed (non-fatal): ${syncErr?.message || syncErr}`,
+                        `[COW] Pre-retry chain verification failed (non-fatal): ${verifyErr?.message || verifyErr}`,
                         'warn'
                     );
                 }
 
-                continue;
+                if (absence === 'absent') {
+                    bot.manager.logger.log(
+                        `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}); verified absent on chain, retrying...`,
+                        'warn'
+                    );
+                    await bot._ensureCredentialDaemonWritable('COW batch retry');
+                    continue;
+                }
+
+                bot.manager.logger.log(
+                    `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}); ` +
+                    `${absence === 'landed' ? 'create(s) confirmed landed on chain' : 'chain state unverifiable (empty/lagging read)'} — ` +
+                    `deferring to post-broadcast reconciliation (no blind re-broadcast)`,
+                    'warn'
+                );
+                throw err;
             }
             throw err;
         }
@@ -1534,6 +1594,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         if (cancelCount > 0) bot.manager.logger.log(`Dry run: would cancel ${cancelCount} orders`, 'info');
         if (createCount > 0) bot.manager.logger.log(`Dry run: would place ${createCount} new orders`, 'info');
         if (updateCount > 0) bot.manager.logger.log(`Dry run: would update ${updateCount} orders`, 'info');
+        if (cowResult?._workingGridPushed === true) {
+            bot.manager._clearWorkingGridRef();
+        }
         return { executed: true, hadRotation: false };
     }
 
@@ -1577,6 +1640,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         );
 
         if (hasHardOccupiedViolation) {
+            if (cowResult?._workingGridPushed === true) {
+                bot.manager._clearWorkingGridRef();
+            }
             return {
                 executed: false,
                 aborted: true,
@@ -1621,6 +1687,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             `Waiting for next fill or sync cycle to reset recovery state.`,
             'warn'
         );
+        if (cowResult?._workingGridPushed === true) {
+            bot.manager._clearWorkingGridRef();
+        }
         return {
             executed: false,
             aborted: true,
@@ -1670,6 +1739,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     'error'
                 );
             }
+            if (cowResult?._workingGridPushed === true) {
+                bot.manager._clearWorkingGridRef();
+            }
             return {
                 executed: false,
                 aborted: true,
@@ -1693,7 +1765,13 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             const freshSnapshot = await chainOrders.readOpenOrders(accountRef);
             if (freshSnapshot && freshSnapshot.length > 0) {
                 const syncResult = await bot.manager.syncFromOpenOrders(freshSnapshot, {
-                    skipAccounting: true,
+                    // Accounting enabled: the adopted chain orders were never
+                    // registered in master (they are unmatched/orphan), so the
+                    // adoption must lock their capital. skipAccounting:true would
+                    // leave the optimistic balances drifted until the next fetch
+                    // — inconsistent with the open-orders loop convention
+                    // ('readOpenOrders' → skipAccounting:false).
+                    skipAccounting: false,
                 });
                 if (syncResult && Array.isArray(syncResult.unmatchedChainOrders)) {
                     const processed = (syncResult.filledOrders?.length || 0) +
@@ -1743,6 +1821,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             `[COW] Rejecting CREATE batch after sync: working grid invalidated by master mutation`,
             'info'
         );
+        if (cowResult?._workingGridPushed === true) {
+            bot.manager._clearWorkingGridRef();
+        }
         return {
             executed: false,
             aborted: true,
@@ -2092,8 +2173,11 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             // grid was pushed by performSafeRebalance, and nothing downstream
             // will commit it — leaving it on the stack would stick the manager
             // in REBALANCING permanently (the outer frame already popped its
-            // own grid before recursing). Popping an empty stack is a no-op.
-            bot.manager._clearWorkingGridRef();
+            // own grid before recursing). Guarded on the push marker so plan
+            // path calls (never pushed) cannot pop an unrelated entry.
+            if (cowResult?._workingGridPushed === true) {
+                bot.manager._clearWorkingGridRef();
+            }
             return { executed: false, hadRotation: false };
         }
 
@@ -2102,7 +2186,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
 
         if (!validation.isValid) {
             bot.manager.logger.log(`Skipping batch broadcast: ${validation.violations!.length} fund violation(s) detected`, 'warn');
-            bot.manager._clearWorkingGridRef();
+            if (cowResult?._workingGridPushed === true) {
+                bot.manager._clearWorkingGridRef();
+            }
             return { executed: false, hadRotation: false };
         }
 
@@ -2141,8 +2227,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 // Abandon the original plan's working grid: it can no longer
                 // commit. Pop it so the rebalance stack stays balanced — the
                 // fresh plan's grid (pushed by performSafeRebalance below) is
-                // popped by the recursion's own commit/cleanup path.
-                if (typeof bot.manager._clearWorkingGridRef === 'function') {
+                // popped by the recursion's own commit/cleanup path. Guarded on
+                // the push marker (plan-path calls never pushed a grid).
+                if (cowResult?._workingGridPushed === true
+                    && typeof bot.manager._clearWorkingGridRef === 'function') {
                     bot.manager._clearWorkingGridRef();
                 }
                 let replanned: any = null;
@@ -2176,7 +2264,8 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     // Re-plan confirms the grid is already consistent
                     // post-fills; the stale original plan must NOT ship.
                     // Pop the fresh plan's grid too (it was never committed).
-                    if (typeof bot.manager._clearWorkingGridRef === 'function') {
+                    if (replanned?._workingGridPushed === true
+                        && typeof bot.manager._clearWorkingGridRef === 'function') {
                         bot.manager._clearWorkingGridRef();
                     }
                     if (bot.manager?._pendingBroadcasts instanceof Map) {
@@ -2238,7 +2327,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         `returned no chainOrderId (${missingSlots}). Discarding working grid and syncing from chain.`,
                         'error'
                     );
-                    bot.manager._clearWorkingGridRef();
+                    if (cowResult?._workingGridPushed === true) {
+                        bot.manager._clearWorkingGridRef();
+                    }
                     markMissingCreateResultsAsStructuralBlocker(bot, missingCreateResults);
                     await recoverAfterMissingCreateResults(bot, 'missing create operation results');
                     return {
@@ -2338,7 +2429,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 return { ...batchResult, executed: true, hadRotation: true };
             } else {
                 bot.manager.logger.log('[COW] Blockchain failed - working grid discarded, master unchanged', 'warn');
-                bot.manager._clearWorkingGridRef();
+                if (cowResult?._workingGridPushed === true) {
+                    bot.manager._clearWorkingGridRef();
+                }
                 clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
                 return { ...result, executed: false, hadRotation: false };
             }
@@ -2444,7 +2537,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             }
         }
 
-        bot.manager._clearWorkingGridRef();
+        if (cowResult?._workingGridPushed === true) {
+            bot.manager._clearWorkingGridRef();
+        }
 
         if (err instanceof BroadcastUncertainError) {
             return await reconcileAfterUncertainBroadcast(bot, err, opContexts);

@@ -379,6 +379,18 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
         if (orderGone) {
             shouldRemove = true;
             _filterUnmatchedChainOrders(manager, chainOrderId);
+        } else if (error?.code === 'BROADCAST_UNCERTAIN' || error?.name === 'BroadcastUncertainError') {
+            // Uncertain update: the delta may have landed. Re-applying the same
+            // delta on a later (possibly lagging) read would double-shrink the
+            // order. Drop the entry instead of re-queueing blindly — the next
+            // sync's price-mismatch detection re-queues the correction if the
+            // order is still off-target, and treats it as done if the update
+            // actually landed.
+            shouldRemove = true;
+            manager.logger?.log?.(
+                `[CORRECTION] Uncertain price update for ${chainOrderId}; deferring verification to next sync re-detection`,
+                'warn'
+            );
         }
         return { success: false, error: getErrorMessage(error), orderGone };
     } finally {

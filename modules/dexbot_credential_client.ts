@@ -211,10 +211,6 @@ async function waitForCredentialDaemon(timeoutMs: number = DEFAULT_WAIT_TIMEOUT_
     }
 }
 
-function extractHostname(url: string): string {
-    try { return new URL(url).hostname; } catch { return url; }
-}
-
 async function executeOperationsViaCredentialDaemon(accountName: string, operations: any[], options: CredentialClientOptions = {}): Promise<CredentialDaemonResponse> {
     if (!accountName) {
         throw new Error('accountName is required to execute operations');
@@ -300,13 +296,13 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
                 if (typeof options.onNodeFailed === 'function' && nodeUrl) {
                     options.onNodeFailed(nodeUrl);
                 }
-                if (attempt < maxAttempts - 1) {
-                    const label = extractHostname(nodeUrl || '') || 'primary';
-                    const nextHost = extractHostname(fallbackNodes[attempt]);
-                    console.warn(`[cred-daemon-client] BROADCAST_DEADLINE on ${label}, retrying fallback ${nextHost}...`);
-                    await new Promise((resolve: any) => setTimeout(resolve, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS));
-                    continue;
-                }
+                // NEVER re-send ops whose outcome is unknown: the broadcast may
+                // have landed, and re-sending duplicates on-chain orders (the
+                // daemon's inner BROADCAST_DEADLINE loop already cycles nodes
+                // internally). Propagate the uncertain error so the recovery
+                // layers (COW retry verification, startup adoption, broadcast
+                // reconciliation) verify chain inclusion before any re-broadcast.
+                throw err;
             }
             throw err;
         }

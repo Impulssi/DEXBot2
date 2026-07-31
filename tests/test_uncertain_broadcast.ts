@@ -650,28 +650,28 @@ async function testCredentialClientBroadcastTimeoutBecomesUncertain() {
 }
 
 async function testCredentialClientFallbackRetrySucceeds() {
-    console.log('\n[UNC-008i-1] credential client fallbackNodes: 1 fallback, 1st DEADLINE → 2nd succeeds...');
+    console.log('\n[UNC-008i-1] credential client DEADLINE → throws immediately, NO fallback re-send (duplicate-order protection)...');
     const operations = [{ op_name: 'limit_order_cancel', op_data: { order: '1.7.1' } }];
     let requestCount = 0;
     const transport = installFakeCredentialDaemonTransport((request, socket) => {
         requestCount++;
-        if (requestCount === 1) {
-            assert.strictEqual(request.nodeUrl, undefined, 'First attempt has no nodeUrl override');
-            socket.endLine({ success: false, code: DAEMON_CODES.BROADCAST_DEADLINE, error: 'inner deadline' });
-        } else {
-            assert.strictEqual(request.nodeUrl, 'wss://fallback-1.bitshares.org/ws', 'Second attempt uses fallback nodeUrl');
-            socket.endLine({ success: true, operation_results: [] });
-        }
+        socket.endLine({ success: false, code: DAEMON_CODES.BROADCAST_DEADLINE, error: 'inner deadline' });
     });
     try {
-        const result = await executeOperationsViaCredentialDaemon('test-account', operations, {
-            socketPath: transport.socketPath,
-            requestType: 'broadcast',
-            timeoutMs: 100,
-            fallbackNodes: ['wss://fallback-1.bitshares.org/ws'],
-        });
-        assert.ok(result.success);
-        assert.strictEqual(requestCount, 2, 'Should retry once on fallback');
+        await assert.rejects(
+            () => executeOperationsViaCredentialDaemon('test-account', operations, {
+                socketPath: transport.socketPath,
+                requestType: 'broadcast',
+                timeoutMs: 100,
+                fallbackNodes: ['wss://fallback-1.bitshares.org/ws'],
+            }),
+            (err) => {
+                assert(err instanceof BroadcastUncertainError);
+                assert.strictEqual(err.code, 'BROADCAST_UNCERTAIN');
+                return true;
+            }
+        );
+        assert.strictEqual(requestCount, 1, 'Must NOT re-send on fallback nodes: the broadcast may have landed and re-sending duplicates on-chain orders');
     } finally {
         transport.restore();
     }
@@ -679,7 +679,7 @@ async function testCredentialClientFallbackRetrySucceeds() {
 }
 
 async function testCredentialClientFallbackRetryExhausted() {
-    console.log('\n[UNC-008i-2] credential client fallbackNodes: all DEADLINE → throws after exhausting...');
+    console.log('\n[UNC-008i-2] credential client DEADLINE → throws immediately regardless of fallback list...');
     const operations = [{ op_name: 'limit_order_cancel', op_data: { order: '1.7.2' } }];
     let requestCount = 0;
     const transport = installFakeCredentialDaemonTransport((request, socket) => {
@@ -703,7 +703,7 @@ async function testCredentialClientFallbackRetryExhausted() {
                 return true;
             }
         );
-        assert.strictEqual(requestCount, 3, 'Should try all 3 nodes (1 primary + 2 fallbacks)');
+        assert.strictEqual(requestCount, 1, 'Single attempt only: recovery layers verify chain inclusion before any re-broadcast');
     } finally {
         transport.restore();
     }
@@ -768,7 +768,7 @@ async function testCredentialClientFallbackEmptyList() {
 }
 
 async function testCredentialClientFallbackReportsFailedNode() {
-    console.log('\n[UNC-008i-5] credential client fallbackNodes: fires onNodeFailed on DEADLINE...');
+    console.log('\n[UNC-008i-5] credential client DEADLINE → single attempt, propagates (no fallback cycling)...');
     const operations = [{ op_name: 'limit_order_cancel', op_data: { order: '1.7.5' } }];
     let requestCount = 0;
     const failedNodes: string[] = [];
@@ -790,10 +790,7 @@ async function testCredentialClientFallbackReportsFailedNode() {
             }),
             (err) => err instanceof BroadcastUncertainError
         );
-        assert.strictEqual(requestCount, 3, 'Should try all 3 nodes');
-        assert.strictEqual(failedNodes.length, 2, 'onNodeFailed fires for both fallbacks (primary has no nodeUrl)');
-        assert.strictEqual(failedNodes[0], 'wss://fallback-1.bitshares.org/ws', 'First failing fallback reported');
-        assert.strictEqual(failedNodes[1], 'wss://fallback-2.bitshares.org/ws', 'Last exhausted fallback also reported');
+        assert.strictEqual(requestCount, 1, 'Single attempt: uncertain broadcasts must not be re-sent on fallback nodes');
     } finally {
         transport.restore();
     }
@@ -1132,7 +1129,7 @@ async function testCowCatchBlockPassesFillLockAlreadyHeld() {
 }
 
 async function testExecuteWithRetryOnUncertainRetriesOnce() {
-    console.log('\n[UNC-013] _executeWithRetryOnUncertain retries once on BroadcastUncertainError then throws...');
+    console.log('\n[UNC-013] _executeWithRetryOnUncertain does NOT retry without verifiable absence (duplicate protection)...');
     const bot = makeBot();
     const origExecuteBatch = chainOrders.executeBatch;
     let callCount = 0;
@@ -1147,7 +1144,10 @@ async function testExecuteWithRetryOnUncertainRetriesOnce() {
             () => bot._executeWithRetryOnUncertain([], []),
             (err) => {
                 assert(err instanceof BroadcastUncertainError, 'must throw BroadcastUncertainError');
-                assert.strictEqual(callCount, 2, 'must try exactly 2 times (1 initial + 1 retry)');
+                // opContexts=[] carries no CREATEs to verify absence for, so the
+                // batch must NOT be re-broadcast — an uncertain broadcast may
+                // have landed and a blind retry would duplicate on-chain orders.
+                assert.strictEqual(callCount, 1, 'must NOT re-broadcast without verified absence');
                 return true;
             }
         );
@@ -1155,6 +1155,90 @@ async function testExecuteWithRetryOnUncertainRetriesOnce() {
         chainOrders.executeBatch = origExecuteBatch;
     }
     console.log('✓ UNC-013 passed');
+}
+
+async function testExecuteWithRetryOnVerifiedAbsence() {
+    console.log('\n[UNC-013b] _executeWithRetryOnUncertain retries ONLY on authoritative absence (non-empty read, no match)...');
+    const bot = makeBot();
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadOpenOrders = chainOrders.readOpenOrders;
+    let callCount = 0;
+
+    const createCtx = {
+        kind: 'create',
+        id: 'slot-buy-1',
+        order: { id: 'slot-buy-1', type: 'buy' },
+        finalInts: { sell: 5000000, receive: 100000000 }
+    };
+
+    chainOrders.executeBatch = async () => {
+        callCount++;
+        if (callCount === 1) {
+            throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013b', timeoutMs: 30000 });
+        }
+        return { success: true, operation_results: [] };
+    };
+    // Authoritative absence: a non-empty read that contains NONE of the batch's
+    // creates (an unrelated order with far-off amounts).
+    chainOrders.readOpenOrders = async () => ([{
+        id: '1.7.700001',
+        type: 'buy',
+        sellInt: 999999999,
+        receiveInt: 999999999
+    }]);
+
+    try {
+        const result = await bot._executeWithRetryOnUncertain([{ op_name: 'limit_order_create' }], [createCtx]);
+        assert.ok(result?.result?.success, 'retry after verified absence must succeed');
+        assert.strictEqual(callCount, 2, 'must re-broadcast exactly once after verified absence');
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrders = origReadOpenOrders;
+    }
+    console.log('✓ UNC-013b passed');
+}
+
+async function testExecuteWithRetryOnLandedCreate() {
+    console.log('\n[UNC-013c] _executeWithRetryOnUncertain does NOT retry when a create is confirmed landed on chain...');
+    const bot = makeBot();
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadOpenOrders = chainOrders.readOpenOrders;
+    let callCount = 0;
+
+    const createCtx = {
+        kind: 'create',
+        id: 'slot-buy-1',
+        order: { id: 'slot-buy-1', type: 'buy' },
+        finalInts: { sell: 5000000, receive: 100000000 }
+    };
+
+    chainOrders.executeBatch = async () => {
+        callCount++;
+        throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013c', timeoutMs: 30000 });
+    };
+    // The create landed: the chain read contains the batch's own order
+    // (matching sell/receive within tolerance).
+    chainOrders.readOpenOrders = async () => ([{
+        id: '1.7.700002',
+        type: 'buy',
+        sellInt: 5000000,
+        receiveInt: 100000000
+    }]);
+
+    try {
+        await assert.rejects(
+            () => bot._executeWithRetryOnUncertain([{ op_name: 'limit_order_create' }], [createCtx]),
+            (err) => {
+                assert(err instanceof BroadcastUncertainError, 'must throw BroadcastUncertainError');
+                assert.strictEqual(callCount, 1, 'must NOT re-broadcast a create that is already on chain');
+                return true;
+            }
+        );
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrders = origReadOpenOrders;
+    }
+    console.log('✓ UNC-013c passed');
 }
 
 async function testExecuteWithRetrySkipsPartialOnChainState() {
@@ -1221,6 +1305,8 @@ async function main() {
     await testAutoCancelOnlyPriceDriftOrphans();
     await testCowCatchBlockPassesFillLockAlreadyHeld();
     await testExecuteWithRetryOnUncertainRetriesOnce();
+    await testExecuteWithRetryOnVerifiedAbsence();
+    await testExecuteWithRetryOnLandedCreate();
     await testExecuteWithRetrySkipsPartialOnChainState();
     await testUpdateToCreateFallbackOnNotFound();
     await testUpdateToCreateFallbackRotationBranch();
@@ -1724,10 +1810,17 @@ async function testBoundaryShiftAllDiscarded() {
             [{ kind: 'create', id: 'buy-1' }, { kind: 'create', id: 'sell-1' }]
         );
         assert.strictEqual(result.uncertain, true);
-        assert.strictEqual(result.adoptedCount, 0, 'no CREATEs should be adopted');
-        assert.strictEqual(result.discardedCount, 2, 'both CREATEs should be discarded');
+        // Empty chain read is ambiguous (node may be lagging behind the
+        // broadcast) — NOT authoritative absence. No discard decisions may be
+        // made: discarding would clear the pending-broadcast protection and let
+        // the next cycle re-CREATE slots whose orders may actually be on chain.
+        assert.strictEqual(result.ambiguousRead, true, 'empty read must be reported as ambiguous');
+        assert.strictEqual(result.adoptedCount, undefined, 'no adoption decisions on ambiguous read');
+        assert.strictEqual(result.discardedCount, undefined, 'no discard decisions on ambiguous read');
+        assert.strictEqual(bot.manager._pendingBroadcasts.size, 2,
+            'pending-broadcast protection must be KEPT on ambiguous (empty) read');
         assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY,
-            'boundaryIdx must NOT shift when all CREATEs are discarded');
+            'boundaryIdx must NOT shift when the read is ambiguous');
     } finally {
         chainOrders.readOpenOrders = origReadOpenOrders;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;

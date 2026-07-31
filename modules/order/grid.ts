@@ -516,6 +516,14 @@ export function createOrderGrid(config: any): any {
      * @private
      */
 function _clearOrderCachesLogic(manager: any): void {
+        // Bump the grid version: the master map is replaced atomically here, and
+        // an in-flight COW plan whose baseVersion matches the pre-swap version
+        // must be refused at commit (version check) instead of committing over
+        // the regenerated grid. _applyOrderUpdate bumps per slot afterwards, but
+        // a zero-slot grid would otherwise leave the version unchanged.
+        if (Number.isFinite(Number(manager._gridVersion))) {
+            manager._gridVersion++;
+        }
         // Replace frozen master grid with fresh empty frozen Map (COW pattern)
         manager.orders = Object.freeze(new Map());
     }
@@ -592,8 +600,26 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                             ? ORDER_TYPES.SELL
                             : ORDER_TYPES.SPREAD;
                     if (slot.type !== correctType) {
+                        let newType = correctType;
+                        // On-chain slots must never be reassigned to SPREAD:
+                        // SPREAD+ACTIVE/PARTIAL is an illegal state (validateOrder
+                        // rejects it), so the slot would be dropped from the loaded
+                        // grid and its chain order orphaned. Keep the stored
+                        // BUY/SELL rail type (the subsequent sync's pass-1
+                        // type-mismatch handling cancels/recreates a genuinely
+                        // wrong side), or resolve a stale SPREAD type by the
+                        // price-vs-startPrice convention used by the funds check.
+                        if (newType === ORDER_TYPES.SPREAD
+                            && slot.orderId
+                            && (slot.state === ORDER_STATES.ACTIVE || slot.state === ORDER_STATES.PARTIAL)) {
+                            newType = (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)
+                                ? slot.type
+                                : (slot.price < manager.config?.startPrice
+                                    ? ORDER_TYPES.BUY
+                                    : ORDER_TYPES.SELL);
+                        }
                         reassignCount++;
-                        return { ...slot, type: correctType };
+                        return { ...slot, type: newType };
                     }
                     return slot;
                 });

@@ -416,6 +416,20 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
             resolveAccountRef(manager, account),
             TIMING.CONNECTION_TIMEOUT_MS
         );
+        if (!Array.isArray(freshChainOrders) || freshChainOrders.length === 0) {
+            // Empty/lagging read guard: syncFromOpenOrders([]) would run pass-1
+            // phantom cleanup and virtualize every ACTIVE/PARTIAL slot missing
+            // from the (possibly lagging) snapshot — destroying a confirmed grid
+            // right after a broadcast, after which Phase 3 re-creates the orders
+            // and duplicates the ones still live on chain. An empty read is
+            // ambiguous, not authoritative absence: defer to the next reconcile
+            // cycle instead of mutating the grid.
+            logger?.log?.(
+                'Startup: Recovery sync skipped — empty chain read is ambiguous (node may be lagging); deferring to next reconcile cycle',
+                'warn'
+            );
+            return null;
+        }
         await manager.syncFromOpenOrders(freshChainOrders, {
             skipAccounting: false,
             source,

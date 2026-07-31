@@ -1575,11 +1575,19 @@ class OrderManager {
         });
 
         if (result.aborted) {
-            this._clearWorkingGridRef();
+            // Nothing was pushed for an aborted result — the push below is
+            // skipped — so there is no working-grid ref to clear here. Popping
+            // would steal an unrelated stack entry (double-pop) when combined
+            // with the caller-side no-action handling in _executeBatchIfNeeded.
             return result;
         }
 
         this._currentWorkingGridStack.push(result.workingGrid);
+        // Marker so pop sites (dexbot_class._executeBatchIfNeeded, COW batch
+        // executor early returns) can tell a pushed grid from results that were
+        // never pushed (no-trigger processFilledOrders, updateOrdersOnChainPlan,
+        // reconcileGridOrders) and avoid unmatched pops.
+        result._workingGridPushed = true;
         return result;
     }
 

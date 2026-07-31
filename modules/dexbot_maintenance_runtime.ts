@@ -2045,7 +2045,19 @@ function wireStructuralGridResyncRequest(bot: any) {
 
             bot._structuralGridResyncRunning++;
             try {
-                const persistedResult = await bot._recoverFromPersistedGrid();
+                // The reload runs without the fill lock, so raise the
+                // recovery-in-flight flag for its whole duration: the fill
+                // consumer defers (dexbot_fill_runtime gates on it), which
+                // prevents a fill arriving mid-reload from starting a new COW
+                // batch whose broadcast would overlap the reload and force an
+                // avoidable commit refusal + re-adoption cycle.
+                bot._recoverySyncInFlight = (bot._recoverySyncInFlight || 0) + 1;
+                let persistedResult: any;
+                try {
+                    persistedResult = await bot._recoverFromPersistedGrid();
+                } finally {
+                    bot._recoverySyncInFlight = Math.max(0, (bot._recoverySyncInFlight || 0) - 1);
+                }
                 if (persistedResult.success) {
                     if (bot.manager?._recoveryState) {
                         bot.manager._recoveryState = { ...bot.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };

@@ -812,7 +812,20 @@ class SyncEngine {
 
                 // Only genuine disappearances (had orderId) count as fills.
                 if (hadOrderId) {
-                    filledOrders.push({ ...currentGridOrder });
+                    // A SPREAD slot can carry an on-chain order (spread-correction
+                    // activation). Resolve the real side before pushing: the fill
+                    // drives deriveTargetBoundary, which only shifts on BUY/SELL —
+                    // a SPREAD-typed fill would silently drop the boundary crawl
+                    // for this completed order. Same price-vs-startPrice convention
+                    // as the funds check (manager.ts) since no chain order remains
+                    // to resolve the side from.
+                    let resolvedType = currentGridOrder.type;
+                    if (resolvedType === ORDER_TYPES.SPREAD) {
+                        resolvedType = currentGridOrder.price < mgr.config.startPrice
+                            ? ORDER_TYPES.BUY
+                            : ORDER_TYPES.SELL;
+                    }
+                    filledOrders.push({ ...currentGridOrder, type: resolvedType });
                 }
             }
         }
@@ -1091,11 +1104,17 @@ class SyncEngine {
         // A SPREAD slot can carry an on-chain order (e.g. spread-correction
         // activation). Resolve the real side from the fill's pays asset so the
         // transition result is BUY/SELL — never SPREAD with an on-chain state,
-        // which validateOrder rejects as fatal ILLEGAL_SPREAD_STATE.
+        // which validateOrder rejects as fatal ILLEGAL_SPREAD_STATE. When the
+        // pays asset matches neither side (malformed fill event), fall back to
+        // the price-vs-startPrice convention so the type can never leak SPREAD
+        // into a fill result (which would drop the boundary shift downstream).
         let orderType = matchedGridOrder.type;
         if (orderType === ORDER_TYPES.SPREAD) {
             if (paysAssetId === mgr.assets.assetB.id) orderType = ORDER_TYPES.BUY;
             else if (paysAssetId === mgr.assets.assetA.id) orderType = ORDER_TYPES.SELL;
+            else orderType = matchedGridOrder.price < mgr.config.startPrice
+                ? ORDER_TYPES.BUY
+                : ORDER_TYPES.SELL;
         }
         const currentSize = toFiniteNumber(matchedGridOrder.size);
         const precision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetA.precision : mgr.assets.assetB.precision;

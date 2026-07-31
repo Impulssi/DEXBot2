@@ -1105,8 +1105,13 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
         if (accountId) {
             try {
                 const openOrders = await readOpenOrders(accountId, TIMING.CONNECTION_TIMEOUT_MS, true);
+                // Only a NON-EMPTY read is authoritative: the order being absent
+                // from a live account snapshot confirms the cancellation landed.
+                // An empty read is ambiguous (the node may be lagging behind the
+                // broadcast) — treating it as confirmed would free the slot and
+                // its capital while the order may still be live on chain.
                 const stillPresent = Array.isArray(openOrders) && openOrders.some((order: any) => String(order?.id ?? '') === String(orderId));
-                if (!stillPresent) {
+                if (!stillPresent && Array.isArray(openOrders) && openOrders.length > 0) {
                     chainOrdersLogger.info(`Order ${orderId} cancellation confirmed after broadcast failure`);
                     return { success: true, orderId, verified: true, verifiedAfterFailure: true };
                 }

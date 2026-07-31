@@ -228,8 +228,14 @@ async function testExecuteBatchIfNeededSkipsEmptyActions() {
     assert.strictEqual(emptyResult.skippedNoActions, true, 'Empty action set should return skipped marker');
     assert(logs.some(l => l.level === 'debug' && l.msg.includes('No actions needed for unit-empty')),
         'Empty action guard should emit debug log');
+    // A result that was never pushed (no _workingGridPushed marker) must NOT pop
+    // the working-grid stack — an unmatched pop could steal a nested grid entry.
+    assert.strictEqual(clearWorkingGridCalls, 0,
+        'Empty action guard must not pop the stack for a result that was never pushed');
+
+    await bot._executeBatchIfNeeded({ actions: [], _workingGridPushed: true }, 'unit-empty-pushed');
     assert.strictEqual(clearWorkingGridCalls, 1,
-        'Empty action guard must call _clearWorkingGridRef to reset REBALANCING state');
+        'Empty action guard must pop exactly once for a result whose grid was pushed');
 
     await bot._executeBatchIfNeeded({
         actions: [{ type: COW_ACTIONS.CREATE, id: 'slot-new', order: { id: 'slot-new' } }],
