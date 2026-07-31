@@ -261,12 +261,14 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
     - Retry once with a fresh deadline window (`_executeWithRetryOnUncertain`).
     - Skip retry when `err.partialOnChainState` is true (pair-mode grouped execution).
     - After retry expiry, reconcile — `AsyncLock` is re-entrant so no special `fillLockAlreadyHeld` parameter is needed.
-  - Daemon broadcast (`broadcastWithDeadline`) retries only provably
-    untransmitted failures (`CREDENTIAL_DAEMON_BROADCAST_RETRIES`, pre-send
-    errors only) inside the hard inner deadline; re-signing an uncertain
-    broadcast would duplicate a landed transaction on chain (new tx ID per
-    signature), so BROADCAST_DEADLINE is reported to the bot and retries
-    happen only after chain verification.
+  - Daemon broadcast (`broadcastWithDeadline`) pins all
+    `CREDENTIAL_DAEMON_BROADCAST_RETRIES` attempts to one node; only when they
+    all fail with provably untransmitted failures (pre-send errors only) does
+    it report the node to the health ledger (threshold → blacklist + shared
+    health-cache exclusion, logged) and rotate to the next best node. Re-signing
+    an uncertain broadcast would duplicate a landed transaction on chain (new
+    tx ID per signature), so BROADCAST_DEADLINE is reported to the bot and
+    retries happen only after chain verification.
 
 - `INV-BROADCAST-002` Deadlock-free reconcile after uncertain broadcast
   - `_reconcileAfterUncertainBroadcast` does not need a `fillLockAlreadyHeld` flag because `AsyncLock` is re-entrant — a second `acquire()` from within the same execution context runs the callback directly instead of queueing.

@@ -295,18 +295,21 @@ let TIMING = {
     // the bot.
     CREDENTIAL_DAEMON_INNER_DEADLINE_MS: 25000,
 
-    // CREDENTIAL_DAEMON_BROADCAST_RETRIES: Number of retry attempts inside the
-    // credential daemon's broadcastWithDeadline AFTER the initial attempt, for
-    // failures that provably never reached the chain (pre-transmit: connection
-    // setup, WebSocket not open, frame send errors). Uncertain failures (RPC
+    // CREDENTIAL_DAEMON_BROADCAST_RETRIES: Number of broadcast attempts pinned
+    // to a SINGLE node in the credential daemon's broadcastWithDeadline
+    // (attempts total, not retries after the first). All attempts use the
+    // same node — only when they ALL fail with failures that provably never
+    // reached the chain (pre-transmit: connection setup, WebSocket not open,
+    // frame send errors) does the daemon report the node failure to the node
+    // health ledger and rotate to the next best node. Uncertain failures (RPC
     // timeout, connection dropped with a response pending) are NEVER retried —
     // the transaction may have landed and a re-sign would duplicate it — they
     // are reported to the bot as BROADCAST_DEADLINE for verify-before-retry.
-    // Total wall time across all attempts stays capped by
+    // Total wall time across all nodes/attempts stays capped by
     // CREDENTIAL_DAEMON_INNER_DEADLINE_MS.
     CREDENTIAL_DAEMON_BROADCAST_RETRIES: 3,
 
-    // CREDENTIAL_DAEMON_BROADCAST_BACKOFF_MS: Delay between pre-transmit retry
+    // CREDENTIAL_DAEMON_BROADCAST_BACKOFF_MS: Delay between pinned-node
     // attempts in the credential daemon. Pre-transmit failures are fast (no
     // RPC wait), so a short backoff keeps the retry burst well inside the
     // inner deadline.

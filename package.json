@@ -110,6 +110,7 @@
     "./dist/modules/credential_runtime.js": false,
     "./dist/modules/dexbot_credential_client.js": false,
     "./dist/modules/node_health_cache.js": false,
+    "./dist/modules/daemon_node_health.js": false,
     "./dist/modules/storage/node_adapter.js": false,
     "./dist/modules/key_store.js": false,
     "./dist/modules/logger.js": false,

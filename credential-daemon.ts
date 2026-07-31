@@ -443,17 +443,44 @@ function buildUncertainError(accountName: any, startedAt: number, detail: string
     return err;
 }
 
+/**
+ * Serialize daemon broadcasts: the daemon shares ONE _nativeChainClient and
+ * signing-client cache across all socket clients, so concurrent
+ * broadcastWithDeadline calls would stomp each other's node pinning, connect
+ * state, and cache clearing (a pre-existing hazard, widened by per-node
+ * pinning). Broadcasts are queued as a promise chain; non-broadcast requests
+ * are unaffected.
+ *
+ * NOTE: the queue wait happens BEFORE the broadcast's 25s inner deadline
+ * starts (the deadline only covers broadcastWithDeadline itself), so under
+ * burst concurrency a queued broadcast can consume the bot's 30s outer
+ * socket window and surface as a spurious BROADCAST_DEADLINE. That is a
+ * safe, verified outcome (verify-before-retry), accepted deliberately:
+ * serializing is cheaper than the stomping it prevents.
+ */
+let broadcastChain: Promise<any> = Promise.resolve();
+function serializeBroadcast<T>(fn: () => Promise<T>): Promise<T> {
+    const run = broadcastChain.then(fn, fn);
+    broadcastChain = run.then(() => undefined, () => undefined);
+    return run;
+}
+
 async function broadcastWithDeadline(accountName: any, privateKey: any, broadcastFn: any, nodeUrl: string | null = null) {
-    // Deadline-capped broadcast with retries ONLY for failures that provably
-    // never reached the chain (pre-transmit: connection setup, WebSocket not
-    // open, frame send errors). An uncertain failure — RPC timeout, or the
-    // connection dropped while a response was pending — may have landed, and
-    // re-signing it would duplicate the transaction on chain (each re-signing
-    // produces a new transaction ID). Those are reported as BROADCAST_DEADLINE
-    // so the bot layer verifies chain inclusion before any re-broadcast
-    // (executeWithRetryOnUncertain, startup adoption). The inner deadline caps
-    // the TOTAL wall time across all attempts — pre-transmit failures are
-    // fast (no RPC wait), so retries never hang the bot — and guarantees we
+    // Deadline-capped broadcast: each node gets CREDENTIAL_DAEMON_BROADCAST_RETRIES
+    // attempts pinned to it (the transport sweeps ONLY the pinned node), and
+    // only when they ALL fail with failures that provably never reached the
+    // chain (pre-transmit: connection setup, WebSocket not open, frame send
+    // errors) does the daemon report the node failure to the node health
+    // ledger and rotate to the next best node from the health cache. An
+    // uncertain failure — RPC timeout, or the connection dropped while a
+    // response was pending — may have landed, and re-signing it would
+    // duplicate the transaction on chain (each re-signing produces a new
+    // transaction ID), so it is NEVER retried on any node: it is reported as
+    // BROADCAST_DEADLINE so the bot layer verifies chain inclusion before any
+    // re-broadcast (executeWithRetryOnUncertain, startup adoption). The inner
+    // deadline caps the TOTAL wall time across all attempts — pre-transmit
+    // failures are fast (no RPC wait), so retries never hang the bot — and
+    // guarantees we
     // reply well before the bot's outer socket timer
     // (CREDENTIAL_BROADCAST_TIMEOUT_MS) fires. If we don't reply in time, the
     // bot raises BroadcastUncertainError and enters the recovery path.
@@ -481,106 +508,170 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
     });
 
     const work = (async () => {
-        const maxAttempts = 1 + maxRetries;
+        // Pin ALL attempts to ONE node at a time: up to `attemptsPerNode`
+        // attempts on the best candidate, and only when those all fail with
+        // provably-untransmitted errors do we report the node failure and
+        // rotate to the next best node.
+        const attemptsPerNode = Math.max(1, maxRetries);
         let lastErr: any = null;
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            // Abort as soon as the inner deadline won the race: the bot has
-            // been told the outcome is uncertain and may verify + re-create —
-            // a late background broadcast would duplicate the order.
-            if (deadlineFired) {
-                throw buildUncertainError(accountName, startedAt, 'inner broadcast deadline exceeded');
+        const exhaustedNodes: string[] = [];
+
+        // Build the ordered candidate list: the bot-supplied nodeUrl is the
+        // PREFERRED node (attempted first), followed by the healthy node set
+        // ordered best-first by the shared health cache. Re-reads the cache
+        // so bot-side blacklists are reflected immediately; daemon-side
+        // blacklists (daemonNodeHealth) are excluded until their cooldown
+        // expires.
+        const buildCandidates = (): string[] => {
+            refreshNodeList();
+            const baseList = _nativeNodeList.length > 0 ? _nativeNodeList : NODE_MANAGEMENT.DEFAULT_NODES;
+            const list = nodeUrl ? [nodeUrl, ...baseList.filter((n: string) => n !== nodeUrl)] : [...baseList];
+            return list.filter((n: string) => !exhaustedNodes.includes(n) && !daemonNodeHealth.isBlacklisted(n));
+        };
+
+        // Candidate pool: healthy nodes best-first. When every available node
+        // is daemon-blacklisted (or the health cache is empty/absent), fall
+        // back to the configured defaults as a LAST RESORT — rebuilt the same
+        // way on every rotation, so each rotation still gets its next
+        // best-effort node: failing the broadcast outright would stall the
+        // order until the bot's next cycle, and a stale blacklist (node
+        // recovered inside its cooldown window) would otherwise go unused.
+        // Ordering: never-failed/recovered nodes first, then blacklisted ones
+        // cooldown-soonest-first.
+        let lastResortWarned = false;
+        const buildCandidatePool = (): string[] => {
+            const pool = buildCandidates();
+            if (pool.length > 0) return pool;
+            const state = daemonNodeHealth.getState();
+            const fallback = NODE_MANAGEMENT.DEFAULT_NODES
+                .filter((n: string) => !exhaustedNodes.includes(n))
+                .sort((a: string, b: string) =>
+                    (state.get(a)?.blacklistedUntil ?? -Infinity) - (state.get(b)?.blacklistedUntil ?? -Infinity)
+                );
+            if (fallback.length > 0 && !lastResortWarned) {
+                lastResortWarned = true;
+                daemonLogger.warn?.(
+                    `[credential-daemon] All healthy candidates blacklisted; falling back to last-resort node(s) (never-failed first, then cooldown-soonest)`
+                );
             }
-            if (attempt > 1) {
-                await sleep(retryBackoffMs);
+            return fallback;
+        };
+
+        // candidates[0] is always the next fresh node: every rotation pushes
+        // the exhausted node onto the ledger and rebuilds the pool, so the
+        // pool shrinks until it is empty.
+        let candidates = buildCandidatePool();
+
+        // candidates[0] is always the next fresh node: every rotation pushes
+        // the exhausted node onto the ledger and rebuilds the pool, so the
+        // pool shrinks until it is empty.
+        while (candidates.length > 0) {
+            const candidate = candidates[0];
+            for (let attempt = 1; attempt <= attemptsPerNode; attempt++) {
+                // Abort as soon as the inner deadline won the race: the bot has
+                // been told the outcome is uncertain and may verify + re-create —
+                // a late background broadcast would duplicate the order.
                 if (deadlineFired) {
                     throw buildUncertainError(accountName, startedAt, 'inner broadcast deadline exceeded');
                 }
-                // Fresh node health on every retry so a node that recovered
-                // (or got blacklisted meanwhile) is reflected immediately.
-                refreshNodeList();
-            }
-
-            // A bot-supplied nodeUrl is the PREFERRED backend, never the ONLY
-            // backend: the candidate list still falls back to the healthy node
-            // set if the preferred node is unavailable at broadcast time.
-            const baseList = _nativeNodeList.length > 0 ? _nativeNodeList : NODE_MANAGEMENT.DEFAULT_NODES;
-            let effectiveNodeList = baseList;
-            if (nodeUrl) {
-                effectiveNodeList = [nodeUrl, ...baseList.filter((n: string) => n !== nodeUrl)];
-            }
-            if (effectiveNodeList.length === 0) {
-                effectiveNodeList = [...baseList];
-            }
-
-            let phase: 'connect' | 'broadcast' = 'connect';
-            try {
-                if (_nativeChainClient.getStatus() !== 'connected') {
-                    phase = 'connect';
-                    _nativeChainClient.setNodes(effectiveNodeList);
-                    await _nativeChainClient.connect();
-                    // Transport reconnected — dispose all stale signing clients (heap-dump safety)
-                    // then clear the cache so new clients use the fresh transport.
-                    for (const [, entry] of signingClientCache) {
-                        if (typeof entry.signingClient.dispose === 'function') {
-                            try { entry.signingClient.dispose(); } catch (_) {}
-                        }
+                if (attempt > 1) {
+                    await sleep(retryBackoffMs);
+                    if (deadlineFired) {
+                        throw buildUncertainError(accountName, startedAt, 'inner broadcast deadline exceeded');
                     }
-                    signingClientCache.clear();
                 }
-                const fp = keyFingerprint(String(privateKey));
-                const cacheKey = accountName + ':' + fp;
-                let cached = signingClientCache.get(cacheKey);
-                if (!cached) {
-                    // Proactively evict stale entries for the same account (different fingerprint)
-                    // so key rotation never leaves dead entries in the map.
-                    const stalePrefix = accountName + ':';
-                    for (const [k, v] of signingClientCache) {
-                        if (k !== cacheKey && k.startsWith(stalePrefix)) {
-                            if (typeof v.signingClient.dispose === 'function') {
-                                try { v.signingClient.dispose(); } catch (_) {}
+
+                let phase: 'connect' | 'broadcast' = 'connect';
+                try {
+                    const currentNode = _nativeChainClient.transport?.getNodeUrl?.();
+                    if (_nativeChainClient.getStatus() !== 'connected' || currentNode !== candidate) {
+                        phase = 'connect';
+                        // Pin the attempt to the current candidate: the transport
+                        // sweeps ONLY the pinned node, so all attempts genuinely
+                        // use the SAME node before any rotation.
+                        _nativeChainClient.setNodes([candidate]);
+                        await _nativeChainClient.connect();
+                        // Transport reconnected — dispose all stale signing clients (heap-dump safety)
+                        // then clear the cache so new clients use the fresh transport.
+                        for (const [, entry] of signingClientCache) {
+                            if (typeof entry.signingClient.dispose === 'function') {
+                                try { entry.signingClient.dispose(); } catch (_) {}
                             }
-                            signingClientCache.delete(k);
                         }
+                        signingClientCache.clear();
                     }
-                    pruneStaleSigningClients();
-                    // Pre-convert WIF string → Buffer so dispose() can actually zero the bytes.
-                    // The WIF string goes out of scope at function return and is GC'd (non-deterministic),
-                    // but the Buffer passed to createSigningClient is filled with 0 by dispose() on eviction/shutdown.
-                    const { createSigningClient, wifToBuffer } = require('./modules/bitshares-native');
-                    const keyBuffer = wifToBuffer(String(privateKey));
-                    const signingClient = createSigningClient(_nativeChainClient, accountName, keyBuffer);
-                    cached = { signingClient, createdAt: Date.now() };
-                    signingClientCache.set(cacheKey, cached);
+                    const fp = keyFingerprint(String(privateKey));
+                    const cacheKey = accountName + ':' + fp;
+                    let cached = signingClientCache.get(cacheKey);
+                    if (!cached) {
+                        // Proactively evict stale entries for the same account (different fingerprint)
+                        // so key rotation never leaves dead entries in the map.
+                        const stalePrefix = accountName + ':';
+                        for (const [k, v] of signingClientCache) {
+                            if (k !== cacheKey && k.startsWith(stalePrefix)) {
+                                if (typeof v.signingClient.dispose === 'function') {
+                                    try { v.signingClient.dispose(); } catch (_) {}
+                                }
+                                signingClientCache.delete(k);
+                            }
+                        }
+                        pruneStaleSigningClients();
+                        // Pre-convert WIF string → Buffer so dispose() can actually zero the bytes.
+                        // The WIF string goes out of scope at function return and is GC'd (non-deterministic),
+                        // but the Buffer passed to createSigningClient is filled with 0 by dispose() on eviction/shutdown.
+                        const { createSigningClient, wifToBuffer } = require('./modules/bitshares-native');
+                        const keyBuffer = wifToBuffer(String(privateKey));
+                        const signingClient = createSigningClient(_nativeChainClient, accountName, keyBuffer);
+                        cached = { signingClient, createdAt: Date.now() };
+                        signingClientCache.set(cacheKey, cached);
+                    }
+                    const client = cached.signingClient.client;
+                    await client.initPromise;
+                    phase = 'broadcast';
+                    const result = await broadcastFn(client);
+                    // Success — restore the full node list so other users of
+                    // the shared client don't inherit the single-node pin.
+                    _nativeChainClient.setNodes(_nativeNodeList.length > 0 ? _nativeNodeList : NODE_MANAGEMENT.DEFAULT_NODES);
+                    return result;
+                } catch (err: any) {
+                    // Connect-phase failures are always pre-transmit: no broadcast
+                    // has been attempted yet. Broadcast-phase failures are only
+                    // retryable when the RPC frame provably never reached the wire.
+                    const cls = phase === 'connect' ? 'retryable' : classifyBroadcastFailure(err);
+                    if (cls === 'retryable') {
+                        lastErr = err;
+                        const retryLabel = attempt < attemptsPerNode ? 'retrying same node' : 'exhausted; rotating to next best node';
+                        debugLog(`Broadcast attempt ${attempt}/${attemptsPerNode} on ${candidate} failed pre-transmit (${getErrorMessage(err)}); ${retryLabel}`);
+                        // Reset the transport so the next attempt reconnects
+                        // cleanly against the pinned node.
+                        try { _nativeChainClient.disconnect(); } catch (_) {}
+                        continue;
+                    }
+                    if (cls === 'uncertain') {
+                        // The transaction may have landed — never re-sign on ANY
+                        // node. Report the typed uncertain reply so the bot's
+                        // verify-before-retry machinery checks chain inclusion
+                        // before any re-create.
+                        throw buildUncertainError(accountName, startedAt, getErrorMessage(err));
+                    }
+                    // 'definite': the chain rejected the transaction or it could
+                    // not be built — nothing landed; the error propagates as-is.
+                    throw err;
                 }
-                const client = cached.signingClient.client;
-                await client.initPromise;
-                phase = 'broadcast';
-                return await broadcastFn(client);
-            } catch (err: any) {
-                // Connect-phase failures are always pre-transmit: no broadcast
-                // has been attempted yet. Broadcast-phase failures are only
-                // retryable when the RPC frame provably never reached the wire.
-                const cls = phase === 'connect' ? 'retryable' : classifyBroadcastFailure(err);
-                if (cls === 'retryable') {
-                    lastErr = err;
-                    debugLog(`Broadcast attempt ${attempt}/${maxAttempts} failed pre-transmit (${getErrorMessage(err)}); retrying`);
-                    // Reset the transport so the next attempt reconnects
-                    // against the freshly refreshed node list.
-                    try { _nativeChainClient.disconnect(); } catch (_) {}
-                    continue;
-                }
-                if (cls === 'uncertain') {
-                    // The transaction may have landed — never re-sign. Report
-                    // the typed uncertain reply so the bot's verify-before-
-                    // retry machinery checks chain inclusion before any re-create.
-                    throw buildUncertainError(accountName, startedAt, getErrorMessage(err));
-                }
-                // 'definite': the chain rejected the transaction or it could
-                // not be built — nothing landed; the error propagates as-is.
-                throw err;
             }
+            // All attempts on this candidate failed pre-transmit: nothing ever
+            // reached the chain via this node. Report the failure so the node
+            // health ledger counts it toward blacklisting, then rotate to the
+            // next best node (re-reading the health cache first).
+            exhaustedNodes.push(candidate);
+            daemonNodeHealth.reportFailure(candidate, getErrorMessage(lastErr) || 'pre-transmit broadcast failure');
+            candidates = buildCandidatePool();
         }
-        // All attempts failed pre-transmit: nothing ever reached the chain.
+        // All candidates failed pre-transmit (or none were usable): nothing
+        // ever reached the chain.
+        if (!lastErr) {
+            lastErr = new Error('Broadcast not attempted: no usable node candidates (all blacklisted or unavailable)');
+        }
         throw lastErr;
     })();
 
@@ -622,6 +713,15 @@ function refreshNodeList() {
         }
     }
 }
+
+/**
+ * Daemon-local node health ledger: blacklists persistently failing nodes so
+ * the broadcast path rotates away from them and the shared health cache is
+ * updated when a node hits the failure threshold. See
+ * modules/daemon_node_health.ts for semantics.
+ */
+const { createNodeHealthLedger } = require('./modules/daemon_node_health');
+const daemonNodeHealth = createNodeHealthLedger({ logger: daemonLogger });
 
 function getCredentialDaemonNodeRefreshIntervalMs(settings: any) {
     const configured = settings?.NODES?.credentialDaemonRefreshIntervalMs
@@ -997,11 +1097,11 @@ function processRequest(requestStr: string, socket: any) {
                     const broadcastNodeUrl = typeof request.nodeUrl === 'string' ? request.nodeUrl : null;
                     let signResult: any;
                     try {
-                        signResult = await broadcastWithDeadline(
+                        signResult = await serializeBroadcast(() => broadcastWithDeadline(
                             accountName, privateKey,
                             (client: any) => client.broadcast(operation),
                             broadcastNodeUrl
-                        );
+                        ));
                     } catch (broadcastErr: any) {
                         if (broadcastErr && broadcastErr.code === DAEMON_CODES.BROADCAST_DEADLINE) {
                             appendAuditLog({
@@ -1105,11 +1205,11 @@ function processRequest(requestStr: string, socket: any) {
                     const broadcastNodeUrl = typeof request.nodeUrl === 'string' ? request.nodeUrl : null;
                     let signResult: any;
                     try {
-                        signResult = await broadcastWithDeadline(
+                        signResult = await serializeBroadcast(() => broadcastWithDeadline(
                             accountName, privateKey,
                             (client: any) => executeOperationsWithClient(client, operations),
                             broadcastNodeUrl
-                        );
+                        ));
                     } catch (broadcastErr: any) {
                         if (broadcastErr && broadcastErr.code === DAEMON_CODES.BROADCAST_DEADLINE) {
                             appendAuditLog({
