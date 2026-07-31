@@ -93,14 +93,25 @@ NORMAL → REBALANCING → BROADCASTING → _commitWorkingGrid() → NORMAL
 
 2. updateOrdersOnChainBatch(result)
    └─> _updateOrdersOnChainBatchCOW()
-       ├─> Lock order IDs
-       ├─> Build blockchain operations
-       ├─> Execute batch
-       ├─> On success:
-       │   ├─> _commitWorkingGrid()  → atomic swap
-       │   └─> persistGrid()          → write to disk
-       └─> On failure:
-           └─> workingGrid discarded (master unchanged)
+        ├─> Lock order IDs
+        ├─> Build blockchain operations
+        ├─> Pre-broadcast staleness guard (evaluateCommit):
+        │   ├─> Plan stale (master mutated mid-planning) => replanStaleBatch:
+        │   │   ├─> Re-plan ONCE from fresh master with same fills
+        │   │   ├─> Restore boundary-shift budget + clear only the abandoned
+        │   │   │   batch's own pending-broadcast entries
+        │   │   ├─> No executable actions => skip stale plan (grid already consistent)
+        │   │   └─> Still stale / no fill context => proceed + structural resync
+        │   └─> Plan valid => continue
+        ├─> Execute batch
+        ├─> On success:
+        │   ├─> _commitWorkingGrid()  → atomic swap
+        │   │   └─> commit refused (master changed during broadcast)
+        │   │       └─> adopt placed orders from chain; keep pending-broadcast
+        │   │           protection + structural resync if adoption unavailable
+        │   └─> persistGrid()          → write to disk
+        └─> On failure:
+            └─> workingGrid discarded (master unchanged)
 ```
 
 ### Fill Processing Flow
@@ -387,7 +398,7 @@ During Rebalance**.
 ## Safety Guardrails
 
 1. **Accountant Dry-Run:** `Accountant.validateTargetGrid(targetMap)` verifies that the entire proposed grid fits within `Liquid + CurrentOrderValue` *before* broadcasting.
-2. **Atomic Transaction Semantics:** Large boundary shifts (>5 slots) are inherently safe because the COW pattern only commits after successful blockchain confirmation. If market volatility causes rapid shifts during planning, the working grid is simply discarded and replanning occurs on the next cycle.
+2. **Atomic Transaction Semantics:** Large boundary shifts (>5 slots) are inherently safe because the COW pattern only commits after successful blockchain confirmation. If market volatility causes rapid shifts during planning, the plan is caught by the **pre-broadcast staleness guard** (`evaluateCommit` against `_gridVersion`): it re-plans ONCE from the fresh master with the same fills (`replanStaleBatch`, bounded by `STALE_PLAN_REPLAN_LIMIT`), then proceeds + structural resync if still stale — never a silent discard that drops the fill set. If the master changes *during* broadcast, the commit-time guard refuses the commit and the placed orders are adopted from chain so on-chain state never runs ahead of the grid.
 3. **Resync on Error:** If any blockchain action fails (e.g., "Insufficient funds"), the bot discards the working grid and triggers `grid_reconcile.ts` for a fresh blockchain sync ([GRID_RECONCILE.md](GRID_RECONCILE.md)).
 
 ## Backward Compatibility
@@ -450,6 +461,15 @@ Divergence Correction Tests (test_cow_divergence_correction.ts):
   ✓ Working grid preserves order states (ACTIVE, PARTIAL)
   ✓ Orders within target window get size updates
   ✓ No duplicate UPDATE/CANCEL overlap for same order
+
+Stale-Plan & Stack Discipline Tests (v1.4.8):
+  ✓ test_cow_guard_replan.ts — bounded re-plan from fresh master, boundary-budget
+    restore, push-marker contract, no double-pop on re-plan failure
+  ✓ test_cow_stale_slot_guard.ts — slot-id based stale-placement veto,
+    boundary-only semantics, rotation-UPDATE coverage
+  ✓ test_cow_commit_guards.ts — empty-action / never-pushed marker contract
+  ✓ test_uncertain_broadcast.ts — verify-before-retry per op kind, truncated-read
+    deferral, pending-broadcast protection kept on ambiguous reads
 ```
 
 **Additional Checks:**

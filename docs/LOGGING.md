@@ -248,6 +248,23 @@ Prefix tags used in log messages to help operators identify event types. To find
 | `[RECONCILE]` | `order/utils/validate.ts` | Grid reconciliation ([GRID_RECONCILE.md](GRID_RECONCILE.md)) |
 | `[TRANSPORT]` | `bitshares-native/transport.ts` | WebSocket keep-alive and reconnect |
 
+## 1.4.8 Markers
+
+New/updated operator-visible messages added by the uncertain-broadcast and COW hardening work:
+
+| Message | Meaning |
+|---------|---------|
+| `[COW] Dropping stale-slot ... > plan boundary ...` | Stale-placement guard vetoed a CREATE/UPDATE that crosses the plan's own target boundary (deferred to next cycle) |
+| `[COW] Stale-placement guard removed N placement(s)` | Summary emitted when the guard filters actions |
+| `[COW] Plan stale pre-broadcast (...); re-planning once from fresh master` | Pre-broadcast staleness guard fired; bounded re-plan in progress |
+| `[COW] Re-plan produced no executable actions; grid is already consistent post-fills, skipping stale plan` | Re-plan confirmed the grid is consistent; the stale plan was not shipped |
+| `[COW] Commit refused after broadcast; adopting placed orders from chain` | Master changed mid-broadcast; placed orders adopted so on-chain state converges |
+| `[COW] Refusing to commit working grid: base version ... != current ...` | Version-mismatch commit refusal (`evaluateCommit`) |
+| `[BROADCAST_DEADLINE]` / `BroadcastUncertainError` | Typed uncertain outcome — the daemon never re-signed; verify-before-retry engages |
+| `⚠ FAILED attempt N/3` / `✗ BLACKLISTED after N failures` | Daemon node health ledger — per-node retry exhaustion then blacklist |
+| `[DUST] Chain refetch after verified cancel is TRUNCATED/EMPTY; applying local cancel sync` | Truncated-read fallback in the dust-cancel refetch path |
+| `authoritative absence verified` | Aligned retry log wording — re-broadcast only on provable absence |
+
 ---
 
 ## Fill History Scan Profiling

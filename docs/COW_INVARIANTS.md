@@ -44,6 +44,18 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - Commit swaps working state to master atomically.
   - On failed/aborted execution, working state is discarded and master remains unchanged.
 
+- `INV-COW-003` Pre-broadcast staleness guard + bounded re-plan
+  - A plan whose working grid went stale before broadcast (master mutated mid-planning: fills, syncs) must never be broadcast as-is.
+  - Re-plan ONCE from fresh master with the same fills (`replanStaleBatch`, bounded by `STALE_PLAN_REPLAN_LIMIT`); restore the boundary-shift budget consumed by the abandoned plan; clear only the abandoned batch's OWN pending-broadcast entries (earlier unresolved batches' entries are kept — the recursion guard then aborts + reconciles instead of re-creating possibly-landed slots).
+  - Still stale or no fill context → proceed + structural resync (never a silent abort that drops the fill set); commit-time guard + chain adoption close residual divergence.
+
+- `INV-COW-004` Working-grid stack exactly-once push/pop
+  - Pushes go through the single `_pushWorkingGridRef` (sets `_workingGridPushed` marker); releases go through `_popWorkingGridRef` (marker-guarded, early-return sites) or `_releaseWorkingGridRef` (identity-checked, commit sites).
+  - A result that was never pushed must never pop — that would underflow or steal a nested grid's stack entry. `_commitWorkingGrid` releases the entry exactly once on every settle path (return or throw).
+
+- `INV-COW-005` Grid regeneration bumps `_gridVersion`
+  - `_clearOrderCachesLogic` must bump `_gridVersion` so an in-flight COW plan (baseVersion from the pre-swap grid) is refused at commit instead of committing over a regenerated zero-slot grid.
+
 - `INV-PROJ-001` New projected orders remain virtual
   - Orders projected into empty slots must be `VIRTUAL` with no `orderId` until chain confirmation.
 
@@ -109,8 +121,14 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - Direct call sites without the lock contract are prohibited.
 
 - `INV-SYNC-007` Authoritative sync preserves fetched free balances
+  - Free-balance values fetched during a sync must not be silently discarded; they seed the optimistic balance model.
+  - If fetched balances are unavailable (failure/error), the optimistic model remains untouched rather than zeroed.
   - `synchronizeWithChain` must not double-deduct already-locked funds from fetched `buyFree`/`sellFree`.
   - After authoritative open-order sync, `checkFundDriftAfterFills` is expected to return `isValid=true` as a design consequence (no enforcement code exists — this sub-clause expresses the intended post-condition, not an assertion).
+
+- `INV-SYNC-008` SPREAD-typed fills resolve the real side
+  - A SPREAD slot can carry an on-chain order (spread-correction activation). Fill processing must resolve the real BUY/SELL side (chain order type, pays asset, or price-vs-startPrice convention) before pushing the fill or computing the transition.
+  - A SPREAD-typed fill would silently drop the `deriveTargetBoundary` shift and produce an illegal SPREAD+on-chain state rejected by `validateOrder`.
 
 ---
 
@@ -273,6 +291,15 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-BROADCAST-002` Deadlock-free reconcile after uncertain broadcast
   - `_reconcileAfterUncertainBroadcast` does not need a `fillLockAlreadyHeld` flag because `AsyncLock` is re-entrant — a second `acquire()` from within the same execution context runs the callback directly instead of queueing.
   - The `gridLockAlreadyHeld` flag has been eliminated — the lock hierarchy was corrected so that `_syncLock(2)` is acquired before `_gridLock(3)` in all paths.
+
+- `INV-BROADCAST-003` Verify-before-retry; never re-sign an uncertain broadcast
+  - An uncertain outcome (RPC timeout, connection dropped with a response pending, unknown code) must never be re-signed — a re-sign would land a duplicate transaction on chain (new tx ID per signature).
+  - Retries are limited to provably-untransmitted failures (pre-send connection/frame errors) and re-broadcast happens only after an AUTHORITATIVE absence read (non-empty, non-truncated chain read containing none of the batch's CREATEs).
+  - Direct-key and claw broadcast paths classify failures via `modules/broadcast_failure.ts` and surface typed `BroadcastUncertainError` so the COW machinery engages instead of a blind error.
+
+- `INV-BROADCAST-004` Truncated/empty reads are ambiguous, not authoritative absence
+  - A `get_full_accounts` window capped at the order limit omits the freshest orders (by_account index = seller,id ascending — fresh creates sort last), so absence on a truncated/empty read can never free slots/capital, confirm a cancel, discard a batch, or clear pending-broadcast protection.
+  - All absence decisions use `readOpenOrdersWithMeta`; truncated/empty snapshots defer (keep protection + request structural resync) instead of acting.
 
 ## Change Policy
 

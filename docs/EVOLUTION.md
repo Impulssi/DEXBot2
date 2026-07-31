@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.7 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.8 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
@@ -58,6 +58,10 @@ Post-stable work focused on reliability. Subscription health watchdogs, broadcas
 ### Phase 7: Concurrency Model Correction (Late July 2026)
 
 CJS→ESM migration and strict-mode zero-errors across all 99 source files completed the module system transition. Concurrent fill processing and grid reconciliation then exposed flaws in the lock hierarchy and concurrency model. v1.4.1 delivered bot-hang prevention via centralized `withBlockchainRetry` with node failover, 4-layer duplicate CREATE guard, fresh-grid excess cancel fix, timeout death spiral fix, spread correction type filter, and Phase 3 stale surplus cancellation after reconcile. v1.4.2 removed direction bias from spread correction, added precision-based price collision guard, and completed stale-node defense. v1.4.3 added poolRef pinned-pool price derivation, extracted `withTimeout` utility, preserved boundary-shift state across failed COW commits, and fixed SPREAD→BUY crosser handling. v1.4.4 enforced COW invariants (no master patching, retry on failed boundary-shift commit) and consolidated the grid engine (deduplication, dead code removal, export cleanup). v1.4.5 hardened AsyncLock forceRelease safety, grid fatal error guard, persist failure handling, and re-entrancy deadlock removal. v1.4.6 corrected the lock hierarchy (swapped `_syncLock`/`_gridLock` to canonical ascending order, eliminated `gridLockAlreadyHeld` + 8 call sites, restructured grid_reconcile Phase 1/2 [GRID_RECONCILE.md](GRID_RECONCILE.md)), replaced single-value state fields with refcounts/stacks for nesting safety, preserved outer lock identity across nested AsyncLock acquisitions via `Set<symbol>` store, and fixed stale COW fund snapshot, `gapSlots` persistence, phantom order fund inflation, and cross-chunk boundary shift cap. v1.4.7 hardened fund accounting races (verification snapshot TOCTOU fix, `adjustTotalBalance` self-protecting lock, `_adjustTotalBalanceLocked` extraction for clean nesting), fixed startup phantom-order fund inflation, removed sub-minimum remnant orphan check, and resolved the create-cancel loop in Phase 3 reconciliation.
+
+### Phase 8: Uncertain-Broadcast Safety & Truncated-Read Ambiguity (Late July 2026)
+
+v1.4.8 closed the duplicate-order and ambiguity classes found in an order-engine audit of test vs main. Broadcasts are never blindly re-signed: the credential daemon retries only provably-untransmitted failures, rotating + blacklisting failing nodes via a new shared failure ledger (`daemon_node_health.ts`, `node_failure_ledger.ts`); uncertain outcomes surface as typed `BroadcastUncertainError`/`BROADCAST_DEADLINE` so the COW runtime verifies chain inclusion before re-broadcasting. Truncated `get_full_accounts` reads (the capped window omits the freshest orders) are treated as ambiguous in every absence decision via `readOpenOrdersWithMeta` — cancel-verify, discard, adoption, dust-cancel, recovery, and reconcile defer on empty/truncated snapshots instead of freeing slots/capital or clearing pending-broadcast protection for possibly-live orders. The COW pipeline gained a bounded pre-broadcast stale-plan re-plan (`replanStaleBatch`), commit-refused chain adoption, exactly-once working-grid stack discipline, and a slot-id/boundary-only stale-placement guard. Also fixed the credential daemon load crash that broke the unlock bootstrap handshake and added the reverse `dexbot enable` CLI command.
 
 ---
 
@@ -185,11 +189,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.4 → v1.4.5 | 2 | Code-review hardening: AsyncLock forceRelease safety, grid update fatal error guard, persist write failure handling, TOCTOU stale price fix, re-entrancy deadlock removal, circular dependency breakage, uncommitted boundary classification fix, dead code cleanup |
 | v1.4.5 → v1.4.6 | 8 | AsyncLock ALS re-entrancy fix (single symbol → Set), grid type reassignment on load, 8 single-value fields hardened to refcounts/stacks, lock hierarchy correction, stale COW fund snapshot fix, gapSlots persistence, phantom order fund inflation fix, cross-chunk boundary shift cap, extract budget from config, loadGrid JSDoc side-effect documentation |
 | v1.4.6 → v1.4.7 | 5 | Fund accounting race hardening (verification snapshot TOCTOU, adjustTotalBalance self-protecting lock + locked helper extraction), phantom-order startup inflation fix, sub-minimum remnant orphan removal, create-cancel loop in Phase 3, code-review hardening (negative free balance ordering, ghost detection, field declarations), GRID_RECONCILE.md design doc |
+| v1.4.7 → v1.4.8 | 15 | Uncertain-broadcast duplicate-order safety (verify-before-retry, pre-transmit-only daemon retries, per-node pin + rotate + blacklist via shared failure ledger, typed BROADCAST_DEADLINE, claw/direct-key classification), truncated-read ambiguity in all absence decisions (readOpenOrdersWithMeta deferral), COW pre-broadcast stale-plan guard + bounded re-plan + commit-refused chain adoption + boundary-budget restore, exactly-once working-grid stack discipline, slot-id stale-placement guard, credential daemon load crash fix, recovery isolation (`_recoverySyncInFlight`), `dexbot enable` CLI, node-health/socket/chain-read dedup, COW guard-path refactor |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: July 30, 2026 (v1.4.7)
-**Total Commits**: 1,914
-**Date Range**: December 2, 2025 – July 30, 2026
+**Last Updated**: August 1, 2026 (v1.4.8)
+**Total Commits**: 1,933
+**Date Range**: December 2, 2025 – August 1, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

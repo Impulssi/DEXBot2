@@ -160,6 +160,16 @@ Up to 3 batch attempts. Each failure triggers recovery sync + plan refresh. If p
 
 Reconcile Phase 1 runs under `_gridLock` with no side effects on the frozen master Map. The working grid is not involved — reconcile is a startup operation that runs before the COW pipeline is active. See [`COPY_ON_WRITE_MASTER_PLAN.md`](COPY_ON_WRITE_MASTER_PLAN.md#safety-guardrails) and [`COW_INVARIANTS.md`](COW_INVARIANTS.md#reconcile) for COW rules.
 
+### Truncated-Read Ambiguity (1.4.8)
+
+**`grid_reconcile_internal.ts`** — every chain read feeding an absence/surplus decision goes through `readOpenOrdersWithMeta` and treats an empty or truncated snapshot as *unreadable* — never as "nothing landed" or "nothing to cancel":
+
+- `_recoverSyncFromChain` (plus its three recovery sites in `_createOrderFromGrid`/`_cancelChainOrder`), `_adoptPossiblyLandedCreate`, and the startup group-batch uncertain verification all defer on empty/truncated reads — pass-1 phantom cleanup would otherwise virtualize live slots from a partial window, and a truncated window omits exactly the batch's freshest creates.
+- Phase 3 final refresh skips adoption/surplus-cancel on a truncated read, keeping the pre-Phase-2 counts for the summary log.
+- Adoption paths (`_adoptPossiblyLandedCreate`, group path, reconcile adoption loop) apply the create-fee deduction via `_applySync` for accounting parity.
+
+The underlying rule is `INV-BROADCAST-004`: a capped `get_full_accounts` window omits the freshest orders (fresh creates sort last), so absence can never be authoritative on a truncated read.
+
 ---
 
 ## Lock Hierarchy
@@ -207,6 +217,8 @@ Commit `e64db685` replaced 6 single-value boolean state fields with refcounts/st
 | `tests/test_resync_duplicate_race.ts` | Phase 2 duplicate race |
 | `tests/test_resync_balance_fix.ts` | Fund reuse during Phase 2 |
 | `tests/test_resync_invariants.ts` | Fund invariant suppression during transient resync state |
+| `tests/test_grid_reconcile_regressions.ts` | Regression 1b: empty refetch after verified cancel defers sync (1.4.8) |
+| `tests/test_uncertain_broadcast.ts` | Startup uncertain-create adoption + truncated-read deferral (UNC-013e–g, 1.4.8) |
 | `tests/test_race_condition_fixes_batch1.ts` | ABBA deadlock (RC-1B) |
 | `tests/test_async_lock_force_release.ts` | Nested multi-lock re-entrancy |
 | `tests/test_targeted_drift_reconcile.ts` | Active-order shortfall triggers sync |

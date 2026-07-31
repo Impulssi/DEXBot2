@@ -563,6 +563,10 @@ BitShares charges fees for `limit_order_create` and `limit_order_cancel`.
     2.  If sufficient `chainFree` available: deduct full amount atomically.
     3.  If insufficient: defer settlement and retry when funds become available.
 
+-   **Adoption fee parity (1.4.8):** COW chain-adoption paths charge fees exactly like the normal open-orders loop. `adoptPlacedBatchFromChain` (refused-commit and poll-confirmed paths) and the startup uncertain-create adoption apply the create/cancel/update fees via `_applySync` — previously create-only charging let optimistic BTS drift when a batch's orders were adopted without fee accounting.
+
+-   **Safe fee lookup:** `processBatchResults` uses `getAssetFeesSafe('BTS')` with zero-fee fallbacks — the throwing variant can no longer hard-fail a whole batch after a successful commit (`modules/dexbot_cow_runtime.ts`).
+
 ### 5.2 Market Fees (Trade Cost)
 These are deducted from the *proceeds* of a fill.
 
@@ -841,4 +845,4 @@ Two additional accounting hardening measures added in v1.2.1:
 **TOCTOU in `processFillAccounting`.** `_buildBtsDeferredRefundAdjustment` reads `btsFeeState` from `mgr.orders`, but the order lock was acquired after accounting ran. Fixed by acquiring the lock first, then running `processFillAccounting` under the lock. This fix was also ported to POST-RESET and BOOTSTRAP tracked-fill accounting paths.
 
 ---
-*Technical Reference for DEXBot2 v1.4.7 release*
+*Technical Reference for DEXBot2 v1.4.8 release*
