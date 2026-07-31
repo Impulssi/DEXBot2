@@ -228,6 +228,7 @@ dexbot white               # Market adapter whitelist, dynamic weights off by de
 dexbot unlock              # Standard live runtime
 dexbot reset {all|<bot>}   # Regenerate grid
 dexbot disable {all|<bot>} # Disable bot in config
+dexbot enable {all|<bot>}  # Enable bot in config
 
 dexbot stat                # Runtime status (unlock or PM2)
 dexbot order               # Analyze order grids

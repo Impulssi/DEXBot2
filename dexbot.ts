@@ -164,7 +164,7 @@ const PROFILES_DIR = PATHS.PROFILES_DIR;
 
 
 const BUILD_DIR = 'dist';
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'help'];
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'test', defaults: 'default' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
@@ -172,6 +172,7 @@ const CLI_EXAMPLES = [
     { title: 'Test-run a bot from the tracked config', command: 'dexbot test bot-name', notes: 'Targets the named entry in profiles/bots.json.' },
     { title: 'Dry-run a bot without broadcasting', command: 'dexbot drystart bot-name', notes: 'Forces the run into dry-run mode even if the stored config was live.' },
     { title: 'Disable a bot in config', command: 'dexbot disable bot-name', notes: 'Marks the bot inactive in config.' },
+    { title: 'Enable a bot in config', command: 'dexbot enable bot-name', notes: 'Marks the bot active in config.' },
     { title: 'Reset all active bot grids', command: 'dexbot reset all', notes: 'Triggers full grid regeneration for every active bot.' },
     { title: 'Reset a bot grid', command: 'dexbot reset bot-name', notes: 'Triggers a full grid regeneration for the named bot.' },
     { title: 'Manage keys', command: 'dexbot key', notes: 'Runs modules/chain_keys.ts to add or update master passwords.' },
@@ -223,6 +224,8 @@ function printCLIUsage() {
     console.log('  default, defaults Reset settings to defaults (deletes general.settings.json, market_profiles.json, market_adapter_settings.json).');
     console.log('  disable all       Mark all bots inactive in config.');
     console.log('  disable <bot>     Mark the bot inactive in config.');
+    console.log('  enable all        Mark all bots active in config.');
+    console.log('  enable <bot>      Mark the bot active in config.');
     console.log('  export <bot>      Export bot trades and settings for QTradeX backtesting.');
     console.log('  key               Launch the chain key helper (modules/chain_keys.ts).');
     console.log('  bot               Launch the interactive bot configurator (modules/account_bots.ts).');
@@ -703,6 +706,45 @@ async function disableBotByName(botName: string | null | undefined) {
 }
 
 /**
+ * Mark a bot (or all bots) as active in profiles/bots.json.
+ * Note: This only updates the config file; running processes must be
+ * started separately using pm2.js.
+ * @param {string|null|undefined} botName - Name of the bot to enable, or null/undefined for all
+ */
+async function enableBotByName(botName: string | null | undefined) {
+    const { config, filePath } = loadSettingsFile(PROFILES_BOTS_FILE);
+    const entries = resolveRawBotEntries(config);
+    if (!botName) {
+        let updated = false;
+        entries.forEach((entry: any) => {
+            if (!entry.active) {
+                entry.active = true;
+                updated = true;
+            }
+        });
+        if (!updated) {
+            console.log('No inactive bots were found to enable.');
+            return;
+        }
+        saveSettingsFile(config, filePath);
+        console.log(`Marked all bots active in ${path.basename(filePath)}.`);
+        return;
+    }
+    const match = entries.find((b: any) => b.name === botName);
+    if (!match) {
+        console.error(startupError(`Could not find any bot named '${botName}' to enable.`));
+        process.exit(1);
+    }
+    if (match.active) {
+        console.log(`Bot '${botName}' is already active.`);
+        return;
+    }
+    match.active = true;
+    saveSettingsFile(config, filePath);
+    console.log(`Marked '${botName}' active in ${path.basename(filePath)}. Start it using 'dexbot pm2 start ${botName}'.`);
+}
+
+/**
  * Reset a bot by regenerating its grid and starting it fresh.
  * This method creates a trigger file that signals the bot instance
  * (whether running locally or via PM2) to perform a full grid resync.
@@ -797,7 +839,7 @@ async function exportBotTrades(botName: string | undefined) {
 
 /**
  * Parse and execute CLI commands.
- * Supported commands: test, drystart, reset, default, disable, key, bot, pm2, update, export, order, clear, status, whitelist, unlock, help
+ * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, clear, status, whitelist, unlock, help
  * @returns {Promise<boolean>} True if a command was handled, false otherwise
  */
 async function handleCLICommands() {
@@ -845,6 +887,14 @@ async function handleCLICommands() {
                 process.exit(1);
             }
             await disableBotByName(target === 'all' ? null : target);
+            process.exit(0);
+        case 'enable':
+            if (!target) {
+                console.error('Error: Target required. Specify "all" or a bot name.');
+                printCLIUsage();
+                process.exit(1);
+            }
+            await enableBotByName(target === 'all' ? null : target);
             process.exit(0);
         case 'key':
             await runAccountManager({ exitAfter: true });

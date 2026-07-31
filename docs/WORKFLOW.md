@@ -222,6 +222,7 @@ the canonical name is preferred in scripts and docs.
 | `dexbot reset <bot>` | — | Trigger a grid reset (applies live or on next start) |
 | `dexbot default` | `defaults` | Reset settings to defaults (deletes generated settings files) |
 | `dexbot disable <bot>` | — | Mark a bot inactive in config (`disable all` for all) |
+| `dexbot enable <bot>` | — | Mark a bot active in config (`enable all` for all) |
 | `dexbot key` | `key` | Launch the chain key helper (`modules/chain_keys.ts`) |
 | `dexbot bot` | `bot` | Launch the interactive bot configurator |
 | `dexbot pm2` | — | Start all active bots via PM2 |
