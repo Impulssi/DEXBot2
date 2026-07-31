@@ -1,22 +1,15 @@
 /** Credential client module - connects to credential daemon for key operations */
 
-import { getNodeRequire } from './env';
 import { getStorage } from './storage';
 import { createHmac } from './crypto/sync';
 import { TIMING, DAEMON_CODES } from './constants';
-const _require = getNodeRequire();
-let net: any;
-try {
-    net = _require ? _require('net') : undefined;
-} catch {
-    // Browser: Unix socket IPC unavailable; methods will throw when called
-}
 const storage = getStorage();
 import {
     getCredentialReadyFilePath,
     getCredentialSocketPath,
     isPrivatePathSecure,
 } from './credential_runtime';
+import { sendSocketJsonRequest } from './socket_json_client';
 import { getErrorMessage } from './utils/errors';
 interface BroadcastUncertainErrorDetails {
     operations?: any[] | null;
@@ -127,20 +120,28 @@ function getSocketPath(options: CredentialClientOptions = {}): string {
 }
 
 function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs: number, meta: CredentialDaemonMeta = {}): Promise<CredentialDaemonResponse> {
-    return new Promise<CredentialDaemonResponse>((resolve: any, reject: any) => {
-        let settled = false;
-        const socket = net.createConnection(socketPath, () => {
+    const isBroadcast = !!(meta && meta.uncertainOnTimeout);
+    return sendSocketJsonRequest({
+        socketPath,
+        timeoutMs,
+        writePayload: (socket: any) => {
             socket.write(`${JSON.stringify(payload)}\n`);
-        });
-
-        let responseBuffer = '';
-        // For broadcast requests the chain may have already accepted the
-        // operations by the time the connection dies (socket error, truncated
-        // stream, or outer timeout). Use a typed error so the recovery path
-        // can detect this case explicitly. Non-broadcast requests stay on the
-        // plain Error path.
-        const buildFailure = (message: string): Error => {
-            if (meta && meta.uncertainOnTimeout) {
+        },
+        buildError: (kind: any, detail: any) => {
+            // For broadcast requests the chain may have already accepted the
+            // operations by the time the connection dies (socket error,
+            // truncated stream, or outer timeout). Use a typed error so the
+            // recovery path can detect this case explicitly. Non-broadcast
+            // requests stay on the plain Error path.
+            if (kind === 'invalid') {
+                return new Error('Invalid credential daemon response');
+            }
+            const message = kind === 'timeout'
+                ? `Credential daemon ${isBroadcast ? 'broadcast ' : ''}request timed out after ${timeoutMs}ms`
+                : kind === 'connection'
+                    ? `Credential daemon connection failed: ${getErrorMessage(detail)}`
+                    : 'Credential daemon closed the connection before a complete response was received';
+            if (isBroadcast) {
                 return new BroadcastUncertainError(message, {
                     operations: meta.operations || null,
                     accountName: meta.accountName || null,
@@ -150,68 +151,10 @@ function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs
                 });
             }
             return new Error(message);
-        };
-        const timer = setTimeout(() => {
-            socket.destroy();
-            if (!settled) {
-                settled = true;
-                const isBroadcast = !!(meta && meta.uncertainOnTimeout);
-                reject(buildFailure(`Credential daemon ${isBroadcast ? 'broadcast ' : ''}request timed out after ${timeoutMs}ms`));
-            }
-        }, timeoutMs);
-
-        socket.on('data', (data: any) => {
-            responseBuffer += data.toString();
-            const lines = responseBuffer.split('\n');
-            responseBuffer = lines.pop() ?? '';
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                clearTimeout(timer);
-                socket.end();
-                if (!settled) {
-                    settled = true;
-                    try {
-                        resolve(JSON.parse(line));
-                    } catch {
-                        reject(new Error('Invalid credential daemon response'));
-                    }
-                }
-                return;
-            }
-        });
-
-        socket.on('error', (error: any) => {
-            clearTimeout(timer);
-            if (!settled) {
-                settled = true;
-                // A dead socket during a broadcast may mean the daemon already
-                // signed + broadcast before dying — classify as uncertain so the
-                // verify-before-retry machinery engages instead of a blind retry.
-                reject(buildFailure(`Credential daemon connection failed: ${getErrorMessage(error)}`));
-            }
-        });
-
-        socket.on('end', () => {
-            clearTimeout(timer);
-            if (!settled) {
-                settled = true;
-                if (responseBuffer.trim()) {
-                    // The daemon closed the socket without a trailing newline.
-                    // A complete buffered line is a valid response; a partial
-                    // line means the daemon was killed mid-write — either way
-                    // the request MUST settle (a truncated stream must not
-                    // leave the caller hanging forever).
-                    try {
-                        resolve(JSON.parse(responseBuffer));
-                        return;
-                    } catch {
-                        // fall through to the rejection below
-                    }
-                }
-                reject(buildFailure('Credential daemon closed the connection before a complete response was received'));
-            }
-        });
+        },
+        handleResponse: (parsed: any, resolve: any) => {
+            resolve(parsed);
+        },
     });
 }
 

@@ -8,6 +8,7 @@
 
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
+import { readOpenOrdersWithMetaSafe } from '../chain_orders';
 import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, floatToBlockchainInt, calculatePriceTolerance } from './utils/math';
 import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults } from './utils/order';
 import { resolveAccountRef } from './utils/system';
@@ -432,18 +433,11 @@ async function _recoverSyncFromChain({ chainOrders, manager, account, logger, so
 }): Promise<any[] | null> {
     try {
         if (triggerMessage) logger?.log?.(triggerMessage, 'warn');
-        const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
-            ? await chainOrders.readOpenOrdersWithMeta(
-                resolveAccountRef(manager, account),
-                TIMING.CONNECTION_TIMEOUT_MS
-            )
-            : {
-                orders: await chainOrders.readOpenOrders(
-                    resolveAccountRef(manager, account),
-                    TIMING.CONNECTION_TIMEOUT_MS
-                ),
-                truncated: false,
-            };
+        const freshRead = await readOpenOrdersWithMetaSafe(
+            chainOrders,
+            resolveAccountRef(manager, account),
+            TIMING.CONNECTION_TIMEOUT_MS
+        );
         const freshChainOrders = freshRead.orders;
         if (!Array.isArray(freshChainOrders) || freshChainOrders.length === 0 || freshRead.truncated) {
             logger?.log?.(
@@ -1104,18 +1098,11 @@ async function _executeStartupCreateGroupBatch({
                 'warn'
             );
             try {
-                const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
-                    ? await chainOrders.readOpenOrdersWithMeta(
-                        resolveAccountRef(manager, account),
-                        TIMING.CONNECTION_TIMEOUT_MS
-                    )
-                    : {
-                        orders: await chainOrders.readOpenOrders(
-                            resolveAccountRef(manager, account),
-                            TIMING.CONNECTION_TIMEOUT_MS
-                        ),
-                        truncated: false,
-                    };
+                const freshRead = await readOpenOrdersWithMetaSafe(
+                    chainOrders,
+                    resolveAccountRef(manager, account),
+                    TIMING.CONNECTION_TIMEOUT_MS
+                );
                 const freshChainOrders = freshRead?.orders;
                 if (freshRead?.truncated || !Array.isArray(freshChainOrders) || freshChainOrders.length === 0) {
                     // An empty/truncated verification read is ambiguous, NOT

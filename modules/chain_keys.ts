@@ -90,6 +90,7 @@ import { PATHS } from './paths';
 import Logger from './logger';
 import { getStorage } from './storage';
 import { ensureDir } from './utils/fs_utils';
+import { sendSocketJsonRequest } from './socket_json_client';
 import { resolvePrivateKey as resolveAuthKey } from './authority_resolver';
 import { Config } from './config';
 import * as base58check from './utils/base58check';
@@ -1057,85 +1058,37 @@ async function waitForDaemon(maxWaitMs: any = TIMING.DAEMON_STARTUP_TIMEOUT_MS, 
  * @returns {Promise<*>} Resolved value from extractResult
  */
 function sendDaemonRequest(requestType: any, accountName: any, timeout: any = TIMING.DAEMON_PING_TIMEOUT_MS, options: any = {}, label: any = 'request', extractResult: ((response: any) => any) | null = null) {
-    const net = getNet();
-    const socketPath = getCredentialSocketPath(options);
-
-    return new Promise((resolve: any, reject: any) => {
-        let settled = false;
-        const socket = net.createConnection(socketPath, () => {
+    return sendSocketJsonRequest({
+        socketPath: getCredentialSocketPath(options),
+        timeoutMs: timeout,
+        writePayload: (socket: any) => {
             socket.write(JSON.stringify({ type: requestType, accountName }) + '\n');
-        });
-
-        let responseBuffer = '';
-        const timer = setTimeout(() => {
-            socket.destroy();
-            if (!settled) { settled = true; reject(new Error(`Daemon ${label} timeout`)); }
-        }, timeout);
-
-        socket.on('data', (data: any) => {
-            responseBuffer += data.toString();
-            const lines = responseBuffer.split('\n');
-            responseBuffer = lines.pop() ?? '';
-
-            for (const line of lines) {
-                if (line.trim()) {
-                    clearTimeout(timer);
-                    socket.end();
-                    if (!settled) {
-                        settled = true;
-                        let parsed: any;
-                        try {
-                            parsed = JSON.parse(line);
-                        } catch {
-                            reject(new Error(`Invalid daemon ${label} response`));
-                            return;
-                        }
-                        if (extractResult) {
-                            resolve(extractResult(parsed));
-                        } else if (parsed.success) {
-                            resolve(parsed);
-                        } else {
-                            reject(new Error(parsed.error || `Daemon ${label} failed`));
-                        }
-                    }
-                    return;
-                }
+        },
+        buildError: (kind: any, detail: any) => {
+            switch (kind) {
+                case 'timeout':
+                    return new Error(`Daemon ${label} timeout`);
+                case 'connection':
+                    return new Error(`Daemon connection failed: ${getErrorMessage(detail)}`);
+                case 'invalid':
+                    return new Error(`Invalid daemon ${label} response`);
+                default:
+                    return new Error(`Daemon ${label} closed connection unexpectedly`);
             }
-        });
-
-        socket.on('error', (error: any) => {
-            clearTimeout(timer);
-            if (!settled) { settled = true; reject(new Error(`Daemon connection failed: ${getErrorMessage(error)}`)); }
-        });
-
-        socket.on('end', () => {
-            clearTimeout(timer);
-            if (!settled) {
-                settled = true;
-                if (responseBuffer.trim()) {
-                    // The daemon closed the socket without a trailing newline.
-                    // A complete buffered line is a valid response; a partial
-                    // line means the daemon was killed mid-write — either way
-                    // the request MUST settle (a truncated stream must not
-                    // leave the caller hanging forever — mirrors
-                    // dexbot_credential_client.ts).
-                    try {
-                        const parsed = JSON.parse(responseBuffer);
-                        if (extractResult) {
-                            resolve(extractResult(parsed));
-                        } else if (parsed.success) {
-                            resolve(parsed);
-                        } else {
-                            reject(new Error(parsed.error || `Daemon ${label} failed`));
-                        }
-                        return;
-                    } catch {
-                        // fall through to the rejection below
-                    }
+        },
+        handleResponse: (parsed: any, resolve: any, reject: any) => {
+            try {
+                if (extractResult) {
+                    resolve(extractResult(parsed));
+                } else if (parsed.success) {
+                    resolve(parsed);
+                } else {
+                    reject(new Error(parsed.error || `Daemon ${label} failed`));
                 }
-                reject(new Error(`Daemon ${label} closed connection unexpectedly`));
+            } catch (handlerErr: any) {
+                reject(handlerErr);
             }
-        });
+        },
     });
 }
 

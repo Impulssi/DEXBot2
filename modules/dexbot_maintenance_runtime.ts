@@ -4,6 +4,7 @@ const fs = require('fs');
 const { path } = require('./path_api');
 const { spawn } = require('child_process');
 const chainOrders = require('./chain_orders');
+const { readOpenOrdersWithMetaSafe } = require('./chain_orders');
 const grid = require('./order/grid');
 const { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } = require('./constants');
 const { PATHS } = require('./paths');
@@ -1705,17 +1706,8 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
                     // truncated refetch must not run the full sync: the snapshot
                     // omits the freshest orders and pass-1 phantom cleanup could
                     // virtualize live slots. Fall back to the local cancel sync.
-                    const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
-                        ? await chainOrders.readOpenOrdersWithMeta(accountRef)
-                        : { orders: await chainOrders.readOpenOrders(accountRef), truncated: false };
+                    const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
                     if (freshRead.truncated || !Array.isArray(freshRead.orders) || freshRead.orders.length === 0) {
-                        // The cancel was verified absent on an authoritative
-                        // (non-empty, non-truncated) read inside cancelOrder, so
-                        // the refetch running the FULL sync is unsafe: an empty/
-                        // truncated snapshot (node lagging, or the capped
-                        // get_full_accounts window omitting fresh orders) would
-                        // let pass-1 phantom cleanup virtualize live ACTIVE
-                        // slots. Fall back to the local cancel sync instead.
                         bot._warn(`[DUST] Chain refetch after verified cancel is ${freshRead.truncated ? 'TRUNCATED' : 'EMPTY'}; applying local cancel sync for ${(order as any).id}`);
                         await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
                     } else {

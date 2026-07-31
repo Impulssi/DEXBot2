@@ -587,6 +587,24 @@ async function readOpenOrders(accountId: string | null = null, timeoutMs: any = 
 }
 
 /**
+ * Read open orders with the truncation flag through a caller-supplied
+ * chainOrders module/mock, falling back to a plain readOpenOrders when the
+ * with-meta variant is unavailable (test mocks). Absence decisions MUST NOT
+ * be made on `truncated: true` or empty reads (see readOpenOrdersWithMeta).
+ * @param {Object} chainOrdersModule - chainOrders module (or mock) with readOpenOrders
+ * @param {string|null} accountId - Account ID to query (uses preferred if null)
+ * @param {number} [timeoutMs] - Connection timeout in milliseconds
+ * @param {boolean} [suppress_log] - Whether to suppress the log
+ * @returns {Promise<{orders: Array, truncated: boolean}>} Raw order objects plus truncation flag
+ */
+async function readOpenOrdersWithMetaSafe(chainOrdersModule: any, accountId: string | null = null, timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS, suppress_log: any = true) {
+    if (chainOrdersModule && typeof chainOrdersModule.readOpenOrdersWithMeta === 'function') {
+        return await chainOrdersModule.readOpenOrdersWithMeta(accountId, timeoutMs, suppress_log);
+    }
+    return { orders: await chainOrdersModule.readOpenOrders(accountId, timeoutMs, suppress_log), truncated: false };
+}
+
+/**
  * Fetch all open limit orders for an account from the blockchain, returning
  * the raw order list together with the node's truncation flag.
  *
@@ -1423,7 +1441,7 @@ function buildLiquidityPoolExchangeOp(accountId: any, poolId: any, sellAmountInt
 function getFillProcessingMode() {
     return FILL_PROCESSING_MODE;
 }
-export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
+export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
 
-module.exports = { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
+module.exports = { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
 

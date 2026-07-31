@@ -1182,10 +1182,7 @@ class DEXBot {
             // outputs, updateOrdersOnChainPlan cowResults, reconcileGridOrders
             // null results) must NOT pop the stack — an unmatched pop could steal
             // a nested grid's entry.
-            if (rebalanceResult?._workingGridPushed === true) {
-                this.manager?._clearWorkingGridRef?.();
-                rebalanceResult._workingGridPushed = false;
-            }
+            cowRuntime.popPushedWorkingGrid(this, rebalanceResult);
             // Persist master grid mutations that may have occurred outside COW
             // broadcast (e.g., partial-fill size updates applied directly by the
             // sync engine). Without this, a partial fill that does not trigger a

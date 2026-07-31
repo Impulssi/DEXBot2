@@ -46,6 +46,7 @@ import { NODE_MANAGEMENT } from './constants';
 import { PATHS, getNodeBlacklistFile } from './paths';
 import { writeJsonFileAtomic } from './bots_file_lock';
 import { readJSON } from './utils/fs_utils';
+import { createFailureLedger } from './node_failure_ledger';
 const _WebSocket = globalThis.WebSocket;
 import {
     resolveHealthCacheFile,
@@ -100,6 +101,7 @@ class NodeManager {
     expectedChainId: string;
     BLACKLIST_COOLDOWN_MS: number;
     FAILURE_REPORT_COOLDOWN_MS: number;
+    failureLedger: any;
 
     constructor(config: NodeManagerConfig = {}) {
         this.logger = new Logger('NodeManager');
@@ -126,6 +128,21 @@ class NodeManager {
 
         // Node statistics tracking
         this.nodeStats = new Map();
+        // Shared failure-counting ledger (same rules as the credential daemon's
+        // ledger — see modules/node_failure_ledger.ts). Counts live here; the
+        // stats map mirrors them for persistence/health-gating.
+        this.failureLedger = createFailureLedger({
+            threshold: this.config.healthCheck.blacklistThreshold,
+            cooldownMs: NODE_MANAGEMENT.BLACKLIST_COOLDOWN_MS,
+            reportCooldownMs: NODE_MANAGEMENT.FAILURE_REPORT_COOLDOWN_MS,
+            // NodeManager semantics: the count that crossed the threshold is
+            // kept (persisted via the blacklist state file), failures while a
+            // node is blacklisted keep counting (each extends the blacklist),
+            // and the health-check cooldown expiry resets the entry via reset().
+            resetCountOnBlacklist: false,
+            resetCountAfterCooldown: false,
+            skipWhileBlacklisted: false,
+        });
         this.initializeNodeStats();
         this.loadBlacklistState();
 
@@ -182,6 +199,14 @@ class NodeManager {
                 stats.failureCount = typeof entry.failureCount === 'number' ? entry.failureCount : this.config.healthCheck.blacklistThreshold;
                 stats.blacklistedAt = typeof entry.blacklistedAt === 'number' ? entry.blacklistedAt : Date.now();
                 stats.lastErrorMessage = typeof entry.lastErrorMessage === 'string' ? entry.lastErrorMessage : null;
+                // Seed the shared ledger so counting continues across restarts
+                // (a persisted blacklist must still count toward the threshold
+                // until the cooldown expires or a health check re-admits the
+                // node).
+                this.failureLedger.seed(nodeUrl, {
+                    failureCount: stats.failureCount,
+                    blacklistedUntil: (stats.blacklistedAt || 0) + this.BLACKLIST_COOLDOWN_MS,
+                });
                 this.logger.debug(`Loaded persisted blacklist: ${nodeUrl}`);
             }
         } catch (err: any) {
@@ -295,6 +320,7 @@ class NodeManager {
                     stats.status = 'unchecked';
                     stats.failureCount = 0;
                     stats.blacklistedAt = null;
+                    this.failureLedger.reset(nodeUrl);
                     this.saveBlacklistState();
                     this.logger.info(`${nodeUrl.substring(0, 40)}... blacklist cooldown expired, re-enabling`);
                     return true;
@@ -360,6 +386,7 @@ class NodeManager {
                 stats.status = status;
                 stats.latencyMs = latencyMs;
                 stats.failureCount = 0;
+                this.failureLedger.reset(nodeUrl);
                 stats.lastCheckTime = new Date().toISOString();
                 stats.lastErrorMessage = null;
                 stats.chainId = result;
@@ -575,6 +602,8 @@ class NodeManager {
      * Report a node failure (from health check or broadcast).
      * Increments failureCount and auto-blacklists when the threshold is reached.
      * All node-failure paths route through here so the retry budget is synchronized.
+     * Counting (threshold / cooldown / rate-limit) is delegated to the shared
+     * failure ledger — the same rules the credential daemon applies.
      * @param {string} nodeUrl - Node URL that failed
      * @param {string} [errorMessage] - Optional error description
      * @param {string} [source] - Failure source ('health-check' or 'broadcast'); controls log level
@@ -587,32 +616,28 @@ class NodeManager {
         }
         const isHealthCheck = source === 'health-check';
 
-        // Rate-limit failure counting: don't increment if reported too recently.
-        // Prevents a burst of operations from instantly blacklisting the node.
-        const now = Date.now();
-        const lastReported = (stats as any).lastFailureReportedAt || 0;
-        if (now - lastReported < this.FAILURE_REPORT_COOLDOWN_MS) {
+        const result = this.failureLedger.recordFailure(nodeUrl);
+        if (result.outcome === 'rate-limited' || result.outcome === 'skipped-blacklisted') {
             return;
         }
-        (stats as any).lastFailureReportedAt = now;
 
-        stats.failureCount++;
+        stats.failureCount = result.failureCount;
         stats.lastCheckTime = new Date().toISOString();
         if (errorMessage) stats.lastErrorMessage = errorMessage;
 
-        if (stats.failureCount >= this.config.healthCheck.blacklistThreshold) {
+        if (result.outcome === 'blacklisted') {
             stats.status = 'blacklisted';
             stats.blacklistedAt = Date.now();
             this.saveBlacklistState();
             this.saveHealthCache();
 
             if (this._shouldLogBlacklistWarning(nodeUrl, errorMessage || '')) {
-                this.logger.warn(`✗ ${nodeUrl.substring(0, 40)}... BLACKLISTED after ${stats.failureCount} failures (${errorMessage || 'unknown'})`);
+                this.logger.warn(`✗ ${nodeUrl.substring(0, 40)}... BLACKLISTED after ${result.failureCount} failures (${errorMessage || 'unknown'})`);
             }
         } else {
             stats.status = 'failed';
             const log = isHealthCheck ? this.logger.debug.bind(this.logger) : this.logger.warn.bind(this.logger);
-            log(`⚠ ${nodeUrl.substring(0, 40)}... FAILED attempt ${stats.failureCount}/${this.config.healthCheck.blacklistThreshold} (${errorMessage || 'unknown'})`);
+            log(`⚠ ${nodeUrl.substring(0, 40)}... FAILED attempt ${result.failureCount}/${result.threshold} (${errorMessage || 'unknown'})`);
         }
     }
 
@@ -626,6 +651,10 @@ class NodeManager {
             stats.status = 'blacklisted';
             stats.failureCount = this.config.healthCheck.blacklistThreshold;
             stats.blacklistedAt = Date.now();
+            this.failureLedger.seed(nodeUrl, {
+                failureCount: stats.failureCount,
+                blacklistedUntil: stats.blacklistedAt + this.BLACKLIST_COOLDOWN_MS,
+            });
             this.saveBlacklistState();
             this.saveHealthCache();
             this.logger.warn(`Manually blacklisted: ${nodeUrl}`);
@@ -644,6 +673,7 @@ class NodeManager {
             stats.latencyMs = null;
             stats.lastErrorMessage = null;
             stats.blacklistedAt = null;
+            this.failureLedger.reset(nodeUrl);
             this._clearBlacklistWarningCooldown(nodeUrl);
             this.saveBlacklistState();
             this.saveHealthCache();
@@ -663,6 +693,7 @@ class NodeManager {
             stats.chainId = null;
             stats.blacklistedAt = null;
         }
+        this.failureLedger.clear();
         this._clearBlacklistWarningCooldown();
         this.saveBlacklistState();
         this.saveHealthCache();

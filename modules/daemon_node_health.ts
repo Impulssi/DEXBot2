@@ -7,6 +7,10 @@
  * blacklisted for NODE_MANAGEMENT.BLACKLIST_COOLDOWN_MS and removed from the
  * shared health cache so every process stops preferring it.
  *
+ * The counting itself (threshold / cooldown / rate-limit) is delegated to the
+ * shared modules/node_failure_ledger.ts — the same ledger NodeManager uses —
+ * so the two processes cannot drift apart on the NODE_MANAGEMENT rules.
+ *
  * Recovery is two-fold, NOT health-bound:
  *   - the in-memory ledger entry expires after BLACKLIST_COOLDOWN_MS, so the
  *     daemon itself re-admits the node (cooldown-bound) — the node is then
@@ -30,7 +34,8 @@
 'use strict';
 
 import { NODE_MANAGEMENT } from './constants';
-import { readHealthCache, writeHealthCache } from './node_health_cache';
+import { createFailureLedger } from './node_failure_ledger';
+import { removeNodesFromHealthCache } from './node_health_cache';
 import { getErrorMessage } from './utils/errors';
 
 export interface NodeHealthLedgerEntry {
@@ -63,7 +68,6 @@ export interface NodeHealthLedger {
 }
 
 export function createNodeHealthLedger(options: NodeHealthLedgerOptions = {}): NodeHealthLedger {
-    const ledger = new Map<string, NodeHealthLedgerEntry>();
     const logger = options.logger || { warn() {}, log() {}, debug() {} };
     const threshold = Number.isFinite(Number(options.threshold))
         ? Number(options.threshold)
@@ -81,10 +85,17 @@ export function createNodeHealthLedger(options: NodeHealthLedgerOptions = {}): N
             ? Number(NODE_MANAGEMENT.FAILURE_REPORT_COOLDOWN_MS)
             : 1000;
 
-    function isBlacklisted(nodeUrl: string): boolean {
-        const entry = ledger.get(nodeUrl);
-        return !!entry && entry.blacklistedUntil > Date.now();
-    }
+    const ledger = createFailureLedger({
+        threshold,
+        cooldownMs,
+        reportCooldownMs,
+        // Daemon semantics: the count resets at blacklist, reports for an
+        // already-blacklisted node are skipped, and a blacklist whose cooldown
+        // expired restarts the count (recovery retry).
+        resetCountOnBlacklist: true,
+        resetCountAfterCooldown: true,
+        skipWhileBlacklisted: true,
+    });
 
     /**
      * Remove a blacklisted node from the shared health cache so
@@ -97,23 +108,10 @@ export function createNodeHealthLedger(options: NodeHealthLedgerOptions = {}): N
     function excludeFromHealthCache(nodeUrl: string) {
         try {
             const cacheOptions = options.healthCacheFile ? { healthCacheFile: options.healthCacheFile } : {};
-            const cache = readHealthCache(cacheOptions);
-            if (!cache || !Array.isArray(cache.nodes)) return;
-            // No-op when the node is already absent: an unlocked read-modify-
-            // write clobbers any concurrent fresh health-check write with the
-            // stale snapshot it read, so only rewrite the file when the
-            // exclusion actually changes something.
-            if (!cache.nodes.some((n) => n && n.url === nodeUrl)) return;
-            const remaining = cache.nodes
-                .filter((n) => !n || n.url !== nodeUrl)
-                .map((n) => ({
-                    url: n.url,
-                    status: n.status,
-                    latencyMs: n.latencyMs ?? undefined,
-                    lastCheckTime: n.lastCheckTime,
-                }));
-            writeHealthCache(remaining, { ...cacheOptions, now: Date.now() });
-            logger.log?.(`[credential-daemon] Excluded ${nodeUrl.substring(0, 40)}... from shared health cache (blacklisted)`);
+            const removed = removeNodesFromHealthCache(nodeUrl, cacheOptions);
+            if (removed) {
+                logger.log?.(`[credential-daemon] Excluded ${nodeUrl.substring(0, 40)}... from shared health cache (blacklisted)`);
+            }
         } catch (err: any) {
             logger.warn?.(`[credential-daemon] Failed to update health cache after blacklisting ${nodeUrl}: ${getErrorMessage(err)}`);
         }
@@ -126,34 +124,25 @@ export function createNodeHealthLedger(options: NodeHealthLedgerOptions = {}): N
      * health cache so all processes stop preferring it.
      */
     function reportFailure(nodeUrl: string, errorMessage: string) {
-        const now = Date.now();
-        const prev = ledger.get(nodeUrl);
-        if (prev && prev.blacklistedUntil > now) {
-            logger.debug?.(`Node ${nodeUrl} already blacklisted until ${new Date(prev.blacklistedUntil).toISOString()}; skipping failure report`);
+        const result = ledger.recordFailure(nodeUrl);
+        if (result.outcome === 'rate-limited') return;
+        if (result.outcome === 'skipped-blacklisted') {
+            const entry = ledger.getState().get(nodeUrl);
+            logger.debug?.(`Node ${nodeUrl} already blacklisted until ${new Date(entry?.blacklistedUntil || 0).toISOString()}; skipping failure report`);
             return;
         }
-        if (prev && now - prev.lastReportedAt < reportCooldownMs) {
-            return;
-        }
-
-        // A blacklist whose cooldown expired resets the count (recovery retry).
-        const base = prev && prev.blacklistedUntil > 0 && prev.blacklistedUntil <= now ? 0 : (prev?.failureCount ?? 0);
-        const failureCount = base + 1;
-
-        if (failureCount >= threshold) {
-            ledger.set(nodeUrl, { failureCount: 0, blacklistedUntil: now + cooldownMs, lastReportedAt: now });
-            logger.warn?.(`✗ ${nodeUrl.substring(0, 40)}... BLACKLISTED after ${failureCount} failures (${errorMessage})`);
+        if (result.outcome === 'blacklisted') {
+            logger.warn?.(`✗ ${nodeUrl.substring(0, 40)}... BLACKLISTED after ${result.failureCount} failures (${errorMessage})`);
             excludeFromHealthCache(nodeUrl);
         } else {
-            ledger.set(nodeUrl, { failureCount, blacklistedUntil: 0, lastReportedAt: now });
-            logger.warn?.(`⚠ ${nodeUrl.substring(0, 40)}... FAILED attempt ${failureCount}/${threshold} (${errorMessage})`);
+            logger.warn?.(`⚠ ${nodeUrl.substring(0, 40)}... FAILED attempt ${result.failureCount}/${result.threshold} (${errorMessage})`);
         }
     }
 
     return {
-        isBlacklisted,
+        isBlacklisted: (nodeUrl: string) => ledger.isBlacklisted(nodeUrl),
         reportFailure,
-        getState: () => new Map(ledger),
+        getState: ledger.getState,
         clear: () => ledger.clear(),
     };
 }

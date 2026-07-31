@@ -667,81 +667,49 @@ async function startBotByName(botName: string | null | undefined, { dryRun = fal
 }
 
 /**
- * Mark a bot (or all bots) as inactive in profiles/bots.json.
+ * Mark a bot (or all bots) as active/inactive in profiles/bots.json.
  * Note: This only updates the config file; running processes must be
- * stopped separately using pm2.js or Ctrl+C.
- * @param {string|null|undefined} botName - Name of the bot to disable, or null/undefined for all
+ * started/stopped separately using pm2.js.
+ * @param {string|null|undefined} botName - Name of the bot, or null/undefined for all
+ * @param {boolean} active - Target active state (true = enable, false = disable)
  */
-async function disableBotByName(botName: string | null | undefined) {
+async function setBotActiveState(botName: string | null | undefined, active: boolean) {
     const { config, filePath } = loadSettingsFile(PROFILES_BOTS_FILE);
     const entries = resolveRawBotEntries(config);
+    const action = active ? 'enable' : 'disable';
+    const inWord = active ? 'active' : 'inactive';
+    const outWord = active ? 'inactive' : 'active';
     if (!botName) {
         let updated = false;
         entries.forEach((entry: any) => {
-            if (entry.active) {
-                entry.active = false;
+            if (entry.active !== active) {
+                entry.active = active;
                 updated = true;
             }
         });
         if (!updated) {
-            console.log('No active bots were found to disable.');
+            console.log(`No ${outWord} bots were found to ${action}.`);
             return;
         }
         saveSettingsFile(config, filePath);
-        console.log(`Marked all bots inactive in ${path.basename(filePath)}.`);
+        console.log(`Marked all bots ${inWord} in ${path.basename(filePath)}.`);
         return;
     }
     const match = entries.find((b: any) => b.name === botName);
     if (!match) {
-        console.error(startupError(`Could not find any bot named '${botName}' to disable.`));
+        console.error(startupError(`Could not find any bot named '${botName}' to ${action}.`));
         process.exit(1);
     }
-    if (!match.active) {
-        console.log(`Bot '${botName}' is already inactive.`);
+    if (match.active === active) {
+        console.log(`Bot '${botName}' is already ${inWord}.`);
         return;
     }
-    match.active = false;
+    match.active = active;
     saveSettingsFile(config, filePath);
-    console.log(`Marked '${botName}' inactive in ${path.basename(filePath)}. Stop the PM2 process using 'dexbot pm2 stop ${botName}'.`);
-}
-
-/**
- * Mark a bot (or all bots) as active in profiles/bots.json.
- * Note: This only updates the config file; running processes must be
- * started separately using pm2.js.
- * @param {string|null|undefined} botName - Name of the bot to enable, or null/undefined for all
- */
-async function enableBotByName(botName: string | null | undefined) {
-    const { config, filePath } = loadSettingsFile(PROFILES_BOTS_FILE);
-    const entries = resolveRawBotEntries(config);
-    if (!botName) {
-        let updated = false;
-        entries.forEach((entry: any) => {
-            if (!entry.active) {
-                entry.active = true;
-                updated = true;
-            }
-        });
-        if (!updated) {
-            console.log('No inactive bots were found to enable.');
-            return;
-        }
-        saveSettingsFile(config, filePath);
-        console.log(`Marked all bots active in ${path.basename(filePath)}.`);
-        return;
-    }
-    const match = entries.find((b: any) => b.name === botName);
-    if (!match) {
-        console.error(startupError(`Could not find any bot named '${botName}' to enable.`));
-        process.exit(1);
-    }
-    if (match.active) {
-        console.log(`Bot '${botName}' is already active.`);
-        return;
-    }
-    match.active = true;
-    saveSettingsFile(config, filePath);
-    console.log(`Marked '${botName}' active in ${path.basename(filePath)}. Start it using 'dexbot pm2 ${botName}'.`);
+    console.log(
+        `Marked '${botName}' ${inWord} in ${path.basename(filePath)}. ` +
+        (active ? `Start it using 'dexbot pm2 ${botName}'.` : `Stop the PM2 process using 'dexbot pm2 stop ${botName}'.`)
+    );
 }
 
 /**
@@ -886,7 +854,7 @@ async function handleCLICommands() {
                 printCLIUsage();
                 process.exit(1);
             }
-            await disableBotByName(target === 'all' ? null : target);
+            await setBotActiveState(target === 'all' ? null : target, false);
             process.exit(0);
         case 'enable':
             if (!target) {
@@ -894,7 +862,7 @@ async function handleCLICommands() {
                 printCLIUsage();
                 process.exit(1);
             }
-            await enableBotByName(target === 'all' ? null : target);
+            await setBotActiveState(target === 'all' ? null : target, true);
             process.exit(0);
         case 'key':
             await runAccountManager({ exitAfter: true });

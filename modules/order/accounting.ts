@@ -81,6 +81,7 @@ import { resolveAccountRef } from './utils/system';
 import * as Format from './format';
 import * as fundRegistry from '../fund_registry';
 import * as chainOrders from '../chain_orders';
+import { readOpenOrdersWithMetaSafe } from '../chain_orders';
 import {
     calculateAvailableFundsValue,
     getAssetFees,
@@ -638,9 +639,7 @@ class Accountant {
         mgr._orphanFillsCreditedAt = null;
 
         // 2. Sync from open orders
-        const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
-            ? await chainOrders.readOpenOrdersWithMeta(accountRef)
-            : { orders: await chainOrders.readOpenOrders(accountRef), truncated: false };
+        const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
         const openOrders = freshRead.orders;
         // An empty/truncated read is ambiguous — the account is either genuinely
         // empty or the node is lagging/capped (fresh orders omitted). Running

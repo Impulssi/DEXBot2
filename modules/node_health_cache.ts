@@ -127,6 +127,28 @@ function readHealthCache(options: HealthCacheOptions = {}): NodeHealthCachePaylo
     }
 }
 
+function removeNodesFromHealthCache(urls: string | string[], options: HealthCacheOptions = {}): NodeHealthCachePayload | null {
+    const toRemove = new Set(Array.isArray(urls) ? urls : [urls]);
+    if (toRemove.size === 0) return null;
+    const cache = readHealthCache(options);
+    if (!cache || !Array.isArray(cache.nodes)) return null;
+    // No-op when the nodes are already absent: an unlocked read-modify-write
+    // clobbers any concurrent fresh health-check write with the stale snapshot
+    // it read, so only rewrite the file when the exclusion actually changes
+    // something (the write itself is atomic — a lost exclusion, never a torn
+    // file).
+    if (!cache.nodes.some((n) => n && n.url && toRemove.has(n.url))) return null;
+    const remaining = cache.nodes
+        .filter((n) => !n || !n.url || !toRemove.has(n.url))
+        .map((n) => ({
+            url: n.url,
+            status: n.status,
+            latencyMs: n.latencyMs ?? undefined,
+            lastCheckTime: n.lastCheckTime,
+        }));
+    return writeHealthCache(remaining, { ...options, now: Date.now() });
+}
+
 function orderNodesFromHealthCache(configuredNodes: unknown, options: HealthCacheOptions = {}): string[] {
     const configured = normalizeNodeList(configuredNodes);
     const configuredSet = new Set(configured);
@@ -171,5 +193,5 @@ function orderNodesForSettings(settings: NodeSettings, options: HealthCacheOptio
     });
 }
 
-export { DEFAULT_HEALTH_CACHE_FILE, buildHealthCachePayload, orderNodesFromHealthCache, orderNodesForSettings, readHealthCache, resolveConfiguredNodes, resolveHealthCacheFile, resolveHealthCacheMaxAgeMs, writeHealthCache }
+export { DEFAULT_HEALTH_CACHE_FILE, buildHealthCachePayload, orderNodesFromHealthCache, orderNodesForSettings, readHealthCache, removeNodesFromHealthCache, resolveConfiguredNodes, resolveHealthCacheFile, resolveHealthCacheMaxAgeMs, writeHealthCache }
 

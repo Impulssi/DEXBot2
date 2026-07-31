@@ -9,6 +9,7 @@
  */
 
 const chainOrders = require('./chain_orders');
+const { readOpenOrdersWithMetaSafe } = require('./chain_orders');
 const { BroadcastUncertainError } = require('./dexbot_credential_client');
 const {
     buildCreateOrderArgs,
@@ -332,6 +333,48 @@ function clearPendingBroadcastsForSlots(bot: any, actions: any) {
 }
 
 /**
+ * Pop a pushed working-grid stack entry exactly once, guarded on the push
+ * marker. Results that were never pushed (aborted plans, no-trigger
+ * processFilledOrders outputs, updateOrdersOnChainPlan cowResults,
+ * reconcileGridOrders null results) leave the stack untouched — an unmatched
+ * pop could steal a nested grid's entry. Clears the marker so a later throw
+ * in the same frame cannot pop a second time.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object} cowResult - Rebalance/COW result carrying _workingGridPushed
+ */
+function popPushedWorkingGrid(bot: any, cowResult: any) {
+    if (cowResult?._workingGridPushed === true) {
+        bot.manager?._clearWorkingGridRef?.();
+        cowResult._workingGridPushed = false;
+    }
+}
+
+/**
+ * Defer an uncertain-broadcast reconciliation on an ambiguous chain read
+ * (empty/truncated/failed). An empty snapshot may be a node lagging behind
+ * the just-broadcast transaction and a truncated get_full_accounts window
+ * omits the freshest orders (exactly the batch's creates), so absence is
+ * never authoritative: the pending-broadcast protection is kept and a
+ * structural resync is requested so the next cycle adopts any landed orders.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {string} detail - The failure detail (before the common suffix)
+ * @param {string} suffix - Parenthetical explanation appended to the message
+ * @param {string} resyncReason - Reason string passed to the structural resync
+ * @param {Object} [resyncOptions={}] - Extra resync context (batchId, truncated...)
+ * @returns {Object} Ambiguous-read reconciliation result
+ */
+async function deferUncertainBroadcastRead(bot: any, detail: string, suffix: string, resyncReason: string, resyncOptions: any = {}) {
+    bot.manager.logger.log(
+        `[COW][UNCERTAIN] ${detail}; keeping pending-broadcast protection and requesting structural resync ${suffix}`,
+        'warn'
+    );
+    if (typeof bot.manager.requestStructuralGridResync === 'function') {
+        await bot.manager.requestStructuralGridResync(resyncReason, resyncOptions);
+    }
+    return { executed: false, hadRotation: false, uncertain: true, ambiguousRead: true };
+}
+
+/**
  * Build a fingerprint for an on-chain order so it can be matched against
  * the pending-broadcast cache.
  * @param {import('./dexbot_class').DEXBot} bot
@@ -548,19 +591,13 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
     // actually be on chain (duplicate orders). Keep the protection and let
     // the structural resync adopt any landed orders.
     if (pending.length > 0 && (chainSnapshot.length === 0 || chainReadTruncated)) {
-        bot.manager.logger.log(
-            `[COW][UNCERTAIN] ${chainSnapshot.length === 0 ? 'Empty' : 'Truncated'} chain read for ${pending.length} pending broadcast(s); ` +
-            `keeping pending-broadcast protection and requesting structural resync ` +
-            `(node may be lagging or the result set capped; no discard decisions made)`,
-            'warn'
+        return await deferUncertainBroadcastRead(
+            bot,
+            `${chainSnapshot.length === 0 ? 'Empty' : 'Truncated'} chain read for ${pending.length} pending broadcast(s)`,
+            '(node may be lagging or the result set capped; no discard decisions made)',
+            'uncertain broadcast — empty/truncated chain read',
+            { batchId: err?.batchId || null, truncated: chainReadTruncated }
         );
-        if (typeof bot.manager.requestStructuralGridResync === 'function') {
-            await bot.manager.requestStructuralGridResync(
-                'uncertain broadcast — empty/truncated chain read',
-                { batchId: err?.batchId || null, truncated: chainReadTruncated }
-            );
-        }
-        return { executed: false, hadRotation: false, uncertain: true, ambiguousRead: true };
     }
 
     const adopted: { entry: any; match: any; }[] = [];
@@ -616,9 +653,7 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
         });
         if (createDiscarded.length > 0) {
             try {
-                const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
-                    ? await chainOrders.readOpenOrdersWithMeta(accountRef)
-                    : { orders: await chainOrders.readOpenOrders(accountRef), truncated: false };
+                const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
                 // An empty/truncated re-read is as ambiguous as the initial
                 // read: a truncated get_full_accounts window omits the freshest
                 // creates (exactly the discarded ones being re-verified), and an
@@ -630,19 +665,13 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
                 // pending-broadcast protection and defer to a structural resync.
                 if (!freshRead || freshRead.truncated || !Array.isArray(freshRead.orders) || freshRead.orders.length === 0) {
                     const ambiguous = !freshRead || !Array.isArray(freshRead.orders) || freshRead.orders.length === 0;
-                    bot.manager.logger.log(
-                        `[COW][UNCERTAIN] ${ambiguous ? 'Empty' : 'Truncated'} re-read for ${createDiscarded.length} discarded CREATE(s); ` +
-                        `keeping pending-broadcast protection and requesting structural resync ` +
-                        `(absence is not authoritative on an ambiguous re-read)`,
-                        'warn'
+                    return await deferUncertainBroadcastRead(
+                        bot,
+                        `${ambiguous ? 'Empty' : 'Truncated'} re-read for ${createDiscarded.length} discarded CREATE(s)`,
+                        '(absence is not authoritative on an ambiguous re-read)',
+                        'uncertain broadcast — ambiguous re-read for discarded creates',
+                        { batchId: err?.batchId || null, truncated: !ambiguous }
                     );
-                    if (typeof bot.manager.requestStructuralGridResync === 'function') {
-                        await bot.manager.requestStructuralGridResync(
-                            'uncertain broadcast — ambiguous re-read for discarded creates',
-                            { batchId: err?.batchId || null, truncated: !ambiguous }
-                        );
-                    }
-                    return { executed: false, hadRotation: false, uncertain: true, ambiguousRead: true };
                 }
                 const freshChain = freshRead.orders;
                 const remainingDiscarded: any[] = [];
@@ -673,19 +702,13 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
                 }
                 discarded = remainingDiscarded;
             } catch (reReadErr: any) {
-                bot.manager.logger.log(
-                    `[COW][UNCERTAIN] Fresh chain read for late adoption FAILED (${getErrorMessage(reReadErr)}); ` +
-                    `keeping pending-broadcast protection and requesting structural resync ` +
-                    `(absence is not authoritative on a failed re-read)`,
-                    'warn'
+                return await deferUncertainBroadcastRead(
+                    bot,
+                    `Fresh chain read for late adoption FAILED (${getErrorMessage(reReadErr)})`,
+                    '(absence is not authoritative on a failed re-read)',
+                    'uncertain broadcast — failed re-read for discarded creates',
+                    { batchId: err?.batchId || null }
                 );
-                if (typeof bot.manager.requestStructuralGridResync === 'function') {
-                    await bot.manager.requestStructuralGridResync(
-                        'uncertain broadcast — failed re-read for discarded creates',
-                        { batchId: err?.batchId || null }
-                    );
-                }
-                return { executed: false, hadRotation: false, uncertain: true, ambiguousRead: true };
             }
         }
     }
@@ -1651,9 +1674,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
 
     for (let attempt = 1; attempt <= maxPollRetries; attempt++) {
         try {
-            const chainRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
-                ? await chainOrders.readOpenOrdersWithMeta(accountRef)
-                : { orders: await chainOrders.readOpenOrders(accountRef), truncated: false };
+            const chainRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
             const chainSnapshot = chainRead.orders;
             // A truncated read omits the freshest orders — the exact CREATEs
             // this poll is trying to confirm — so absence cannot be
@@ -1774,10 +1795,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         if (cancelCount > 0) bot.manager.logger.log(`Dry run: would cancel ${cancelCount} orders`, 'info');
         if (createCount > 0) bot.manager.logger.log(`Dry run: would place ${createCount} new orders`, 'info');
         if (updateCount > 0) bot.manager.logger.log(`Dry run: would update ${updateCount} orders`, 'info');
-        if (cowResult?._workingGridPushed === true) {
-            bot.manager._clearWorkingGridRef();
-            cowResult._workingGridPushed = false;
-        }
+        popPushedWorkingGrid(bot, cowResult);
         return { executed: true, hadRotation: false };
     }
 
@@ -1821,10 +1839,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         );
 
         if (hasHardOccupiedViolation) {
-            if (cowResult?._workingGridPushed === true) {
-                bot.manager._clearWorkingGridRef();
-                cowResult._workingGridPushed = false;
-            }
+            popPushedWorkingGrid(bot, cowResult);
             return {
                 executed: false,
                 aborted: true,
@@ -1857,10 +1872,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 // Same exactly-once marker discipline as the other early
                 // returns: a pushed working grid must be popped here or the
                 // caller would leak the stack entry.
-                if (cowResult?._workingGridPushed === true) {
-                    bot.manager._clearWorkingGridRef();
-                    cowResult._workingGridPushed = false;
-                }
+                popPushedWorkingGrid(bot, cowResult);
                 return { executed: false, hadRotation: false };
             }
         }
@@ -1876,10 +1888,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             `Waiting for next fill or sync cycle to reset recovery state.`,
             'warn'
         );
-        if (cowResult?._workingGridPushed === true) {
-            bot.manager._clearWorkingGridRef();
-            cowResult._workingGridPushed = false;
-        }
+        popPushedWorkingGrid(bot, cowResult);
         return {
             executed: false,
             aborted: true,
@@ -1929,10 +1938,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     'error'
                 );
             }
-            if (cowResult?._workingGridPushed === true) {
-                bot.manager._clearWorkingGridRef();
-                cowResult._workingGridPushed = false;
-            }
+            popPushedWorkingGrid(bot, cowResult);
             return {
                 executed: false,
                 aborted: true,
@@ -2022,10 +2028,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             `[COW] Rejecting CREATE batch after sync: working grid invalidated by master mutation`,
             'info'
         );
-        if (cowResult?._workingGridPushed === true) {
-            bot.manager._clearWorkingGridRef();
-            cowResult._workingGridPushed = false;
-        }
+        popPushedWorkingGrid(bot, cowResult);
         return {
             executed: false,
             aborted: true,
@@ -2377,10 +2380,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             // in REBALANCING permanently (the outer frame already popped its
             // own grid before recursing). Guarded on the push marker so plan
             // path calls (never pushed) cannot pop an unrelated entry.
-            if (cowResult?._workingGridPushed === true) {
-                bot.manager._clearWorkingGridRef();
-                cowResult._workingGridPushed = false;
-            }
+            popPushedWorkingGrid(bot, cowResult);
             return { executed: false, hadRotation: false };
         }
 
@@ -2389,10 +2389,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
 
         if (!validation.isValid) {
             bot.manager.logger.log(`Skipping batch broadcast: ${validation.violations!.length} fund violation(s) detected`, 'warn');
-            if (cowResult?._workingGridPushed === true) {
-                bot.manager._clearWorkingGridRef();
-                cowResult._workingGridPushed = false;
-            }
+            popPushedWorkingGrid(bot, cowResult);
             return { executed: false, hadRotation: false };
         }
 
@@ -2435,12 +2432,8 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 // the push marker (plan-path calls never pushed a grid). The
                 // marker is cleared so a later throw in this frame (e.g. the
                 // recursion) cannot pop the entry a second time.
-                const hadPushedGrid = cowResult?._workingGridPushed === true
-                    && typeof bot.manager._clearWorkingGridRef === 'function';
-                if (hadPushedGrid) {
-                    bot.manager._clearWorkingGridRef();
-                    cowResult._workingGridPushed = false;
-                }
+                const hadPushedGrid = cowResult?._workingGridPushed === true;
+                popPushedWorkingGrid(bot, cowResult);
                 let replanned: any = null;
                 try {
                     // Restore the boundary-shift budget consumed by the abandoned
@@ -2484,11 +2477,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     // Re-plan confirms the grid is already consistent
                     // post-fills; the stale original plan must NOT ship.
                     // Pop the fresh plan's grid too (it was never committed).
-                    if (replanned?._workingGridPushed === true
-                        && typeof bot.manager._clearWorkingGridRef === 'function') {
-                        bot.manager._clearWorkingGridRef();
-                        replanned._workingGridPushed = false;
-                    }
+                    popPushedWorkingGrid(bot, replanned);
                     clearPendingBroadcastsForSlots(bot, cowResult.actions);
                     bot.manager.logger.log(
                         '[COW] Re-plan produced no executable actions; grid is already consistent post-fills, skipping stale plan',
@@ -2561,10 +2550,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         `returned no chainOrderId (${missingSlots}). Discarding working grid and syncing from chain.`,
                         'error'
                     );
-                    if (cowResult?._workingGridPushed === true) {
-                        bot.manager._clearWorkingGridRef();
-                        cowResult._workingGridPushed = false;
-                    }
+                    popPushedWorkingGrid(bot, cowResult);
                     markMissingCreateResultsAsStructuralBlocker(bot, missingCreateResults);
                     await recoverAfterMissingCreateResults(bot, 'missing create operation results');
                     return {
@@ -2674,10 +2660,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 return { ...batchResult, executed: true, hadRotation: true };
             } else {
                 bot.manager.logger.log('[COW] Blockchain failed - working grid discarded, master unchanged', 'warn');
-                if (cowResult?._workingGridPushed === true) {
-                    bot.manager._clearWorkingGridRef();
-                    cowResult._workingGridPushed = false;
-                }
+                popPushedWorkingGrid(bot, cowResult);
                 clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
                 return { ...result, executed: false, hadRotation: false };
             }
@@ -2808,10 +2791,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             }
         }
 
-        if (cowResult?._workingGridPushed === true) {
-            bot.manager._clearWorkingGridRef();
-            cowResult._workingGridPushed = false;
-        }
+        popPushedWorkingGrid(bot, cowResult);
 
         if (err instanceof BroadcastUncertainError) {
             return await reconcileAfterUncertainBroadcast(bot, err, opContexts);
@@ -2886,9 +2866,7 @@ async function requestStructuralResync(bot: any, reason: string, details: any = 
 async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: string): Promise<boolean> {
     try {
         const accountRef = bot.accountId || bot.account?.id || bot.account;
-        const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
-            ? await chainOrders.readOpenOrdersWithMeta(accountRef)
-            : { orders: await chainOrders.readOpenOrders(accountRef), truncated: false };
+        const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
         // A truncated read (get_full_accounts caps the limit_orders window and
         // fresh creates sort last) omits the very orders this batch just
         // broadcast — the adoption sync could not register them, and clearing
@@ -3256,6 +3234,8 @@ export = {
     formatUnmatchedChainOrderForLog,
     recordPendingBroadcast,
     clearPendingBroadcasts,
+    clearPendingBroadcastsForSlots,
+    popPushedWorkingGrid,
     buildChainOrderFingerprint,
     normalizeChainOrderForPendingMatch,
     findChainOrderForSlot,

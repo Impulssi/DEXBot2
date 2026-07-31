@@ -6,6 +6,7 @@ import {
     _executePlannedStartupCreates, _reconcileStartupSide,
 } from './grid_reconcile_internal';
 import { ORDER_TYPES, ORDER_STATES } from '../constants';
+import { readOpenOrdersWithMetaSafe } from '../chain_orders';
 import { calculatePriceTolerance, floatToBlockchainInt, getAssetFeesSafe } from './utils/math';
 import {
     isOrderPlaced, parseChainOrder, isOrderOnChain,
@@ -463,9 +464,7 @@ export async function reconcileGridOrders({
     let finalChainBuyCount = chainBuyCount;
     if (!dryRun) {
         try {
-            const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
-                ? await chainOrders.readOpenOrdersWithMeta(account)
-                : { orders: await chainOrders.readOpenOrders(account), truncated: false };
+            const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, account);
             // Truncated-read guard: get_full_accounts caps the limit_orders
             // window and fresh orders (exactly the Phase-2 creates) sort last
             // and are the first entries omitted. The adoption loop and the
