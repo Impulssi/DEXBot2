@@ -69,6 +69,22 @@ const { toFiniteNumber } = Format;
 // ===============================================================================
 // SECTION 2: COW REBALANCE ENGINE
 // ===============================================================================
+
+/**
+ * Parse a grid slot id ("slot-123") to its rail index. Slot ids are assigned
+ * in ascending price order at grid generation (grid.ts), so the index is
+ * strictly price-monotonic and can be compared exactly where float prices
+ * would risk rounding ambiguity (adjacent levels can round to the same
+ * price). Returns null when the id is not a grid slot id (e.g. orphan fills
+ * with chain-derived ids) so callers can fall back to price comparison.
+ */
+function parseSlotIndex(id: any): number | null {
+    if (typeof id !== 'string') return null;
+    const match = /^slot-(\d+)$/.exec(id);
+    if (!match) return null;
+    const idx = parseInt(match[1], 10);
+    return Number.isFinite(idx) ? idx : null;
+}
 //
 // COPY-ON-WRITE (COW) PATTERN FOR SAFE REBALANCING
 //
@@ -163,53 +179,92 @@ class COWRebalanceEngine {
 
         const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid);
 
-        // Stale-price guard: drop BUY create/update priced above the last
-        // same-side shift-eligible fill, and SELL create/update priced below
-        // the last same-side shift-eligible fill. A plan built on stale market
-        // data would place an order that crosses the current spread and fills
-        // immediately; defer it to the next cycle.
+        // Stale-placement guard: drop BUY create/update targeting a slot ABOVE
+        // the last same-side shift-eligible fill slot, and SELL create/update
+        // targeting a slot BELOW the last same-side shift-eligible fill slot.
+        // A plan built on stale market data would place an order that crosses
+        // the current spread and fills immediately; defer it to the next cycle.
+        // - Slot ids are compared (slot-N rail index, ascending in price) so
+        //   the "same price level" test is exact and free of float rounding;
+        //   when a fill or action has no grid slot id (e.g. orphan fills),
+        //   the price comparison is used as a fallback.
         // - Only shift-eligible fills are used as the reference: partial fills
         //   (without delayed-rotation trigger) never moved the boundary, so
-        //   their price is not a valid cross-check.
-        // - Only same-side fills are used: a SELL fill's price is the taker
+        //   their level is not a valid cross-check.
+        // - Only same-side fills are used: a SELL fill's level is the taker
         //   level of the opposite side and would wrongly veto valid buys (and
         //   vice versa).
         // - Both CREATE and UPDATE actions are guarded: the cancel/create
         //   optimization can convert the same logical placement into an UPDATE
-        //   op, which the CREATE-only check would have missed.
+        //   op (target slot = newGridId), which the CREATE-only check would
+        //   have missed.
+        // - Strict comparison: a placement AT the last fill's slot is kept —
+        //   the boundary shift is capped (deriveTargetBoundary), so a burst
+        //   can legitimately re-place at the just-traded level.
         const eligibleFills = (Array.isArray(fills) ? fills : []).filter(
             (f: any) => f?.isPartial !== true || f?.isDelayedRotationTrigger === true
         );
         const lastBuyFill = [...eligibleFills].reverse().find((f: any) => f?.type === ORDER_TYPES.BUY);
         const lastSellFill = [...eligibleFills].reverse().find((f: any) => f?.type === ORDER_TYPES.SELL);
+        const lastBuyFillSlot = lastBuyFill ? parseSlotIndex(lastBuyFill?.id) : null;
+        const lastSellFillSlot = lastSellFill ? parseSlotIndex(lastSellFill?.id) : null;
         const lastBuyFillPrice = lastBuyFill ? toFiniteNumber(lastBuyFill?.price) : NaN;
         const lastSellFillPrice = lastSellFill ? toFiniteNumber(lastSellFill?.price) : NaN;
-        if ((Number.isFinite(lastBuyFillPrice) || Number.isFinite(lastSellFillPrice)) && optimizedActions.length > 0) {
+        if ((lastBuyFillSlot !== null || lastSellFillSlot !== null
+                || Number.isFinite(lastBuyFillPrice) || Number.isFinite(lastSellFillPrice))
+            && optimizedActions.length > 0) {
             const before = optimizedActions.length;
             const guarded = optimizedActions.filter((a: any) => {
                 const isPlacement = a?.type === COW_ACTIONS.CREATE || a?.type === COW_ACTIONS.UPDATE;
                 if (!isPlacement) return true;
-                const targetPrice = toFiniteNumber(a?.newPrice ?? a?.order?.price);
-                if (!Number.isFinite(targetPrice)) return true;
-                if (a?.order?.type === ORDER_TYPES.BUY && Number.isFinite(lastBuyFillPrice) && targetPrice > lastBuyFillPrice) {
-                    this.logger?.log(
-                        `[COW] Dropping stale-price BUY ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: price=${targetPrice} > last BUY fill=${lastBuyFillPrice}`,
-                        'warn'
-                    );
-                    return false;
+                const targetSlot = parseSlotIndex(a?.newGridId ?? a?.id);
+                if (a?.order?.type === ORDER_TYPES.BUY) {
+                    if (lastBuyFillSlot !== null && targetSlot !== null) {
+                        if (targetSlot > lastBuyFillSlot) {
+                            this.logger?.log(
+                                `[COW] Dropping stale-slot BUY ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} > last BUY fill slot ${lastBuyFillSlot}`,
+                                'warn'
+                            );
+                            return false;
+                        }
+                        return true;
+                    }
+                    const targetPrice = toFiniteNumber(a?.newPrice ?? a?.order?.price);
+                    if (Number.isFinite(lastBuyFillPrice) && Number.isFinite(targetPrice) && targetPrice > lastBuyFillPrice) {
+                        this.logger?.log(
+                            `[COW] Dropping stale-price BUY ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: price=${targetPrice} > last BUY fill=${lastBuyFillPrice}`,
+                            'warn'
+                        );
+                        return false;
+                    }
+                    return true;
                 }
-                if (a?.order?.type === ORDER_TYPES.SELL && Number.isFinite(lastSellFillPrice) && targetPrice < lastSellFillPrice) {
-                    this.logger?.log(
-                        `[COW] Dropping stale-price SELL ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: price=${targetPrice} < last SELL fill=${lastSellFillPrice}`,
-                        'warn'
-                    );
-                    return false;
+                if (a?.order?.type === ORDER_TYPES.SELL) {
+                    if (lastSellFillSlot !== null && targetSlot !== null) {
+                        if (targetSlot < lastSellFillSlot) {
+                            this.logger?.log(
+                                `[COW] Dropping stale-slot SELL ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} < last SELL fill slot ${lastSellFillSlot}`,
+                                'warn'
+                            );
+                            return false;
+                        }
+                        return true;
+                    }
+                    const targetPrice = toFiniteNumber(a?.newPrice ?? a?.order?.price);
+                    if (Number.isFinite(lastSellFillPrice) && Number.isFinite(targetPrice) && targetPrice < lastSellFillPrice) {
+                        this.logger?.log(
+                            `[COW] Dropping stale-price SELL ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: price=${targetPrice} < last SELL fill=${lastSellFillPrice}`,
+                            'warn'
+                        );
+                        return false;
+                    }
+                    return true;
                 }
                 return true;
             });
             if (guarded.length < before) {
                 this.logger?.log(
-                    `[COW] Stale-price guard removed ${before - guarded.length} placement(s); ${guarded.length} action(s) remain`,
+                    `[COW] Stale-placement guard removed ${before - guarded.length} placement(s); ${guarded.length} action(s) remain`,
                     'warn'
                 );
             }
@@ -1985,5 +2040,5 @@ class OrderManager {
 
 }
 
-export { OrderManager }
+export { OrderManager, COWRebalanceEngine }
 
