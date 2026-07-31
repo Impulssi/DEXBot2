@@ -586,7 +586,35 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
         });
         if (createDiscarded.length > 0) {
             try {
-                const freshChain = await chainOrders.readOpenOrders(accountRef);
+                const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
+                    ? await chainOrders.readOpenOrdersWithMeta(accountRef)
+                    : { orders: await chainOrders.readOpenOrders(accountRef), truncated: false };
+                // An empty/truncated re-read is as ambiguous as the initial
+                // read: a truncated get_full_accounts window omits the freshest
+                // creates (exactly the discarded ones being re-verified), and an
+                // empty snapshot may be a node lagging behind the just-broadcast
+                // transaction. Absence in either case is NOT authoritative —
+                // discarding here would free the slot + clear the pending
+                // protection and let the next cycle re-create (duplicate) an
+                // order that actually landed in the TOCTOU window. Keep the
+                // pending-broadcast protection and defer to a structural resync.
+                if (!freshRead || freshRead.truncated || !Array.isArray(freshRead.orders) || freshRead.orders.length === 0) {
+                    const ambiguous = !freshRead || !Array.isArray(freshRead.orders) || freshRead.orders.length === 0;
+                    bot.manager.logger.log(
+                        `[COW][UNCERTAIN] ${ambiguous ? 'Empty' : 'Truncated'} re-read for ${createDiscarded.length} discarded CREATE(s); ` +
+                        `keeping pending-broadcast protection and requesting structural resync ` +
+                        `(absence is not authoritative on an ambiguous re-read)`,
+                        'warn'
+                    );
+                    if (typeof bot.manager.requestStructuralGridResync === 'function') {
+                        await bot.manager.requestStructuralGridResync(
+                            'uncertain broadcast — ambiguous re-read for discarded creates',
+                            { batchId: err?.batchId || null, truncated: !ambiguous }
+                        );
+                    }
+                    return { executed: false, hadRotation: false, uncertain: true, ambiguousRead: true };
+                }
+                const freshChain = freshRead.orders;
                 const remainingDiscarded: any[] = [];
                 for (const entry of discarded) {
                     const ctx = opContexts[entry.ctxIndex];
@@ -1707,6 +1735,13 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
 
         if (!actions.some((action: any) => action.type === COW_ACTIONS.CREATE)) {
             if (actions.length === 0) {
+                // Same exactly-once marker discipline as the other early
+                // returns: a pushed working grid must be popped here or the
+                // caller would leak the stack entry.
+                if (cowResult?._workingGridPushed === true) {
+                    bot.manager._clearWorkingGridRef();
+                    cowResult._workingGridPushed = false;
+                }
                 return { executed: false, hadRotation: false };
             }
         }
@@ -2279,6 +2314,14 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 }
                 let replanned: any = null;
                 try {
+                    // Restore the boundary-shift budget consumed by the abandoned
+                    // plan: it was built from the same fills and never shipped, so
+                    // the re-plan must derive from the FULL batch budget — not the
+                    // leftover. Without the restore, each stale-plan re-plan spends
+                    // the budget twice and drifts conservative (boundary under-shift).
+                    if ((bot.manager as any)?._boundaryShiftBudgetBase != null) {
+                        (bot.manager as any)._boundaryShiftBudget = (bot.manager as any)._boundaryShiftBudgetBase;
+                    }
                     if (typeof bot.manager.performSafeRebalance === 'function') {
                         replanned = await bot.manager.performSafeRebalance(
                             cowResult.fills,
@@ -2599,10 +2642,26 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     }
                     // Enrich master grid with chain-assigned order IDs and amounts;
                     // accounting enabled so the adopted orders' capital is locked
-                    // and any cancelled orders release theirs. Adoption is
-                    // best-effort here: the commit already succeeded, so a sync
-                    // failure only delays enrichment until the next sync.
-                    await adoptPlacedBatchFromChain(bot, chainOrders, '[COW][UNCERTAIN]');
+                    // and any cancelled orders release theirs. The adoption result
+                    // is authoritative: a truncated read right after the confirming
+                    // poll can omit the batch's own fresh creates (they sort last
+                    // in the by_account index), so clearing the pending protection
+                    // on a failed adoption would let the next cycle re-create the
+                    // VIRTUAL slots as duplicate on-chain orders. Keep the
+                    // protection and defer to a structural resync instead.
+                    const pollAdoptedOk = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW][UNCERTAIN]');
+                    if (!pollAdoptedOk) {
+                        bot.manager.logger.log(
+                            '[COW][UNCERTAIN] Poll-confirmed commit with unavailable chain adoption; keeping pending protection pending structural resync',
+                            'error'
+                        );
+                        await requestStructuralResync(
+                            bot,
+                            'poll-confirmed commit (chain adoption unavailable)',
+                            { reason: 'chain-adoption-unavailable' }
+                        );
+                        return { executed: false, hadRotation: false, commitRefused: false, chainAdoptionPending: true };
+                    }
                     // The commit happened without processBatchResults (no success
                     // result to extract); deduct create fees so the optimistic
                     // balance reflects the on-chain cost.

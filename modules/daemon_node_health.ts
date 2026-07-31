@@ -5,8 +5,18 @@
  * path (broadcastWithDeadline). Failures count toward the bot-side
  * NODE_MANAGEMENT.BLACKLIST_THRESHOLD and, at the threshold, the node is
  * blacklisted for NODE_MANAGEMENT.BLACKLIST_COOLDOWN_MS and removed from the
- * shared health cache so every process stops preferring it. Recovery is the
- * bot-side health check re-including the node once it is healthy again.
+ * shared health cache so every process stops preferring it.
+ *
+ * Recovery is two-fold, NOT health-bound:
+ *   - the in-memory ledger entry expires after BLACKLIST_COOLDOWN_MS, so the
+ *     daemon itself re-admits the node (cooldown-bound) — the node is then
+ *     re-preferable immediately, without waiting for a health check;
+ *   - the shared health-cache exclusion is reverted when a later bot-side
+ *     health check re-adds the node (health-bound). The exclusion rewrite is
+ *     a best-effort unlocked read-modify-write of the shared cache: a
+ *     concurrent health-check writer may overwrite it with a fresh snapshot
+ *     that re-includes the node, which is the intended recovery path (the
+ *     write is atomic, so a torn file cannot result — only a lost exclusion).
  *
  * Counting unit differs from the bot-side NodeManager on purpose: one ledger
  * report per exhausted node rotation (all pinned attempts), not per probe.
@@ -79,8 +89,10 @@ export function createNodeHealthLedger(options: NodeHealthLedgerOptions = {}): N
     /**
      * Remove a blacklisted node from the shared health cache so
      * orderNodesForSettings (daemon and bot processes) stops preferring it.
-     * Atomic rewrite; a later bot-side health check re-adds the node if it is
-     * healthy again (recovery path).
+     * Best-effort unlocked read-modify-write: the write itself is atomic
+     * (no torn file), but a concurrent health-check writer may overwrite the
+     * exclusion with a fresh snapshot that re-includes the node — which is
+     * the intended health-bound recovery path.
      */
     function excludeFromHealthCache(nodeUrl: string) {
         try {

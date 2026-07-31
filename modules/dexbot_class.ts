@@ -1184,6 +1184,7 @@ class DEXBot {
             // a nested grid's entry.
             if (rebalanceResult?._workingGridPushed === true) {
                 this.manager?._clearWorkingGridRef?.();
+                rebalanceResult._workingGridPushed = false;
             }
             // Persist master grid mutations that may have occurred outside COW
             // broadcast (e.g., partial-fill size updates applied directly by the
@@ -1250,6 +1251,10 @@ class DEXBot {
             const activeBuy = this.manager?.config?.activeOrders?.buy ?? 1;
             const shiftBudget = Math.max(Math.floor(activeSell / 2), Math.floor(activeBuy / 2), 1);
             (this.manager as any)._boundaryShiftBudget = shiftBudget;
+            // Keep the batch-start budget so the COW re-plan path can restore it:
+            // a plan abandoned as stale consumed budget but never shipped, so the
+            // re-plan must re-derive from the FULL batch budget, not the leftover.
+            (this.manager as any)._boundaryShiftBudgetBase = shiftBudget;
             let i = 0;
             while (i < totalFills) {
                 const remaining = totalFills - i;
@@ -1292,6 +1297,7 @@ class DEXBot {
         } finally {
             if (this.manager) {
                 delete (this.manager as any)._boundaryShiftBudget;
+                delete (this.manager as any)._boundaryShiftBudgetBase;
             }
             if (typeof this.manager?.resumeFundRecalc === 'function') {
                 await this.manager.resumeFundRecalc();

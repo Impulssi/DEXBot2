@@ -638,7 +638,27 @@ class Accountant {
         mgr._orphanFillsCreditedAt = null;
 
         // 2. Sync from open orders
-        const openOrders = await chainOrders.readOpenOrders(accountRef);
+        const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
+            ? await chainOrders.readOpenOrdersWithMeta(accountRef)
+            : { orders: await chainOrders.readOpenOrders(accountRef), truncated: false };
+        const openOrders = freshRead.orders;
+        // An empty/truncated read is ambiguous — the account is either genuinely
+        // empty or the node is lagging/capped (fresh orders omitted). Running
+        // syncFromOpenOrders on it would let pass-1 phantom cleanup virtualize
+        // ACTIVE/PARTIAL slots that are live on chain, after which the next
+        // cycle re-creates them as duplicates. Skip the sync and defer to the
+        // next reconcile cycle, mirroring the other recovery-read guards.
+        if (freshRead.truncated || !Array.isArray(openOrders) || openOrders.length === 0) {
+            mgr.logger?.log?.(
+                `[RECOVERY] Open-order read ${freshRead.truncated ? 'TRUNCATED' : 'EMPTY'} during state recovery; skipping sync (ambiguous snapshot, node may be lagging)`,
+                'warn'
+            );
+            return {
+                isValid: false,
+                reason: `Recovery sync skipped: ${freshRead.truncated ? 'truncated' : 'empty'} chain read is ambiguous (node may be lagging); deferring to next reconcile cycle`,
+                structuralGridResyncRequired: true,
+            };
+        }
         // Recovery runs after fetchAccountTotals() has refreshed authoritative balances
         // from chain. During this pass we only want to reconcile grid structure/order
         // mapping against open orders; re-applying optimistic accounting deltas here

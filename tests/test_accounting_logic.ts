@@ -6,11 +6,9 @@
  */
 
 const assert = require('assert');
-const path = require('path');
 const { OrderManager } = require('../modules/order/index');
 const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
 const { getErrorMessage } = require('../modules/utils/errors');
 
 // Mock getAssetFees to prevent crashes during recalculateFunds
@@ -394,16 +392,12 @@ async function runTests() {
 
         const originalFetchTotals = manager.fetchAccountTotals;
         const originalSyncFromOpenOrders = manager.syncFromOpenOrders;
-        const { BUILD_DIR } = require('../modules/constants');
-        const chainOrdersPath = path.resolve(__dirname, '../modules/chain_orders.ts');
-        const chainOrdersSourcePath = path.resolve(__dirname, '../modules/chain_orders.ts');
-        const distChainOrdersPath = path.resolve(__dirname, '..', BUILD_DIR, 'modules', 'chain_orders.js');
-        const stubbedChainOrders = {
-            readOpenOrders: async () => [],
-        };
-        const originalChainOrders = setCachedModule(chainOrdersPath, stubbedChainOrders);
-        const originalSourceChainOrders = setCachedModule(chainOrdersSourcePath, stubbedChainOrders);
-        const originalDistChainOrders = setCachedModule(distChainOrdersPath, stubbedChainOrders);
+        const chainOrders = require('../modules/chain_orders');
+        const originalRead = chainOrders.readOpenOrders;
+        const originalReadMeta = chainOrders.readOpenOrdersWithMeta;
+        const stubOrders = [{ id: '1.7.1', sell_price: { base: { amount: 100, asset_id: '1.3.0' }, quote: { amount: 100, asset_id: '1.3.121' } }, for_sale: 100, expiration: '2099-01-01T00:00:00' }];
+        chainOrders.readOpenOrders = async () => stubOrders;
+        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: stubOrders, truncated: false });
 
         let capturedSyncOptions = null;
         manager.fetchAccountTotals = async () => { };
@@ -420,9 +414,38 @@ async function runTests() {
         } finally {
             manager.fetchAccountTotals = originalFetchTotals;
             manager.syncFromOpenOrders = originalSyncFromOpenOrders;
-            restoreCachedModule(chainOrdersPath, originalChainOrders);
-            restoreCachedModule(chainOrdersSourcePath, originalSourceChainOrders);
-            restoreCachedModule(distChainOrdersPath, originalDistChainOrders);
+            chainOrders.readOpenOrders = originalRead;
+            chainOrders.readOpenOrdersWithMeta = originalReadMeta;
+        }
+    }
+
+    console.log(' - Testing recovery skips sync on empty/truncated read...');
+    {
+        const manager = await createManager();
+        manager.accountId = '1.2.345';
+
+        const originalFetchTotals = manager.fetchAccountTotals;
+        const originalSyncFromOpenOrders = manager.syncFromOpenOrders;
+        const chainOrders = require('../modules/chain_orders');
+        const originalRead = chainOrders.readOpenOrders;
+        const originalReadMeta = chainOrders.readOpenOrdersWithMeta;
+        chainOrders.readOpenOrders = async () => [];
+        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+
+        let syncCalled = false;
+        manager.fetchAccountTotals = async () => { };
+        manager.syncFromOpenOrders = async () => { syncCalled = true; };
+
+        try {
+            const result = await manager.accountant._performStateRecovery(manager);
+            assert.strictEqual(syncCalled, false,
+                'Empty read is ambiguous — recovery sync must be skipped (node may be lagging; pass-1 phantom cleanup would virtualize live slots)');
+            assert.strictEqual(result.isValid, false, 'Skipped recovery must report an invalid/deferred validation result');
+        } finally {
+            manager.fetchAccountTotals = originalFetchTotals;
+            manager.syncFromOpenOrders = originalSyncFromOpenOrders;
+            chainOrders.readOpenOrders = originalRead;
+            chainOrders.readOpenOrdersWithMeta = originalReadMeta;
         }
     }
 

@@ -642,6 +642,14 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
                         // use the SAME node before any rotation.
                         _nativeChainClient.setNodes([candidate]);
                         await _nativeChainClient.connect();
+                        // The guard may have fired while the connect handshake was
+                        // in flight (slow node + inner deadline). Abort here —
+                        // before any signing-client work — so the sign+broadcast
+                        // never happens after the bot was told BROADCAST_DEADLINE:
+                        // a late background broadcast would duplicate the order.
+                        if (guard.isFired()) {
+                            throw buildUncertainError(accountName, startedAt, 'inner broadcast deadline exceeded during connect');
+                        }
                         // Transport reconnected — dispose all stale signing clients (heap-dump safety)
                         // then clear the cache so new clients use the fresh transport.
                         for (const [, entry] of signingClientCache) {
@@ -678,6 +686,14 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
                     }
                     const client = cached.signingClient.client;
                     await client.initPromise;
+                    // The guard may have fired while the signing client fetched
+                    // account/order metadata. Abort before the broadcast RPC so
+                    // nothing is transmitted post-deadline — a zombie broadcast
+                    // landing after the bot verified chain absence would duplicate
+                    // the operation.
+                    if (guard.isFired()) {
+                        throw buildUncertainError(accountName, startedAt, 'inner broadcast deadline exceeded during signing client init');
+                    }
                     phase = 'broadcast';
                     const result = await broadcastFn(client);
                     // Success — restore the full node list so other users of
@@ -685,6 +701,13 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
                     _nativeChainClient.setNodes(_nativeNodeList.length > 0 ? _nativeNodeList : NODE_MANAGEMENT.DEFAULT_NODES);
                     return result;
                 } catch (err: any) {
+                    // Guard-fired aborts (deadline during connect/init) must
+                    // propagate as uncertain immediately — they are never
+                    // retryable, even during the connect phase, and a retry
+                    // would just re-enter the same deadlined attempt.
+                    if (err?.code === DAEMON_CODES.BROADCAST_DEADLINE || err?.uncertain === true) {
+                        throw err;
+                    }
                     // Connect-phase failures are always pre-transmit: no broadcast
                     // has been attempted yet. Broadcast-phase failures are only
                     // retryable when the RPC frame provably never reached the wire.

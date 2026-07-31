@@ -104,6 +104,7 @@ export class DaemonKeyStore implements KeyStore {
                         botHmacSecret: signingKey.botHmacSecret || null,
                         requestType: 'broadcast',
                         batchId: signingKey.batchId || null,
+                        ...(extraOptions.nodeUrl ? { nodeUrl: extraOptions.nodeUrl } : {}),
                         ...(extraOptions.fallbackNodes ? { fallbackNodes: extraOptions.fallbackNodes } : {}),
                         ...(typeof extraOptions.onNodeFailed === 'function' ? { onNodeFailed: extraOptions.onNodeFailed } : {}),
                     });

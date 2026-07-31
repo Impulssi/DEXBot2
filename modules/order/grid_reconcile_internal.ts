@@ -376,13 +376,23 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
 
     const cancelResult = await chainOrders.cancelOrder(account, privateKey, chainOrderId);
     if (cancelResult?.verifiedAfterFailure) {
-        await _recoverSyncFromChain({
+        const recovered = await _recoverSyncFromChain({
             chainOrders,
             manager,
             account,
             logger: manager && manager.logger,
             source: 'cancelOrder',
         });
+        if (!recovered) {
+            // The cancellation was authoritatively confirmed absent inside
+            // cancelOrder, but the recovery refetch was skipped (empty/
+            // truncated read — ambiguous, so the full sync must NOT run) or
+            // failed. The order is provably gone, so apply the local cancel
+            // sync to release its capital and clear the slot — same fallback
+            // as the dust-cancel path. Skipping it would leave the slot stuck
+            // ACTIVE with a chain order that no longer exists.
+            await manager._applySync({ orderId: chainOrderId }, 'cancelOrder');
+        }
     } else {
         await manager._applySync({ orderId: chainOrderId }, 'cancelOrder');
     }
@@ -816,6 +826,19 @@ async function _adoptPossiblyLandedCreate({
             skipAccounting: false,
             source: 'startup-create-uncertain-adopt',
         });
+        // Deduct the create fee: syncFromOpenOrders activates the slot and locks
+        // its capital but does not apply the on-chain create cost. The group
+        // batch path and the grid_reconcile adoption loop both apply it via
+        // _applySync(fee: createFee) — mirror that here so the optimistic
+        // balance reflects the real chain cost.
+        const btsFeeData = getAssetFeesSafe('BTS');
+        await manager._applySync({
+            gridOrderId: gridOrder.id,
+            chainOrderId: matched.id,
+            isPartialPlacement: false,
+            expectedType: gridOrder.type,
+            fee: btsFeeData?.createFee || 0,
+        }, 'createOrder');
         return matched.id || null;
     } catch (adoptErr: any) {
         manager?.logger?.log?.(
@@ -1081,11 +1104,46 @@ async function _executeStartupCreateGroupBatch({
                 'warn'
             );
             try {
-                const freshChainOrders = await chainOrders.readOpenOrders(
-                    resolveAccountRef(manager, account),
-                    TIMING.CONNECTION_TIMEOUT_MS
-                );
-                if (Array.isArray(freshChainOrders) && freshChainOrders.length > 0) {
+                const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
+                    ? await chainOrders.readOpenOrdersWithMeta(
+                        resolveAccountRef(manager, account),
+                        TIMING.CONNECTION_TIMEOUT_MS
+                    )
+                    : {
+                        orders: await chainOrders.readOpenOrders(
+                            resolveAccountRef(manager, account),
+                            TIMING.CONNECTION_TIMEOUT_MS
+                        ),
+                        truncated: false,
+                    };
+                const freshChainOrders = freshRead?.orders;
+                if (freshRead?.truncated || !Array.isArray(freshChainOrders) || freshChainOrders.length === 0) {
+                    // An empty/truncated verification read is ambiguous, NOT
+                    // proof that nothing landed: a truncated get_full_accounts
+                    // window omits the freshest creates (exactly this batch's),
+                    // and an empty snapshot may be a node lagging behind the
+                    // just-broadcast transaction. Treating it as "nothing
+                    // landed" would let a later pass re-create (duplicate) or
+                    // cancel as surplus the very orders this batch placed.
+                    // Mirror the single-create sibling: defer through the
+                    // guarded recovery sync, which re-reads and only syncs on
+                    // an authoritative snapshot (deferring to the next
+                    // reconcile cycle otherwise).
+                    logger?.log?.(
+                        `Startup: Uncertain create group ${groupIndex + 1}/${totalGroups} verification read is ` +
+                        `${freshRead?.truncated ? 'TRUNCATED' : 'EMPTY'}; cannot confirm whether the batch landed — ` +
+                        `deferring to guarded recovery sync (duplicate-order protection)`,
+                        'warn'
+                    );
+                    await _recoverStartupSyncFailure({
+                        chainOrders,
+                        manager,
+                        account,
+                        logger,
+                        triggerMessage: recovery.triggerMessage,
+                        source: recovery.source,
+                    });
+                } else {
                     await manager.syncFromOpenOrders(freshChainOrders, {
                         // Accounting enabled: the batch's created orders were
                         // never registered (no _applySync ran), so the adoption

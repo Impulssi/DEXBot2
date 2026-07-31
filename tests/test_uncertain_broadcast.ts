@@ -1418,6 +1418,7 @@ async function testStartupCreateAdoptsLandedOrder() {
     console.log('\n[UNC-013g] startup create adopts the landed order instead of re-broadcasting...');
     const bot = makeBot();
     bot.manager.syncFromOpenOrders = async () => {};
+    bot.manager._applySync = async () => {};
     const origCreateOrder = chainOrders.createOrder;
     const origReadMeta = chainOrders.readOpenOrdersWithMeta;
     let createCalls = 0;

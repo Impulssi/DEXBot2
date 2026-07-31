@@ -143,14 +143,22 @@ async function runTests() {
         manager.accountId = '1.2.test';
         manager.fetchAccountTotals = async () => {};
         manager.syncFromOpenOrders = async () => ({ filledOrders: [], updatedOrders: [] });
+        // A NON-EMPTY, NON-TRUNCATED read is authoritative, so the recovery
+        // sync runs and the drift check fires. (An empty/truncated read now
+        // defers the sync — it is ambiguous, and syncFromOpenOrders on it
+        // would let pass-1 phantom cleanup virtualize live ACTIVE slots.)
         const originalReadOpenOrders = chainOrders.readOpenOrders;
-        chainOrders.readOpenOrders = async () => [];
+        const originalReadOpenOrdersMeta = chainOrders.readOpenOrdersWithMeta;
+        const stubOrders = [{ id: '1.7.1', sell_price: { base: { amount: 100, asset_id: '1.3.0' }, quote: { amount: 100, asset_id: '1.3.1' } }, for_sale: 100, expiration: '2099-01-01T00:00:00' }];
+        chainOrders.readOpenOrders = async () => stubOrders;
+        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: stubOrders, truncated: false });
 
         let validation;
         try {
             validation = await manager.accountant._performStateRecovery(manager);
         } finally {
             chainOrders.readOpenOrders = originalReadOpenOrders;
+            chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersMeta;
         }
 
         assert.strictEqual(validation.isValid, false, 'Recovery validation should detect drift even during bootstrap');

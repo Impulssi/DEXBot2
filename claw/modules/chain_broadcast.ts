@@ -10,7 +10,7 @@ import { getCredentialReadyFilePath } from '../../modules/credential_runtime';
 import { readJSON } from '../../modules/utils/fs_utils';
 import { runtime } from '../../modules/runtime';
 const storage = getStorage();
-import { isCredentialDaemonReady, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, waitForCredentialDaemon } from './dexbot_credential_client.js';
+import { isCredentialDaemonReady, DEFAULT_BROADCAST_TIMEOUT_MS, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, waitForCredentialDaemon } from './dexbot_credential_client.js';
 import { getErrorMessage } from '../../modules/utils/errors';
 
 // Lazy-load DEXBot2 modules
@@ -136,8 +136,12 @@ async function executeOperations(operations: any, options: Record<string, any> =
     const daemonTimeoutMs = Number.isFinite(Number(options.daemonTimeoutMs))
       ? Number(options.daemonTimeoutMs)
       : undefined;
+    // Clamp the broadcast request timeout up to the default outer window: the
+    // daemon's inner deadline (25s) must be allowed to fire and reply a typed
+    // BROADCAST_DEADLINE before this socket timer. A caller-supplied short
+    // timeout would time out mid-broadcast — a false uncertain.
     const requestTimeoutMs = Number.isFinite(Number(options.daemonRequestTimeoutMs))
-      ? Number(options.daemonRequestTimeoutMs)
+      ? Math.max(Number(options.daemonRequestTimeoutMs), DEFAULT_BROADCAST_TIMEOUT_MS)
       : undefined;
 
     await waitForCredentialDaemon(daemonTimeoutMs, options);
@@ -239,8 +243,12 @@ async function broadcastOperation(operation: any, options: Record<string, any> =
     const daemonTimeoutMs = Number.isFinite(Number(options.daemonTimeoutMs))
       ? Number(options.daemonTimeoutMs)
       : undefined;
+    // Clamp the broadcast request timeout up to the default outer window: the
+    // daemon's inner deadline (25s) must be allowed to fire and reply a typed
+    // BROADCAST_DEADLINE before this socket timer. A caller-supplied short
+    // timeout would time out mid-broadcast — a false uncertain.
     const requestTimeoutMs = Number.isFinite(Number(options.daemonRequestTimeoutMs))
-      ? Number(options.daemonRequestTimeoutMs)
+      ? Math.max(Number(options.daemonRequestTimeoutMs), DEFAULT_BROADCAST_TIMEOUT_MS)
       : undefined;
 
     await waitForCredentialDaemon(daemonTimeoutMs, options);

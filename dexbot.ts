@@ -741,7 +741,7 @@ async function enableBotByName(botName: string | null | undefined) {
     }
     match.active = true;
     saveSettingsFile(config, filePath);
-    console.log(`Marked '${botName}' active in ${path.basename(filePath)}. Start it using 'dexbot pm2 start ${botName}'.`);
+    console.log(`Marked '${botName}' active in ${path.basename(filePath)}. Start it using 'dexbot pm2 ${botName}'.`);
 }
 
 /**
@@ -912,18 +912,22 @@ async function handleCLICommands() {
              }
              process.exit(0);
              return true;
-        case 'pm2':
-            try {
-                const pm2Launcher = require('./pm2');
-                await pm2Launcher.main();
-                // Close stdin and exit cleanly after PM2 startup
-                if (process.stdin) process.stdin.destroy();
-                process.exit(0);
-            } catch (err: any) {
-                console.error('Error:', getErrorMessage(err));
-                process.exit(1);
-            }
+        case 'pm2': {
+            const { spawnSync } = require('child_process') as any as any;
+            // Forward the remaining CLI args to pm2.js so subcommands work
+            // (`dexbot pm2 stop XRP-BTS`, `dexbot pm2 restart all`, `dexbot pm2
+            // help`...). Previously the subcommand was silently dropped and the
+            // full-setup path ran, so `dexbot pm2 start X` started ALL bots and
+            // `dexbot pm2 stop X` no-oped into a full setup.
+            const pm2Script = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
+            const pm2Args = [pm2Script, ...cliArgs.slice(1)];
+            const result = spawnSync(Config.EXEC_PATH, pm2Args, {
+                cwd: PATHS.PROJECT_ROOT,
+                stdio: 'inherit',
+            });
+            process.exit(result.status ?? 0);
             return true;
+        }
         case 'update':
             setSuppressConnectionLog(true);
             require('./scripts/update');

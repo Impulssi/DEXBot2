@@ -1170,6 +1170,12 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
                 // cancelled, so absence is not authoritative there either.
                 const stillPresent = Array.isArray(openOrders) && openOrders.some((order: any) => String(order?.id ?? '') === String(orderId));
                 if (!stillPresent && !truncated && Array.isArray(openOrders) && openOrders.length > 0) {
+                    // The cancellation is confirmed landed (authoritative
+                    // non-empty, non-truncated read shows the order gone) —
+                    // arm the own-cancel marker exactly like the success paths
+                    // above, or a later fill artifact for this order would not
+                    // be skipped (dexbot_fill_runtime.ts wasRecentlyOwnCancelled).
+                    recordOwnCancel(orderId);
                     chainOrdersLogger.info(`Order ${orderId} cancellation confirmed after broadcast failure`);
                     return { success: true, orderId, verified: true, verifiedAfterFailure: true };
                 }

@@ -52,6 +52,28 @@ export function classifyBroadcastFailure(err: any): BroadcastFailureClass {
     // REJECTED the transaction, so it definitively did not land.
     if (/^\d+$/.test(code)) return 'definite';
     if (code === 'BROADCAST_ERROR' || code === 'CHAIN_CONFIG_ERROR') return 'definite';
+    // Local transaction build/sign failures (modules/bitshares-native/tx/builder.ts
+    // and signing_client.ts): the transaction was never transmitted, so the
+    // broadcast provably did not leave the machine. Classifying these as
+    // 'uncertain' would fire onNodeFailed and blacklist a healthy node for
+    // BLACKLIST_COOLDOWN_MS over a broadcast that never reached the wire.
+    // 'retryable' here means safe to retry on another node (nothing landed).
+    if (code === 'TX_TOO_LARGE') return 'retryable';
+    const msg = String(err.message || '');
+    if (
+        /^Failed to fetch required fees/.test(msg)
+        || /^Failed to fetch reference block/.test(msg)
+        || /^Invalid chain id for transaction signing/.test(msg)
+        || msg === 'Operation must have op_name and op_data'
+        || /^Max operations per tx/.test(msg)
+        || msg === 'Broadcast API does not support transaction broadcast'
+        || msg === 'Signing client has been disposed'
+        || msg === 'chainClient is required'
+        || msg === 'accountName is required'
+        || msg === 'privateKey is required'
+    ) {
+        return 'retryable';
+    }
     // Anything else during the broadcast phase — conservative: uncertain.
     return 'uncertain';
 }

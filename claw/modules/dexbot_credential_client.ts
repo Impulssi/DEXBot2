@@ -1,5 +1,5 @@
 
-import { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon } from '../../modules/dexbot_credential_client.js';
+import { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, DEFAULT_BROADCAST_TIMEOUT_MS, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon } from '../../modules/dexbot_credential_client.js';
 
 function getSocketPath(options: Record<string, any> = {}) {
   return options.socketPath || DEFAULT_SOCKET_PATH;
@@ -31,9 +31,19 @@ function broadcastOperationViaCredentialDaemon(accountName: any, operation: any,
     return Promise.reject(new Error('operation must be an object'));
   }
 
+  // A broadcast's outer socket timeout MUST leave room for the daemon's inner
+  // deadline (CREDENTIAL_DAEMON_INNER_DEADLINE_MS, 25s) to fire first and
+  // reply a typed BROADCAST_DEADLINE. A caller-supplied timeout below that
+  // window would time out while the daemon is still mid-broadcast — a false
+  // uncertain on every slow broadcast. Clamp up to the default outer window.
+  const callerTimeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : undefined;
+  const broadcastTimeoutMs = callerTimeoutMs !== undefined
+    ? Math.max(callerTimeoutMs, DEFAULT_BROADCAST_TIMEOUT_MS)
+    : undefined;
+
   return executeOperationsViaCredentialDaemon(accountName, [operation], {
     socketPath: getSocketPath(options),
-    timeoutMs: Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : undefined,
+    timeoutMs: broadcastTimeoutMs,
     sessionId: options.sessionId || null,
     botHmacSecret: options.botHmacSecret || null,
     requestType: 'broadcast',
@@ -42,4 +52,4 @@ function broadcastOperationViaCredentialDaemon(accountName: any, operation: any,
   });
 }
 
-export { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon }
+export { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, DEFAULT_BROADCAST_TIMEOUT_MS, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon }

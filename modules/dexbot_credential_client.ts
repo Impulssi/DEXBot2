@@ -130,28 +130,29 @@ function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs
         });
 
         let responseBuffer = '';
+        // For broadcast requests the chain may have already accepted the
+        // operations by the time the connection dies (socket error, truncated
+        // stream, or outer timeout). Use a typed error so the recovery path
+        // can detect this case explicitly. Non-broadcast requests stay on the
+        // plain Error path.
+        const buildFailure = (message: string): Error => {
+            if (meta && meta.uncertainOnTimeout) {
+                return new BroadcastUncertainError(message, {
+                    operations: meta.operations || null,
+                    accountName: meta.accountName || null,
+                    batchId: meta.batchId || null,
+                    payload,
+                    timeoutMs,
+                });
+            }
+            return new Error(message);
+        };
         const timer = setTimeout(() => {
             socket.destroy();
             if (!settled) {
                 settled = true;
-                // For broadcast requests the chain may have already accepted the
-                // operations by the time we time out. Use a typed error so the
-                // recovery path can detect this case explicitly. Non-broadcast
-                // requests stay on the plain Error path.
-                if (meta && meta.uncertainOnTimeout) {
-                    reject(new BroadcastUncertainError(
-                        `Credential daemon broadcast request timed out after ${timeoutMs}ms`,
-                        {
-                            operations: meta.operations || null,
-                            accountName: meta.accountName || null,
-                            batchId: meta.batchId || null,
-                            payload,
-                            timeoutMs,
-                        }
-                    ));
-                } else {
-                    reject(new Error(`Credential daemon request timed out after ${timeoutMs}ms`));
-                }
+                const isBroadcast = !!(meta && meta.uncertainOnTimeout);
+                reject(buildFailure(`Credential daemon ${isBroadcast ? 'broadcast ' : ''}request timed out after ${timeoutMs}ms`));
             }
         }, timeoutMs);
 
@@ -178,14 +179,33 @@ function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs
 
         socket.on('error', (error: any) => {
             clearTimeout(timer);
-            if (!settled) { settled = true; reject(new Error(`Credential daemon connection failed: ${getErrorMessage(error)}`)); }
+            if (!settled) {
+                settled = true;
+                // A dead socket during a broadcast may mean the daemon already
+                // signed + broadcast before dying — classify as uncertain so the
+                // verify-before-retry machinery engages instead of a blind retry.
+                reject(buildFailure(`Credential daemon connection failed: ${getErrorMessage(error)}`));
+            }
         });
 
         socket.on('end', () => {
             clearTimeout(timer);
-            if (!settled && !responseBuffer.trim()) {
+            if (!settled) {
                 settled = true;
-                reject(new Error('Credential daemon closed the connection unexpectedly'));
+                if (responseBuffer.trim()) {
+                    // The daemon closed the socket without a trailing newline.
+                    // A complete buffered line is a valid response; a partial
+                    // line means the daemon was killed mid-write — either way
+                    // the request MUST settle (a truncated stream must not
+                    // leave the caller hanging forever).
+                    try {
+                        resolve(JSON.parse(responseBuffer));
+                        return;
+                    } catch {
+                        // fall through to the rejection below
+                    }
+                }
+                reject(buildFailure('Credential daemon closed the connection before a complete response was received'));
             }
         });
     });

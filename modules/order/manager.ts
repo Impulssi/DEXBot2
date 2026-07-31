@@ -180,27 +180,35 @@ class COWRebalanceEngine {
         const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid);
 
         // Stale-placement guard: drop BUY create/update targeting a slot ABOVE
-        // the last same-side shift-eligible fill slot, and SELL create/update
-        // targeting a slot BELOW the last same-side shift-eligible fill slot.
+        // the boundary, and SELL create/update targeting a slot BELOW the
+        // boundary.
         // A plan built on stale market data would place an order that crosses
         // the current spread and fills immediately; defer it to the next cycle.
-        // - Slot ids are compared (slot-N rail index, ascending in price) so
-        //   the "same price level" test is exact and free of float rounding;
-        //   when a fill or action has no grid slot id (e.g. orphan fills),
-        //   the price comparison is used as a fallback.
-        // - Only shift-eligible fills are used as the reference: partial fills
+        // - The reference is the PLAN'S OWN targetBoundary, not the last
+        //   same-side fill slot: deriveTargetBoundary caps the net boundary
+        //   shift, so after a burst (e.g. SELL fills 5,6,7 with cap=1 the
+        //   boundary only reaches slot 6) the last fill sits ABOVE the plan's
+        //   legitimate re-place levels — a fill-slot veto would drop those
+        //   valid placements. Comparing against the boundary only vetoes
+        //   genuinely cross-spread placements (an UPDATE/ROTATE keeping an
+        //   order in a slot the plan now assigns to the opposite side).
+        // - Slot ids are compared within the plan's own grid generation
+        //   (targetBoundary and target slots are both from the current plan),
+        //   so a recenter between the fill capture and the plan cannot skew
+        //   the comparison.
+        // - The last same-side shift-eligible fill slot is kept only as a
+        //   fallback when the plan boundary is unavailable; partial fills
         //   (without delayed-rotation trigger) never moved the boundary, so
         //   their level is not a valid cross-check.
-        // - Only same-side fills are used: a SELL fill's level is the taker
-        //   level of the opposite side and would wrongly veto valid buys (and
-        //   vice versa).
         // - Both CREATE and UPDATE actions are guarded: the cancel/create
         //   optimization can convert the same logical placement into an UPDATE
         //   op (target slot = newGridId), which the CREATE-only check would
         //   have missed.
-        // - Strict comparison: a placement AT the last fill's slot is kept —
-        //   the boundary shift is capped (deriveTargetBoundary), so a burst
-        //   can legitimately re-place at the just-traded level.
+        // - Strict comparison: a placement AT the boundary is kept — the
+        //   boundary slot is the spread, which reconcile never targets.
+        const planBoundary = (targetBoundary !== null && targetBoundary !== undefined && Number.isFinite(Number(targetBoundary)))
+            ? Number(targetBoundary)
+            : null;
         const eligibleFills = (Array.isArray(fills) ? fills : []).filter(
             (f: any) => f?.isPartial !== true || f?.isDelayedRotationTrigger === true
         );
@@ -210,15 +218,25 @@ class COWRebalanceEngine {
         const lastSellFillSlot = lastSellFill ? parseSlotIndex(lastSellFill?.id) : null;
         const lastBuyFillPrice = lastBuyFill ? toFiniteNumber(lastBuyFill?.price) : NaN;
         const lastSellFillPrice = lastSellFill ? toFiniteNumber(lastSellFill?.price) : NaN;
-        if ((lastBuyFillSlot !== null || lastSellFillSlot !== null
-                || Number.isFinite(lastBuyFillPrice) || Number.isFinite(lastSellFillPrice))
-            && optimizedActions.length > 0) {
+        if (planBoundary !== null
+            || lastBuyFillSlot !== null || lastSellFillSlot !== null
+            || Number.isFinite(lastBuyFillPrice) || Number.isFinite(lastSellFillPrice)) {
             const before = optimizedActions.length;
             const guarded = optimizedActions.filter((a: any) => {
                 const isPlacement = a?.type === COW_ACTIONS.CREATE || a?.type === COW_ACTIONS.UPDATE;
                 if (!isPlacement) return true;
                 const targetSlot = parseSlotIndex(a?.newGridId ?? a?.id);
                 if (a?.order?.type === ORDER_TYPES.BUY) {
+                    if (planBoundary !== null && targetSlot !== null) {
+                        if (targetSlot > planBoundary) {
+                            this.logger?.log(
+                                `[COW] Dropping stale-slot BUY ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} > plan boundary ${planBoundary}`,
+                                'warn'
+                            );
+                            return false;
+                        }
+                        return true;
+                    }
                     if (lastBuyFillSlot !== null && targetSlot !== null) {
                         if (targetSlot > lastBuyFillSlot) {
                             this.logger?.log(
@@ -240,6 +258,16 @@ class COWRebalanceEngine {
                     return true;
                 }
                 if (a?.order?.type === ORDER_TYPES.SELL) {
+                    if (planBoundary !== null && targetSlot !== null) {
+                        if (targetSlot < planBoundary) {
+                            this.logger?.log(
+                                `[COW] Dropping stale-slot SELL ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: slot ${targetSlot} < plan boundary ${planBoundary}`,
+                                'warn'
+                            );
+                            return false;
+                        }
+                        return true;
+                    }
                     if (lastSellFillSlot !== null && targetSlot !== null) {
                         if (targetSlot < lastSellFillSlot) {
                             this.logger?.log(
