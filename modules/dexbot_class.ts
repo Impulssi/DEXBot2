@@ -1103,8 +1103,12 @@ class DEXBot {
 
     /**
      * Execute operations with retry on BroadcastUncertainError.
-     * The daemon already retries internally against a 25s deadline.
-     * If all expire, a fresh bot-level attempt buys a new 25s window.
+     * The daemon already retries internally against a 25s deadline. If it
+     * still expires, this layer's single retry is verification-gated: the
+     * batch is only re-broadcast after an authoritative non-empty chain read
+     * proves none of its CREATEs landed. Empty (possibly-lagging) reads and
+     * landed creates defer to the post-broadcast reconciliation machinery
+     * instead — no blind re-broadcast ever duplicates on-chain orders.
      *
      * Skips retry when partialOnChainState is true (pair-mode grouped
      * execution where earlier groups already committed). Re-broadcasting

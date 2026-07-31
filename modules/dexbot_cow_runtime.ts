@@ -469,9 +469,9 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
         'warn'
     );
 
-    if (!chainOrders?.readOpenOrders) {
+    if (!chainOrders?.readOpenOrdersWithMeta) {
         bot.manager.logger.log(
-            '[COW][UNCERTAIN] readOpenOrders unavailable; falling back to structural resync only.',
+            '[COW][UNCERTAIN] readOpenOrdersWithMeta unavailable; falling back to structural resync only.',
             'error'
         );
         if (typeof bot.manager.requestStructuralGridResync === 'function') {
@@ -487,8 +487,11 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
     // 1. Read the chain
     const accountRef = bot.accountId || bot.account?.id || bot.account;
     let chainSnapshot: any[] = [];
+    let chainReadTruncated = false;
     try {
-        chainSnapshot = await chainOrders.readOpenOrders(accountRef);
+        const chainRead = await chainOrders.readOpenOrdersWithMeta(accountRef);
+        chainSnapshot = chainRead.orders;
+        chainReadTruncated = chainRead.truncated;
     } catch (readErr) {
         bot.manager.logger.log(
             `[COW][UNCERTAIN] readOpenOrders failed: ${(readErr as any)?.message || readErr}. ` +
@@ -505,23 +508,27 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
         return { executed: false, hadRotation: false, uncertain: true };
     }
 
-    // 1.5. Empty-read guard: an empty snapshot is ambiguous — the account is
-    // either genuinely empty or the node is lagging behind the just-broadcast
-    // transaction. Treating every pending broadcast as discarded would clear
-    // the pending-broadcast protection and let the next cycle re-CREATE slots
-    // whose orders may actually be on chain (duplicate orders). Keep the
-    // protection and let the structural resync adopt any landed orders.
-    if (chainSnapshot.length === 0 && pending.length > 0) {
+    // 1.5. Empty/truncated-read guard: an empty snapshot is ambiguous — the
+    // account is either genuinely empty or the node is lagging behind the
+    // just-broadcast transaction. A truncated snapshot (get_full_accounts
+    // capped limit_orders; fresh creates sort last in the by_account index
+    // and are the first entries omitted) is equally ambiguous: the batch's
+    // creates may simply be missing from the returned window. Treating every
+    // pending broadcast as discarded would clear the pending-broadcast
+    // protection and let the next cycle re-CREATE slots whose orders may
+    // actually be on chain (duplicate orders). Keep the protection and let
+    // the structural resync adopt any landed orders.
+    if (pending.length > 0 && (chainSnapshot.length === 0 || chainReadTruncated)) {
         bot.manager.logger.log(
-            `[COW][UNCERTAIN] Empty chain read for ${pending.length} pending broadcast(s); ` +
+            `[COW][UNCERTAIN] ${chainSnapshot.length === 0 ? 'Empty' : 'Truncated'} chain read for ${pending.length} pending broadcast(s); ` +
             `keeping pending-broadcast protection and requesting structural resync ` +
-            `(node may be lagging; no discard decisions made)`,
+            `(node may be lagging or the result set capped; no discard decisions made)`,
             'warn'
         );
         if (typeof bot.manager.requestStructuralGridResync === 'function') {
             await bot.manager.requestStructuralGridResync(
-                'uncertain broadcast — empty chain read',
-                { batchId: err?.batchId || null }
+                'uncertain broadcast — empty/truncated chain read',
+                { batchId: err?.batchId || null, truncated: chainReadTruncated }
             );
         }
         return { executed: false, hadRotation: false, uncertain: true, ambiguousRead: true };
@@ -896,11 +903,14 @@ function shouldExecuteCreatePairMode(_bot: any, opContexts: any) {
  *
  * Never re-broadcasts blindly: an uncertain broadcast may have landed, and
  * re-sending the same ops would duplicate on-chain orders. A retry is only
- * allowed on AUTHORITATIVE ABSENCE — a successful non-empty chain read that
- * contains none of the batch's CREATEs. An empty read (node may be lagging)
- * or any matched CREATE defers to the post-broadcast reconciliation machinery
- * (pollChainForConfirmation + reconcileAfterUncertainBroadcast), which
- * verifies inclusion and adopts landed orders before the next cycle.
+ * allowed on AUTHORITATIVE ABSENCE — a successful non-empty, non-truncated
+ * chain read that contains none of the batch's CREATEs (fingerprint/
+ * near-match). An empty read (node may be lagging), a truncated read
+ * (get_full_accounts capped the result set; fresh creates sort last and are
+ * the first entries omitted), or any matched CREATE defers to the
+ * post-broadcast reconciliation machinery (pollChainForConfirmation +
+ * reconcileAfterUncertainBroadcast), which verifies inclusion and adopts
+ * landed orders before the next cycle.
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {Array} operations
  * @param {Array} opContexts
@@ -922,7 +932,8 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                 let absence: 'absent' | 'landed' | 'unknown' = 'unknown';
                 try {
                     const accountRef = bot.accountId || bot.account?.id || bot.account;
-                    const freshChain = await chainOrders.readOpenOrders(accountRef);
+                    const freshRead = await chainOrders.readOpenOrdersWithMeta(accountRef);
+                    const freshChain = freshRead.orders;
                     if (Array.isArray(freshChain) && freshChain.length > 0) {
                         absence = 'absent';
                         for (const ctx of createContexts) {
@@ -945,6 +956,13 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                             }
                         }
                     }
+                    // A truncated read (get_full_accounts caps limit_orders, and
+                    // fresh creates sort last in the by_account index) omits the
+                    // very orders this batch may have landed — 'absent' is not
+                    // authoritative here, degrade to 'unknown' and defer.
+                    if (freshRead.truncated && absence === 'absent') {
+                        absence = 'unknown';
+                    }
                 } catch (verifyErr: any) {
                     bot.manager.logger.log(
                         `[COW] Pre-retry chain verification failed (non-fatal): ${verifyErr?.message || verifyErr}`,
@@ -963,7 +981,7 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
 
                 bot.manager.logger.log(
                     `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}); ` +
-                    `${absence === 'landed' ? 'create(s) confirmed landed on chain' : 'chain state unverifiable (empty/lagging read)'} — ` +
+                    `${absence === 'landed' ? 'create(s) confirmed landed on chain' : 'chain state unverifiable (empty/truncated/lagging read)'} — ` +
                     `deferring to post-broadcast reconciliation (no blind re-broadcast)`,
                     'warn'
                 );

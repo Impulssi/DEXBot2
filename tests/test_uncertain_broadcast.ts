@@ -438,7 +438,7 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
     const chainSnapshot = [makeChainOrder('1.7.572312011', 'sell', plannedSell, plannedReceive)];
     let readCalls = 0;
     let syncCalls = 0;
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     bot.manager.orders.set(slotId, { id: slotId, type: 'sell', price: 0.05, size: 1.2 });
@@ -455,10 +455,10 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
         order: { id: slotId, type: 'sell', price: 0.05, size: 1.2 },
         finalInts: { sell: plannedSell, receive: plannedReceive }
     });
-    chainOrders.readOpenOrders = async (accountRef) => {
+    chainOrders.readOpenOrdersWithMeta = async (accountRef) => {
         readCalls++;
         assert.strictEqual(accountRef, 'test-account');
-        return chainSnapshot;
+        return { orders: chainSnapshot, truncated: false };
     };
 
     try {
@@ -478,7 +478,7 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
         assert.strictEqual(readCalls, 1, 'uncertain broadcast recovery reads chain orders once');
         assert.strictEqual(syncCalls, 1, 'synchronizeWithChain must be called for each adopted CREATE');
     } finally {
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-008b passed');
@@ -487,7 +487,7 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
 async function testReconcileReadFailureRequestsStructuralResync() {
     console.log('\n[UNC-008c] _reconcileAfterUncertainBroadcast requests structural resync on read failure...');
     const bot = makeBot();
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     let resyncReason = null;
     let resyncMeta = null;
     bot.manager.requestStructuralGridResync = async (reason, meta) => {
@@ -500,7 +500,7 @@ async function testReconcileReadFailureRequestsStructuralResync() {
         order: { id: 'sell-12', type: 'sell', price: 0.05, size: 1.2 },
         finalInts: { sell: 120000000, receive: 6000000 }
     });
-    chainOrders.readOpenOrders = async () => {
+    chainOrders.readOpenOrdersWithMeta = async () => {
         throw new Error('read failed');
     };
 
@@ -515,7 +515,7 @@ async function testReconcileReadFailureRequestsStructuralResync() {
         assert.strictEqual(resyncMeta.batchId, 'batch-read-fail');
         assert.strictEqual(bot.manager._pendingBroadcasts.size, 0, 'pending broadcasts must clear on fallback resync');
     } finally {
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
     }
     console.log('✓ UNC-008c passed');
 }
@@ -526,7 +526,7 @@ async function testReconcileAcquiresFillLock() {
     const slotId = 'sell-lock';
     const plannedSell = 120000000;
     const plannedReceive = 6000000;
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
     let lockAcquireCalls = 0;
     let insideLock = false;
@@ -556,7 +556,10 @@ async function testReconcileAcquiresFillLock() {
         order: { id: slotId, type: 'sell', price: 0.05, size: 1.2 },
         finalInts: { sell: plannedSell, receive: plannedReceive }
     });
-    chainOrders.readOpenOrders = async () => [makeChainOrder('1.7.572312012', 'sell', plannedSell, plannedReceive)];
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.572312012', 'sell', plannedSell, plannedReceive)],
+        truncated: false
+    });
 
     try {
         const result = await bot._reconcileAfterUncertainBroadcast(
@@ -567,7 +570,7 @@ async function testReconcileAcquiresFillLock() {
         assert.strictEqual(lockAcquireCalls, 1, 'recovery should acquire the fill lock once');
         assert.strictEqual(syncCalls, 1, 'synchronizeWithChain must be called for each adopted CREATE');
     } finally {
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-008c2 passed');
@@ -768,7 +771,7 @@ async function testCredentialClientFallbackEmptyList() {
 }
 
 async function testCredentialClientFallbackReportsFailedNode() {
-    console.log('\n[UNC-008i-5] credential client DEADLINE → single attempt, propagates (no fallback cycling)...');
+    console.log('\n[UNC-008i-5] credential client DEADLINE → single attempt, onNodeFailed never fires for fallback list...');
     const operations = [{ op_name: 'limit_order_cancel', op_data: { order: '1.7.5' } }];
     let requestCount = 0;
     const failedNodes: string[] = [];
@@ -791,6 +794,7 @@ async function testCredentialClientFallbackReportsFailedNode() {
             (err) => err instanceof BroadcastUncertainError
         );
         assert.strictEqual(requestCount, 1, 'Single attempt: uncertain broadcasts must not be re-sent on fallback nodes');
+        assert.strictEqual(failedNodes.length, 0, 'onNodeFailed must never fire without an explicit nodeUrl (no fallback cycling to blame)');
     } finally {
         transport.restore();
     }
@@ -1158,10 +1162,10 @@ async function testExecuteWithRetryOnUncertainRetriesOnce() {
 }
 
 async function testExecuteWithRetryOnVerifiedAbsence() {
-    console.log('\n[UNC-013b] _executeWithRetryOnUncertain retries ONLY on authoritative absence (non-empty read, no match)...');
+    console.log('\n[UNC-013b] _executeWithRetryOnUncertain retries ONLY on authoritative absence (non-empty non-truncated read, no match)...');
     const bot = makeBot();
     const origExecuteBatch = chainOrders.executeBatch;
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     let callCount = 0;
 
     const createCtx = {
@@ -1178,14 +1182,17 @@ async function testExecuteWithRetryOnVerifiedAbsence() {
         }
         return { success: true, operation_results: [] };
     };
-    // Authoritative absence: a non-empty read that contains NONE of the batch's
-    // creates (an unrelated order with far-off amounts).
-    chainOrders.readOpenOrders = async () => ([{
-        id: '1.7.700001',
-        type: 'buy',
-        sellInt: 999999999,
-        receiveInt: 999999999
-    }]);
+    // Authoritative absence: a non-empty, non-truncated read that contains NONE
+    // of the batch's creates (an unrelated order with far-off amounts).
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [{
+            id: '1.7.700001',
+            type: 'buy',
+            sellInt: 999999999,
+            receiveInt: 999999999
+        }],
+        truncated: false
+    });
 
     try {
         const result = await bot._executeWithRetryOnUncertain([{ op_name: 'limit_order_create' }], [createCtx]);
@@ -1193,7 +1200,7 @@ async function testExecuteWithRetryOnVerifiedAbsence() {
         assert.strictEqual(callCount, 2, 'must re-broadcast exactly once after verified absence');
     } finally {
         chainOrders.executeBatch = origExecuteBatch;
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
     }
     console.log('✓ UNC-013b passed');
 }
@@ -1202,7 +1209,7 @@ async function testExecuteWithRetryOnLandedCreate() {
     console.log('\n[UNC-013c] _executeWithRetryOnUncertain does NOT retry when a create is confirmed landed on chain...');
     const bot = makeBot();
     const origExecuteBatch = chainOrders.executeBatch;
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     let callCount = 0;
 
     const createCtx = {
@@ -1218,12 +1225,15 @@ async function testExecuteWithRetryOnLandedCreate() {
     };
     // The create landed: the chain read contains the batch's own order
     // (matching sell/receive within tolerance).
-    chainOrders.readOpenOrders = async () => ([{
-        id: '1.7.700002',
-        type: 'buy',
-        sellInt: 5000000,
-        receiveInt: 100000000
-    }]);
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [{
+            id: '1.7.700002',
+            type: 'buy',
+            sellInt: 5000000,
+            receiveInt: 100000000
+        }],
+        truncated: false
+    });
 
     try {
         await assert.rejects(
@@ -1236,9 +1246,58 @@ async function testExecuteWithRetryOnLandedCreate() {
         );
     } finally {
         chainOrders.executeBatch = origExecuteBatch;
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
     }
     console.log('✓ UNC-013c passed');
+}
+
+async function testExecuteWithRetryOnTruncatedRead() {
+    console.log('\n[UNC-013d] _executeWithRetryOnUncertain does NOT retry on a truncated read (capped result set is not authoritative absence)...');
+    const bot = makeBot();
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    let callCount = 0;
+
+    const createCtx = {
+        kind: 'create',
+        id: 'slot-buy-1',
+        order: { id: 'slot-buy-1', type: 'buy' },
+        finalInts: { sell: 5000000, receive: 100000000 }
+    };
+
+    chainOrders.executeBatch = async () => {
+        callCount++;
+        throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013d', timeoutMs: 30000 });
+    };
+    // Truncated read (get_full_accounts capped limit_orders, e.g. default 500):
+    // non-empty, but none of the batch's creates visible. Fresh creates sort
+    // last in the by_account index and are the FIRST entries a capped read
+    // omits — this must be 'unknown', NOT verified absence, or the
+    // re-broadcast could duplicate orders that actually landed.
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [{
+            id: '1.7.700001',
+            type: 'buy',
+            sellInt: 999999999,
+            receiveInt: 999999999
+        }],
+        truncated: true
+    });
+
+    try {
+        await assert.rejects(
+            () => bot._executeWithRetryOnUncertain([{ op_name: 'limit_order_create' }], [createCtx]),
+            (err) => {
+                assert(err instanceof BroadcastUncertainError, 'must throw BroadcastUncertainError');
+                assert.strictEqual(callCount, 1, 'must NOT re-broadcast on a truncated read (may be false absence)');
+                return true;
+            }
+        );
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+    }
+    console.log('✓ UNC-013d passed');
 }
 
 async function testExecuteWithRetrySkipsPartialOnChainState() {
@@ -1307,6 +1366,7 @@ async function main() {
     await testExecuteWithRetryOnUncertainRetriesOnce();
     await testExecuteWithRetryOnVerifiedAbsence();
     await testExecuteWithRetryOnLandedCreate();
+    await testExecuteWithRetryOnTruncatedRead();
     await testExecuteWithRetrySkipsPartialOnChainState();
     await testUpdateToCreateFallbackOnNotFound();
     await testUpdateToCreateFallbackRotationBranch();
@@ -1318,6 +1378,7 @@ async function main() {
     await testBoundaryShiftAllDiscarded();
     await testBoundaryShiftMixedAdoptedDiscarded();
     await testBoundaryShiftAllAdopted();
+    await testBoundaryShiftTruncatedRead();
     testsComplete = true;
     console.log('\nAll uncertain-broadcast tests passed (incl. retry + deadlock regression guards).');
 }
@@ -1773,7 +1834,7 @@ async function testRecoverFromPersistedGridUnmatchedRemain() {
 async function testBoundaryShiftAllDiscarded() {
     console.log('\n[UNC-017] Boundary shift recovery: all CREATEs discarded → boundaryIdx unchanged...');
     const bot = makeBot();
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     const INITIAL_BOUNDARY = 5;
@@ -1798,7 +1859,7 @@ async function testBoundaryShiftAllDiscarded() {
         finalInts: { sell: 100000000, receive: 5000000 }
     });
 
-    chainOrders.readOpenOrders = async () => [];
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
     bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
@@ -1822,7 +1883,7 @@ async function testBoundaryShiftAllDiscarded() {
         assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY,
             'boundaryIdx must NOT shift when the read is ambiguous');
     } finally {
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-017 passed');
@@ -1832,7 +1893,7 @@ async function testBoundaryShiftAllDiscarded() {
 async function testBoundaryShiftMixedAdoptedDiscarded() {
     console.log('\n[UNC-017b] Boundary shift recovery: mixed adopted/discarded → boundary shifts for adopted only...');
     const bot = makeBot();
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     const INITIAL_BOUNDARY = 5;
@@ -1857,9 +1918,12 @@ async function testBoundaryShiftMixedAdoptedDiscarded() {
         finalInts: { sell: 100000000, receive: 5000000 }
     });
 
-    chainOrders.readOpenOrders = async () => [
-        makeChainOrder('1.7.300', 'buy', 5000000, 100000000)
-    ];
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [
+            makeChainOrder('1.7.300', 'buy', 5000000, 100000000)
+        ],
+        truncated: false
+    });
     bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
@@ -1876,7 +1940,7 @@ async function testBoundaryShiftMixedAdoptedDiscarded() {
         assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY,
             'boundaryIdx should remain unchanged after uncertain broadcast recovery (reconcile does not shift boundary)');
     } finally {
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-017b passed');
@@ -1886,7 +1950,7 @@ async function testBoundaryShiftMixedAdoptedDiscarded() {
 async function testBoundaryShiftAllAdopted() {
     console.log('\n[UNC-017c] Boundary shift recovery: all CREATEs adopted → boundary shifts for all...');
     const bot = makeBot();
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     const INITIAL_BOUNDARY = 5;
@@ -1910,11 +1974,13 @@ async function testBoundaryShiftAllAdopted() {
         order: { id: 'buy-2', type: 'buy', price: 0.04, size: 1 },
         finalInts: { sell: 4000000, receive: 80000000 }
     });
-
-    chainOrders.readOpenOrders = async () => [
-        makeChainOrder('1.7.400', 'buy', 5000000, 100000000),
-        makeChainOrder('1.7.401', 'buy', 4000000, 80000000)
-    ];
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [
+            makeChainOrder('1.7.400', 'buy', 5000000, 100000000),
+            makeChainOrder('1.7.401', 'buy', 4000000, 80000000)
+        ],
+        truncated: false
+    });
     bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
@@ -1931,10 +1997,74 @@ async function testBoundaryShiftAllAdopted() {
         assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY,
             'boundaryIdx should remain unchanged after uncertain broadcast recovery');
     } finally {
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-017c passed');
+}
+
+// ── Truncated read: same ambiguity as empty → protection kept ────────────
+async function testBoundaryShiftTruncatedRead() {
+    console.log('\n[UNC-017d] Boundary shift recovery: truncated chain read → ambiguous (protection kept, no discard)...');
+    const bot = makeBot();
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
+
+    const INITIAL_BOUNDARY = 5;
+    bot.manager.boundaryIdx = INITIAL_BOUNDARY;
+    bot.manager.persistGrid = async () => ({ isValid: true });
+    bot.manager._markGridDirty = () => {};
+    bot.manager.synchronizeWithChain = async () => {};
+
+    for (let i = 0; i <= 9; i++) {
+        const side = i <= INITIAL_BOUNDARY ? 'buy' : 'sell';
+        bot.manager.orders.set(`slot-${i}`, { id: `slot-${i}`, type: side, price: 0.05 + i * 0.001, size: 1 });
+    }
+
+    bot._recordPendingBroadcast({
+        opIndex: 0, ctxIndex: 0,
+        order: { id: 'buy-1', type: 'buy', price: 0.05, size: 1 },
+        finalInts: { sell: 5000000, receive: 100000000 }
+    });
+    bot._recordPendingBroadcast({
+        opIndex: 1, ctxIndex: 1,
+        order: { id: 'sell-1', type: 'sell', price: 0.06, size: 1 },
+        finalInts: { sell: 100000000, receive: 5000000 }
+    });
+
+    // Truncated read (get_full_accounts capped limit_orders): non-empty, but
+    // none of the batch's creates visible. Fresh creates sort last in the
+    // by_account index and are the FIRST entries a capped read omits — this
+    // must be treated like an empty read: ambiguous, NOT authoritative
+    // absence. Discarding would clear pending-broadcast protection and let
+    // the next cycle re-CREATE slots whose orders may actually be on chain.
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.900', 'sell', 999999999, 999999999)],
+        truncated: true
+    });
+    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
+
+    try {
+        const result = await bot._reconcileAfterUncertainBroadcast(
+            new BroadcastUncertainError('timeout', {
+                operations: [{ op_name: 'limit_order_create' }, { op_name: 'limit_order_create' }],
+                accountName: 'test-account', batchId: 'batch-truncated', timeoutMs: 30000
+            }),
+            [{ kind: 'create', id: 'buy-1' }, { kind: 'create', id: 'sell-1' }]
+        );
+        assert.strictEqual(result.uncertain, true);
+        assert.strictEqual(result.ambiguousRead, true, 'truncated read must be reported as ambiguous');
+        assert.strictEqual(result.adoptedCount, undefined, 'no adoption decisions on ambiguous read');
+        assert.strictEqual(result.discardedCount, undefined, 'no discard decisions on ambiguous read');
+        assert.strictEqual(bot.manager._pendingBroadcasts.size, 2,
+            'pending-broadcast protection must be KEPT on ambiguous (truncated) read');
+        assert.strictEqual(bot.manager.boundaryIdx, INITIAL_BOUNDARY,
+            'boundaryIdx must NOT shift when the read is ambiguous');
+    } finally {
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
+    }
+    console.log('✓ UNC-017d passed');
 }
 
 main().catch((err) => {

@@ -15,7 +15,6 @@ const fundRegistry = require('./fund_registry');
 const { BitShares } = require('./bitshares_client');
 const { BroadcastUncertainError } = require('./dexbot_credential_client');
 const { Config } = require('./config');
-function getNodeManager(...args: any) { return require('./bitshares_client').getNodeManager(...args); }
 function hasOpenOrdersSyncLoopMsSet(...args: any) { return require('./config').hasOpenOrdersSyncLoopMsSet(...args); }
 function getOpenOrdersSyncLoopMs(...args: any) { return require('./config').getOpenOrdersSyncLoopMs(...args); }
 function isGridBloated(...args: any) { return grid.isGridBloated(...args); }
@@ -1620,13 +1619,13 @@ async function executeMaintenanceLogic(bot: any, context: any) {
 }
 
 /**
- * Cancel a single order, retrying on alternate BitShares nodes when the
- * credential daemon reports BROADCAST_DEADLINE.  The daemon already retries
- * 3× internally against its own node list; if it still hits the deadline
- * the node itself may be unhealthy.  We hand the full healthy-node list
- * (excluding the primary) to the credential client, which cycles through
- * the fallbacks with a 1 s gap and raises the last BroadcastUncertainError
- * only when all nodes are exhausted.
+ * Cancel a single order, deferring on an uncertain daemon broadcast.
+ * The credential daemon already retries 3× internally against its own node
+ * list; if it still hits BROADCAST_DEADLINE the credential client makes one
+ * attempt and propagates a BroadcastUncertainError — the outcome is unknown
+ * and re-sending could duplicate a landed cancel. No node is blacklisted
+ * here: without an explicit nodeUrl the daemon chose the node, so there is
+ * no single node to blame. The next dust-detection cycle re-attempts.
  *
  * The daemon's session is validated early in processRequest (before the
  * broadcast), so a BROADCAST_DEADLINE reply cannot be caused by an expired
@@ -1636,25 +1635,12 @@ async function executeMaintenanceLogic(bot: any, context: any) {
  * @param {import('./types').Order} order
  * @returns {Promise<*>} Result from chainOrders.cancelOrder
  */
-async function cancelOrderWithNodeFallback(bot: any, order: any) {
+async function cancelOrderDeferredOnUncertain(bot: any, order: any) {
     try {
-        const nodeManager = getNodeManager();
-        const nodes = nodeManager?.getHealthyNodes() ?? [];
-        const fallbackNodes = nodes.length > 1 ? nodes.slice(1) : undefined;
-        return await chainOrders.cancelOrder(
-            bot.account, bot.privateKey, order.orderId,
-            fallbackNodes
-                ? {
-                    fallbackNodes,
-                    onNodeFailed: (nodeUrl: string) => {
-                        nodeManager.reportNodeFailure(nodeUrl, 'BROADCAST_DEADLINE', 'broadcast');
-                    },
-                }
-                : {}
-        );
+        return await chainOrders.cancelOrder(bot.account, bot.privateKey, order.orderId);
     } catch (err) {
         if (err instanceof BroadcastUncertainError) {
-            bot._warn(`[DUST] All nodes exhausted for ${order.id} (${order.orderId})`);
+            bot._warn(`[DUST] Broadcast uncertain for ${order.id} (${order.orderId}); outcome deferred to chain verification`);
         }
         throw err;
     }
@@ -1679,7 +1665,7 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
     for (const order of allDust) {
         if (!order.orderId) continue;
         try {
-            const cancelResult = await cancelOrderWithNodeFallback(bot, order);
+            const cancelResult = await cancelOrderDeferredOnUncertain(bot, order);
             try {
                 if (cancelResult?.verifiedAfterFailure) {
                     const accountRef = bot.accountId || bot.account;

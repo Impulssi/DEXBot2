@@ -427,7 +427,7 @@ async function executeOperationsWithClient(client: any, operations: any) {
 }
 
 async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn: any, nodeUrl: string | null = null) {
-    // The inner deadline caps the TOTAL time spent across BOTH retry attempts
+    // The inner deadline caps the TOTAL time spent across ALL retry attempts
     // so we always reply to the bot well before its outer socket timer
     // (CREDENTIAL_BROADCAST_TIMEOUT_MS) fires. If we don't reply in time, the
     // bot raises BroadcastUncertainError and enters the recovery path.
@@ -452,15 +452,35 @@ async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn
     });
 
     const maxRetries = TIMING?.CREDENTIAL_DAEMON_BROADCAST_RETRIES ?? 2;
+
+    // Refresh the node list from the health cache at the start of EVERY
+    // broadcast: bot processes rewrite that cache the moment a node is
+    // blacklisted (reportNodeFailure / blacklistNode), so re-reading here
+    // keeps blacklisted nodes out of the rotation immediately instead of
+    // lingering until the hourly refresh.
+    refreshNodeList();
+
     const work = (async () => {
-        // If a specific node URL is requested, override the global node list
-        // for this broadcast so the retry uses a different backend.
-        const effectiveNodeList = nodeUrl
-            ? [nodeUrl]
-            : (_nativeNodeList.length > 0 ? _nativeNodeList : NODE_MANAGEMENT.DEFAULT_NODES);
+        // A bot-supplied nodeUrl is the PREFERRED backend for the first
+        // attempt, never the ONLY backend: if it fails (the health snapshot
+        // may be stale by broadcast time), retries must be able to switch to
+        // a different node instead of hammering the same one.
+        const baseList = _nativeNodeList.length > 0 ? _nativeNodeList : NODE_MANAGEMENT.DEFAULT_NODES;
+        const failedNodes: string[] = [];
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
+                // Exclude nodes that failed on an earlier attempt so the
+                // retry genuinely switches backend (the transport races all
+                // candidates, so removal is what forces a change).
+                let effectiveNodeList = baseList.filter((n: string) => !failedNodes.includes(n));
+                if (attempt === 1 && nodeUrl) {
+                    effectiveNodeList = [nodeUrl, ...effectiveNodeList.filter((n: string) => n !== nodeUrl)];
+                }
+                if (effectiveNodeList.length === 0) {
+                    effectiveNodeList = [...baseList];
+                }
+
                 if (_nativeChainClient.getStatus() !== 'connected') {
                     _nativeChainClient.setNodes(effectiveNodeList);
                     await _nativeChainClient.connect();
@@ -502,6 +522,16 @@ async function broadcastWithRetry(accountName: any, privateKey: any, broadcastFn
                 await client.initPromise;
                 return await broadcastFn(client);
             } catch (err: any) {
+                // Remember the node that just failed so the next attempt
+                // switches away from it. Capture BEFORE disconnecting — the
+                // transport clears its node reference on disconnect.
+                try {
+                    const failedUrl = _nativeChainClient.transport?.getNodeUrl?.();
+                    if (failedUrl && !failedNodes.includes(failedUrl)) {
+                        failedNodes.push(failedUrl);
+                        debugLog(`Broadcast attempt ${attempt} failed on ${failedUrl}`);
+                    }
+                } catch (_) {}
                 if (attempt === maxRetries) throw err;
                 debugLog(`Broadcast failed (attempt ${attempt}), reconnecting: ${getErrorMessage(err)}`);
                 const staleKey = accountName + ':' + keyFingerprint(String(privateKey));

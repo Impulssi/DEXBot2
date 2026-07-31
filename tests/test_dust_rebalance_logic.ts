@@ -404,7 +404,7 @@ async function testDustCancelDoesNotBeatRealFill() {
 }
 
 async function testDustCancelNodeFallback() {
-    console.log('Testing Dust Cancel Node Fallback after BROADCAST_DEADLINE...');
+    console.log('Testing Dust Cancel defers on BROADCAST_DEADLINE (no client-side node fallback re-send)...');
 
     const originalCancelOrder = chainOrders.cancelOrder;
     let bot;
@@ -445,18 +445,15 @@ async function testDustCancelNodeFallback() {
             },
         };
 
-        // The helper passes fallbackNodes to cancelOrder; retry cycling is
-        // handled inside executeOperationsViaCredentialDaemon (tested
-        // separately in the credential-client suite). Here we just verify
-        // that fallbackNodes are wired and errors propagate correctly.
+        // The helper no longer passes node-fallback options: the credential
+        // client makes a single attempt (node cycling + 3x retry live inside
+        // the daemon) and uncertain cancels propagate for the next detection
+        // cycle. Here we just verify cancelOrder is called and errors
+        // propagate correctly.
         chainOrders.cancelOrder = async (account, key, orderId, extraOptions) => {
             cancelCalls++;
-            assert.ok(extraOptions, 'cancelOrder receives extraOptions');
-            assert.deepStrictEqual(
-                extraOptions.fallbackNodes,
-                ['wss://alt-1.bitshares.org/ws', 'wss://alt-2.bitshares.org/ws'],
-                'fallbackNodes includes alt nodes after primary'
-            );
+            assert.ok(extraOptions === undefined || !extraOptions.fallbackNodes, 'no fallbackNodes are passed (single-attempt client)');
+            assert.ok(extraOptions === undefined || !extraOptions.onNodeFailed, 'no onNodeFailed is passed (daemon handles node cycling)');
             return { success: true, orderId };
         };
 
@@ -470,11 +467,11 @@ async function testDustCancelNodeFallback() {
         };
 
         const result = await bot._cancelDustOrders({ buy: [dustOrder], sell: [] });
-        assert.strictEqual(result.cancelledCount, 1, 'Fallback should succeed');
+        assert.strictEqual(result.cancelledCount, 1, 'Cancel should succeed');
         assert.strictEqual(cancelCalls, 1, 'cancelOrder called once (retry in credential client)');
         assert.strictEqual(syncCalls, 1, 'Should sync after successful cancel');
         assert.strictEqual(processCalls, 1, 'Should process synthetic fill');
-        console.log('  ✓ Dust cancel passes fallbackNodes to cancelOrder');
+        console.log('  ✓ Dust cancel defers uncertain outcomes and passes no node-fallback options');
     } finally {
         chainOrders.cancelOrder = originalCancelOrder;
     }

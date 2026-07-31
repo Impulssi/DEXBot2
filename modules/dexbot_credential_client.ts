@@ -37,7 +37,18 @@ interface CredentialClientOptions {
     botHmacSecret?: string | null;
     batchId?: string | null;
     nodeUrl?: string;
+    /**
+     * Accepted for interface compatibility only. The daemon cycles its own
+     * node list internally, and an uncertain broadcast must never be re-sent
+     * (a landed tx would be duplicated), so the client no longer cycles
+     * through fallbacks. Callers may keep passing this field; it is ignored.
+     */
     fallbackNodes?: string[];
+    /**
+     * Fired with the node actually used (options.nodeUrl) when a broadcast
+     * ends uncertain (BROADCAST_DEADLINE / outer timeout). Never fired for
+     * fallback nodes or when no nodeUrl was requested.
+     */
     onNodeFailed?: (nodeUrl: string) => void;
 }
 
@@ -228,86 +239,86 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
         ? Number(options.timeoutMs)
         : defaultTimeout;
 
-    const fallbackNodes = Array.isArray(options.fallbackNodes) ? options.fallbackNodes : [];
-    const maxAttempts = 1 + fallbackNodes.length;
+    // Single attempt, no client-side node cycling. The daemon already retries
+    // internally against its own node list (25s inner BROADCAST_DEADLINE
+    // loop), and re-sending the ops here is unsafe: an uncertain broadcast
+    // may have landed, duplicating on-chain orders. `fallbackNodes` is kept
+    // for interface compatibility but never cycled — the recovery layers
+    // (COW retry verification, startup adoption, broadcast reconciliation)
+    // verify chain inclusion before any re-broadcast. onNodeFailed fires for
+    // the node actually used (options.nodeUrl) so callers can blacklist it on
+    // an uncertain outcome; without a nodeUrl the daemon chose the node, so no
+    // single node is reported.
+    const nodeUrl = options.nodeUrl || undefined;
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        // attempt 0 uses options.nodeUrl (typically undefined, meaning the daemon's
-        // default node list); subsequent attempts cycle through fallbackNodes[].
-        // onNodeFailed is only invoked when nodeUrl is truthy, so the primary
-        // node is never reported through this callback — only the named fallbacks.
-        const nodeUrl = attempt === 0 ? (options.nodeUrl || undefined) : fallbackNodes[attempt - 1];
+    const payload: RequestPayload = { type: 'execute-operations', accountName, operations };
+    const sessionId = options.sessionId || null;
+    if (sessionId) payload.sessionId = sessionId;
+    if (nodeUrl) payload.nodeUrl = nodeUrl;
 
-        const payload: RequestPayload = { type: 'execute-operations', accountName, operations };
-        const sessionId = options.sessionId || null;
-        if (sessionId) payload.sessionId = sessionId;
-        if (nodeUrl) payload.nodeUrl = nodeUrl;
+    const botHmacSecret = options.botHmacSecret || null;
+    if (botHmacSecret && sessionId) {
+        payload.hmac = createHmac('sha256', Buffer.from(botHmacSecret, 'hex'))
+            .update(JSON.stringify({ sessionId, operations }))
+            .digest('hex');
+    }
 
-        const botHmacSecret = options.botHmacSecret || null;
-        if (botHmacSecret && sessionId) {
-            payload.hmac = createHmac('sha256', Buffer.from(botHmacSecret, 'hex'))
-                .update(JSON.stringify({ sessionId, operations }))
-                .digest('hex');
+    const meta = isBroadcast
+        ? {
+            uncertainOnTimeout: true,
+            operations,
+            accountName,
+            batchId: options.batchId || null,
         }
+        : {};
 
-        const meta = isBroadcast
-            ? {
-                uncertainOnTimeout: true,
-                operations,
-                accountName,
-                batchId: options.batchId || null,
-            }
-            : {};
-
-        try {
-            const response = await sendCredentialDaemonRequest(socketPath, payload, timeoutMs, meta);
-            if (response.success) {
-                return response;
-            }
-            const errMsg = response.error || 'Unknown credential daemon error';
-            const errCode = response.code || null;
-            // The daemon hit its inner deadline (BROADCAST_DEADLINE) and the chain
-            // state is uncertain. Convert this typed failure back to a
-            // BroadcastUncertainError so the recovery path picks it up. Only
-            // relevant for broadcast requests — non-broadcast callers don't carry
-            // the uncertainOnTimeout flag.
-            if (
-                isBroadcast &&
-                (errCode === DAEMON_CODES.BROADCAST_DEADLINE ||
-                    (typeof errMsg === 'string' && errMsg.startsWith(DAEMON_CODES.BROADCAST_DEADLINE)))
-            ) {
-                throw new BroadcastUncertainError(
-                    `Credential daemon broadcast uncertain: ${errCode || errMsg}`,
-                    {
-                        operations,
-                        accountName,
-                        batchId: options.batchId || null,
-                        payload,
-                        timeoutMs,
-                    }
-                );
-            }
-            // Typed failure reply from the daemon (e.g. policy denied, bad op) —
-            // the chain state is known (chain NOT touched), so a plain Error is
-            // fine.
-            throw new Error(errMsg);
-        } catch (err) {
-            if (err instanceof BroadcastUncertainError) {
-                if (typeof options.onNodeFailed === 'function' && nodeUrl) {
-                    options.onNodeFailed(nodeUrl);
+    try {
+        const response = await sendCredentialDaemonRequest(socketPath, payload, timeoutMs, meta);
+        if (response.success) {
+            return response;
+        }
+        const errMsg = response.error || 'Unknown credential daemon error';
+        const errCode = response.code || null;
+        // The daemon hit its inner deadline (BROADCAST_DEADLINE) and the chain
+        // state is uncertain. Convert this typed failure back to a
+        // BroadcastUncertainError so the recovery path picks it up. Only
+        // relevant for broadcast requests — non-broadcast callers don't carry
+        // the uncertainOnTimeout flag.
+        if (
+            isBroadcast &&
+            (errCode === DAEMON_CODES.BROADCAST_DEADLINE ||
+                (typeof errMsg === 'string' && errMsg.startsWith(DAEMON_CODES.BROADCAST_DEADLINE)))
+        ) {
+            throw new BroadcastUncertainError(
+                `Credential daemon broadcast uncertain: ${errCode || errMsg}`,
+                {
+                    operations,
+                    accountName,
+                    batchId: options.batchId || null,
+                    payload,
+                    timeoutMs,
                 }
-                // NEVER re-send ops whose outcome is unknown: the broadcast may
-                // have landed, and re-sending duplicates on-chain orders (the
-                // daemon's inner BROADCAST_DEADLINE loop already cycles nodes
-                // internally). Propagate the uncertain error so the recovery
-                // layers (COW retry verification, startup adoption, broadcast
-                // reconciliation) verify chain inclusion before any re-broadcast.
-                throw err;
+            );
+        }
+        // Typed failure reply from the daemon (e.g. policy denied, bad op) —
+        // the chain state is known (chain NOT touched), so a plain Error is
+        // fine.
+        throw new Error(errMsg);
+    } catch (err) {
+        if (err instanceof BroadcastUncertainError) {
+            if (typeof options.onNodeFailed === 'function' && nodeUrl) {
+                options.onNodeFailed(nodeUrl);
             }
+            // NEVER re-send ops whose outcome is unknown: the broadcast may
+            // have landed, and re-sending duplicates on-chain orders (the
+            // daemon's inner BROADCAST_DEADLINE loop already cycles nodes
+            // internally). Propagate the uncertain error so the recovery
+            // layers (COW retry verification, startup adoption, broadcast
+            // reconciliation) verify chain inclusion before any re-broadcast.
             throw err;
         }
+        throw err;
     }
-    throw new Error('All credential daemon attempts exhausted');
 }
 
 export { DEFAULT_READY_FILE, DEFAULT_SOCKET_PATH, DEFAULT_BROADCAST_TIMEOUT_MS, sendCredentialDaemonRequest, executeOperationsViaCredentialDaemon, isCredentialDaemonReady, waitForCredentialDaemon, BroadcastUncertainError }

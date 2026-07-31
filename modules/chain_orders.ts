@@ -581,6 +581,27 @@ async function batchReadOrders(orderIds: any, timeoutMs: any = TIMING.CONNECTION
  * @returns {Promise<Array>} Array of raw order objects from chain
  */
 async function readOpenOrders(accountId: string | null = null, timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS, suppress_log: any = true) {
+    const { orders } = await readOpenOrdersWithMeta(accountId, timeoutMs, suppress_log);
+    return orders;
+}
+
+/**
+ * Fetch all open limit orders for an account from the blockchain, returning
+ * the raw order list together with the node's truncation flag.
+ *
+ * get_full_accounts caps each collection (api_limit_get_full_accounts_lists,
+ * default 500 limit_orders; a node operator may lower it). The by_account
+ * index is ordered (seller, object_id), so freshly created orders sort last
+ * and are the FIRST entries truncated away on an oversized account. Callers
+ * that make absence decisions (e.g. pre-retry broadcast verification) MUST
+ * treat a truncated read as 'unknown' — a batch's fresh creates may simply
+ * be missing from the returned window, not absent from the chain.
+ * @param {string|null} accountId - Account ID to query (uses preferred if null)
+ * @param {number} timeoutMs - Connection timeout in milliseconds
+ * @param {boolean} suppress_log - Whether to suppress the log
+ * @returns {Promise<{orders: Array, truncated: boolean}>} Raw order objects plus truncation flag
+ */
+async function readOpenOrdersWithMeta(accountId: string | null = null, timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS, suppress_log: any = true) {
     await waitForConnected(timeoutMs);
     try {
         let accId = accountId;
@@ -600,12 +621,14 @@ async function readOpenOrders(accountId: string | null = null, timeoutMs: any = 
             throw new Error('No account selected. Please call selectAccount() first or pass an account id');
         }
         const fullAccount = await BitShares.db.get_full_accounts([accId], false);
-        const orders = fullAccount[0][1].limit_orders || [];
+        const accountObj = fullAccount[0][1];
+        const orders = accountObj.limit_orders || [];
+        const truncated = Boolean(accountObj.more_data_available?.limit_orders);
 
         if (!suppress_log) {
-            chainOrdersLogger.info(`Found ${orders.length} open orders for account ${accId}`);
+            chainOrdersLogger.info(`Found ${orders.length} open orders for account ${accId}${truncated ? ' (TRUNCATED)' : ''}`);
         }
-        return orders;
+        return { orders, truncated };
     } catch (error: any) {
         chainOrdersLogger.error(`Error reading open orders: ${getErrorMessage(error)}`);
         throw error;
@@ -1342,6 +1365,6 @@ function getFillProcessingMode() {
     return FILL_PROCESSING_MODE;
 }
 
-export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError }
-module.exports = { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError }
+export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError }
+module.exports = { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError }
 
