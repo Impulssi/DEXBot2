@@ -724,11 +724,13 @@ async function _executeStartupSequentialUpdateFallback({
  * so adopt it via a chain sync so the slot is registered with its real orderId.
  * Returns the chain order id when the create landed.
  * Returns the string 'unknown' when the chain state could NOT be verified
- * (read failure, or an empty read which is indistinguishable from a lagging
- * node that missed the just-broadcast transaction) — the caller must NOT
+ * (read failure, an empty read which is indistinguishable from a lagging
+ * node that missed the just-broadcast transaction, or a truncated read whose
+ * capped result set omits the fresh create) — the caller must NOT
  * re-broadcast on 'unknown', or a landed order would be duplicated.
- * Returns null only on AUTHORITATIVE absence: a successful non-empty read
- * that contains no matching order. In that case re-broadcasting is safe.
+ * Returns null only on AUTHORITATIVE absence: a successful non-empty,
+ * non-truncated read that contains no matching order. In that case
+ * re-broadcasting is safe.
  * @private
  */
 async function _adoptPossiblyLandedCreate({
@@ -743,10 +745,18 @@ async function _adoptPossiblyLandedCreate({
     gridOrder: any;
 }): Promise<string | null | 'unknown'> {
     try {
-        const freshChainOrders = await chainOrders.readOpenOrders(
+        const freshRead = await chainOrders.readOpenOrdersWithMeta(
             resolveAccountRef(manager, account),
             TIMING.CONNECTION_TIMEOUT_MS
         );
+        if (freshRead.truncated) {
+            // A capped get_full_accounts read omits the newest limit orders
+            // (by_account index order) — exactly the create this check is
+            // verifying. Absence in a truncated read is not authoritative;
+            // treat as unverifiable so the caller defers the re-broadcast.
+            return 'unknown';
+        }
+        const freshChainOrders = freshRead.orders;
         if (!Array.isArray(freshChainOrders) || freshChainOrders.length === 0) {
             // Empty read: the account is either genuinely empty (nothing else
             // open) or the node is lagging. Both are plausible right after an
@@ -847,7 +857,7 @@ async function _createStartupOrderWithHandling({
             }
             if (attempt < maxAttempts) {
                 manager?.logger?.log?.(
-                    `Startup: Uncertain create for ${orderLabel} not found on chain; retrying (daemon client cycles fallback nodes on retry)`,
+                    `Startup: Uncertain create for ${orderLabel} not found on chain; retrying (authoritative absence verified)`,
                     'warn'
                 );
             }

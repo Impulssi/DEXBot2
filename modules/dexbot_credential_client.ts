@@ -239,16 +239,18 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
         ? Number(options.timeoutMs)
         : defaultTimeout;
 
-    // Single attempt, no client-side node cycling. The daemon already retries
-    // internally against its own node list (25s inner BROADCAST_DEADLINE
-    // loop), and re-sending the ops here is unsafe: an uncertain broadcast
-    // may have landed, duplicating on-chain orders. `fallbackNodes` is kept
-    // for interface compatibility but never cycled — the recovery layers
-    // (COW retry verification, startup adoption, broadcast reconciliation)
+    // Single attempt, no client-side node cycling. The daemon retries
+    // internally ONLY failures that provably never reached the chain
+    // (connect/send errors); an uncertain broadcast (RPC timeout, dropped
+    // connection, 25s inner BROADCAST_DEADLINE) is never re-signed, and
+    // re-sending the ops here is unsafe: an uncertain broadcast may have
+    // landed, duplicating on-chain orders. `fallbackNodes` is kept for
+    // interface compatibility but never cycled — the recovery layers (COW
+    // retry verification, startup adoption, broadcast reconciliation)
     // verify chain inclusion before any re-broadcast. onNodeFailed fires for
     // the node actually used (options.nodeUrl) so callers can blacklist it on
-    // an uncertain outcome; without a nodeUrl the daemon chose the node, so no
-    // single node is reported.
+    // an uncertain outcome; without a nodeUrl the daemon chose the node, so
+    // no single node is reported.
     const nodeUrl = options.nodeUrl || undefined;
 
     const payload: RequestPayload = { type: 'execute-operations', accountName, operations };
@@ -311,10 +313,11 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
             }
             // NEVER re-send ops whose outcome is unknown: the broadcast may
             // have landed, and re-sending duplicates on-chain orders (the
-            // daemon's inner BROADCAST_DEADLINE loop already cycles nodes
-            // internally). Propagate the uncertain error so the recovery
-            // layers (COW retry verification, startup adoption, broadcast
-            // reconciliation) verify chain inclusion before any re-broadcast.
+            // daemon never re-signs an uncertain broadcast — it only retries
+            // provably-untransmitted failures). Propagate the uncertain error
+            // so the recovery layers (COW retry verification, startup
+            // adoption, broadcast reconciliation) verify chain inclusion
+            // before any re-broadcast.
             throw err;
         }
         throw err;

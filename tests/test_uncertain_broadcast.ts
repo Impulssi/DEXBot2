@@ -21,6 +21,9 @@ const {
 const {
     buildCreateOpFingerprint
 } = require('../modules/order/utils/order');
+const {
+    _createStartupOrderWithHandling
+} = require('../modules/order/grid_reconcile_internal');
 
 let testsComplete = false;
 
@@ -1331,6 +1334,125 @@ async function testExecuteWithRetrySkipsPartialOnChainState() {
     console.log('✓ UNC-014 passed');
 }
 
+// ── Startup create: verification-gated retry (duplicate protection) ─────
+async function testStartupCreateDeferredOnTruncatedRead() {
+    console.log('\n[UNC-013e] startup create defers re-broadcast when the verification read is truncated...');
+    const bot = makeBot();
+    const origCreateOrder = chainOrders.createOrder;
+    const origReadMeta = chainOrders.readOpenOrdersWithMeta;
+    let createCalls = 0;
+
+    chainOrders.createOrder = async () => {
+        createCalls++;
+        throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013e', timeoutMs: 30000 });
+    };
+    // A truncated read may omit the just-landed create (by_account index order) —
+    // absence in a capped snapshot is not authoritative.
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.999999998', 'buy', 100000000, 5000000)],
+        truncated: true
+    });
+
+    try {
+        const result = await _createStartupOrderWithHandling({
+            chainOrders,
+            account: bot.account,
+            privateKey: bot.privateKey,
+            manager: bot.manager,
+            gridOrder: { id: 'slot-unc-013e', price: 1000, size: 3.8179, type: 'sell', state: 'VIRTUAL', orderId: null },
+            orderLabel: 'SELL:slot-unc-013e',
+            dryRun: false,
+            recovery: false
+        });
+        assert.strictEqual(result, null, 'must NOT return an order id on an unverifiable (truncated) read');
+        assert.strictEqual(createCalls, 1, 'must NOT re-broadcast on a truncated read — a landed order would be duplicated');
+    } finally {
+        chainOrders.createOrder = origCreateOrder;
+        chainOrders.readOpenOrdersWithMeta = origReadMeta;
+    }
+    console.log('✓ UNC-013e passed');
+}
+
+async function testStartupCreateRetriesOnAuthoritativeAbsence() {
+    console.log('\n[UNC-013f] startup create re-broadcasts only on authoritative absence (non-empty, non-truncated read)...');
+    const bot = makeBot();
+    bot.manager._applySync = async () => {};
+    const origCreateOrder = chainOrders.createOrder;
+    const origReadMeta = chainOrders.readOpenOrdersWithMeta;
+    let createCalls = 0;
+
+    chainOrders.createOrder = async () => {
+        createCalls++;
+        if (createCalls === 1) {
+            throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013f', timeoutMs: 30000 });
+        }
+        return { operation_results: [[1, '1.7.888888888']] };
+    };
+    // Non-truncated, non-empty read containing no matching SELL: authoritative absence.
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.999999997', 'buy', 100000000, 5000000)],
+        truncated: false
+    });
+
+    try {
+        const result = await _createStartupOrderWithHandling({
+            chainOrders,
+            account: bot.account,
+            privateKey: bot.privateKey,
+            manager: bot.manager,
+            gridOrder: { id: 'slot-unc-013f', price: 1000, size: 3.8179, type: 'sell', state: 'VIRTUAL', orderId: null },
+            orderLabel: 'SELL:slot-unc-013f',
+            dryRun: false,
+            recovery: false
+        });
+        assert.strictEqual(createCalls, 2, 'must retry exactly once on authoritative absence');
+        assert.strictEqual(result, '1.7.888888888', 'retry should return the chain order id');
+    } finally {
+        chainOrders.createOrder = origCreateOrder;
+        chainOrders.readOpenOrdersWithMeta = origReadMeta;
+    }
+    console.log('✓ UNC-013f passed');
+}
+
+async function testStartupCreateAdoptsLandedOrder() {
+    console.log('\n[UNC-013g] startup create adopts the landed order instead of re-broadcasting...');
+    const bot = makeBot();
+    bot.manager.syncFromOpenOrders = async () => {};
+    const origCreateOrder = chainOrders.createOrder;
+    const origReadMeta = chainOrders.readOpenOrdersWithMeta;
+    let createCalls = 0;
+
+    chainOrders.createOrder = async () => {
+        createCalls++;
+        throw new BroadcastUncertainError('uncertain', { batchId: 'unc-013g', timeoutMs: 30000 });
+    };
+    // The create actually landed: 3.8179 BTS for 3817.9 USD → price 1000, size 3.8179.
+    const landed = makeChainOrder('1.7.999999999', 'sell', 381790000, 381790000);
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [landed],
+        truncated: false
+    });
+
+    try {
+        const result = await _createStartupOrderWithHandling({
+            chainOrders,
+            account: bot.account,
+            privateKey: bot.privateKey,
+            manager: bot.manager,
+            gridOrder: { id: 'slot-unc-013g', price: 1000, size: 3.8179, type: 'sell', state: 'VIRTUAL', orderId: null },
+            orderLabel: 'SELL:slot-unc-013g',
+            dryRun: false,
+            recovery: false
+        });
+        assert.strictEqual(createCalls, 1, 'must NOT re-broadcast when the create is confirmed landed');
+        assert.strictEqual(result, '1.7.999999999', 'must adopt the landed order id');
+    } finally {
+        chainOrders.createOrder = origCreateOrder;
+        chainOrders.readOpenOrdersWithMeta = origReadMeta;
+    }
+    console.log('✓ UNC-013g passed');
+}
+
 async function main() {
     console.log('Running uncertain-broadcast recovery tests...');
     await testFingerprintDeterministic();
@@ -1368,6 +1490,9 @@ async function main() {
     await testExecuteWithRetryOnLandedCreate();
     await testExecuteWithRetryOnTruncatedRead();
     await testExecuteWithRetrySkipsPartialOnChainState();
+    await testStartupCreateDeferredOnTruncatedRead();
+    await testStartupCreateRetriesOnAuthoritativeAbsence();
+    await testStartupCreateAdoptsLandedOrder();
     await testUpdateToCreateFallbackOnNotFound();
     await testUpdateToCreateFallbackRotationBranch();
     await testUpdateToCreateFallbackCreateAlsoFails();

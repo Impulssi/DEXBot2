@@ -284,21 +284,33 @@ let TIMING = {
     CREDENTIAL_BROADCAST_TIMEOUT_MS: 30000,
 
     // CREDENTIAL_DAEMON_INNER_DEADLINE_MS: Inner deadline enforced inside the credential
-    // daemon's broadcastWithRetry (credential-daemon.ts). Must be strictly less than
+    // daemon's broadcastWithDeadline (credential-daemon.ts). Must be strictly less than
     // CREDENTIAL_BROADCAST_TIMEOUT_MS so the daemon can report a typed
     // { success:false, code:'BROADCAST_DEADLINE' } failure before the bot-side
     // socket timer fires. 5s of slack is enough for the bot to receive and
     // process the typed reply on a slow connection. 25s gives slow mainnet
     // nodes most of the outer window for a successful broadcast; the recovery
-    // path handles whatever takes longer.
+    // path handles whatever takes longer. The deadline caps the TOTAL wall
+    // time across all daemon broadcast attempts, so retries can never hang
+    // the bot.
     CREDENTIAL_DAEMON_INNER_DEADLINE_MS: 25000,
 
-    // CREDENTIAL_DAEMON_BROADCAST_RETRIES: Number of broadcast attempts inside the
-    // credential daemon's broadcastWithRetry. Each attempt connects, signs, and pushes
-    // the transaction. Total wall time across all attempts is capped by
-    // CREDENTIAL_DAEMON_INNER_DEADLINE_MS above. 2 is a pragmatic balance: try once,
-    // retry once on disconnect, while leaving room for a slow block before the deadline.
+    // CREDENTIAL_DAEMON_BROADCAST_RETRIES: Number of retry attempts inside the
+    // credential daemon's broadcastWithDeadline AFTER the initial attempt, for
+    // failures that provably never reached the chain (pre-transmit: connection
+    // setup, WebSocket not open, frame send errors). Uncertain failures (RPC
+    // timeout, connection dropped with a response pending) are NEVER retried —
+    // the transaction may have landed and a re-sign would duplicate it — they
+    // are reported to the bot as BROADCAST_DEADLINE for verify-before-retry.
+    // Total wall time across all attempts stays capped by
+    // CREDENTIAL_DAEMON_INNER_DEADLINE_MS.
     CREDENTIAL_DAEMON_BROADCAST_RETRIES: 3,
+
+    // CREDENTIAL_DAEMON_BROADCAST_BACKOFF_MS: Delay between pre-transmit retry
+    // attempts in the credential daemon. Pre-transmit failures are fast (no
+    // RPC wait), so a short backoff keeps the retry burst well inside the
+    // inner deadline.
+    CREDENTIAL_DAEMON_BROADCAST_BACKOFF_MS: 1000,
 
     // CREDENTIAL_DAEMON_SOCKET_TIMEOUT_MS: Idle timeout for credential daemon
     // Unix socket client connections. If a client connects but sends no complete

@@ -1620,12 +1620,13 @@ async function executeMaintenanceLogic(bot: any, context: any) {
 
 /**
  * Cancel a single order, deferring on an uncertain daemon broadcast.
- * The credential daemon already retries 3× internally against its own node
- * list; if it still hits BROADCAST_DEADLINE the credential client makes one
- * attempt and propagates a BroadcastUncertainError — the outcome is unknown
- * and re-sending could duplicate a landed cancel. No node is blacklisted
- * here: without an explicit nodeUrl the daemon chose the node, so there is
- * no single node to blame. The next dust-detection cycle re-attempts.
+ * The credential daemon retries internally only failures that provably never
+ * reached the chain (pre-transmit connect/send errors); on BROADCAST_DEADLINE
+ * (or any uncertain outcome) it never re-signs, and the credential client
+ * propagates a BroadcastUncertainError — the outcome is unknown and re-sending
+ * could duplicate a landed cancel. No node is blacklisted here: without an
+ * explicit nodeUrl the daemon chose the node, so there is no single node to
+ * blame. The next dust-detection cycle re-attempts.
  *
  * The daemon's session is validated early in processRequest (before the
  * broadcast), so a BROADCAST_DEADLINE reply cannot be caused by an expired
