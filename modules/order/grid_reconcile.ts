@@ -463,118 +463,135 @@ export async function reconcileGridOrders({
     let finalChainBuyCount = chainBuyCount;
     if (!dryRun) {
         try {
-            const freshOpenOrders = await chainOrders.readOpenOrders(account);
-            const freshParsed = (Array.isArray(freshOpenOrders) ? freshOpenOrders : [])
-                .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-                .filter((x: any) => x.parsed);
+            const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
+                ? await chainOrders.readOpenOrdersWithMeta(account)
+                : { orders: await chainOrders.readOpenOrders(account), truncated: false };
+            // Truncated-read guard: get_full_accounts caps the limit_orders
+            // window and fresh orders (exactly the Phase-2 creates) sort last
+            // and are the first entries omitted. The adoption loop and the
+            // surplus-cancel counts would silently operate on a partial
+            // snapshot — defer to the sync loop's targeted drift detection and
+            // keep the pre-Phase-2 counts for the summary log.
+            if (freshRead.truncated) {
+                logger?.log?.(
+                    `Startup: Post-Phase-2 chain read is TRUNCATED (account exceeds the get_full_accounts window); ` +
+                    `adoption/surplus-cancel deferred and final counts are from the pre-Phase-2 snapshot`,
+                    'warn'
+                );
+            } else {
+                const freshOpenOrders = freshRead.orders;
+                const freshParsed = (Array.isArray(freshOpenOrders) ? freshOpenOrders : [])
+                    .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
+                    .filter((x: any) => x.parsed);
 
-            const gridOrderIds = new Set<string>();
-            for (const order of manager.orders.values()) {
-                if (order && order.orderId) gridOrderIds.add(order.orderId);
-            }
-            // Merge any chain order IDs Phase 2 successfully created on-chain
-            // (even if _applySync failed to register them in manager.orders).
-            // This prevents Phase 3 from cancelling legitimately created orders.
-            for (const id of phase2CreatedOrderIds) {
-                gridOrderIds.add(id);
-            }
-
-            // Adopt any Phase-2 uncertain-landed chain orders that never made
-            // it into grid slots (the group adoption sync only runs when the
-            // post-uncertain read returned orders). Targeted slot adoption
-            // only: match VIRTUAL/SPREAD slots without an orderId by
-            // type+price+size (within tolerance). Full syncFromOpenOrders is
-            // deliberately NOT used here — its pass-1 virtualizes ACTIVE slots
-            // missing from the snapshot, and a lagging read right after the
-            // Phase-2 broadcast would destroy the confirmed grid.
-            const btsFeeData = getAssetFeesSafe('BTS');
-            for (const entry of freshParsed) {
-                const co: any = entry.chain;
-                const parsed: any = entry.parsed;
-                if (!co?.id || !parsed) continue;
-                if (gridOrderIds.has(co.id)) continue;
-                const candidate: any = Array.from(manager.orders.values()).find((o: any) => {
-                    if (!o || o.orderId || o.state !== ORDER_STATES.VIRTUAL) return false;
-                    if (o.type !== parsed.type && o.type !== ORDER_TYPES.SPREAD) return false;
-                    const tol = calculatePriceTolerance(o.price, o.size, parsed.type, manager.assets) || 0;
-                    if (Math.abs(parsed.price - o.price) > tol) return false;
-                    const precision = parsed.type === ORDER_TYPES.SELL
-                        ? manager.assets.assetA.precision
-                        : manager.assets.assetB.precision;
-                    const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(o.size, precision) * 0.01));
-                    if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(o.size, precision)) > sizeTolerance) return false;
-                    return true;
-                });
-                if (!candidate) continue;
-                try {
-                    await manager._applySync({
-                        gridOrderId: candidate.id,
-                        chainOrderId: co.id,
-                        isPartialPlacement: false,
-                        expectedType: parsed.type,
-                        fee: btsFeeData?.createFee || 0,
-                    }, 'createOrder');
-                    gridOrderIds.add(co.id);
-                    phase2CreatedOrderIds.add(co.id);
-                    logger?.log?.(
-                        `Startup: Adopted uncertain-landed chain order ${co.id} into slot ${candidate.id} (${parsed.type}, price=${parsed.price})`,
-                        'warn'
-                    );
-                } catch (adoptErr: any) {
-                    logger?.log?.(
-                        `Startup: Failed to adopt landed order ${co.id} into slot ${candidate?.id}: ${getErrorMessage(adoptErr)}`,
-                        'warn'
-                    );
+                const gridOrderIds = new Set<string>();
+                for (const order of manager.orders.values()) {
+                    if (order && order.orderId) gridOrderIds.add(order.orderId);
                 }
-            }
-            const staleSurplusCancels: Array<{ chainOrderObj: any; sideLabel: string }> = [];
-            for (const side of [ORDER_TYPES.SELL, ORDER_TYPES.BUY]) {
-                const targetCount = side === ORDER_TYPES.SELL ? targetSell : targetBuy;
-                let sideOrders = freshParsed.filter((x: any) => x.parsed.type === side);
-                const sideLabel = side === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
+                // Merge any chain order IDs Phase 2 successfully created on-chain
+                // (even if _applySync failed to register them in manager.orders).
+                // This prevents Phase 3 from cancelling legitimately created orders.
+                for (const id of phase2CreatedOrderIds) {
+                    gridOrderIds.add(id);
+                }
 
-                if (sideOrders.length > targetCount) {
-                    // Sort by chain ID for deterministic cancellation order.
-                    sideOrders = sideOrders.sort((a: any, b: any) =>
-                        (a.chain.id || '').localeCompare(b.chain.id || '')
-                    );
-                    let cancelLimit = sideOrders.length - targetCount;
-                    for (const so of sideOrders) {
-                        if (cancelLimit <= 0) break;
-                        if (!gridOrderIds.has(so.chain.id)) {
-                            staleSurplusCancels.push({ chainOrderObj: so.chain, sideLabel });
-                            cancelLimit--;
+                // Adopt any Phase-2 uncertain-landed chain orders that never made
+                // it into grid slots (the group adoption sync only runs when the
+                // post-uncertain read returned orders). Targeted slot adoption
+                // only: match VIRTUAL/SPREAD slots without an orderId by
+                // type+price+size (within tolerance). Full syncFromOpenOrders is
+                // deliberately NOT used here — its pass-1 virtualizes ACTIVE slots
+                // missing from the snapshot, and a lagging read right after the
+                // Phase-2 broadcast would destroy the confirmed grid.
+                const btsFeeData = getAssetFeesSafe('BTS');
+                for (const entry of freshParsed) {
+                    const co: any = entry.chain;
+                    const parsed: any = entry.parsed;
+                    if (!co?.id || !parsed) continue;
+                    if (gridOrderIds.has(co.id)) continue;
+                    const candidate: any = Array.from(manager.orders.values()).find((o: any) => {
+                        if (!o || o.orderId || o.state !== ORDER_STATES.VIRTUAL) return false;
+                        if (o.type !== parsed.type && o.type !== ORDER_TYPES.SPREAD) return false;
+                        const tol = calculatePriceTolerance(o.price, o.size, parsed.type, manager.assets) || 0;
+                        if (Math.abs(parsed.price - o.price) > tol) return false;
+                        const precision = parsed.type === ORDER_TYPES.SELL
+                            ? manager.assets.assetA.precision
+                            : manager.assets.assetB.precision;
+                        const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(o.size, precision) * 0.01));
+                        if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(o.size, precision)) > sizeTolerance) return false;
+                        return true;
+                    });
+                    if (!candidate) continue;
+                    try {
+                        await manager._applySync({
+                            gridOrderId: candidate.id,
+                            chainOrderId: co.id,
+                            isPartialPlacement: false,
+                            expectedType: parsed.type,
+                            fee: btsFeeData?.createFee || 0,
+                        }, 'createOrder');
+                        gridOrderIds.add(co.id);
+                        phase2CreatedOrderIds.add(co.id);
+                        logger?.log?.(
+                            `Startup: Adopted uncertain-landed chain order ${co.id} into slot ${candidate.id} (${parsed.type}, price=${parsed.price})`,
+                            'warn'
+                        );
+                    } catch (adoptErr: any) {
+                        logger?.log?.(
+                            `Startup: Failed to adopt landed order ${co.id} into slot ${candidate?.id}: ${getErrorMessage(adoptErr)}`,
+                            'warn'
+                        );
+                    }
+                }
+                const staleSurplusCancels: Array<{ chainOrderObj: any; sideLabel: string }> = [];
+                for (const side of [ORDER_TYPES.SELL, ORDER_TYPES.BUY]) {
+                    const targetCount = side === ORDER_TYPES.SELL ? targetSell : targetBuy;
+                    let sideOrders = freshParsed.filter((x: any) => x.parsed.type === side);
+                    const sideLabel = side === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
+
+                    if (sideOrders.length > targetCount) {
+                        // Sort by chain ID for deterministic cancellation order.
+                        sideOrders = sideOrders.sort((a: any, b: any) =>
+                            (a.chain.id || '').localeCompare(b.chain.id || '')
+                        );
+                        let cancelLimit = sideOrders.length - targetCount;
+                        for (const so of sideOrders) {
+                            if (cancelLimit <= 0) break;
+                            if (!gridOrderIds.has(so.chain.id)) {
+                                staleSurplusCancels.push({ chainOrderObj: so.chain, sideLabel });
+                                cancelLimit--;
+                            }
                         }
                     }
                 }
-            }
 
-            let cancelledSellCount = 0;
-            let cancelledBuyCount = 0;
-            if (staleSurplusCancels.length > 0) {
-                for (const sc of staleSurplusCancels) {
-                    try {
-                        await _cancelChainOrder({
-                            chainOrders,
-                            account,
-                            privateKey,
-                            manager,
-                            chainOrderId: sc.chainOrderObj.id,
-                            dryRun,
-                            chainOrderObj: sc.chainOrderObj,
-                            releaseUntrackedFunds: true,
-                        });
-                        if (sc.sideLabel === 'SELL') cancelledSellCount++;
-                        else cancelledBuyCount++;
-                        logger?.log?.(`Startup: Cancelled stale surplus ${sc.sideLabel} order ${sc.chainOrderObj.id}`, 'info');
-                    } catch (e: any) {
-                        logger?.log?.(`Startup: Failed to cancel surplus ${sc.sideLabel} ${sc.chainOrderObj.id}: ${getErrorMessage(e)}`, 'warn');
+                let cancelledSellCount = 0;
+                let cancelledBuyCount = 0;
+                if (staleSurplusCancels.length > 0) {
+                    for (const sc of staleSurplusCancels) {
+                        try {
+                            await _cancelChainOrder({
+                                chainOrders,
+                                account,
+                                privateKey,
+                                manager,
+                                chainOrderId: sc.chainOrderObj.id,
+                                dryRun,
+                                chainOrderObj: sc.chainOrderObj,
+                                releaseUntrackedFunds: true,
+                            });
+                            if (sc.sideLabel === 'SELL') cancelledSellCount++;
+                            else cancelledBuyCount++;
+                            logger?.log?.(`Startup: Cancelled stale surplus ${sc.sideLabel} order ${sc.chainOrderObj.id}`, 'info');
+                        } catch (e: any) {
+                            logger?.log?.(`Startup: Failed to cancel surplus ${sc.sideLabel} ${sc.chainOrderObj.id}: ${getErrorMessage(e)}`, 'warn');
+                        }
                     }
                 }
-            }
 
-            finalChainSellCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).length - cancelledSellCount;
-            finalChainBuyCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).length - cancelledBuyCount;
+                finalChainSellCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).length - cancelledSellCount;
+                finalChainBuyCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).length - cancelledBuyCount;
+            }
         } catch (err: any) {
             logger?.log?.(`Startup: Failed to refresh final chain counts: ${getErrorMessage(err)}`, 'warn');
         }

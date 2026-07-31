@@ -117,7 +117,7 @@ export class DaemonKeyStore implements KeyStore {
             }
         }
 
-        const { createAccountClient } = require('./chain_orders');
+        const { createAccountClient, broadcastTxWithClassification } = require('./chain_orders');
         const acc = await createAccountClient(accountName, signingKey);
         await acc.initPromise;
         const tx = acc.newTx();
@@ -129,7 +129,7 @@ export class DaemonKeyStore implements KeyStore {
                 throw new Error(`Transaction builder does not support ${methodName}`);
             }
         }
-        await tx.broadcast();
+        await broadcastTxWithClassification(tx, accountName, operations);
         return { success: true };
     }
 }
@@ -146,7 +146,7 @@ export class DirectKeyStore implements KeyStore {
     isDaemonSigningKey(_key: any): boolean { return false; }
 
     async executeOperations(accountName: string, operations: any[], signingKey: any): Promise<SigningResult> {
-        const { createAccountClient } = require('./chain_orders');
+        const { createAccountClient, broadcastTxWithClassification } = require('./chain_orders');
         const acc = await createAccountClient(accountName, signingKey);
         await acc.initPromise;
         const tx = acc.newTx();
@@ -158,7 +158,7 @@ export class DirectKeyStore implements KeyStore {
                 throw new Error(`Transaction builder does not support ${methodName}`);
             }
         }
-        await tx.broadcast();
+        await broadcastTxWithClassification(tx, accountName, operations);
         return { success: true };
     }
 }

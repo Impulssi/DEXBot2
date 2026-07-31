@@ -309,22 +309,15 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
                 'error'
             );
             // Run recovery sync to register the orphaned order. If this also
-            // fails, the returned capturedId still prevents Phase 3 cancellation.
-            try {
-                const freshChainOrders = await chainOrders.readOpenOrders(
-                    resolveAccountRef(manager, account),
-                    TIMING.CONNECTION_TIMEOUT_MS
-                );
-                await manager.syncFromOpenOrders(freshChainOrders, {
-                    skipAccounting: false,
-                    source: 'createOrder-applySync-failure',
-                });
-            } catch (recoveryErr: any) {
-                logger?.log?.(
-                    `[_createOrderFromGrid] Recovery sync after _applySync failure also failed: ${getErrorMessage(recoveryErr)}`,
-                    'error'
-                );
-            }
+            // fails (or the chain read is empty/truncated), the returned
+            // capturedId still prevents Phase 3 cancellation.
+            await _recoverSyncFromChain({
+                chainOrders,
+                manager,
+                account,
+                logger,
+                source: 'createOrder-applySync-failure',
+            });
             // Return the captured ID regardless so Phase 3 knows this order was
             // legitimately created and avoids cancelling it.
             return capturedId;
@@ -335,17 +328,15 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         // CRITICAL FIX: Recovery sync if order extraction fails
         const logger = manager && manager.logger;
         logger?.log?.(`[_createOrderFromGrid] CRITICAL: createOrder succeeded but chainOrderId extraction failed`, 'error');
-        try {
-            const freshChainOrders = await chainOrders.readOpenOrders(
-                resolveAccountRef(manager, account),
-                TIMING.CONNECTION_TIMEOUT_MS
-            );
-            await manager.syncFromOpenOrders(freshChainOrders, {
-                skipAccounting: false,
-                source: 'chainOrderIdExtractionFailure',
-            });
-        } catch (syncErr: any) {
-            logger?.log?.(`[_createOrderFromGrid] Recovery sync failed: ${getErrorMessage(syncErr)}`, 'error');
+        const recovered = await _recoverSyncFromChain({
+            chainOrders,
+            manager,
+            account,
+            logger,
+            source: 'chainOrderIdExtractionFailure',
+        });
+        if (!recovered) {
+            logger?.log?.(`[_createOrderFromGrid] Recovery sync unavailable; zeroing slot ${gridOrder.id} to prevent duplicate creation`, 'error');
             // Transition the slot to zero-size VIRTUAL to prevent duplicate
             // creation on the next COW cycle. The orphaned chain order will
             // be picked up by the next normal full sync.
@@ -385,12 +376,11 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
 
     const cancelResult = await chainOrders.cancelOrder(account, privateKey, chainOrderId);
     if (cancelResult?.verifiedAfterFailure) {
-        const freshChainOrders = await chainOrders.readOpenOrders(
-            resolveAccountRef(manager, account),
-            TIMING.CONNECTION_TIMEOUT_MS
-        );
-        await manager.syncFromOpenOrders(freshChainOrders, {
-            skipAccounting: false,
+        await _recoverSyncFromChain({
+            chainOrders,
+            manager,
+            account,
+            logger: manager && manager.logger,
             source: 'cancelOrder',
         });
     } else {
@@ -409,23 +399,45 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
     }
 }
 
-async function _recoverStartupSyncFailure({ chainOrders, manager, account, logger, triggerMessage, source }: { chainOrders: any; manager: any; account: any; logger: any; triggerMessage: any; source: any; }): Promise<any> {
+/**
+ * Recovery sync from a fresh chain read, guarded against ambiguous snapshots.
+ * An empty read (node may be lagging behind a just-broadcast transaction) and
+ * a truncated read (get_full_accounts caps the limit_orders window; fresh
+ * orders sort last and are the first entries omitted) are both treated as
+ * unreadable: running syncFromOpenOrders on them would let pass-1 phantom
+ * cleanup virtualize ACTIVE/PARTIAL slots that are actually live on chain,
+ * after which the next cycle re-creates them and duplicates the orders.
+ * Returns the fresh orders when the sync ran, null when skipped/failed.
+ * @returns {Promise<any[] | null>}
+ * @private
+ */
+async function _recoverSyncFromChain({ chainOrders, manager, account, logger, source, triggerMessage, skipMessage }: {
+    chainOrders: any;
+    manager: any;
+    account: any;
+    logger: any;
+    source: any;
+    triggerMessage?: string;
+    skipMessage?: string;
+}): Promise<any[] | null> {
     try {
-        logger?.log?.(triggerMessage, 'warn');
-        const freshChainOrders = await chainOrders.readOpenOrders(
-            resolveAccountRef(manager, account),
-            TIMING.CONNECTION_TIMEOUT_MS
-        );
-        if (!Array.isArray(freshChainOrders) || freshChainOrders.length === 0) {
-            // Empty/lagging read guard: syncFromOpenOrders([]) would run pass-1
-            // phantom cleanup and virtualize every ACTIVE/PARTIAL slot missing
-            // from the (possibly lagging) snapshot — destroying a confirmed grid
-            // right after a broadcast, after which Phase 3 re-creates the orders
-            // and duplicates the ones still live on chain. An empty read is
-            // ambiguous, not authoritative absence: defer to the next reconcile
-            // cycle instead of mutating the grid.
+        if (triggerMessage) logger?.log?.(triggerMessage, 'warn');
+        const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
+            ? await chainOrders.readOpenOrdersWithMeta(
+                resolveAccountRef(manager, account),
+                TIMING.CONNECTION_TIMEOUT_MS
+            )
+            : {
+                orders: await chainOrders.readOpenOrders(
+                    resolveAccountRef(manager, account),
+                    TIMING.CONNECTION_TIMEOUT_MS
+                ),
+                truncated: false,
+            };
+        const freshChainOrders = freshRead.orders;
+        if (!Array.isArray(freshChainOrders) || freshChainOrders.length === 0 || freshRead.truncated) {
             logger?.log?.(
-                'Startup: Recovery sync skipped — empty chain read is ambiguous (node may be lagging); deferring to next reconcile cycle',
+                skipMessage || 'Recovery sync skipped — empty/truncated chain read is ambiguous (node may be lagging, or the get_full_accounts window omitted fresh orders); deferring to next reconcile cycle',
                 'warn'
             );
             return null;
@@ -436,9 +448,23 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
         });
         return freshChainOrders;
     } catch (syncErr: any) {
-        logger?.log?.(`Startup: Recovery sync failed: ${getErrorMessage(syncErr)}`, 'error');
+        logger?.log?.(`Recovery sync failed: ${getErrorMessage(syncErr)}`, 'error');
         return null;
     }
+}
+
+async function _recoverStartupSyncFailure({ chainOrders, manager, account, logger, triggerMessage, source }: { chainOrders: any; manager: any; account: any; logger: any; triggerMessage: any; source: any; }): Promise<any> {
+    return _recoverSyncFromChain({
+        chainOrders,
+        manager,
+        account,
+        logger,
+        source,
+        triggerMessage,
+        skipMessage:
+            'Startup: Recovery sync skipped — empty/truncated chain read is ambiguous (node may be lagging, ' +
+            'or the get_full_accounts window omitted fresh orders); deferring to next reconcile cycle',
+    });
 }
 
 function _refreshStartupUpdatePlans(updatePlans: any, chainOpenOrders: any): any[] {

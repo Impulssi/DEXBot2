@@ -87,18 +87,12 @@ async function testUnmatchedCancelReleasesFundsAndHandlesNullEntries() {
     console.log('✅ Regression 1 passed: unmatched cancel releases funds and null chain entries are tolerated');
 }
 
-async function testVerifiedAfterFailureRefetchesOpenOrders() {
+async function testVerifiedAfterFailureWithEmptyRefetchDefersSync() {
     const manager = createManager({ accountTotals: { sellFree: 1, buyFree: 0 } });
 
     let syncCalls = 0;
-    let syncSource = null;
-    let syncOptions = null;
-    let syncPayload = null;
-    (manager as any).syncFromOpenOrders = async (chainOrders, options) => {
+    (manager as any).syncFromOpenOrders = async () => {
         syncCalls++;
-        syncPayload = chainOrders;
-        syncOptions = options;
-        syncSource = options?.source;
         return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
     };
 
@@ -139,11 +133,11 @@ async function testVerifiedAfterFailureRefetchesOpenOrders() {
     });
 
     assert.strictEqual(cancelCalls, 1, 'Should attempt one cancel');
-    assert.strictEqual(syncCalls, 1, 'Fallback cancel should trigger a fresh open-order sync');
-    assert.deepStrictEqual(syncPayload, [], 'Fallback sync should use the refetched open-order snapshot');
-    assert.strictEqual(syncSource, 'cancelOrder', 'Fallback sync should preserve cancelOrder source');
-    assert.strictEqual(manager.accountTotals.sellFree, 11, 'Fallback sync should still release unmatched funds');
-    console.log('✅ Regression 1b passed: verifiedAfterFailure cancel refetches open orders before sync');
+    assert.strictEqual(syncCalls, 0,
+        'Empty refetch after a verified cancel is ambiguous (node may be lagging) — the full sync must defer ' +
+        'so pass-1 phantom cleanup cannot virtualize live ACTIVE/PARTIAL slots');
+    assert.strictEqual(manager.accountTotals.sellFree, 11, 'Fallback cancel should still release unmatched funds');
+    console.log('✅ Regression 1b passed: verifiedAfterFailure cancel defers the full sync on an empty refetch');
 }
 
 async function testSkipUpdateWhenSlotAlreadyMapped() {
@@ -515,7 +509,7 @@ async function testRecalculateGridFundLockSerialization() {
 (async () => {
     console.log('\n========== STARTUP RECONCILE REGRESSION TESTS ==========\n');
     await testUnmatchedCancelReleasesFundsAndHandlesNullEntries();
-    await testVerifiedAfterFailureRefetchesOpenOrders();
+    await testVerifiedAfterFailureWithEmptyRefetchDefersSync();
     await testSkipUpdateWhenSlotAlreadyMapped();
     await testAttemptResumeAwaitsStoreGrid();
     await testNoExcessCancelWhenMatchedOnGridIsZero();

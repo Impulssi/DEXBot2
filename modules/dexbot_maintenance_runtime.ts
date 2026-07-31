@@ -1057,7 +1057,14 @@ function startOpenOrdersSyncLoop(bot: any) {
         while (bot._mainLoopActive && !bot._shuttingDown) {
             try {
                 if (bot.manager && bot.accountId && !bot.config.dryRun) {
-                    if (!bot.manager._fillProcessingLock.isLocked() &&
+                    // Skip while a structural recovery reload is in flight:
+                    // _recoverFromPersistedGrid runs WITHOUT the fill lock, so
+                    // the lock gate alone would let this loop synchronizeWithChain
+                    // (and even fire a rebalance broadcast) into a half-rebuilt
+                    // grid. Same isolation the fill consumer gets via
+                    // _recoverySyncInFlight.
+                    if (!bot._recoverySyncInFlight &&
+                        !bot.manager._fillProcessingLock.isLocked() &&
                         bot.manager._fillProcessingLock.getQueueLength() === 0) {
                         await bot.manager._fillProcessingLock.acquire(async () => {
                             const chainOpenOrders = await readOpenOrdersFn.call(chainOrders, bot.accountId);
@@ -1461,7 +1468,10 @@ async function executeMaintenanceLogic(bot: any, context: any) {
     // LIGHTWEIGHT_SYNC_CHECK_INTERVAL_MS to limit blockchain query load.
     // Skip if the COW pipeline has active CREATEs in flight to avoid racing
     // with batch broadcasts — transient mismatches are expected during a COW cycle.
+    // Also skip while a structural recovery reload is in flight (it runs without
+    // the fill lock, so this check must gate on the recovery flag explicitly).
     if (
+        !bot._recoverySyncInFlight &&
         !bot._batchInFlight &&
         !(bot.manager?._pendingBroadcasts?.size > 0) &&
         (bot._lightweightSyncCheckAt == null || Date.now() - bot._lightweightSyncCheckAt >= TIMING.LIGHTWEIGHT_SYNC_CHECK_INTERVAL_MS)
@@ -1670,8 +1680,20 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
             try {
                 if (cancelResult?.verifiedAfterFailure) {
                     const accountRef = bot.accountId || bot.account;
-                    const chainOpenOrders = await chainOrders.readOpenOrders(accountRef);
-                    await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+                    // The cancel was verified absent on an authoritative
+                    // (non-empty, non-truncated) read inside cancelOrder, so a
+                    // truncated refetch must not run the full sync: the snapshot
+                    // omits the freshest orders and pass-1 phantom cleanup could
+                    // virtualize live slots. Fall back to the local cancel sync.
+                    const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
+                        ? await chainOrders.readOpenOrdersWithMeta(accountRef)
+                        : { orders: await chainOrders.readOpenOrders(accountRef), truncated: false };
+                    if (freshRead.truncated) {
+                        bot._warn(`[DUST] Chain refetch after verified cancel is TRUNCATED; applying local cancel sync for ${(order as any).id}`);
+                        await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
+                    } else {
+                        await bot.manager.synchronizeWithChain(freshRead.orders, 'readOpenOrders');
+                    }
                 } else {
                     await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
                 }

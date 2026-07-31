@@ -117,6 +117,7 @@ import { readInput } from './order/utils/system';
 import * as chainKeys from './chain_keys';
 import { getKeyStore } from './key_store';
 import { BroadcastUncertainError } from './dexbot_credential_client';
+import { classifyBroadcastFailure } from './broadcast_failure';
 import Logger from './logger';
 import { getErrorMessage } from './utils/errors';
 function getNodeManager() { return require('./bitshares_client').getNodeManager(); }
@@ -923,6 +924,36 @@ async function buildUpdateOrderOp(accountName: any, orderId: any, newParams: any
 }
 
 /**
+ * Broadcast a prepared transaction through the direct-key client, classifying
+ * failures with the same rules as the credential daemon
+ * (modules/broadcast_failure.ts): an 'uncertain' outcome (RPC timeout,
+ * connection dropped while the response was pending, unknown error) may have
+ * landed, so it is re-thrown as a BroadcastUncertainError — the verify-
+ * before-retry machinery (COW retry verification, startup adoption) then
+ * checks chain inclusion before any re-broadcast. 'definite' rejections
+ * (node assertion, insufficient balance) and provably-untransmitted
+ * ('retryable') failures propagate as plain errors.
+ * @param {Object} tx - The prepared signing-client transaction.
+ * @param {string} accountName - Account the ops were intended for.
+ * @param {Array} [operations=[]] - The ops carried by the transaction (for the error payload).
+ * @returns {Promise<Object>} Broadcast result.
+ * @throws {BroadcastUncertainError} When the outcome may have reached the chain.
+ */
+async function broadcastTxWithClassification(tx: any, accountName: string, operations: any[] = []): Promise<any> {
+    try {
+        return await tx.broadcast();
+    } catch (err: any) {
+        if (classifyBroadcastFailure(err) === 'uncertain') {
+            throw new BroadcastUncertainError(
+                `Direct-key broadcast uncertain for ${accountName}: ${getErrorMessage(err)}`,
+                { operations: operations.length > 0 ? operations : null, accountName, timeoutMs: null }
+            );
+        }
+        throw err;
+    }
+}
+
+/**
  * Update an existing limit order on the blockchain.
  * @param {string} accountName - The name of the account.
  * @param {string|Object} privateKey - The private key for signing (or daemon signing token).
@@ -956,7 +987,7 @@ async function updateOrder(accountName: any, privateKey: any, orderId: any, newP
         } else {
             throw new Error(`Transaction builder does not support limit_order_update`);
         }
-        await tx.broadcast();
+        await broadcastTxWithClassification(tx, accountName, [op]);
 
         chainOrdersLogger.info(`Order ${orderId} updated successfully`);
         return { success: true, orderId };
@@ -1059,7 +1090,7 @@ async function createOrder(accountName: any, privateKey: any, amountToSell: any,
         const tx = acc.newTx();
         // Invoke standard method directly
         tx.limit_order_create(op.op_data);
-        const result = await tx.broadcast();
+        const result = await broadcastTxWithClassification(tx, accountName, [op]);
         chainOrdersLogger.info(`Limit order created successfully for account ${accountName}`);
         return result;
     } catch (error: any) {
@@ -1119,7 +1150,7 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
         const tx = acc.newTx();
         // Explicit call
         tx.limit_order_cancel(op.op_data);
-        await tx.broadcast();
+        await broadcastTxWithClassification(tx, accountName, [op]);
 
         recordOwnCancel(orderId);
         chainOrdersLogger.info(`Order ${orderId} cancelled successfully`);
@@ -1127,14 +1158,18 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
     } catch (error: any) {
         if (accountId) {
             try {
-                const openOrders = await readOpenOrders(accountId, TIMING.CONNECTION_TIMEOUT_MS, true);
-                // Only a NON-EMPTY read is authoritative: the order being absent
-                // from a live account snapshot confirms the cancellation landed.
-                // An empty read is ambiguous (the node may be lagging behind the
-                // broadcast) — treating it as confirmed would free the slot and
-                // its capital while the order may still be live on chain.
+                const { orders: openOrders, truncated } = await readOpenOrdersWithMeta(accountId, TIMING.CONNECTION_TIMEOUT_MS, true);
+                // Only a NON-EMPTY, NON-TRUNCATED read is authoritative: the
+                // order being absent from a live account snapshot confirms the
+                // cancellation landed. An empty read is ambiguous (the node may
+                // be lagging behind the broadcast) — treating it as confirmed
+                // would free the slot and its capital while the order may still
+                // be live on chain. A truncated read (get_full_accounts caps
+                // the limit_orders window; fresh orders sort last and are the
+                // first entries omitted) may omit the order without it being
+                // cancelled, so absence is not authoritative there either.
                 const stillPresent = Array.isArray(openOrders) && openOrders.some((order: any) => String(order?.id ?? '') === String(orderId));
-                if (!stillPresent && Array.isArray(openOrders) && openOrders.length > 0) {
+                if (!stillPresent && !truncated && Array.isArray(openOrders) && openOrders.length > 0) {
                     chainOrdersLogger.info(`Order ${orderId} cancellation confirmed after broadcast failure`);
                     return { success: true, orderId, verified: true, verifiedAfterFailure: true };
                 }
@@ -1178,7 +1213,7 @@ async function executeBatch(accountName: any, privateKey: any, operations: any, 
             }
         }
 
-        const result = await tx.broadcast();
+        const result = await broadcastTxWithClassification(tx, accountName, operations);
 
         // Record own-cancel correlation for the self-cancel guard in the fill
         // consumer. Without this, batched cancels (the dominant COW path) would
@@ -1364,7 +1399,7 @@ function buildLiquidityPoolExchangeOp(accountId: any, poolId: any, sellAmountInt
 function getFillProcessingMode() {
     return FILL_PROCESSING_MODE;
 }
+export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
 
-export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError }
-module.exports = { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError }
+module.exports = { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
 

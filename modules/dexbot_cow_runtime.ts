@@ -1504,7 +1504,23 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
 
     for (let attempt = 1; attempt <= maxPollRetries; attempt++) {
         try {
-            const chainSnapshot = await chainOrders.readOpenOrders(accountRef);
+            const chainRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
+                ? await chainOrders.readOpenOrdersWithMeta(accountRef)
+                : { orders: await chainOrders.readOpenOrders(accountRef), truncated: false };
+            const chainSnapshot = chainRead.orders;
+            // A truncated read omits the freshest orders — the exact CREATEs
+            // this poll is trying to confirm — so absence cannot be
+            // distinguished from window truncation. Fall back to the
+            // reconciliation machinery immediately instead of burning the
+            // remaining polls.
+            if (chainRead.truncated) {
+                bot.manager.logger.log(
+                    `[COW][POLL] Chain read TRUNCATED (account exceeds the get_full_accounts window); ` +
+                    `fresh creates cannot be confirmed — deferring to reconciliation`,
+                    'warn'
+                );
+                break;
+            }
             if (!Array.isArray(chainSnapshot) || chainSnapshot.length === 0) {
                 if (attempt < maxPollRetries) {
                     await sleep(pollIntervalMs);
@@ -2669,8 +2685,9 @@ async function requestStructuralResync(bot: any, reason: string, details: any = 
  * chain but never reached master, so a full chain sync with accounting
  * enabled locks the placed orders' capital and releases any cancelled ones.
  * Returns true when the adoption sync ran; false when the chain state could
- * not be read (empty/lagging read or sync failure) — the caller then keeps
- * the pending-broadcast protection and defers adoption to a structural resync.
+ * not be read (empty/lagging read, truncated read, or sync failure) — the
+ * caller then keeps the pending-broadcast protection and defers adoption to
+ * a structural resync.
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {Object} chainOrders - Chain orders module
  * @param {string} logPrefix - Log prefix for sync failure messages
@@ -2679,7 +2696,23 @@ async function requestStructuralResync(bot: any, reason: string, details: any = 
 async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: string): Promise<boolean> {
     try {
         const accountRef = bot.accountId || bot.account?.id || bot.account;
-        const freshChain = await chainOrders.readOpenOrders(accountRef);
+        const freshRead = typeof chainOrders.readOpenOrdersWithMeta === 'function'
+            ? await chainOrders.readOpenOrdersWithMeta(accountRef)
+            : { orders: await chainOrders.readOpenOrders(accountRef), truncated: false };
+        // A truncated read (get_full_accounts caps the limit_orders window and
+        // fresh creates sort last) omits the very orders this batch just
+        // broadcast — the adoption sync could not register them, and clearing
+        // the pending-broadcast protection would let the next cycle re-create
+        // them as duplicates on chain. Treat truncated like an unreadable
+        // chain state: keep the protection and defer to a structural resync.
+        if (freshRead.truncated) {
+            bot.manager.logger.log(
+                `${logPrefix} Chain read TRUNCATED after batch broadcast; adoption deferred (pending-broadcast protection kept)`,
+                'warn'
+            );
+            return false;
+        }
+        const freshChain = freshRead.orders;
         if (freshChain.length > 0 && typeof bot.manager.syncFromOpenOrders === 'function') {
             await bot.manager.syncFromOpenOrders(freshChain, { skipAccounting: false });
             return true;
