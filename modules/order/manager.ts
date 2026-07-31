@@ -578,6 +578,20 @@ class OrderManager {
             : REBALANCE_STATES.NORMAL;
     }
 
+    /**
+     * Push a previously popped working grid back onto the rebalance stack.
+     * Used by the COW batch executor's bounded re-plan path: the original
+     * grid is popped before the fresh re-plan pushes (LIFO order), and when
+     * the re-plan fails/aborts the original plan proceeds — its grid must be
+     * restored so the later commit/catch pop sites release exactly the entry
+     * that was pushed, instead of underflowing or stealing a nested entry.
+     * @param {Object} workingGrid - The working grid to restore on the stack
+     */
+    _restoreWorkingGridRef(workingGrid: any) {
+        this._currentWorkingGridStack.push(workingGrid);
+        this._rebalanceState = REBALANCE_STATES.REBALANCING;
+    }
+
     _setRebalanceState(state: any) {
         this._rebalanceState = state;
         this.logger?.log(`[COW] Rebalance state: ${state}`, 'debug');
@@ -1716,118 +1730,143 @@ class OrderManager {
     }
 
     async _commitWorkingGrid(workingGrid: any, _workingIndexes: any, workingBoundary: any, options: any = {}) {
-        const { skipRecalc } = this._normalizeCommitOptions(options);
         const startTime = Date.now();
-        const stats = workingGrid.getMemoryStats();
         let committed = false;
-        let comparePrecisions;
+        let comparePrecisions: any;
+        let skipRecalc = false;
+        // Exactly-once stack-release contract: every settle path (return or
+        // throw) pops the working-grid stack entry exactly one time. Callers
+        // rely on this: the COW batch executor clears its _workingGridPushed
+        // marker once _commitWorkingGrid settles, so its catch block cannot
+        // pop a second time for the same grid. Previously the _gridLock
+        // acquire/rejection path escaped without popping, leaving the marker
+        // true and the grid's entry on the stack for the outer catch — an
+        // unmatched pop in disguise that would steal a nested grid's entry.
+        let popped = false;
+        const releaseStackEntry = () => {
+            if (popped) return;
+            popped = true;
+            this._clearWorkingGridRef();
+        };
 
         try {
-            comparePrecisions = this._getCowComparePrecisions();
-        } catch (precisionErr: any) {
-            this.logger.log(`[COW] ${getErrorMessage(precisionErr)}`, 'error');
-            this._clearWorkingGridRef();
-            return false;
-        }
+            const { skipRecalc: skipRecalcOpt } = this._normalizeCommitOptions(options);
+            skipRecalc = skipRecalcOpt;
+            const stats = workingGrid.getMemoryStats();
 
-        const preCommitGuard = evaluateCommit(workingGrid, {
-            hasLock: false,
-            currentVersion: this._gridVersion,
-            masterGrid: this.orders,
-            comparePrecisions
-        });
-        if (!preCommitGuard.canCommit) {
-            this.logger.log(`[COW] ${preCommitGuard.reason}`, preCommitGuard.level || 'warn');
-            this._clearWorkingGridRef();
-            return false;
-        }
+            try {
+                comparePrecisions = this._getCowComparePrecisions();
+            } catch (precisionErr: any) {
+                this.logger.log(`[COW] ${getErrorMessage(precisionErr)}`, 'error');
+                releaseStackEntry();
+                return false;
+            }
 
-        await this._gridLock.acquire(async () => {
-            const lockCommitGuard = evaluateCommit(workingGrid, {
-                hasLock: true,
+            const preCommitGuard = evaluateCommit(workingGrid, {
+                hasLock: false,
                 currentVersion: this._gridVersion,
                 masterGrid: this.orders,
                 comparePrecisions
             });
-            if (!lockCommitGuard.canCommit) {
-                this.logger.log(`[COW] ${lockCommitGuard.reason}`, lockCommitGuard.level || 'warn');
-                // Working grid ref is cleared exactly once below via the
-                // !committed path (the callback returns without committing).
-                return;
+            if (!preCommitGuard.canCommit) {
+                this.logger.log(`[COW] ${preCommitGuard.reason}`, preCommitGuard.level || 'warn');
+                releaseStackEntry();
+                return false;
             }
 
-            this.logger.log(
-                `[COW] Committing working grid: ${stats.size} orders, ${stats.modified} modified`,
-                'debug'
-            );
-
-            const finalMap = workingGrid.toMap();
-            // RC-4: Deep-freeze all modified orders before committing to master state
-            // Ensures COW immutability invariants are maintained for all grid entries.
-            for (const [, order] of finalMap.entries()) {
-                if (order && !Object.isFrozen(order)) {
-                    deepFreeze(order);
+            await this._gridLock.acquire(async () => {
+                const lockCommitGuard = evaluateCommit(workingGrid, {
+                    hasLock: true,
+                    currentVersion: this._gridVersion,
+                    masterGrid: this.orders,
+                    comparePrecisions
+                });
+                if (!lockCommitGuard.canCommit) {
+                    this.logger.log(`[COW] ${lockCommitGuard.reason}`, lockCommitGuard.level || 'warn');
+                    // Working grid ref is cleared exactly once below via the
+                    // !committed path (the callback returns without committing).
+                    return;
                 }
+
+                this.logger.log(
+                    `[COW] Committing working grid: ${stats.size} orders, ${stats.modified} modified`,
+                    'debug'
+                );
+
+                const finalMap = workingGrid.toMap();
+                // RC-4: Deep-freeze all modified orders before committing to master state
+                // Ensures COW immutability invariants are maintained for all grid entries.
+                for (const [, order] of finalMap.entries()) {
+                    if (order && !Object.isFrozen(order)) {
+                        deepFreeze(order);
+                    }
+                }
+
+                this.orders = Object.freeze(finalMap);
+                this._setBoundary(workingBoundary);
+                this._gridVersion++;
+                committed = true;
+
+                // Track orderIds from successful COW commits for recovery sync protection.
+                // Build a new set from the committed finalMap and atomically swap to
+                // avoid the intermediate empty state that clear() creates — a crash
+                // during clear()+repopulate would lose all committed IDs.
+                const newCommittedIds = new Set<string>();
+                for (const [, order] of finalMap.entries()) {
+                    if (order.orderId) newCommittedIds.add(order.orderId);
+                }
+                this._committedOrderIds = newCommittedIds;
+                this._committedOrderIdsBuiltAt = Date.now();
+
+                // Index caches invalidated by _gridVersion bump above — lazy getters recompute from this.orders
+            });
+
+            if (!committed) {
+                releaseStackEntry();
+                return false;
             }
 
-            this.orders = Object.freeze(finalMap);
-            this._setBoundary(workingBoundary);
-            this._gridVersion++;
-            committed = true;
+            try {
+                if (!skipRecalc) {
+                    // If the last accounting failure was due to stale accountTotals,
+                    // the commit proceeded without locking funds. Refresh accountTotals
+                    // before recalculateFunds() to avoid a false-positive drift recovery.
+                    if (this._lastAccountingFailure?.reason === 'stale') {
+                        this.logger.log(
+                            '[COW] Stale accountTotals during commit; refreshing before recalculateFunds to avoid false recovery',
+                            'warn'
+                        );
+                        await this.fetchAccountTotals(this.accountId);
+                    }
+                    await this.recalculateFunds();
+                }
+                const duration = Date.now() - startTime;
+                this.logger.log(`[COW] Grid committed in ${duration}ms`, 'debug');
 
-            // Track orderIds from successful COW commits for recovery sync protection.
-            // Build a new set from the committed finalMap and atomically swap to
-            // avoid the intermediate empty state that clear() creates — a crash
-            // during clear()+repopulate would lose all committed IDs.
-            const newCommittedIds = new Set<string>();
-            for (const [, order] of finalMap.entries()) {
-                if (order.orderId) newCommittedIds.add(order.orderId);
-            }
-            this._committedOrderIds = newCommittedIds;
-            this._committedOrderIdsBuiltAt = Date.now();
-
-            // Index caches invalidated by _gridVersion bump above — lazy getters recompute from this.orders
-        });
-
-        if (!committed) {
-            this._clearWorkingGridRef();
-            return false;
-        }
-
-        try {
-            if (!skipRecalc) {
-                // If the last accounting failure was due to stale accountTotals,
-                // the commit proceeded without locking funds. Refresh accountTotals
-                // before recalculateFunds() to avoid a false-positive drift recovery.
-                if (this._lastAccountingFailure?.reason === 'stale') {
+                if (stats.size > COW_PERFORMANCE.GRID_MEMORY_WARNING) {
                     this.logger.log(
-                        '[COW] Stale accountTotals during commit; refreshing before recalculateFunds to avoid false recovery',
+                        `[COW] Warning: Large grid size (${stats.size} orders). Peak memory: ~${Math.round(stats.estimatedBytes / 1024)}KB`,
                         'warn'
                     );
-                    await this.fetchAccountTotals(this.accountId);
                 }
-                await this.recalculateFunds();
+            } catch (recalcErr: any) {
+                this.logger.log(`[COW] Fund recalculation failed post-commit: ${getErrorMessage(recalcErr)}`, 'error');
+                this._recoveryState = { ...this._recoveryState, lastFailureAt: Date.now() };
+                // Re-throw to signal callers that the commit is incomplete
+                // (grid state committed, but fund state is stale).
+                releaseStackEntry();
+                throw recalcErr;
             }
-            const duration = Date.now() - startTime;
-            this.logger.log(`[COW] Grid committed in ${duration}ms`, 'debug');
 
-            if (stats.size > COW_PERFORMANCE.GRID_MEMORY_WARNING) {
-                this.logger.log(
-                    `[COW] Warning: Large grid size (${stats.size} orders). Peak memory: ~${Math.round(stats.estimatedBytes / 1024)}KB`,
-                    'warn'
-                );
-            }
-        } catch (recalcErr: any) {
-            this.logger.log(`[COW] Fund recalculation failed post-commit: ${getErrorMessage(recalcErr)}`, 'error');
-            this._recoveryState = { ...this._recoveryState, lastFailureAt: Date.now() };
-            // Re-throw to signal callers that the commit is incomplete
-            // (grid state committed, but fund state is stale).
-            throw recalcErr;
-        } finally {
-            this._clearWorkingGridRef();
+            releaseStackEntry();
+            return true;
+        } catch (err: any) {
+            // Unhandled commit failure (e.g. _gridLock acquisition timeout or
+            // an in-lock commit error): nothing was committed, but the stack
+            // entry must still be released exactly once.
+            releaseStackEntry();
+            throw err;
         }
-
-        return true;
     }
 
     /**

@@ -96,15 +96,24 @@ async function testCase1() {
     });
 
     // Window discipline slices the target side arrays, so active orders can
-    // never exceed the target's own slots. The master seed roles are static
-    // and are NOT the reference: the target reassigns roles by boundary
-    // (here slots 0-2 become BUY, 3-5 SELL at boundary 2). Assert against
-    // the real constraint: total active orders ≤ total grid slots.
-    const activeOrdersCount = Array.from(result.targetGrid.values())
-        .filter(o => (o as any).state === ORDER_STATES.ACTIVE).length;
-    const totalSlots = mgr.orders.size;
+    // never exceed the target's own side slots. The master seed roles are
+    // static and are NOT the reference: the target reassigns roles by
+    // boundary (here slots 0-2 become BUY, 3-5 SELL at boundary 2). Assert
+    // per side against the TARGET's own classification: a side-imbalance
+    // regression (e.g. a BUY active placed on a SELL-classified slot) must
+    // fail, not hide behind a total-count bound the target can never exceed.
+    const targetOrders = Array.from(result.targetGrid.values());
+    const activeBuyCount = targetOrders
+        .filter(o => (o as any).type === ORDER_TYPES.BUY && (o as any).state === ORDER_STATES.ACTIVE).length;
+    const buySlotCount = targetOrders.filter(o => (o as any).type === ORDER_TYPES.BUY).length;
+    const activeSellCount = targetOrders
+        .filter(o => (o as any).type === ORDER_TYPES.SELL && (o as any).state === ORDER_STATES.ACTIVE).length;
+    const sellSlotCount = targetOrders.filter(o => (o as any).type === ORDER_TYPES.SELL).length;
 
-    assert(activeOrdersCount <= totalSlots, 'Should not place more orders than available slots');
+    assert(activeBuyCount <= buySlotCount,
+        `Should not place more active BUY orders (${activeBuyCount}) than target BUY slots (${buySlotCount})`);
+    assert(activeSellCount <= sellSlotCount,
+        `Should not place more active SELL orders (${activeSellCount}) than target SELL slots (${sellSlotCount})`);
 }
 
 async function testCase2() {

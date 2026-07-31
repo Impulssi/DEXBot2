@@ -451,12 +451,16 @@ function buildUncertainError(accountName: any, startedAt: number, detail: string
  * pinning). Broadcasts are queued as a promise chain; non-broadcast requests
  * are unaffected.
  *
- * NOTE: the queue wait happens BEFORE the broadcast's 25s inner deadline
- * starts (the deadline only covers broadcastWithDeadline itself), so under
- * burst concurrency a queued broadcast can consume the bot's 30s outer
- * socket window and surface as a spurious BROADCAST_DEADLINE. That is a
- * safe, verified outcome (verify-before-retry), accepted deliberately:
- * serializing is cheaper than the stomping it prevents.
+ * The broadcast deadline guard (createBroadcastGuard) is created by the
+ * request handler BEFORE the queue wait, so the deadline timer covers queue
+ * wait + broadcast work together: total daemon wall time per request is
+ * capped at CREDENTIAL_DAEMON_INNER_DEADLINE_MS, well inside the bot's
+ * CREDENTIAL_BROADCAST_TIMEOUT_MS outer socket window. A broadcast that is
+ * still queued when the deadline fires aborts via guard.isFired() before it
+ * starts, and a client socket that dies (bot outer timeout destroys its end,
+ * crash, restart) fires the guard too — so a broadcast can never land on
+ * chain AFTER the bot already verified chain absence and re-broadcast the
+ * same operation.
  */
 let broadcastChain: Promise<any> = Promise.resolve();
 function serializeBroadcast<T>(fn: () => Promise<T>): Promise<T> {
@@ -465,7 +469,58 @@ function serializeBroadcast<T>(fn: () => Promise<T>): Promise<T> {
     return run;
 }
 
-async function broadcastWithDeadline(accountName: any, privateKey: any, broadcastFn: any, nodeUrl: string | null = null) {
+/**
+ * Broadcast deadline guard shared between the queue wait and the broadcast
+ * work. The timer starts at request receipt — before the serializeBroadcast
+ * queue wait — so queued broadcasts cannot outlive the bot's outer socket
+ * window. Firing the guard (deadline exceeded, or the requesting socket
+ * died) aborts the queued/in-flight broadcast: the work checks isFired()
+ * before every attempt, so a late broadcast can never land after the bot
+ * already verified chain absence and re-broadcast the operation.
+ */
+function createBroadcastGuard(accountName: any, startedAt: number, deadlineMs: number) {
+    let fired = false;
+    let timer: any = null;
+    let rejectGuard: any = null;
+    const promise = new Promise((_, reject) => {
+        rejectGuard = reject;
+        timer = setTimeout(() => {
+            fired = true;
+            reject(buildUncertainError(accountName, startedAt, `inner broadcast deadline ${deadlineMs}ms exceeded`));
+        }, deadlineMs);
+    });
+    // The guard promise is raced only once the serialized broadcast starts;
+    // while the request sits in the queue a deadline rejection would
+    // otherwise surface as an unhandled rejection.
+    promise.catch(() => {});
+    return {
+        isFired: () => fired,
+        promise,
+        fire: (reason: string) => {
+            if (fired) return;
+            fired = true;
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            rejectGuard(buildUncertainError(accountName, startedAt, reason));
+        },
+        clearTimer: () => {
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        }
+    };
+}
+
+function resolveInnerDeadlineMs() {
+    return Number.isFinite(Number(TIMING?.CREDENTIAL_DAEMON_INNER_DEADLINE_MS))
+        ? Number(TIMING.CREDENTIAL_DAEMON_INNER_DEADLINE_MS)
+        : 20000;
+}
+
+async function broadcastWithDeadline(accountName: any, privateKey: any, broadcastFn: any, nodeUrl: string | null = null, opts: any = {}) {
     // Deadline-capped broadcast: each node gets CREDENTIAL_DAEMON_BROADCAST_RETRIES
     // attempts pinned to it (the transport sweeps ONLY the pinned node), and
     // only when they ALL fail with failures that provably never reached the
@@ -485,27 +540,22 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
     // (CREDENTIAL_BROADCAST_TIMEOUT_MS) fires. If we don't reply in time, the
     // bot raises BroadcastUncertainError and enters the recovery path.
     // See: modules/dexbot_credential_client.ts BroadcastUncertainError.
-    const innerDeadlineMs = Number.isFinite(Number(TIMING?.CREDENTIAL_DAEMON_INNER_DEADLINE_MS))
-        ? Number(TIMING.CREDENTIAL_DAEMON_INNER_DEADLINE_MS)
-        : 20000;
+    const innerDeadlineMs = resolveInnerDeadlineMs();
     const maxRetries = Number.isFinite(Number(TIMING?.CREDENTIAL_DAEMON_BROADCAST_RETRIES))
         ? Number(TIMING.CREDENTIAL_DAEMON_BROADCAST_RETRIES)
         : 3;
     const retryBackoffMs = Number.isFinite(Number(TIMING?.CREDENTIAL_DAEMON_BROADCAST_BACKOFF_MS))
         ? Number(TIMING.CREDENTIAL_DAEMON_BROADCAST_BACKOFF_MS)
         : 1000;
-    const startedAt = Date.now();
-    let deadlineTimer: any = null;
-    // Tracks whether the inner deadline won the race, so the finally block can
-    // reset the transport even while the broadcast is still in flight, and so
-    // the retry loop aborts before any late background broadcast.
-    let deadlineFired = false;
-    const deadlinePromise = new Promise((_, reject) => {
-        deadlineTimer = setTimeout(() => {
-            deadlineFired = true;
-            reject(buildUncertainError(accountName, startedAt, `inner broadcast deadline ${innerDeadlineMs}ms exceeded`));
-        }, innerDeadlineMs);
-    });
+    const startedAt = opts.startedAt ?? Date.now();
+    // The guard covers the queue wait too when the request handler creates
+    // it before serializeBroadcast (deadline timer started at request
+    // receipt); without one it starts here and covers only the broadcast
+    // work. isFired() lets the retry loop abort before any late background
+    // broadcast, and the finally block resets the transport even while the
+    // broadcast is still in flight.
+    const guard = opts.guard ?? createBroadcastGuard(accountName, startedAt, innerDeadlineMs);
+    const deadlinePromise = guard.promise;
 
     const work = (async () => {
         // Pin ALL attempts to ONE node at a time: up to `attemptsPerNode`
@@ -568,15 +618,16 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
         while (candidates.length > 0) {
             const candidate = candidates[0];
             for (let attempt = 1; attempt <= attemptsPerNode; attempt++) {
-                // Abort as soon as the inner deadline won the race: the bot has
-                // been told the outcome is uncertain and may verify + re-create —
-                // a late background broadcast would duplicate the order.
-                if (deadlineFired) {
+                // Abort as soon as the guard fired (inner deadline won the
+                // race, or the requesting socket died): the bot has been told
+                // the outcome is uncertain and may verify + re-create — a
+                // late background broadcast would duplicate the order.
+                if (guard.isFired()) {
                     throw buildUncertainError(accountName, startedAt, 'inner broadcast deadline exceeded');
                 }
                 if (attempt > 1) {
                     await sleep(retryBackoffMs);
-                    if (deadlineFired) {
+                    if (guard.isFired()) {
                         throw buildUncertainError(accountName, startedAt, 'inner broadcast deadline exceeded');
                     }
                 }
@@ -678,9 +729,9 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
     try {
         return await Promise.race([work, deadlinePromise]);
     } finally {
-        if (deadlineTimer) clearTimeout(deadlineTimer);
-        if (deadlineFired) {
-            // The deadline won while the broadcast may still be in flight —
+        guard.clearTimer();
+        if (guard.isFired()) {
+            // The guard won while the broadcast may still be in flight —
             // drop the connection so the next request starts clean.
             try { _nativeChainClient.disconnect(); } catch (_) {}
         }
@@ -932,11 +983,25 @@ async function initialize() {
  */
 function handleConnection(socket: any) {
     let buffer = '';
+    // Broadcast deadline guards for requests on this socket. Fired when the
+    // socket dies (bot outer timeout destroys its end, crash, restart): the
+    // queued/in-flight broadcast for a client that can no longer receive the
+    // reply must abort — otherwise it can land on chain after the bot
+    // verified chain absence and re-broadcast the same operation.
+    const activeGuards = new Set<any>();
+
+    const abortSocketGuards = () => {
+        for (const guard of activeGuards) {
+            guard.fire('client socket closed before broadcast reply');
+        }
+        activeGuards.clear();
+    };
 
     socket.setTimeout(TIMING.CREDENTIAL_DAEMON_SOCKET_TIMEOUT_MS);
 
     socket.on('timeout', () => {
         daemonLogger.debug?.('[credential-daemon] Socket timeout — client idle');
+        abortSocketGuards();
         socket.destroy();
     });
 
@@ -956,7 +1021,7 @@ function handleConnection(socket: any) {
 
             for (const line of lines) {
                 if (line.trim()) {
-                    processRequest(line.trim(), socket);
+                    processRequest(line.trim(), socket, activeGuards);
                 }
             }
         } catch (error) {
@@ -965,12 +1030,18 @@ function handleConnection(socket: any) {
     });
 
     socket.on('end', () => {
+        abortSocketGuards();
         socket.destroy();
     });
 
     socket.on('error', (error: any) => {
         daemonLogger.debug?.('[credential-daemon] Socket error: ' + getErrorMessage(error));
+        abortSocketGuards();
         socket.destroy();
+    });
+
+    socket.on('close', () => {
+        abortSocketGuards();
     });
 }
 
@@ -982,7 +1053,7 @@ function handleConnection(socket: any) {
  * @param {string} requestStr - JSON string with {type, accountName}
  * @param {net.Socket} socket - Client socket to send response
  */
-function processRequest(requestStr: string, socket: any) {
+function processRequest(requestStr: string, socket: any, activeGuards: Set<any> = new Set()) {
     if (daemonShuttingDown) return;
     // The outer try/catch handles JSON parse errors and any synchronous throws.
     // Each async branch manages its own errors via .catch() → sendError(), so
@@ -1095,12 +1166,23 @@ function processRequest(requestStr: string, socket: any) {
 
                     const privateKey = await loadCurrentPrivateKey(accountName);
                     const broadcastNodeUrl = typeof request.nodeUrl === 'string' ? request.nodeUrl : null;
+                    // Start the broadcast deadline NOW, before the
+                    // serializeBroadcast queue wait, so total daemon wall time
+                    // per request stays inside the bot's outer socket window.
+                    // If the deadline fires while queued (burst concurrency),
+                    // the queued broadcast aborts via guard.isFired() before
+                    // it starts — it can never land after the bot verified
+                    // chain absence and re-broadcast the same operation.
+                    const broadcastStartedAt = Date.now();
+                    const broadcastGuard = createBroadcastGuard(accountName, broadcastStartedAt, resolveInnerDeadlineMs());
+                    activeGuards.add(broadcastGuard);
                     let signResult: any;
                     try {
                         signResult = await serializeBroadcast(() => broadcastWithDeadline(
                             accountName, privateKey,
                             (client: any) => client.broadcast(operation),
-                            broadcastNodeUrl
+                            broadcastNodeUrl,
+                            { guard: broadcastGuard, startedAt: broadcastStartedAt }
                         ));
                     } catch (broadcastErr: any) {
                         if (broadcastErr && broadcastErr.code === DAEMON_CODES.BROADCAST_DEADLINE) {
@@ -1127,6 +1209,8 @@ function processRequest(requestStr: string, socket: any) {
                             );
                         }
                         throw broadcastErr;
+                    } finally {
+                        activeGuards.delete(broadcastGuard);
                     }
 
                     appendAuditLog({
@@ -1203,12 +1287,23 @@ function processRequest(requestStr: string, socket: any) {
 
                     const privateKey = await loadCurrentPrivateKey(accountName);
                     const broadcastNodeUrl = typeof request.nodeUrl === 'string' ? request.nodeUrl : null;
+                    // Start the broadcast deadline NOW, before the
+                    // serializeBroadcast queue wait, so total daemon wall time
+                    // per request stays inside the bot's outer socket window.
+                    // If the deadline fires while queued (burst concurrency),
+                    // the queued broadcast aborts via guard.isFired() before
+                    // it starts — it can never land after the bot verified
+                    // chain absence and re-broadcast the same operation.
+                    const broadcastStartedAt = Date.now();
+                    const broadcastGuard = createBroadcastGuard(accountName, broadcastStartedAt, resolveInnerDeadlineMs());
+                    activeGuards.add(broadcastGuard);
                     let signResult: any;
                     try {
                         signResult = await serializeBroadcast(() => broadcastWithDeadline(
                             accountName, privateKey,
                             (client: any) => executeOperationsWithClient(client, operations),
-                            broadcastNodeUrl
+                            broadcastNodeUrl,
+                            { guard: broadcastGuard, startedAt: broadcastStartedAt }
                         ));
                     } catch (broadcastErr: any) {
                         if (broadcastErr && broadcastErr.code === DAEMON_CODES.BROADCAST_DEADLINE) {
@@ -1232,6 +1327,8 @@ function processRequest(requestStr: string, socket: any) {
                             );
                         }
                         throw broadcastErr;
+                    } finally {
+                        activeGuards.delete(broadcastGuard);
                     }
 
                     appendAuditLog({

@@ -57,9 +57,13 @@ function createVirtualCreateAction(id, price) {
  * Fixture for the pre-broadcast stale-plan guard (bounded re-plan).
  *
  * Mirrors the real manager's stack contract: performSafeRebalance pushes a
- * fresh working grid onto _currentWorkingGridStack and _commitWorkingGrid
- * pops the top on success (the real method pops on every terminal path).
- * The pop/spy counters let the tests assert the stack stays balanced.
+ * fresh working grid onto _currentWorkingGridStack, _commitWorkingGrid pops
+ * the top once on every terminal path, and _restoreWorkingGridRef pushes a
+ * previously popped grid back (bounded re-plan fall-through). Tests must
+ * push the stale plan's grid before invoking the batch executor, exactly as
+ * the real flow does. The pop spy THROWS on a pop from an empty stack so an
+ * unmatched pop (the pre-fix double-pop imbalance) fails the test instead
+ * of being absorbed as a benign underflow.
  */
 function createGuardFixture(masterOrders = new Map()) {
     const bot = new DEXBot({
@@ -77,7 +81,8 @@ function createGuardFixture(masterOrders = new Map()) {
         replanCalls: 0,
         resyncCalls: 0,
         executeBatchCalls: 0,
-        clearCalls: 0
+        clearCalls: 0,
+        restoreCalls: 0
     };
 
     const manager: any = {
@@ -109,7 +114,14 @@ function createGuardFixture(masterOrders = new Map()) {
         persistGrid: async () => {},
         _clearWorkingGridRef: () => {
             counters.clearCalls += 1;
+            if (manager._currentWorkingGridStack.length === 0) {
+                throw new Error('UNMATCHED WORKING-GRID POP (stack underflow)');
+            }
             manager._currentWorkingGridStack.pop();
+        },
+        _restoreWorkingGridRef: (workingGrid: any) => {
+            counters.restoreCalls += 1;
+            manager._currentWorkingGridStack.push(workingGrid);
         },
         requestStructuralGridResync: async () => {
             counters.resyncCalls += 1;
@@ -194,6 +206,9 @@ async function testStalePlanReplansOnceAndExecutes() {
     };
 
     try {
+        // Mirrors the real push contract: performSafeRebalance pushes the
+        // plan's grid and marks the result before the batch executor runs.
+        manager._currentWorkingGridStack.push(staleWG);
         const result = await bot._updateOrdersOnChainBatchCOW({
             workingGrid: staleWG,
             workingIndexes: staleWG.getIndexes(),
@@ -212,6 +227,7 @@ async function testStalePlanReplansOnceAndExecutes() {
         assert.strictEqual(counters.executeBatchCalls, 1, 'exactly one broadcast');
         assert.strictEqual(manager._currentWorkingGridStack.length, 0, 'working grid stack must be balanced');
         assert.strictEqual(counters.clearCalls, 2, 'original pop + commit pop');
+        assert.strictEqual(counters.restoreCalls, 0, 'no restore needed when re-plan succeeds');
         assert.strictEqual(counters.resyncCalls, 0, 'no structural resync needed when re-plan succeeds');
     } finally {
         restore();
@@ -246,6 +262,9 @@ async function testReplanWithNoActionsSkipsStalePlan() {
     };
 
     try {
+        // Mirrors the real push contract: the stale plan's grid was pushed
+        // by performSafeRebalance before this batch executor call.
+        manager._currentWorkingGridStack.push(staleWG);
         const result = await bot._updateOrdersOnChainBatchCOW({
             workingGrid: staleWG,
             workingIndexes: staleWG.getIndexes(),
@@ -262,6 +281,7 @@ async function testReplanWithNoActionsSkipsStalePlan() {
         assert.strictEqual(counters.commitCalls, 0, 'no commit for a skipped plan');
         assert.strictEqual(manager._currentWorkingGridStack.length, 0, 'working grid stack must be balanced');
         assert.strictEqual(counters.clearCalls, 2, 'original pop + fresh-plan pop');
+        assert.strictEqual(counters.restoreCalls, 0, 'no restore needed when re-plan succeeds');
     } finally {
         restore();
     }
@@ -282,6 +302,9 @@ async function testStaleAtReplanLimitProceedsWithResync() {
     const staleWG = makeStaleWorkingGrid(manager);
 
     try {
+        // Mirrors the real push contract: the stale plan's grid was pushed
+        // by performSafeRebalance before this batch executor call.
+        manager._currentWorkingGridStack.push(staleWG);
         const result = await bot._updateOrdersOnChainBatchCOW({
             workingGrid: staleWG,
             workingIndexes: staleWG.getIndexes(),
@@ -296,6 +319,7 @@ async function testStaleAtReplanLimitProceedsWithResync() {
         assert.strictEqual(manager._recoveryState.structuralResyncRequested, true, 'resync flag recorded on recovery state');
         assert.strictEqual(counters.commitCalls, 1, 'proceeded plan commits');
         assert.strictEqual(manager._currentWorkingGridStack.length, 0, 'working grid stack must be balanced');
+        assert.strictEqual(counters.restoreCalls, 0, 'no restore when the depth limit blocks re-planning');
         assert(logs.some((m: string) => m.includes('still stale after re-plan')), 'should log the depth-limit proceed decision');
     } finally {
         restore();
@@ -322,6 +346,9 @@ async function testReplanThrowProceedsWithResync() {
     };
 
     try {
+        // Mirrors the real push contract: the stale plan's grid was pushed
+        // by performSafeRebalance before this batch executor call.
+        manager._currentWorkingGridStack.push(staleWG);
         const result = await bot._updateOrdersOnChainBatchCOW({
             workingGrid: staleWG,
             workingIndexes: staleWG.getIndexes(),
@@ -337,7 +364,12 @@ async function testReplanThrowProceedsWithResync() {
         assert.strictEqual(manager._recoveryState.structuralResyncRequested, true, 'resync flag recorded on recovery state');
         assert.strictEqual(counters.commitCalls, 1, 'proceeded plan commits');
         assert.strictEqual(manager._currentWorkingGridStack.length, 0, 'working grid stack must be balanced');
-        assert.strictEqual(counters.clearCalls, 2, 'original pop + commit pop');
+        // The original grid is popped before the re-plan attempt, then
+        // restored when the re-plan throws — the commit pops the RESTORED
+        // entry, so both pops are matched (no underflow). The fixture's
+        // pop spy throws on underflow, so this assertion is genuine.
+        assert.strictEqual(counters.restoreCalls, 1, 'original plan grid restored after re-plan failure');
+        assert.strictEqual(counters.clearCalls, 2, 'original pop + commit pop of the restored grid');
         assert(logs.some((m: string) => m.includes('Re-plan failed')), 'should log the re-plan failure');
     } finally {
         restore();

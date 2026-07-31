@@ -22,7 +22,6 @@ const {
 const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = require('./order/utils/validate');
 const { validateOrderSize, findPriceCollision } = require('./order/utils/math');
 // Lazy accessor so test mocks on the math module export take effect at call time.
-function getAssetFees(...args: any) { return require('./order/utils/math').getAssetFees(...args); }
 function getAssetFeesSafe(...args: any) { return require('./order/utils/math').getAssetFeesSafe(...args); }
 const {
     COW_ACTIONS,
@@ -636,12 +635,12 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
             const expectedType = plannedOpCtx.order?.type || entry.orderType;
 
             try {
-                const btsFeeData = getAssetFees('BTS');
+                const btsFeeData = getAssetFeesSafe('BTS');
                 await bot.manager.synchronizeWithChain({
                     gridOrderId: plannedOpCtx.order?.id || entry.slotId,
                     chainOrderId,
                     expectedType,
-                    fee: btsFeeData.createFee,
+                    fee: btsFeeData?.createFee || 0,
                 }, 'createOrder');
             } catch (syncErr: any) {
                 bot.manager.logger.log(
@@ -1614,6 +1613,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         if (updateCount > 0) bot.manager.logger.log(`Dry run: would update ${updateCount} orders`, 'info');
         if (cowResult?._workingGridPushed === true) {
             bot.manager._clearWorkingGridRef();
+            cowResult._workingGridPushed = false;
         }
         return { executed: true, hadRotation: false };
     }
@@ -1660,6 +1660,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         if (hasHardOccupiedViolation) {
             if (cowResult?._workingGridPushed === true) {
                 bot.manager._clearWorkingGridRef();
+                cowResult._workingGridPushed = false;
             }
             return {
                 executed: false,
@@ -1707,6 +1708,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         );
         if (cowResult?._workingGridPushed === true) {
             bot.manager._clearWorkingGridRef();
+            cowResult._workingGridPushed = false;
         }
         return {
             executed: false,
@@ -1759,6 +1761,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             }
             if (cowResult?._workingGridPushed === true) {
                 bot.manager._clearWorkingGridRef();
+                cowResult._workingGridPushed = false;
             }
             return {
                 executed: false,
@@ -1841,6 +1844,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         );
         if (cowResult?._workingGridPushed === true) {
             bot.manager._clearWorkingGridRef();
+            cowResult._workingGridPushed = false;
         }
         return {
             executed: false,
@@ -2195,6 +2199,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             // path calls (never pushed) cannot pop an unrelated entry.
             if (cowResult?._workingGridPushed === true) {
                 bot.manager._clearWorkingGridRef();
+                cowResult._workingGridPushed = false;
             }
             return { executed: false, hadRotation: false };
         }
@@ -2206,6 +2211,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             bot.manager.logger.log(`Skipping batch broadcast: ${validation.violations!.length} fund violation(s) detected`, 'warn');
             if (cowResult?._workingGridPushed === true) {
                 bot.manager._clearWorkingGridRef();
+                cowResult._workingGridPushed = false;
             }
             return { executed: false, hadRotation: false };
         }
@@ -2246,10 +2252,14 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 // commit. Pop it so the rebalance stack stays balanced — the
                 // fresh plan's grid (pushed by performSafeRebalance below) is
                 // popped by the recursion's own commit/cleanup path. Guarded on
-                // the push marker (plan-path calls never pushed a grid).
-                if (cowResult?._workingGridPushed === true
-                    && typeof bot.manager._clearWorkingGridRef === 'function') {
+                // the push marker (plan-path calls never pushed a grid). The
+                // marker is cleared so a later throw in this frame (e.g. the
+                // recursion) cannot pop the entry a second time.
+                const hadPushedGrid = cowResult?._workingGridPushed === true
+                    && typeof bot.manager._clearWorkingGridRef === 'function';
+                if (hadPushedGrid) {
                     bot.manager._clearWorkingGridRef();
+                    cowResult._workingGridPushed = false;
                 }
                 let replanned: any = null;
                 try {
@@ -2285,6 +2295,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     if (replanned?._workingGridPushed === true
                         && typeof bot.manager._clearWorkingGridRef === 'function') {
                         bot.manager._clearWorkingGridRef();
+                        replanned._workingGridPushed = false;
                     }
                     if (bot.manager?._pendingBroadcasts instanceof Map) {
                         clearPendingBroadcasts(bot.manager._pendingBroadcasts);
@@ -2294,6 +2305,21 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         'info'
                     );
                     return { executed: false, hadRotation: false, skippedStalePlan: true };
+                }
+                // Re-plan failed or aborted — the original plan proceeds after
+                // all. Its grid was popped above to keep the stack LIFO-balanced
+                // for the fresh plan; push it back (marker restored) so the
+                // broadcast commit / catch pop sites release exactly the entry
+                // they were pushed with, instead of underflowing or stealing a
+                // nested grid's entry.
+                if (hadPushedGrid && cowResult.workingGrid) {
+                    if (typeof bot.manager._restoreWorkingGridRef === 'function') {
+                        bot.manager._restoreWorkingGridRef(cowResult.workingGrid);
+                    } else {
+                        bot.manager._currentWorkingGridStack?.push?.(cowResult.workingGrid);
+                        bot.manager._resetRebalanceStateToDepth?.();
+                    }
+                    cowResult._workingGridPushed = true;
                 }
                 bot.manager.logger.log(
                     '[COW] Re-plan unavailable; proceeding with original plan (commit guard + chain adoption close divergence)',
@@ -2347,6 +2373,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     );
                     if (cowResult?._workingGridPushed === true) {
                         bot.manager._clearWorkingGridRef();
+                        cowResult._workingGridPushed = false;
                     }
                     markMissingCreateResultsAsStructuralBlocker(bot, missingCreateResults);
                     await recoverAfterMissingCreateResults(bot, 'missing create operation results');
@@ -2368,12 +2395,22 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 applyRotationTransitionsToWorkingGrid(bot, workingGrid, executedContexts);
 
                 bot.manager.logger.log('[COW] Blockchain success - committing working grid to master', 'info');
-                const commitOk = await bot.manager._commitWorkingGrid(
-                    workingGrid,
-                    workingIndexes,
-                    workingBoundary,
-                    { skipRecalc: true }
-                );
+                let commitOk: boolean;
+                try {
+                    commitOk = await bot.manager._commitWorkingGrid(
+                        workingGrid,
+                        workingIndexes,
+                        workingBoundary,
+                        { skipRecalc: true }
+                    );
+                } finally {
+                    // _commitWorkingGrid releases the stack entry on every
+                    // settle path (return or throw). Clear the push marker so
+                    // the batch catch below cannot pop a second time for the
+                    // same grid when a later step (e.g. processBatchResults)
+                    // throws after a successful commit.
+                    cowResult._workingGridPushed = false;
+                }
                 if (!commitOk) {
                     // Master changed during broadcast (e.g. a fill landed and was
                     // processed concurrently) so the commit was refused. The batch
@@ -2449,6 +2486,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 bot.manager.logger.log('[COW] Blockchain failed - working grid discarded, master unchanged', 'warn');
                 if (cowResult?._workingGridPushed === true) {
                     bot.manager._clearWorkingGridRef();
+                    cowResult._workingGridPushed = false;
                 }
                 clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
                 return { ...result, executed: false, hadRotation: false };
@@ -2503,12 +2541,21 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         );
                     }
                     applyRotationTransitionsToWorkingGrid(bot, workingGrid, opContexts);
-                    const pollCommitOk = await bot.manager._commitWorkingGrid(
-                        workingGrid,
-                        workingIndexes,
-                        workingBoundary,
-                        { skipRecalc: true }
-                    );
+                    let pollCommitOk: boolean;
+                    try {
+                        pollCommitOk = await bot.manager._commitWorkingGrid(
+                            workingGrid,
+                            workingIndexes,
+                            workingBoundary,
+                            { skipRecalc: true }
+                        );
+                    } finally {
+                        // Same exactly-once marker discipline as the success
+                        // path: _commitWorkingGrid pops on every settle path,
+                        // so a later throw here must not pop again in the
+                        // batch catch below.
+                        cowResult._workingGridPushed = false;
+                    }
                     if (!pollCommitOk) {
                         // Master moved while polling — same recovery as the
                         // refused-commit path: adopt from chain, keep pending
@@ -2557,6 +2604,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
 
         if (cowResult?._workingGridPushed === true) {
             bot.manager._clearWorkingGridRef();
+            cowResult._workingGridPushed = false;
         }
 
         if (err instanceof BroadcastUncertainError) {
@@ -2716,7 +2764,13 @@ async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
  */
 async function processBatchResults(bot: any, result: any, opContexts: any) {
     const results = extractOperationResults(result, 'processBatchResults', bot.manager?.logger?.log?.bind(bot.manager?.logger));
-    const btsFeeData = getAssetFees('BTS');
+    // Safe variant: this runs AFTER the working grid committed, so a throw
+    // here (fee cache unset) would hard-fail the whole batch post-commit and
+    // land in the executor catch, where the stack-entry marker is already
+    // cleared — leaving the grid committed but its post-commit processing
+    // (fee deduction, metadata) silently skipped. Zero-fee fallback keeps the
+    // accounting close; the next sync converges the residual.
+    const btsFeeData = getAssetFeesSafe('BTS');
     let hadRotation = false;
     let updateOperationCount = 0;
 
@@ -2750,7 +2804,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
                     oldOrder,
                     ord,
                     'order-update',
-                    btsFeeData.updateFee,
+                    btsFeeData?.updateFee || 0,
                     false
                 );
             }
@@ -2776,7 +2830,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
             const chainOrderId = res && res[1];
             if (chainOrderId) {
                 await bot.manager.synchronizeWithChain({
-                    gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData.createFee
+                    gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData?.createFee || 0
                 }, 'createOrder');
 
                 if (ctx.finalInts) {
@@ -2826,7 +2880,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
                         oldOrder,
                         ord,
                         'order-update',
-                        btsFeeData.updateFee,
+                        btsFeeData?.updateFee || 0,
                         false
                     );
                 }
@@ -2892,7 +2946,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
                     oldOrder,
                     updatedSlot,
                     'order-update',
-                    btsFeeData.updateFee,
+                    btsFeeData?.updateFee || 0,
                     false
                 );
             }
