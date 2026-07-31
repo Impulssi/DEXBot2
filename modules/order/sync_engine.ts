@@ -755,7 +755,12 @@ class SyncEngine {
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
                         await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', { skipAccounting: skipAccounting, fee: 0 });
-                        filledOrders.push(spreadOrder);
+                        // Push the filled order with its REAL side (chain order
+                        // type), not the SPREAD placeholder: downstream fill
+                        // processing (deriveTargetBoundary) derives boundary
+                        // movement from fill.type, and a SPREAD type would
+                        // silently drop the shift for this completed order.
+                        filledOrders.push({ ...gridOrder, type: chainOrder.type });
                         updatedOrders.push(spreadOrder);
                     }
                 }
@@ -1083,7 +1088,15 @@ class SyncEngine {
     }
 
     _computeFillContext(mgr: any, matchedGridOrder: any, paysAssetId: any, paysAmountRaw: any) {
-        const orderType = matchedGridOrder.type;
+        // A SPREAD slot can carry an on-chain order (e.g. spread-correction
+        // activation). Resolve the real side from the fill's pays asset so the
+        // transition result is BUY/SELL — never SPREAD with an on-chain state,
+        // which validateOrder rejects as fatal ILLEGAL_SPREAD_STATE.
+        let orderType = matchedGridOrder.type;
+        if (orderType === ORDER_TYPES.SPREAD) {
+            if (paysAssetId === mgr.assets.assetB.id) orderType = ORDER_TYPES.BUY;
+            else if (paysAssetId === mgr.assets.assetA.id) orderType = ORDER_TYPES.SELL;
+        }
         const currentSize = toFiniteNumber(matchedGridOrder.size);
         const precision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetA.precision : mgr.assets.assetB.precision;
 
@@ -1149,6 +1162,7 @@ class SyncEngine {
             if (ghostOrderId) {
                 ghostUpdate = {
                     ...matchedGridOrder,
+                    type: orderType,
                     size: 0,
                     state: ORDER_STATES.PARTIAL,
                     orderId: ghostOrderId,
@@ -1157,10 +1171,17 @@ class SyncEngine {
             } else {
                 fullUpdate = convertToSpreadPlaceholder(matchedGridOrder);
             }
-            filledOrderResult = { ...matchedGridOrder, blockNum, historyId, isMaker };
+            filledOrderResult = {
+                ...matchedGridOrder,
+                type: orderType,
+                blockNum,
+                historyId,
+                isMaker
+            };
         } else {
             filledOrderResult = {
                 ...matchedGridOrder,
+                type: orderType,
                 size: filledAmount,
                 isPartial: true,
                 blockNum,
@@ -1168,7 +1189,7 @@ class SyncEngine {
                 isMaker
             };
             const { btsFeeState, ...matchedWithoutDeferredFee } = matchedGridOrder;
-            let updatedOrder = { ...matchedWithoutDeferredFee, state: ORDER_STATES.PARTIAL };
+            let updatedOrder = { ...matchedWithoutDeferredFee, type: orderType, state: ORDER_STATES.PARTIAL };
 
             if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
                 const baselineForSale = (chainRefetched && Number.isFinite(effectiveRawForSale))
@@ -1678,9 +1699,18 @@ class SyncEngine {
                             }
 
                             const newState = isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE;
-                            const normalizedExpectedType = (expectedType === ORDER_TYPES.BUY || expectedType === ORDER_TYPES.SELL)
+                            let normalizedExpectedType = (expectedType === ORDER_TYPES.BUY || expectedType === ORDER_TYPES.SELL)
                                 ? expectedType
                                 : null;
+                            // Defensive: a SPREAD slot must never transition to an on-chain
+                            // state (validateOrder rejects SPREAD+ACTIVE/PARTIAL as fatal).
+                            // Derive the side from the slot price vs start price — same
+                            // convention as the funds check (manager.ts).
+                            if (!normalizedExpectedType && gridOrder.type === ORDER_TYPES.SPREAD) {
+                                normalizedExpectedType = gridOrder.price < mgr.config.startPrice
+                                    ? ORDER_TYPES.BUY
+                                    : ORDER_TYPES.SELL;
+                            }
                             const updatedOrder = {
                                 ...gridOrder,
                                 type: normalizedExpectedType || gridOrder.type,

@@ -35,6 +35,13 @@ async function testUnanchoredSpreadCorrection() {
         assetB: { id: '1.3.2', symbol: 'QUOTE', precision: 5 }
     };
 
+    // The grid is seeded manually below, so _gapSlots stays at the constructor
+    // default (0). Production grids set it during generation. syncBoundaryToFunds
+    // clamps the fund-driven boundary to the spread gap between typed BUY/SELL
+    // slots — with gapSlots 0 that gap is empty and the boundary freezes after
+    // the first correction. Set the production-like geometry explicitly.
+    mgr._gapSlots = 2;
+
     // 1. Initial setup around 100
     console.log('  Scenario 1: Initial setup at 100');
     for(let i=0; i<20; i++) {

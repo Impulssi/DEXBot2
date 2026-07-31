@@ -49,7 +49,7 @@ function makeBot() {
         stopBroadcasting: () => {},
         pauseFundRecalc: () => {},
         resumeFundRecalc: async () => {},
-        _commitWorkingGrid: async () => {},
+        _commitWorkingGrid: async () => true,
         _clearWorkingGridRef: () => {},
         _clearPendingBroadcasts: () => {},
         _persistenceWarning: undefined,

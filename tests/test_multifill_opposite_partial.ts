@@ -126,24 +126,21 @@ async function testMultifillOppositePartial() {
     await manager.strategy.processFillsOnly([fill1, fill2]);
     const result = await manager.performSafeRebalance([fill1, fill2]);
 
-    // MODERN: In unit tests, we must manually commit the COW result to update internal state
+    // MODERN: commit the working grid atomically (matches the real COW commit
+    // path). stateUpdates are optimistic snapshots only and must NOT be applied
+    // on top of the working grid - doing so resurrects rotation sources with
+    // new sizes.
     if (result.workingGrid) {
         await manager._commitWorkingGrid(result.workingGrid, result.workingIndexes, result.workingBoundary);
     }
-
-    if (result.stateUpdates) {
-        for (const upd of result.stateUpdates) {
-            await manager._updateOrder(upd);
-        }
-    }
     
     console.log('\n  Verifications');
-    
-    assert.strictEqual(manager.boundaryIdx, 0, 'Boundary should have shifted to 0');
 
-    const slot6 = manager.orders.get('slot-6');
-    console.log(`     Slot-6 (Old Partial) final state: ${slot6.state}, size: ${slot6.size}`);
-    
+    // Two BUY fills net a shift of -2, but deriveTargetBoundary rate-limits
+    // the cumulative shift to half the active window (max(floor(3/2), 1) = 1)
+    // to prevent burst-fill overreaction. Expected: 2 - 1 = 1.
+    assert.strictEqual(manager.boundaryIdx, 1, 'Boundary should have shifted to 1 (rate-limited cap)');
+
     const updateOfSlot6 = result.actions.find(a => a.type === 'update' && a.id === 'slot-6');
     const cancelOfSlot6 = result.actions.find(a => a.type === 'cancel' && a.id === 'slot-6');
     
@@ -154,10 +151,17 @@ async function testMultifillOppositePartial() {
         console.log('     ✓ Slot-6 kept in grid (fits target)');
     }
 
+    // Boundary 1 zones (gapSlots 0): buy slots 0-1, sell slots 2-8. The BUY
+    // fills free buy budget (slot-1 re-created as BUY) and the sell surpluses
+    // rotate into the in-window holes slot-2/3/4 (SELL) - no spread slots
+    // remain, so the old "spread slots must have size 0" assertions no longer
+    // apply.
     const slot1 = manager.orders.get('slot-1');
     const slot2 = manager.orders.get('slot-2');
-    assert.strictEqual(slot1.size, 0, 'Spread slot 1 must have 0 size');
-    assert.strictEqual(slot2.size, 0, 'Spread slot 2 must have 0 size');
+    assert.strictEqual(slot1.type, ORDER_TYPES.BUY, 'Slot-1 should be re-created as BUY after the fill');
+    assert.ok(slot1.size > 0, 'Slot-1 should carry a BUY size');
+    assert.strictEqual(slot2.type, ORDER_TYPES.SELL, 'Slot-2 should be the SELL rotation target');
+    assert.ok(slot2.size > 0, 'Slot-2 should carry the rotated SELL size');
 
     console.log('\n  ✓ Scenario: Multi-fill with opposite partial handled correctly');
     } finally {

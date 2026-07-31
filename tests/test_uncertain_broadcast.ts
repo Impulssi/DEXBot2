@@ -12,6 +12,7 @@ installBitsharesClientStub(bitsharesClientPath);
 const chainOrders = require('../modules/chain_orders');
 const chainKeys = require('../modules/chain_keys');
 const { OrderManager } = require('../modules/order/manager');
+const { WorkingGrid } = require('../modules/order/working_grid');
 const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DAEMON_CODES, DAEMON_ERRORS } = require('../modules/constants');
 const {
     BroadcastUncertainError,
@@ -578,7 +579,7 @@ async function testCowBatchAdvancesCycleMarker() {
     bot.config.dryRun = true;
     const startCycle = bot._currentCycleId;
     const cowResult = {
-        workingGrid: {},
+        workingGrid: new WorkingGrid(bot.manager.orders, { baseVersion: 0 }),
         workingIndexes: {},
         workingBoundary: 0,
         actions: [{ type: COW_ACTIONS.CANCEL, id: 'sell-1', orderId: '1.7.1' }]
@@ -1055,6 +1056,8 @@ function makeBot() {
             assetB: { id: '1.3.121', precision: 5, symbol: 'USD' }
         },
         orders: new Map(),
+        _gridVersion: 0,
+        _fundLock: { acquire: async (fn) => fn(), isLocked: () => false, isReentrant: () => false },
         logger: {
             log: (msg, level) => { /* noop */ },
             logFundsStatus: () => {}
@@ -1105,7 +1108,7 @@ async function testCowCatchBlockPassesFillLockAlreadyHeld() {
     chainOrders.readOpenOrders = async () => [];
 
     const cowResult = {
-        workingGrid: {},
+        workingGrid: new WorkingGrid(bot.manager.orders, { baseVersion: 0 }),
         workingIndexes: {},
         workingBoundary: {},
         actions: [{
@@ -1252,7 +1255,7 @@ async function testUpdateToCreateFallbackOnNotFound() {
     bot.manager.synchronizeWithChain = async () => {};
     bot.manager.applyGridUpdateBatch = async () => {};
     bot.manager.persistGrid = async () => ({ isValid: true });
-    bot.manager._commitWorkingGrid = async () => {};
+    bot.manager._commitWorkingGrid = async () => true;
     bot.manager.logger.log = (msg, level) => {
         if (level === 'warn') loggedWarn = msg;
     };
@@ -1270,7 +1273,7 @@ async function testUpdateToCreateFallbackOnNotFound() {
     });
 
     const cowResult = {
-        workingGrid: {}, workingIndexes: {}, workingBoundary: {},
+        workingGrid: new WorkingGrid(bot.manager.orders, { baseVersion: 0 }), workingIndexes: {}, workingBoundary: {},
         actions: [{
             type: COW_ACTIONS.UPDATE,
             id: slotId, orderId: actionOrderId,
@@ -1311,7 +1314,7 @@ async function testUpdateToCreateFallbackRotationBranch() {
     bot.manager.synchronizeWithChain = async () => {};
     bot.manager.applyGridUpdateBatch = async () => {};
     bot.manager.persistGrid = async () => ({ isValid: true });
-    bot.manager._commitWorkingGrid = async () => {};
+    bot.manager._commitWorkingGrid = async () => true;
 
     chainOrders.buildUpdateOrderOp = async () => { throw new Error('Order 1.7.999015b not found'); };
     chainOrders.buildCreateOrderOp = async (account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => {
@@ -1326,7 +1329,7 @@ async function testUpdateToCreateFallbackRotationBranch() {
     });
 
     const cowResult = {
-        workingGrid: {}, workingIndexes: {}, workingBoundary: {},
+        workingGrid: new WorkingGrid(bot.manager.orders, { baseVersion: 0 }), workingIndexes: {}, workingBoundary: {},
         actions: [{
             type: COW_ACTIONS.UPDATE,
             id: oldSlotId,
@@ -1363,7 +1366,7 @@ async function testUpdateToCreateFallbackCreateAlsoFails() {
 
     bot.manager.orders.set(slotId, { id: slotId, type: 'sell', price: 0.05, size: 100, orderId: actionOrderId });
     bot.manager.persistGrid = async () => ({ isValid: true });
-    bot.manager._commitWorkingGrid = async () => {};
+    bot.manager._commitWorkingGrid = async () => true;
     bot.manager.logger.log = (msg, level) => {
         if (level === 'error') loggedError = msg;
         if (level === 'warn') loggedWarn = msg;
@@ -1373,7 +1376,7 @@ async function testUpdateToCreateFallbackCreateAlsoFails() {
     chainOrders.buildCreateOrderOp = async () => { throw new Error('insufficient funds'); };
 
     const cowResult = {
-        workingGrid: {}, workingIndexes: {}, workingBoundary: {},
+        workingGrid: new WorkingGrid(bot.manager.orders, { baseVersion: 0 }), workingIndexes: {}, workingBoundary: {},
         actions: [{
             type: COW_ACTIONS.UPDATE,
             id: slotId, orderId: actionOrderId,

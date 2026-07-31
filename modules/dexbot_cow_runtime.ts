@@ -19,10 +19,11 @@ const {
     buildOutsideInPairGroups,
     isOrderPlaced,
 } = require('./order/utils/order');
-const { validateCreateTargetSlots } = require('./order/utils/validate');
+const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = require('./order/utils/validate');
 const { validateOrderSize, findPriceCollision } = require('./order/utils/math');
 // Lazy accessor so test mocks on the math module export take effect at call time.
 function getAssetFees(...args: any) { return require('./order/utils/math').getAssetFees(...args); }
+function getAssetFeesSafe(...args: any) { return require('./order/utils/math').getAssetFeesSafe(...args); }
 const {
     COW_ACTIONS,
     ORDER_STATES,
@@ -32,6 +33,13 @@ const {
 const Format = require('./order/format');
 const { WorkingGrid } = require('./order/working_grid');
 const { getErrorMessage } = require('./utils/errors');
+
+// Maximum number of times the pre-broadcast staleness guard may re-plan the
+// batch from a fresh master before proceeding anyway. Bounded so a master
+// grid that keeps mutating (fill bursts, sync loops) can never livelock the
+// pipeline: after one re-plan the batch is shipped regardless, and the
+// commit-time guard + post-refused-commit chain adoption close divergence.
+const STALE_PLAN_REPLAN_LIMIT = 1;
 
 /**
  * Group orders into outside-in pairs for atomic create execution.
@@ -633,17 +641,57 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
                 if (entry.order?.id && entry.order?.size && entry.order?.type) {
                     const slot = bot.manager.orders.get(entry.order.id);
                     if (slot) {
-                        bot.manager.logger.log(
-                            `[COW][UNCERTAIN] Restored target size for discarded CREATE slot ${entry.slotId} (size: ${entry.order.size})`,
-                            'debug'
-                        );
-                        const updates = [{
-                            ...slot,
-                            size: entry.order.size,
-                            price: entry.order.price,
-                        }];
-                        if (typeof bot.manager.applyGridUpdateBatch === 'function') {
-                            await bot.manager.applyGridUpdateBatch(updates, 'uncertain-broadcast-discard-restore');
+                        const plannedType = entry.order.type;
+                        if (plannedType === ORDER_TYPES.BUY || plannedType === ORDER_TYPES.SELL) {
+                            // Creation-uncertain state: the broadcast MAY have
+                            // landed on chain even though no match was found yet.
+                            // Keep the planned type and size on the slot (VIRTUAL)
+                            // instead of restoring the SPREAD placeholder, whose
+                            // size is normalized to 0 by the SPREAD invariant.
+                            // A possibly-landed order must never be released as a
+                            // clean hole — that frees the slot for a duplicate
+                            // CREATE and later orphan adoption double-commits the
+                            // funds. The next sync's orphan adoption reconciles a
+                            // landed order into this slot cleanly.
+                            bot.manager.logger.log(
+                                `[COW][UNCERTAIN] Restored creation-uncertain state for slot ${entry.slotId} ` +
+                                `(type=${plannedType}, size: ${entry.order.size}); next sync adoption will reconcile any landed order`,
+                                'warn'
+                            );
+                            const updates = [{
+                                ...slot,
+                                type: plannedType,
+                                size: entry.order.size,
+                                price: entry.order.price,
+                                state: ORDER_STATES.VIRTUAL,
+                                // Clear any stale order identity: the broadcast
+                                // MAY have landed, but the slot must look like a
+                                // clean adoption target (no orderId/rawOnChain)
+                                // so the next sync's orphan adoption can reconcile
+                                // a landed order into it. A retained orderId would
+                                // make pass-2 adoption skip the slot (it requires
+                                // !adoptedSlot.orderId), leaving the landed order
+                                // unmatched and auto-cancelled; a stale rawOnChain
+                                // would feed a bogus drift signal.
+                                orderId: null,
+                                rawOnChain: null,
+                            }];
+                            if (typeof bot.manager.applyGridUpdateBatch === 'function') {
+                                await bot.manager.applyGridUpdateBatch(updates, 'uncertain-broadcast-discard-restore');
+                            }
+                        } else {
+                            bot.manager.logger.log(
+                                `[COW][UNCERTAIN] Restored target size for discarded CREATE slot ${entry.slotId} (size: ${entry.order.size})`,
+                                'debug'
+                            );
+                            const updates = [{
+                                ...slot,
+                                size: entry.order.size,
+                                price: entry.order.price,
+                            }];
+                            if (typeof bot.manager.applyGridUpdateBatch === 'function') {
+                                await bot.manager.applyGridUpdateBatch(updates, 'uncertain-broadcast-discard-restore');
+                            }
                         }
                     }
                 }
@@ -1471,9 +1519,11 @@ function restoreSkippedUpdateSlotsInWorkingGrid(bot: any, workingGrid: any, skip
  * COW broadcast: Execute blockchain operations and commit working grid on success.
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {Object} cowResult
+ * @param {Object} [options={}] - Internal execution options (replanDepth)
  * @returns {Promise<Object>}
  */
-async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
+async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: any = {}) {
+    const replanDepth = Number.isFinite(Number(options?.replanDepth)) ? Number(options.replanDepth) : 0;
     bot._currentCycleId = (Number.isFinite(Number(bot._currentCycleId)) ? Number(bot._currentCycleId) : 0) + 1;
     const { workingGrid, workingIndexes, workingBoundary, actions } = cowResult;
 
@@ -2038,7 +2088,12 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
         }
 
         if (operations.length === 0) {
-            bot.manager._resetRebalanceStateToDepth();
+            // Pop the working grid: in the re-plan recursion the fresh plan's
+            // grid was pushed by performSafeRebalance, and nothing downstream
+            // will commit it — leaving it on the stack would stick the manager
+            // in REBALANCING permanently (the outer frame already popped its
+            // own grid before recursing). Popping an empty stack is a no-op.
+            bot.manager._clearWorkingGridRef();
             return { executed: false, hadRotation: false };
         }
 
@@ -2047,8 +2102,116 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
 
         if (!validation.isValid) {
             bot.manager.logger.log(`Skipping batch broadcast: ${validation.violations!.length} fund violation(s) detected`, 'warn');
-            bot.manager._resetRebalanceStateToDepth();
+            bot.manager._clearWorkingGridRef();
             return { executed: false, hadRotation: false };
+        }
+
+        // Refuse stale plans BEFORE broadcasting: a master-grid change during
+        // planning (fills, syncs) makes the working grid invalid. Broadcasting
+        // anyway would place orders the commit will refuse to register, leaving
+        // on-chain state ahead of the grid.
+        // NOTE: the commit-time evaluateCommit also rejects empty deltas; here
+        // (pre-broadcast) that case is already covered by the operations.length
+        // guard above, so only staleness and version-mismatch are checked.
+        //
+        // Regression-safe policy (bounded re-plan + proceed):
+        //   * First staleness hit → re-plan ONCE from fresh master using the
+        //     same fills; the recursion re-runs this guard against the fresh
+        //     plan. A re-plan with no executable actions means the grid is
+        //     already consistent post-fills — the stale plan must NOT ship.
+        //   * Still stale (master kept mutating), or no fill context to re-plan
+        //     with → PROCEED with the plan anyway and request a structural
+        //     resync. Never hard-abort on staleness: an abort would silently
+        //     drop the fill set that triggered this rebalance
+        //     (_processFillsWithBatching only hard-aborts on illegal-state or
+        //     accounting failures), and the post-broadcast commit guard +
+        //     chain adoption below close any residual divergence.
+        const preBroadcastGuard = evaluateCommit(workingGrid, {
+            hasLock: false,
+            currentVersion: bot.manager._gridVersion
+        });
+        if (!preBroadcastGuard.canCommit) {
+            const canReplan = replanDepth < STALE_PLAN_REPLAN_LIMIT
+                && Array.isArray(cowResult.fills) && cowResult.fills.length > 0;
+            if (canReplan) {
+                bot.manager.logger.log(
+                    `[COW] Plan stale pre-broadcast (${preBroadcastGuard.reason}); re-planning once from fresh master`,
+                    'warn'
+                );
+                // Abandon the original plan's working grid: it can no longer
+                // commit. Pop it so the rebalance stack stays balanced — the
+                // fresh plan's grid (pushed by performSafeRebalance below) is
+                // popped by the recursion's own commit/cleanup path.
+                if (typeof bot.manager._clearWorkingGridRef === 'function') {
+                    bot.manager._clearWorkingGridRef();
+                }
+                let replanned: any = null;
+                try {
+                    if (typeof bot.manager.performSafeRebalance === 'function') {
+                        replanned = await bot.manager.performSafeRebalance(
+                            cowResult.fills,
+                            cowResult.excludeIds || new Set()
+                        );
+                    }
+                } catch (replanErr: any) {
+                    bot.manager.logger.log(
+                        `[COW] Re-plan failed: ${getErrorMessage(replanErr)}; proceeding with original plan`,
+                        'warn'
+                    );
+                }
+                if (replanned && !replanned.aborted) {
+                    if (hasExecutableActions(replanned)) {
+                        // The original plan's ops are abandoned with its working
+                        // grid; drop their pending-broadcast entries too, or the
+                        // recursion's own pending-broadcast guard would reject
+                        // the fresh plan's CREATEs. Safe to clear all: any prior
+                        // entries would have aborted this batch at the guard.
+                        if (bot.manager?._pendingBroadcasts instanceof Map) {
+                            clearPendingBroadcasts(bot.manager._pendingBroadcasts);
+                        }
+                        return await updateOrdersOnChainBatchCOW(bot, replanned, {
+                            replanDepth: replanDepth + 1
+                        });
+                    }
+                    // Re-plan confirms the grid is already consistent
+                    // post-fills; the stale original plan must NOT ship.
+                    // Pop the fresh plan's grid too (it was never committed).
+                    if (typeof bot.manager._clearWorkingGridRef === 'function') {
+                        bot.manager._clearWorkingGridRef();
+                    }
+                    if (bot.manager?._pendingBroadcasts instanceof Map) {
+                        clearPendingBroadcasts(bot.manager._pendingBroadcasts);
+                    }
+                    bot.manager.logger.log(
+                        '[COW] Re-plan produced no executable actions; grid is already consistent post-fills, skipping stale plan',
+                        'info'
+                    );
+                    return { executed: false, hadRotation: false, skippedStalePlan: true };
+                }
+                bot.manager.logger.log(
+                    '[COW] Re-plan unavailable; proceeding with original plan (commit guard + chain adoption close divergence)',
+                    'warn'
+                );
+                await requestStructuralResync(
+                    bot,
+                    're-plan unavailable (proceeding with original plan)',
+                    { reason: preBroadcastGuard.reason }
+                );
+            } else {
+                bot.manager.logger.log(
+                    `[COW] Plan stale pre-broadcast (${preBroadcastGuard.reason}); ` +
+                    (replanDepth >= STALE_PLAN_REPLAN_LIMIT
+                        ? 'still stale after re-plan — proceeding with plan (commit guard + chain adoption close divergence)'
+                        : 'no fill context for re-plan — proceeding with plan (commit guard + chain adoption close divergence)'),
+                    'warn'
+                );
+                await requestStructuralResync(
+                    bot,
+                    'plan stale pre-broadcast (proceeding with plan)',
+                    { reason: preBroadcastGuard.reason }
+                );
+            }
+            // Fall through: proceed with the current plan (bounded policy).
         }
 
         await bot._ensureCredentialDaemonWritable('COW batch broadcast');
@@ -2096,12 +2259,44 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                 applyRotationTransitionsToWorkingGrid(bot, workingGrid, executedContexts);
 
                 bot.manager.logger.log('[COW] Blockchain success - committing working grid to master', 'info');
-                await bot.manager._commitWorkingGrid(
+                const commitOk = await bot.manager._commitWorkingGrid(
                     workingGrid,
                     workingIndexes,
                     workingBoundary,
                     { skipRecalc: true }
                 );
+                if (!commitOk) {
+                    // Master changed during broadcast (e.g. a fill landed and was
+                    // processed concurrently) so the commit was refused. The batch
+                    // is on chain; adopt the placed orders from the chain so master
+                    // converges instead of remaining divergent until a later sync.
+                    bot.manager.logger.log(
+                        '[COW] Commit refused after broadcast; adopting placed orders from chain to keep master in sync',
+                        'warn'
+                    );
+                    const adopted = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW]');
+                    if (!adopted) {
+                        // Chain state unknown (empty/lagging read or sync failure):
+                        // keep the pending-broadcast protection so a later plan
+                        // cannot duplicate the placed orders, and let the structural
+                        // resync adopt them from the chain.
+                        bot.manager.logger.log(
+                            '[COW] Commit refused and chain adoption unavailable; keeping pending-broadcast protection pending structural resync',
+                            'error'
+                        );
+                        await requestStructuralResync(
+                            bot,
+                            'commit refused after broadcast (chain adoption unavailable)',
+                            { reason: 'chain-adoption-unavailable' }
+                        );
+                        return { executed: false, hadRotation: false, commitRefused: true, chainAdoptionPending: true };
+                    }
+                    // Deduct create fees for the placed orders (mirrors
+                    // processBatchResults, which the refused path bypasses).
+                    await applyAdoptionFeeAccounting(bot, executedContexts);
+                    await persistGridAndClearPendingBroadcasts(bot, '[COW]');
+                    return { executed: false, hadRotation: false, commitRefused: true };
+                }
                 
                 const batchResult = await processBatchResults(bot, result, executedContexts);
 
@@ -2138,7 +2333,6 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                 }
 
                 bot._metrics.batchesExecuted++;
-                bot.manager._clearWorkingGridRef();
                 clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
 
                 return { ...batchResult, executed: true, hadRotation: true };
@@ -2198,28 +2392,48 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
                         );
                     }
                     applyRotationTransitionsToWorkingGrid(bot, workingGrid, opContexts);
-                    await bot.manager._commitWorkingGrid(
+                    const pollCommitOk = await bot.manager._commitWorkingGrid(
                         workingGrid,
                         workingIndexes,
                         workingBoundary,
                         { skipRecalc: true }
                     );
-                    // Enrich master grid with chain-assigned order IDs and amounts
-                    try {
-                        const accountRef = bot.accountId || bot.account?.id || bot.account;
-                        const freshChain = await chainOrders.readOpenOrders(accountRef);
-                        if (freshChain.length > 0 && typeof bot.manager.syncFromOpenOrders === 'function') {
-                            await bot.manager.syncFromOpenOrders(freshChain, { skipAccounting: true });
-                        }
-                    } catch (syncErr: any) {
+                    if (!pollCommitOk) {
+                        // Master moved while polling — same recovery as the
+                        // refused-commit path: adopt from chain, keep pending
+                        // protection if adoption is unavailable.
                         bot.manager.logger.log(
-                            `[COW][UNCERTAIN] Chain sync after poll-confirmed commit failed: ${getErrorMessage(syncErr)}`,
+                            `[COW][UNCERTAIN] Poll-confirmed commit refused; adopting placed orders from chain`,
                             'warn'
                         );
+                        const pollAdopted = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW][UNCERTAIN]');
+                        if (!pollAdopted) {
+                            bot.manager.logger.log(
+                                '[COW][UNCERTAIN] Poll-refused commit with unavailable chain adoption; keeping pending protection pending structural resync',
+                                'error'
+                            );
+                            await requestStructuralResync(
+                                bot,
+                                'poll-confirmed commit refused (chain adoption unavailable)',
+                                { reason: 'chain-adoption-unavailable' }
+                            );
+                            return { executed: false, hadRotation: false, commitRefused: true, chainAdoptionPending: true };
+                        }
+                        await applyAdoptionFeeAccounting(bot, opContexts);
+                        await persistGridAndClearPendingBroadcasts(bot, '[COW][UNCERTAIN]');
+                        return { executed: false, hadRotation: false, commitRefused: true, uncertainResolved: true };
                     }
-                    await bot.manager.persistGrid();
-                    bot.manager._clearWorkingGridRef();
-                    clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
+                    // Enrich master grid with chain-assigned order IDs and amounts;
+                    // accounting enabled so the adopted orders' capital is locked
+                    // and any cancelled orders release theirs. Adoption is
+                    // best-effort here: the commit already succeeded, so a sync
+                    // failure only delays enrichment until the next sync.
+                    await adoptPlacedBatchFromChain(bot, chainOrders, '[COW][UNCERTAIN]');
+                    // The commit happened without processBatchResults (no success
+                    // result to extract); deduct create fees so the optimistic
+                    // balance reflects the on-chain cost.
+                    await applyAdoptionFeeAccounting(bot, opContexts);
+                    await persistGridAndClearPendingBroadcasts(bot, '[COW][UNCERTAIN]');
                     return { executed: true, hadRotation: false, uncertainResolved: true };
                 }
             } catch (pollErr: any) {
@@ -2268,6 +2482,113 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any) {
 
         if (!bot._shuttingDown && bot._incomingFillQueue.length > 0) {
             bot._scheduleFillConsumerRestart(chainOrders);
+        }
+    }
+}
+
+/**
+ * Request a structural grid resync with the recovery-state flag raised, so a
+ * later plan cannot duplicate orders placed by a batch whose chain adoption is
+ * pending. No-op when the manager has no structural-resync handler.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {string} reason - Human-readable resync reason
+ * @param {Object} [details={}] - Details passed to the resync handler
+ */
+async function requestStructuralResync(bot: any, reason: string, details: any = {}) {
+    if (typeof bot.manager?.requestStructuralGridResync !== 'function') return;
+    if (bot.manager._recoveryState) {
+        bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: true };
+    }
+    await bot.manager.requestStructuralGridResync(reason, details);
+}
+
+/**
+ * Adopt a batch's placed orders from the chain after the commit was refused
+ * or after a poll-confirmed uncertain commit. The batch ops are already on
+ * chain but never reached master, so a full chain sync with accounting
+ * enabled locks the placed orders' capital and releases any cancelled ones.
+ * Returns true when the adoption sync ran; false when the chain state could
+ * not be read (empty/lagging read or sync failure) — the caller then keeps
+ * the pending-broadcast protection and defers adoption to a structural resync.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Object} chainOrders - Chain orders module
+ * @param {string} logPrefix - Log prefix for sync failure messages
+ * @returns {Promise<boolean>}
+ */
+async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: string): Promise<boolean> {
+    try {
+        const accountRef = bot.accountId || bot.account?.id || bot.account;
+        const freshChain = await chainOrders.readOpenOrders(accountRef);
+        if (freshChain.length > 0 && typeof bot.manager.syncFromOpenOrders === 'function') {
+            await bot.manager.syncFromOpenOrders(freshChain, { skipAccounting: false });
+            return true;
+        }
+    } catch (syncErr: any) {
+        bot.manager.logger.log(
+            `${logPrefix} Chain sync after batch broadcast failed: ${getErrorMessage(syncErr)}`,
+            'error'
+        );
+    }
+    return false;
+}
+
+/**
+ * Persist the master grid after a chain adoption and clear the pending
+ * broadcast protection. Persist failures are logged, not thrown — the
+ * in-memory master is authoritative and the next sync/persist converges disk.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {string} logPrefix - Log prefix for persist failure messages
+ */
+async function persistGridAndClearPendingBroadcasts(bot: any, logPrefix: string) {
+    try {
+        await bot.manager.persistGrid();
+    } catch (persistErr: any) {
+        bot.manager.logger.log(
+            `${logPrefix} Persist after chain adoption failed: ${getErrorMessage(persistErr)}`,
+            'error'
+        );
+    }
+    clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
+}
+
+/**
+ * Apply BTS create-fee accounting for a batch that bypassed the normal
+ * processBatchResults pipeline (commit refused after broadcast, or
+ * poll-confirmed uncertain commit). Mirrors the create branch of
+ * processBatchResults using master-grid state after chain adoption, so the
+ * optimistic balance reflects the on-chain create cost.
+ *
+ * Safe on adopted/committed slots only: the slot must already carry its
+ * orderId, so the transition old(ACTIVE)→new(ACTIVE) is delta-zero and only
+ * the fee is applied — no double capital commitment. Cancel/rotation fee
+ * accounting is intentionally skipped: the chain sync already performed the
+ * capital release for cancelled orders (diff-based, applying it again would
+ * double-release), and rotations without a committed destination cannot be
+ * accounted locally.
+ * @param {import('./dexbot_class').DEXBot} bot
+ * @param {Array<Object>} contexts - Executed op contexts (create/rotation/cancel)
+ */
+async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
+    if (!bot.manager?.accountant || !Array.isArray(contexts) || contexts.length === 0) return;
+    const btsFeeData = getAssetFeesSafe('BTS');
+
+    for (const ctx of contexts) {
+        if (ctx?.kind !== 'create') continue;
+        const slot = ctx.order?.id ? bot.manager.orders.get(ctx.order.id) : null;
+        if (!slot?.orderId) continue;
+        try {
+            await bot.manager.synchronizeWithChain({
+                gridOrderId: ctx.order.id,
+                chainOrderId: slot.orderId,
+                isPartialPlacement: false,
+                expectedType: ctx.order.type,
+                fee: btsFeeData?.createFee || 0,
+            }, 'createOrder');
+        } catch (feeErr: any) {
+            bot.manager.logger.log(
+                `[COW] Adoption fee accounting failed for create slot ${ctx.order.id}: ${getErrorMessage(feeErr)}`,
+                'warn'
+            );
         }
     }
 }

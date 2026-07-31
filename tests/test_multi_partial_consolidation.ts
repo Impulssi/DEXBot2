@@ -80,21 +80,22 @@ async function testMultiPartialConsolidation() {
     // Check that we have some actions
     assert(result.actions.length > 0, 'Should have actions for partials');
 
-    // In modern architecture, activeOrders=2 window will keep p3 and sell-v3?
-    // Let's see roles. startPrice=1.0. Prices=[1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
-    // splitIdx for 1.0 is 0. gapSlots=2. boundaryIdx=-1.
-    // Slots 0, 1 are SPREAD. Slots 2... are SELL.
-    // Slot 2: 1.10 (p3) is SELL.
-    // Slot 3: 1.15 (sell-v2) is SELL.
-    // Slot 4: 1.20 (p2) is SELL.
-    // Window of 2: p3 and sell-v2.
-    // p2 and p1 are outside window -> should be CANCELLED.
-    
-    const cancelP1 = result.actions.find(a => a.type === 'cancel' && a.id === 'sell-0');
-    const cancelP2 = result.actions.find(a => a.type === 'cancel' && a.id === 'sell-1');
-    const updateP3 = result.actions.find(a => a.type === 'update' && a.id === 'sell-2');
+    // Modern rotation-first strategy. The BUY fill at 0.95 crawls the boundary
+    // left: the buy-0 slot (0.90) turns into a SELL slot and sell-2 (1.10)
+    // becomes the SPREAD slot. Target window holds the two in-zone SELL slots.
+    // On-chain orders outside the window are surplus and get ROTATED (UPDATE)
+    // into empty in-window holes: sell-0 -> buy-0 slot, sell-1 -> sell-v3.
+    // The partial whose slot became SPREAD (sell-2) has no rotation target
+    // and is CANCELLED ('surplus-no-rotation-target'). All three partials
+    // must be resolved (rotated or cancelled) - none left dangling.
 
-    assert(cancelP1 || cancelP2 || updateP3, 'Should handle at least one of the partials');
+    const updateP1 = result.actions.find(a => a.type === 'update' && a.id === 'sell-0' && a.newGridId === 'buy-0');
+    const updateP2 = result.actions.find(a => a.type === 'update' && a.id === 'sell-1' && a.newGridId === 'sell-v3');
+    const cancelP3 = result.actions.find(a => a.type === 'cancel' && a.id === 'sell-2');
+
+    assert(updateP1, 'sell-0 (p1) should be rotated into the buy-0 slot');
+    assert(updateP2, 'sell-1 (p2) should be rotated into the sell-v3 slot');
+    assert(cancelP3, 'sell-2 (p3) should be cancelled (no rotation target)');
 
     console.log(`  ✓ Multi-partial handling verified via unified strategy (COW)`);
 }

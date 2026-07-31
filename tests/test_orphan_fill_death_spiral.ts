@@ -215,13 +215,15 @@ async function runTests() {
 
     // Call with parameters that match the modified accountTotals
     // chainFreeBuy = 10000, chainBuy = 0 → expected = 10000
-    // actual = 10020 → diff = 20
+    // actual = 10020 → diff = 20 (actualBuy/actualSell passed explicitly)
     await bot.manager.accountant._verifyFundInvariants(
       bot.manager,
       10000,  // chainFreeBuy
       100,    // chainFreeSell
       0,      // chainBuy
       0,      // chainSell
+      bot.manager.accountTotals.buy,   // actualBuy = 10020
+      bot.manager.accountTotals.sell,  // actualSell = 100
     );
 
     assert.strictEqual(violationDetected, false,
@@ -237,6 +239,8 @@ async function runTests() {
       100,    // chainFreeSell
       0,      // chainBuy
       0,      // chainSell
+      bot.manager.accountTotals.buy,   // actualBuy = 10020
+      bot.manager.accountTotals.sell,  // actualSell = 100
     );
 
     assert.strictEqual(violationDetected, true,

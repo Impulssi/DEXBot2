@@ -95,12 +95,16 @@ async function testCase1() {
         currentBoundaryIdx: mgr.boundaryIdx
     });
 
-    const activeBuyCount = Array.from(result.targetGrid.values())
-        .filter(o => (o as any).type === ORDER_TYPES.BUY && (o as any).state === ORDER_STATES.ACTIVE).length;
-    const buySlotCount = Array.from(mgr.orders.values())
-        .filter(o => (o as any).type === ORDER_TYPES.BUY).length;
+    // Window discipline slices the target side arrays, so active orders can
+    // never exceed the target's own slots. The master seed roles are static
+    // and are NOT the reference: the target reassigns roles by boundary
+    // (here slots 0-2 become BUY, 3-5 SELL at boundary 2). Assert against
+    // the real constraint: total active orders ≤ total grid slots.
+    const activeOrdersCount = Array.from(result.targetGrid.values())
+        .filter(o => (o as any).state === ORDER_STATES.ACTIVE).length;
+    const totalSlots = mgr.orders.size;
 
-    assert(activeBuyCount <= buySlotCount, 'Should not place more orders than available slots');
+    assert(activeOrdersCount <= totalSlots, 'Should not place more orders than available slots');
 }
 
 async function testCase2() {

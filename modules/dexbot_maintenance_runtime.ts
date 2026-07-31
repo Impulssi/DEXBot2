@@ -788,6 +788,7 @@ function updateBotGridResetMetadata(botKey: any, options: { resetAt?: string; re
  * recalculate the grid, persist, and record reset metadata.
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {import('./types').GridResyncOptions} [options] - Grid resync options
+ * @param {boolean} [options.skipIdle=false] - Skip the idle-cooldown deferral
  * @returns {Promise<boolean>} True if resync succeeded
  */
 function performGridResync(bot: any, options: {
@@ -795,6 +796,7 @@ function performGridResync(bot: any, options: {
     centerRefreshContext?: string;
     centerRefreshLabel?: string;
     resetSource?: string;
+    skipIdle?: boolean;
 } = {}) {
     const self = bot;
     let success = false;
@@ -802,8 +804,9 @@ function performGridResync(bot: any, options: {
     const centerRefreshContext = options.centerRefreshContext || (refreshCenterPrice ? 'grid reset recenter' : 'grid resync');
     const centerRefreshLabel = options.centerRefreshLabel || (refreshCenterPrice ? 'grid reset' : 'grid resync');
     const resetSource = options.resetSource || (refreshCenterPrice ? 'manual_grid_resync' : 'dexbot_grid_resync');
+    const skipIdle = options.skipIdle === true;
     const idleDelayMs = getMaintenanceIdleDelayMs(self);
-    if (idleDelayMs > 0) {
+    if (!skipIdle && idleDelayMs > 0) {
         self._log(
             `[MAINT-IDLE] Deferring grid resync until bot is idle` +
             ` (next check in ${Math.ceil(idleDelayMs / TIMING.MILLISECONDS_PER_SECOND)}s)`,
@@ -1972,10 +1975,10 @@ function setupDustHealthCheckInterval(bot: any) {
  * Request a full grid reset from fresh on-chain state.
  * @param {import('./dexbot_class').DEXBot} bot
  * @param {string} [reason='structural change']
- * @param {{refreshCenterPrice?: boolean}} [options={}]
+ * @param {{refreshCenterPrice?: boolean, skipIdle?: boolean, skipFillLock?: boolean}} [options={}]
  * @returns {Promise<Object>}
  */
-async function requestGridReset(bot: any, reason: any = 'structural change', options: { refreshCenterPrice?: boolean } = {}) {
+async function requestGridReset(bot: any, reason: any = 'structural change', options: { refreshCenterPrice?: boolean; skipIdle?: boolean; skipFillLock?: boolean } = {}) {
     if (!bot.manager || typeof bot._performGridResync !== 'function') {
         return { skipped: true, reason: 'grid resync unavailable' };
     }
@@ -1987,8 +1990,20 @@ async function requestGridReset(bot: any, reason: any = 'structural change', opt
         refreshCenterPrice: options.refreshCenterPrice !== false,
     };
 
-    if (!bot.manager._fillProcessingLock || bot.manager._fillProcessingLock.isReentrant()) {
-        return performGridResync(bot, resetOptions);
+    // Structural recovery resyncs are chain-read/rebuild operations that do not
+    // mutate order state in place; running them behind the fill-processing lock
+    // lets a fill storm starve recovery indefinitely. Skip the lock when the
+    // caller explicitly requests it (structural resync wiring). While the
+    // rebuild runs unlocked, raise _recoverySyncInFlight so the fill consumer
+    // defers fills entirely (no concurrent mutation race) instead of racing
+    // them behind a lock.
+    if (options.skipFillLock === true || !bot.manager._fillProcessingLock || bot.manager._fillProcessingLock.isReentrant()) {
+        bot._recoverySyncInFlight = (bot._recoverySyncInFlight || 0) + 1;
+        try {
+            return await performGridResync(bot, resetOptions);
+        } finally {
+            bot._recoverySyncInFlight = Math.max(0, (bot._recoverySyncInFlight || 0) - 1);
+        }
     }
 
     return bot.manager._fillProcessingLock.acquire(async () => performGridResync(bot, resetOptions));
@@ -2013,9 +2028,20 @@ function wireStructuralGridResyncRequest(bot: any) {
         const unmatchedCount = Array.isArray(details?.unmatchedChainOrders)
             ? details.unmatchedChainOrders.length
             : 0;
-        bot._structuralGridResyncTimer = setTimeout(async () => {
+        const runStructuralResync = async () => {
             bot._structuralGridResyncTimer = null;
             if (bot._shuttingDown) return;
+
+            // A COW batch can be mid-broadcast (its broadcast phase holds no
+            // grid lock, only the commit does). Reloading the persisted grid
+            // underneath it would race the commit and force an avoidable
+            // commit refusal + re-adoption cycle. Defer until the batch
+            // completes; the fill consumer is already gated on _batchInFlight,
+            // so this only blocks the recovery itself, never new fills.
+            if (bot._batchInFlight > 0) {
+                bot._structuralGridResyncTimer = setTimeout(runStructuralResync, TIMING.LOCK_REFRESH_MIN_MS);
+                return;
+            }
 
             bot._structuralGridResyncRunning++;
             try {
@@ -2031,6 +2057,11 @@ function wireStructuralGridResyncRequest(bot: any) {
                     bot._warn(`[RECOVERY] Running structural full grid resync for ${reason}${suffix}`);
                     const resetResult = await bot.requestGridReset('rms_structural_grid_resync', {
                         refreshCenterPrice: true,
+                        // Structural resync is a chain-read/rebuild; do not let a
+                        // fill storm starve it behind the idle cooldown or the
+                        // fill-processing lock.
+                        skipIdle: true,
+                        skipFillLock: true,
                     });
                 if (resetResult && bot.manager?._recoveryState) {
                     bot.manager._recoveryState = { ...bot.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
@@ -2043,7 +2074,8 @@ function wireStructuralGridResyncRequest(bot: any) {
                     bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: false };
                 }
             }
-        }, 0);
+        };
+        bot._structuralGridResyncTimer = setTimeout(runStructuralResync, 0);
 
         return { scheduled: true };
     };

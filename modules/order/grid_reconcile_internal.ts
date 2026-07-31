@@ -8,7 +8,7 @@
 
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
-import { getMinAbsoluteOrderSize, getAssetFees, blockchainToFloat, findPriceCollision } from './utils/math';
+import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, floatToBlockchainInt, calculatePriceTolerance } from './utils/math';
 import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults } from './utils/order';
 import { resolveAccountRef } from './utils/system';
 import * as Format from './format';
@@ -230,7 +230,7 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
  * @param {boolean} params.dryRun - Whether to simulate.
  * @returns {Promise<void>}
  */
-async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun }: { chainOrders: any; account: any; privateKey: any; manager: any; gridOrder: any; dryRun: any; }): Promise<string | null> {
+async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun, extraOptions = {} }: { chainOrders: any; account: any; privateKey: any; manager: any; gridOrder: any; dryRun: any; extraOptions?: any }): Promise<string | null> {
     if (dryRun) return null;
 
     // ATOMIC RE-VERIFICATION: Ensure slot is still virtual and hasn't been filled by recovery sync.
@@ -274,7 +274,8 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         minToReceive,
         receiveAssetId,
         null,
-        false
+        false,
+        extraOptions
     );
 
     if (result && result.skipped) {
@@ -704,6 +705,77 @@ async function _executeStartupSequentialUpdateFallback({
     return { executed, skipped, failed };
 }
 
+/**
+ * Verify whether an uncertain startup create actually landed on chain, and if
+ * so adopt it via a chain sync so the slot is registered with its real orderId.
+ * Returns the chain order id when the create landed.
+ * Returns the string 'unknown' when the chain state could NOT be verified
+ * (read failure, or an empty read which is indistinguishable from a lagging
+ * node that missed the just-broadcast transaction) — the caller must NOT
+ * re-broadcast on 'unknown', or a landed order would be duplicated.
+ * Returns null only on AUTHORITATIVE absence: a successful non-empty read
+ * that contains no matching order. In that case re-broadcasting is safe.
+ * @private
+ */
+async function _adoptPossiblyLandedCreate({
+    chainOrders,
+    manager,
+    account,
+    gridOrder,
+}: {
+    chainOrders: any;
+    manager: any;
+    account: any;
+    gridOrder: any;
+}): Promise<string | null | 'unknown'> {
+    try {
+        const freshChainOrders = await chainOrders.readOpenOrders(
+            resolveAccountRef(manager, account),
+            TIMING.CONNECTION_TIMEOUT_MS
+        );
+        if (!Array.isArray(freshChainOrders) || freshChainOrders.length === 0) {
+            // Empty read: the account is either genuinely empty (nothing else
+            // open) or the node is lagging. Both are plausible right after an
+            // uncertain broadcast; treat as unverifiable.
+            return 'unknown';
+        }
+
+        const assets = manager?.assets;
+        if (!assets?.assetA || !assets?.assetB) return 'unknown';
+
+        let matched: any = null;
+        for (const o of freshChainOrders) {
+            const parsed = parseChainOrder(o, assets);
+            if (!parsed || parsed.type !== gridOrder.type) continue;
+            if (parsed.orderId && Array.from(manager.orders.values()).some((g: any) => g.orderId === parsed.orderId)) continue;
+            const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, assets) || 0;
+            if (Math.abs(parsed.price - gridOrder.price) > priceTolerance) continue;
+            const precision = gridOrder.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
+            const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(gridOrder.size, precision) * 0.01));
+            if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(gridOrder.size, precision)) > sizeTolerance) continue;
+            matched = o;
+            break;
+        }
+        if (!matched) return null;
+
+        await manager.syncFromOpenOrders(freshChainOrders, {
+            // Accounting enabled: the landed order must be committed in the
+            // optimistic balances (VIRTUAL→ACTIVE locks its capital), or the
+            // funds appear free while locked on chain — same policy as
+            // _recoverStartupSyncFailure and the group-uncertain adoption.
+            skipAccounting: false,
+            source: 'startup-create-uncertain-adopt',
+        });
+        return matched.id || null;
+    } catch (adoptErr: any) {
+        manager?.logger?.log?.(
+            `Startup: Uncertain-create adoption check failed for ${gridOrder?.id}: ${getErrorMessage(adoptErr)}`,
+            'warn'
+        );
+        return 'unknown';
+    }
+}
+
 async function _createStartupOrderWithHandling({
     chainOrders,
     account,
@@ -723,23 +795,68 @@ async function _createStartupOrderWithHandling({
     dryRun: any;
     recovery: any;
 }): Promise<string | null> {
-    try {
-        return await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
-    } catch (err: any) {
-        manager?.logger?.log?.(`Startup: Failed to create ${orderLabel}: ${getErrorMessage(err)}`, 'error');
+    const maxAttempts = 2;
+    let failedWithUncertain = false;
 
-        if (recovery && recovery.triggerMessage && recovery.source) {
-            await _recoverStartupSyncFailure({
-                chainOrders,
-                manager,
-                account,
-                logger: manager?.logger,
-                triggerMessage: recovery.triggerMessage,
-                source: recovery.source,
-                });
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const chainOrderId = await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
+            if (chainOrderId) return chainOrderId;
+            return null;
+        } catch (err: any) {
+            const isUncertain = err?.code === 'BROADCAST_UNCERTAIN' || err?.name === 'BroadcastUncertainError';
+            manager?.logger?.log?.(
+                `Startup: Failed to create ${orderLabel} (attempt ${attempt}/${maxAttempts}${isUncertain ? ', uncertain broadcast' : ''}): ${getErrorMessage(err)}`,
+                'error'
+            );
+
+            if (!isUncertain) break;
+
+            failedWithUncertain = true;
+            const landed = await _adoptPossiblyLandedCreate({ chainOrders, manager, account, gridOrder });
+            if (landed && landed !== 'unknown') {
+                manager?.logger?.log?.(
+                    `Startup: Uncertain create for ${orderLabel} confirmed on chain (${landed}); adopted via chain sync`,
+                    'warn'
+                );
+                return landed;
+            }
+            if (landed === 'unknown') {
+                // Chain state unverifiable (lagging/empty read). Re-broadcasting
+                // now could duplicate an order that actually landed; defer the
+                // create to the next startup reconcile cycle instead.
+                manager?.logger?.log?.(
+                    `Startup: Uncertain create for ${orderLabel} could not be verified on chain; deferring re-broadcast to next reconcile cycle (duplicate-order protection)`,
+                    'warn'
+                );
+                break;
+            }
+            if (attempt < maxAttempts) {
+                manager?.logger?.log?.(
+                    `Startup: Uncertain create for ${orderLabel} not found on chain; retrying (daemon client cycles fallback nodes on retry)`,
+                    'warn'
+                );
+            }
         }
-        return null;
     }
+
+    if (recovery && recovery.triggerMessage && recovery.source) {
+        await _recoverStartupSyncFailure({
+            chainOrders,
+            manager,
+            account,
+            logger: manager?.logger,
+            triggerMessage: recovery.triggerMessage,
+            source: recovery.source,
+        });
+    }
+    if (failedWithUncertain) {
+        manager?.logger?.log?.(
+            `Startup: Create failed for ${orderLabel} after ${maxAttempts} attempt(s); slot kept for next startup reconcile cycle`,
+            'warn'
+        );
+    }
+    return null;
 }
 
 // _extractBatchOperationResults — thin wrapper over shared utility,
@@ -900,15 +1017,87 @@ async function _executeStartupCreateGroupBatch({
                 });
         }
     } catch (err: any) {
-        logger?.log?.(`Startup: Failed to create group ${groupIndex + 1}/${totalGroups}: ${getErrorMessage(err)}`, 'error');
-        await _recoverStartupSyncFailure({
-            chainOrders,
-            manager,
-            account,
-            logger,
-            triggerMessage: recovery.triggerMessage,
-            source: recovery.source,
-        });
+        const isUncertain = err?.code === 'BROADCAST_UNCERTAIN' || err?.name === 'BroadcastUncertainError';
+        logger?.log?.(
+            `Startup: Failed to create group ${groupIndex + 1}/${totalGroups}${isUncertain ? ' (uncertain broadcast)' : ''}: ${getErrorMessage(err)}`,
+            'error'
+        );
+        if (isUncertain) {
+            // The batch may have landed despite the deadline. Verify on chain and
+            // adopt any landed orders via chain sync instead of blindly
+            // re-broadcasting (duplicate order risk).
+            logger?.log?.(
+                `Startup: Verifying uncertain create group ${groupIndex + 1}/${totalGroups} on chain; adopting any landed orders`,
+                'warn'
+            );
+            try {
+                const freshChainOrders = await chainOrders.readOpenOrders(
+                    resolveAccountRef(manager, account),
+                    TIMING.CONNECTION_TIMEOUT_MS
+                );
+                if (Array.isArray(freshChainOrders) && freshChainOrders.length > 0) {
+                    await manager.syncFromOpenOrders(freshChainOrders, {
+                        // Accounting enabled: the batch's created orders were
+                        // never registered (no _applySync ran), so the adoption
+                        // must lock their capital. skipAccounting:true would
+                        // leave the optimistic balances drifted.
+                        skipAccounting: false,
+                        source: 'startup-create-group-uncertain-adopt',
+                    });
+                    // Complete the create accounting (fees + order registration)
+                    // for every group plan whose slot was adopted, and register
+                    // the adopted IDs so the final refresh never cancels them
+                    // as surplus.
+                    const btsFeeData = getAssetFeesSafe('BTS');
+                    for (const item of prepared) {
+                        const plan = item?.plan;
+                        const slot = plan?.gridOrder?.id ? manager.orders.get(plan.gridOrder.id) : null;
+                        if (!slot?.orderId) continue;
+                        try {
+                            await manager._applySync({
+                                gridOrderId: plan.gridOrder.id,
+                                chainOrderId: slot.orderId,
+                                isPartialPlacement: false,
+                                expectedType: plan.gridOrder.type,
+                                fee: btsFeeData?.createFee || 0,
+                            }, 'createOrder');
+                            createdOrderIds.push(slot.orderId);
+                            logger?.log?.(
+                                `Startup: Uncertain create for ${plan.orderLabel} confirmed on chain (${slot.orderId}); adopted + accounted`,
+                                'warn'
+                            );
+                        } catch (applyErr: any) {
+                            logger?.log?.(
+                                `Startup: Adoption accounting failed for ${plan.orderLabel}: ${getErrorMessage(applyErr)}`,
+                                'warn'
+                            );
+                        }
+                    }
+                }
+            } catch (verifyErr: any) {
+                logger?.log?.(
+                    `Startup: Uncertain group verification failed: ${getErrorMessage(verifyErr)}; falling back to recovery sync`,
+                    'error'
+                );
+                await _recoverStartupSyncFailure({
+                    chainOrders,
+                    manager,
+                    account,
+                    logger,
+                    triggerMessage: recovery.triggerMessage,
+                    source: recovery.source,
+                });
+            }
+        } else {
+            await _recoverStartupSyncFailure({
+                chainOrders,
+                manager,
+                account,
+                logger,
+                triggerMessage: recovery.triggerMessage,
+                source: recovery.source,
+            });
+        }
     }
 
     return createdOrderIds;
@@ -948,7 +1137,6 @@ async function _executePlannedStartupCreates({
         const group = groups[i];
         const labels = group.map((p: any) => `${p.orderType.toUpperCase()}:${p.gridOrder?.id}`).join(', ');
         logger?.log?.(`Startup: Create group ${i + 1}/${groups.length} (${labels})`, 'info');
-
         const canBatchCreate = typeof chainOrders?.buildCreateOrderOp === 'function' && typeof chainOrders?.executeBatch === 'function';
         if (group.length > 1 && canBatchCreate) {
             const batchIds = await _executeStartupCreateGroupBatch({
@@ -983,6 +1171,13 @@ async function _executePlannedStartupCreates({
             if (chainOrderId) createdOrderIds.add(chainOrderId);
         }
     }
+
+    const failedCount = Math.max(0, createPlans.length - createdOrderIds.size);
+    logger?.log?.(
+        `Startup: Create execution summary: ${createdOrderIds.size}/${createPlans.length} planned create(s) placed ` +
+        `across ${groups.length} group(s)${failedCount > 0 ? `, ${failedCount} failed/skipped (see error logs)` : ''}`,
+        failedCount > 0 ? 'warn' : 'info'
+    );
 
     return createdOrderIds;
 }

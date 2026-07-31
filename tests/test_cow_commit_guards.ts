@@ -115,6 +115,7 @@ function createCowExecutionFixture(masterOrders = new Map()) {
 
     const postBatchAdjustments = [];
     const manager = {
+        _gridVersion: 0,
         assets: {
             assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
             assetB: { id: '1.3.1', precision: 5, symbol: 'USD' }
@@ -314,7 +315,7 @@ async function testRejectsCreatesWhenUnmatchedChainOrdersExist() {
         })]
     ]);
     const { bot, manager } = createCowExecutionFixture(masterOrders);
-    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 0 });
     let structuralResyncRequests = 0;
     let executeCalls = 0;
 
@@ -407,7 +408,7 @@ async function testNoPostBatchCacheDeductionForCreates() {
     console.log('\n[COW-COMMIT-007] no post-batch cache deduction (handled in real-time by updateOptimisticFreeBalance)...');
 
     const { bot, manager, postBatchAdjustments } = createCowExecutionFixture();
-    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 0 });
 
     const actions = [{
         type: COW_ACTIONS.CREATE,
@@ -490,7 +491,7 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
     console.log('\n[COW-COMMIT-008] no post-batch cache deduction for mixed creates...');
 
     const { bot, manager, postBatchAdjustments } = createCowExecutionFixture();
-    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 0 });
 
     const actions = [
         {
@@ -613,7 +614,7 @@ async function testNoPostBatchCacheDeductionForSizeUpdates() {
         })]
     ]);
     const { bot, manager, postBatchAdjustments } = createCowExecutionFixture(master);
-    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 0 });
 
     const actions = [{
         type: COW_ACTIONS.UPDATE,
@@ -660,6 +661,7 @@ async function testNoPostBatchCacheDeductionForSizeUpdates() {
     let commitCalls = 0;
     manager._commitWorkingGrid = async () => {
         commitCalls += 1;
+        return true;
     };
     const originalExecuteBatch = chainOrders.executeBatch;
     chainOrders.executeBatch = async () => ({ success: true, operation_results: [] });
@@ -761,6 +763,8 @@ async function testToleranceViolationFiltersCreatesOnly() {
 
     let executeBatchOps: any[] = [];
     let executeBatchCalls = 0;
+
+    manager._commitWorkingGrid = async () => true;
 
     chainOrders.buildCancelOrderOp = async () => ({ op_name: 'limit_order_cancel', op_data: {} });
     chainOrders.buildCreateOrderOp = async (_account: any, _amountToSell: any, sellAssetId: string) => ({

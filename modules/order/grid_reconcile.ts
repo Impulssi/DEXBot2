@@ -6,7 +6,7 @@ import {
     _executePlannedStartupCreates, _reconcileStartupSide,
 } from './grid_reconcile_internal';
 import { ORDER_TYPES, ORDER_STATES } from '../constants';
-import { calculatePriceTolerance } from './utils/math';
+import { calculatePriceTolerance, floatToBlockchainInt, getAssetFeesSafe } from './utils/math';
 import {
     isOrderPlaced, parseChainOrder, isOrderOnChain,
 } from './utils/order';
@@ -477,6 +477,55 @@ export async function reconcileGridOrders({
             // This prevents Phase 3 from cancelling legitimately created orders.
             for (const id of phase2CreatedOrderIds) {
                 gridOrderIds.add(id);
+            }
+
+            // Adopt any Phase-2 uncertain-landed chain orders that never made
+            // it into grid slots (the group adoption sync only runs when the
+            // post-uncertain read returned orders). Targeted slot adoption
+            // only: match VIRTUAL/SPREAD slots without an orderId by
+            // type+price+size (within tolerance). Full syncFromOpenOrders is
+            // deliberately NOT used here — its pass-1 virtualizes ACTIVE slots
+            // missing from the snapshot, and a lagging read right after the
+            // Phase-2 broadcast would destroy the confirmed grid.
+            const btsFeeData = getAssetFeesSafe('BTS');
+            for (const entry of freshParsed) {
+                const co: any = entry.chain;
+                const parsed: any = entry.parsed;
+                if (!co?.id || !parsed) continue;
+                if (gridOrderIds.has(co.id)) continue;
+                const candidate: any = Array.from(manager.orders.values()).find((o: any) => {
+                    if (!o || o.orderId || o.state !== ORDER_STATES.VIRTUAL) return false;
+                    if (o.type !== parsed.type && o.type !== ORDER_TYPES.SPREAD) return false;
+                    const tol = calculatePriceTolerance(o.price, o.size, parsed.type, manager.assets) || 0;
+                    if (Math.abs(parsed.price - o.price) > tol) return false;
+                    const precision = parsed.type === ORDER_TYPES.SELL
+                        ? manager.assets.assetA.precision
+                        : manager.assets.assetB.precision;
+                    const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(o.size, precision) * 0.01));
+                    if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(o.size, precision)) > sizeTolerance) return false;
+                    return true;
+                });
+                if (!candidate) continue;
+                try {
+                    await manager._applySync({
+                        gridOrderId: candidate.id,
+                        chainOrderId: co.id,
+                        isPartialPlacement: false,
+                        expectedType: parsed.type,
+                        fee: btsFeeData?.createFee || 0,
+                    }, 'createOrder');
+                    gridOrderIds.add(co.id);
+                    phase2CreatedOrderIds.add(co.id);
+                    logger?.log?.(
+                        `Startup: Adopted uncertain-landed chain order ${co.id} into slot ${candidate.id} (${parsed.type}, price=${parsed.price})`,
+                        'warn'
+                    );
+                } catch (adoptErr: any) {
+                    logger?.log?.(
+                        `Startup: Failed to adopt landed order ${co.id} into slot ${candidate?.id}: ${getErrorMessage(adoptErr)}`,
+                        'warn'
+                    );
+                }
             }
             const staleSurplusCancels: Array<{ chainOrderObj: any; sideLabel: string }> = [];
             for (const side of [ORDER_TYPES.SELL, ORDER_TYPES.BUY]) {

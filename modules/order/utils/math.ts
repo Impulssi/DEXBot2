@@ -378,6 +378,23 @@ function getAssetFees(assetSymbol: any, assetAmount: any = null, isMaker: any = 
 }
 
 /**
+ * Get fee data for an asset without throwing when the fee cache has not been
+ * initialized (e.g. startup reconcile paths that must not hard-fail). Returns
+ * null when fees are unavailable; callers fall back to zero-fee accounting.
+ * @param {string} assetSymbol - Asset symbol (e.g., "BTS", "USD")
+ * @param {number} [assetAmount=null] - Asset amount to calculate net proceeds
+ * @param {boolean} [isMaker=true] - Whether this is a maker or taker
+ * @returns {Object|null} Fee structure or null when fees are not cached
+ */
+function getAssetFeesSafe(assetSymbol: any, assetAmount: any = null, isMaker: any = true) {
+    try {
+        return getAssetFees(assetSymbol, assetAmount, isMaker);
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Calculate available funds for a specific side (buy or sell).
  * Deducts virtual reservations, BTS fees owed, and BTS fee reservation from chain-free balance.
  * 
@@ -1264,7 +1281,7 @@ function getSellStartIdx(boundaryIdx: any, gapSlots: any): number {
     return Number(boundaryIdx ?? 0) + Number(gapSlots) + 1;
 }
 
-export { getBtsSide, getSellStartIdx, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, deductOrderFeesFromFunds, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+export { getBtsSide, getSellStartIdx, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, deductOrderFeesFromFunds, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.

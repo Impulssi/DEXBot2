@@ -37,7 +37,8 @@ import {
     TIMING,
     LOG_LEVEL,
     PIPELINE_TIMING,
-    COW_PERFORMANCE
+    COW_PERFORMANCE,
+    COW_ACTIONS
 } from '../constants';
 import {
     getMinAbsoluteOrderSize,
@@ -161,6 +162,61 @@ class COWRebalanceEngine {
         }
 
         const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid);
+
+        // Stale-price guard: drop BUY create/update priced above the last
+        // same-side shift-eligible fill, and SELL create/update priced below
+        // the last same-side shift-eligible fill. A plan built on stale market
+        // data would place an order that crosses the current spread and fills
+        // immediately; defer it to the next cycle.
+        // - Only shift-eligible fills are used as the reference: partial fills
+        //   (without delayed-rotation trigger) never moved the boundary, so
+        //   their price is not a valid cross-check.
+        // - Only same-side fills are used: a SELL fill's price is the taker
+        //   level of the opposite side and would wrongly veto valid buys (and
+        //   vice versa).
+        // - Both CREATE and UPDATE actions are guarded: the cancel/create
+        //   optimization can convert the same logical placement into an UPDATE
+        //   op, which the CREATE-only check would have missed.
+        const eligibleFills = (Array.isArray(fills) ? fills : []).filter(
+            (f: any) => f?.isPartial !== true || f?.isDelayedRotationTrigger === true
+        );
+        const lastBuyFill = [...eligibleFills].reverse().find((f: any) => f?.type === ORDER_TYPES.BUY);
+        const lastSellFill = [...eligibleFills].reverse().find((f: any) => f?.type === ORDER_TYPES.SELL);
+        const lastBuyFillPrice = lastBuyFill ? toFiniteNumber(lastBuyFill?.price) : NaN;
+        const lastSellFillPrice = lastSellFill ? toFiniteNumber(lastSellFill?.price) : NaN;
+        if ((Number.isFinite(lastBuyFillPrice) || Number.isFinite(lastSellFillPrice)) && optimizedActions.length > 0) {
+            const before = optimizedActions.length;
+            const guarded = optimizedActions.filter((a: any) => {
+                const isPlacement = a?.type === COW_ACTIONS.CREATE || a?.type === COW_ACTIONS.UPDATE;
+                if (!isPlacement) return true;
+                const targetPrice = toFiniteNumber(a?.newPrice ?? a?.order?.price);
+                if (!Number.isFinite(targetPrice)) return true;
+                if (a?.order?.type === ORDER_TYPES.BUY && Number.isFinite(lastBuyFillPrice) && targetPrice > lastBuyFillPrice) {
+                    this.logger?.log(
+                        `[COW] Dropping stale-price BUY ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: price=${targetPrice} > last BUY fill=${lastBuyFillPrice}`,
+                        'warn'
+                    );
+                    return false;
+                }
+                if (a?.order?.type === ORDER_TYPES.SELL && Number.isFinite(lastSellFillPrice) && targetPrice < lastSellFillPrice) {
+                    this.logger?.log(
+                        `[COW] Dropping stale-price SELL ${a.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${a.id}: price=${targetPrice} < last SELL fill=${lastSellFillPrice}`,
+                        'warn'
+                    );
+                    return false;
+                }
+                return true;
+            });
+            if (guarded.length < before) {
+                this.logger?.log(
+                    `[COW] Stale-price guard removed ${before - guarded.length} placement(s); ${guarded.length} action(s) remain`,
+                    'warn'
+                );
+            }
+            optimizedActions.length = 0;
+            optimizedActions.push(...guarded);
+        }
+
         projectTargetToWorkingGrid(workingGrid, targetGrid, { actions: optimizedActions });
 
         const precisions = {
@@ -1222,6 +1278,11 @@ class OrderManager {
 
         if (shouldRebalance) {
             const rebalanceResult = await this.performSafeRebalance(orders, excl);
+            // Carry the fill set + exclusions on the result so the COW batch
+            // executor can re-plan once from fresh master if the plan goes
+            // stale between planning and broadcast.
+            rebalanceResult.fills = orders;
+            rebalanceResult.excludeIds = excl || new Set();
             return rebalanceResult;
         }
 
@@ -1627,7 +1688,8 @@ class OrderManager {
             });
             if (!lockCommitGuard.canCommit) {
                 this.logger.log(`[COW] ${lockCommitGuard.reason}`, lockCommitGuard.level || 'warn');
-                this._clearWorkingGridRef();
+                // Working grid ref is cleared exactly once below via the
+                // !committed path (the callback returns without committing).
                 return;
             }
 

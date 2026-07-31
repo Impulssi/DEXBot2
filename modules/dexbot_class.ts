@@ -1585,8 +1585,8 @@ class DEXBot {
      * @returns {Promise<Object>} The batch result.
      * @private
      */
-    async _updateOrdersOnChainBatchCOW(cowResult: any) {
-        return cowRuntime.updateOrdersOnChainBatchCOW(this, cowResult);
+    async _updateOrdersOnChainBatchCOW(cowResult: any, options: any = {}) {
+        return cowRuntime.updateOrdersOnChainBatchCOW(this, cowResult, options);
     }
 
     async _processBatchResults(result: any, opContexts: any) {
