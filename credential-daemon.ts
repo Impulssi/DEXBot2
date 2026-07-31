@@ -115,7 +115,7 @@ const {
 } = require('./modules/credential_session_cache');
 const { fetchBootstrapPassword } = require('./modules/launcher/credential_bootstrap');
 const { normalizeBootstrapCredential } = require('./modules/launcher/credential_secret');
-const Logger = require('./modules/logger');
+const Logger = require('./modules/logger').default;
 const { ensureDir, safeUnlink } = require('./modules/utils/fs_utils');
 const { Config } = require('./modules/config');
 const daemonLogger = new Logger('credential-daemon');

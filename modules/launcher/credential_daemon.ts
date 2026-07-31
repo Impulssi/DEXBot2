@@ -136,9 +136,23 @@ function createCredentialDaemonController({
                 daemonProcess.unref();
             }
 
-            await Promise.all([
-                chainKeys.waitForDaemon(undefined, { socketPath, readyFilePath }),
-                bootstrap.waitForTransfer(),
+            // If the daemon child exits (or fails to spawn) before both the
+            // readiness probe and the bootstrap transfer settle, surface the
+            // failure immediately instead of burning the full startup timeout
+            // (DAEMON_STARTUP_TIMEOUT_MS) waiting for a handshake that can
+            // never happen.  The child's stderr carries the startup error
+            // (monolithic mode: logs/monolithic-error.log).
+            await Promise.race([
+                Promise.all([
+                    chainKeys.waitForDaemon(undefined, { socketPath, readyFilePath }),
+                    bootstrap.waitForTransfer(),
+                ]),
+                daemonExitPromise.then((exitCode: any) => {
+                    throw new Error(
+                        `credential daemon exited during startup (exit ${exitCode}). ` +
+                        `Check the daemon logs for the startup error.`
+                    );
+                }),
             ]);
             return true;
         } catch (error: any) {
