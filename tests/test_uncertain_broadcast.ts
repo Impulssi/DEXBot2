@@ -1718,6 +1718,7 @@ async function main() {
     await testRecoverFromPersistedGridNoGrid();
     await testRecoverFromPersistedGridBloated();
     await testRecoverFromPersistedGridUnmatchedRemain();
+    await testRecoverFromPersistedGridTruncatedRead();
     await testBoundaryShiftAllDiscarded();
     await testBoundaryShiftMixedAdoptedDiscarded();
     await testBoundaryShiftAllAdopted();
@@ -1891,7 +1892,7 @@ async function testUpdateToCreateFallbackCreateAlsoFails() {
 async function testRecoverFromPersistedGrid() {
     console.log('\n[UNC-016] _recoverFromPersistedGrid loads grid from disk and re-syncs...');
     const bot = makeBot();
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const origPersist = bot.manager.persistGrid;
     let loadGridCalled = false;
     let loadBoundaryCalled = false;
@@ -1943,9 +1944,9 @@ async function testRecoverFromPersistedGrid() {
         }
     };
 
-    chainOrders.readOpenOrders = async (accountRef) => {
+    chainOrders.readOpenOrdersWithMeta = async (accountRef) => {
         assert.strictEqual(accountRef, 'test-account');
-        return chainState;
+        return { orders: chainState, truncated: false };
     };
 
     bot.manager.syncFromOpenOrders = async (orders, options) => {
@@ -1969,10 +1970,82 @@ async function testRecoverFromPersistedGrid() {
         // AsyncLock is re-entrant; fillLockAlreadyHeld flag eliminated
         assert.strictEqual(persistCalled, true, 'persistGrid must be called to save reconciled state');
     } finally {
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
         bot.manager.persistGrid = origPersist;
     }
     console.log('✓ UNC-016 passed');
+}
+
+// ── _recoverFromPersistedGrid: truncated chain read must defer ──────────
+async function testRecoverFromPersistedGridTruncatedRead() {
+    console.log('\n[UNC-016e] _recoverFromPersistedGrid defers (fails cleanly) when the chain read is truncated...');
+    const bot = makeBot();
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+
+    bot.accountId = 'test-account';
+
+    bot.manager._gridLock = {
+        acquire: async (fn) => fn(),
+        isLocked: () => false,
+        isReentrant: () => false,
+    };
+    bot.manager._syncLock = {
+        acquire: async (fn) => fn(),
+        isLocked: () => false,
+        isReentrant: () => false,
+        forceRelease: () => 0,
+    };
+    bot.manager._fillProcessingLock = undefined;
+    bot.manager._applyOrderUpdate = async () => true;
+    bot.manager._initializeAssets = async () => {};
+    bot.manager.resetFunds = () => {};
+    bot.manager.pauseRecalcLogging = () => {};
+    bot.manager.resumeRecalcLogging = () => {};
+    bot.manager.funds = { btsFeesOwed: 0 };
+    bot.manager.boundaryIdx = 0;
+    bot.manager._restoreBoundary = (idx: any) => { bot.manager.boundaryIdx = idx; };
+
+    const persistedGrid = [
+        { id: 'slot-1', type: 'buy', price: 0.04, size: 200, orderId: '1.7.111' },
+        { id: 'slot-2', type: 'sell', price: 0.06, size: 100, orderId: '1.7.222' }
+    ];
+
+    bot.accountOrders = {
+        loadGrid: () => persistedGrid,
+        loadBoundaryIdx: () => 42,
+    };
+
+    // Truncated read: the get_full_accounts window omitted the freshest
+    // orders (exactly the CREATEs a reload would be looking for). The
+    // recovery MUST NOT sync from this snapshot.
+    let syncCalled = false;
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [
+            { id: '1.7.111', type: 'buy', price: 0.04, for_sale: 200 }
+        ],
+        truncated: true
+    });
+
+    bot.manager.syncFromOpenOrders = async () => {
+        syncCalled = true;
+        return { filledOrders: [], updatedOrders: [] };
+    };
+    bot.manager.persistGrid = async () => ({ isValid: true });
+
+    try {
+        const result = await bot._recoverFromPersistedGrid();
+        assert.strictEqual(result.success, false,
+            'Recovery must defer on a truncated read: success=' + result.success +
+            ' reason=' + (result.reason || 'none'));
+        assert(result.reason, 'should provide a reason');
+        assert(result.reason.includes('truncated'),
+            `reason should mention truncated read, got: ${result.reason}`);
+        assert.strictEqual(syncCalled, false,
+            'syncFromOpenOrders must NOT run on a truncated read (would virtualize live ACTIVE slots)');
+    } finally {
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+    }
+    console.log('✓ UNC-016e passed');
 }
 
 // ── _recoverFromPersistedGrid: no persisted grid on disk ────────────────
@@ -1996,7 +2069,7 @@ async function testRecoverFromPersistedGridNoGrid() {
 async function testRecoverFromPersistedGridBloated() {
     console.log('\n[UNC-016c] _recoverFromPersistedGrid rejects grid that is still bloated after reload...');
     const bot = makeBot();
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const origPersist = bot.manager.persistGrid;
     let loadGridCalled = false;
 
@@ -2064,7 +2137,7 @@ async function testRecoverFromPersistedGridBloated() {
         loadBoundaryIdx: () => 0,
     };
 
-    chainOrders.readOpenOrders = async () => chainState;
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: chainState, truncated: false });
 
     bot.manager.syncFromOpenOrders = async () => ({ filledOrders: [], updatedOrders: [] });
     bot.manager.persistGrid = async () => ({ isValid: true });
@@ -2081,7 +2154,7 @@ async function testRecoverFromPersistedGridBloated() {
         assert(result.reason.includes('still bloated'),
             `reason should mention bloat, got: ${result.reason}`);
     } finally {
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
         bot.manager.persistGrid = origPersist;
     }
     console.log('✓ UNC-016c passed');
@@ -2091,7 +2164,7 @@ async function testRecoverFromPersistedGridBloated() {
 async function testRecoverFromPersistedGridUnmatchedRemain() {
     console.log('\n[UNC-016d] _recoverFromPersistedGrid rejects when unmatched chain orders remain after sync...');
     const bot = makeBot();
-    const origReadOpenOrders = chainOrders.readOpenOrders;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const origPersist = bot.manager.persistGrid;
 
     bot.accountId = 'test-account';
@@ -2138,7 +2211,7 @@ async function testRecoverFromPersistedGridUnmatchedRemain() {
         loadBoundaryIdx: () => 0,
     };
 
-    chainOrders.readOpenOrders = async () => chainState;
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: chainState, truncated: false });
 
     // syncFromOpenOrders simulates finding the extra chain order as unmatched.
     // It sets _lastUnmatchedChainOrders to simulate the sync engine's behavior.
@@ -2167,7 +2240,7 @@ async function testRecoverFromPersistedGridUnmatchedRemain() {
         assert(result.reason.includes('unmatched'),
             `reason should mention unmatched, got: ${result.reason}`);
     } finally {
-        chainOrders.readOpenOrders = origReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
         bot.manager.persistGrid = origPersist;
     }
     console.log('✓ UNC-016d passed');

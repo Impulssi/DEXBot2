@@ -9,7 +9,7 @@
  */
 
 const chainOrders = require('./chain_orders');
-const { readOpenOrdersWithMetaSafe } = require('./chain_orders');
+const { readOpenOrdersWithMetaSafe, readOpenOrdersGuarded } = require('./chain_orders');
 const { BroadcastUncertainError } = require('./dexbot_credential_client');
 const {
     buildCreateOrderArgs,
@@ -135,7 +135,22 @@ async function recoverAfterMissingCreateResults(bot: any, reason: any = 'missing
                 .filter((order: any) => order?.reason === 'missing-create-result')
                 .map((order: any) => ({ ...order }))
             : [];
-        const openOrders = await chainOrders.readOpenOrders(accountRef);
+        // Truncated-read guard: the freshest CREATEs sort last and are exactly
+        // the orders a partial get_full_accounts window omits — syncing would
+        // virtualize them (phantom cleanup). Defer; blockers stay registered
+        // so the COW guard retries the recovery on a clean read.
+        const openOrders = await readOpenOrdersGuarded(chainOrders, accountRef, {
+            log: (message: string, level: any) => bot.manager?.logger?.log?.(message, level),
+            label: 'COW',
+            detail: `recovery sync after ${reason}`,
+        });
+        if (openOrders === null) {
+            bot.manager?.logger?.log?.(
+                `[COW] Deferring recovery sync after ${reason}: open-order read ambiguous (truncated); blockers retained for retry.`,
+                'warn'
+            );
+            return;
+        }
         const recoveryResult = await bot.manager.syncFromOpenOrders(openOrders, {
             skipAccounting: false,
         });

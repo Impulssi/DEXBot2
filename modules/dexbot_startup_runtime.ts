@@ -152,8 +152,14 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         let safetyNetTimer;
                         const workPromise = bot.manager._fillProcessingLock.acquire(async () => {
                             if (bot._shuttingDown) return;
-                            const chainOpenOrders = await chainOrders.readOpenOrders(bot.accountId);
-                            if (bot._shuttingDown) return;
+                            // Truncated-read guard: the safety-net sync makes
+                            // absence decisions (phantom cleanup); a partial
+                            // get_full_accounts window must defer instead.
+                            const chainOpenOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                                log: (message: string, level: any) => bot._log(message, level),
+                                label: 'RECONNECT-SYNC',
+                            });
+                            if (chainOpenOrders === null || bot._shuttingDown) return;
                             const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
                             if (bot._shuttingDown) return;
                             if (syncResult?.filledOrders?.length > 0) {
@@ -289,10 +295,20 @@ async function finishStartupSequence(bot: any, startupState: any) {
 
                     if (requiresOpenOrdersSync) {
                         bot._log('[POST-RESET] Falling back to open-orders sync for fill(s) missing replay-safe history identifiers', 'warn');
-                        const postResetChainOpenOrders = await chainOrders.readOpenOrders(bot.accountId);
-                        const syncResult = await bot.manager.syncFromOpenOrders(postResetChainOpenOrders);
-                        if (syncResult.filledOrders?.length > 0) {
-                            await bot._processFillsWithBatching(syncResult.filledOrders, new Set(), '[POST-RESET] open-orders fallback');
+                        // Truncated-read guard: syncing on a partial
+                        // get_full_accounts window would virtualize live ACTIVE
+                        // slots (pass-1 phantom cleanup). Defer — the guarded
+                        // pre-spread sync below picks up on a clean read.
+                        const postResetChainOpenOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                            log: (message: string, level: any) => bot._log(message, level),
+                            label: 'POST-RESET',
+                            detail: 'open-orders fallback',
+                        });
+                        if (postResetChainOpenOrders !== null) {
+                            const syncResult = await bot.manager.syncFromOpenOrders(postResetChainOpenOrders);
+                            if (syncResult.filledOrders?.length > 0) {
+                                await bot._processFillsWithBatching(syncResult.filledOrders, new Set(), '[POST-RESET] open-orders fallback');
+                            }
                         }
                     }
 

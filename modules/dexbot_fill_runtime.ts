@@ -6,6 +6,7 @@ import { getErrorMessage } from './utils/errors';
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function retryPersistenceIfNeeded(...args: any) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
+const { readOpenOrdersGuarded } = require('./chain_orders');
 
 /**
  * Wire processed fill tracking into the manager and processed fill store.
@@ -434,14 +435,23 @@ async function processFillsWithBootstrapMode(bot: any, chainOrders: any) {
 
     if (requiresOpenOrdersSync) {
         bot._log('[BOOTSTRAP] Falling back to open-orders sync for fill(s) missing replay-safe history identifiers', 'warn');
-        const bootstrapChainOpenOrders = await chainOrders.readOpenOrders(bot.accountId);
-        const syncResult = await bot.manager.syncFromOpenOrders(bootstrapChainOpenOrders);
-        if (syncResult.filledOrders?.length > 0) {
-            const queuedOrderIds = new Set(validFills.map((fill: any) => fill?.gridOrder?.orderId).filter(Boolean));
-            for (const filledOrder of syncResult.filledOrders) {
-                if (!filledOrder?.orderId || queuedOrderIds.has(filledOrder.orderId)) continue;
-                validFills.push({ gridOrder: filledOrder });
-                queuedOrderIds.add(filledOrder.orderId);
+        // Truncated-read guard: syncing on a partial get_full_accounts window
+        // would virtualize live ACTIVE slots (pass-1 phantom cleanup). Defer —
+        // the guarded sync loop picks up on a clean read.
+        const bootstrapChainOpenOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+            log: (message: string, level: any) => bot._log(message, level),
+            label: 'BOOTSTRAP',
+            detail: 'open-orders fallback',
+        });
+        if (bootstrapChainOpenOrders !== null) {
+            const syncResult = await bot.manager.syncFromOpenOrders(bootstrapChainOpenOrders);
+            if (syncResult.filledOrders?.length > 0) {
+                const queuedOrderIds = new Set(validFills.map((fill: any) => fill?.gridOrder?.orderId).filter(Boolean));
+                for (const filledOrder of syncResult.filledOrders) {
+                    if (!filledOrder?.orderId || queuedOrderIds.has(filledOrder.orderId)) continue;
+                    validFills.push({ gridOrder: filledOrder });
+                    queuedOrderIds.add(filledOrder.orderId);
+                }
             }
         }
     }
@@ -689,10 +699,19 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                             );
                         }
                         bot.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (open orders mode)`, 'info');
-                        const chainOpenOrders = await chainOrders.readOpenOrders(bot.account);
-                        const resultOpenOrders = await bot.manager.syncFromOpenOrders(chainOpenOrders);
-                        if (resultOpenOrders.filledOrders) resolvedOrders.push(...resultOpenOrders.filledOrders);
-                        if (resultOpenOrders.ordersNeedingCorrection) ordersNeedingCorrection.push(...resultOpenOrders.ordersNeedingCorrection);
+                        // Truncated-read guard: syncing on a partial
+                        // get_full_accounts window would virtualize live ACTIVE
+                        // slots (pass-1 phantom cleanup). Defer this batch.
+                        const chainOpenOrders = await readOpenOrdersGuarded(chainOrders, bot.account, {
+                            log: (message: string, level: any) => bot.manager.logger.log(message, level),
+                            label: 'FILL-SYNC',
+                            detail: 'open-orders mode',
+                        });
+                        if (chainOpenOrders !== null) {
+                            const resultOpenOrders = await bot.manager.syncFromOpenOrders(chainOpenOrders);
+                            if (resultOpenOrders.filledOrders) resolvedOrders.push(...resultOpenOrders.filledOrders);
+                            if (resultOpenOrders.ordersNeedingCorrection) ordersNeedingCorrection.push(...resultOpenOrders.ordersNeedingCorrection);
+                        }
                     }
                     return resolvedOrders;
                 };

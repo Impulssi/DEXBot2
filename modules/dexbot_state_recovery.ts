@@ -317,7 +317,19 @@ async function recoverFromPersistedGrid(bot: any) {
             return { success: false, reason: 'corrupted grid snapshot rejected (fund drift)' };
         }
 
-        const chainOpenOrders = await chainOrders.readOpenOrders(accountRef);
+        // Truncated-read guard: syncing on a partial get_full_accounts window
+        // would virtualize live ACTIVE slots (pass-1 phantom cleanup) and
+        // re-create them as duplicates. A reload that cannot reconcile with
+        // chain did not complete its contract — fail so the caller escalates
+        // to a structural resync (which defers the same way on a clean read).
+        const chainOpenOrders = await readOpenOrdersGuarded(chainOrders, accountRef, {
+            log: (message: string, level: any) => bot.manager.logger.log(message, level),
+            label: 'RECOVERY',
+            detail: 'full grid reload from persisted snapshot',
+        });
+        if (chainOpenOrders === null) {
+            return { success: false, reason: 'truncated open-order read; full grid reload deferred' };
+        }
 
         if (chainOpenOrders.length > 0 && bot.manager?.syncFromOpenOrders) {
             await bot.manager.syncFromOpenOrders(chainOpenOrders, {

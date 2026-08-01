@@ -864,7 +864,21 @@ function performGridResync(bot: any, options: {
                 refreshDynamicWeightDistribution(self, 'grid resync');
             }
 
-            const readFn = () => chainOrders.readOpenOrders(self.accountId);
+            // Truncated-read guard: recalculateGrid's readOpenOrdersFn drives
+            // syncFromOpenOrders absence decisions (pass-1 phantom cleanup).
+            // A partial get_full_accounts window must abort the resync instead
+            // of virtualizing live ACTIVE slots; the trigger file is retained
+            // so the resync retries on a clean read.
+            let resyncReadAmbiguous = false;
+            const readFn = async () => {
+                const orders = await readOpenOrdersGuarded(chainOrders, self.accountId, {
+                    log: (message: string, level: any) => self._log(message, level),
+                    label: 'GRID-RESYNC',
+                    detail: 'trigger-file resync',
+                });
+                if (orders === null) resyncReadAmbiguous = true;
+                return orders;
+            };
             await recalculateGrid(self.manager, {
                 readOpenOrdersFn: readFn,
                 chainOrders,
@@ -872,6 +886,11 @@ function performGridResync(bot: any, options: {
                 privateKey: self.privateKey,
                 config: self.config,
             });
+
+            if (resyncReadAmbiguous) {
+                self._warn('[GRID-RESYNC] Aborted trigger-file resync: open-order read ambiguous (truncated); retaining trigger file for retry.');
+                return false;
+            }
 
             await self.manager._fundLock.acquire(async () => {
                 self.manager.funds.btsFeesOwed = 0;
