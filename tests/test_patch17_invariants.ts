@@ -47,7 +47,7 @@ async function createManager() {
     });
     mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
     await mgr.setAccountTotals({ buy: 10000, sell: 1000, buyFree: 10000, sellFree: 1000 });
-    mgr.resetFunds();
+    await mgr.resetFunds();
     return mgr;
 }
 
@@ -316,7 +316,7 @@ async function testRoleAssignmentBlocksOnChainSpreadConversion() {
 async function testGridResizeRespectsBudgetAfterCap() {
     const mgr = await createManager();
     await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1, sellFree: 1000 });
-    mgr.resetFunds();
+    await mgr.resetFunds();
 
     const slots = [
         { id: 'b0', type: ORDER_TYPES.BUY, price: 99, state: ORDER_STATES.ACTIVE, orderId: '1.7.1', size: 0.5 },

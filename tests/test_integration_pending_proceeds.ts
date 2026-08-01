@@ -36,7 +36,7 @@ async function testCompleteLifecycle() {
 
     const manager = new OrderManager(config);
     manager.accountOrders = accountOrders;
-    manager.resetFunds();
+    await manager.resetFunds();
     manager.funds.available.buy = 409.36835306;
     manager.funds.available.sell = 1000;
     manager.funds.btsFeesOwed = 0.125;

@@ -55,7 +55,7 @@ async function runTests() {
      console.log(' - Testing resetFunds()...');
      {
          const manager = await createManager();
-         manager.resetFunds();
+         await manager.resetFunds();
          assert(manager.funds !== undefined, 'funds should be defined');
          assert.strictEqual(manager.funds.available.buy, 0);
          assert.strictEqual(manager.funds.available.sell, 0);
@@ -165,7 +165,7 @@ async function runTests() {
     console.log(' - Testing manual fund override protection via pauseFundRecalc...');
     {
         const manager = await createManager();
-        manager.resetFunds();
+        await manager.resetFunds();
 
         // Manually override fund values
         const manualAvailable = 5000;

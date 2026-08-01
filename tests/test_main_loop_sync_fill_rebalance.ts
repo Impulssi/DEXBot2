@@ -32,7 +32,7 @@ async function runTests() {
     console.log('Running Main Loop Sync Fill Rebalance Test...');
 
     const originalLoopMs = process.env.OPEN_ORDERS_SYNC_LOOP_MS;
-    const originalReadOpenOrders = chainOrders.readOpenOrders;
+    const originalReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const unhandledRejectionHandler = (reason) => {
         const isWsErrorEvent = reason &&
             (
@@ -126,7 +126,7 @@ async function runTests() {
             return { executed: false, hadRotation: false };
         };
 
-        chainOrders.readOpenOrders = async () => [];
+        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
         bot._startOpenOrdersSyncLoop();
         assert.strictEqual(
@@ -135,12 +135,6 @@ async function runTests() {
             'Open-orders sync loop must not install global unhandledRejection handlers'
         );
         await new Promise((resolve) => setTimeout(resolve, 90));
-        await bot._stopOpenOrdersSyncLoop();
-        assert.strictEqual(
-            process.listeners('unhandledRejection').length,
-            unhandledRejectionListenersBefore,
-            'Open-orders sync loop shutdown must leave global unhandledRejection handlers unchanged'
-        );
 
         assert(syncCalls >= 1, 'Main loop should run synchronizeWithChain at least once');
         assert.strictEqual(processCalls, 1, 'Main loop should process sync-detected fills');
@@ -148,6 +142,26 @@ async function runTests() {
         assert.strictEqual(persistCalls, 1, 'Main loop should persist grid after rebalance pipeline');
 
         console.log('✓ Main loop processes sync-detected fills through rebalance pipeline');
+
+        // Phase 2: a TRUNCATED read must defer the sync (pass-1 phantom
+        // cleanup on a partial window would virtualize live slots) while the
+        // loop keeps ticking for a clean read.
+        syncCalls = 0;
+        processCalls = 0;
+        batchCalls = 0;
+        persistCalls = 0;
+        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: true });
+        await new Promise((resolve) => setTimeout(resolve, 90));
+        assert.strictEqual(syncCalls, 0, 'Truncated reads must never reach synchronizeWithChain');
+        assert.strictEqual(processCalls, 0, 'Truncated reads must not trigger fill processing');
+        console.log('✓ Main loop defers synchronizeWithChain on truncated reads');
+
+        await bot._stopOpenOrdersSyncLoop();
+        assert.strictEqual(
+            process.listeners('unhandledRejection').length,
+            unhandledRejectionListenersBefore,
+            'Open-orders sync loop shutdown must leave global unhandledRejection handlers unchanged'
+        );
     } finally {
         weightFiles.cleanup();
         process.off('unhandledRejection', unhandledRejectionHandler);
@@ -156,7 +170,7 @@ async function runTests() {
         } else {
             process.env.OPEN_ORDERS_SYNC_LOOP_MS = originalLoopMs;
         }
-        chainOrders.readOpenOrders = originalReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
     }
 }
 

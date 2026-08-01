@@ -77,7 +77,7 @@ import Logger from '../../logger';
 import { sleep } from './system';
 import { getErrorMessage } from '../../utils/errors';
 const { isValidNumber, toFiniteNumber } = Format;
-const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = MathUtils;
+const { blockchainToFloat, floatToBlockchainInt, quantizeFloat, calculatePriceTolerance } = MathUtils;
 const orderLogger = new Logger('Order');
 
 const ORDER_GONE_ERROR_FRAGMENT = 'not found';
@@ -573,6 +573,42 @@ function virtualizeOrder(order: any) {
  */
 function convertToSpreadPlaceholder(order: any) {
     return { ...virtualizeOrder(order), type: ORDER_TYPES.SPREAD, size: 0 };
+}
+
+/**
+ * Resolve the real BUY/SELL side of a SPREAD-typed grid slot from its price
+ * relative to the configured start price. SPREAD slots never carry an
+ * on-chain state (validateOrder rejects SPREAD+ACTIVE/PARTIAL as fatal), so
+ * every transition to an on-chain state (fill processing, sync, adoption)
+ * must resolve the side first. Convention is strict: price below startPrice
+ * is BUY, at or above is SELL.
+ * @param {number} price - The slot's grid price.
+ * @param {number} startPrice - The configured grid center price.
+ * @returns {string} ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ */
+function resolveSpreadOrderSide(price: any, startPrice: any): string {
+    return Number(price) < Number(startPrice) ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+}
+
+/**
+ * Whether a parsed chain order matches a grid slot within tolerance:
+ * type-compatible (slot may be SPREAD), price within tolerance, size within
+ * 1% quantum tolerance (floor 2 units). Shared by the startup adoption paths
+ * that match an uncertain-landed chain order to the slot it was created for.
+ * @param {Object} parsed - parseChainOrder output ({type, price, size, ...})
+ * @param {Object} slot - Grid slot order object
+ * @param {Object} assets - Manager assets ({assetA, assetB} with precision)
+ * @returns {boolean}
+ */
+function chainOrderMatchesSlot(parsed: any, slot: any, assets: any): boolean {
+    if (!parsed || !slot || !assets) return false;
+    if (parsed.type !== slot.type && slot.type !== ORDER_TYPES.SPREAD) return false;
+    const priceTolerance = calculatePriceTolerance(slot.price, slot.size, parsed.type, assets) || 0;
+    if (Math.abs(parsed.price - slot.price) > priceTolerance) return false;
+    const precision = parsed.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
+    const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(slot.size, precision) * 0.01));
+    if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(slot.size, precision)) > sizeTolerance) return false;
+    return true;
 }
 
 // ================================================================================
@@ -1284,5 +1320,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
     );
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
 

@@ -134,7 +134,7 @@ assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should
 
     rotateMgr.assets = { assetA: { id: '1.3.0', precision: 5 }, assetB: { id: '1.3.1', precision: 5 } };
     await rotateMgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
-    rotateMgr.resetFunds();
+    await rotateMgr.resetFunds();
 
     for (let i = 0; i < 100; i++) {
         const type = (i <= 50) ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;

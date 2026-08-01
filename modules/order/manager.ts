@@ -63,6 +63,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate';
+import { resolveSpreadOrderSide } from './utils/order';
 import { getErrorMessage } from '../utils/errors';
 const { toFiniteNumber } = Format;
 
@@ -791,7 +792,7 @@ class OrderManager {
             if (!isActive) continue;
             const size = toFiniteNumber(order.size);
             if (size <= 0) continue;
-            const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && order.price < this.config.startPrice);
+            const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && resolveSpreadOrderSide(order.price, this.config.startPrice) === ORDER_TYPES.BUY);
             if (isBuy) committedBuy += size;
             else committedSell += size;
         }

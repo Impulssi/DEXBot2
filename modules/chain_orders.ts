@@ -605,6 +605,52 @@ async function readOpenOrdersWithMetaSafe(chainOrdersModule: any, accountId: str
 }
 
 /**
+ * Read open orders for a sync/reconcile decision, deferring (returning null)
+ * when the snapshot cannot drive absence/sync decisions:
+ * - truncated: the get_full_accounts window omitted the freshest orders —
+ *   syncing would virtualize live ACTIVE slots via pass-1 phantom cleanup;
+ * - empty (only when deferEmpty is set): indistinguishable from a lagging
+ *   node that missed a just-broadcast transaction.
+ * Callers treat null as "defer this cycle" (optionally falling back to a
+ * local sync); the raw orders are returned otherwise.
+ * @param {Object} chainOrdersModule - chainOrders module (or mock)
+ * @param {string|null} accountId - Account ID to query (uses preferred if null)
+ * @param {Object} [options]
+ * @param {Function} [options.log] - Logger callback (message, level); skipped when omitted
+ * @param {string} [options.label] - Log prefix label (e.g. 'PERIODIC-SYNC')
+ * @param {string} [options.detail] - Extra context appended to the default message
+ * @param {boolean} [options.deferEmpty] - Treat an empty read as ambiguous too
+ * @param {number} [options.timeoutMs] - Connection timeout in milliseconds
+ * @param {string|Function} [options.skipMessage] - Replace the default log message;
+ *   a function receives the kind ('TRUNCATED'|'EMPTY') to build a site-specific message
+ * @returns {Promise<Array|null>} Open orders, or null when the read is ambiguous
+ */
+async function readOpenOrdersGuarded(chainOrdersModule: any, accountId: string | null = null, options: {
+    log?: (message: string, level?: string) => void;
+    label?: string;
+    detail?: string;
+    deferEmpty?: boolean;
+    timeoutMs?: number;
+    skipMessage?: string | ((kind: string) => string);
+} = {}) {
+    const { log, label = 'SYNC', detail, deferEmpty = false, timeoutMs, skipMessage } = options;
+    const read = await readOpenOrdersWithMetaSafe(chainOrdersModule, accountId, timeoutMs);
+    const truncated = read?.truncated === true;
+    const orders = read?.orders;
+    const empty = !Array.isArray(orders) || orders.length === 0;
+    if (!truncated && !(deferEmpty && empty)) return Array.isArray(orders) ? orders : [];
+
+    if (typeof log === 'function') {
+        const kind = truncated ? 'TRUNCATED' : 'EMPTY';
+        const message = typeof skipMessage === 'function'
+            ? skipMessage(kind)
+            : (skipMessage || `[${label}] Open-order read ${kind}${detail ? ` (${detail})` : ''} - ambiguous snapshot (fresh orders omitted by the get_full_accounts window, or the node is lagging); deferring`);
+        log(message, 'warn');
+    }
+    return null;
+}
+
+/**
  * Fetch all open limit orders for an account from the blockchain, returning
  * the raw order list together with the node's truncation flag.
  *
@@ -1441,7 +1487,7 @@ function buildLiquidityPoolExchangeOp(accountId: any, poolId: any, sellAmountInt
 function getFillProcessingMode() {
     return FILL_PROCESSING_MODE;
 }
-export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
+export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
 
-module.exports = { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
+module.exports = { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
 

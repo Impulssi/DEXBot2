@@ -4,7 +4,7 @@ const fs = require('fs');
 const { path } = require('./path_api');
 const { spawn } = require('child_process');
 const chainOrders = require('./chain_orders');
-const { readOpenOrdersWithMetaSafe } = require('./chain_orders');
+const { readOpenOrdersGuarded } = require('./chain_orders');
 const grid = require('./order/grid');
 const { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } = require('./constants');
 const { PATHS } = require('./paths');
@@ -1052,7 +1052,6 @@ function startOpenOrdersSyncLoop(bot: any) {
 
     bot._mainLoopActive = true;
     bot._log(`Open-orders sync loop started (every ${loopDelayMs}ms, dryRun=${!!bot.config.dryRun})`);
-    const readOpenOrdersFn = chainOrders.readOpenOrders;
 
     bot._mainLoopPromise = (async () => {
         while (bot._mainLoopActive && !bot._shuttingDown) {
@@ -1068,17 +1067,28 @@ function startOpenOrdersSyncLoop(bot: any) {
                         !bot.manager._fillProcessingLock.isLocked() &&
                         bot.manager._fillProcessingLock.getQueueLength() === 0) {
                         await bot.manager._fillProcessingLock.acquire(async () => {
-                            const chainOpenOrders = await readOpenOrdersFn.call(chainOrders, bot.accountId);
-                            const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+                            // Truncated-read guard: syncing on a partial
+                            // get_full_accounts window would virtualize live
+                            // ACTIVE slots (pass-1 phantom cleanup) and
+                            // re-create them as duplicates. Defer to a clean
+                            // read — fill subscription events keep the bot
+                            // responsive in the meantime.
+                            const chainOpenOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                                log: (message: string, level: any) => bot._log(message, level),
+                                label: 'OPEN-ORDERS-SYNC',
+                            });
+                            if (chainOpenOrders !== null) {
+                                const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
-                            if (syncResult?.filledOrders && syncResult.filledOrders.length > 0) {
-                                bot._log(`Open-orders sync loop: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
-                                bot._markGridActivity?.('open-orders sync fill');
-                                const batchResult = await bot._processFillsWithBatching(
-                                    syncResult.filledOrders, new Set(), 'open-orders sync fill rebalance'
-                                );
-                                if (!batchResult?.aborted) {
-                                    await bot.manager.persistGrid();
+                                if (syncResult?.filledOrders && syncResult.filledOrders.length > 0) {
+                                    bot._log(`Open-orders sync loop: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
+                                    bot._markGridActivity?.('open-orders sync fill');
+                                    const batchResult = await bot._processFillsWithBatching(
+                                        syncResult.filledOrders, new Set(), 'open-orders sync fill rebalance'
+                                    );
+                                    if (!batchResult?.aborted) {
+                                        await bot.manager.persistGrid();
+                                    }
                                 }
                             }
                             // Run grid health / dust detection after every sync tick so
@@ -1195,17 +1205,17 @@ function setupBlockchainFetchInterval(bot: any) {
                     let chainOpenOrders = [];
                     if (!bot.config.dryRun) {
                         try {
-                            const chainRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
                             // Truncated-read guard: a partial get_full_accounts
                             // window would make synchronizeWithChain's pass-1
                             // virtualize live ACTIVE slots that are simply missing
                             // from the window (then re-create them as duplicates).
                             // Defer the sync to a clean read; fills are still
                             // caught by subscription events and the next cycle.
-                            if (chainRead.truncated) {
-                                bot._log('[PERIODIC-SYNC] Open-order read TRUNCATED (account exceeds the get_full_accounts window); deferring sync this cycle', 'warn');
-                            } else {
-                                chainOpenOrders = chainRead.orders;
+                            chainOpenOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                                log: (message: string, level: any) => bot._log(message, level),
+                                label: 'PERIODIC-SYNC',
+                            });
+                            if (chainOpenOrders !== null) {
                                 const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'periodicBlockchainFetch');
 
                                 if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
@@ -1490,15 +1500,17 @@ async function executeMaintenanceLogic(bot: any, context: any) {
     ) {
         bot._lightweightSyncCheckAt = Date.now();
         try {
-            const chainOpenOrdersRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
             // Truncated-read guard: a partial window undercounts the chain
             // order count, which would fabricate a divergence and trigger a
             // full synchronizeWithChain on a partial snapshot (pass-1 phantom
             // virtualization). Defer to a clean read.
-            if (chainOpenOrdersRead.truncated) {
-                bot._log('[LIGHTWEIGHT-SYNC] Open-order read TRUNCATED; skipping consistency check (partial snapshot cannot drive count comparisons)', 'warn');
-            } else {
-                const chainOpenOrdersResult = chainOpenOrdersRead.orders;
+            const chainOpenOrdersResult = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                log: (message: string, level: any) => bot._log(message, level),
+                label: 'LIGHTWEIGHT-SYNC',
+                skipMessage: (kind: string) =>
+                    `[LIGHTWEIGHT-SYNC] Open-order read ${kind}; skipping consistency check (partial snapshot cannot drive count comparisons)`,
+            });
+            if (chainOpenOrdersResult !== null) {
                 const assets = bot.manager?.assets;
                 if (!assets) {
                     bot._log('[LIGHTWEIGHT-SYNC] Skipped: manager assets not available', 'debug');
@@ -1702,16 +1714,21 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
                 if (cancelResult?.verifiedAfterFailure) {
                     const accountRef = bot.accountId || bot.account;
                     // The cancel was verified absent on an authoritative
-                    // (non-empty, non-truncated) read inside cancelOrder, so a
-                    // truncated refetch must not run the full sync: the snapshot
+                    // (non-empty, non-truncated) read inside cancelOrder, so an
+                    // ambiguous refetch must not run the full sync: the snapshot
                     // omits the freshest orders and pass-1 phantom cleanup could
                     // virtualize live slots. Fall back to the local cancel sync.
-                    const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
-                    if (freshRead.truncated || !Array.isArray(freshRead.orders) || freshRead.orders.length === 0) {
-                        bot._warn(`[DUST] Chain refetch after verified cancel is ${freshRead.truncated ? 'TRUNCATED' : 'EMPTY'}; applying local cancel sync for ${(order as any).id}`);
+                    const freshOrders = await readOpenOrdersGuarded(chainOrders, accountRef, {
+                        log: (message: string) => bot._warn(message),
+                        label: 'DUST',
+                        deferEmpty: true,
+                        skipMessage: (kind: string) =>
+                            `[DUST] Chain refetch after verified cancel is ${kind}; applying local cancel sync for ${(order as any).id}`,
+                    });
+                    if (freshOrders === null) {
                         await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
                     } else {
-                        await bot.manager.synchronizeWithChain(freshRead.orders, 'readOpenOrders');
+                        await bot.manager.synchronizeWithChain(freshOrders, 'readOpenOrders');
                     }
                 } else {
                     await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
@@ -2176,16 +2193,19 @@ async function syncOpenOrdersAndProcessFills(bot: any, tag: any) {
         return { syncResult: null, aborted: false, hasUnmatched: 0, openOrders: null };
     }
     try {
-        const openOrdersRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
         // Truncated-read guard: syncing on a partial get_full_accounts window
         // would virtualize live ACTIVE slots (pass-1 phantom cleanup) and
         // re-create them as duplicates. Defer to a clean read — fill
         // subscription events keep the bot responsive in the meantime.
-        if (openOrdersRead.truncated) {
-            bot._log(`[SYNC-CHAIN] Open-order read TRUNCATED during ${tag}; deferring sync to a non-truncated cycle`, 'warn');
+        const firstRead = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+            log: (message: string, level: any) => bot._log(message, level),
+            label: 'SYNC-CHAIN',
+            detail: `during ${tag}`,
+        });
+        if (firstRead === null) {
             return { syncResult: null, aborted: false, hasUnmatched: 0, openOrders: null };
         }
-        let openOrders = openOrdersRead.orders;
+        let openOrders = firstRead;
         const syncResult = await bot.manager.synchronizeWithChain(
             openOrders,
             'readOpenOrders'
@@ -2200,11 +2220,16 @@ async function syncOpenOrdersAndProcessFills(bot: any, tag: any) {
                 `${tag} sync-fill`
             );
             if (!batchResult?.aborted) {
-                const reRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
-                if (reRead.truncated) {
-                    bot._log(`[SYNC-CHAIN] Post-fill re-read TRUNCATED during ${tag}; skipping second sync (partial snapshot cannot drive pass-1 cleanup)`, 'warn');
-                } else {
-                    openOrders = reRead.orders;
+                // Reassign the returned snapshot to the post-fill re-read: the
+                // caller feeds openOrders into reconcileGridOrders, which must
+                // see the freshest chain state, not the pre-fill first read.
+                const reReadOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                    log: (message: string, level: any) => bot._log(message, level),
+                    label: 'SYNC-CHAIN',
+                    detail: `post-fill re-read during ${tag}`,
+                });
+                if (reReadOrders !== null) {
+                    openOrders = reReadOrders;
                     await bot.manager.synchronizeWithChain(openOrders, 'readOpenOrders');
                 }
             } else {

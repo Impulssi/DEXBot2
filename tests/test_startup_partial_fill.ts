@@ -29,7 +29,7 @@ console.log('Running offline partial-fill unit test (syncing startup orders)...'
         mgr._ordersByState[ORDER_STATES.VIRTUAL].add(gridId);
         mgr._ordersByType[ORDER_TYPES.SELL].add(gridId);
 
-        mgr.resetFunds();
+        await mgr.resetFunds();
         await mgr.setAccountTotals({ buy: 0, sell: initialSize, buyFree: initialSize, sellFree: initialSize });
         await mgr.recalculateFunds();
 

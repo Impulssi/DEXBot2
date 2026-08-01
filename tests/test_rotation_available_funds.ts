@@ -13,7 +13,7 @@ async function makeManager() {
     });
     mgr.assets = { assetA: { precision: 5 }, assetB: { precision: 5 } };
     await mgr.setAccountTotals({ buy: 1000, sell: 10, buyFree: 1000, sellFree: 10 });
-    mgr.resetFunds();
+    await mgr.resetFunds();
     return mgr;
 }
 

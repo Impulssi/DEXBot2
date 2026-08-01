@@ -119,7 +119,8 @@ import {
     buildFillKey,
     isOrderPlaced,
     hasOnChainId,
-    isOrderVirtual
+    isOrderVirtual,
+    resolveSpreadOrderSide
 } from './utils/order';
 import {
     resolveProcessedFillPersistenceMode
@@ -821,9 +822,7 @@ class SyncEngine {
                     // to resolve the side from.
                     let resolvedType = currentGridOrder.type;
                     if (resolvedType === ORDER_TYPES.SPREAD) {
-                        resolvedType = currentGridOrder.price < mgr.config.startPrice
-                            ? ORDER_TYPES.BUY
-                            : ORDER_TYPES.SELL;
+                        resolvedType = resolveSpreadOrderSide(currentGridOrder.price, mgr.config.startPrice);
                     }
                     filledOrders.push({ ...currentGridOrder, type: resolvedType });
                 }
@@ -1112,9 +1111,7 @@ class SyncEngine {
         if (orderType === ORDER_TYPES.SPREAD) {
             if (paysAssetId === mgr.assets.assetB.id) orderType = ORDER_TYPES.BUY;
             else if (paysAssetId === mgr.assets.assetA.id) orderType = ORDER_TYPES.SELL;
-            else orderType = matchedGridOrder.price < mgr.config.startPrice
-                ? ORDER_TYPES.BUY
-                : ORDER_TYPES.SELL;
+            else orderType = resolveSpreadOrderSide(matchedGridOrder.price, mgr.config.startPrice);
         }
         const currentSize = toFiniteNumber(matchedGridOrder.size);
         const precision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetA.precision : mgr.assets.assetB.precision;
@@ -1726,9 +1723,7 @@ class SyncEngine {
                             // Derive the side from the slot price vs start price — same
                             // convention as the funds check (manager.ts).
                             if (!normalizedExpectedType && gridOrder.type === ORDER_TYPES.SPREAD) {
-                                normalizedExpectedType = gridOrder.price < mgr.config.startPrice
-                                    ? ORDER_TYPES.BUY
-                                    : ORDER_TYPES.SELL;
+                                normalizedExpectedType = resolveSpreadOrderSide(gridOrder.price, mgr.config.startPrice);
                             }
                             const updatedOrder = {
                                 ...gridOrder,

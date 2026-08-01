@@ -34,7 +34,7 @@ async function runTests() {
         mgr.logger.level = 'debug';
         mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
         await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
-        mgr.resetFunds();
+        await mgr.resetFunds();
         return mgr;
     };
 
@@ -125,7 +125,7 @@ async function runTests() {
 
         // Set totals so total budget is limited
         await manager.setAccountTotals({ buy: 100, sell: 1000, buyFree: 100, sellFree: 1000 });
-        manager.resetFunds();
+        await manager.resetFunds();
 
         // Mock a target slot near market (shortage)
         await manager._updateOrder({ id: 'target-1', type: ORDER_TYPES.BUY, price: 99, size: 0, state: ORDER_STATES.VIRTUAL });

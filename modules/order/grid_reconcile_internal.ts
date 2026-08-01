@@ -8,9 +8,9 @@
 
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
-import { readOpenOrdersWithMetaSafe } from '../chain_orders';
-import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, floatToBlockchainInt, calculatePriceTolerance } from './utils/math';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults } from './utils/order';
+import { readOpenOrdersGuarded } from '../chain_orders';
+import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision } from './utils/math';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot } from './utils/order';
 import { resolveAccountRef } from './utils/system';
 import * as Format from './format';
 import { getErrorMessage } from '../utils/errors';
@@ -433,19 +433,18 @@ async function _recoverSyncFromChain({ chainOrders, manager, account, logger, so
 }): Promise<any[] | null> {
     try {
         if (triggerMessage) logger?.log?.(triggerMessage, 'warn');
-        const freshRead = await readOpenOrdersWithMetaSafe(
+        const freshChainOrders = await readOpenOrdersGuarded(
             chainOrders,
             resolveAccountRef(manager, account),
-            TIMING.CONNECTION_TIMEOUT_MS
+            {
+                log: (message: string, level: any) => logger?.log?.(message, level),
+                label: 'RECOVERY',
+                deferEmpty: true,
+                timeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
+                skipMessage: skipMessage || 'Recovery sync skipped - empty/truncated chain read is ambiguous (node may be lagging, or the get_full_accounts window omitted fresh orders); deferring to next reconcile cycle',
+            }
         );
-        const freshChainOrders = freshRead.orders;
-        if (!Array.isArray(freshChainOrders) || freshChainOrders.length === 0 || freshRead.truncated) {
-            logger?.log?.(
-                skipMessage || 'Recovery sync skipped — empty/truncated chain read is ambiguous (node may be lagging, or the get_full_accounts window omitted fresh orders); deferring to next reconcile cycle',
-                'warn'
-            );
-            return null;
-        }
+        if (freshChainOrders === null) return null;
         await manager.syncFromOpenOrders(freshChainOrders, {
             skipAccounting: false,
             source,
@@ -466,7 +465,7 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
         source,
         triggerMessage,
         skipMessage:
-            'Startup: Recovery sync skipped — empty/truncated chain read is ambiguous (node may be lagging, ' +
+            'Startup: Recovery sync skipped - empty/truncated chain read is ambiguous (node may be lagging, ' +
             'or the get_full_accounts window omitted fresh orders); deferring to next reconcile cycle',
     });
 }
@@ -775,22 +774,20 @@ async function _adoptPossiblyLandedCreate({
     gridOrder: any;
 }): Promise<string | null | 'unknown'> {
     try {
-        const freshRead = await chainOrders.readOpenOrdersWithMeta(
+        // Truncated reads omit the newest limit orders (by_account index
+        // order) — exactly the create this check is verifying — and empty
+        // reads are indistinguishable from a lagging node that missed the
+        // just-broadcast transaction. Both are unverifiable; absence is only
+        // authoritative on a clean, non-empty read.
+        const freshChainOrders = await readOpenOrdersGuarded(
+            chainOrders,
             resolveAccountRef(manager, account),
-            TIMING.CONNECTION_TIMEOUT_MS
+            {
+                deferEmpty: true,
+                timeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
+            }
         );
-        if (freshRead.truncated) {
-            // A capped get_full_accounts read omits the newest limit orders
-            // (by_account index order) — exactly the create this check is
-            // verifying. Absence in a truncated read is not authoritative;
-            // treat as unverifiable so the caller defers the re-broadcast.
-            return 'unknown';
-        }
-        const freshChainOrders = freshRead.orders;
-        if (!Array.isArray(freshChainOrders) || freshChainOrders.length === 0) {
-            // Empty read: the account is either genuinely empty (nothing else
-            // open) or the node is lagging. Both are plausible right after an
-            // uncertain broadcast; treat as unverifiable.
+        if (freshChainOrders === null) {
             return 'unknown';
         }
 
@@ -802,11 +799,7 @@ async function _adoptPossiblyLandedCreate({
             const parsed = parseChainOrder(o, assets);
             if (!parsed || parsed.type !== gridOrder.type) continue;
             if (parsed.orderId && Array.from(manager.orders.values()).some((g: any) => g.orderId === parsed.orderId)) continue;
-            const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, assets) || 0;
-            if (Math.abs(parsed.price - gridOrder.price) > priceTolerance) continue;
-            const precision = gridOrder.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
-            const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(gridOrder.size, precision) * 0.01));
-            if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(gridOrder.size, precision)) > sizeTolerance) continue;
+            if (!chainOrderMatchesSlot(parsed, gridOrder, assets)) continue;
             matched = o;
             break;
         }
@@ -1098,30 +1091,32 @@ async function _executeStartupCreateGroupBatch({
                 'warn'
             );
             try {
-                const freshRead = await readOpenOrdersWithMetaSafe(
+                // An empty/truncated verification read is ambiguous, NOT
+                // proof that nothing landed: a truncated get_full_accounts
+                // window omits the freshest creates (exactly this batch's),
+                // and an empty snapshot may be a node lagging behind the
+                // just-broadcast transaction. Treating it as "nothing
+                // landed" would let a later pass re-create (duplicate) or
+                // cancel as surplus the very orders this batch placed.
+                // Mirror the single-create sibling: defer through the
+                // guarded recovery sync, which re-reads and only syncs on
+                // an authoritative snapshot (deferring to the next
+                // reconcile cycle otherwise).
+                const freshChainOrders = await readOpenOrdersGuarded(
                     chainOrders,
                     resolveAccountRef(manager, account),
-                    TIMING.CONNECTION_TIMEOUT_MS
+                    {
+                        log: (message: string, level: any) => logger?.log?.(message, level),
+                        label: 'STARTUP',
+                        deferEmpty: true,
+                        timeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
+                        skipMessage: (kind: string) =>
+                            `Startup: Uncertain create group ${groupIndex + 1}/${totalGroups} verification read is ` +
+                            `${kind}; cannot confirm whether the batch landed - ` +
+                            `deferring to guarded recovery sync (duplicate-order protection)`,
+                    }
                 );
-                const freshChainOrders = freshRead?.orders;
-                if (freshRead?.truncated || !Array.isArray(freshChainOrders) || freshChainOrders.length === 0) {
-                    // An empty/truncated verification read is ambiguous, NOT
-                    // proof that nothing landed: a truncated get_full_accounts
-                    // window omits the freshest creates (exactly this batch's),
-                    // and an empty snapshot may be a node lagging behind the
-                    // just-broadcast transaction. Treating it as "nothing
-                    // landed" would let a later pass re-create (duplicate) or
-                    // cancel as surplus the very orders this batch placed.
-                    // Mirror the single-create sibling: defer through the
-                    // guarded recovery sync, which re-reads and only syncs on
-                    // an authoritative snapshot (deferring to the next
-                    // reconcile cycle otherwise).
-                    logger?.log?.(
-                        `Startup: Uncertain create group ${groupIndex + 1}/${totalGroups} verification read is ` +
-                        `${freshRead?.truncated ? 'TRUNCATED' : 'EMPTY'}; cannot confirm whether the batch landed — ` +
-                        `deferring to guarded recovery sync (duplicate-order protection)`,
-                        'warn'
-                    );
+                if (freshChainOrders === null) {
                     await _recoverStartupSyncFailure({
                         chainOrders,
                         manager,

@@ -467,7 +467,7 @@ async function testRecalculateGridFundLockSerialization() {
     // Context A: holds _fundLock for 200ms (simulating the recalculateGrid wrap).
     let wrapReleased = false;
     const contextA = manager._fundLock.acquire(async () => {
-        manager.resetFunds();
+        await manager.resetFunds();
         await new Promise(r => setTimeout(r, 200));
         wrapReleased = true;
     });

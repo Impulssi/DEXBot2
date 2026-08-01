@@ -979,7 +979,7 @@ export async function initializeGrid(manager: any): Promise<void> {
         }
 
         // RC-2: Wrap atomic changes in grid lock
-            await manager._gridLock.acquire(async () => {
+        await manager._gridLock.acquire(async () => {
             _clearOrderCachesLogic(manager);
             await manager._fundLock.acquire(async () => {
                 await manager.resetFunds();
@@ -988,20 +988,19 @@ export async function initializeGrid(manager: any): Promise<void> {
             manager.pauseRecalcLogging();
             manager.pauseFundRecalc();
             try {
-                 // RC-2: Use _applyOrderUpdate (PRIVATE/UNLOCKED)
-                 for (const order of sizedOrders) {
-                     await manager._applyOrderUpdate(order, 'grid-init', { skipAccounting: true });
-                 }
-             } finally {
-                 await manager.resumeFundRecalc();
-                 manager.resumeRecalcLogging();
-             }
+                // RC-2: Use _applyOrderUpdate (PRIVATE/UNLOCKED)
+                for (const order of sizedOrders) {
+                    await manager._applyOrderUpdate(order, 'grid-init', { skipAccounting: true });
+                }
+            } finally {
+                await manager.resumeFundRecalc();
+                manager.resumeRecalcLogging();
+            }
 
-             // RC-6: Spread count updates protected by grid lock
-             manager.targetSpreadCount = initialSpreadCount.buy + initialSpreadCount.sell;
-             manager.currentSpreadCount = manager.targetSpreadCount;
+            // RC-6: Spread count updates protected by grid lock
+            manager.targetSpreadCount = initialSpreadCount.buy + initialSpreadCount.sell;
+            manager.currentSpreadCount = manager.targetSpreadCount;
         });
-
         // FIX: Use consistent optional chaining pattern for all logger calls
         manager.logger?.log?.(`Initialized grid with ${orders.length} orders.`, 'info');
         manager.logger?.logFundsStatus?.(manager);

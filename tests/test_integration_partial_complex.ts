@@ -86,7 +86,7 @@ async function testFundCyclingWithPartialFills() {
     await mgr._updateOrder({ id: 'sell-1', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, price: 1850, size: 5, orderId: '1.7.101' });
     await mgr._updateOrder({ id: 'buy-0', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, price: 1700, size: 100, orderId: '1.7.200' });
 
-    mgr.resetFunds();
+    await mgr.resetFunds();
     await mgr.setAccountTotals({ buy: 600, sell: 515, buyFree: 100, sellFree: 0 });
     await mgr.recalculateFunds();
 

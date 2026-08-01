@@ -78,10 +78,11 @@
 
 import { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS } from '../constants';
 import { resolveAccountRef } from './utils/system';
+import { resolveSpreadOrderSide } from './utils/order';
 import * as Format from './format';
 import * as fundRegistry from '../fund_registry';
 import * as chainOrders from '../chain_orders';
-import { readOpenOrdersWithMetaSafe } from '../chain_orders';
+import { readOpenOrdersGuarded } from '../chain_orders';
 import {
     calculateAvailableFundsValue,
     getAssetFees,
@@ -374,8 +375,8 @@ class Accountant {
              // - SPREAD type: derive from price relation to startPrice (market midpoint)
              //   * price < startPrice → BUY side (lower prices are bids)
              //   * price >= startPrice → SELL side (higher prices are asks)
-              const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && order.price < mgr.config.startPrice);
-              const isSell = order.type === ORDER_TYPES.SELL || (order.type === ORDER_TYPES.SPREAD && order.price >= mgr.config.startPrice);
+              const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && resolveSpreadOrderSide(order.price, mgr.config.startPrice) === ORDER_TYPES.BUY);
+              const isSell = order.type === ORDER_TYPES.SELL || (order.type === ORDER_TYPES.SPREAD && resolveSpreadOrderSide(order.price, mgr.config.startPrice) === ORDER_TYPES.SELL);
 
              if (isBuy) {
                  if (isActive) {
@@ -639,23 +640,23 @@ class Accountant {
         mgr._orphanFillsCreditedAt = null;
 
         // 2. Sync from open orders
-        const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
-        const openOrders = freshRead.orders;
         // An empty/truncated read is ambiguous — the account is either genuinely
         // empty or the node is lagging/capped (fresh orders omitted). Running
         // syncFromOpenOrders on it would let pass-1 phantom cleanup virtualize
         // ACTIVE/PARTIAL slots that are live on chain, after which the next
         // cycle re-creates them as duplicates. Skip the sync and defer to the
         // next reconcile cycle, mirroring the other recovery-read guards.
-        if (freshRead.truncated || !Array.isArray(openOrders) || openOrders.length === 0) {
-            mgr.logger?.log?.(
-                `[RECOVERY] Open-order read ${freshRead.truncated ? 'TRUNCATED' : 'EMPTY'} during state recovery; skipping sync (ambiguous snapshot, node may be lagging)`,
-                'warn'
-            );
+        const openOrders = await readOpenOrdersGuarded(chainOrders, accountRef, {
+            log: (message: string, level: any) => mgr.logger?.log?.(message, level),
+            label: 'RECOVERY',
+            detail: 'during state recovery',
+            deferEmpty: true,
+        });
+        if (openOrders === null) {
             return {
                 isValid: false,
                 deferred: true,
-                reason: `Recovery sync skipped: ${freshRead.truncated ? 'truncated' : 'empty'} chain read is ambiguous (node may be lagging); deferring to next reconcile cycle`,
+                reason: 'Recovery sync skipped: ambiguous chain read (truncated or empty) - node may be lagging; deferring to next reconcile cycle',
             };
         }
         // Recovery runs after fetchAccountTotals() has refreshed authoritative balances

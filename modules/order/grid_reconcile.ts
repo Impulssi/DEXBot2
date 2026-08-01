@@ -6,10 +6,10 @@ import {
     _executePlannedStartupCreates, _reconcileStartupSide,
 } from './grid_reconcile_internal';
 import { ORDER_TYPES, ORDER_STATES } from '../constants';
-import { readOpenOrdersWithMetaSafe } from '../chain_orders';
-import { calculatePriceTolerance, floatToBlockchainInt, getAssetFeesSafe } from './utils/math';
+import { readOpenOrdersGuarded } from '../chain_orders';
+import { calculatePriceTolerance, getAssetFeesSafe } from './utils/math';
 import {
-    isOrderPlaced, parseChainOrder, isOrderOnChain,
+    isOrderPlaced, parseChainOrder, isOrderOnChain, chainOrderMatchesSlot,
 } from './utils/order';
 import * as Format from './format';
 import { getErrorMessage } from '../utils/errors';
@@ -464,21 +464,18 @@ export async function reconcileGridOrders({
     let finalChainBuyCount = chainBuyCount;
     if (!dryRun) {
         try {
-            const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, account);
             // Truncated-read guard: get_full_accounts caps the limit_orders
             // window and fresh orders (exactly the Phase-2 creates) sort last
             // and are the first entries omitted. The adoption loop and the
             // surplus-cancel counts would silently operate on a partial
             // snapshot — defer to the sync loop's targeted drift detection and
             // keep the pre-Phase-2 counts for the summary log.
-            if (freshRead.truncated) {
-                logger?.log?.(
-                    `Startup: Post-Phase-2 chain read is TRUNCATED (account exceeds the get_full_accounts window); ` +
-                    `adoption/surplus-cancel deferred and final counts are from the pre-Phase-2 snapshot`,
-                    'warn'
-                );
-            } else {
-                const freshOpenOrders = freshRead.orders;
+            const freshOpenOrders = await readOpenOrdersGuarded(chainOrders, account, {
+                log: (message: string, level: any) => logger?.log?.(message, level),
+                label: 'STARTUP',
+                detail: 'Post-Phase-2 chain read',
+            });
+            if (freshOpenOrders !== null) {
                 const freshParsed = (Array.isArray(freshOpenOrders) ? freshOpenOrders : [])
                     .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
                     .filter((x: any) => x.parsed);
@@ -510,15 +507,7 @@ export async function reconcileGridOrders({
                     if (gridOrderIds.has(co.id)) continue;
                     const candidate: any = Array.from(manager.orders.values()).find((o: any) => {
                         if (!o || o.orderId || o.state !== ORDER_STATES.VIRTUAL) return false;
-                        if (o.type !== parsed.type && o.type !== ORDER_TYPES.SPREAD) return false;
-                        const tol = calculatePriceTolerance(o.price, o.size, parsed.type, manager.assets) || 0;
-                        if (Math.abs(parsed.price - o.price) > tol) return false;
-                        const precision = parsed.type === ORDER_TYPES.SELL
-                            ? manager.assets.assetA.precision
-                            : manager.assets.assetB.precision;
-                        const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(o.size, precision) * 0.01));
-                        if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(o.size, precision)) > sizeTolerance) return false;
-                        return true;
+                        return chainOrderMatchesSlot(parsed, o, manager.assets);
                     });
                     if (!candidate) continue;
                     try {

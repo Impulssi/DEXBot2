@@ -20,7 +20,7 @@ async function runTests() {
         });
         mgr.assets = { assetA: { id: '1.3.0', precision: 5 }, assetB: { id: '1.3.121', precision: 5 } };
         await mgr.setAccountTotals({ buy: 10000, sell: 1000, buyFree: 10000, sellFree: 1000 });
-        mgr.resetFunds();
+        await mgr.resetFunds();
         return mgr;
     };
 

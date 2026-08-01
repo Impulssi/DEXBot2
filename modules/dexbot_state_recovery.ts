@@ -3,6 +3,7 @@
 import * as client from './bitshares_client';
 const { BitShares } = client;
 import * as chainOrders from './chain_orders';
+import { readOpenOrdersGuarded } from './chain_orders';
 import { ORDER_TYPES } from './constants';
 import * as Format from './order/format';
 import * as grid from './order/grid';
@@ -72,18 +73,15 @@ async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery 
     try {
         bot.manager.logger.log(`Triggering state recovery sync (${reason})...`, 'info');
         await bot.manager.fetchAccountTotals(bot.accountId);
-        const openOrdersRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
         // Truncated-read guard: syncing on a partial get_full_accounts window
         // would virtualize live ACTIVE slots (pass-1 phantom cleanup) and let
         // the next cycle re-create them as duplicates. Defer to a clean read.
-        if (openOrdersRead.truncated) {
-            bot.manager.logger.log(
-                '[RECOVERY] Open-order read TRUNCATED during state recovery sync; deferring sync (partial snapshot would virtualize live slots)',
-                'warn'
-            );
-            return;
-        }
-        const openOrders = openOrdersRead.orders;
+        const openOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+            log: (message: string, level: any) => bot.manager.logger.log(message, level),
+            label: 'RECOVERY',
+            detail: 'during state recovery sync',
+        });
+        if (openOrders === null) return;
         await bot.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
         if (typeof bot.manager.persistGrid === 'function') {
             await bot.manager.persistGrid();

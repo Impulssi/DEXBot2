@@ -2,6 +2,7 @@
 
 import { path } from './path_api';
 import * as chainOrders from './chain_orders';
+import { readOpenOrdersGuarded } from './chain_orders';
 import { ORDER_STATES } from './constants';
 import { PATHS } from './paths';
 import { getStorage } from './storage';
@@ -383,14 +384,17 @@ async function finishStartupSequence(bot: any, startupState: any) {
             throw new Error('Cannot start bot without a resolved account ID');
         }
 
-        const startupChainRead = bot.config.dryRun
-            ? { orders: [] as any[], truncated: false }
-            : await chainOrders.readOpenOrdersWithMeta(bot.accountId);
-        const chainOpenOrders = startupChainRead.orders;
-        const chainReadTruncated = !!startupChainRead.truncated;
-        if (chainReadTruncated) {
-            bot._log('[STARTUP] Open-order read TRUNCATED (account exceeds the get_full_accounts window); chain-touching startup steps deferred — the sync loop will reconcile on a clean read', 'warn');
-        }
+        const guardedChainOrders = bot.config.dryRun
+            ? []
+            : await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                log: (message: string, level: any) => bot._log(message, level),
+                label: 'STARTUP',
+            });
+        // Truncated reads defer all chain-touching steps below; the decision
+        // function must never see the partial snapshot (it could wrongly
+        // resume/regenerate on ambiguous data), so it gets the empty list.
+        const chainReadTruncated = guardedChainOrders === null;
+        const chainOpenOrders = guardedChainOrders === null ? [] : guardedChainOrders;
 
         let shouldRegenerate = false;
         if (!persistedGrid || persistedGrid.length === 0) {
@@ -496,11 +500,13 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             );
 
                             if (!batchResult?.aborted) {
-                                const reRead = await chainOrders.readOpenOrdersWithMeta(bot.accountId);
-                                if (reRead.truncated) {
-                                    bot._log('[STARTUP] Post-fill re-read TRUNCATED; skipping second sync (partial snapshot cannot drive pass-1 cleanup)', 'warn');
-                                } else {
-                                    startupChainOpenOrders = reRead.orders;
+                                const reReadOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                                    log: (message: string, level: any) => bot._log(message, level),
+                                    label: 'STARTUP',
+                                    detail: 'post-fill re-read',
+                                });
+                                if (reReadOrders !== null) {
+                                    startupChainOpenOrders = reReadOrders;
                                     await bot.manager.synchronizeWithChain(startupChainOpenOrders, 'readOpenOrders');
                                 }
                             }
