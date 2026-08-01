@@ -1275,6 +1275,20 @@ class SyncEngine {
             return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: true };
         }
 
+        // Stale-totals gate (mirrors syncFromFillHistoryBatch): refresh the
+        // accountTotals snapshot before applying the fill's optimistic
+        // accounting / re-commitments. Defer if the refresh fails so no
+        // unaccounted capital is committed; the fill is replay-safe and will
+        // be re-read on the next cycle.
+        const totalsGate = await mgr.refreshAccountTotalsIfStale();
+        if (!totalsGate.ok) {
+            mgr.logger.log(
+                `[SYNC] Deferring fill ${historyId}: accountTotals refresh failed (stale snapshot). Will be re-processed on the next cycle.`,
+                'warn'
+            );
+            return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: false, deferred: true };
+        }
+
         const orderIdsToLock = new Set([orderId]);
         mgr.lockOrders([...orderIdsToLock]);
 
@@ -1440,6 +1454,23 @@ class SyncEngine {
 
         if (fillEntries.length === 0) {
             return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: anyRequiresSync };
+        }
+
+        // Stale-totals gate: this batch applies optimistic accounting and
+        // re-commitments (refills) against accountTotals. If those are stale,
+        // tryDeductFromChainFree refuses the lock, the order is committed
+        // unaccounted, and an avoidable recovery cycle fires. Refresh the
+        // snapshot from chain once up front so the batch accounting runs on
+        // fresh pre-broadcast data. If the refresh fails (node trouble), defer
+        // the whole batch — fills are replay-safe (fillKey dedup) and will be
+        // re-read on the next cycle — rather than commit unaccounted capital.
+        const totalsGate = await mgr.refreshAccountTotalsIfStale();
+        if (!totalsGate.ok) {
+            mgr.logger.log(
+                '[SYNC] Deferring fill batch: accountTotals refresh failed (stale snapshot). Fills will be re-processed on the next cycle.',
+                'warn'
+            );
+            return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: false, deferred: true };
         }
 
         // Phase 2: Lock all unique order IDs once

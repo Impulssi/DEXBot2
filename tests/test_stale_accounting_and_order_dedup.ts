@@ -359,6 +359,56 @@ async function runTests() {
         console.log('   ✓ Non-orderGone error preserves _lastUnmatchedChainOrders');
     }
 
+    // 3e. refreshAccountTotalsIfStale — fresh snapshot short-circuits (no fetch)
+    {
+        const mgr = new OrderManager({ assetA: 'BTS', assetB: 'USD', startPrice: 1 });
+        mgr.logger = createSilentLogger();
+        await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 500, sellFree: 500 });
+        mgr.accountTotals._lastFetchedAt = Date.now();  // fresh
+        let fetchCalls = 0;
+        mgr._fetchAccountBalancesAndSetTotals = async () => { fetchCalls++; };
+
+        const result = await mgr.refreshAccountTotalsIfStale();
+        assert.strictEqual(result.ok, true, 'fresh totals should report ok=true');
+        assert.strictEqual(fetchCalls, 0, 'fresh totals should NOT trigger a chain fetch');
+        console.log('   ✓ refreshAccountTotalsIfStale short-circuits on fresh totals');
+    }
+
+    // 3f. refreshAccountTotalsIfStale — stale + successful refetch
+    {
+        const mgr = new OrderManager({ assetA: 'BTS', assetB: 'USD', startPrice: 1 });
+        mgr.logger = createSilentLogger();
+        await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 500, sellFree: 500 });
+        mgr.accountTotals._lastFetchedAt = Date.now() - TIMING.MAX_ACCOUNT_TOTALS_AGE_MS - 60000;
+        const oldStamp = mgr.accountTotals._lastFetchedAt;
+        mgr._fetchAccountBalancesAndSetTotals = async () => {
+            await mgr.setAccountTotals({ buy: 2000, sell: 2000, buyFree: 1500, sellFree: 1500 });
+        };
+
+        const result = await mgr.refreshAccountTotalsIfStale();
+        assert.strictEqual(result.ok, true, 'successful refetch should report ok=true');
+        assert.ok(mgr.accountTotals._lastFetchedAt > oldStamp, 'refetch should advance _lastFetchedAt');
+        assert.strictEqual(mgr.accountTotals.buyFree, 1500, 'refetch should apply fresh totals');
+        console.log('   ✓ refreshAccountTotalsIfStale refreshes stale totals when fetch succeeds');
+    }
+
+    // 3g. refreshAccountTotalsIfStale — stale + failed refetch (no-op fetch)
+    {
+        const mgr = new OrderManager({ assetA: 'BTS', assetB: 'USD', startPrice: 1 });
+        mgr.logger = createSilentLogger();
+        await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 500, sellFree: 500 });
+        mgr.accountTotals._lastFetchedAt = Date.now() - TIMING.MAX_ACCOUNT_TOTALS_AGE_MS - 60000;
+        const oldStamp = mgr.accountTotals._lastFetchedAt;
+        // Fetch "fails" by not refreshing totals (node error / empty read)
+        mgr._fetchAccountBalancesAndSetTotals = async () => {};
+
+        const result = await mgr.refreshAccountTotalsIfStale();
+        assert.strictEqual(result.ok, false, 'failed refetch should report ok=false');
+        assert.strictEqual(result.reason, 'refresh-failed', 'failed refetch should report reason=refresh-failed');
+        assert.strictEqual(mgr.accountTotals._lastFetchedAt, oldStamp, 'failed refetch should NOT advance _lastFetchedAt');
+        console.log('   ✓ refreshAccountTotalsIfStale reports refresh-failed when fetch does not refresh');
+    }
+
     console.log('✓ All stale accounting & order dedup tests passed!');
     process.exit(0);
 }

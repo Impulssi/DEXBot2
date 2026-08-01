@@ -664,6 +664,16 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                             const batchResult = await bot.manager.syncFromFillHistoryBatch(fillsToSync, {
                                 persistenceMode: PROCESSED_FILL_PERSISTENCE_MODES.BATCHED
                             });
+                            if (batchResult.deferred) {
+                                // Deferred: stale accountTotals refresh failed.
+                                // Do NOT mark the fills processed — they will be
+                                // re-read and re-processed on the next cycle.
+                                bot.manager.logger.log(
+                                    `[FILL] Deferred ${fillsToSync.length} fill(s) (stale accountTotals, refresh failed); retrying next cycle.`,
+                                    'warn'
+                                );
+                                return resolvedOrders;
+                            }
                             for (const fill of fillsToSync) {
                                 const fillKey = buildFillKey({
                                     orderId: fill?.op?.[1]?.order_id,
@@ -684,6 +694,13 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                                     blockNum: fill?.block_num,
                                     historyId: fill?.id
                                 });
+                                if (resultHistory.deferred) {
+                                    bot.manager.logger.log(
+                                        `[FILL] Deferred fill (stale accountTotals, refresh failed); retrying next cycle.`,
+                                        'warn'
+                                    );
+                                    continue;
+                                }
                                 if (fillKey) pendingFillKeysForCurrentCycle.add(fillKey);
                                 if (resultHistory.filledOrders) resolvedOrders.push(...resultHistory.filledOrders);
                                 if (resultHistory.requiresOpenOrdersSync) requiresOpenOrdersSync = true;

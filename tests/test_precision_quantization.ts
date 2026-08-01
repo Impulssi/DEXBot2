@@ -115,6 +115,10 @@ async function testFillWithQuantizedOrder() {
         assetB: { id: '1.3.121', precision: 5 }
     };
 
+    // Fresh accountTotals snapshot so the stale-totals fill gate short-circuits
+    // (real chain fetch is unavailable in this test environment).
+    mgr.accountTotals = { buy: 100000, sell: 100000, buyFree: 50000, sellFree: 50000, _lastFetchedAt: Date.now() };
+
     // Step 1: Create order with float size
     const originalSize = 8.62251000;
     const assetBPrecision = 5;

@@ -44,6 +44,9 @@ function createManager() {
             console.log(`  ${msg}`);
         }
     };
+    // Fresh accountTotals snapshot so the stale-totals fill gate short-circuits
+    // (real fetch is unavailable in this test environment).
+    mgr.accountTotals = { buy: 100000, sell: 100000, buyFree: 50000, sellFree: 50000, _lastFetchedAt: Date.now() };
     return mgr;
 }
 

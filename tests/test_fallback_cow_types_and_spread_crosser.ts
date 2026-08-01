@@ -251,9 +251,44 @@ async function testSpreadBuyCrosserNoSpuriousCreate() {
     console.log('  ✓ SPREAD→BUY crosser correctly handled\n');
 }
 
+async function testRecoveryExhaustedReasonPropagation() {
+    console.log('\n=== Test 3: RECOVERY_EXHAUSTED abort propagates reason (blocks retry loop) ===\n');
+
+    const manager = await createBoundaryShiftFixture();
+
+    const mockUpdateFn = async () => ({
+        executed: false,
+        aborted: true,
+        reason: 'RECOVERY_EXHAUSTED',
+    });
+    const mockAccountOrders = { storeMasterGrid: async () => {} };
+
+    const result = await applyGridDivergenceCorrections(
+        manager, mockAccountOrders, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot
+    );
+
+    // The maintenance runtime gates the immediate boundary-shift retry on this
+    // reason: a RECOVERY_EXHAUSTED abort cannot make progress until the next
+    // fill/sync cycle, so scheduling setTimeout(0) retries would spin the loop.
+    assert(result, 'Should return a result object');
+    assert.strictEqual(result.committed, false, `committed should be false, got ${result.committed}`);
+    assert.strictEqual(result.boundaryChanged, true, `boundaryChanged should be true, got ${result.boundaryChanged}`);
+    assert.strictEqual(result.reason, 'RECOVERY_EXHAUSTED',
+        `reason should be RECOVERY_EXHAUSTED, got ${result.reason}`);
+
+    // Master must remain unpatched (types stay stale) — same contract as Test 1.
+    const slot4 = manager.orders.get('slot-4');
+    assert.strictEqual(slot4.type, ORDER_TYPES.SPREAD,
+        `slot-4 should remain SPREAD (master not patched), got ${slot4.type}`);
+
+    console.log('  ✓ returned { committed: false, boundaryChanged: true, reason: RECOVERY_EXHAUSTED }');
+    console.log('  ✓ master not patched\n');
+}
+
 async function main() {
     await testFailedCommitSignalsRetry();
     await testSpreadBuyCrosserNoSpuriousCreate();
+    await testRecoveryExhaustedReasonPropagation();
     console.log('✓ All commit-retry-signal and SPREAD→BUY crosser tests PASSED!\n');
 }
 
@@ -264,4 +299,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { testFailedCommitSignalsRetry, testSpreadBuyCrosserNoSpuriousCreate };
+module.exports = { testFailedCommitSignalsRetry, testSpreadBuyCrosserNoSpuriousCreate, testRecoveryExhaustedReasonPropagation };

@@ -1652,13 +1652,24 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                 // immediately instead of patching master types.  The retry re-fetches
                 // blockchain state and re-derives the boundary with consistent data.
                 // Skip spread correction this tick — the retry will handle it.
-                if (dcResult && !dcResult.committed && dcResult.boundaryChanged) {
+                // EXCEPTION: a RECOVERY_EXHAUSTED abort means CREATEs are blocked until
+                // the next fill or sync cycle (see recovery-exhausted reset logic), so an
+                // immediate retry can never make progress and would spin the loop,
+                // producing unbounded log volume.  Defer to the normal cycle instead.
+                if (dcResult && !dcResult.committed && dcResult.boundaryChanged &&
+                    dcResult.reason !== 'RECOVERY_EXHAUSTED') {
                     bot._log(
                         `[DIVERGENCE-COW] Commit failed with boundary shift; ` +
                         `scheduling immediate retry instead of patching master`,
                         'warn'
                     );
                     setTimeout(() => runGridMaintenance(bot, 'failed-commit-retry', { skipIdle: true }), 0);
+                } else if (dcResult && !dcResult.committed && dcResult.boundaryChanged) {
+                    bot._log(
+                        `[DIVERGENCE-COW] Boundary-shift commit blocked (reason=${dcResult.reason}); ` +
+                        `deferring retry to next fill/sync cycle`,
+                        'warn'
+                    );
                 } else {
                     const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
                     if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;

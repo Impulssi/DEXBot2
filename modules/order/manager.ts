@@ -842,6 +842,41 @@ class OrderManager {
         await this._fetchAccountBalancesAndSetTotals();
     }
 
+    /**
+     * Refresh accountTotals from chain when the cached snapshot is stale.
+     *
+     * Optimistic deductions (tryDeductFromChainFree) refuse to operate on
+     * snapshots older than MAX_ACCOUNT_TOTALS_AGE_MS and schedule a recovery
+     * instead, leaving the order placed but unaccounted. By refreshing once
+     * up front, the caller's accounting batch runs against a fresh snapshot
+     * so deductions apply normally and no skip/recovery cycle is triggered.
+     *
+     * @returns {Promise<{ok: boolean, reason?: string}>} {ok: true} when the
+     * snapshot is (now) fresh; {ok: false, reason} when the refresh failed and
+     * the snapshot is still stale — the caller must not proceed with accounting.
+     */
+    async refreshAccountTotalsIfStale() {
+        const lastFetched = this.accountTotals?._lastFetchedAt || 0;
+        if (Date.now() - lastFetched <= TIMING.MAX_ACCOUNT_TOTALS_AGE_MS) {
+            return { ok: true };
+        }
+        const fetchedBefore = lastFetched;
+        try {
+            await this.fetchAccountTotals(this.accountId);
+        } catch (err: any) {
+            this.logger?.log?.(`[SYNC] refreshAccountTotalsIfStale fetch failed: ${getErrorMessage(err)}`, 'warn');
+        }
+        const fetchedAfter = this.accountTotals?._lastFetchedAt || 0;
+        if (fetchedAfter <= fetchedBefore) {
+            this.logger?.log?.(
+                `[SYNC] refreshAccountTotalsIfStale: accountTotals still stale after refresh (age=${Math.max(0, Date.now() - fetchedAfter)}ms).`,
+                'warn'
+            );
+            return { ok: false, reason: 'refresh-failed' };
+        }
+        return { ok: true };
+    }
+
     async _fetchAccountBalancesAndSetTotals() {
         return await this.sync.fetchAccountBalancesAndSetTotals();
     }

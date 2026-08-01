@@ -802,7 +802,7 @@ export async function retryPersistenceIfNeeded(manager: any): Promise<boolean> {
  * @param {Function} updateGridFromBlockchainSnapshotFn - Grid resize function (injected to avoid circular dependency with grid.ts)
  * @returns {Promise<void>}
  */
-export async function applyGridDivergenceCorrections(manager: any, accountOrders: any, _botKey: string, updateOrdersOnChainBatchFn: Function, updateGridFromBlockchainSnapshotFn: Function): Promise<{ committed: boolean, boundaryChanged: boolean } | undefined> {
+export async function applyGridDivergenceCorrections(manager: any, accountOrders: any, _botKey: string, updateOrdersOnChainBatchFn: Function, updateGridFromBlockchainSnapshotFn: Function): Promise<{ committed: boolean, boundaryChanged: boolean, reason?: string } | undefined> {
     if (!manager._gridLock) return;
     if (typeof updateGridFromBlockchainSnapshotFn !== 'function') {
         manager.logger?.log?.('[DIVERGENCE-COW] updateGridFromBlockchainSnapshotFn is not a function — aborting', 'error');
@@ -1043,7 +1043,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             } else {
                 manager.logger.log(`[DIVERGENCE-COW] Divergence corrections not executed (working grid discarded)`, 'warn');
                 manager._gridSidesUpdated.clear();
-                return { committed: false, boundaryChanged: hadBoundaryShift };
+                return { committed: false, boundaryChanged: hadBoundaryShift, reason: result?.reason };
             }
         } catch (err: any) {
             manager.logger.log(`[DIVERGENCE-COW] Error executing divergence corrections: ${getErrorMessage(err)}`, 'error');
