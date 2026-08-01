@@ -560,7 +560,12 @@ function resolveConfiguredPriceBound(value: any, fallback: any, startPrice: any,
  */
 function virtualizeOrder(order: any) {
     if (!order) return order;
-    const { btsFeeState, ...rest } = order;
+    const { btsFeeState, isGhost, ...rest } = order;
+    // A VIRTUAL order is never a ghost: the isGhost marker only describes the
+    // PARTIAL, size<=0 "blocked CREATE" state left by a fill that rounds to
+    // zero on the other side (see sync_engine._computeFillTransitionResult).
+    // Virtualizing clears the marker so it cannot leak onto freshly-placed
+    // real orders or spread placeholders that reuse this slot.
     return { ...rest, state: ORDER_STATES.VIRTUAL, orderId: null, rawOnChain: null };
 }
 
@@ -708,6 +713,31 @@ function formatUnmatchedChainOrder(order: any) {
  */
 function isOrderOnChain(order: any) {
     return (order?.state === ORDER_STATES.ACTIVE || order?.state === ORDER_STATES.PARTIAL) && !!order?.orderId;
+}
+
+/**
+ * Resolve the type to keep when a slot holding a live on-chain order would
+ * otherwise be reassigned to SPREAD. SPREAD+ACTIVE/PARTIAL is an illegal state
+ * (validateOrder rejects it as fatal ILLEGAL_SPREAD_STATE), so the slot keeps
+ * its stored BUY/SELL rail type; a stale SPREAD type is resolved by the slot
+ * index vs the boundary (the same convention the grid type correction uses).
+ * A genuinely misplaced order is later cancelled by sync pass-1 type-mismatch
+ * handling. Shared by assignGridRoles (runtime boundary shifts) and the
+ * load-time GRID-TYPE-CORRECT guard so the invariant lives in one place.
+ * Filled orders are unaffected: a full fill first converts the slot via
+ * convertToSpreadPlaceholder/virtualizeOrder, clearing orderId and state, so
+ * isOrderOnChain is false and the placeholder remains freely retypable.
+ *
+ * @param {Object} slot - The slot being retyped
+ * @param {number} idx - Slot index
+ * @param {number} buyEndIdx - Boundary index (last BUY slot)
+ * @param {Object} ORDER_TYPES - ORDER_TYPES constants
+ * @returns {string} Type to keep for the on-chain slot
+ */
+function resolveOnChainRetypeType(slot: any, idx: number, buyEndIdx: number, ORDER_TYPES: any) {
+    return (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)
+        ? slot.type
+        : (idx <= buyEndIdx ? ORDER_TYPES.BUY : ORDER_TYPES.SELL);
 }
 
 /**
@@ -877,12 +907,24 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
 
     return allSlots.map((slot: any, i: any) => {
         const liveSlot = getCurrentSlot ? (getCurrentSlot(slot.id) || slot) : slot;
+        const newType = (i <= buyEndIdx) ? ORDER_TYPES.BUY : (i >= sellStartIdx) ? ORDER_TYPES.SELL : ORDER_TYPES.SPREAD;
+        if (slot.type === newType) return slot;
+
+        // SPREAD GUARD: a slot holding a live on-chain order (state ACTIVE/PARTIAL
+        // with an orderId, including ghost PARTIAL size-0 orders) must never be
+        // reassigned to SPREAD, even when assignOnChain:true moves it into the gap
+        // band. SPREAD+ACTIVE/PARTIAL is an illegal state (validateOrder rejects it
+        // as fatal ILLEGAL_SPREAD_STATE), and retyping would orphan the live chain
+        // order. Preserve the BUY/SELL rail type; any genuinely misplaced order is
+        // cancelled by sync pass-1 type-mismatch handling. Mirrors the load-time
+        // GRID-TYPE-CORRECT guard (grid.ts).
+        if (newType === ORDER_TYPES.SPREAD && isOrderOnChain(liveSlot)) {
+            return { ...slot, type: resolveOnChainRetypeType(slot, i, buyEndIdx, ORDER_TYPES) };
+        }
+
         const canAssign = assignOnChain || !isOrderOnChain(liveSlot);
         if (canAssign) {
-            const newType = (i <= buyEndIdx) ? ORDER_TYPES.BUY : (i >= sellStartIdx) ? ORDER_TYPES.SELL : ORDER_TYPES.SPREAD;
-            if (slot.type !== newType) {
-                return { ...slot, type: newType };
-            }
+            return { ...slot, type: newType };
         }
         return slot;
     });
@@ -1320,5 +1362,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
     );
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
 

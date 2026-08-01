@@ -150,7 +150,8 @@ import {
     isOrderPlaced,
     hasOnChainId,
     calculateIdealBoundary,
-    assignGridRoles
+    assignGridRoles,
+    resolveOnChainRetypeType
 } from './utils/order';
 import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system';
 import { derivePriceWithPoolRef } from './utils/withPoolRef';
@@ -615,12 +616,8 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                         // to a number by initializeGrid), which makes every
                         // comparison false and wrongly resolves below-center
                         // slots to SELL.
-                        if (newType === ORDER_TYPES.SPREAD
-                            && slot.orderId
-                            && (slot.state === ORDER_STATES.ACTIVE || slot.state === ORDER_STATES.PARTIAL)) {
-                            newType = (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)
-                                ? slot.type
-                                : (i <= buyEndIdx ? ORDER_TYPES.BUY : ORDER_TYPES.SELL);
+                        if (newType === ORDER_TYPES.SPREAD && isOrderOnChain(slot)) {
+                            newType = resolveOnChainRetypeType(slot, i, buyEndIdx, ORDER_TYPES);
                         }
                         reassignCount++;
                         return { ...slot, type: newType };

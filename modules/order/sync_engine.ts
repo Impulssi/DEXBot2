@@ -903,6 +903,10 @@ class SyncEngine {
                 const wasVirtual = match.state === ORDER_STATES.VIRTUAL;
                 const wasPartial = match.state === ORDER_STATES.PARTIAL;
                 bestMatch.orderId = chainOrderId;
+                // A real chain order is being adopted onto this slot; it is no
+                // longer a ghost. Clears any isGhost marker leaked from a prior
+                // fill so it cannot persist onto the adopted on-chain order.
+                bestMatch.isGhost = false;
                 bestMatch.state = wasVirtual ? ORDER_STATES.ACTIVE : match.state;
                 const bestMatchRaw = rawChainOrders.get(chainOrderId);
                 bestMatch.rawOnChain = bestMatchRaw
@@ -1729,7 +1733,10 @@ class SyncEngine {
                                 ...gridOrder,
                                 type: normalizedExpectedType || gridOrder.type,
                                 state: newState,
-                                orderId: chainOrderId
+                                orderId: chainOrderId,
+                                // A freshly-placed real on-chain order is never a
+                                // ghost. Clear any leaked marker from gridOrder.
+                                isGhost: false
                             };
                             // Restore btsFeeState from raw chain order data if provided.
                             // After a grid reset, in-memory orders have no fee state but the

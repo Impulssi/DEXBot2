@@ -13,7 +13,7 @@ const { calculateGapSlots, getSizingContext, createOrderGrid, initializeGrid, ch
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, BUILD_DIR } = require('../modules/constants');
 const { OrderManager } = require('../modules/order/manager');
 const { allocateFundsByWeights, getSingleDustThreshold } = require('../modules/order/utils/math');
-const { shouldFlagOutOfSpread } = require('../modules/order/utils/order');
+const { shouldFlagOutOfSpread, assignGridRoles } = require('../modules/order/utils/order');
 const { WHITELIST_FILE, resetMarketAdapterWhitelistCache } = require('../modules/market_adapter_whitelist');
 const { ensureDir, safeUnlink, writeJSON } = require('../modules/utils/fs_utils');
 const _distWhitelist = require(`../${BUILD_DIR}/modules/market_adapter_whitelist.js`);
@@ -700,6 +700,66 @@ async function runTests() {
         // Edge case: empty side should return nominal gap slot count (not 0)
         result = shouldFlagOutOfSpread(2.0, targetSpread, toleranceSteps, 0, 5, increment);
         assert.strictEqual(result, 4, 'With empty buy side, should return nominal gap slot count');
+    }
+
+    console.log(' - Testing on-chain→SPREAD guard in assignGridRoles...');
+    {
+        const ORDER_TYPES_G = ORDER_TYPES;
+        const ORDER_STATES_G = ORDER_STATES;
+
+        // Build a price-sorted rail: boundary=2, gap=2 → buyEndIdx=2, sellStartIdx=5.
+        // Indices 3-4 are the SPREAD band.
+        const slots = [
+            { id: 's0', type: ORDER_TYPES_G.BUY, price: 90, state: ORDER_STATES_G.ACTIVE, orderId: 'oid0' },
+            { id: 's1', type: ORDER_TYPES_G.BUY, price: 93, state: ORDER_STATES_G.ACTIVE, orderId: 'oid1' },
+            { id: 's2', type: ORDER_TYPES_G.BUY, price: 96, state: ORDER_STATES_G.ACTIVE, orderId: 'oid2' },
+            { id: 's3', type: ORDER_TYPES_G.SPREAD, price: 99, state: ORDER_STATES_G.VIRTUAL, orderId: null },
+            { id: 's4', type: ORDER_TYPES_G.SPREAD, price: 102, state: ORDER_STATES_G.VIRTUAL, orderId: null },
+            { id: 's5', type: ORDER_TYPES_G.SELL, price: 105, state: ORDER_STATES_G.ACTIVE, orderId: 'oid5' },
+            { id: 's6', type: ORDER_TYPES_G.SELL, price: 108, state: ORDER_STATES_G.ACTIVE, orderId: 'oid6' }
+        ];
+
+        // Case 1: assignOnChain=false (default) — on-chain slots never retyped.
+        let result = assignGridRoles(slots, 2, 2, ORDER_TYPES_G, ORDER_STATES_G);
+        assert.strictEqual(result[0].type, ORDER_TYPES_G.BUY, 'on-chain buy keeps type without assignOnChain');
+        assert.strictEqual(result[5].type, ORDER_TYPES_G.SELL, 'on-chain sell keeps type without assignOnChain');
+
+        // Case 2: assignOnChain=true with boundary shift left (boundary=0, gap=2)
+        // → buyEndIdx=0, sellStartIdx=3. Indices 1-2 (on-chain BUY) now fall in the
+        // SPREAD band. Guard must keep them BUY, never SPREAD. Indices 3+ are SELL.
+        result = assignGridRoles(slots, 0, 2, ORDER_TYPES_G, ORDER_STATES_G, { assignOnChain: true });
+        assert.strictEqual(result[1].type, ORDER_TYPES_G.BUY, 'on-chain slot in gap keeps BUY rail type');
+        assert.strictEqual(result[2].type, ORDER_TYPES_G.BUY, 'on-chain slot in gap keeps BUY rail type');
+        // Non-on-chain slots are freely retyped by position.
+        assert.strictEqual(result[3].type, ORDER_TYPES_G.SELL, 'virtual gap slot retyped by position');
+        assert.strictEqual(result[4].type, ORDER_TYPES_G.SELL, 'virtual gap slot retyped by position');
+        // On-chain SELLs beyond sellStart keep SELL.
+        assert.strictEqual(result[5].type, ORDER_TYPES_G.SELL, 'on-chain sell beyond sellStart stays SELL');
+        assert.strictEqual(result[6].type, ORDER_TYPES_G.SELL, 'on-chain sell beyond sellStart stays SELL');
+
+        // Case 3: ghost order (PARTIAL + size 0 + orderId) in gap band — also guarded.
+        // boundary=0, gap=2 → buyEndIdx=0, sellStartIdx=3; gap band = indices 1-2.
+        const ghostSlots = [
+            { id: 'g0', type: ORDER_TYPES_G.BUY, price: 90, state: ORDER_STATES_G.ACTIVE, orderId: 'goid0' },
+            { id: 'g1', type: ORDER_TYPES_G.SELL, price: 100, state: ORDER_STATES_G.PARTIAL, size: 0, orderId: 'goid1' },
+            { id: 'g2', type: ORDER_TYPES_G.SELL, price: 103, state: ORDER_STATES_G.ACTIVE, orderId: 'goid2' }
+        ];
+        result = assignGridRoles(ghostSlots, 0, 2, ORDER_TYPES_G, ORDER_STATES_G, { assignOnChain: true });
+        assert.strictEqual(result[1].type, ORDER_TYPES_G.SELL, 'ghost order in gap keeps SELL rail type');
+
+        // Case 4: filled placeholder (VIRTUAL, no orderId) must still be re-typed —
+        // this is how a filled order is replaced with a new BUY/SELL to keep the
+        // spread constant. The guard must NOT apply to virtual slots.
+        const fillSlots = [
+            { id: 'f0', type: ORDER_TYPES_G.SPREAD, price: 100, state: ORDER_STATES_G.VIRTUAL, size: 0, orderId: null },
+            { id: 'f1', type: ORDER_TYPES_G.SPREAD, price: 103, state: ORDER_STATES_G.VIRTUAL, size: 0, orderId: null }
+        ];
+        // boundary=0, gap=0 → buyEndIdx=0, sellStartIdx=1. Index 0 is BUY zone,
+        // index 1 is SELL zone. Virtual placeholders are freely retyped — the
+        // guard must not block them.
+        result = assignGridRoles(fillSlots, 0, 0, ORDER_TYPES_G, ORDER_STATES_G, { assignOnChain: true });
+        assert.strictEqual(result[0].type, ORDER_TYPES_G.BUY, 'filled placeholder retyped to BUY for replacement');
+        assert.strictEqual(result[1].type, ORDER_TYPES_G.SELL, 'filled placeholder retyped to SELL for replacement');
     }
 
     console.log('✓ Grid logic tests passed!');

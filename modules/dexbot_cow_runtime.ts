@@ -1541,7 +1541,11 @@ function buildCowResultFromPlan(bot: any, plan: any) {
                 ...action.order,
                 id: action.id,
                 state: ORDER_STATES.VIRTUAL,
-                orderId: null
+                orderId: null,
+                // A fresh CREATE is never a ghost. Clear the marker that may have
+                // been left on this slot by a prior fill so it cannot persist onto
+                // the newly-placed real order (see buildCowResultFromPlan).
+                isGhost: false
             });
         } else if (action.type === COW_ACTIONS.UPDATE) {
             if (action.newGridId && action.newGridId !== action.id) {
@@ -1566,7 +1570,8 @@ function buildCowResultFromPlan(bot: any, plan: any) {
                     size: rotatedSize,
                     price: rotatedPrice,
                     state: ORDER_STATES.VIRTUAL,
-                    orderId: null
+                    orderId: null,
+                    isGhost: false
                 });
                 continue;
             }
@@ -1581,7 +1586,8 @@ function buildCowResultFromPlan(bot: any, plan: any) {
                 ...(action.order || {}),
                 id: action.id,
                 orderId: action.orderId || current.orderId,
-                size: newSize
+                size: newSize,
+                isGhost: false
             });
         }
     }
@@ -1628,7 +1634,10 @@ function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, execu
                     ...sourceSlot,
                     state: ORDER_STATES.VIRTUAL,
                     orderId: null,
-                    rawOnChain: null
+                    rawOnChain: null,
+                    // Rotation source frees the slot back to VIRTUAL; it is no
+                    // longer a ghost (the orderId moves to the destination).
+                    isGhost: false
                 });
                 bot.manager.logger.log(
                     `[COW] Pre-applied rotation: source ${oldOrder.id} → VIRTUAL (order ${sourceSlot.orderId} moved to ${newGridId})`,
@@ -1653,7 +1662,10 @@ function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, execu
                 // already held a prior committed ID (e.g. a partial commit
                 // left a stale reference).  The source-of-truth is always the
                 // original order being rotated.
-                orderId: oldOrder?.orderId || destSlot.orderId || null
+                orderId: oldOrder?.orderId || destSlot.orderId || null,
+                // Rotation destination becomes a real on-chain order; it is
+                // never a ghost.
+                isGhost: false
             });
             bot.manager.logger.log(
                 `[COW] Pre-applied rotation: dest ${newGridId} → ACTIVE (orderId=${oldOrder?.orderId || destSlot.orderId || 'none'})`,
