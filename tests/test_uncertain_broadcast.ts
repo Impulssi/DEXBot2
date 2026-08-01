@@ -1723,6 +1723,9 @@ async function main() {
     await testBoundaryShiftMixedAdoptedDiscarded();
     await testBoundaryShiftAllAdopted();
     await testBoundaryShiftTruncatedRead();
+    await testReReadLateAdoptsDiscardedCreate();
+    await testPollConfirmationAdoptsPlacedBatch();
+    await testAdoptionZeroFeeFallbackWithoutFeeCache();
     testsComplete = true;
     console.log('\nAll uncertain-broadcast tests passed (incl. retry + deadlock regression guards).');
 }
@@ -2481,6 +2484,226 @@ async function testBoundaryShiftTruncatedRead() {
         bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-017d passed');
+}
+
+// ── Re-read positive branch: late-adopted discarded CREATE ───────────────
+// The initial snapshot misses a create (TOCTOU window), so it is discarded;
+// the 3a re-read then reveals the create landed → late adoption. UNC-017b's
+// mock returned the same snapshot twice, so only the negative branch ran.
+async function testReReadLateAdoptsDiscardedCreate() {
+    console.log('\n[UNC-017e] Re-read reveals a discarded CREATE landed → late adoption (create-uncertain restore NOT needed)...');
+    const bot = makeBot();
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
+
+    bot.manager.persistGrid = async () => ({ isValid: true });
+    bot.manager._markGridDirty = () => {};
+    let syncCalls = 0;
+    bot.manager.synchronizeWithChain = async () => { syncCalls++; };
+    bot.manager.applyGridUpdateBatch = async () => {};
+
+    bot._recordPendingBroadcast({
+        opIndex: 0, ctxIndex: 0,
+        order: { id: 'buy-1', type: 'buy', price: 0.05, size: 1 },
+        finalInts: { sell: 5000000, receive: 100000000 }
+    });
+    bot._recordPendingBroadcast({
+        opIndex: 1, ctxIndex: 1,
+        order: { id: 'sell-1', type: 'sell', price: 0.06, size: 1 },
+        finalInts: { sell: 100000000, receive: 5000000 }
+    });
+
+    // Stateful mock: the FIRST read misses the sell-1 create (node lag /
+    // TOCTOU window); the 3a re-read reveals it landed.
+    let readCalls = 0;
+    chainOrders.readOpenOrdersWithMeta = async () => {
+        readCalls++;
+        if (readCalls === 1) {
+            return { orders: [makeChainOrder('1.7.300', 'buy', 5000000, 100000000)], truncated: false };
+        }
+        return {
+            orders: [
+                makeChainOrder('1.7.300', 'buy', 5000000, 100000000),
+                makeChainOrder('1.7.301', 'sell', 100000000, 5000000)
+            ],
+            truncated: false
+        };
+    };
+    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
+
+    try {
+        const result = await bot._reconcileAfterUncertainBroadcast(
+            new BroadcastUncertainError('timeout', {
+                operations: [{ op_name: 'limit_order_create' }, { op_name: 'limit_order_create' }],
+                accountName: 'test-account', batchId: 'batch-late-adopt', timeoutMs: 30000
+            }),
+            [{ kind: 'create', id: 'buy-1' }, { kind: 'create', id: 'sell-1' }]
+        );
+        assert.strictEqual(readCalls, 2, 'exactly one initial read + one re-read expected');
+        assert.strictEqual(result.uncertain, true);
+        assert.strictEqual(result.adoptedCount, 2, 're-read must late-adopt the discarded CREATE');
+        assert.strictEqual(result.discardedCount, 0, 'no CREATE may be discarded once the re-read proves it landed');
+        assert.strictEqual(syncCalls, 2, 'synchronizeWithChain must run for each adopted CREATE (incl. late-adopted)');
+        assert.strictEqual(bot.manager._pendingBroadcasts.size, 0,
+            'pending-broadcast protection must clear after late adoption');
+    } finally {
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
+    }
+    console.log('✓ UNC-017e passed');
+}
+
+// ── Post-broadcast poll machinery: poll-confirmed uncertain commit ───────
+// BroadcastUncertainError with a verifiable landed create → pollChainForConfirmation
+// confirms → _commitWorkingGrid → adoptPlacedBatchFromChain adopts the placed
+// orders from chain. Zero test references existed for this machinery
+// (adoptPlacedBatchFromChain + poll-confirmed commit).
+async function testPollConfirmationAdoptsPlacedBatch() {
+    console.log('\n[UNC-018] Uncertain broadcast → poll confirms CREATE landed → commit + chain adoption...');
+    const bot = makeBot();
+    const slotId = 'slot-unc-018';
+    const origBuildCreate = chainOrders.buildCreateOrderOp;
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadMeta = chainOrders.readOpenOrdersWithMeta;
+
+    bot.manager.getChainFundsSnapshot = () => ({ chainFreeSell: 1000, chainFreeBuy: 1000 });
+    bot.manager.synchronizeWithChain = async () => {};
+    bot.manager.applyGridUpdateBatch = async () => {};
+    bot.manager._commitWorkingGrid = async () => true;
+    bot.manager.persistGrid = async () => ({ isValid: true });
+
+    let syncFromOpenOrdersCalls = 0;
+    let capturedAdoptionOrders = null;
+    let capturedAdoptionOptions = null;
+    bot.manager.syncFromOpenOrders = async (orders, options) => {
+        syncFromOpenOrdersCalls++;
+        capturedAdoptionOrders = orders;
+        capturedAdoptionOptions = options;
+        return { filledOrders: [], updatedOrders: [], unmatchedChainOrders: [] };
+    };
+
+    const assetA = bot.manager.assets.assetA;
+    const assetB = bot.manager.assets.assetB;
+    let landedFinalInts = null;
+    chainOrders.buildCreateOrderOp = async (account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => {
+        landedFinalInts = {
+            sell: Math.round(Number(amountToSell) * 10 ** assetA.precision),
+            receive: Math.round(Number(minToReceive) * 10 ** assetB.precision),
+            sellAssetId,
+            receiveAssetId
+        };
+        return {
+            op: {
+                op_name: 'limit_order_create',
+                op_data: {
+                    amount_to_sell: { amount: landedFinalInts.sell, asset_id: sellAssetId },
+                    min_to_receive: { amount: landedFinalInts.receive, asset_id: receiveAssetId }
+                }
+            },
+            finalInts: landedFinalInts
+        };
+    };
+    chainOrders.executeBatch = async () => {
+        throw new BroadcastUncertainError('uncertain', { batchId: 'unc-018', timeoutMs: 30000 });
+    };
+    // The create landed on chain: the retry-verification read, the poll read
+    // and the adoption read all see the batch's own order.
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.802', 'sell', landedFinalInts.sell, landedFinalInts.receive)],
+        truncated: false
+    });
+
+    const cowResult = {
+        workingGrid: new WorkingGrid(bot.manager.orders, { baseVersion: 0 }),
+        workingIndexes: {},
+        workingBoundary: {},
+        actions: [{
+            type: COW_ACTIONS.CREATE,
+            id: slotId,
+            order: { id: slotId, type: 'sell', price: 0.005, size: 100 }
+        }]
+    };
+
+    try {
+        const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
+        assert.strictEqual(result.uncertainResolved, true,
+            'poll-confirmed commit must resolve as uncertainResolved');
+        assert.strictEqual(result.executed, true, 'poll-confirmed commit counts as executed');
+        assert.strictEqual(syncFromOpenOrdersCalls, 1,
+            'adoptPlacedBatchFromChain must run the adoption sync exactly once');
+        assert.strictEqual(capturedAdoptionOptions?.skipAccounting, false,
+            'adoption sync must lock capital (skipAccounting: false)');
+        assert(Array.isArray(capturedAdoptionOrders) && capturedAdoptionOrders.length === 1,
+            'adoption sync must receive the fresh chain snapshot');
+        assert.strictEqual(capturedAdoptionOrders[0].id, '1.7.802',
+            'adoption must sync the batch\'s placed order');
+        assert.strictEqual(bot.manager._pendingBroadcasts.size, 0,
+            'pending-broadcast protection must clear after poll-confirmed adoption');
+    } finally {
+        chainOrders.buildCreateOrderOp = origBuildCreate;
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadMeta;
+    }
+    console.log('✓ UNC-018 passed');
+}
+
+// ── getAssetFeesSafe zero-fee fallback in the adoption path ──────────────
+// Adoption sync at cow_runtime:740 must not throw when the BTS fee cache is
+// unavailable (e.g. cleared); the zero-fee fallback (btsFeeData?.createFee || 0)
+// keeps the adoption running and the optimistic balance close until the next
+// fee fetch converges the residual.
+async function testAdoptionZeroFeeFallbackWithoutFeeCache() {
+    console.log('\n[UNC-019] Cleared fee cache → adoption sync runs with zero create fee, no throw...');
+    const bot = makeBot();
+    const slotId = 'sell-fee-fallback';
+    const plannedSell = 120000000;
+    const plannedReceive = 6000000;
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
+    const mathUtils = require('../modules/order/utils/math');
+    let syncCalls = 0;
+    let capturedFee = null;
+    let capturedSource = null;
+
+    mathUtils._setFeeCache({});
+
+    bot.manager.orders.set(slotId, { id: slotId, type: 'sell', price: 0.05, size: 1.2 });
+    bot.manager.synchronizeWithChain = async (params, source) => {
+        syncCalls++;
+        capturedFee = params.fee;
+        capturedSource = source;
+    };
+    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false, reason: 'test-noop' });
+    bot._recordPendingBroadcast({
+        opIndex: 0, ctxIndex: 0,
+        order: { id: slotId, type: 'sell', price: 0.05, size: 1.2 },
+        finalInts: { sell: plannedSell, receive: plannedReceive }
+    });
+    chainOrders.readOpenOrdersWithMeta = async () => ({
+        orders: [makeChainOrder('1.7.572312099', 'sell', plannedSell, plannedReceive)],
+        truncated: false
+    });
+
+    try {
+        const result = await bot._reconcileAfterUncertainBroadcast(
+            new BroadcastUncertainError('timeout', {
+                operations: [{ op_name: 'limit_order_create' }],
+                accountName: 'test-account', batchId: 'batch-fee-fallback', timeoutMs: 30000
+            }),
+            [{ kind: 'create', id: slotId }]
+        );
+        assert.strictEqual(result.uncertain, true);
+        assert.strictEqual(result.adoptedCount, 1, 'adoption must still succeed without a fee cache');
+        assert.strictEqual(syncCalls, 1, 'adoption sync must run despite missing fee cache');
+        assert.strictEqual(capturedSource, 'createOrder');
+        assert.strictEqual(capturedFee, 0,
+            'getAssetFeesSafe fallback must yield createFee 0 (null fee data), never throw');
+    } finally {
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
+        ensureFeeCache();
+    }
+    console.log('✓ UNC-019 passed');
 }
 
 main().catch((err) => {

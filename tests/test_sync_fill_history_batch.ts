@@ -246,10 +246,23 @@ async function testBatchDriftRefetchFallback() {
         const result = await mgr.syncFromFillHistoryBatch([fill], {
             persistenceMode: 'batched'
         });
-        // Should still produce a result, using cached value as fallback
-        assert.ok(result.filledOrders.length > 0, 'Should produce filled orders despite refetch error');
+        // Should still produce a result, using cached value as fallback.
+        // The fallback must use the cached rawOnChain.for_sale (1.0), not the
+        // grid size (5.0): effectiveRawForSale = refetchInfo ?? rawForSaleInt
+        // (sync_engine.ts). Pinning the exact arithmetic distinguishes the
+        // cache-derived remaining size (1.0 - 0.5 = 0.5) from a regression
+        // that silently fell back to the grid (5.0 - 0.5 = 4.5) or zeroed the
+        // baseline (full-fill virtualization, size 0).
+        assert.strictEqual(result.filledOrders.length, 1, 'refetch failure should still produce the filled order');
+        assert.strictEqual(result.partialFill, true,
+            'refetch failure must stay a partial fill — the cache cannot confirm chain emptiness');
         const slot0 = mgr.orders.get('slot-0');
-        assert.ok(slot0.size > 0, 'Slot should still contain remaining amount');
+        assert.strictEqual(slot0.size, 0.5,
+            'fallback must use cached for_sale (1.0) - 0.5 fill = 0.5 remaining, not the grid-based 4.5');
+        assert.strictEqual(slot0.state, ORDER_STATES.PARTIAL,
+            'slot must remain PARTIAL (chain-confirm gate closed on refetch error)');
+        assert.strictEqual(slot0.rawOnChain.for_sale, '5000',
+            'cached for_sale must be decremented by the fill (10000 - 5000)');
     } finally {
         restore();
     }
