@@ -56,6 +56,43 @@ async function testPoolRefPinsDirectFetch() {
   console.log('testPoolRefPinsDirectFetch passed');
 }
 
+async function testDirectPoolReversedPairOrients() {
+  const client = mockClient();
+  const { withPoolRef } = require('../modules/order/utils/withPoolRef');
+
+  // Pool 1.19.48 is BTS(1.3.0)/XBTSX.USDT(1.3.100) with balance_a=BTS.
+  // Bot trades the same pair reversed: XBTSX.USDT / BTS.
+  // balance_a=500000 (BTS prec=4) -> float 50, balance_b=1000000 (USDT prec=6) -> float 1
+  // The pool intrinsic price is 0.02 USDT/BTS; the pair B/A price is 1/0.02 = 50 BTS/USDT.
+  const override = withPoolRef(client, '1.19.48');
+  assert.ok(override, 'override created for direct pool');
+
+  const price = await override.derivePoolPrice('XBTSX.USDT', 'BTS');
+  assert.ok(price != null, 'direct pool reversed pair should derive a price');
+  assert.strictEqual(price, 50, 'price must be oriented to the pair (B/A): 1/0.02 = 50');
+
+  console.log('testDirectPoolReversedPairOrients passed');
+}
+
+async function testPartialMatchBotQuoteIsPoolBase() {
+  const client = mockClient();
+  const { withPoolRef } = require('../modules/order/utils/withPoolRef');
+
+  // Bot trades USDC (1.3.200) / BTS (1.3.0). Pinned pool 1.19.133 is BTS/XBTSX.USDT.
+  // Only one bot asset (BTS) is in the pool — it is the pool base.
+  // The unmatched pool asset (XBTSX.USDT) proxies USDC, so orient to B/A for the pair.
+  const override = withPoolRef(client, '1.19.133');
+  assert.ok(override, 'partial-match override created');
+
+  const price = await override.derivePoolPrice('USDC', 'BTS');
+  assert.ok(price != null, 'partial-match pool should derive a price');
+  // balance_a=10000000 (BTS prec=4) -> float 1000, balance_b=20000000 (USDT prec=6) -> float 20
+  // BTS matches pool base => invert: price = floatA/floatB = 1000/20 = 50 (BTS per USDC proxy)
+  assert.strictEqual(price, 50, 'partial-match pool orients to the pair (50)');
+
+  console.log('testPartialMatchBotQuoteIsPoolBase passed');
+}
+
 async function testPoolRefNullReturnsNull() {
   const client = mockClient();
   const { withPoolRef } = require('../modules/order/utils/withPoolRef');
@@ -177,20 +214,16 @@ async function testProxyPoolReversedBotAssets() {
   const { withPoolRef } = require('../modules/order/utils/withPoolRef');
 
   // Same pool 1.19.200 (BTS/USDC) but bot has reversed ordering:
-  // XBTSX.USDT (1.3.100) / BTS (1.3.0) — symA ID > symB ID
-  // Old code: aIdNum=100 > bIdNum=0 => aIsFirst=false
-  //            amtA = balance_b (USDC), amtB = balance_a (BTS) — WRONG inversion
-  // New code: uses pool.asset_a/asset_b directly — always correct
+  // XBTSX.USDT (1.3.100) / BTS (1.3.0) — symA not in pool, symB (BTS) is pool base
+  // The unmatched pool asset (USDC) proxies symA; orient so the result is B/A.
   const override = withPoolRef(client, '1.19.200');
   assert.ok(override, 'proxy pool override should be created');
 
   const price = await override.derivePoolPrice('XBTSX.USDT', 'BTS');
   assert.ok(price != null, 'reversed proxy pool should derive a price');
   // Pool: balance_a=BTS (50), balance_b=USDC (2)
-  // The pool intrinsic price is always balance_b/balance_a = 2/50 = 0.04 (USDC/BTS)
-  // With reversed bot sym ordering the same pool intrinsic price is returned
-  // — the caller (derivePriceWithPoolRef) interprets it as the proxy for the pair
-  assert.strictEqual(price, 0.04, 'reversed proxy pool returns pool price (not inverted)');
+  // BTS matches pool base => invert: price = balance_a/balance_b = 50/2 = 25 (BTS per USDC proxy)
+  assert.strictEqual(price, 25, 'partial-match pool orients to the pair (25)');
 
   console.log('testProxyPoolReversedBotAssets passed');
 }
@@ -215,6 +248,8 @@ async function testProxyPoolUsesPoolPrecisionsNotBotPrecisions() {
 
 async function main() {
   await testPoolRefPinsDirectFetch();
+  await testDirectPoolReversedPairOrients();
+  await testPartialMatchBotQuoteIsPoolBase();
   await testPoolRefNullReturnsNull();
   await testPoolRefUndefinedReturnsNull();
   await testPoolRefEmptyStringReturnsNull();

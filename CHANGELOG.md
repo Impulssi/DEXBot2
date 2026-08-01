@@ -28,6 +28,10 @@ All notable changes to this project will be documented in this file.
 - **Test**: open-orders sync loop test mocks `readOpenOrdersWithMeta` and adds a truncated-read deferral phase; `resetFunds()` awaited at 13 test call sites to match the async contract (`tests/test_main_loop_sync_fill_rebalance.ts` + 11 test files).
 - **Fix**: all remaining fallback/reset sync paths defer on truncated reads — post-reconnect safety-net, post-reset fallback, bootstrap fallback, open-orders-mode fill sync, full grid reload, trigger-file resync (trigger retained), and missing-CREATE-result recovery; absence on a partial `get_full_accounts` window would virtualize live ACTIVE slots and re-create duplicates (`modules/dexbot_cow_runtime.ts`, `modules/dexbot_fill_runtime.ts`, `modules/dexbot_maintenance_runtime.ts`, `modules/dexbot_startup_runtime.ts`, `modules/dexbot_state_recovery.ts`).
 - **Test**: UNC-016e — `_recoverFromPersistedGrid` defers on a truncated read and never syncs from a partial snapshot (`tests/test_uncertain_broadcast.ts`).
+- **Fix**: pinned `poolRef` price derivation now orients reserves to the bot's pair (B/A) — full-pair-reversed pools no longer return inverted prices, and partial-match pools (only one bot asset in the pinned pool) are oriented via the unmatched pool asset as the proxy; pins sharing no asset keep intrinsic proxy behavior (`modules/order/utils/withPoolRef.ts`).
+- **Fix**: bot editor (`node dexbot bots`) no longer strips custom overrides on save — `promptBotData` returns the full normalized draft instead of a fixed field whitelist, so `logging`, `timing`, `feeParams`, `gridLimits`, `poolRef`, etc. survive editing a bot (`modules/account_bots.ts`).
+- **Fix**: `askPoolRef` can clear a pinned pool via `none`/`clear`/`off`/`no`; blank input still preserves the current value, and `0` remains a valid pool ID (`modules/account_bots.ts`).
+- **Tests**: poolRef orientation suites for full-pair-reversed and partial-match pins; reversed-proxy expectation corrected to the oriented value (`tests/test_pool_ref_price.ts`).
 
 ## [1.4.7] - 2026-07-30 - Fund Accounting Race Hardening, Phantom-Order Startup Fix, Create-Cancel Loop Fix
 

@@ -763,24 +763,30 @@ async function askStartPrice(promptText: string, defaultValue?: any): Promise<an
 
 /**
  * Prompts the user for an optional pool ID to pin price derivation.
- * Enter a pool ID (e.g. 48 or 1.19.48) or leave blank to clear.
+ * Enter a pool ID (e.g. 48 or 1.19.48) to set/change the pin, or enter
+ * "none" / "clear" to remove it. Blank input keeps the current value.
  * @param {string} promptText - The prompt text to display.
  * @param {string|null|undefined} [currentValue] - The current poolRef value.
- * @returns {Promise<string|null|symbol>} Pool ID, null, or '\x1b' on ESC.
+ * @returns {Promise<string|null|symbol>} Pool ID, null (cleared), or '\x1b' on ESC.
  */
 async function askPoolRef(promptText: string, currentValue?: string | null | undefined): Promise<any> {
     while (true) {
         const suffix = currentValue ? ` [${currentValue}]` : ' [none]';
-        const raw = (await readInput(`${promptText}${suffix}: `)).trim();
+        const raw = (await readInput(`${promptText}${suffix} (none to clear): `)).trim();
         if (raw === '\x1b') return '\x1b';
         if (!raw) return currentValue || null;
+
+        const lower = raw.toLowerCase();
+        if (lower === 'none' || lower === 'clear' || lower === 'off' || lower === 'no') {
+            return null;
+        }
 
         const normalized = raw.startsWith('1.19.') ? raw : `1.19.${raw}`;
         const parts = normalized.split('.');
         if (parts.length === 3 && parts[0] === '1' && parts[1] === '19' && /^\d+$/.test(parts[2])) {
             return normalized;
         }
-        console.log('Invalid — enter a pool number (e.g. 48) or full ID (e.g. 1.19.48).');
+        console.log('Invalid — enter a pool number (e.g. 48), full ID (e.g. 1.19.48), or "none" to clear.');
     }
 }
 
@@ -980,26 +986,11 @@ async function promptBotData(base = {}) {
 
     if (cancelled) return null;
 
-    // Return the final data structure
-    return {
-        name: data.name,
-        active: data.active,
-        dryRun: data.dryRun,
-        preferredAccount: data.preferredAccount,
-        assetA: data.assetA,
-        assetB: data.assetB,
-        startPrice: data.startPrice,
-        minPrice: data.minPrice,
-        maxPrice: data.maxPrice,
-        incrementPercent: data.incrementPercent,
-        targetSpreadPercent: data.targetSpreadPercent,
-        weightDistribution: data.weightDistribution,
-        botFunds: data.botFunds,
-        activeOrders: data.activeOrders,
-        gridPrice: data.gridPrice,
-        poolRef: data.poolRef,
-        debtPolicy: data.debtPolicy,
-    };
+    // Return the final data structure, preserving ALL fields from the normalized
+    // draft (deep-copy of base + defaults, minus stripped runtime-managed fields).
+    // A fixed whitelist here would silently drop custom overrides (logging, timing,
+    // feeParams, gridLimits, poolRef, etc.) when the caller replaces the bot entry.
+    return { ...data };
 }
 
 /**

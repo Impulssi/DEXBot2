@@ -43,10 +43,45 @@ export function withPoolRef(
             return null;
           }
 
-          amtA = toFiniteNumber(pool.balance_a);
-          amtB = toFiniteNumber(pool.balance_b);
-          precA = poolAssetA.precision;
-          precB = poolAssetB.precision;
+          let aId: string | null = null;
+          let bId: string | null = null;
+          try {
+            const [aMeta, bMeta] = await Promise.all([
+              lookupAsset(BitShares, symA),
+              lookupAsset(BitShares, symB),
+            ]);
+            aId = aMeta?.id ? String(aMeta.id) : null;
+            bId = bMeta?.id ? String(bMeta.id) : null;
+          } catch (_) {
+            aId = null;
+            bId = null;
+          }
+
+          const poolA = String(pool.asset_a);
+          const poolB = String(pool.asset_b);
+
+          // Orient the pinned pool's reserves to the bot's pair (B/A).
+          //   - bot.assetA in pool: base position -> intrinsic, quote position -> invert
+          //   - else bot.assetB in pool: quote position -> intrinsic, base position -> invert
+          //   - neither in pool: pure proxy, use intrinsic as-is
+          let invert = false;
+          if (aId && (poolA === aId || poolB === aId)) {
+            invert = poolB === aId;
+          } else if (bId && (poolA === bId || poolB === bId)) {
+            invert = poolA === bId;
+          }
+
+          if (invert) {
+            amtA = toFiniteNumber(pool.balance_b);
+            amtB = toFiniteNumber(pool.balance_a);
+            precA = poolAssetB.precision;
+            precB = poolAssetA.precision;
+          } else {
+            amtA = toFiniteNumber(pool.balance_a);
+            amtB = toFiniteNumber(pool.balance_b);
+            precA = poolAssetA.precision;
+            precB = poolAssetB.precision;
+          }
           poolLabel = `${poolAssetA.symbol || pool.asset_a}/${poolAssetB.symbol || pool.asset_b} (${pinnedId})`;
         } else if (Array.isArray(pool.reserves)) {
           const [aMeta, bMeta] = await Promise.all([
