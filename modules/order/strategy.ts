@@ -250,12 +250,35 @@ class StrategyEngine {
         const targetCountBuy = Math.max(1, (config.activeOrders?.buy ?? 1));
         const targetCountSell = Math.max(1, (config.activeOrders?.sell ?? 1));
 
+        // The SPREAD GUARD (assignGridRoles) keeps a live on-chain order typed
+        // BUY/SELL even when a boundary crawl moves its slot into the spread
+        // band (to avoid the illegal SPREAD+ACTIVE state). Such a stray slot
+        // must NOT be counted in the active window: otherwise the window keeps
+        // the rail parked in its old position and an on-chain sell gets left
+        // inside the gap (spread removed). Exclude stray slots by geometry so
+        // reconcile treats them as surplus and relocates them back onto the rail.
+        const sellStartIdx = newBoundaryIdx + gapSlots + 1;
+        const slotIndex = (o: any) => {
+            const n = /slot-(\d+)/i.exec(String(o?.id ?? ''));
+            return n ? parseInt(n[1], 10) : null;
+        };
+        const inBuyRail = (o: any) => {
+            const i = slotIndex(o);
+            return i === null || i <= newBoundaryIdx;
+        };
+        const inSellRail = (o: any) => {
+            const i = slotIndex(o);
+            return i === null || i >= sellStartIdx;
+        };
+
         // Sort Closest-First for windowing
         const buySlots = allBuySlots
+            .filter(inBuyRail)
             .sort((a: any, b: any) => b.price - a.price)
             .slice(0, targetCountBuy);
         
         const sellSlots = allSellSlots
+            .filter(inSellRail)
             .sort((a: any, b: any) => a.price - b.price)
             .slice(0, targetCountSell);
         

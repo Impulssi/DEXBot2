@@ -9,7 +9,7 @@
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
 import { readOpenOrdersGuarded } from '../chain_orders';
-import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision } from './utils/math';
+import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, calculateGapSlots as calculateGapSlotsFromMath } from './utils/math';
 import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot } from './utils/order';
 import { resolveAccountRef } from './utils/system';
 import * as Format from './format';
@@ -38,10 +38,37 @@ function _countActiveOnGrid(manager: any, type: any): number {
 function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[] {
     if (count <= 0) return [];
 
+    // Boundary geometry: slots in the spread band (between boundary and
+    // sellStart) must never be activated as BUY/SELL — an order placed there
+    // would sit inside the gap and remove the spread. The SPREAD GUARD keeps
+    // such slots typed BUY/SELL (never SPREAD+ACTIVE), so a VIRTUAL sell left
+    // behind by a rotation/rebalance could otherwise be re-picked here and
+    // placed back inside the gap. Filter by geometry, not just type.
+    const gapSlots = (manager._gapSlots ?? calculateGapSlotsFromConfig(manager)) || 0;
+    const boundaryIdx = manager.boundaryIdx;
+    const sellStartIdx = (boundaryIdx !== null && Number.isFinite(Number(boundaryIdx)))
+        ? Number(boundaryIdx) + gapSlots + 1
+        : null;
+    const slotIndex = (id: any): number | null => {
+        if (typeof id !== 'string') return null;
+        const match = /^slot-(\d+)$/.exec(id);
+        if (!match) return null;
+        const idx = parseInt(match[1], 10);
+        return Number.isFinite(idx) ? idx : null;
+    };
+    const inRail = (slot: any): boolean => {
+        if (sellStartIdx === null) return true;
+        const idx = slotIndex(slot.id);
+        if (idx === null) return true;
+        if (type === ORDER_TYPES.BUY) return idx <= Number(boundaryIdx);
+        return idx >= sellStartIdx;
+    };
+
     // CRITICAL FIX: Filter by type BEFORE sorting
     // Only get slots of the requested type (SELL or BUY), not a mix
     const slotsOfType = (Array.from(manager.orders.values()) as any[])
         .filter((slot: any) => slot && slot.type === type)
+        .filter(inRail)
         .sort((a: any, b: any) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
 
     let effectiveMin = 0;
@@ -62,6 +89,18 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     }
 
     return valid;
+}
+
+function calculateGapSlotsFromConfig(manager: any): number | null {
+    try {
+        return calculateGapSlotsFromMath(
+            manager?.config?.incrementPercent,
+            manager?.config?.targetSpreadPercent,
+            manager?.config?.gridLimits
+        );
+    } catch (e: any) {
+        return null;
+    }
 }
 
 function _getStartupSideComparators(orderType: any, assets: any): { sortUpdateComparator: (a: any, b: any) => number; sortExcessCancelComparator: (a: any, b: any) => number; sortMatchedCancelComparator: (a: any, b: any) => number } {
