@@ -49,7 +49,7 @@ if [ ! -d "$LOGS_DIR" ]; then
 fi
 
 # Count log files
-LOG_COUNT=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
+LOG_COUNT=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
 
 if [ "$LOG_COUNT" -eq 0 ]; then
     log_info "No log files found in $LOGS_DIR"
@@ -61,7 +61,7 @@ log_info ""
 
 # Show what will be deleted
 log_info "Log files to be deleted:"
-find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.jsonl" \) 2>/dev/null | while read file; do
+find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | while read file; do
     SIZE=$(du -h "$file" | cut -f1)
     echo -e "${BLUE}  -${NC} $(basename "$file") ($SIZE)"
 done
@@ -77,11 +77,11 @@ if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
 fi
 
 # Delete log files
-find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.jsonl" \) 2>/dev/null -delete
+find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null -delete
 DELETED=$?
 
 # Re-count to confirm
-REMAINING=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
+REMAINING=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
 
 log_info "=========================================="
 if [ "$REMAINING" -eq 0 ]; then

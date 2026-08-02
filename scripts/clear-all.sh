@@ -65,7 +65,7 @@ else
 fi
 
 if [ -d "$LOGS_DIR" ]; then
-    LOG_COUNT=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
+    LOG_COUNT=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
 else
     log_warning "Logs directory does not exist: $LOGS_DIR"
 fi
@@ -104,7 +104,7 @@ fi
 
 if [ "$LOG_COUNT" -gt 0 ]; then
     log_info "Log files to be deleted:"
-    find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.jsonl" \) 2>/dev/null | while read -r file; do
+    find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | while read -r file; do
         SIZE=$(du -h "$file" | cut -f1)
         echo -e "${BLUE}  -${NC} $(realpath --relative-to="$PROJECT_ROOT" "$file") ($SIZE)"
     done
@@ -143,7 +143,7 @@ if [ "$ORDER_COUNT" -gt 0 ]; then
 fi
 
 if [ "$LOG_COUNT" -gt 0 ]; then
-    find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.jsonl" \) 2>/dev/null -delete
+    find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null -delete
 fi
 
 if [ "$MA_DATA_COUNT" -gt 0 ]; then
@@ -166,7 +166,7 @@ if [ -d "$ORDERS_DIR" ]; then
 fi
 
 if [ -d "$LOGS_DIR" ]; then
-    REMAINING_LOGS=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
+    REMAINING_LOGS=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
 fi
 
 if [ -d "$MA_DATA_DIR" ]; then
