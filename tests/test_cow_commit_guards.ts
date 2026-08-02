@@ -464,7 +464,9 @@ async function testNoPostBatchCacheDeductionForCreates() {
         return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
     };
     const originalReadOpenOrders = chainOrders.readOpenOrders;
+    const originalReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     chainOrders.readOpenOrders = async () => [];
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
     const originalExecuteBatch = chainOrders.executeBatch;
     chainOrders.executeBatch = async () => ({ success: true, operation_results: [] });
 
@@ -481,6 +483,7 @@ async function testNoPostBatchCacheDeductionForCreates() {
         chainOrders.buildCancelOrderOp = originalBuildCancel;
         chainOrders.buildUpdateOrderOp = originalBuildUpdate;
         chainOrders.readOpenOrders = originalReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
         chainOrders.executeBatch = originalExecuteBatch;
     }
 
@@ -581,6 +584,8 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
     };
     const originalReadOpenOrders = chainOrders.readOpenOrders;
     chainOrders.readOpenOrders = async () => [];
+    const originalReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
     const originalExecuteBatch = chainOrders.executeBatch;
     chainOrders.executeBatch = async () => ({ success: true, operation_results: [[1, '1.7.999']] });
     let result;
@@ -596,6 +601,7 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
         chainOrders.buildCancelOrderOp = originalBuildCancel;
         chainOrders.buildUpdateOrderOp = originalBuildUpdate;
         chainOrders.readOpenOrders = originalReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
         chainOrders.executeBatch = originalExecuteBatch;
     }
 

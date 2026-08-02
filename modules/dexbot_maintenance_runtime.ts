@@ -1584,11 +1584,27 @@ async function executeMaintenanceLogic(bot: any, context: any) {
 
     const pipelineStatus = bot.manager.isPipelineEmpty(bot._getPipelineSignals());
     if (pipelineStatus.isEmpty) {
-        const repairedFromChain = await maybeRunTargetedDriftReconciliation(bot, context);
-        if (repairedFromChain) {
+        const repairedFromTarget = await maybeRunTargetedDriftReconciliation(bot, context);
+        if (repairedFromTarget) {
             const freshHealth = await bot.manager.checkGridHealth(bot.updateOrdersOnChainPlan.bind(bot));
             if (await bot._abortFlowIfIllegalState(`${context} post-reconcile health check`)) return;
             healthResult = freshHealth;
+        }
+
+        if (!repairedFromTarget) {
+            const autoCancelResult = await bot._autoCancelOneUnmatchedOrphan();
+            if (autoCancelResult?.cancelled) {
+                bot._log(
+                    `[MAINT] Auto-cancelled unmatched price-drift orphan ${autoCancelResult.orderId} during ${context} ` +
+                    `(unblocking CREATE pipeline that targeted-drift reconcile could not adopt).`,
+                    'warn'
+                );
+            } else if (autoCancelResult?.reason) {
+                bot._log(
+                    `[MAINT] Skipped unmatched-orphan auto-cancel during ${context}: ${autoCancelResult.reason}`,
+                    'debug'
+                );
+            }
         }
 
         refreshDynamicWeightDistribution(bot, context);

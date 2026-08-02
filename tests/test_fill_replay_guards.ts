@@ -606,6 +606,7 @@ async function runTests() {
         const { bot } = await createBotFixture('test_fill_replay_postreset_spread_guard');
         const originalListenForFills = chainOrders.listenForFills;
         const originalReadOpenOrders = chainOrders.readOpenOrders;
+        const originalReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
 
         let spreadChecks = 0;
         let readOpenOrdersCalls = 0;
@@ -615,6 +616,10 @@ async function runTests() {
         chainOrders.readOpenOrders = async () => {
             readOpenOrdersCalls++;
             return [{ id: '1.7.999999' }];
+        };
+        chainOrders.readOpenOrdersWithMeta = async () => {
+            readOpenOrdersCalls++;
+            return { orders: [{ id: '1.7.999999' }], truncated: false };
         };
 
         bot.accountId = '1.2.345';
@@ -649,6 +654,7 @@ async function runTests() {
         } finally {
             chainOrders.listenForFills = originalListenForFills;
             chainOrders.readOpenOrders = originalReadOpenOrders;
+            chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
         }
 
         assert.strictEqual(readOpenOrdersCalls, 1, 'Post-reset path should refresh open orders before spread check');
