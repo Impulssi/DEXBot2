@@ -231,8 +231,8 @@ async function runTests() {
         assert(failure, '_lastAccountingFailure should be set when refresh fails');
         assert.strictEqual(failure.reason, 'stale',
             'failure reason should still be stale when refresh fails');
-        assert(logs.some(l => l.includes('cannot retry optimistic lock')),
-            'should log that the retry was skipped after refresh failure');
+        assert(logs.some(l => l.includes('skipping in-lock refresh')),
+            'should log that the retry was skipped to avoid holding _fundLock across a blocking chain RPC');
         console.log('   ✓ Failed refresh preserves stale-failure handling (no throw, recovery signal kept)');
     }
 

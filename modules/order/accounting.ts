@@ -1103,15 +1103,18 @@ class Accountant {
         // 3 retries, then node failover) — running it while holding _fundLock would
         // stall every other fund-critical waiter (deductBtsFees, setAccountTotals,
         // persistGrid) and, past the 30s acquire timeout, force them to throw instead
-        // of deferring. Only the plain mutation phase below runs under the lock.
+        // of deferring. Only the plain mutation runs under the lock.
+        let preLockRefreshFailed = false;
         if (!skipAssetAccounting) {
             const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
             const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
             const willLock = (newIsActive ? toFiniteNumber(newOrder.size) : 0) - (oldIsActive ? toFiniteNumber(oldOrder.size) : 0) > 0;
             if (willLock) {
                 try {
-                    await mgr.refreshAccountTotalsIfStale();
+                    const pre = await mgr.refreshAccountTotalsIfStale();
+                    preLockRefreshFailed = !pre.ok;
                 } catch (err: any) {
+                    preLockRefreshFailed = true;
                     mgr.logger?.log?.(`[ACCOUNTING] pre-lock accountTotals refresh error: ${getErrorMessage(err)}`, 'warn');
                 }
             }
@@ -1155,11 +1158,15 @@ class Accountant {
                     let result = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
 
                     // Fix staleness in the first place: a stale snapshot refused
-                    // the lock. Refresh accountTotals from chain immediately and
-                    // retry the deduction once rather than committing the order
-                    // unaccounted and waiting for a recovery cycle. The refresh
-                    // carries the standard 30s/3-retry/node-failover policy.
-                    if (!result.ok && result.reason === 'stale') {
+                    // the lock. When the pre-lock refresh was skipped (not needed)
+                    // or is in flight and this deduction still races a fresh window,
+                    // refresh accountTotals from chain and retry once. But if the
+                    // pre-lock refresh already FAILED, the chain is unhealthy — do
+                    // NOT re-run the 30s/3-retry/node-failover RPC while holding
+                    // _fundLock (that would stall every other fund-critical waiter
+                    // exactly like the regression this rework eliminated). Fall
+                    // through to the failure/recovery path below instead.
+                    if (!result.ok && result.reason === 'stale' && !preLockRefreshFailed) {
                         mgr.logger?.log?.(
                             `[ACCOUNTING] Stale accountTotals during ${context}; refreshing from chain before retrying optimistic lock.`,
                             'warn'
@@ -1173,6 +1180,15 @@ class Accountant {
                                 'warn'
                             );
                         }
+                    } else if (!result.ok && result.reason === 'stale' && preLockRefreshFailed) {
+                        // The pre-lock refresh already failed (chain unhealthy) so we
+                        // refuse to re-run the blocking RPC under _fundLock. Fall
+                        // through to the stale failure/recovery path below; the batch
+                        // stays accounted for and recovery is scheduled.
+                        mgr.logger?.log?.(
+                            `[ACCOUNTING] Stale accountTotals during ${context}; pre-lock refresh failed, skipping in-lock refresh to avoid holding _fundLock across a blocking chain RPC.`,
+                            'warn'
+                        );
                     }
 
                     if (!result.ok) {
