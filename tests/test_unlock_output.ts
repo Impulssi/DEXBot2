@@ -249,6 +249,10 @@ function countSpawnCallsMatchingScript(scriptName) {
     ))).length;
 }
 
+function formatBotCount(count) {
+    return `${count} ${count === 1 ? 'bot' : 'bots'}`;
+}
+
 async function runUnlockStart(args, startupGraceMs = 0) {
     try {
         await unlock.main({ argv: args, startupGraceMs });
@@ -277,7 +281,7 @@ async function runAllBotsTest() {
     assert.ok(logs.includes('Starting all bots'), 'launcher should print the chosen launch mode');
     assert.ok(logs.includes('✓ Authentication successful'), 'launcher should confirm successful authentication');
     assert.ok(
-        logs.includes(`DEXBot2 started ${activeBotNames.length} bots in background`),
+        logs.includes(`DEXBot2 started ${formatBotCount(activeBotNames.length)} in background`),
         'launcher should print the launched bot count'
     );
     for (const botName of activeBotNames) {
@@ -306,7 +310,7 @@ async function runForegroundTest() {
     assert.strictEqual(state.stopCount, 1, 'foreground mode should clean up its owned daemon');
     assert.strictEqual(countSpawnCallsMatchingScript('dexbot'), 1, 'foreground mode should spawn the bot process once');
     assert.ok(
-        logs.includes(`DEXBot2 started ${activeBotNames.length} bots in foreground`),
+        logs.includes(`DEXBot2 started ${formatBotCount(activeBotNames.length)} in foreground`),
         'foreground mode should print the shared startup summary'
     );
     for (const botName of activeBotNames) {

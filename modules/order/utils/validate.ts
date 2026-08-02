@@ -118,22 +118,6 @@ function validateOrder(order: any, oldOrder: any = null, context: any = 'validat
         normalizedOrder.state === ORDER_STATES.PARTIAL
     );
 
-    // isGhost is a transient "blocked CREATE" marker that is ONLY meaningful
-    // in the exact PARTIAL + size<=0 state a full fill leaves behind (see
-    // sync_engine._computeFillTransitionResult).  Any other state means the
-    // flag leaked (e.g. a real order re-placed on the slot, a virtualized
-    // slot, or a spread placeholder) and must be cleared so it cannot persist
-    // onto fresh on-chain orders.
-    if (normalizedOrder.isGhost === true &&
-        !(normalizedOrder.state === ORDER_STATES.PARTIAL &&
-          toFiniteNumber(normalizedOrder.size) <= 0)) {
-        warnings.push({
-            code: 'ISGHOST_CLEARED',
-            message: `[INVARIANT] Clearing leaked isGhost marker on ${normalizedOrder.id} (state=${normalizedOrder.state}, size=${toFiniteNumber(normalizedOrder.size)}, context: ${context})`
-        });
-        normalizedOrder.isGhost = false;
-    }
-
     if (normalizedOrder.type === ORDER_TYPES.SPREAD && isOnChainState) {
         errors.push({
             code: 'ILLEGAL_SPREAD_STATE',

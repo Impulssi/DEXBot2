@@ -1028,6 +1028,7 @@ async function testRmsDivergenceRunsFullGridResync() {
         _getPipelineSignals: () => ({}),
         _cancelDustOrders: async () => ({ cancelledCount: 0, batchResult: null }),
         _abortFlowIfIllegalState: async () => false,
+        _autoCancelOneUnmatchedOrphan: async () => ({ cancelled: false, reason: 'test-noop' }),
         _performGridResync: async (options) => {
             resyncOptions = options;
             return true;

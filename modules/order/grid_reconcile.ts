@@ -222,7 +222,7 @@ export async function reconcileGridOrders({
                     // sync_engine committed-order guard; ghost orders (PARTIAL +
                     // size=0) still pass through so known fills get cleaned up.
                     const assignedAt = manager._orderIdAssignedAt?.get(order.orderId) || 0;
-                    const isGhost = order.isGhost === true || (order.size <= 0 && order.state === ORDER_STATES.PARTIAL);
+                    const isGhost = order.size <= 0 && order.state === ORDER_STATES.PARTIAL;
                     if (!isGhost && assignedAt > 0 && Date.now() - assignedAt < TIMING.SYNC_LOCK_TIMEOUT_MS) {
                         logger?.log?.(
                             `Startup: Order ${order.id} (ID ${order.orderId}) absent from snapshot but freshly assigned ` +

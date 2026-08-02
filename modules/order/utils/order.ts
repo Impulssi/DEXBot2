@@ -560,12 +560,7 @@ function resolveConfiguredPriceBound(value: any, fallback: any, startPrice: any,
  */
 function virtualizeOrder(order: any) {
     if (!order) return order;
-    const { btsFeeState, isGhost, ...rest } = order;
-    // A VIRTUAL order is never a ghost: the isGhost marker only describes the
-    // PARTIAL, size<=0 "blocked CREATE" state left by a fill that rounds to
-    // zero on the other side (see sync_engine._computeFillTransitionResult).
-    // Virtualizing clears the marker so it cannot leak onto freshly-placed
-    // real orders or spread placeholders that reuse this slot.
+    const { btsFeeState, ...rest } = order;
     return { ...rest, state: ORDER_STATES.VIRTUAL, orderId: null, rawOnChain: null };
 }
 

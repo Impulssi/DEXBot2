@@ -730,12 +730,7 @@ class AccountOrders {
       state: state,
       price: Number.isFinite(priceValue) ? priceValue : 0,
       size: Number.isFinite(sizeValue) ? sizeValue : 0,
-      orderId,
-      // isGhost is a transient "blocked CREATE" marker that is only meaningful
-      // in the exact PARTIAL + size<=0 state a fill leaves behind. Persist it
-      // ONLY in that state — never on ACTIVE/PARTIAL real orders or VIRTUAL/
-      // SPREAD placeholders, so a leaked flag cannot survive a restart.
-      isGhost: order.isGhost === true && state === ORDER_STATES.PARTIAL && sizeValue <= 0
+      orderId
     };
 
     return serialized;
