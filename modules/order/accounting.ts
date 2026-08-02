@@ -483,6 +483,19 @@ class Accountant {
       * @private
       */
       async _verifyFundInvariants(mgr: any, chainFreeBuy: any, chainFreeSell: any, chainBuy: any, chainSell: any, actualBuy: any, actualSell: any) {
+          // Half-baked guard: while a fill batch is mid-accounting, the balance
+          // snapshot may already reflect the just-filled orders on-chain while
+          // the grid still counts them as committed (or the reverse during
+          // optimistic fill adjustments). Running Total = Free + Committed in
+          // that window produces a spurious CRITICAL equal to the batch size.
+          // The check is deferred until the batch settles (grid mutation +
+          // authoritative re-anchor) and is re-run by the resume recalculation.
+          if ((mgr._fillBatchInFlight ?? 0) > 0) {
+              if (mgr.logger?.level === 'debug') {
+                  mgr.logger.log('[INVARIANT] Fill batch in flight; deferring fund-invariant check until batch settles.', 'debug');
+              }
+              return;
+          }
           const buyPrecision = mgr.assets?.assetB?.precision;
           const sellPrecision = mgr.assets?.assetA?.precision;
           if (!Number.isFinite(buyPrecision) || !Number.isFinite(sellPrecision)) {

@@ -439,6 +439,83 @@ async function testSpreadSlotPartialFillResolvesBuySide() {
     console.log('  PASS');
 }
 
+async function testPostBatchReanchorAndInvariantGuard() {
+    console.log('\n - Post-batch accountTotals re-anchor + in-flight invariant guard...');
+    const mgr = createManager();
+
+    // Capture CRITICAL-level output so a spurious invariant violation is detectable.
+    const errorLogs = [];
+    mgr.logger = {
+        log: (msg, level) => {
+            if (level === 'error' || level === 'warn') errorLogs.push(String(msg));
+            if (level !== 'debug') console.log(`  ${msg}`);
+        }
+    };
+
+    // STALE (pre-fill) snapshot: the fills already settled on-chain but the last
+    // fetch predates them. Two buy orders are committed (slot-0 will fully fill,
+    // slot-1 remains active); pre-fill total = free(50000) + locked(200) = 50200.
+    mgr.accountTotals = {
+        buy: 50200, buyFree: 50000,
+        sell: 100000, sellFree: 99900,
+        _lastFetchedAt: Date.now() - 600000
+    };
+
+    // Authoritative POST-fill chain state the mock fetch returns: the 100 BTS
+    // locked in slot-0 was paid out, free BTS unchanged, XRP proceeds credited.
+    const postFill = {
+        buy: 50100, buyFree: 50000,
+        sell: 100000.9604, sellFree: 99900.9604
+    };
+    mgr.fetchAccountTotals = async () => {
+        mgr.accountTotals = { ...mgr.accountTotals, ...postFill, _lastFetchedAt: Date.now() };
+    };
+
+    await mgr._updateOrder({
+        id: 'slot-0', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
+        size: 100.0, price: 1041.273399444015, orderId: '1.7.200001',
+        rawOnChain: { for_sale: String(Math.round(100.0 * 100000)), fetchedAt: Date.now() }
+    });
+    await mgr._updateOrder({
+        id: 'slot-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
+        size: 100.0, price: 1041.273399444015, orderId: '1.7.200002',
+        rawOnChain: { for_sale: String(Math.round(100.0 * 100000)), fetchedAt: Date.now() }
+    });
+
+    const fill = _makeBuyFillEvent('1.7.200001', 100.0, 200, '1.11.2001');
+    const result = await mgr.syncFromFillHistoryBatch([fill], { persistenceMode: 'batched' });
+
+    assert.strictEqual(result.filledOrders.length, 1, 'Buy fill should produce a filled order');
+    const slot0 = mgr.orders.get('slot-0');
+    assert.strictEqual(slot0.state, ORDER_STATES.VIRTUAL, 'Filled buy slot must be virtualized');
+
+    // The post-batch re-anchor must have overwritten the optimistic fill
+    // accounting (which double-counted the 100 BTS payout against the post-fill
+    // refresh) with the authoritative post-fill totals.
+    assert.strictEqual(mgr.accountTotals.buy, postFill.buy,
+        `accountTotals.buy must be re-anchored to authoritative post-fill total (got ${mgr.accountTotals.buy})`);
+    assert.strictEqual(mgr.accountTotals.sell, postFill.sell,
+        `accountTotals.sell must be re-anchored to authoritative post-fill total (got ${mgr.accountTotals.sell})`);
+
+    // No spurious CRITICAL (diff == the fills' size) may fire while the batch is
+    // half-accounted or after it settles.
+    assert.ok(
+        !errorLogs.some(m => m.includes('Fund invariant violation')),
+        'No fund-invariant violation may fire while/after the fill batch settles'
+    );
+
+    // Final invariant must hold: Total = Free + Committed per side.
+    const chainBuy = Array.from(mgr.orders.values())
+        .filter(o => (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL) && o.orderId && o.type === ORDER_TYPES.BUY)
+        .reduce((s, o) => s + Number(o.size || 0), 0);
+    assert.ok(Math.abs(mgr.accountTotals.buyFree + chainBuy - mgr.accountTotals.buy) < 0.0001,
+        `Total must equal Free + Committed after the batch (buy=${mgr.accountTotals.buy}, buyFree=${mgr.accountTotals.buyFree}, chainBuy=${chainBuy})`);
+
+    // The in-flight guard must be fully released so subsequent cycles verify.
+    assert.strictEqual(mgr._fillBatchInFlight, 0, 'In-flight guard must be cleared after the batch');
+    console.log('  PASS');
+}
+
 async function runTests() {
     suppressNoise();
 
@@ -453,6 +530,7 @@ async function runTests() {
     await testSingleFillViaBatch();
     await testSpreadSlotFullFillResolvesBuySide();
     await testSpreadSlotPartialFillResolvesBuySide();
+    await testPostBatchReanchorAndInvariantGuard();
 
     console.log('\n✓ All syncFromFillHistoryBatch tests passed!\n');
 }

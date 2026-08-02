@@ -401,6 +401,7 @@ class OrderManager {
     _gridSidesUpdated: Set<any>;
     _pauseFundRecalc: number;
     _pauseFundRecalcWatchdog: ReturnType<typeof setTimeout> | null;
+    _fillBatchInFlight: number;
     _pauseRecalcLogging: boolean;
     _pauseRecalcLoggingWatchdog: ReturnType<typeof setTimeout> | null;
     _throwOnIllegalState: boolean;
@@ -506,6 +507,13 @@ class OrderManager {
         this._gridSidesUpdated = new Set();
         this._pauseFundRecalc = 0;
         this._pauseFundRecalcWatchdog = null;
+        // Depth counter for fill batches currently mid-accounting. While non-zero,
+        // _verifyFundInvariants must not run: the batch's balance refresh already
+        // reflects the just-filled orders on-chain, but the grid still holds them
+        // as committed until the batch's grid mutation lands, so a check in that
+        // window would report a spurious Total != Free + Committed by exactly the
+        // fills' size. The check runs once the batch settles instead.
+        this._fillBatchInFlight = 0;
         this._pauseRecalcLogging = false;
         this._pauseRecalcLoggingWatchdog = null;
         this._throwOnIllegalState = false;
@@ -857,9 +865,10 @@ class OrderManager {
      * snapshot is (now) fresh; {ok: false, reason} when the refresh failed and
      * the snapshot is still stale — the caller must not proceed with accounting.
      */
-    async refreshAccountTotalsIfStale() {
+    async refreshAccountTotalsIfStale(options: { force?: boolean } = {}) {
+        const force = options?.force === true;
         const lastFetched = this.accountTotals?._lastFetchedAt || 0;
-        if (Date.now() - lastFetched <= TIMING.MAX_ACCOUNT_TOTALS_AGE_MS) {
+        if (!force && Date.now() - lastFetched <= TIMING.MAX_ACCOUNT_TOTALS_AGE_MS) {
             return { ok: true };
         }
         const fetchedBefore = lastFetched;
@@ -885,6 +894,33 @@ class OrderManager {
             return { ok: false, reason: 'refresh-failed' };
         }
         return { ok: true };
+    }
+
+    /**
+     * Re-anchor accountTotals to authoritative on-chain values after a fill
+     * batch has applied its optimistic accounting and grid mutation.
+     *
+     * A fill batch's up-front stale-totals refresh returns POST-fill balances
+     * (the fills already settled on-chain), then processFillAccounting applies
+     * the same pays/receives again — a double-count on the totals. Force-fetching
+     * here overwrites the optimistic values with the authoritative post-fill
+     * state so the batch ends exactly consistent with chain and the invariant
+     * holds at the final consolidated recalculation.
+     *
+     * @param {string} [label] - Context label for log messages
+     * @returns {Promise<boolean>} true when the re-anchor refreshed successfully
+     */
+    async reanchorAccountTotals(label = 'fill-batch') {
+        const result = await this.refreshAccountTotalsIfStale({ force: true });
+        if (!result.ok) {
+            this.logger?.log?.(
+                `[ACCOUNTING] ${label}: accountTotals re-anchor failed (${result.reason}); marking totals stale.`,
+                'warn'
+            );
+            this.accountTotalsStale = true;
+            return false;
+        }
+        return true;
     }
 
     async _fetchAccountBalancesAndSetTotals() {
