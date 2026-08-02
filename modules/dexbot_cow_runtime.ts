@@ -1148,6 +1148,21 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                         `[COW] Broadcast uncertain (attempt ${attempt}/${MAX_RETRIES + 1}); verified unapplied on chain, retrying...`,
                         'warn'
                     );
+                    // The CREATE prep recorded pending-broadcast entries for this
+                    // batch; re-entering executeOperationsWithStrategy would hit the
+                    // PENDING_BROADCASTS guard and fall back to structural resync
+                    // instead of re-broadcasting. We have just PROVEN this batch is
+                    // absent on chain (authoritative read), so dropping this batch's
+                    // own entries is safe and lets the intended re-broadcast happen.
+                    // Only THIS batch's slots are dropped; entries from other
+                    // unresolved batches are preserved (their broadcasts may have
+                    // landed, so clearing them could re-create duplicates).
+                    const retriedCreateSlots = (opContexts || [])
+                        .filter((ctx: any) => ctx && ctx.kind === 'create')
+                        .map((ctx: any) => ({ type: COW_ACTIONS.CREATE, id: ctx.id }));
+                    if (retriedCreateSlots.length > 0) {
+                        clearPendingBroadcastsForSlots(bot, retriedCreateSlots);
+                    }
                     await bot._ensureCredentialDaemonWritable('COW batch retry');
                     continue;
                 }

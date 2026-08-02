@@ -1098,8 +1098,27 @@ class Accountant {
         const mgr = this.manager;
         if (!oldOrder || !newOrder) return;
 
+        // If this transition will LOCK capital, ensure a fresh accountTotals snapshot
+        // BEFORE acquiring _fundLock. The refresh is a live chain RPC (30s timeout,
+        // 3 retries, then node failover) — running it while holding _fundLock would
+        // stall every other fund-critical waiter (deductBtsFees, setAccountTotals,
+        // persistGrid) and, past the 30s acquire timeout, force them to throw instead
+        // of deferring. Only the plain mutation phase below runs under the lock.
+        if (!skipAssetAccounting) {
+            const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
+            const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
+            const willLock = (newIsActive ? toFiniteNumber(newOrder.size) : 0) - (oldIsActive ? toFiniteNumber(oldOrder.size) : 0) > 0;
+            if (willLock) {
+                try {
+                    await mgr.refreshAccountTotalsIfStale();
+                } catch (err: any) {
+                    mgr.logger?.log?.(`[ACCOUNTING] pre-lock accountTotals refresh error: ${getErrorMessage(err)}`, 'warn');
+                }
+            }
+        }
+
         return await mgr._fundLock.acquire(async () => {
-            // Ensure a mutable copy: _resolveBtsFeeLifecycle mutates btsFeeState on
+            // Ensure a copy: _resolveBtsFeeLifecycle mutates btsFeeState on
             // newOrder (line 230), but the caller may pass a frozen master-grid order.
             if (Object.isFrozen(newOrder)) {
                 newOrder = { ...newOrder };

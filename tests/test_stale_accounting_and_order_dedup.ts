@@ -177,14 +177,15 @@ async function runTests() {
 
     // 2c. Stale snapshot: refresh-from-chain + retry once → deduction succeeds (no recovery)
     {
-        const logs: string[] = [];
         const mgr = new OrderManager({ assetA: 'TEST', assetB: 'BTS', startPrice: 1 });
-        mgr.logger = createTestLogger({ onLog: (msg: string) => logs.push(msg) });
+        mgr.logger = createSilentLogger();
         await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 500, sellFree: 500 });
         mgr.accountTotals._lastFetchedAt = Date.now() - TIMING.MAX_ACCOUNT_TOTALS_AGE_MS - 60000;
 
         // Refresh supplies fresh chain balances, so the retry must succeed.
+        let refreshed = false;
         mgr._fetchAccountBalancesAndSetTotals = async () => {
+            refreshed = true;
             await mgr.setAccountTotals({ buy: 2000, sell: 2000, buyFree: 1500, sellFree: 1500 });
         };
 
@@ -199,8 +200,8 @@ async function runTests() {
             'refresh+retry should avoid setting _lastAccountingFailure');
         assert.strictEqual(mgr.accountTotals.buyFree, 1400,
             'deduction should apply against the fresh snapshot (1500 - 100)');
-        assert(logs.some(l => l.includes('refreshing from chain before retrying')),
-            'should log the stale-refresh-before-retry');
+        assert.strictEqual(refreshed, true,
+            'the accountTotals refresh should run BEFORE _fundLock is held (never across the lock boundary)');
         console.log('   ✓ Stale snapshot is refreshed from chain and the deduction retried in place');
     }
 

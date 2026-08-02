@@ -1282,6 +1282,15 @@ class OrderManager {
         // and re-create a duplicate. Absence decisions defer while the stamp is
         // younger than SYNC_LOCK_TIMEOUT_MS.
         if (updatedOrder.orderId && (!oldOrder?.orderId || oldOrder.orderId !== updatedOrder.orderId)) {
+            // Prune stamps older than the guard window — they can never be
+            // consulted again (the consumer defers only while the stamp is
+            // younger than SYNC_LOCK_TIMEOUT_MS), so keeping them would leak one
+            // entry per orderId on a perpetual-turnover bot.
+            for (const [orderId, assignedAt] of this._orderIdAssignedAt) {
+                if (Date.now() - assignedAt >= TIMING.SYNC_LOCK_TIMEOUT_MS) {
+                    this._orderIdAssignedAt.delete(orderId);
+                }
+            }
             this._orderIdAssignedAt.set(updatedOrder.orderId, Date.now());
         }
 
