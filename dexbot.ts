@@ -669,7 +669,7 @@ async function startBotByName(botName: string | null | undefined, { dryRun = fal
 /**
  * Mark a bot (or all bots) as active/inactive in profiles/bots.json.
  * Note: This only updates the config file; running processes must be
- * started/stopped separately using pm2.js.
+ * started/stopped separately (e.g. `dexbot unlock <bot>`).
  * @param {string|null|undefined} botName - Name of the bot, or null/undefined for all
  * @param {boolean} active - Target active state (true = enable, false = disable)
  */
@@ -706,10 +706,12 @@ async function setBotActiveState(botName: string | null | undefined, active: boo
     }
     match.active = active;
     saveSettingsFile(config, filePath);
-    console.log(
-        `Marked '${botName}' ${inWord} in ${path.basename(filePath)}. ` +
-        (active ? `Start it using 'dexbot pm2 ${botName}'.` : `Stop the PM2 process using 'dexbot pm2 stop ${botName}'.`)
-    );
+    const markedMessage = `Marked '${botName}' ${inWord} in ${path.basename(filePath)}.`;
+    if (active) {
+        console.log(markedMessage + ` Start it using 'dexbot unlock ${botName}'.`);
+    } else {
+        console.log(markedMessage);
+    }
 }
 
 /**
