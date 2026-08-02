@@ -6,10 +6,10 @@ DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares 
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 1,908 commits over ~8 active months
+- **Growth Phase**: 1,948 commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 234 automated test files
-- **Releases**: 87 release entries (v0.1.0 to v1.4.6)
+- **Releases**: 88 release entries (v0.1.0 to v1.4.7)
 
 ---
 
@@ -187,14 +187,14 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.2 → v1.4.3 | 5 | Boundary-shift state preservation across failed COW commits, SPREAD→BUY crosser handling, per-batch tolerance violation filter (no full abort), precision-0 tolerance overflow fix, poolRef pinned-pool price derivation, withTimeout utility extraction + circular dep fix |
 | v1.4.3 → v1.4.4 | 4 | COW invariant enforcement (retry on failed boundary-shift commit, no master patching), COW pipeline code review fixes, grid engine consolidation (deduplication, dead code removal, export cleanup), UNC-016 recovery test mock fix |
 | v1.4.4 → v1.4.5 | 2 | Code-review hardening: AsyncLock forceRelease safety, grid update fatal error guard, persist write failure handling, TOCTOU stale price fix, re-entrancy deadlock removal, circular dependency breakage, uncommitted boundary classification fix, dead code cleanup |
-| v1.4.5 → v1.4.6 | 8 | AsyncLock ALS re-entrancy fix (single symbol → Set), grid type reassignment on load, 8 single-value fields hardened to refcounts/stacks, lock hierarchy correction, stale COW fund snapshot fix, gapSlots persistence, phantom order fund inflation fix, cross-chunk boundary shift cap, extract budget from config, loadGrid JSDoc side-effect documentation |
-| v1.4.6 → v1.4.7 | 5 | Fund accounting race hardening (verification snapshot TOCTOU, adjustTotalBalance self-protecting lock + locked helper extraction), phantom-order startup inflation fix, sub-minimum remnant orphan removal, create-cancel loop in Phase 3, code-review hardening (negative free balance ordering, ghost detection, field declarations), GRID_RECONCILE.md design doc |
-| v1.4.7 → v1.4.8 | 15 | Uncertain-broadcast duplicate-order safety (verify-before-retry, pre-transmit-only daemon retries, per-node pin + rotate + blacklist via shared failure ledger, typed BROADCAST_DEADLINE, claw/direct-key classification), truncated-read ambiguity in all absence decisions (readOpenOrdersWithMeta deferral), COW pre-broadcast stale-plan guard + bounded re-plan + commit-refused chain adoption + boundary-budget restore, exactly-once working-grid stack discipline, slot-id stale-placement guard, credential daemon load crash fix, recovery isolation (`_recoverySyncInFlight`), `dexbot enable` CLI, node-health/socket/chain-read dedup, COW guard-path refactor |
+| v1.4.5 → v1.4.6 | 8 | AsyncLock re-entrancy fix, grid type reassignment on load, refcount/stack hardening of state fields, lock hierarchy correction, stale COW fund snapshot fix, gapSlots persistence, phantom fund inflation fix, boundary shift cap |
+| v1.4.6 → v1.4.7 | 5 | Fund accounting race hardening, phantom-order startup inflation fix, create-cancel loop fix, negative free balance ordering, GRID_RECONCILE.md |
+| v1.4.7 → v1.4.8 | 26 | Uncertain-broadcast duplicate-order safety (verify-before-retry, per-node retry pin + blacklist), truncated-read ambiguity deferral (readOpenOrdersWithMeta), COW stale-plan replan + working-grid stack discipline, fill-authoritative rework, sell-rail re-anchor, orphan auto-cancel wiring, fill-batch fund-invariant deferral |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 1, 2026 (v1.4.8)
-**Total Commits**: 1,933
-**Date Range**: December 2, 2025 – August 1, 2026
+**Last Updated**: August 2, 2026 (v1.4.8)
+**Total Commits**: 1,948
+**Date Range**: December 2, 2025 – August 2, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

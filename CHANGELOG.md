@@ -33,6 +33,16 @@ All notable changes to this project will be documented in this file.
 - **Fix**: `askPoolRef` can clear a pinned pool via `none`/`clear`/`off`/`no`; blank input still preserves the current value, and `0` remains a valid pool ID (`modules/account_bots.ts`).
 - **Tests**: poolRef orientation suites for full-pair-reversed and partial-match pins; reversed-proxy expectation corrected to the oriented value (`tests/test_pool_ref_price.ts`).
 
+### 2026-08-02
+
+- **Fix**: fills are now treated as authoritative — the transient `isGhost` "blocked CREATE" flag and ghost-order preservation (keeping `orderId` as a size-0 PARTIAL after a sub-dust other-side fill) are removed; such fills become regular full fills (`convertToSpreadPlaceholder`, `orderId` cleared) so rotation immediately plans the replacement instead of stalling the COW create pipeline (`modules/order/sync_engine.ts`, `modules/order/utils/order.ts`, `modules/dexbot_cow_runtime.ts`, `modules/order/grid_reconcile.ts`; removed `tests/test_isghost_leak_fix.ts`).
+- **Fix**: keep the sell rail anchored to the boundary after a crawl-up — the active window excludes slots outside the boundary geometry, so stray gap-band sells become surplus and reconcile rotates them back onto the rail instead of leaving them parked inside the spread gap (`modules/order/strategy.ts`, `modules/order/grid_reconcile_internal.ts`, `tests/test_rail_reanchor_fix.ts`).
+- **Fix**: wire the previously-dead unmatched-orphan auto-cancel into idle maintenance — runs only when targeted-drift reconcile finds nothing to adopt, cancels only `price-drift-orphan` orders, honors the pending-broadcast guard and per-cycle cap, unblocking the CREATE pipeline reconcile cannot service (`modules/dexbot_maintenance_runtime.ts`).
+- **Fix**: suppress spurious fund-invariant CRITICAL during rapid multi-fill batches — new `_fillBatchInFlight` depth counter defers `_verifyFundInvariants` past the half-accounted window (fresh refresh vs. still-committed grid orders) and re-anchors account totals after accounting + grid mutation (`modules/order/manager.ts`, `modules/order/accounting.ts`, `modules/order/sync_engine.ts`).
+- **Fix**: stale `accountTotals` fill gate — fill paths refresh the snapshot once up front and defer (`deferred:true`, replay-safe re-read next cycle) instead of committing against stale totals; busy wall-clock stays unaccounted only by design (`modules/order/manager.ts`, `modules/order/sync_engine.ts`, `modules/dexbot_fill_runtime.ts`).
+- **Fix**: root-cause reconcile, phantom-cleanup, and stale-accounting guards — removed the per-attempt wall-clock that orphaned mid-batch creates, made phantom cleanup defer freshly-assigned `orderId`s invisible to a lagging read, and sharpened stale-accounting gates (`modules/order/grid.ts`, `modules/order/grid_reconcile.ts`, `modules/order/manager.ts`).
+- **Fix**: clear scripts now include rotated logs (`*.log.1`, `*.log.2`) and `dexbot enable`/`disable` output no longer shows legacy PM2 hints (`scripts/clear-all.sh`, `scripts/clear-logs.sh`, `dexbot.ts`, `b9ddeced`).
+
 ## [1.4.7] - 2026-07-30 - Fund Accounting Race Hardening, Phantom-Order Startup Fix, Create-Cancel Loop Fix
 
 ### 2026-07-30

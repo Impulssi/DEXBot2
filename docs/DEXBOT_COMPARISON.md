@@ -271,7 +271,8 @@ Price Scale (geometric, e.g. 0.4% increments):
   1. Match master grid orders to on-chain orders
   2. Create entries for unexpected on-chain orders
   3. Mark orphaned grid orders as VIRTUAL
-- **Ghost order prevention**: robust full-fill detection
+- **Fill-authoritative handling**: every fill is treated as authoritative; sub-dust residual fills resolve immediately instead of preserving a "ghost" slot
+- **Orphan order reconciliation**: unmatched on-chain orders adopted or cancelled to preserve a 1-to-1 slot↔order mapping
 - **Version epoch tracking**: stale working grids detected and aborted
 - **Processed fill store**: persistent dedupe layer for replay-safe accounting
 - **Startup reconciliation**: detects existing, orphaned, partial, and missing orders before normal trading resumes ([GRID_RECONCILE.md](GRID_RECONCILE.md))
@@ -286,7 +287,7 @@ Price Scale (geometric, e.g. 0.4% increments):
 | **COW / Atomic Commits** | No | Yes |
 | **Reconciliation** | Per-tick fetch | Two-pass sync engine |
 | **Orphan Detection** | Basic | Full two-pass matching |
-| **Ghost Order Prevention** | Basic | Hardened (multiple guards) |
+| **Plain-fill Handling** | Basic | Authoritative (isGhost/ghost-preservation removed) |
 | **Partial Fill Tracking** | Basic | Advanced (per-order tracking) |
 | **Dust Detection** | Basic (staggered_orders.py:979) | Yes (systematic health checks) |
 | **Stale State Detection** | No | Version epoch tracking |
@@ -619,7 +620,7 @@ Where:
 - **231 `test_*.ts` files** auto-discovered via `globSync` (`tests/test_*.ts` + `claw/tests/test_*.ts`; 233 repo-wide including analysis), covering:
   - Unit tests: accounting, strategy, grid, manager logic
   - Copy-on-Write semantics: COW commits, guards, concurrent fills
-  - Edge cases: ghost orders, partial fills, BTS fee accounting, precision
+  - Edge cases: authoritative full-fill resolution, partial fills, BTS fee accounting, precision
   - Concurrency: fill batching, lock behaviors
   - Scenario tests: specific bug reproductions
   - Market adapter: AMA snapshots, dynamic weights, asymmetric bounds, signal gates
