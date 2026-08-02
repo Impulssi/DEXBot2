@@ -70,16 +70,20 @@ async function runTests() {
 
         const result = await manager.sync.syncFromFillHistory(fillEvent);
 
-        // Assertions: sub-minimum remnant is NOT treated as full fill — it goes through
-        // the "other-side rounds to 0" ghost path instead, which preserves orderId
-        // so the COW rotation cancels the chain order properly.
-        assert.strictEqual(result.partialFill, false, 'Ghost path should return partialFill=false (rotation trigger)');
+        // A fill is authoritative: the order WAS on-chain and this fill consumed
+        // the tradeable remainder. Sub-dust other-side rounds to 0 are treated as
+        // real full fills (SPREAD placeholder, orderId cleared) so rotation plans
+        // the opposite side immediately; residual dust is cleaned by reconciliation.
+        assert.strictEqual(result.partialFill, false, 'sub-dust fill path should return partialFill=false (rotation trigger)');
         assert.strictEqual(result.filledOrders[0].isPartial, undefined, 'filledOrder should NOT be marked as partial to trigger rotation');
 
         const slot = manager.orders.get('slot-164');
-        assert.strictEqual(slot.state, ORDER_STATES.PARTIAL, 'Ghost slot should remain PARTIAL to preserve orderId');
-        assert.strictEqual(slot.size, 0, 'Ghost order slot size should be 0');
-        assert.strictEqual(slot.orderId, orderId, 'Ghost slot must preserve orderId so COW cancels the chain order');
+        assert.strictEqual(slot.state, ORDER_STATES.VIRTUAL,
+            'sub-dust fill should become a SPREAD placeholder (VIRTUAL), got ' + slot.state);
+        assert.strictEqual(slot.type, ORDER_TYPES.SPREAD,
+            'sub-dust fill slot should be SPREAD type, got ' + slot.type);
+        assert.strictEqual(slot.size, 0, 'full-filled slot size should be 0');
+        assert.strictEqual(slot.orderId, null, 'real full fill must clear the orderId (no ghost preservation)');
     }
 
     console.log('✓ Ghost order fix tests passed!');

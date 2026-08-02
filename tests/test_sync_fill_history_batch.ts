@@ -134,7 +134,7 @@ async function testFullAndPartialMix() {
         rawOnChain: { for_sale: String(Math.round(5.0 * 10000)), fetchedAt: Date.now() }
     });
 
-    // Full fill on slot-0 (1.0 XRP at low price -> other side rounds to 0 -> ghost)
+    // Full fill on slot-0 (1.0 XRP: other side rounds to 0 -> real full fill -> SPREAD placeholder)
     // Partial on slot-1 (0.5 XRP)
     const fill1 = makeSellFillEvent(orderId1, 1.0, 200, '1.11.2001');
     const fill2 = makeSellFillEvent(orderId2, 0.5, 200, '1.11.2002');
@@ -145,22 +145,24 @@ async function testFullAndPartialMix() {
 
     const slot0 = mgr.orders.get('slot-0');
     const slot1 = mgr.orders.get('slot-1');
-    // Full fill with low price -> other-side rounds to 0 -> ghost (PARTIAL with orderId)
-    assert.ok(slot0.state === ORDER_STATES.PARTIAL, `Ghost-filled slot should be PARTIAL, got ${slot0.state}`);
+    // Full fill -> other-side rounds to 0 -> real full fill (VIRTUAL/SPREAD placeholder, orderId cleared)
+    assert.ok(slot0.state === ORDER_STATES.VIRTUAL, `Full-filled slot should be VIRTUAL placeholder, got ${slot0.state}`);
+    assert.ok(slot0.type === ORDER_TYPES.SPREAD, `Full-filled slot should be SPREAD placeholder, got ${slot0.type}`);
     assert.ok(slot0.size === 0, 'Full-filled slot size should be 0');
+    assert.ok(slot0.orderId === null, 'Full-filled slot must clear the orderId (no ghost preservation)');
     assert.ok(slot1.state === ORDER_STATES.PARTIAL, 'Partial-filled slot should be PARTIAL');
     assert.ok(slot1.size < 5.0, 'Partial-filled slot size should have decreased');
     console.log('  PASS');
 }
 
 async function testGhostOrderInBatch() {
-    console.log('\n - Ghost order detection in batch preserves orderId...');
+    console.log('\n - Sub-dust full fill in batch becomes a REAL full fill (SPREAD placeholder)...');
     const mgr = createManager();
     // Use a high-precision asset B where the "other side" rounds to 0
     const orderId = '1.7.300001';
 
-    // Sell 1 XRP at 1041.27 -> receives ~1041.27 BTS
-    // If we fill the entire sell, the other side is 0 -> ghost
+    // Sell 1 XRP at 0.0001 -> receives ~0.0001 BTS (other side rounds to 0).
+    // A fill is authoritative: treated as a real full fill (SPREAD placeholder).
     await mgr._updateOrder({
         id: 'slot-0', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SELL,
         size: 1.0, price: 0.0001, orderId: orderId,
@@ -173,9 +175,11 @@ async function testGhostOrderInBatch() {
     });
 
     const slot0 = mgr.orders.get('slot-0');
-    // Ghost: SPREAD state, orderId preserved (as PARTIAL)
-    assert.ok(slot0.state === ORDER_STATES.PARTIAL || slot0.state === ORDER_STATES.SPREAD,
-        `Ghost slot should not be ACTIVE (state=${slot0.state})`);
+    // Real full fill: VIRTUAL SPREAD placeholder, orderId cleared.
+    assert.ok(slot0.state === ORDER_STATES.VIRTUAL, `Slot should be VIRTUAL (real full fill), got ${slot0.state}`);
+    assert.ok(slot0.type === ORDER_TYPES.SPREAD, `Slot should be SPREAD placeholder, got ${slot0.type}`);
+    assert.ok(slot0.orderId === null, 'Full fill must clear the orderId (no ghost preservation)');
+    assert.ok(result.filledOrders.length === 1, 'Fill should be reported');
     console.log('  PASS');
 }
 
@@ -386,11 +390,14 @@ async function testSpreadSlotFullFillResolvesBuySide() {
     assert.strictEqual(filledOrder.type, ORDER_TYPES.BUY,
         `fill on SPREAD slot must resolve to BUY, got ${filledOrder.type}`);
 
-    // Slot virtualized: ghost keeps orderId (blocks duplicate CREATE), size 0, not ACTIVE.
+    // Slot virtualized to a SPREAD placeholder (VIRTUAL state, orderId cleared):
+    // the real full fill no longer preserves the orderId as a ghost. Rotation can
+    // immediately plan the opposite side.
     const slot = mgr.orders.get('slot-spread');
     assert.ok(slot.state !== ORDER_STATES.ACTIVE, `filled slot must leave ACTIVE (state=${slot.state})`);
     assert.strictEqual(slot.size, 0, 'filled slot must be zero-sized');
-    assert.ok(slot.isGhost === true || slot.state === ORDER_STATES.SPREAD, 'slot should be ghost or spread placeholder');
+    assert.strictEqual(slot.type, ORDER_TYPES.SPREAD,
+        `filled slot must become SPREAD placeholder, got ${slot.type}`);
 
     // Boundary crawl: BUY fill shifts boundary left; the pre-fix SPREAD type must NOT.
     const allSlots = Array.from(mgr.orders.values()).filter((o) => o.price != null).sort((a, b) => a.price - b.price);

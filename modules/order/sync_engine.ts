@@ -1159,38 +1159,40 @@ class SyncEngine {
 
         const gridAlsoEmpty = currentSizeIntFromGrid <= 0;
         let isEffectivelyFull = resolvedChainConfirmsEmpty || gridAlsoEmpty;
-        let ghostOrderId;
 
         if (!isEffectivelyFull) {
             const otherPrecision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetB.precision : mgr.assets.assetA.precision;
-            const price = matchedGridOrder.price;
-            const otherSize = (orderType === ORDER_TYPES.SELL) ? newSize * price : newSize / price;
+            const otherSidePrice = matchedGridOrder.price;
+            const otherSize = (orderType === ORDER_TYPES.SELL) ? newSize * otherSidePrice : newSize / otherSidePrice;
 
             if (floatToBlockchainInt(otherSize, otherPrecision) <= 0) {
-                mgr.logger.log(`[SYNC] Order ${matchedGridOrder.orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. Treating as full fill to trigger rotation.`, 'info');
+                // A fill event is authoritative: the order WAS on-chain and this
+                // fill consumed the tradeable remainder. A fill is a fill — we do
+                // not need to preserve the orderId as a "ghost" PARTIAL to block
+                // a duplicate CREATE. Any residual dust that remains on-chain
+                // after rounding is cancelled by the normal reconciliation /
+                // duplicate-price cancel path, not by stalling the grid. Treating
+                // every sub-dust other-side fill as a real full fill lets rotation
+                // immediately plan the opposite-side replacement, preserving the
+                // grid invariant (each filled side produces a new order on the
+                // other side). This replaces the legacy ghost mechanism whose
+                // preserved orderIds caused instantly-filled replacement orders
+                // to deadlock the COW create pipeline.
+                mgr.logger.log(
+                    `[SYNC] Order ${matchedGridOrder.orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. ` +
+                    `Fill is authoritative: treating as full fill for rotation; residual dust left for reconciliation cancel.`,
+                    'info'
+                );
                 isEffectivelyFull = true;
-                ghostOrderId = matchedGridOrder.orderId;
             }
         }
 
         let fullUpdate;
-        let ghostUpdate;
         let partialUpdate;
         let filledOrderResult;
 
         if (isEffectivelyFull) {
-            if (ghostOrderId) {
-                ghostUpdate = {
-                    ...matchedGridOrder,
-                    type: orderType,
-                    size: 0,
-                    state: ORDER_STATES.PARTIAL,
-                    orderId: ghostOrderId,
-                    isGhost: true,
-                };
-            } else {
-                fullUpdate = convertToSpreadPlaceholder(matchedGridOrder);
-            }
+            fullUpdate = convertToSpreadPlaceholder(matchedGridOrder);
             filledOrderResult = {
                 ...matchedGridOrder,
                 type: orderType,
@@ -1232,11 +1234,8 @@ class SyncEngine {
 
         return {
             isFull: isEffectivelyFull,
-            isGhost: !!ghostOrderId,
-            ghostOrderId,
             filledOrder: filledOrderResult,
             fullUpdate,
-            ghostUpdate,
             partialUpdate,
             newSize
         };
@@ -1364,16 +1363,6 @@ class SyncEngine {
                 const updatedOrders: any[] = [];
 
                 if (result.isFull) {
-                    if (result.isGhost) {
-                        mgr.logger.log(`[SYNC] Ghost full fill for order ${orderId} (slot ${matchedGridOrder.id}): preserving orderId ${result.ghostOrderId} as PARTIAL to block duplicate CREATE.`, 'info');
-                        const ghostOk = await mgr._updateOrder(result.ghostUpdate, 'handle-fill-ghost', { skipAccounting: false, fee: 0 });
-                        if (ghostOk === false) {
-                            mgr.logger.log(`[SYNC] Failed to apply ghost fill state for order ${orderId}; marking totals stale for next sync cycle`, 'warn');
-                            mgr.accountTotalsStale = true;
-                        }
-                        filledOrders.push(result.filledOrder);
-                        return { filledOrders, updatedOrders, partialFill: false };
-                    }
                     mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
                     const fullOk = await mgr._updateOrder(result.fullUpdate, 'handle-fill-full', { skipAccounting: false, fee: 0 });
                     if (fullOk === false) {
@@ -1616,17 +1605,8 @@ class SyncEngine {
                     });
 
                     if (result.isFull) {
-                        if (result.isGhost) {
-                            mgr.logger.log(
-                                `[SYNC] Ghost full fill for order ${orderId} (slot ${matchedGridOrder.id}): ` +
-                                `preserving orderId ${result.ghostOrderId} as PARTIAL to block duplicate CREATE.`,
-                                'info'
-                            );
-                            gridUpdates.push({ id: matchedGridOrder.id, ...result.ghostUpdate, context: 'handle-fill-ghost' });
-                        } else {
-                            mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
-                            gridUpdates.push({ id: matchedGridOrder.id, ...result.fullUpdate, context: 'handle-fill-full' });
-                        }
+                        mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
+                        gridUpdates.push({ id: matchedGridOrder.id, ...result.fullUpdate, context: 'handle-fill-full' });
                         filledOrders.push(result.filledOrder);
                     } else {
                         mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${result.newSize}`, 'info');
