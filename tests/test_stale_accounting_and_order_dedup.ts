@@ -175,6 +175,66 @@ async function runTests() {
         console.log('   ✓ Insufficient funds path throws with ACCOUNTING_COMMITMENT_FAILED');
     }
 
+    // 2c. Stale snapshot: refresh-from-chain + retry once → deduction succeeds (no recovery)
+    {
+        const logs: string[] = [];
+        const mgr = new OrderManager({ assetA: 'TEST', assetB: 'BTS', startPrice: 1 });
+        mgr.logger = createTestLogger({ onLog: (msg: string) => logs.push(msg) });
+        await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 500, sellFree: 500 });
+        mgr.accountTotals._lastFetchedAt = Date.now() - TIMING.MAX_ACCOUNT_TOTALS_AGE_MS - 60000;
+
+        // Refresh supplies fresh chain balances, so the retry must succeed.
+        mgr._fetchAccountBalancesAndSetTotals = async () => {
+            await mgr.setAccountTotals({ buy: 2000, sell: 2000, buyFree: 1500, sellFree: 1500 });
+        };
+
+        const oldOrder = { id: 'o1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 0, price: 1 };
+        const newOrder = { id: 'o1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY, size: 100, price: 1, orderId: '1.7.1' };
+
+        await mgr.accountant.updateOptimisticFreeBalance(oldOrder, newOrder, 'test-stale-refresh-retry', 0);
+
+        // The order was committed without throwing AND without a recovery signal:
+        // staleness was fixed in place by refreshing and retrying the deduction.
+        assert.strictEqual(mgr._lastAccountingFailure, null,
+            'refresh+retry should avoid setting _lastAccountingFailure');
+        assert.strictEqual(mgr.accountTotals.buyFree, 1400,
+            'deduction should apply against the fresh snapshot (1500 - 100)');
+        assert(logs.some(l => l.includes('refreshing from chain before retrying')),
+            'should log the stale-refresh-before-retry');
+        console.log('   ✓ Stale snapshot is refreshed from chain and the deduction retried in place');
+    }
+
+    // 2d. Stale snapshot + refresh fails → still does not throw, records stale failure
+    {
+        const logs: string[] = [];
+        const mgr = new OrderManager({ assetA: 'TEST', assetB: 'BTS', startPrice: 1 });
+        mgr.logger = createTestLogger({ onLog: (msg: string) => logs.push(msg) });
+        await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 500, sellFree: 500 });
+        mgr.accountTotals._lastFetchedAt = Date.now() - TIMING.MAX_ACCOUNT_TOTALS_AGE_MS - 60000;
+
+        // Refresh "fails" by not advancing _lastFetchedAt (node error / empty read).
+        mgr._fetchAccountBalancesAndSetTotals = async () => {};
+
+        const oldOrder = { id: 'o1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 0, price: 1 };
+        const newOrder = { id: 'o1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY, size: 100, price: 1, orderId: '1.7.1' };
+
+        let threw = false;
+        try {
+            await mgr.accountant.updateOptimisticFreeBalance(oldOrder, newOrder, 'test-stale-refresh-fail', 0);
+        } catch {
+            threw = true;
+        }
+        assert.strictEqual(threw, false, 'failed refresh must NOT throw (orphan-broadcast protection)');
+
+        const failure = mgr._lastAccountingFailure;
+        assert(failure, '_lastAccountingFailure should be set when refresh fails');
+        assert.strictEqual(failure.reason, 'stale',
+            'failure reason should still be stale when refresh fails');
+        assert(logs.some(l => l.includes('cannot retry optimistic lock')),
+            'should log that the retry was skipped after refresh failure');
+        console.log('   ✓ Failed refresh preserves stale-failure handling (no throw, recovery signal kept)');
+    }
+
     // ====================================================================
     // 3. correctOrderPriceOnChain — orderGone dedup of _lastUnmatchedChainOrders
     // ====================================================================

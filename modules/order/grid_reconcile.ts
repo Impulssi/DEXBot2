@@ -5,7 +5,7 @@ import {
     _executeStartupSequentialUpdateFallback,
     _executePlannedStartupCreates, _reconcileStartupSide,
 } from './grid_reconcile_internal';
-import { ORDER_TYPES, ORDER_STATES } from '../constants';
+import { ORDER_TYPES, ORDER_STATES, TIMING } from '../constants';
 import { readOpenOrdersGuarded } from '../chain_orders';
 import { calculatePriceTolerance, getAssetFeesSafe } from './utils/math';
 import {
@@ -212,6 +212,25 @@ export async function reconcileGridOrders({
         for (const order of manager.orders.values()) {
             if (isOrderPlaced(order)) {
                 if (!chainIds.has(order.orderId)) {
+                    // Absence-decision guard: only virtualize as a phantom when
+                    // the absence is trustworthy. An orderId assigned within the
+                    // sync-lock window may be an in-flight create/adopt whose
+                    // broadcast has not landed or is not yet visible to a
+                    // lagging/truncated read. Virtualizing it here and
+                    // re-creating would duplicate a real live order (the
+                    // reconcile-timeout death-spiral root cause). Mirror the
+                    // sync_engine committed-order guard; ghost orders (PARTIAL +
+                    // size=0) still pass through so known fills get cleaned up.
+                    const assignedAt = manager._orderIdAssignedAt?.get(order.orderId) || 0;
+                    const isGhost = order.isGhost === true || (order.size <= 0 && order.state === ORDER_STATES.PARTIAL);
+                    if (!isGhost && assignedAt > 0 && Date.now() - assignedAt < TIMING.SYNC_LOCK_TIMEOUT_MS) {
+                        logger?.log?.(
+                            `Startup: Order ${order.id} (ID ${order.orderId}) absent from snapshot but freshly assigned ` +
+                            `(${Date.now() - assignedAt}ms ago); deferring phantom cleanup (duplicate-order protection).`,
+                            'warn'
+                        );
+                        continue;
+                    }
                     logger?.log?.(`Startup: Found phantom order ${order.id} (ID ${order.orderId}) not on chain. Resetting to VIRTUAL.`, 'warn');
 
                     await applyUpdate({

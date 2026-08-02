@@ -36,6 +36,7 @@ function createManager(overrides = {}) {
         _applySync: async () => {},
         _updateOrder: (order) => { orders.set(order.id, order); },
         _applyOrderUpdate: async (order) => { orders.set(order.id, order); return true; },
+        _orderIdAssignedAt: new Map(),
         ...overrides,
     };
     return manager;
@@ -430,6 +431,66 @@ async function testNoExcessCancelWhenMatchedOnGridIsZero() {
     console.log('✅ Regression 5 passed: no excess cancel when matchedOnGrid is zero (fresh grid)');
 }
 
+// Regression 8: phantom cleanup must defer freshly assigned orderIds.
+// An orderId stamped in _orderIdAssignedAt within SYNC_LOCK_TIMEOUT_MS may be
+// an in-flight create/adopt broadcast not yet visible to a lagging/truncated
+// read. Virtualizing it and re-creating would duplicate a real live order
+// (the reconcile-timeout death-spiral root cause on 2026-07-28).
+async function testPhantomCleanupDefersFreshlyAssignedOrderIds() {
+    const logs: string[] = [];
+    const manager = createManager({
+        logger: { log: (msg: string) => logs.push(msg) },
+    });
+
+    // Freshly assigned orderId (create broadcast moments ago).
+    manager._orderIdAssignedAt.set('1.7.500', Date.now());
+    manager.orders.set('buy-1', {
+        id: 'buy-1',
+        type: ORDER_TYPES.BUY,
+        state: ORDER_STATES.ACTIVE,
+        price: 1.0,
+        size: 10,
+        orderId: '1.7.500',
+    });
+
+    let virtualizeCalls = 0;
+    manager._applyOrderUpdate = async (order: any) => {
+        if (order.orderId === '') virtualizeCalls++;
+        manager.orders.set(order.id, order);
+        return true;
+    };
+
+    const chainOrders = {
+        updateOrder: async () => {},
+        buildUpdateOrderOp: async () => ({ op: { op_name: 'limit_order_update', op_data: { fee: { amount: 0, asset_id: '1.3.0' } } } }),
+        executeBatch: async () => ({ success: true, operation_results: [] }),
+        cancelOrder: async () => {},
+        createOrder: async () => [],
+        readOpenOrders: async () => [],
+    };
+
+    // Snapshot does NOT include 1.7.500 — absent from the (lagging/truncated) read.
+    await reconcileGridOrders({
+        manager,
+        config: { activeOrders: { sell: 0, buy: 1 } },
+        account: 'acct',
+        privateKey: 'pk',
+        chainOrders,
+        chainOpenOrders: [],
+    });
+
+    const slot = manager.orders.get('buy-1');
+    assert.strictEqual(slot.state, ORDER_STATES.ACTIVE,
+        'freshly assigned order must NOT be virtualized');
+    assert.strictEqual(slot.orderId, '1.7.500',
+        'freshly assigned orderId must be preserved');
+    assert.strictEqual(virtualizeCalls, 0,
+        'phantom cleanup must not virtualize a freshly assigned slot');
+    assert(logs.some((l: string) => l.includes('deferring phantom cleanup')),
+        'should log the phantom-cleanup deferral');
+    console.log('✅ Regression 8 passed: phantom cleanup defers freshly assigned orderIds');
+}
+
 // Regression 7: _fundLock serialization in the recalculateGrid wrap.
 // Uses a real AsyncLock (not a passthrough mock) to verify that concurrent
 // fund operations observe the post-resetFunds state only after the lock releases.
@@ -514,6 +575,7 @@ async function testRecalculateGridFundLockSerialization() {
     await testAttemptResumeAwaitsStoreGrid();
     await testNoExcessCancelWhenMatchedOnGridIsZero();
     await testPhase3CancelsStaleSurplusUntrackedByGrid();
+    await testPhantomCleanupDefersFreshlyAssignedOrderIds();
     await testRecalculateGridFundLockSerialization();
     console.log('\n✅ Startup reconcile regression tests passed!\n');
 })().catch((err) => {

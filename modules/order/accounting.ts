@@ -1120,7 +1120,29 @@ class Accountant {
                 if (commitmentDelta > 0) {
                     // Lock capital: move from Free to Committed
                     const commitmentSide = newSideType || newOrder.type;
-                    const result = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
+                    let result = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
+
+                    // Fix staleness in the first place: a stale snapshot refused
+                    // the lock. Refresh accountTotals from chain immediately and
+                    // retry the deduction once rather than committing the order
+                    // unaccounted and waiting for a recovery cycle. The refresh
+                    // carries the standard 30s/3-retry/node-failover policy.
+                    if (!result.ok && result.reason === 'stale') {
+                        mgr.logger?.log?.(
+                            `[ACCOUNTING] Stale accountTotals during ${context}; refreshing from chain before retrying optimistic lock.`,
+                            'warn'
+                        );
+                        const refresh = await mgr.refreshAccountTotalsIfStale();
+                        if (refresh.ok) {
+                            result = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context} (post-refresh retry)`);
+                        } else {
+                            mgr.logger?.log?.(
+                                `[ACCOUNTING] accountTotals refresh failed (${refresh.reason}); cannot retry optimistic lock of ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide}.`,
+                                'warn'
+                            );
+                        }
+                    }
+
                     if (!result.ok) {
                         const failure = {
                             code: result.reason === 'stale' ? 'ACCOUNTING_STALE_ACCOUNT_TOTALS' : 'ACCOUNTING_COMMITMENT_FAILED',

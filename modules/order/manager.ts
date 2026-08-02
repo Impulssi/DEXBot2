@@ -19,7 +19,7 @@
 // ===============================================================================
 
 
-import { persistGridSnapshot, deepFreeze, cloneMap } from './utils/system';
+import { persistGridSnapshot, deepFreeze, cloneMap, withBlockchainRetry } from './utils/system';
 import { withTimeout } from './utils/timeout';
 import { WorkingGrid } from './working_grid';
 import Logger from './logger';
@@ -412,6 +412,7 @@ class OrderManager {
     _pendingBroadcasts: Map<any, any>;
     _committedOrderIds: Set<string>;
     _committedOrderIdsBuiltAt: number;
+    _orderIdAssignedAt: Map<string, number>;
     _gapSlots: number;
     _gridDirtyAt: number | null;
     _orphanFillsCreditedAt: number | null;
@@ -516,6 +517,7 @@ class OrderManager {
         this._pendingBroadcasts = new Map();
         this._committedOrderIds = new Set();
         this._committedOrderIdsBuiltAt = 0;
+        this._orderIdAssignedAt = new Map();
         this._gapSlots = 0;
         this._gridDirtyAt = null;
         this._orphanFillsCreditedAt = null;
@@ -861,8 +863,16 @@ class OrderManager {
             return { ok: true };
         }
         const fetchedBefore = lastFetched;
+        // Apply the standard blockchain-op policy (30s timeout, 3 attempts, then
+        // node failover) so a transiently bad node does not force the caller to
+        // defer the whole fill batch to the next cycle. Only a genuinely
+        // unreachable chain leaves the snapshot stale.
         try {
-            await this.fetchAccountTotals(this.accountId);
+            await withBlockchainRetry(
+                () => this.fetchAccountTotals(this.accountId),
+                'refreshAccountTotalsIfStale',
+                { logger: this.logger }
+            );
         } catch (err: any) {
             this.logger?.log?.(`[SYNC] refreshAccountTotalsIfStale fetch failed: ${getErrorMessage(err)}`, 'warn');
         }
@@ -1228,6 +1238,16 @@ class OrderManager {
 
         const updatedOrder = deepFreeze({ ...nextOrder });
         const id = order.id;
+
+        // Track when an orderId is first assigned to a slot. A freshly assigned
+        // orderId (create/adopt broadcast still in flight, or not yet visible to
+        // a lagging/truncated chain read) must not be treated as "absent from
+        // chain" by phantom cleanup — that would virtualize a real live order
+        // and re-create a duplicate. Absence decisions defer while the stamp is
+        // younger than SYNC_LOCK_TIMEOUT_MS.
+        if (updatedOrder.orderId && (!oldOrder?.orderId || oldOrder.orderId !== updatedOrder.orderId)) {
+            this._orderIdAssignedAt.set(updatedOrder.orderId, Date.now());
+        }
 
         const newMap = cloneMap(this.orders);
         newMap.set(id, updatedOrder);

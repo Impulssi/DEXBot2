@@ -1088,17 +1088,20 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
                 if (_resyncAborted) return;
                 const { reconcileGridOrders } = require('./grid_reconcile');
 
-                // #5: Reconcile grid orders with timeout + retry + node failover
+                // #5: Reconcile grid orders.
+                // No per-attempt wall-clock race around the whole reconcile.
+                // Phase 2 performs many sequential broadcasts (creates ~3s each)
+                // plus per-op retry with on-chain verification
+                // (grid_reconcile_internal._createOrderFromGrid: uncertain creates
+                // are re-read, adopted if landed, and re-broadcast only on
+                // authoritative absence). An outer timeout would fire mid-batch,
+                // orphan in-flight broadcasts, and let the next attempt virtualize
+                // and re-create them — the duplicate-accumulation death spiral.
+                // Reads inside reconcile already follow the 30s/3-retry/node-
+                // failover standard via withBlockchainRetry, and the 10-min
+                // totalTimeoutMs safety net below bounds the whole resync.
                 try {
-                    await withBlockchainRetry(
-                        () => reconcileGridOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders }),
-                        'reconcileGridOrders',
-                        // 5 min: Phase 2 of reconcile does sequential creates (~3s each);
-                        // the default 30s timeout would kill mid-batch and cause duplicate-
-                        // accumulation death spirals. PIPELINE_TIMING.TIMEOUT_MS gives enough
-                        // headroom for all pending creates+updates to finish in one shot.
-                        { logger: manager.logger, timeoutMs: PIPELINE_TIMING.TIMEOUT_MS }
-                    );
+                    await reconcileGridOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders });
                 } catch (err: any) {
                     manager.logger?.log?.(`Error during startup order reconciliation: ${getErrorMessage(err)}`, 'error');
                     throw new Error(`Grid recalculation failed during order reconciliation: ${getErrorMessage(err)}`);
