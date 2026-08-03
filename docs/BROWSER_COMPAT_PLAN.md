@@ -194,7 +194,6 @@ Add `false` mappings for all AGENTS.md node-only modules currently missing:
 | `modules/dexbot_maintenance_runtime` | `"./dist/modules/dexbot_maintenance_runtime.js": false` |
 | `modules/order/logger` | `"./dist/modules/order/logger.js": false` |
 | `modules/order/export` | `"./dist/modules/order/export.js": false` |
-| `modules/order/runner` | `"./dist/modules/order/runner.js": false` |
 | `modules/process_discovery` | `"./dist/modules/process_discovery.js": false` |
 | `modules/graceful_shutdown` | `"./dist/modules/graceful_shutdown.js": false` |
 
@@ -283,7 +282,7 @@ npm test
 rg "import\s+\*\s+as\s+\w+\s+from\s+['\"](?:fs|path|os|child_process|crypto|net|tls|http)['\"]" modules/crypto/ modules/claw/ modules/env.ts modules/runtime.ts modules/config.ts modules/path_api.ts modules/storage/
 
 # 4. Verify no static ESM imports of node-only modules from browser-safe modules
-rg "from\s+['\"]\.\.?/(?:launcher|key_store|dexbot_maintenance_runtime|order/(?:logger|export|runner))['\"]" modules/crypto/ modules/claw/ modules/env.ts modules/runtime.ts modules/config.ts modules/path_api.ts modules/storage/
+rg "from\s+['\"]\.\.?/(?:launcher|key_store|dexbot_maintenance_runtime|order/(?:logger|export))['\"]" modules/crypto/ modules/claw/ modules/env.ts modules/runtime.ts modules/config.ts modules/path_api.ts modules/storage/
 
 # 5. Final — try a browser bundle (if bundler is in the toolchain)
 # npx webpack --mode production --target web --entry some-browser-entry.ts

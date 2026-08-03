@@ -120,7 +120,7 @@ cause abrupt grid-center changes.
 The adapter uses tiered clamping thresholds to manage inventory risk during extreme price divergence from the AMA trend center. These thresholds are derived from historical pool volatility and replace static 'fit cap' multipliers. The specific clamping limits and exit parameters are calculated per pair and preset using the AMA fitting toolchain:
 
 ```bash
-node dist/analysis/ama_fitting/optimizer_high_resolution.js --data <lp-file.json>
+tsx analysis/ama_fitting/optimizer_high_resolution.ts --data <lp-file.json>
 ```
 
 Source: example LP pool, 1h candles, representative historical window.

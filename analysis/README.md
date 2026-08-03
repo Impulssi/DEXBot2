@@ -159,7 +159,7 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 | `--hours <n>` | `168` (7d) | Lookback hours (alternative to start/end) |
 | `--asset <id>` | all | Filter to one base asset ID |
 | `--lookup` | off | Resolve account name to 1.2.x ID via BitShares node |
-| `--node <url>` | first healthy from built-in pool (8 nodes) | BitShares node for account + asset resolution |
+| `--node <url>` | first healthy from built-in pool (10 nodes) | BitShares node for account + asset resolution |
 | `--csv <file>` | — | Export chronologically sorted trade list |
 | `--json <file>` | — | Export full analysis with per-pair PnL data |
 | `--match-mode <mode>` | `sequential` | Matching mode: `sequential` (LIFO, default) or `fifo` |

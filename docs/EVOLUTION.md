@@ -9,7 +9,7 @@ DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares 
 - **Growth Phase**: 1,950 commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 234 automated test files
-- **Releases**: 89 release entries (v0.1.0 to v1.4.8)
+- **Releases**: 90 release entries (v0.1.0 to v1.4.9)
 
 ---
 
@@ -77,7 +77,7 @@ DEXBot2's architecture progressed through distinct maturity stages:
 
 ## Development Statistics
 
-The project has accumulated 234 automated test files across 87 release entries. See the **Version History** below for a per-release commit breakdown.
+The project has accumulated 234 automated test files across 90 release entries. See the **Version History** below for a per-release commit breakdown.
 
 ---
 
