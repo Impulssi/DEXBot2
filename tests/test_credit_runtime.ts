@@ -4434,6 +4434,107 @@ async function testMaxBorrowAmountPerOperationIsMaxBorrowAmountError() {
   }
 }
 
+async function testLpCollateralResolvesCreditConversionRate() {
+  const calls = [];
+  const dbCalls = [];
+  const restore = installStubs(calls, dbCalls, {
+    assetsById: {
+      '1.3.0': {
+        id: '1.3.0',
+        symbol: 'BTS',
+        precision: 2,
+        bitasset_data_id: null,
+      },
+      '1.3.22': {
+        id: '1.3.22',
+        symbol: 'ALT',
+        precision: 2,
+        bitasset_data_id: null,
+      },
+      '1.3.20': {
+        id: '1.3.20',
+        symbol: 'TWENTIX.IOXRPMM',
+        precision: 0,
+        bitasset_data_id: null,
+        dynamic_asset_data_id: '2.4.20',
+        for_liquidity_pool: '1.19.1',
+        current_supply: 10000,
+      },
+    },
+    assetDynamicData: {
+      '2.4.20': {
+        id: '2.4.20',
+        current_supply: 10000,
+      },
+    },
+    poolByShareAsset: {
+      '1.3.20': {
+        id: '1.19.1',
+        asset_a: '1.3.0',
+        asset_b: '1.3.22',
+        balance_a: 10000,
+        balance_b: 10000,
+        share_asset: '1.3.20',
+      },
+    },
+    poolByAssetPair: {
+      '1.3.0|1.3.22': {
+        id: '1.19.4',
+        asset_a: '1.3.0',
+        asset_b: '1.3.22',
+        balance_a: 10000,
+        balance_b: 10000,
+        share_asset: '1.3.21',
+      },
+    },
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-credit-lp-rate-'));
+
+  try {
+    delete require.cache[creditRuntimePath];
+    const CreditRuntime = require('../modules/credit_runtime');
+    const runtime = new CreditRuntime(
+      {
+        config: createBaseBotConfig({
+          botKey: 'credit-bot-lp-rate',
+          debtPolicy: {
+            lending: [
+              {
+                asset: 'BTS',
+                collateralAsset: 'TWENTIX.IOXRPMM',
+                type: 'creditOffer',
+                outputWeight: 1,
+                maxBorrowAmount: 1000,
+                maxCollateralRatio: 1.5,
+                maxFeeRatePerDay: 0.05,
+                autoReborrow: true,
+                autoRepay: 2,
+              },
+            ],
+          },
+        }),
+        account: { id: '1.2.3', name: 'alice' },
+        accountId: '1.2.3',
+        privateKey: 'WIF-KEY',
+        _log() {},
+        _warn() {},
+      },
+      { stateDir: path.join(baseDir, 'credit_runtime') },
+    );
+
+    const lendingItem = runtime.debtPolicy.lending.find((item) => item.type === 'creditOffer');
+    const debtAsset = await runtime._resolveAsset('BTS');
+    const collateralAsset = await runtime._resolveAsset('TWENTIX.IOXRPMM');
+    const rate = await runtime._resolveCreditConversionRate(lendingItem, debtAsset.id, collateralAsset.id, { includeSource: true });
+
+    assert.ok(rate && rate.price != null && rate.price > 0, `pool collateral should resolve a positive conversion rate (got ${JSON.stringify(rate)})`);
+    assert.strictEqual(rate.source, 'pool-derived', 'pool share collateral should derive its credit conversion rate from the AMM pool');
+  } finally {
+    restore();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
+  }
+}
+
 (async () => {
   await testRefreshAndMpaPlan();
   await testCreditOfferCollateralPercentUsesDebtSnapshot();
@@ -4455,6 +4556,7 @@ async function testMaxBorrowAmountPerOperationIsMaxBorrowAmountError() {
   await testCreditOfferTotalCeilingEnforcement();
   await testCreditOfferTotalCeilingUsesAssetPrecision();
   await testLpCollateralRatioGate();
+  await testLpCollateralResolvesCreditConversionRate();
   await testDealDisappearanceDoesNotAutoQueueReborrow();
   await testDeferredReborrowQueuesAfterConfirmedRepay();
   await testFallbackOfferSelectedWhenOriginalOfferUnavailable();

@@ -705,6 +705,32 @@ class CreditRuntime {
         const cachedAt = this.state.positions[posKey]?.creditConversionRateAt || 0;
         const cachedIsFresh = cached !== null && (Date.now() - cachedAt) < CREDIT_RATE_MAX_AGE_MS;
 
+        // Liquidity pool share collateral (for_liquidity_pool) has no direct
+        // base/quote pair against the debt asset in the offer's acceptable_collateral
+        // map. Its conversion rate must be derived from the underlying AMM pool by
+        // pricing both reserve assets against the debt asset. Do this before the
+        // offer-map math so we don't fall through to a missing-offer path.
+        const collateralAssetForPool = await this._resolveAsset(collateralAssetId);
+        const debtAssetForPool = await this._resolveAsset(debtAssetId);
+        if (collateralAssetForPool?.for_liquidity_pool && debtAssetForPool?.id) {
+            const poolRate = await deriveLiquidityPoolTokenValue(BitShares, collateralAssetForPool.id, debtAssetForPool.id).catch((e: any) => {
+                this.log(`credit runtime: pool token rate derivation failed for ${collateralAssetForPool.id}/${debtAssetForPool.id}: ${getErrorMessage(e)}`);
+                return null;
+            });
+            if (poolRate != null && Number.isFinite(poolRate) && poolRate > 0) {
+                if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
+                this.state.positions[posKey].creditConversionRate = poolRate;
+                this.state.positions[posKey].creditConversionRateAt = Date.now();
+                return options.includeSource ? { price: poolRate, source: 'pool-derived' } : poolRate;
+            }
+            if (options.includeSource) {
+                return cachedIsFresh
+                    ? { price: cached, source: 'cached-offer' }
+                    : { price: null, source: 'missing-offer' };
+            }
+            return cachedIsFresh ? cached : null;
+        }
+
         const offerIds = new Set();
 
         const deals = Array.isArray(this.state.positions[posKey]?.creditDeals)
