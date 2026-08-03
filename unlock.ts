@@ -451,7 +451,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
     }
     const selectedBot = effectiveBotName ? resolveBotEntryForName(effectiveBotName) : null;
     let launchedBotNames = getLaunchedBotNames(effectiveBotName);
-    const shouldStartMonolithicBackground = !clawOnly && !creditOnly && !isolated && !isDetachedSupervisorChild && !isMonolithicBgChild && !forceForeground;
+    const shouldStartMonolithicBackground = !clawOnly && !isolated && !isDetachedSupervisorChild && !isMonolithicBgChild && !forceForeground;
     let daemonReleased = false;
 
     if (botName && !selectedBot) {
@@ -479,7 +479,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             let daemonOutFd: any = null;
             let daemonErrFd: any = null;
 
-            if (!clawOnly && !creditOnly && !isolated && !forceForeground) {
+            if (!clawOnly && !isolated && !forceForeground) {
                 ensureMonolithicLogDir();
                 daemonOutFd = storage.open(MONOLITHIC_OUT_LOG, 'a', 0o600);
                 try {

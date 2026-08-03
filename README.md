@@ -209,7 +209,6 @@ Defaults in [`modules/constants.ts`](modules/constants.ts) are overridable at gl
 ```bash
 dexbot unlock              # Start all active bots
 dexbot unlock --dryrun     # Dry-run (no transactions broadcast)
-dexbot unlock credit       # Credit-only worker
 dexbot stop                # Stop the monolithic runtime
 dexbot restart             # Restart the monolithic runtime
 dexbot delete              # Shut down and clean up

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.10] - 2026-08-03
+
+### 2026-08-03
+
+- **Fix**: `dexbot unlock credit` now daemonizes to the background like `dexbot unlock` but runs only the credit-only bot — the previous credit path skipped the monolithic background daemon and stayed foreground; the credential daemon detaches to the monolithic log files the same way (`unlock.ts`).
+- **Docs**: remove the `dexbot unlock credit` line from the root README command list and clarify the credit-only worker's behavior in the docs (README.md, docs/WORKFLOW.md, docs/MPA_CREDIT_USAGE.md, docs/README.md).
+
 ## [1.4.9] - 2026-08-03 - LP-Collateral Credit Conversion Rate, Top-Level Unlock Control Aliases
 
 ### 2026-08-03

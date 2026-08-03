@@ -205,7 +205,7 @@ dexbot unlock --foreground
 # Start with claw automation
 dexbot unlock --claw-only
 
-# Start credit-only worker (no grid trading, just credit runtime)
+# Start credit-only worker in the background (no grid trading, just credit runtime)
 dexbot unlock credit
 ```
 
