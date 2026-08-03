@@ -64,6 +64,9 @@
  *
  * MAINTENANCE:
  *   dexbot update               - Update to latest version (pull + install + restart)
+ *   dexbot stop                 - Stop the monolithic runtime
+ *   dexbot restart              - Restart the monolithic runtime
+ *   dexbot delete               - Stop/delete all runtime processes
  *   dexbot export <bot-name>    - Export trading history to CSV/JSON for QTradeX
  *   dexbot order                - Analyze persisted order grids in profiles/orders/
  *   dexbot order --export       - Export order analysis as standalone HTML report
@@ -164,8 +167,8 @@ const PROFILES_DIR = PATHS.PROFILES_DIR;
 
 
 const BUILD_DIR = 'dist';
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'help'];
-const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'test', defaults: 'default' };
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'help'];
+const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'test', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
@@ -234,6 +237,9 @@ function printCLIUsage() {
     console.log('  order             Analyze persisted order grids in profiles/orders/ (spread, increment, funds). Use --export for HTML.');
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Run credential daemon + bot (repo-root: `./unlock`).');
+    console.log('  stop              Stop the monolithic runtime (alias for `unlock stop`).');
+    console.log('  restart           Restart the monolithic runtime (alias for `unlock restart`).');
+    console.log('  delete            Stop/delete all runtime processes (alias for `unlock delete`).');
     console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune) are forwarded.');
     console.log('  clear             Remove all log files from profiles/logs/ (runs scripts/clear-logs.sh).');
     console.log('  clear-orders      Remove all persisted order files from profiles/orders/.');
@@ -1110,6 +1116,19 @@ async function handleCLICommands() {
                 console.log('No DEXBot2 processes running.');
             }
             process.exit(0);
+            return true;
+        }
+        case 'delete':
+        case 'stop':
+        case 'restart': {
+            const { spawnSync } = require('child_process') as any as any;
+            const unlockScript = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js');
+            const unlockArgs = [unlockScript, command, ...cliArgs.slice(1)];
+            const result = spawnSync(Config.EXEC_PATH, unlockArgs, {
+                cwd: PATHS.PROJECT_ROOT,
+                stdio: 'inherit',
+            });
+            process.exit(result.status ?? 0);
             return true;
         }
         case 'help':

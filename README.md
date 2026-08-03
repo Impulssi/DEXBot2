@@ -210,10 +210,9 @@ Defaults in [`modules/constants.ts`](modules/constants.ts) are overridable at gl
 dexbot unlock              # Start all active bots
 dexbot unlock --dryrun     # Dry-run (no transactions broadcast)
 dexbot unlock credit       # Credit-only worker
-dexbot unlock stat         # Runtime status
-dexbot unlock stop         # Stop the monolithic runtime
-dexbot unlock restart      # Restart the monolithic runtime
-dexbot unlock delete       # Shut down and clean up
+dexbot stop                # Stop the monolithic runtime
+dexbot restart             # Restart the monolithic runtime
+dexbot delete              # Shut down and clean up
 ```
 
 For independent per-bot process control, start isolated mode with `dexbot unlock --isolated` or use PM2 instead of the default monolithic runtime.
@@ -225,7 +224,6 @@ dexbot key                 # Master password/keyring
 dexbot bot                 # Interactive bot configurator
 dexbot white               # Market adapter whitelist, dynamic weights off by default
 
-dexbot unlock              # Standard live runtime
 dexbot reset {all|<bot>}   # Regenerate grid
 dexbot disable {all|<bot>} # Disable bot in config
 dexbot enable {all|<bot>}  # Enable bot in config

@@ -20,10 +20,10 @@
  *   dexbot unlock --dryrun <botName>
  *   dexbot unlock --headless              Non-interactive (requires env var or --password-file)
  *   dexbot unlock --headless --password-file <path>
- *   dexbot unlock status, stat
- *   dexbot unlock stop
- *   dexbot unlock restart
- *   dexbot unlock delete
+ *   dexbot stat, status        Runtime status
+ *   dexbot stop                Stop the monolithic runtime
+ *   dexbot restart             Restart the monolithic runtime
+ *   dexbot delete              Shut down and clean up
  *
  * Repo-root users can run `./unlock` instead.
  *
@@ -463,7 +463,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
         if (pid > 0) {
             printLauncherHeader({ botName: effectiveBotName || botName, clawOnly, creditOnly, isolated, dryrun, headless });
             console.log(`DEXBot2 already running in background (PID ${pid}).`);
-            console.log('Use `dexbot stat` to inspect it, or `dexbot unlock restart` to restart it.');
+            console.log('Use `dexbot stat` to inspect it, or `dexbot restart` to restart it.');
             process.exitCode = 0;
             return;
         }
@@ -514,7 +514,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             const { pid } = readLiveMonolithicPid();
             if (pid > 0) {
                 console.log(`DEXBot2 already running in background (PID ${pid}).`);
-                console.log('Use `dexbot stat` to inspect it, or `dexbot unlock restart` to restart it.');
+                console.log('Use `dexbot stat` to inspect it, or `dexbot restart` to restart it.');
                 process.exitCode = 0;
                 return;
             }
