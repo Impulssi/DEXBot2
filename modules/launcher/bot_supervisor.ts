@@ -421,6 +421,7 @@ function createBotSupervisor({
     getChildRss = getChildRSS,
     memoryCheckIntervalMs = MEMORY_CHECK_INTERVAL_MS,
     statusLogIntervalMs = STATUS_LOG_INTERVAL_MS,
+    staggerDelayMs = STAGGER_DELAY_MS,
     setTimeoutFn = setTimeout,
     clearTimeoutFn = clearTimeout,
     nowFn = () => Date.now(),
@@ -930,7 +931,7 @@ function createBotSupervisor({
                 }
             }
             if (i < activeApps.length - 1) {
-                await sleep(STAGGER_DELAY_MS);
+                await sleep(staggerDelayMs);
             }
         }
 

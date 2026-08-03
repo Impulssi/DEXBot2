@@ -36,6 +36,7 @@ async function testAmaBotsStartAdapterService() {
     const supervisor = createBotSupervisor({
         bots: [{ name: 'AMA-BOT', gridPrice: 'ama', active: true }],
         controlSocket: false,
+        staggerDelayMs: 10,
         log: () => {},
         logError: () => {},
         spawnFn: (command, args, options) => {
@@ -65,6 +66,7 @@ async function testMemoryLimitRestartsProcess() {
     const supervisor = createBotSupervisor({
         bots: [{ name: 'MEM-BOT', active: true }],
         controlSocket: false,
+        staggerDelayMs: 10,
         memoryCheckIntervalMs: 5,
         getChildRss: () => 300 * 1024 * 1024,
         log: () => {},
@@ -88,6 +90,7 @@ async function testRestartControlsExcludeUpdaterJob() {
     const supervisor = createBotSupervisor({
         bots: [{ name: 'CTRL-BOT', active: true }],
         controlSocket: false,
+        staggerDelayMs: 10,
         log: () => {},
         logError: () => {},
         spawnFn: (command, args, options) => {
@@ -129,6 +132,7 @@ async function testAdapterRestartDoesNotKillReplacementChild() {
     const supervisor = createBotSupervisor({
         bots: [{ name: 'AMA-RACE-BOT', gridPrice: 'ama', active: true }],
         controlSocket: false,
+        staggerDelayMs: 10,
         log: () => {},
         logError: () => {},
         spawnFn: (command, args) => {
@@ -169,6 +173,7 @@ async function testStableStartupRejectsImmediateExit() {
     const supervisor = createBotSupervisor({
         bots: [{ name: 'FAIL-BOT', active: true }],
         controlSocket: false,
+        staggerDelayMs: 10,
         log: () => {},
         logError: () => {},
         spawnFn: () => {

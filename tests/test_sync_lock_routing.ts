@@ -31,14 +31,20 @@ async function testReadOpenOrdersNoDeadlock() {
     const manager = createManagerFixture();
 
     const timeoutMs = 1500;
+    let timeoutTimer: any = null;
     const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+        timeoutTimer = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
     });
 
-    const result = await Promise.race([
-        manager.synchronizeWithChain([], 'readOpenOrders'),
-        timeoutPromise
-    ]);
+    let result;
+    try {
+        result = await Promise.race([
+            manager.synchronizeWithChain([], 'readOpenOrders'),
+            timeoutPromise
+        ]);
+    } finally {
+        clearTimeout(timeoutTimer);
+    }
 
     assert.ok(result && typeof result === 'object', 'sync should resolve with result object');
     console.log('  PASS');

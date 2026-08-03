@@ -2,6 +2,9 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// Lower scrypt cost for tests — chain_keys.ts reads this at module load, so it
+// must be set before the require() below (config caching trap).
+process.env.DEXBOT_VAULT_SCRYPT_N = '4096';
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
 const { Config } = require('../modules/config');
 

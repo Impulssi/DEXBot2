@@ -94,7 +94,7 @@
  * ===============================================================================
  */
 
-import { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, PIPELINE_TIMING, MARKET_ADAPTER } from '../constants';
+import { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, PIPELINE_TIMING, MARKET_ADAPTER, INCREMENT_BOUNDS } from '../constants';
 const { GRID_COMPARISON } = GRID_LIMITS;
 import * as Format from './format';
 import {
@@ -405,9 +405,13 @@ export function createOrderGrid(config: any): any {
         if (!Number.isFinite(incrementPercent)) {
             throw new Error(`Invalid incrementPercent: ${incrementPercent}. Must be a finite number.`);
         }
-        const minPercent = config.incrementBounds?.MIN_PERCENT;
-        const maxPercent = config.incrementBounds?.MAX_PERCENT;
-        if (incrementPercent < minPercent || incrementPercent > maxPercent) {
+        // Fall back to the canonical INCREMENT_BOUNDS when the config omits
+        // incrementBounds. Without this, a non-positive incrementPercent (e.g. 0)
+        // silently passes validation and the geometric loop below spins forever.
+        const incrementBounds = config.incrementBounds || INCREMENT_BOUNDS;
+        const minPercent = incrementBounds.MIN_PERCENT;
+        const maxPercent = incrementBounds.MAX_PERCENT;
+        if (incrementPercent <= 0 || incrementPercent < minPercent || incrementPercent > maxPercent) {
             throw new Error(
                 `Invalid incrementPercent: ${incrementPercent}. Must be between ` +
                 `${minPercent} and ${maxPercent} (inclusive).`

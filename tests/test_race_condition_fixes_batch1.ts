@@ -400,7 +400,7 @@ async function testPositionManagerWatchInFlightGuard() {
 
     const watcher = createPositionManagerWatcher({
         accountName: 'tester',
-        syncIntervalMs: 20,
+        syncIntervalMs: 5,
         healthPath: path.join(freshBaseDir('pmw-health'), 'health.json'),
         statePath: path.join(freshBaseDir('pmw-state'), 'state.json'),
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -410,13 +410,13 @@ async function testPositionManagerWatchInFlightGuard() {
         await watcher.start();
         // Let the initial sync (call 1) finish, then wait for the first interval
         // tick (call 2) to enter the blocking state.
-        await new Promise((r) => setTimeout(r, 40));
+        await new Promise((r) => setTimeout(r, 10));
         // Now 3+ more intervals should fire while call 2 is in flight.
-        await new Promise((r) => setTimeout(r, 80));
+        await new Promise((r) => setTimeout(r, 20));
         const callsBeforeRelease = callCount;
         releaseFirst();
         // Let any remaining interval(s) run normally.
-        await new Promise((r) => setTimeout(r, 60));
+        await new Promise((r) => setTimeout(r, 15));
 
         assert.strictEqual(inflight.max, 1, 'syncAllPositions should never overlap; max in-flight should be 1');
         // We expect: call 1 (initial), call 2 (first interval, blocked),
@@ -625,15 +625,15 @@ async function testGridLockSyncLockCorrectOrder() {
     const SyncEngine = SyncEngineModule.default || SyncEngineModule;
     const syncEngine = new SyncEngine(mgr);
 
-    // Context B: hold _syncLock for 200ms (simulates a fill-context sync).
+    // Context B: hold _syncLock for 80ms (simulates a fill-context sync).
     let syncLockReleased = false;
     const contextB = mgr._syncLock.acquire(async () => {
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 80));
         syncLockReleased = true;
     });
 
     // Yield so B acquires _syncLock first.
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise(r => setTimeout(r, 5));
 
     // Context A: call syncFromOpenOrders normally (no gridLockAlreadyHeld).
     // With the corrected hierarchy, syncFromOpenOrders acquires _syncLock(2)
@@ -651,13 +651,21 @@ async function testGridLockSyncLockCorrectOrder() {
 
     // Both must complete within 2s (no deadlock). Context A waits for _syncLock
     // so it naturally finishes after Context B (not before).
-    await Promise.race([
-        Promise.all([contextA, contextB]),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('DEADLOCK: contexts did not complete within 2s')), 2000)),
-    ]);
+    let deadlockTimer: any = null;
+    const deadlockGuard = new Promise((_, reject) => {
+        deadlockTimer = setTimeout(() => reject(new Error('DEADLOCK: contexts did not complete within 2s')), 2000);
+    });
+    try {
+        await Promise.race([
+            Promise.all([contextA, contextB]),
+            deadlockGuard,
+        ]);
+    } finally {
+        clearTimeout(deadlockTimer);
+    }
 
     assert.strictEqual(syncLockReleased, true, 'Context B must complete');
-    assert.ok(contextAElapsed >= 150,
+    assert.ok(contextAElapsed >= 30,
         `Context A must wait for Context B to release _syncLock (took ${contextAElapsed}ms)`);
 
     console.log('  PASS: syncFromOpenOrders correctly waits for _syncLock — no deadlock');

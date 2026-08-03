@@ -188,6 +188,10 @@ async function testPipelineInFlightDefersMaintenance() {
 }
 
 async function testIllegalStateAbortResyncAndCooldown() {
+    // The maintenance loop runs a lightweight sync that reads open orders from
+    // chain; stub it so this test stays offline and fast.
+    const originalReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
     const bot = new DEXBot({
         botKey: 'test_patch17_invariants_abort',
         dryRun: false,
@@ -244,6 +248,8 @@ async function testIllegalStateAbortResyncAndCooldown() {
     await bot._executeMaintenanceLogic('invariant-abort-2');
     assert.strictEqual(healthChecks, 1, 'Cooldown cycle should skip all maintenance checks once after hard-abort');
     assert.strictEqual(spreadChecks, 0, 'Cooldown cycle should skip spread checks once after hard-abort');
+
+    chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
 }
 
 async function testFillCallbackAppliesQueueBackPressure() {

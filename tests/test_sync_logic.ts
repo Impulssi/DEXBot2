@@ -7,6 +7,20 @@
  */
 
 const assert = require('assert');
+const path = require('path');
+const { setCachedModule } = require('./helpers/module_cache_stub');
+// Stub bitshares_client so requiring modules/order/index does not open real
+// WebSocket connections to the chain (those sockets kept the event loop alive
+// for ~1-2s of flaky connect/backoff time). The sync logic under test is fully
+// in-memory with mocked chain orders, so no chain calls are needed.
+setCachedModule(
+    path.resolve(__dirname, '../modules/bitshares_client.ts'),
+    {
+        BitShares: {},
+        waitForConnected: async () => {},
+        setSuppressConnectionLog() {},
+    }
+);
 const { OrderManager } = require('../modules/order/index');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');

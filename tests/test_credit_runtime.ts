@@ -4109,6 +4109,17 @@ async function testMaxBorrowAmountPerOperationWithSelection() {
 }
 
 async function testSplitOversizedCreditDealsSplitsCorrectly() {
+  // The split logic sleeps BLOCKCHAIN_SETTLE_DELAY_MS (default 6000ms) between
+  // pieces to let on-chain state settle. This test only asserts the piece math,
+  // so the sleep is pure wait time — stub the constants module with a zeroed
+  // settle delay for the duration of this test and restore afterwards.
+  const constantsPath = path.resolve(__dirname, '../modules/constants.ts');
+  const realConstants = require('../modules/constants');
+  const stubbedConstants = {
+    ...realConstants,
+    TIMING: { ...realConstants.TIMING, BLOCKCHAIN_SETTLE_DELAY_MS: 0 },
+  };
+  const originalConstants = setCachedModule(constantsPath, stubbedConstants);
   const calls = [];
   const dbCalls = [];
   const baseAssets = {
@@ -4205,6 +4216,7 @@ async function testSplitOversizedCreditDealsSplitsCorrectly() {
     const remaining  = 500 - totalRepaid;
     assert.ok(remaining <= 200 + 0.01, `remaining debt ${remaining} should be ≤ maxPerOp 200`);
   } finally {
+    restoreCachedModule(constantsPath, originalConstants);
     restore();
     try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
   }

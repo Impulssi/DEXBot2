@@ -124,6 +124,7 @@ import {
     assertPrivatePathSecurity,
 } from './credential_runtime';
 import { getErrorMessage } from './utils/errors';
+import { hasProcess } from './env';
 const storage = getStorage();
 
 const chainKeysLogger = new Logger('chain-keys');
@@ -133,8 +134,22 @@ const VAULT_SALT_BYTES = 16;
 const VAULT_RECORD_SALT_BYTES = 16;
 const VAULT_IV_BYTES = 12;
 const VAULT_KEY_BYTES = 32;
+// Test-only override: allow tests to lower the scrypt cost so they don't burn
+// ~0.5-1s of CPU per derivation with the production N=2^17. Production keeps the
+// strong default; only DEXBOT_VAULT_SCRYPT_N (or a small N) lowers it.
+const _vaultScryptNOverride = (() => {
+    try {
+        if (!hasProcess()) return undefined;
+        const raw = process.env?.DEXBOT_VAULT_SCRYPT_N;
+        if (!raw) return undefined;
+        const n = Number(raw);
+        return Number.isInteger(n) && n >= 2 && n <= 2 ** 20 ? n : undefined;
+    } catch {
+        return undefined;
+    }
+})();
 const VAULT_SCRYPT_PARAMS = Object.freeze({
-    N: 2 ** 17,
+    N: _vaultScryptNOverride ?? 2 ** 17,
     r: 8,
     p: 1,
     // 128 * N * r bytes plus headroom for Node/OpenSSL overhead.

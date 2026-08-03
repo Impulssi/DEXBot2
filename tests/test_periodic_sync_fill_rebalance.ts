@@ -1,5 +1,18 @@
 const assert = require('assert');
 const fs = require('fs');
+const path = require('path');
+const { setCachedModule } = require('./helpers/module_cache_stub');
+// Stub bitshares_client so requiring chain_orders/dexbot_class does not open
+// real WebSocket connections to the chain (the sockets kept the process alive
+// ~1-2s of flaky connect/backoff time). All chain interaction here is mocked.
+setCachedModule(
+    path.resolve(__dirname, '../modules/bitshares_client.ts'),
+    {
+        BitShares: {},
+        waitForConnected: async () => {},
+        setSuppressConnectionLog() {},
+    }
+);
 const chainOrders = require('../modules/chain_orders');
 const maintenanceRuntime = require('../modules/dexbot_maintenance_runtime');
 const DEXBot = require('../modules/dexbot_class');
@@ -35,6 +48,7 @@ async function runTests() {
     const originalSetInterval = global.setInterval;
     const originalClearInterval = global.clearInterval;
     const originalReadOpenOrders = chainOrders.readOpenOrders;
+    const originalReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const originalSyncMarketAdapterOnPeriodicConfigCheck = maintenanceRuntime.syncMarketAdapterOnPeriodicConfigCheck;
     const originalExistsSync = fs.existsSync;
     const originalReadFileSync = fs.readFileSync;
@@ -168,6 +182,7 @@ async function runTests() {
         };
 
         chainOrders.readOpenOrders = async () => [];
+        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
         bot._setupBlockchainFetchInterval();
         assert.strictEqual(typeof capturedCallback, 'function', 'Periodic interval callback should be registered');
@@ -190,6 +205,7 @@ async function runTests() {
         fs.existsSync = originalExistsSync;
         fs.readFileSync = originalReadFileSync;
         chainOrders.readOpenOrders = originalReadOpenOrders;
+        chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
         maintenanceRuntime.syncMarketAdapterOnPeriodicConfigCheck = originalSyncMarketAdapterOnPeriodicConfigCheck;
     }
 }

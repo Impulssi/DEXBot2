@@ -227,7 +227,7 @@ async function testAttemptResumeAwaitsStoreGrid() {
 
         let storeResolved = false;
         const storeGrid = async () => {
-            await new Promise(resolve => setTimeout(resolve, 30));
+            await new Promise(resolve => setTimeout(resolve, 10));
             storeResolved = true;
         };
 
@@ -525,11 +525,11 @@ async function testRecalculateGridFundLockSerialization() {
         _clearGridDirty: () => {},
     };
 
-    // Context A: holds _fundLock for 200ms (simulating the recalculateGrid wrap).
+    // Context A: holds _fundLock for 80ms (simulating the recalculateGrid wrap).
     let wrapReleased = false;
     const contextA = manager._fundLock.acquire(async () => {
         await manager.resetFunds();
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 80));
         wrapReleased = true;
     });
 
@@ -551,13 +551,21 @@ async function testRecalculateGridFundLockSerialization() {
     })();
 
     // Both must complete within 2s (no deadlock).
-    await Promise.race([
-        Promise.all([contextA, contextB]),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('DEADLOCK: contexts did not complete within 2s')), 2000)),
-    ]);
+    let deadlockTimer: any = null;
+    const deadlockGuard = new Promise((_, reject) => {
+        deadlockTimer = setTimeout(() => reject(new Error('DEADLOCK: contexts did not complete within 2s')), 2000);
+    });
+    try {
+        await Promise.race([
+            Promise.all([contextA, contextB]),
+            deadlockGuard,
+        ]);
+    } finally {
+        clearTimeout(deadlockTimer);
+    }
 
     assert.strictEqual(wrapReleased, true, 'Context A (wrap) must complete');
-    assert.strictEqual(contextBElapsed >= 150, true,
+    assert.strictEqual(contextBElapsed >= 30, true,
         `Context B must wait for A to release _fundLock (took ${contextBElapsed}ms)`);
 
     // Context B must observe the post-resetFunds state (zeroed), not the initial state.

@@ -104,8 +104,6 @@ async function testPerformGridResyncAppliesVolatilityOnlyDynamicWeights() {
         return originalReadFileSync(filePath, encoding);
     };
 
-    fs.unlinkSync = () => {};
-
     setCachedModule(bitsharesClientPath, { BitShares: {} });
     setCachedModule(chainOrdersPath, {
         readOpenOrders: async () => [],

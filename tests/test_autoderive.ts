@@ -70,12 +70,15 @@ async function runAutoderiveForBot(botCfg) {
 
     // Create and initialize the OrderManager which triggers auto-derive.
     const { OrderManager, grid: Grid } = require('../modules/order');
-    // Override minPrice/maxPrice with wide bounds to accommodate any derived price
-    // This ensures the test's mock derivation succeeds regardless of bot's configured bounds
+    // Override minPrice/maxPrice with bounds around the mocked derived price.
+    // The mock derivePrice/pool price resolve to 150, so a tight window keeps
+    // the grid small (a handful of slots) while still guaranteeing startPrice
+    // lands inside the bounds — no need for absurd 1e-12/1e12 windows that
+    // generate ~18k grid slots and blow up test runtime.
     const cfg = Object.assign({}, botCfg, {
         startPrice: botCfg.startPrice || 'book',
-        minPrice: 1e-12,
-        maxPrice: 1e12
+        minPrice: 100,
+        maxPrice: 200
     });
 
     const manager = new OrderManager(cfg);

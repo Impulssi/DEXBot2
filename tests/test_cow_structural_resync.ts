@@ -92,9 +92,13 @@ async function runTests() {
         // Monkeypatch chainOrders.cancelOrder to avoid real blockchain calls.
         const chainOrdersModule = require('../modules/chain_orders');
         const originalCancelOrder = chainOrdersModule.cancelOrder;
+        const originalReadOpenOrdersWithMeta = chainOrdersModule.readOpenOrdersWithMeta;
         chainOrdersModule.cancelOrder = async () => {
             throw new Error('Simulated cancel failure for test');
         };
+        // The COW abort path re-reads open orders with meta before escalating to
+        // a structural resync; stub it so the test stays offline and fast.
+        chainOrdersModule.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
         try {
             (manager as any)._lastUnmatchedChainOrders = [{
@@ -134,7 +138,7 @@ async function runTests() {
             'COW guard must set the structural resync latch so other paths see a resync is in progress'
         );
 
-        await waitForResync(300);
+        await waitForResync(120);
 
         assert.strictEqual(
             requestGridResetCalls.length,
@@ -164,6 +168,7 @@ async function runTests() {
         console.log('\u2713 COW-STRUCTURAL-RESYNC-001 passed');
         } finally {
             chainOrdersModule.cancelOrder = originalCancelOrder;
+            chainOrdersModule.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
         }
     }
 
@@ -220,7 +225,7 @@ async function runTests() {
         assert.strictEqual(second.skipped, true, 'Second call should be deduped (skipped)');
         assert.strictEqual(second.reason, 'structural grid resync already scheduled', 'Dedup reason should reference existing schedule');
 
-        await waitForResync(300);
+        await waitForResync(120);
 
         assert.strictEqual(
             requestGridResetCalls.length,
@@ -231,7 +236,7 @@ async function runTests() {
         const third = await (manager as any).requestStructuralGridResync('after completion', { unmatchedChainOrders: unmatched });
         assert.strictEqual(third.scheduled, true, 'After completion a fresh schedule should be accepted');
 
-        await waitForResync(300);
+        await waitForResync(120);
 
         assert.strictEqual(
             requestGridResetCalls.length,
@@ -298,7 +303,7 @@ async function runTests() {
 
         await bot.shutdown();
 
-        await waitForResync(200);
+        await waitForResync(120);
 
         assert.strictEqual(
             requestGridResetCalls.length,
@@ -376,6 +381,8 @@ async function runTests() {
         };
         const originalRecordOwnCancel = chainOrdersModule.recordOwnCancel;
         chainOrdersModule.recordOwnCancel = () => {};
+        const originalReadOpenOrdersWithMeta = chainOrdersModule.readOpenOrdersWithMeta;
+        chainOrdersModule.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
         try {
             // Two unmatched chain orders (no fingerprints, no price-drift-orphan).
@@ -430,6 +437,7 @@ async function runTests() {
         } finally {
             chainOrdersModule.cancelOrder = originalCancelOrder;
             chainOrdersModule.recordOwnCancel = originalRecordOwnCancel;
+            chainOrdersModule.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
         }
     }
 
@@ -501,6 +509,8 @@ async function runTests() {
         };
         const originalRecordOwnCancel = chainOrdersModule.recordOwnCancel;
         chainOrdersModule.recordOwnCancel = () => {};
+        const originalReadOpenOrdersWithMeta = chainOrdersModule.readOpenOrdersWithMeta;
+        chainOrdersModule.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
         try {
             // Only fingerprinted unmatched orders (missing-create-result style).
@@ -555,6 +565,7 @@ async function runTests() {
         } finally {
             chainOrdersModule.cancelOrder = originalCancelOrder;
             chainOrdersModule.recordOwnCancel = originalRecordOwnCancel;
+            chainOrdersModule.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
         }
     }
 

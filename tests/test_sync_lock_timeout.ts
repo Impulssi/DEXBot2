@@ -15,7 +15,7 @@ async function testLockTimeout() {
 
     // Simulate lock being held
     lock.acquire(async () => {
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 40));
     });
 
     // This one should be cancelled
@@ -33,14 +33,14 @@ async function testLockTimeout() {
     }
     
     // Wait for queue to clear
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 60));
     assert.strictEqual(executed, false, 'Callback should not have executed');
     assert.strictEqual(lock.isLocked(), false);
 
     // 2. Test clearQueue
     console.log(' - Testing clearQueue...');
     lock.acquire(async () => {
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 40));
     });
 
     let q1 = false, q2 = false;
@@ -65,7 +65,7 @@ async function testLockTimeout() {
     
     // Hold lock
     lock.acquire(async () => {
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 40));
     });
 
     const pAbort = lock.acquire(async () => {
