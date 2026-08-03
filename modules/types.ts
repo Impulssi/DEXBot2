@@ -14,35 +14,8 @@
 export type OrderType = 'sell' | 'buy' | 'spread';
 export type OrderState = 'virtual' | 'active' | 'partial' | 'filled';
 export type RebalanceState = 'NORMAL' | 'REBALANCING' | 'BROADCASTING';
-export type CowActionType = 'create' | 'cancel' | 'update';
-export type AmaSlopePercentMode = 'perBar' | 'window';
-export type ProcessedFillPersistenceMode = 'immediate' | 'batched' | 'manual';
-export type CreditDealAutoRepay = 'no_auto_repayment' | 'only_full_repayment' | 'allow_partial_repayment';
 export type GridPriceSource = 'pool' | 'book' | 'ama' | 'ama1' | 'ama2' | 'ama3' | 'ama4' | number | null;
 export type StartPriceSource = 'pool' | 'book' | number;
-
-/**
- * Blockchain operation type IDs matching the fc::static_variant index.
- * See graphene/protocol/operations.hpp for the canonical list:
- *   1  = limit_order_create
- *   2  = limit_order_cancel
- *   3  = call_order_update
- *   4  = fill_order (VIRTUAL)
- *   69 = credit_offer_create
- *   70 = credit_offer_delete
- *   71 = credit_offer_update
- *   72 = credit_offer_accept
- *   73 = credit_deal_repay
- *   74 = credit_deal_expired (VIRTUAL)
- *   77 = limit_order_update
- */
-export type OperationTypeId =
-  | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
-  | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32
-  | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48
-  | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64
-  | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77;
-
 // ============================================================
 // PRIMITIVE BLOCKCHAIN TYPES
 // Matches graphene::protocol::asset (asset.hpp)
@@ -61,30 +34,9 @@ export interface Price {
   quote: Asset;
 }
 
-/** Market parameters for margin positions (bitasset feeds). Matches graphene::protocol::price_feed */
-export interface PriceFeed {
-  settlement_price: Price;
-  core_exchange_rate: Price;
-  /** MCR (fixed point, denominator 1000) */
-  maintenance_collateral_ratio: number;
-  /** MSSR */
-  maximum_short_squeeze_ratio: number;
-}
-
 // ============================================================
 // BLOCKCHAIN ORDER STRUCTURES
 // ============================================================
-
-/** Raw limit order as returned by the blockchain API */
-export interface ChainLimitOrder {
-  id: string;
-  seller: string;
-  for_sale: number;
-  sell_price: { base: Asset; quote: Asset };
-  expiration: string;
-  delegated_fee_asset_id?: string;
-  created?: string;
-}
 
 /** Normalized order parsed from a chain order object */
 export interface ParsedChainOrder {
@@ -168,41 +120,6 @@ export interface TransferOp {
   extensions?: Record<string, any>;
 }
 
-export interface CreditOfferCreateOp {
-  fee: Asset;
-  owner_account: string;
-  asset_type: string;
-  balance: number;
-  fee_rate: number;
-  max_duration_seconds: number;
-  min_deal_amount: number;
-  enabled: boolean;
-  auto_disable_time: number;
-  acceptable_collateral: Record<string, Price>;
-  acceptable_borrowers: Record<string, number>;
-  extensions?: Record<string, any>;
-}
-
-export interface CreditOfferAcceptOp {
-  fee: Asset;
-  borrower: string;
-  offer_id: string;
-  borrow_amount: Asset;
-  collateral: Asset;
-  max_fee_rate: number;
-  min_duration_seconds: number;
-  extensions?: Record<string, any>;
-}
-
-export interface CreditDealRepayOp {
-  fee: Asset;
-  account: string;
-  deal_id: string;
-  repay_amount: Asset;
-  credit_fee: Asset;
-  extensions?: Record<string, any>;
-}
-
 export interface CreatedOperation {
   op_name: string;
   op_data: Record<string, any>;
@@ -216,47 +133,6 @@ export interface BroadcastResult {
   success: boolean;
   raw?: any;
   operation_results?: any[];
-}
-
-export interface CreateOrderResult {
-  success?: boolean;
-  dryRun?: boolean;
-  params?: Record<string, any>;
-  skipped?: boolean;
-  raw?: any;
-  operation_results?: any[];
-}
-
-export interface CancelOrderResult {
-  success: boolean;
-  orderId: string;
-  verified: boolean;
-  verifiedAfterFailure?: boolean;
-  raw?: any;
-  operation_results?: any[];
-}
-
-export interface BatchExecutionResult {
-  success: boolean;
-  raw: any;
-  operation_results: any[];
-}
-
-export interface DaemonExecutionResult {
-  success: boolean;
-  raw: any | null;
-  operation_results: any[];
-}
-
-export interface OnChainBalances {
-  assetId: string;
-  symbol: string;
-  precision: number;
-  freeRaw: number;
-  lockedRaw: number;
-  free: number;
-  locked: number;
-  total: number;
 }
 
 // ============================================================
@@ -297,26 +173,6 @@ export interface PartialOrder extends OrderBase {
 }
 
 export type Order = VirtualOrder | ActiveOrder | PartialOrder;
-
-export interface FilledOrder extends OrderBase {
-  state: 'filled';
-  orderId: string;
-  size: number;
-  blockNum: number;
-  historyId: string;
-  isMaker: boolean;
-  isPartial?: boolean;
-  filledSize?: number;
-  isDelayedRotationTrigger?: boolean;
-}
-
-export interface FilledPortion {
-  size: number;
-  isPartial: true;
-  blockNum: number;
-  historyId: string;
-  isMaker: boolean;
-}
 
 export interface OrderValidationError {
   code: string;
@@ -372,16 +228,6 @@ export interface GridCreationResult {
   initialSpreadCount: { buy: number; sell: number };
 }
 
-export interface GridPricingContext {
-  gridPrice: number;
-  gridPriceOffsetPct: number;
-  offsetAdjustedStartPrice: number;
-  startPrice: number;
-  configuredMinPrice: number | string;
-  configuredMaxPrice: number | string;
-  rangeScalingFactor: number | null;
-}
-
 export interface SizingContext {
   budget: number;
   precision: number;
@@ -432,31 +278,11 @@ export interface SideFunds {
   buy: number;
 }
 
-export interface BotFunds {
-  chainFree: SideFunds;
-  allocated: SideFunds;
-  committed: SideFunds;
-  virtual: SideFunds;
-  btsFeesOwed: number;
-}
-
 export interface AccountTotals {
   buy: number | null;
   sell: number | null;
   buyFree: number | null;
   sellFree: number | null;
-}
-
-export interface BalanceAdjustment {
-  orderType: 'buy' | 'sell';
-  delta: number;
-  operation: string;
-}
-
-export interface TargetGridValidation {
-  isValid: boolean;
-  shortfall: { buy: number; sell: number };
-  details: { requiredBuy: number; requiredSell: number; totalBuy: number; totalSell: number };
 }
 
 export interface ChainFundsSnapshot {
@@ -495,14 +321,6 @@ export interface CowUpdateAction {
 }
 
 export type CowAction = CowCreateAction | CowCancelAction | CowUpdateAction;
-
-export interface DeltaAction {
-  type: 'create' | 'cancel' | 'update';
-  id: string;
-  order?: Order;
-  orderId?: string;
-  prevOrder?: Order;
-}
 
 export interface StateUpdate {
   id: string;
@@ -551,12 +369,6 @@ export interface ReconcileResult {
   summary: ActionSummary;
 }
 
-export interface CommitEvalResult {
-  canCommit: boolean;
-  reason?: string;
-  level?: 'error' | 'warn' | 'debug';
-}
-
 export interface DriftCheckResult {
   isValid: boolean;
   driftBuy: number;
@@ -564,14 +376,6 @@ export interface DriftCheckResult {
   allowedDriftBuy: number;
   allowedDriftSell: number;
   reason: string | null;
-}
-
-export interface FundValidationResult {
-  isValid: boolean;
-  reason: string | null;
-  shortfalls: Array<{ asset: string; required: number; available: number; deficit: number }>;
-  required: { buyInt: number; sellInt: number; buy: number; sell: number };
-  available: { buy: number; sell: number };
 }
 
 export interface BootstrapResult {
@@ -602,31 +406,9 @@ export interface GridIndexes {
   spread: Set<string>;
 }
 
-export interface MemoryStats {
-  size: number;
-  modified: number;
-  estimatedBytes: number;
-}
-
-export interface IndexValidationResult {
-  valid: boolean;
-  errors: string[];
-}
-
 // ============================================================
 // DOMAIN: STRATEGY / TARGET GRID
 // ============================================================
-
-export interface TargetGridEntry {
-  id: string;
-  price: number;
-  type: OrderType;
-  size: number;
-  idealSize: number;
-  state: OrderState;
-  committedSide?: OrderType;
-}
-
 // ============================================================
 // DOMAIN: SYNC ENGINE
 // ============================================================
@@ -643,11 +425,6 @@ export interface SyncResult {
 export interface BatchSyncResult extends SyncResult {
 }
 
-export interface SynchronizeResult {
-  newOrders: Order[];
-  ordersNeedingCorrection: PriceCorrectionEntry[];
-}
-
 export interface PriceCorrectionEntry {
   gridOrder: Order;
   chainOrderId: string;
@@ -660,38 +437,9 @@ export interface PriceCorrectionEntry {
   sideUpdated?: string;
 }
 
-export interface ChainCreateOrderData {
-  gridOrderId: string;
-  chainOrderId: string;
-  isPartialPlacement: boolean;
-  expectedType?: string;
-  fee: number;
-  skipAccounting?: boolean;
-}
-
-export interface ChainCancelOrderData {
-  orderId: string;
-  clearSize?: boolean;
-}
-
 // ============================================================
 // DOMAIN: STATE MANAGER / PIPELINE
 // ============================================================
-
-export interface SignalEntry {
-  id: string;
-  context: string;
-  message: string;
-  at: number;
-}
-
-export interface AccountingFailureSignal {
-  code: 'ACCOUNTING_COMMITMENT_FAILED';
-  side: 'buy' | 'sell';
-  amount: number;
-  context: string;
-  at: number;
-}
 
 export interface GridRegenSideState {
   armed: boolean;
@@ -745,61 +493,14 @@ export interface PipelineEmptyResult {
   reasons: string[];
 }
 
-export interface PipelineSignals {
-  incomingFillQueueLength?: number;
-  shadowLocks?: number;
-  batchInFlight?: boolean;
-  recoveryInFlight?: boolean;
-  broadcasting?: boolean;
-}
-
 export interface OrderUpdateOptions {
   skipAccounting?: boolean;
   fee?: number;
 }
 
-export interface CommitOptions {
-  skipRecalc?: boolean;
-}
-
-export interface CowComparePrecisions {
-  buyPrecision: number;
-  sellPrecision: number;
-  priceRelativeTolerance: number;
-}
-
 // ============================================================
 // DOMAIN: STARTUP RECONCILE
 // ============================================================
-
-export interface StartupGridAction {
-  shouldRegenerate: boolean;
-  hasActiveMatch: boolean;
-  resumedByPrice: boolean;
-  matchedCount: number;
-}
-
-export interface PriceMatchResumeResult {
-  resumed: boolean;
-  matchedCount: number;
-}
-
-export interface StartupReconcileSideResult {
-  chainCount: number;
-}
-
-export interface StartupUpdateBatchResult {
-  executed: boolean;
-  prepared: number;
-  skipped: boolean;
-}
-
-export interface StartupSequentialUpdateResult {
-  executed: number;
-  skipped: number;
-  failed: number;
-}
-
 // ============================================================
 // DOMAIN: FILL PROCESSING / RUNTIME
 // ============================================================
@@ -809,11 +510,6 @@ export interface ReplaySafeFillResult {
   fillKey: string | null;
   usedFallbackKey?: boolean;
   error?: Error;
-}
-
-export interface SyntheticFill {
-  isPartial: boolean;
-  isDelayedRotationTrigger?: boolean;
 }
 
 export interface BotsConfigSnapshot {
@@ -844,11 +540,6 @@ export interface GridResyncOptions {
   centerRefreshContext?: string;
   centerRefreshLabel?: string;
   resetSource?: string;
-}
-
-export interface DustCancelResult {
-  cancelledCount: number;
-  batchResult: { aborted: boolean } | null;
 }
 
 export interface MarketAdapterSyncResult {
@@ -1002,15 +693,6 @@ export interface BotConfigEntry {
   apiLimits?: BotApiLimitsOverrides;
 }
 
-export interface DEXBotConfig extends BotConfigEntry {
-  botKey: string;
-  botIndex?: number;
-  ama?: BotAmaConfig;
-  marketAdapterSettings?: Record<string, any>;
-  TIMING?: Record<string, any>;
-  min_BTS_value?: number;
-}
-
 export interface BotAmaConfig {
   enabled: boolean;
   erPeriod: number;
@@ -1062,10 +744,6 @@ export interface CreditOfferLendingEntry extends LendingEntryBase {
 
 export type DebtPolicyLendingEntry = MpaLendingEntry | CreditOfferLendingEntry;
 
-export interface BotsFile {
-  bots: BotConfigEntry[];
-}
-
 export interface LoggingRotationConfig {
   enabled: boolean;
   maxSize: number;
@@ -1094,19 +772,6 @@ export interface LoggingConfig {
   display?: Record<string, any>;
 }
 
-export interface GeneralSettings {
-  LOG_LEVEL?: string;
-  GRID_LIMITS?: Record<string, any>;
-  TIMING?: Record<string, any>;
-  UPDATER?: Record<string, any>;
-  MARKET_ADAPTER?: Record<string, any>;
-  LOGGING_CONFIG?: LoggingConfig;
-  NATIVE_CLIENT?: Record<string, any>;
-  FILL_PROCESSING?: Record<string, any>;
-  PIPELINE_TIMING?: Record<string, any>;
-  DEFAULT_CONFIG?: Record<string, any>;
-}
-
 // ============================================================
 // DOMAIN: KEY MANAGEMENT
 // ============================================================
@@ -1123,26 +788,6 @@ export interface VaultSecret {
   kind: 'dexbot-vault-secret';
   version: number;
   vaultKeyHex: string;
-}
-
-export interface SessionSecret {
-  kind: 'dexbot-session-secret';
-  version: number;
-  sessionSaltHex: string;
-  vaultKeyHex: string;
-}
-
-export interface DaemonSigningToken {
-  kind: 'dexbot-daemon-signing-token';
-  accountName: string;
-  socketPath: string;
-  sessionId: string | null;
-  botHmacSecret: string | null;
-}
-
-export interface KeyValidationResult {
-  valid: boolean;
-  reason?: string;
 }
 
 // ============================================================
@@ -1204,155 +849,7 @@ export interface DynamicWeightsPayload {
   profile?: string;
 }
 
-export interface GridPriceOffsetPlan {
-  trend: 'UP' | 'DOWN' | 'NEUTRAL';
-  rawSlopeOffset: number | null;
-  maxSlopeOffset: number | null;
-  slopeRatio: number;
-  targetSpreadPercent: number;
-  maxGridPriceOffsetPct: number;
-  gridPriceOffsetPct: number;
-}
-
-export interface BotState {
-  botName: string;
-  botKey: string;
-  marketSource: 'pool' | 'book' | null;
-  priceMode: 'book' | 'fixed' | null;
-  lastCycleSource: string | null;
-  lastCycleAt: string | null;
-  pendingClosedCandle: boolean;
-  lastTriggerSuppressedReason: string | null;
-  poolId: string | null;
-  candleFile: string | null;
-  candleCount: number;
-  analysisCandleCount: number;
-  kibanaGapRepairCount: number;
-  kibanaBackfillCount: number;
-  unresolvedGapCount: number;
-  nativeRecentTradeSequences: number[];
-  nativeLastTradeTs: number | null;
-  nativeOverlapCount: number | null;
-  nativePagesFetched: number | null;
-  lastCandleTs: number | null;
-  rawLastCandleTs: number | null;
-  lastClosedCandleTs: number | null;
-  gridCenterPrice: number | null;
-  centerPrice: number | null;
-  amaCenterPrice: number | null;
-  amaConfig: { erPeriod: number; fastPeriod: number; slowPeriod: number; erSmoothPeriod: number } | null;
-  atr: number | null;
-  weightVariance: number | null;
-  weights: DynamicWeightsPayload | null;
-  effectiveWeights: { sell: number; buy: number } | null;
-  collateralRecommendation: any;
-  amaSlope: AmaSlopeSnapshot | null;
-  amaSlopeDeltaPercent: number | null;
-  amaSlopeThresholdPercent: number | null;
-  rawKeepCount: number;
-  analysisKeepCount: number;
-  amaWarmupBars: number;
-  staleData: boolean;
-  staleAgeHours: number | null;
-  dynamicWeightWhitelisted?: boolean;
-  gridRangeScalingWhitelisted?: boolean;
-  dynamicWeightReady?: boolean;
-  dynamicWeightProfile?: string | null;
-  dynamicWeightApplied?: boolean;
-  hasExplicitBaseWeights?: boolean;
-}
-
-export interface ProcessBotResult {
-  ok: boolean;
-  dryRunMessages: string[];
-  source: string;
-  marketSource: 'pool' | 'book';
-  intervalSeconds: number;
-  candleCount: number;
-  analysisCandleCount: number;
-  rawKeepCount: number;
-  analysisKeepCount: number;
-  amaWarmupBars: number;
-  kibanaGapRepairCount: number;
-  kibanaBackfillCount: number;
-  unresolvedGapCount: number;
-  nativeRecentTradeSequences: number[];
-  nativeLastTradeTs: number | null;
-  nativeOverlapCount: number | null;
-  nativePagesFetched: number | null;
-  amaPrice: number | null;
-  previousCenterPrice: number | null;
-  deltaPercent: number | null;
-  thresholdPercent: number | null;
-  referencePrice: number | null;
-  amaComparison: any[];
-  triggered: boolean;
-  triggerPath: string | null;
-  staleData: boolean;
-  staleAgeHours: number | null;
-  triggerCallbackError: string | null;
-  triggerSuppressedReason: string | null;
-  weights: DynamicWeightsPayload | null;
-  collateralRecommendation: any;
-  amaSlope: AmaSlopeSnapshot | null;
-  amaSlopeDeltaPercent: number | null;
-  amaSlopeThresholdPercent: number | null;
-  dynamicWeightWhitelisted: boolean;
-  gridRangeScalingWhitelisted: boolean;
-  dynamicWeightReady: boolean;
-  dynamicWeightProfile: string | null;
-  dynamicWeightApplied: boolean;
-  hasExplicitBaseWeights: boolean;
-  poolId: string | null;
-  candleFile: string;
-  lastCandleTs: number | null;
-  rawLastCandleTs: number | null;
-  lastClosedCandleTs: number | null;
-  lastClosedCandleClose: number;
-  centerPrice: number;
-  amaConfig: { erPeriod: number; fastPeriod: number; slowPeriod: number; erSmoothPeriod: number };
-  atr: number | null;
-  weightVariance: number | null;
-  pendingClosedCandle: boolean;
-  reason?: string;
-}
-
 export type Candle = [number, number, number, number, number, number];
-
-export interface TriggerFilePayload {
-  createdAt: string;
-  source: string;
-  botName: string;
-  botKey: string;
-  price?: number;
-  amaPrice?: number;
-  previousCenterPrice?: number;
-  deltaPercent?: number;
-  thresholdPercent?: number;
-  dynamicGridPath?: string;
-}
-
-export interface DynamicGridSnapshot {
-  gridCenterPrice: number;
-  centerPrice: number;
-  amaCenterPrice: number;
-  amaSlopePercentMode: 'perBar';
-  updatedAt: string;
-  source: string;
-  amaSlope?: AmaSlopeSnapshot;
-  gridRangeScalingAmaSlope?: AmaSlopeSnapshot;
-  gridPriceOffsetPct?: number;
-  amaSlopeDeltaPercent?: number;
-  amaSlopeThresholdPercent?: number;
-  dynamicWeights?: DynamicWeightsPayload;
-  lastGridResetAt?: string;
-  lastGridResetSource?: string;
-}
-
-export interface CenterSnapshot {
-  updatedAt: string;
-  bots: Record<string, CenterSnapshotBotEntry>;
-}
 
 export interface CenterSnapshotBotEntry {
   botName: string;
@@ -1387,15 +884,6 @@ export interface ProcessedFillStoreConfig {
 // ============================================================
 // DOMAIN: DEXBot CLASS
 // ============================================================
-
-export interface DEXBotMetrics {
-  fillsProcessed: number;
-  fillProcessingTimeMs: number;
-  batchesExecuted: number;
-  lockContentionEvents: number;
-  maxQueueDepth: number;
-}
-
 // ============================================================
 // DOMAIN: ACCOUNT ORDERS (PERSISTENCE)
 // ============================================================
@@ -1420,24 +908,6 @@ export interface BotMeta {
   updatedAt: string;
 }
 
-export interface PerBotStorage {
-  meta: BotMeta;
-  grid: SerializedGridEntry[];
-  btsFeesOwed: number;
-  boundaryIdx: number | null;
-  assets: AssetsPair | null;
-  debugInputs: Record<string, any> | null;
-  processedFills: Record<string, number>;
-  createdAt: string;
-  lastUpdated: string;
-}
-
-export interface DBAssetBalances {
-  assetA: { active: number; virtual: number };
-  assetB: { active: number; virtual: number };
-  meta: { key: string; name: string | null; assetA: string | null; assetB: string | null };
-}
-
 // ============================================================
 // DOMAIN: GRACEFUL SHUTDOWN
 // ============================================================
@@ -1447,115 +917,18 @@ export interface CleanupHandler {
   handler: () => void | Promise<void>;
 }
 
-export interface ShutdownState {
-  cleanupHandlers: CleanupHandler[];
-  shutdownInProgress: boolean;
-}
-
 // ============================================================
 // DOMAIN: CREDIT RUNTIME
 // ============================================================
-
-export interface CreditDeal {
-  id: string;
-  offer_id: string;
-  borrower: string;
-  borrow_amount: Asset;
-  collateral: Asset;
-  fee_rate: number;
-  expiration: number;
-  auto_repay: number;
-}
-
-export interface CreditOffer {
-  id: string;
-  owner_account: string;
-  asset_type: string;
-  balance: number;
-  fee_rate: number;
-  max_duration_seconds: number;
-  min_deal_amount: number;
-  enabled: boolean;
-  auto_disable_time: number;
-  acceptable_collateral: Record<string, Price>;
-  acceptable_borrowers: Record<string, number>;
-}
-
 // ============================================================
 // DOMAIN: NODE MANAGER
 // ============================================================
-
-export interface NodeHealth {
-  url: string;
-  connected: boolean;
-  latency: number;
-  lastChecked: number;
-  failCount: number;
-  blacklistedUntil?: number;
-}
-
 // ============================================================
 // DOMAIN: CHAIN KEYS CRYPTO
 // ============================================================
-
-export interface DaemonRequest {
-  type: 'ping' | 'probe-account' | 'broadcast-operation' | 'execute-operations';
-  accountName: string;
-}
-
-export interface DaemonProbeResponse {
-  success: boolean;
-  sessionId?: string;
-  error?: string;
-}
-
 // ============================================================
 // DOMAIN: UTILITIES
 // ============================================================
-
-export interface CreateOrderArgs {
-  amountToSell: number;
-  sellAssetId: string;
-  minToReceive: number;
-  receiveAssetId: string;
-}
-
-export interface OrderComparisonOptions {
-  precisions?: {
-    buyPrecision?: number | string | null;
-    sellPrecision?: number | string | null;
-    defaultPrecision?: number | string | null;
-    priceRelativeTolerance?: number;
-  };
-}
-
-export interface OutsideInPairGroupAccessors {
-  isValid?: (order: Order) => boolean;
-  getType: (order: Order) => OrderType;
-  getPrice: (order: Order) => number;
-}
-
 // ============================================================
 // DOMAIN: AMA / KALMAN / SIGNALS
 // ============================================================
-
-export interface AmaPreset {
-  name: string;
-  erPeriod: number;
-  fastPeriod: number;
-  slowPeriod: number;
-}
-
-export interface MarketAdapterRuntimeDefaults {
-  intervalSeconds: number;
-  intervalLabel: string;
-  pollSeconds: number;
-  bootstrapLookbackHours: number;
-  nativeBackfillHours: number;
-  maxStaleHours: number;
-  sourceRetries: number;
-  retryDelayMs: number;
-  maxPages: number;
-  pageLimit: number;
-  minRequiredCandles: number;
-}

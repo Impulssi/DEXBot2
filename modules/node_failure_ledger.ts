@@ -131,5 +131,3 @@ export function createFailureLedger(options: FailureLedgerOptions): FailureLedge
         clear: () => ledger.clear(),
     };
 }
-
-export default createFailureLedger;

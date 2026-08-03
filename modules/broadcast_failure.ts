@@ -90,5 +90,3 @@ export function classifyBroadcastFailure(err: any): BroadcastFailureClass {
     // Anything else during the broadcast phase — conservative: uncertain.
     return 'uncertain';
 }
-
-export default classifyBroadcastFailure;

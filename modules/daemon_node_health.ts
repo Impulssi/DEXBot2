@@ -146,5 +146,3 @@ export function createNodeHealthLedger(options: NodeHealthLedgerOptions = {}): N
         clear: () => ledger.clear(),
     };
 }
-
-export default createNodeHealthLedger;

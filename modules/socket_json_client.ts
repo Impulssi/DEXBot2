@@ -112,5 +112,3 @@ export function sendSocketJsonRequest(options: SocketJsonRequestOptions): Promis
         });
     });
 }
-
-export default sendSocketJsonRequest;
