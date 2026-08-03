@@ -19,6 +19,7 @@ import * as chainKeys from '../chain_keys';
 const storage = getStorage();
 import {
     isPidAlive,
+    usesAmaGridPrice,
     parseCronExpression,
     getNextCronDate,
     isNodeProcessWithExactScript,
@@ -125,14 +126,6 @@ async function stopCredentialDaemonPid(pid: string | number) {
         return;
     }
 
-    function isAlive(targetPid: number): boolean {
-        try {
-            return runtime.kill(targetPid, 0);
-        } catch (_) {
-            return false;
-        }
-    }
-
     try {
         runtime.kill(daemonPid, 'SIGTERM');
     } catch (e: any) {
@@ -142,7 +135,7 @@ async function stopCredentialDaemonPid(pid: string | number) {
 
     const startedAt = Date.now();
     while ((Date.now() - startedAt) < 5000) {
-        if (!isAlive(daemonPid)) {
+        if (!isPidAlive(daemonPid)) {
             return;
         }
         await sleep(100);
@@ -159,7 +152,7 @@ async function stopCredentialDaemonPid(pid: string | number) {
     }
     if (sigkillSent) {
         while ((Date.now() - sigkillStartedAt) < SIGKILL_DEADLINE_MS) {
-            if (!isAlive(daemonPid)) {
+            if (!isPidAlive(daemonPid)) {
                 return;
             }
             await sleep(100);
@@ -379,11 +372,6 @@ function getControlActionLabel(cmd: any) {
     if (cmd === 'restart' || cmd === 'restart-all') return 'restarting';
     if (cmd === 'shutdown' || cmd === 'delete') return 'shutting down';
     return 'stopping';
-}
-
-function usesAmaGridPrice(bot: any) {
-    const gridPrice = typeof bot?.gridPrice === 'string' ? bot.gridPrice.trim().toLowerCase() : '';
-    return /^ama(?:[1-4])?$/.test(gridPrice);
 }
 
 function getControlServiceNames(cmd: any, botNames: any) {

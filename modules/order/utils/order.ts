@@ -591,6 +591,23 @@ function resolveSpreadOrderSide(price: any, startPrice: any): string {
 }
 
 /**
+ * Parse a grid slot id ("slot-123") to its rail index. Slot ids are assigned
+ * in ascending price order at grid generation (grid.ts), so the index is
+ * strictly price-monotonic and can be compared exactly where float prices
+ * would risk rounding ambiguity (adjacent levels can round to the same
+ * price). Returns null when the id is not a grid slot id (e.g. orphan fills
+ * with chain-derived ids) so callers can fall back to price comparison.
+ * @param {any} id - grid slot id string
+ * @returns {number|null}
+ */
+function parseSlotIndex(id: any): number | null {
+    if (typeof id !== 'string') return null;
+    const match = /^slot-(\d+)$/.exec(id);
+    if (!match) return null;
+    const idx = parseInt(match[1], 10);
+    return Number.isFinite(idx) ? idx : null;
+}
+/**
  * Whether a parsed chain order matches a grid slot within tolerance:
  * type-compatible (slot may be SPREAD), price within tolerance, size within
  * 1% quantum tolerance (floor 2 units). Shared by the startup adoption paths
@@ -1357,5 +1374,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
     );
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
 

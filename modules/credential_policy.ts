@@ -695,418 +695,166 @@ function buildPolicyContext(request: any): PolicyContext {
  * Evaluate per-operation parameter constraints.
  * Returns { allow: boolean, reason: string|null, policyId: string }
  */
+function asDeny(reason: string): { allow: false; reason: string; policyId: 'opParams' } {
+    return { allow: false, reason, policyId: 'opParams' };
+}
+
+function denyNotInList(opName: string, word: string, id: any, listName: string, list: any, requirePresent?: boolean): { allow: false; reason: string; policyId: 'opParams' } | null {
+    if (!Array.isArray(list) || list.length === 0) return null;
+    if (requirePresent) {
+        if (!list.includes(String(id))) {
+            return asDeny(`${opName}: ${word} "${id}" not in ${listName}`);
+        }
+    } else if (id != null && !list.includes(String(id))) {
+        return asDeny(`${opName}: ${word} "${id}" not in ${listName}`);
+    }
+    return null;
+}
+
+function denyBoundExceeded(opName: string, label: string, compareValue: number | null, shownValue: any, boundLabel: string, bound: any, opts: { lower?: boolean; verb?: string } = {}): { allow: false; reason: string; policyId: 'opParams' } | null {
+    if (bound == null) return null;
+    if (compareValue == null || !Number.isFinite(compareValue)) return null;
+    const over = opts.lower ? compareValue < bound : compareValue > bound;
+    if (!over) return null;
+    const verb = opts.verb ?? (opts.lower ? 'below' : 'exceeds');
+    return asDeny(`${opName}: ${label} ${shownValue} ${verb} ${boundLabel} ${bound}`);
+}
+
+async function denyAssetRefMismatch(opName: string, word: string, assetId: any, refs: any, refLabel: string, opts: { active?: boolean; matchOnly?: boolean } = {}): Promise<{ allow: false; reason: string; policyId: 'opParams' } | null> {
+    if (!opts.active) return null;
+    const resolved = await resolveConfiguredAssetRefs(refs, refLabel);
+    if (!resolved.ok) return asDeny(`${opName}: ${resolved.reason}`);
+    if (assetId && resolved.values && !resolved.values.includes(String(assetId))) {
+        const phrase = opts.matchOnly ? 'does not match' : 'not in';
+        return asDeny(`${opName}: ${word} "${assetId}" ${phrase} ${refLabel}`);
+    }
+    return null;
+}
+
 async function evaluateOpConstraints(opName: string, opData: any, constraints: any): Promise<{ allow: boolean; reason: string | null; policyId: string | null }> {
     if (!constraints) return { allow: true, reason: null, policyId: null };
     const d = opData || {};
 
     if (opName === 'transfer') {
         // allowedToAccounts
-        if (Array.isArray(constraints.allowedToAccounts) && constraints.allowedToAccounts.length > 0) {
-            if (!constraints.allowedToAccounts.includes(d.to)) {
-                return {
-                    allow: false,
-                    reason: `transfer: recipient "${d.to}" not in allowedToAccounts`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const recipientDenied = denyNotInList('transfer', 'recipient', d.to, 'allowedToAccounts', constraints.allowedToAccounts, true);
+        if (recipientDenied) return recipientDenied;
         // allowedAssets
-        if (Array.isArray(constraints.allowedAssets) && constraints.allowedAssets.length > 0) {
-            const id = d.amount && d.amount.asset_id;
-            if (id && !constraints.allowedAssets.includes(id)) {
-                return {
-                    allow: false,
-                    reason: `transfer: asset "${id}" not in allowedAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const assetDenied = denyNotInList('transfer', 'asset', d.amount && d.amount.asset_id, 'allowedAssets', constraints.allowedAssets);
+        if (assetDenied) return assetDenied;
         // maxAmount
-        if (constraints.maxAmount != null) {
-            const amt = d.amount && d.amount.amount;
-            if (typeof amt === 'number' && amt > constraints.maxAmount) {
-                return {
-                    allow: false,
-                    reason: `transfer: amount ${amt} exceeds maxAmount ${constraints.maxAmount}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const maxAmountDenied = denyBoundExceeded('transfer', 'amount', d.amount && d.amount.amount, d.amount && d.amount.amount, 'maxAmount', constraints.maxAmount);
+        if (maxAmountDenied) return maxAmountDenied;
     }
 
     if (opName === 'limit_order_create') {
         // allowedSellAssets
-        if (Array.isArray(constraints.allowedSellAssets) && constraints.allowedSellAssets.length > 0) {
-            const id = d.amount_to_sell && d.amount_to_sell.asset_id;
-            if (id && !constraints.allowedSellAssets.includes(id)) {
-                return {
-                    allow: false,
-                    reason: `limit_order_create: sell asset "${id}" not in allowedSellAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const sellDenied = denyNotInList('limit_order_create', 'sell asset', d.amount_to_sell && d.amount_to_sell.asset_id, 'allowedSellAssets', constraints.allowedSellAssets);
+        if (sellDenied) return sellDenied;
         // allowedReceiveAssets
-        if (Array.isArray(constraints.allowedReceiveAssets) && constraints.allowedReceiveAssets.length > 0) {
-            const id = d.min_to_receive && d.min_to_receive.asset_id;
-            if (id && !constraints.allowedReceiveAssets.includes(id)) {
-                return {
-                    allow: false,
-                    reason: `limit_order_create: receive asset "${id}" not in allowedReceiveAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const receiveDenied = denyNotInList('limit_order_create', 'receive asset', d.min_to_receive && d.min_to_receive.asset_id, 'allowedReceiveAssets', constraints.allowedReceiveAssets);
+        if (receiveDenied) return receiveDenied;
         // maxSellAmount
-        if (constraints.maxSellAmount != null) {
-            const amt = d.amount_to_sell && d.amount_to_sell.amount;
-            if (typeof amt === 'number' && amt > constraints.maxSellAmount) {
-                return {
-                    allow: false,
-                    reason: `limit_order_create: sell amount ${amt} exceeds maxSellAmount ${constraints.maxSellAmount}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const maxSellDenied = denyBoundExceeded('limit_order_create', 'sell amount', d.amount_to_sell && d.amount_to_sell.amount, d.amount_to_sell && d.amount_to_sell.amount, 'maxSellAmount', constraints.maxSellAmount);
+        if (maxSellDenied) return maxSellDenied;
         // maxReceiveAmount
-        if (constraints.maxReceiveAmount != null) {
-            const amt = d.min_to_receive && d.min_to_receive.amount;
-            if (typeof amt === 'number' && amt > constraints.maxReceiveAmount) {
-                return {
-                    allow: false,
-                    reason: `limit_order_create: receive amount ${amt} exceeds maxReceiveAmount ${constraints.maxReceiveAmount}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const maxReceiveDenied = denyBoundExceeded('limit_order_create', 'receive amount', d.min_to_receive && d.min_to_receive.amount, d.min_to_receive && d.min_to_receive.amount, 'maxReceiveAmount', constraints.maxReceiveAmount);
+        if (maxReceiveDenied) return maxReceiveDenied;
         // allowFillOrKill
         if (constraints.allowFillOrKill === false && d.fill_or_kill === true) {
-            return {
-                allow: false,
-                reason: 'limit_order_create: fill_or_kill=true not permitted',
-                policyId: 'opParams',
-            };
+            return asDeny('limit_order_create: fill_or_kill=true not permitted');
         }
     }
 
     if (opName === 'limit_order_update') {
         // allowedSellAssets via new_price.base
-        if (Array.isArray(constraints.allowedSellAssets) && constraints.allowedSellAssets.length > 0) {
-            const id = d.new_price && d.new_price.base && d.new_price.base.asset_id;
-            if (id && !constraints.allowedSellAssets.includes(id)) {
-                return {
-                    allow: false,
-                    reason: `limit_order_update: base asset "${id}" not in allowedSellAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const sellDenied = denyNotInList('limit_order_update', 'base asset', d.new_price && d.new_price.base && d.new_price.base.asset_id, 'allowedSellAssets', constraints.allowedSellAssets);
+        if (sellDenied) return sellDenied;
         // allowedReceiveAssets via new_price.quote
-        if (Array.isArray(constraints.allowedReceiveAssets) && constraints.allowedReceiveAssets.length > 0) {
-            const id = d.new_price && d.new_price.quote && d.new_price.quote.asset_id;
-            if (id && !constraints.allowedReceiveAssets.includes(id)) {
-                return {
-                    allow: false,
-                    reason: `limit_order_update: quote asset "${id}" not in allowedReceiveAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const receiveDenied = denyNotInList('limit_order_update', 'quote asset', d.new_price && d.new_price.quote && d.new_price.quote.asset_id, 'allowedReceiveAssets', constraints.allowedReceiveAssets);
+        if (receiveDenied) return receiveDenied;
         // maxDeltaSellAmount (abs value)
-        if (constraints.maxDeltaSellAmount != null) {
-            const delta = d.delta_amount_to_sell && d.delta_amount_to_sell.amount;
-            if (typeof delta === 'number' && Math.abs(delta) > constraints.maxDeltaSellAmount) {
-                return {
-                    allow: false,
-                    reason: `limit_order_update: |delta| ${Math.abs(delta)} exceeds maxDeltaSellAmount ${constraints.maxDeltaSellAmount}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const maxDeltaSellDenied = denyBoundExceeded('limit_order_update', '|delta|', Math.abs(d.delta_amount_to_sell && d.delta_amount_to_sell.amount), Math.abs(d.delta_amount_to_sell && d.delta_amount_to_sell.amount), 'maxDeltaSellAmount', constraints.maxDeltaSellAmount);
+        if (maxDeltaSellDenied) return maxDeltaSellDenied;
     }
 
     if (opName === 'call_order_update') {
         // allowedAssets
-        if (Array.isArray(constraints.allowedAssets) && constraints.allowedAssets.length > 0) {
-            const collId = d.delta_collateral && d.delta_collateral.asset_id;
-            const debtId = d.delta_debt && d.delta_debt.asset_id;
-            if (collId && !constraints.allowedAssets.includes(collId)) {
-                return {
-                    allow: false,
-                    reason: `call_order_update: collateral asset "${collId}" not in allowedAssets`,
-                    policyId: 'opParams',
-                };
-            }
-            if (debtId && !constraints.allowedAssets.includes(debtId)) {
-                return {
-                    allow: false,
-                    reason: `call_order_update: debt asset "${debtId}" not in allowedAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (constraints.collateralAsset) {
-            const collId = d.delta_collateral && d.delta_collateral.asset_id;
-            const resolved = await resolveConfiguredAssetRefs([constraints.collateralAsset], 'collateralAsset');
-            if (!resolved.ok) {
-                return {
-                    allow: false,
-                    reason: `call_order_update: ${resolved.reason}`,
-                    policyId: 'opParams',
-                };
-            }
-            if (collId && resolved.values && !resolved.values.includes(String(collId))) {
-                return {
-                    allow: false,
-                    reason: `call_order_update: collateral asset "${collId}" does not match collateralAsset`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (Array.isArray(constraints.allowedCollateralAssets) && constraints.allowedCollateralAssets.length > 0) {
-            const collId = d.delta_collateral && d.delta_collateral.asset_id;
-            const resolved = await resolveConfiguredAssetRefs(constraints.allowedCollateralAssets, 'allowedCollateralAssets');
-            if (!resolved.ok) {
-                return {
-                    allow: false,
-                    reason: `call_order_update: ${resolved.reason}`,
-                    policyId: 'opParams',
-                };
-            }
-            if (collId && resolved.values && !resolved.values.includes(String(collId))) {
-                return {
-                    allow: false,
-                    reason: `call_order_update: collateral asset "${collId}" not in allowedCollateralAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const collDenied = denyNotInList('call_order_update', 'collateral asset', d.delta_collateral && d.delta_collateral.asset_id, 'allowedAssets', constraints.allowedAssets);
+        if (collDenied) return collDenied;
+        const debtDenied = denyNotInList('call_order_update', 'debt asset', d.delta_debt && d.delta_debt.asset_id, 'allowedAssets', constraints.allowedAssets);
+        if (debtDenied) return debtDenied;
+
+        const collateralMatchDenied = await denyAssetRefMismatch('call_order_update', 'collateral asset', d.delta_collateral && d.delta_collateral.asset_id, [constraints.collateralAsset], 'collateralAsset', { active: !!constraints.collateralAsset, matchOnly: true });
+        if (collateralMatchDenied) return collateralMatchDenied;
+
+        const allowedCollateralDenied = await denyAssetRefMismatch('call_order_update', 'collateral asset', d.delta_collateral && d.delta_collateral.asset_id, constraints.allowedCollateralAssets, 'allowedCollateralAssets', { active: Array.isArray(constraints.allowedCollateralAssets) && constraints.allowedCollateralAssets.length > 0 });
+        if (allowedCollateralDenied) return allowedCollateralDenied;
+
         // maxDeltaCollateral
-        if (constraints.maxDeltaCollateral != null) {
-            const amt = d.delta_collateral && d.delta_collateral.amount;
-            if (typeof amt === 'number' && Math.abs(amt) > constraints.maxDeltaCollateral) {
-                return {
-                    allow: false,
-                    reason: `call_order_update: |delta_collateral| ${Math.abs(amt)} exceeds maxDeltaCollateral ${constraints.maxDeltaCollateral}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const maxDeltaCollateralDenied = denyBoundExceeded('call_order_update', '|delta_collateral|', Math.abs(d.delta_collateral && d.delta_collateral.amount), Math.abs(d.delta_collateral && d.delta_collateral.amount), 'maxDeltaCollateral', constraints.maxDeltaCollateral);
+        if (maxDeltaCollateralDenied) return maxDeltaCollateralDenied;
         // maxDeltaDebt
-        if (constraints.maxDeltaDebt != null) {
-            const amt = d.delta_debt && d.delta_debt.amount;
-            if (typeof amt === 'number' && Math.abs(amt) > constraints.maxDeltaDebt) {
-                return {
-                    allow: false,
-                    reason: `call_order_update: |delta_debt| ${Math.abs(amt)} exceeds maxDeltaDebt ${constraints.maxDeltaDebt}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (constraints.minCollateralRatio != null && d.extensions && d.extensions.target_collateral_ratio != null) {
-            const target = normalizeGrapheneCollateralRatio(d.extensions.target_collateral_ratio);
-            if (Number.isFinite(target) && target != null && target < constraints.minCollateralRatio) {
-                return {
-                    allow: false,
-                    reason: `call_order_update: target_collateral_ratio ${target} below minCollateralRatio ${constraints.minCollateralRatio}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (constraints.maxCollateralRatio != null && d.extensions && d.extensions.target_collateral_ratio != null) {
-            const target = normalizeGrapheneCollateralRatio(d.extensions.target_collateral_ratio);
-            if (Number.isFinite(target) && target != null && target > constraints.maxCollateralRatio) {
-                return {
-                    allow: false,
-                    reason: `call_order_update: target_collateral_ratio ${target} above maxCollateralRatio ${constraints.maxCollateralRatio}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const maxDeltaDebtDenied = denyBoundExceeded('call_order_update', '|delta_debt|', Math.abs(d.delta_debt && d.delta_debt.amount), Math.abs(d.delta_debt && d.delta_debt.amount), 'maxDeltaDebt', constraints.maxDeltaDebt);
+        if (maxDeltaDebtDenied) return maxDeltaDebtDenied;
+
+        const targetCollateralRatio = d.extensions && d.extensions.target_collateral_ratio != null ? normalizeGrapheneCollateralRatio(d.extensions.target_collateral_ratio) : NaN;
+        const minRatioDenied = denyBoundExceeded('call_order_update', 'target_collateral_ratio', targetCollateralRatio, targetCollateralRatio, 'minCollateralRatio', constraints.minCollateralRatio, { lower: true });
+        if (minRatioDenied) return minRatioDenied;
+        const maxRatioDenied = denyBoundExceeded('call_order_update', 'target_collateral_ratio', targetCollateralRatio, targetCollateralRatio, 'maxCollateralRatio', constraints.maxCollateralRatio, { verb: 'above' });
+        if (maxRatioDenied) return maxRatioDenied;
     }
 
     if (opName === 'credit_offer_accept') {
-        if (Array.isArray(constraints.allowedOfferIds) && constraints.allowedOfferIds.length > 0) {
-            const offerId = d.offer_id;
-            if (offerId && !constraints.allowedOfferIds.includes(String(offerId))) {
-                return {
-                    allow: false,
-                    reason: `credit_offer_accept: offer "${offerId}" not in allowedOfferIds`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (constraints.collateralAsset) {
-            const assetId = d.collateral && d.collateral.asset_id;
-            const resolved = await resolveConfiguredAssetRefs([constraints.collateralAsset], 'collateralAsset');
-            if (!resolved.ok) {
-                return {
-                    allow: false,
-                    reason: `credit_offer_accept: ${resolved.reason}`,
-                    policyId: 'opParams',
-                };
-            }
-            if (assetId && resolved.values && !resolved.values.includes(String(assetId))) {
-                return {
-                    allow: false,
-                    reason: `credit_offer_accept: collateral asset "${assetId}" does not match collateralAsset`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (Array.isArray(constraints.allowedCollateralAssets) && constraints.allowedCollateralAssets.length > 0) {
-            const assetId = d.collateral && d.collateral.asset_id;
-            const resolved = await resolveConfiguredAssetRefs(constraints.allowedCollateralAssets, 'allowedCollateralAssets');
-            if (!resolved.ok) {
-                return {
-                    allow: false,
-                    reason: `credit_offer_accept: ${resolved.reason}`,
-                    policyId: 'opParams',
-                };
-            }
-            if (assetId && resolved.values && !resolved.values.includes(String(assetId))) {
-                return {
-                    allow: false,
-                    reason: `credit_offer_accept: collateral asset "${assetId}" not in allowedCollateralAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (Array.isArray(constraints.allowedDebtAssets) && constraints.allowedDebtAssets.length > 0) {
-            const assetId = d.borrow_amount && d.borrow_amount.asset_id;
-            const resolved = await resolveConfiguredAssetRefs(constraints.allowedDebtAssets, 'allowedDebtAssets');
-            if (!resolved.ok) {
-                return {
-                    allow: false,
-                    reason: `credit_offer_accept: ${resolved.reason}`,
-                    policyId: 'opParams',
-                };
-            }
-            if (assetId && resolved.values && !resolved.values.includes(String(assetId))) {
-                return {
-                    allow: false,
-                    reason: `credit_offer_accept: debt asset "${assetId}" not in allowedDebtAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (constraints.maxFeeRate != null) {
-            const maxFeeRate = Number(d.max_fee_rate);
-            if (Number.isFinite(maxFeeRate) && maxFeeRate > constraints.maxFeeRate) {
-                return {
-                    allow: false,
-                    reason: `credit_offer_accept: max_fee_rate ${maxFeeRate} exceeds maxFeeRate ${constraints.maxFeeRate}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (constraints.minDurationSeconds != null) {
-            const minDurationSeconds = Number(d.min_duration_seconds);
-            if (Number.isFinite(minDurationSeconds) && minDurationSeconds < constraints.minDurationSeconds) {
-                return {
-                    allow: false,
-                    reason: `credit_offer_accept: min_duration_seconds ${minDurationSeconds} below minDurationSeconds ${constraints.minDurationSeconds}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const offerDenied = denyNotInList('credit_offer_accept', 'offer', d.offer_id, 'allowedOfferIds', constraints.allowedOfferIds);
+        if (offerDenied) return offerDenied;
+
+        const collateralMatchDenied = await denyAssetRefMismatch('credit_offer_accept', 'collateral asset', d.collateral && d.collateral.asset_id, [constraints.collateralAsset], 'collateralAsset', { active: !!constraints.collateralAsset, matchOnly: true });
+        if (collateralMatchDenied) return collateralMatchDenied;
+
+        const allowedCollateralDenied = await denyAssetRefMismatch('credit_offer_accept', 'collateral asset', d.collateral && d.collateral.asset_id, constraints.allowedCollateralAssets, 'allowedCollateralAssets', { active: Array.isArray(constraints.allowedCollateralAssets) && constraints.allowedCollateralAssets.length > 0 });
+        if (allowedCollateralDenied) return allowedCollateralDenied;
+
+        const allowedDebtDenied = await denyAssetRefMismatch('credit_offer_accept', 'debt asset', d.borrow_amount && d.borrow_amount.asset_id, constraints.allowedDebtAssets, 'allowedDebtAssets', { active: Array.isArray(constraints.allowedDebtAssets) && constraints.allowedDebtAssets.length > 0 });
+        if (allowedDebtDenied) return allowedDebtDenied;
+
+        const maxFeeDenied = denyBoundExceeded('credit_offer_accept', 'max_fee_rate', Number(d.max_fee_rate), Number(d.max_fee_rate), 'maxFeeRate', constraints.maxFeeRate);
+        if (maxFeeDenied) return maxFeeDenied;
+
+        const minDurationDenied = denyBoundExceeded('credit_offer_accept', 'min_duration_seconds', Number(d.min_duration_seconds), Number(d.min_duration_seconds), 'minDurationSeconds', constraints.minDurationSeconds, { lower: true });
+        if (minDurationDenied) return minDurationDenied;
     }
 
     if (opName === 'credit_deal_repay') {
-        if (Array.isArray(constraints.allowedDebtAssets) && constraints.allowedDebtAssets.length > 0) {
-            const assetId = d.repay_amount && d.repay_amount.asset_id;
-            const resolved = await resolveConfiguredAssetRefs(constraints.allowedDebtAssets, 'allowedDebtAssets');
-            if (!resolved.ok) {
-                return {
-                    allow: false,
-                    reason: `credit_deal_repay: ${resolved.reason}`,
-                    policyId: 'opParams',
-                };
-            }
-            if (assetId && resolved.values && !resolved.values.includes(String(assetId))) {
-                return {
-                    allow: false,
-                    reason: `credit_deal_repay: debt asset "${assetId}" not in allowedDebtAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (constraints.maxRepayAmount != null) {
-            const amt = d.repay_amount && d.repay_amount.amount;
-            if (typeof amt === 'number' && amt > constraints.maxRepayAmount) {
-                return {
-                    allow: false,
-                    reason: `credit_deal_repay: repay amount ${amt} exceeds maxRepayAmount ${constraints.maxRepayAmount}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
-        if (constraints.maxCreditFee != null) {
-            const fee = d.credit_fee && d.credit_fee.amount;
-            if (typeof fee === 'number' && fee > constraints.maxCreditFee) {
-                return {
-                    allow: false,
-                    reason: `credit_deal_repay: credit fee ${fee} exceeds maxCreditFee ${constraints.maxCreditFee}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const allowedDebtDenied = await denyAssetRefMismatch('credit_deal_repay', 'debt asset', d.repay_amount && d.repay_amount.asset_id, constraints.allowedDebtAssets, 'allowedDebtAssets', { active: Array.isArray(constraints.allowedDebtAssets) && constraints.allowedDebtAssets.length > 0 });
+        if (allowedDebtDenied) return allowedDebtDenied;
+
+        const maxRepayDenied = denyBoundExceeded('credit_deal_repay', 'repay amount', d.repay_amount && d.repay_amount.amount, d.repay_amount && d.repay_amount.amount, 'maxRepayAmount', constraints.maxRepayAmount);
+        if (maxRepayDenied) return maxRepayDenied;
+
+        const maxCreditFeeDenied = denyBoundExceeded('credit_deal_repay', 'credit fee', d.credit_fee && d.credit_fee.amount, d.credit_fee && d.credit_fee.amount, 'maxCreditFee', constraints.maxCreditFee);
+        if (maxCreditFeeDenied) return maxCreditFeeDenied;
     }
 
     if (opName === 'credit_deal_update') {
         if (constraints.allowAutoRepay === false && d.auto_repay) {
-            return {
-                allow: false,
-                reason: 'credit_deal_update: auto_repay change not permitted',
-                policyId: 'opParams',
-            };
+            return asDeny('credit_deal_update: auto_repay change not permitted');
         }
     }
 
     if (opName === 'liquidity_pool_exchange') {
         // allowedPools
-        if (Array.isArray(constraints.allowedPools) && constraints.allowedPools.length > 0) {
-            if (!constraints.allowedPools.includes(d.pool)) {
-                return {
-                    allow: false,
-                    reason: `liquidity_pool_exchange: pool "${d.pool}" not in allowedPools`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const poolDenied = denyNotInList('liquidity_pool_exchange', 'pool', d.pool, 'allowedPools', constraints.allowedPools, true);
+        if (poolDenied) return poolDenied;
         // allowedSellAssets
-        if (Array.isArray(constraints.allowedSellAssets) && constraints.allowedSellAssets.length > 0) {
-            const id = d.amount_to_sell && d.amount_to_sell.asset_id;
-            if (id && !constraints.allowedSellAssets.includes(id)) {
-                return {
-                    allow: false,
-                    reason: `liquidity_pool_exchange: sell asset "${id}" not in allowedSellAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const sellDenied = denyNotInList('liquidity_pool_exchange', 'sell asset', d.amount_to_sell && d.amount_to_sell.asset_id, 'allowedSellAssets', constraints.allowedSellAssets);
+        if (sellDenied) return sellDenied;
         // allowedReceiveAssets
-        if (Array.isArray(constraints.allowedReceiveAssets) && constraints.allowedReceiveAssets.length > 0) {
-            const id = d.min_to_receive && d.min_to_receive.asset_id;
-            if (id && !constraints.allowedReceiveAssets.includes(id)) {
-                return {
-                    allow: false,
-                    reason: `liquidity_pool_exchange: receive asset "${id}" not in allowedReceiveAssets`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const receiveDenied = denyNotInList('liquidity_pool_exchange', 'receive asset', d.min_to_receive && d.min_to_receive.asset_id, 'allowedReceiveAssets', constraints.allowedReceiveAssets);
+        if (receiveDenied) return receiveDenied;
         // maxSellAmount
-        if (constraints.maxSellAmount != null) {
-            const amt = d.amount_to_sell && d.amount_to_sell.amount;
-            if (typeof amt === 'number' && amt > constraints.maxSellAmount) {
-                return {
-                    allow: false,
-                    reason: `liquidity_pool_exchange: sell amount ${amt} exceeds maxSellAmount ${constraints.maxSellAmount}`,
-                    policyId: 'opParams',
-                };
-            }
-        }
+        const maxSellDenied = denyBoundExceeded('liquidity_pool_exchange', 'sell amount', d.amount_to_sell && d.amount_to_sell.amount, d.amount_to_sell && d.amount_to_sell.amount, 'maxSellAmount', constraints.maxSellAmount);
+        if (maxSellDenied) return maxSellDenied;
     }
 
     // limit_order_cancel — no constraints

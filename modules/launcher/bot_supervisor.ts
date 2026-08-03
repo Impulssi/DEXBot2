@@ -10,7 +10,7 @@ import { normalizeBotEntries, resolveRawBotEntries, loadSettingsFile } from '../
 import { UPDATER, BUILD_DIR, LAUNCHER } from '../constants';
 import { ensureDir, readJSON, safeUnlink } from '../utils/fs_utils';
 import { Config } from '../config';
-import { getProcessDiscovery } from '../process_discovery';
+import { getProcessDiscovery, formatUptime } from '../process_discovery';
 import { runtime } from '../runtime';
 import { sleep } from '../order/utils/system';
 'use strict';
@@ -245,12 +245,7 @@ function forwardSignal(child: any, signal: any) {
 }
 
 function isPidAlive(pid: any) {
-    if (!Number.isInteger(pid) || pid <= 0) return false;
-    try {
-        return runtime.kill(pid, 0);
-    } catch (_) {
-        return false;
-    }
+    return getProcessDiscovery().isAlive(pid);
 }
 
 async function waitForPidExit(pid: any, timeoutMs: any) {
@@ -398,17 +393,6 @@ function waitForChildSpawn(child: any) {
         child.once('spawn', handleSpawn);
         child.once('error', handleError);
     });
-}
-
-function formatUptime(ms: any) {
-    const s = Math.floor(ms / 1000);
-    const m = Math.floor(s / 60);
-    const h = Math.floor(m / 60);
-    const d = Math.floor(h / 24);
-    if (d > 0) return `${d}d ${h % 24}h`;
-    if (h > 0) return `${h}h ${m % 60}m`;
-    if (m > 0) return `${m}m ${s % 60}s`;
-    return `${s}s`;
 }
 
 function createBotSupervisor({

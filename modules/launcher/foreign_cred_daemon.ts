@@ -2,6 +2,7 @@
 import { getStorage } from '../storage';
 import { safeUnlink } from '../utils/fs_utils';
 import { getProcessDiscovery } from '../process_discovery';
+import { isPidAlive } from './bot_supervisor';
 import { runtime } from '../runtime';
 import { sleep } from '../order/utils/system';
 const storage = getStorage();
@@ -23,15 +24,6 @@ const storage = getStorage();
  * and lets the caller fall through to the normal "prompt for master
  * password" path.
  */
-
-function isPidAlive(pid: any) {
-    if (!Number.isInteger(pid) || pid <= 0) return false;
-    try {
-        return runtime.kill(pid, 0);
-    } catch (_) {
-        return false;
-    }
-}
 
 function readCredentialSocketInode(socketPath: any) {
     return getProcessDiscovery().readSocketInode(socketPath);

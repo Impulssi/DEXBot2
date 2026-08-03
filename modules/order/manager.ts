@@ -63,29 +63,13 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate';
-import { resolveSpreadOrderSide } from './utils/order';
+import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order';
 import { getErrorMessage } from '../utils/errors';
 const { toFiniteNumber } = Format;
 
 // ===============================================================================
 // SECTION 2: COW REBALANCE ENGINE
 // ===============================================================================
-
-/**
- * Parse a grid slot id ("slot-123") to its rail index. Slot ids are assigned
- * in ascending price order at grid generation (grid.ts), so the index is
- * strictly price-monotonic and can be compared exactly where float prices
- * would risk rounding ambiguity (adjacent levels can round to the same
- * price). Returns null when the id is not a grid slot id (e.g. orphan fills
- * with chain-derived ids) so callers can fall back to price comparison.
- */
-function parseSlotIndex(id: any): number | null {
-    if (typeof id !== 'string') return null;
-    const match = /^slot-(\d+)$/.exec(id);
-    if (!match) return null;
-    const idx = parseInt(match[1], 10);
-    return Number.isFinite(idx) ? idx : null;
-}
 
 /**
  * Stale-placement veto: whether a placement action crosses the plan's own

@@ -12,6 +12,7 @@ import { AccountOrders } from './account_orders';
 import { BitShares, onReconnect as registerReconnectHook } from './bitshares_client';
 import orderModule from './order';
 import { getErrorMessage } from './utils/errors';
+import { processSweepOrphanFill } from './dexbot_fill_runtime';
 const { OrderManager, grid: Grid } = orderModule;
 function initializeFeeCache(...args: any) { return require('./order/utils/system').initializeFeeCache(...args); }
 function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
@@ -242,21 +243,12 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             (Array.from(bot.manager.orders.values()) as any[]).find((o: any) => o.orderId === fillOp.order_id);
 
                         if (!gridOrder) {
-                            let orphanFillKey = buildFillKey(fill);
-                            if (!orphanFillKey) {
-                                orphanFillKey = bot._buildOrphanFillFallbackKey(fill);
-                            }
-                            if (orphanFillKey && !bot._isNewFillKey(orphanFillKey, processedFillKeys, '[POST-RESET]', fillOp.order_id)) {
-                                continue;
-                            }
-
-                            bot._log(`[POST-RESET] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
-                            const accountingResult = await bot._applyReplaySafeOrphanFillAccounting(fill, fillOp, {
+                            if (await processSweepOrphanFill(bot, fill, fillOp, processedFillKeys, {
                                 context: 'POST-RESET',
+                                label: 'POST-RESET',
                                 logger: { log: bot._log.bind(bot) },
                                 replayMessage: (op: any) => `[POST-RESET] Replay detected for orphan fill ${op.order_id}; skipping duplicate credit`
-                            });
-                            if (accountingResult.status === 'missing_key') {
+                            })) {
                                 requiresOpenOrdersSync = true;
                             }
                             continue;

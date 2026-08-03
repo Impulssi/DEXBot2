@@ -28,6 +28,44 @@ export interface KeyStore {
     executeOperations(accountName: string, operations: any[], signingKey: any, extraOptions?: Record<string, any>): Promise<SigningResult>;
 }
 
+function buildDaemonBroadcastOptions(signingKey: any, extraOptions: Record<string, any>, sessionIdOverride?: string): Record<string, any> {
+    return {
+        socketPath: signingKey.socketPath,
+        sessionId: sessionIdOverride !== undefined ? sessionIdOverride : (signingKey.sessionId || null),
+        botHmacSecret: signingKey.botHmacSecret || null,
+        requestType: 'broadcast',
+        batchId: signingKey.batchId || null,
+        ...(extraOptions.nodeUrl ? { nodeUrl: extraOptions.nodeUrl } : {}),
+        ...(extraOptions.fallbackNodes ? { fallbackNodes: extraOptions.fallbackNodes } : {}),
+        ...(typeof extraOptions.onNodeFailed === 'function' ? { onNodeFailed: extraOptions.onNodeFailed } : {}),
+    };
+}
+
+function normalizeDaemonResult(result: any): SigningResult {
+    return {
+        success: true,
+        raw: result.raw || null,
+        operation_results: Array.isArray(result.operation_results) ? result.operation_results : [],
+    };
+}
+
+async function broadcastViaChainOrders(accountName: string, operations: any[], signingKey: any): Promise<SigningResult> {
+    const { createAccountClient, broadcastTxWithClassification } = require('./chain_orders');
+    const acc = await createAccountClient(accountName, signingKey);
+    await acc.initPromise;
+    const tx = acc.newTx();
+    for (const op of operations) {
+        const methodName = op.op_name;
+        if (typeof tx[methodName] === 'function') {
+            tx[methodName](op.op_data);
+        } else {
+            throw new Error(`Transaction builder does not support ${methodName}`);
+        }
+    }
+    await broadcastTxWithClassification(tx, accountName, operations);
+    return { success: true };
+}
+
 export class DaemonKeyStore implements KeyStore {
     async resolveSigningKey(accountName: string, vaultSecret?: any, chainClient?: any): Promise<any> {
         if (vaultSecret) {
@@ -60,21 +98,8 @@ export class DaemonKeyStore implements KeyStore {
     async executeOperations(accountName: string, operations: any[], signingKey: any, extraOptions: Record<string, any> = {}): Promise<SigningResult> {
         if (this.isDaemonSigningKey(signingKey)) {
             try {
-                const result = await executeOperationsViaCredentialDaemon(accountName, operations, {
-                    socketPath: signingKey.socketPath,
-                    sessionId: signingKey.sessionId || null,
-                    botHmacSecret: signingKey.botHmacSecret || null,
-                    requestType: 'broadcast',
-                    batchId: signingKey.batchId || null,
-                    ...(extraOptions.nodeUrl ? { nodeUrl: extraOptions.nodeUrl } : {}),
-                    ...(extraOptions.fallbackNodes ? { fallbackNodes: extraOptions.fallbackNodes } : {}),
-                    ...(typeof extraOptions.onNodeFailed === 'function' ? { onNodeFailed: extraOptions.onNodeFailed } : {}),
-                });
-                return {
-                    success: true,
-                    raw: result.raw || null,
-                    operation_results: Array.isArray(result.operation_results) ? result.operation_results : [],
-                };
+                const result = await executeOperationsViaCredentialDaemon(accountName, operations, buildDaemonBroadcastOptions(signingKey, extraOptions));
+                return normalizeDaemonResult(result);
             } catch (err: any) {
                 if (err instanceof BroadcastUncertainError) throw err;
                 if (getErrorMessage(err) && (getErrorMessage(err).includes(DAEMON_ERRORS.SESSION_EXPIRED) || getErrorMessage(err).includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED))) {
@@ -98,40 +123,14 @@ export class DaemonKeyStore implements KeyStore {
                         await sleep(500);
                     }
 
-                    const retryResult = await executeOperationsViaCredentialDaemon(accountName, operations, {
-                        socketPath: signingKey.socketPath,
-                        sessionId: signingKey.sessionId,
-                        botHmacSecret: signingKey.botHmacSecret || null,
-                        requestType: 'broadcast',
-                        batchId: signingKey.batchId || null,
-                        ...(extraOptions.nodeUrl ? { nodeUrl: extraOptions.nodeUrl } : {}),
-                        ...(extraOptions.fallbackNodes ? { fallbackNodes: extraOptions.fallbackNodes } : {}),
-                        ...(typeof extraOptions.onNodeFailed === 'function' ? { onNodeFailed: extraOptions.onNodeFailed } : {}),
-                    });
-                    return {
-                        success: true,
-                        raw: retryResult.raw || null,
-                        operation_results: Array.isArray(retryResult.operation_results) ? retryResult.operation_results : [],
-                    };
+                    const retryResult = await executeOperationsViaCredentialDaemon(accountName, operations, buildDaemonBroadcastOptions(signingKey, extraOptions, signingKey.sessionId));
+                    return normalizeDaemonResult(retryResult);
                 }
                 throw err;
             }
         }
 
-        const { createAccountClient, broadcastTxWithClassification } = require('./chain_orders');
-        const acc = await createAccountClient(accountName, signingKey);
-        await acc.initPromise;
-        const tx = acc.newTx();
-        for (const op of operations) {
-            const methodName = op.op_name;
-            if (typeof tx[methodName] === 'function') {
-                tx[methodName](op.op_data);
-            } else {
-                throw new Error(`Transaction builder does not support ${methodName}`);
-            }
-        }
-        await broadcastTxWithClassification(tx, accountName, operations);
-        return { success: true };
+        return broadcastViaChainOrders(accountName, operations, signingKey);
     }
 }
 
@@ -147,20 +146,7 @@ export class DirectKeyStore implements KeyStore {
     isDaemonSigningKey(_key: any): boolean { return false; }
 
     async executeOperations(accountName: string, operations: any[], signingKey: any): Promise<SigningResult> {
-        const { createAccountClient, broadcastTxWithClassification } = require('./chain_orders');
-        const acc = await createAccountClient(accountName, signingKey);
-        await acc.initPromise;
-        const tx = acc.newTx();
-        for (const op of operations) {
-            const methodName = op.op_name;
-            if (typeof tx[methodName] === 'function') {
-                tx[methodName](op.op_data);
-            } else {
-                throw new Error(`Transaction builder does not support ${methodName}`);
-            }
-        }
-        await broadcastTxWithClassification(tx, accountName, operations);
-        return { success: true };
+        return broadcastViaChainOrders(accountName, operations, signingKey);
     }
 }
 

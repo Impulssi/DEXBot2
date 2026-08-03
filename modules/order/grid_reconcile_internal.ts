@@ -10,10 +10,22 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
 import { readOpenOrdersGuarded } from '../chain_orders';
 import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, calculateGapSlots as calculateGapSlotsFromMath } from './utils/math';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot } from './utils/order';
+import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot } from './utils/order';
 import { resolveAccountRef } from './utils/system';
 import * as Format from './format';
 import { getErrorMessage } from '../utils/errors';
+
+function computePlacementPriceCollision(manager: any, gridOrder: any): any {
+    const createPrice = gridOrder.price;
+    const createSize = gridOrder.size;
+    return createPrice != null && findPriceCollision(
+        manager.orders.values(),
+        gridOrder.id,
+        createPrice, createSize, gridOrder.type, manager.assets,
+        isOrderPlaced
+    );
+}
+
 /**
  * Count active orders on the grid for a given type.
  * @param {Object} manager - OrderManager instance.
@@ -49,16 +61,9 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     const sellStartIdx = (boundaryIdx !== null && Number.isFinite(Number(boundaryIdx)))
         ? Number(boundaryIdx) + gapSlots + 1
         : null;
-    const slotIndex = (id: any): number | null => {
-        if (typeof id !== 'string') return null;
-        const match = /^slot-(\d+)$/.exec(id);
-        if (!match) return null;
-        const idx = parseInt(match[1], 10);
-        return Number.isFinite(idx) ? idx : null;
-    };
     const inRail = (slot: any): boolean => {
         if (sellStartIdx === null) return true;
-        const idx = slotIndex(slot.id);
+        const idx = parseSlotIndex(slot.id);
         if (idx === null) return true;
         if (type === ORDER_TYPES.BUY) return idx <= Number(boundaryIdx);
         return idx >= sellStartIdx;
@@ -284,13 +289,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
 
     // Price collision guard: reject if another placed order already exists at this price level.
     const createPrice = gridOrder.price;
-    const createSize = gridOrder.size;
-    const priceCollision = createPrice != null && findPriceCollision(
-        manager.orders.values(),
-        gridOrder.id,
-        createPrice, createSize, gridOrder.type, manager.assets,
-        isOrderPlaced
-    );
+    const priceCollision = computePlacementPriceCollision(manager, gridOrder);
     if (priceCollision) {
         manager.logger?.log?.(
             `[_createOrderFromGrid] SKIP: Create for ${gridOrder.id} at ${Format.formatPrice6(createPrice)} ` +
@@ -1014,13 +1013,7 @@ async function _executeStartupCreateGroupBatch({
         // The slot-orderId check (above) protects the same slot; this protects against other
         // slots whose price falls within tolerance — the two are complementary.
         const createPrice = gridOrder.price;
-        const createSize = gridOrder.size;
-        const priceCollision = createPrice != null && findPriceCollision(
-            manager.orders.values(),
-            gridOrder.id,
-            createPrice, createSize, gridOrder.type, manager.assets,
-            isOrderPlaced
-        );
+        const priceCollision = computePlacementPriceCollision(manager, gridOrder);
         if (priceCollision) {
             logger?.log?.(
                 `Startup: Skip create ${plan.orderLabel} - price ${Format.formatPrice6(createPrice)} ` +

@@ -8,12 +8,42 @@ function correctAllPriceMismatches(...args: any) { return require('./order/utils
 function retryPersistenceIfNeeded(...args: any) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
 const { readOpenOrdersGuarded } = require('./chain_orders');
 
+interface SweepOrphanFillOptions {
+    context: string;
+    label: string;
+    logger?: any;
+    replayMessage?: any;
+}
+
 /**
- * Wire processed fill tracking into the manager and processed fill store.
- * Establishes the bidirectional link between the runtime's processed fill store
- * and the OrderManager's processed fill tracker.
- * @param {import('./dexbot_class').DEXBot} bot
+ * Handle a sweep fill whose grid order could not be resolved (orphan): derive a
+ * replay-safe key (with degraded fallback), skip already-processed fills, credit
+ * the fill's proceeds via replay-safe orphan accounting, and report whether the
+ * fill was missing a history key (which should trigger an open-orders sync).
+ * Shared by the bootstrap/post-reset/orphan-fill sweep loops.
+ * @returns true when the fill was missing a replay-safe history identifier.
  */
+async function processSweepOrphanFill(bot: any, fill: any, fillOp: any, processedFillKeys: Set<any>, opts: SweepOrphanFillOptions): Promise<boolean> {
+    let orphanFillKey = buildFillKey(fill);
+    if (!orphanFillKey) {
+        orphanFillKey = bot._buildOrphanFillFallbackKey(fill);
+    }
+    if (orphanFillKey && !bot._isNewFillKey(orphanFillKey, processedFillKeys, opts.label, fillOp.order_id)) {
+        return false;
+    }
+
+    (opts.logger ?? bot.manager.logger).log(
+        `[${opts.label}] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`,
+        'warn'
+    );
+    const accountingResult = await bot._applyReplaySafeOrphanFillAccounting(fill, fillOp, {
+        context: opts.context,
+        logger: opts.logger,
+        replayMessage: opts.replayMessage,
+    });
+    return accountingResult.status === 'missing_key';
+}
+
 function wireProcessedFillTracking(bot: any) {
     if (!bot.manager) return;
 
@@ -386,20 +416,7 @@ async function processFillsWithBootstrapMode(bot: any, chainOrders: any) {
         const gridOrder = bot.manager.orders.get(fillOp.order_id) ||
             (Array.from(bot.manager.orders.values()) as any[]).find((o: any) => o.orderId === fillOp.order_id);
         if (!gridOrder) {
-            let orphanFillKey = buildFillKey(fill);
-
-            if (!orphanFillKey) {
-                orphanFillKey = bot._buildOrphanFillFallbackKey(fill);
-            }
-            if (orphanFillKey && !bot._isNewFillKey(orphanFillKey, processedFillKeys, '[BOOTSTRAP]', fillOp.order_id)) {
-                continue;
-            }
-
-            bot.manager.logger.log(`[BOOTSTRAP] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
-            const accountingResult = await bot._applyReplaySafeOrphanFillAccounting(fill, fillOp, {
-                context: 'BOOTSTRAP'
-            });
-            if (accountingResult.status === 'missing_key') {
+            if (await processSweepOrphanFill(bot, fill, fillOp, processedFillKeys, { context: 'BOOTSTRAP', label: 'BOOTSTRAP' })) {
                 requiresOpenOrdersSync = true;
             }
             continue;
@@ -590,20 +607,11 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                                 bot._staleCleanedOrderIds.delete(fillOp.order_id);
                             }
 
-                            let orphanFillKey = buildFillKey(fill);
-                            if (!orphanFillKey) {
-                                orphanFillKey = bot._buildOrphanFillFallbackKey(fill);
-                            }
-                            if (orphanFillKey && !bot._isNewFillKey(orphanFillKey, processedFillKeys, '[ORPHAN-FILL]', fillOp.order_id)) {
-                                continue;
-                            }
-
-                            bot.manager.logger.log(`[ORPHAN-FILL] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
-                            const accountingResult = await bot._applyReplaySafeOrphanFillAccounting(fill, fillOp, {
+                            if (await processSweepOrphanFill(bot, fill, fillOp, processedFillKeys, {
                                 context: 'ORPHAN-FILL',
+                                label: 'ORPHAN-FILL',
                                 replayMessage: (op: any) => `[ORPHAN-FILL] Replay detected for ${op.order_id}; skipping duplicate credit`
-                            });
-                            if (accountingResult.status === 'missing_key') {
+                            })) {
                                 requiresOpenOrdersSync = true;
                             }
                             bot.manager._orphanFillsCreditedAt = Date.now();
@@ -937,5 +945,5 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
     }
 }
 
-export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, discardPendingProcessedFillPersistence, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, createFillCallback, maxConsecutiveFillConsumerFailures, computeFillConsumerBackoffMs, scheduleFillConsumerRestart, consumeFillQueue, processFillsWithBootstrapMode }
+export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, discardPendingProcessedFillPersistence, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, processSweepOrphanFill, createFillCallback, maxConsecutiveFillConsumerFailures, computeFillConsumerBackoffMs, scheduleFillConsumerRestart, consumeFillQueue, processFillsWithBootstrapMode }
 
