@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.8 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.9 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 1,948 commits over ~8 active months
+- **Growth Phase**: 1,950 commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 234 automated test files
-- **Releases**: 88 release entries (v0.1.0 to v1.4.7)
+- **Releases**: 89 release entries (v0.1.0 to v1.4.8)
 
 ---
 
@@ -53,15 +53,15 @@ The release introduced profile validation, on-chain authority resolution, a shar
 
 ### Phase 6: Production Hardening & Iterative Refinement (June – July 2026)
 
-Post-stable work focused on reliability. Subscription health watchdogs, broadcast deadlock recovery at both bot and daemon level, and comprehensive system invariants documentation were added. A series of releases (v1.0.1–v1.3.3) delivered multi-round AMA refits, oversize credit deal splitting with per-operation caps, lock contention reduction, unique bot name enforcement, chart controls, HTML order analysis exports, committed order protection during recovery, price correction queue processing on startup, COW broadcast recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload), centralized node-fallback for BROADCAST_DEADLINE, orphan-fill death spiral resolution, fee cache persistence, credit-only bot mode for MPA workflows, boundary shift recovery after uncertain broadcast discard, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync loop), parallel node connect with `Promise.any`, subscription re-entrancy guards, credential daemon memory leak, order correction reliability, StateManager inline refactor, invariant sabotage prevention, credential daemon signing client cache with session purge, daemon-signing node failover, runtime extraction (COW, fill, state recovery), and active fill polling with stale-watchdog removal.
+Post-stable work focused on reliability: subscription health watchdogs, broadcast deadlock recovery at bot and daemon level, and documented system invariants. Iterative releases (v1.0.1–v1.3.3) delivered multi-round AMA refits, oversize credit deal splitting with per-operation caps, COW broadcast recovery hardening, centralized node-fallback for BROADCAST_DEADLINE, credit-only mode for MPA workflows, credential daemon memory fixes, and runtime extraction (COW, fill, state recovery).
 
 ### Phase 7: Concurrency Model Correction (Late July 2026)
 
-CJS→ESM migration and strict-mode zero-errors across all 99 source files completed the module system transition. Concurrent fill processing and grid reconciliation then exposed flaws in the lock hierarchy and concurrency model. v1.4.1 delivered bot-hang prevention via centralized `withBlockchainRetry` with node failover, 4-layer duplicate CREATE guard, fresh-grid excess cancel fix, timeout death spiral fix, spread correction type filter, and Phase 3 stale surplus cancellation after reconcile. v1.4.2 removed direction bias from spread correction, added precision-based price collision guard, and completed stale-node defense. v1.4.3 added poolRef pinned-pool price derivation, extracted `withTimeout` utility, preserved boundary-shift state across failed COW commits, and fixed SPREAD→BUY crosser handling. v1.4.4 enforced COW invariants (no master patching, retry on failed boundary-shift commit) and consolidated the grid engine (deduplication, dead code removal, export cleanup). v1.4.5 hardened AsyncLock forceRelease safety, grid fatal error guard, persist failure handling, and re-entrancy deadlock removal. v1.4.6 corrected the lock hierarchy (swapped `_syncLock`/`_gridLock` to canonical ascending order, eliminated `gridLockAlreadyHeld` + 8 call sites, restructured grid_reconcile Phase 1/2 [GRID_RECONCILE.md](GRID_RECONCILE.md)), replaced single-value state fields with refcounts/stacks for nesting safety, preserved outer lock identity across nested AsyncLock acquisitions via `Set<symbol>` store, and fixed stale COW fund snapshot, `gapSlots` persistence, phantom order fund inflation, and cross-chunk boundary shift cap. v1.4.7 hardened fund accounting races (verification snapshot TOCTOU fix, `adjustTotalBalance` self-protecting lock, `_adjustTotalBalanceLocked` extraction for clean nesting), fixed startup phantom-order fund inflation, removed sub-minimum remnant orphan check, and resolved the create-cancel loop in Phase 3 reconciliation.
+CJS→ESM migration and strict-mode zero-errors across all source files completed the module transition. The v1.4.x releases that followed corrected the concurrency model — centralized `withBlockchainRetry` with node failover, a 4-layer duplicate CREATE guard, corrected lock hierarchy with refcount/stack state hardening, AsyncLock forceRelease safety, and fund-accounting race hardening — fixing stale COW fund snapshots, phantom-order fund inflation, and the create-cancel loop.
 
 ### Phase 8: Uncertain-Broadcast Safety & Truncated-Read Ambiguity (Late July 2026)
 
-v1.4.8 closed the duplicate-order and ambiguity classes found in an order-engine audit of test vs main. Broadcasts are never blindly re-signed: the credential daemon retries only provably-untransmitted failures, rotating + blacklisting failing nodes via a new shared failure ledger (`daemon_node_health.ts`, `node_failure_ledger.ts`); uncertain outcomes surface as typed `BroadcastUncertainError`/`BROADCAST_DEADLINE` so the COW runtime verifies chain inclusion before re-broadcasting. Truncated `get_full_accounts` reads (the capped window omits the freshest orders) are treated as ambiguous in every absence decision via `readOpenOrdersWithMeta` — cancel-verify, discard, adoption, dust-cancel, recovery, and reconcile defer on empty/truncated snapshots instead of freeing slots/capital or clearing pending-broadcast protection for possibly-live orders. The COW pipeline gained a bounded pre-broadcast stale-plan re-plan (`replanStaleBatch`), commit-refused chain adoption, exactly-once working-grid stack discipline, and a slot-id/boundary-only stale-placement guard. Also fixed the credential daemon load crash that broke the unlock bootstrap handshake and added the reverse `dexbot enable` CLI command.
+v1.4.8 closed the duplicate-order and ambiguity classes found in an order-engine audit of test vs main. Broadcasts are never blindly re-signed — the credential daemon retries only provably-untransmitted failures (per-node pin + rotation + blacklist), and uncertain outcomes surface as typed errors so the COW runtime verifies chain inclusion before re-broadcasting. Truncated `get_full_accounts` reads are treated as ambiguous in every absence decision, so cancel/discard/recovery paths defer instead of freeing slots or capital for possibly-live orders. The COW pipeline also gained bounded stale-plan re-planning and exactly-once working-grid stack discipline.
 
 ---
 
@@ -190,11 +190,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.5 → v1.4.6 | 8 | AsyncLock re-entrancy fix, grid type reassignment on load, refcount/stack hardening of state fields, lock hierarchy correction, stale COW fund snapshot fix, gapSlots persistence, phantom fund inflation fix, boundary shift cap |
 | v1.4.6 → v1.4.7 | 5 | Fund accounting race hardening, phantom-order startup inflation fix, create-cancel loop fix, negative free balance ordering, GRID_RECONCILE.md |
 | v1.4.7 → v1.4.8 | 26 | Uncertain-broadcast duplicate-order safety (verify-before-retry, per-node retry pin + blacklist), truncated-read ambiguity deferral (readOpenOrdersWithMeta), COW stale-plan replan + working-grid stack discipline, fill-authoritative rework, sell-rail re-anchor, orphan auto-cancel wiring, fill-batch fund-invariant deferral |
+| v1.4.8 → v1.4.9 | 2 | LP-collateral credit conversion rate via AMM (pool-derived source), flat CLI aliases (dexbot stop/restart/delete) for monolithic unlock controls |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 2, 2026 (v1.4.8)
-**Total Commits**: 1,948
-**Date Range**: December 2, 2025 – August 2, 2026
+**Last Updated**: August 3, 2026 (v1.4.9)
+**Total Commits**: 1,950
+**Date Range**: December 2, 2025 – August 3, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.9] - 2026-08-03 - LP-Collateral Credit Conversion Rate, Top-Level Unlock Control Aliases
+
+### 2026-08-03
+
+- **Fix**: `_resolveCreditConversionRate` could not price pool-share collateral — the offer's `acceptable_collateral` map only carries a direct base/quote price, and a liquidity pool token has no such pair against the debt asset, producing repeated "unable to resolve credit offer price ... no usable last known price" warnings and freezing the collateral group's budget. When the collateral asset has `for_liquidity_pool`, the rate is now derived via `deriveLiquidityPoolTokenValue` (prices both pool reserve assets against the debt asset), cached/persisted with source `pool-derived`, falling back to the existing cached/missing path so non-pool behavior is unchanged; mirrors the existing `_calculateCollateralValueInDebtAsset` pool-token handling (`modules/credit_runtime.ts`).
+- **Test**: `testLpCollateralResolvesCreditConversionRate` covers debt against a pool-share collateral and asserts a positive pool-derived rate (`tests/test_credit_runtime.ts`).
+- **Feat**: add `dexbot stop`, `dexbot restart`, and `dexbot delete` as top-level aliases for the `unlock stop|restart|delete` monolithic controls; the shared switch case spawns `dist/unlock.js` with the resolved command and forwards all remaining args (targets like `all` or a bot name pass through). New aliases `stp`/`stopall` → `stop` and `restartall` → `restart` (`dexbot.ts`).
+- **Docs**: update README and unlock doc comment/runtime hints to the flat `dexbot stop|restart|delete` forms, removing the duplicated `dexbot unlock` / `dexbot stat` entries (`README.md`, `unlock.ts`).
+
 ## [1.4.8] - 2026-08-01 - Uncertain-Broadcast Duplicate-Order Safety, Truncated-Read Ambiguity, COW Stale-Plan Replan
 
 ### 2026-08-01
