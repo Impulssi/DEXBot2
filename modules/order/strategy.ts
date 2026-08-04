@@ -50,7 +50,7 @@
 
 import { ORDER_TYPES, ORDER_STATES } from '../constants';
 import { calculateGapSlots } from './grid';
-import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes } from './utils/order';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order';
 import { assignGridRoles } from './utils/order';
 import {
     virtualizeOrder,
@@ -238,7 +238,7 @@ class StrategyEngine {
         updatedSlots.forEach((s: any) => this.manager.logger.log(`  Slot ${s.id}: price=${s.price}, size=${s.size ?? 'n/a'}, type=${s.type}`, 'debug'));
 
         // 3. Calculate Ideal Sizes (Budgeting)
-        const totalTarget = Math.max(0, config.activeOrders?.buy ?? 1) + Math.max(0, config.activeOrders?.sell ?? 1);
+        const totalTarget = getActiveOrdersTotal(config);
         const budgetBuy = getSideBudget('buy', funds, config, totalTarget);
         const budgetSell = getSideBudget('sell', funds, config, totalTarget);
         

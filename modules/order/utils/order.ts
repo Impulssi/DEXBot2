@@ -1297,6 +1297,18 @@ function adjustBudgetForBtsFees(allocated: any, isBtsSide: any, formulaBudget: a
 }
 
 /**
+ * Total target order count across both sides (used for BTS fee calculation).
+ * Single source of truth so every budget derivation sizes identically.
+ *
+ * @param {Object} config - Bot configuration
+ * @returns {number} Total target order count
+ */
+function getActiveOrdersTotal(config: any) {
+    return Math.max(0, config?.activeOrders?.buy ?? 1) +
+        Math.max(0, config?.activeOrders?.sell ?? 1);
+}
+
+/**
  * Calculate side budget after BTS fee deduction.
  *
  * @param {string} side - 'buy' or 'sell'
@@ -1374,5 +1386,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
     );
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
 

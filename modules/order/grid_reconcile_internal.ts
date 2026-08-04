@@ -10,7 +10,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
 import { readOpenOrdersGuarded } from '../chain_orders';
 import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, calculateGapSlots as calculateGapSlotsFromMath } from './utils/math';
-import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot } from './utils/order';
+import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order';
 import { resolveAccountRef } from './utils/system';
 import * as Format from './format';
 import { getErrorMessage } from '../utils/errors';
@@ -37,6 +37,72 @@ function _countActiveOnGrid(manager: any, type: any): number {
     const active = manager.getOrdersByTypeAndState(type, ORDER_STATES.ACTIVE).filter((o: any) => o && o.orderId);
     const partial = manager.getOrdersByTypeAndState(type, ORDER_STATES.PARTIAL).filter((o: any) => o && o.orderId);
     return active.length + partial.length;
+}
+
+/**
+ * Re-derive ideal budgeted sizes for every in-rail slot on a side by mirroring
+ * the strategy's full-side sizing (getSideBudget + calculateBudgetedSizes).
+ * Built once per _pickVirtualSlotsToActivate call to keep the pick loop O(n)
+ * (callers look up derived size by slot id).
+ *
+ * This handles the "replay the grid shift" case: when a boundary-adjacent slot
+ * was virtualized with size 0 by stale-order cleanup (recoverExplicitStaleOrders),
+ * it is skipped by the size >= effectiveMin filter and never re-placed, so the
+ * reconcile backfills far-end slots instead of the boundary. Re-deriving the
+ * size from the live fund snapshot restores a real size for such slots so they
+ * become pickable and get re-placed at the boundary.
+ *
+ * Returns an empty map when the side budget cannot be derived (no funds
+ * snapshot, no weight distribution, non-positive budget) — callers then fall
+ * through to the stored size, preserving legacy behavior.
+ *
+ * @param {Object} manager - OrderManager instance.
+ * @param {string} type - ORDER_TYPES value.
+ * @returns {Map<string, number>} Derived budgeted size keyed by slot id.
+ * @private
+ */
+function _deriveBudgetedSideSizes(manager: any, type: any): Map<string, number> {
+    const derived = new Map<string, number>();
+    if (typeof manager?.getChainFundsSnapshot !== 'function') return derived;
+    const weightDist = manager.config?.weightDistribution;
+    if (!weightDist) return derived;
+
+    let funds;
+    try {
+        funds = manager.getChainFundsSnapshot();
+    } catch (e: any) {
+        return derived;
+    }
+    if (!funds) return derived;
+
+    const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
+    const totalTarget = getActiveOrdersTotal(manager.config);
+    const budget = getSideBudget(side, funds, manager.config, totalTarget);
+    if (!(budget > 0)) return derived;
+
+    const allSideSlots = (Array.from(manager.orders.values()) as any[])
+        .filter((o: any) => o && o.price != null && o.type === type)
+        .sort((a: any, b: any) => a.price - b.price);
+    if (allSideSlots.length === 0) return derived;
+
+    let sizes;
+    try {
+        sizes = calculateBudgetedSizes(
+            allSideSlots,
+            side,
+            budget,
+            weightDist[side],
+            manager.config.incrementPercent,
+            manager.assets
+        );
+    } catch (e: any) {
+        return derived;
+    }
+
+    allSideSlots.forEach((s: any, i: number) => {
+        derived.set(s.id, (Number(sizes?.[i]) || 0));
+    });
+    return derived;
 }
 
 /**
@@ -82,13 +148,31 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     } catch (e: any) { effectiveMin = 0; }
 
     const valid: any[] = [];
+    // Derived budgeted size per slot, built once (O(n)) so below-min lookups
+    // don't recompute full-side sizing for every candidate (avoid O(n²)).
+    const derivedSizes = _deriveBudgetedSideSizes(manager, type);
     for (const slot of slotsOfType) {
         if (valid.length >= count) break;
         if (!slot.orderId && slot.state === ORDER_STATES.VIRTUAL) {
             // Role invariant: Only pick slots that make sense for this type based on current market pivot
             // (Strategy will enforce this strictly, but we filter here for cleaner activation)
-            if (slot.id && (Number(slot.size) || 0) >= effectiveMin) {
-                valid.push(slot);
+            const storedSize = Number(slot.size) || 0;
+            let effectiveSize = storedSize;
+
+            // Replay the grid shift: a boundary-adjacent slot virtualized with
+            // size 0 by stale-order cleanup is un-pickable (below effectiveMin)
+            // and never re-placed, so the reconcile backfills far-end slots
+            // instead. Re-derive its budgeted size so it becomes pickable and
+            // gets re-placed at the boundary with a real, funded size.
+            if (effectiveSize < effectiveMin) {
+                const derived = derivedSizes.get(slot.id);
+                if (derived != null && derived >= effectiveMin) {
+                    effectiveSize = derived;
+                }
+            }
+
+            if (slot.id && effectiveSize >= effectiveMin) {
+                valid.push(effectiveSize === storedSize ? slot : { ...slot, size: effectiveSize });
             }
         }
     }

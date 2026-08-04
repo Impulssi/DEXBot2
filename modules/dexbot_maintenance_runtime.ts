@@ -43,6 +43,7 @@ function updateDynamicGridSnapshotSync(...args: any) { return require('../market
 function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
 function formatUnmatchedChainOrder(...args: any) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
 function getSideBudget(...args: any) { return require('./order/utils/order').getSideBudget(...args); }
+function getActiveOrdersTotal(config: any) { return require('./order/utils/order').getActiveOrdersTotal(config); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function isOrderOnChain(...args: any) { return require('./order/utils/order').isOrderOnChain(...args); }
 function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
@@ -155,9 +156,7 @@ function _hasBudgetForSide(manager: any, config: any, side: any) {
         if (!funds) return true;
         const allocated = side === 'buy' ? (funds.allocatedBuy || 0) : (funds.allocatedSell || 0);
         if (allocated <= 0) return false;
-        const targetBuy = Math.max(0, config?.activeOrders?.buy ?? 1);
-        const targetSell = Math.max(0, config?.activeOrders?.sell ?? 1);
-        const totalTarget = targetBuy + targetSell;
+        const totalTarget = getActiveOrdersTotal(config);
         const budget = getSideBudget(side, funds, config, totalTarget);
         return budget > 0;
     } catch { return true; }
@@ -1630,6 +1629,12 @@ async function executeMaintenanceLogic(bot: any, context: any) {
 
             const divergence = await grid.monitorDivergence(bot.manager, calculatedGrid, persistedGridData);
 
+            // Runtime lockout for the spread check below: when divergence
+            // corrections end in a pending boundary-shift retry, spread
+            // correction this tick is skipped because placing orders against a
+            // stale boundary before the retry re-derives it would be a TOCTOU.
+            let boundaryShiftPending = false;
+
             if (divergence.needsUpdate) {
                 const hasRmsDivergence = !!(divergence.buy.rms || divergence.sell.rms);
                 if (divergence.buy.ratio || divergence.sell.ratio) {
@@ -1680,19 +1685,37 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                         'warn'
                     );
                     setTimeout(() => runGridMaintenance(bot, 'failed-commit-retry', { skipIdle: true }), 0);
+                    boundaryShiftPending = true;
                 } else if (dcResult && !dcResult.committed && dcResult.boundaryChanged) {
                     bot._log(
                         `[DIVERGENCE-COW] Boundary-shift commit blocked (reason=${dcResult.reason}); ` +
                         `deferring retry to next fill/sync cycle`,
                         'warn'
                     );
-                } else {
-                    const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
-                    if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;
-                    if (spreadResult && spreadResult.ordersPlaced > 0) {
-                        bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
-                        await bot._persistAndRecoverIfNeeded();
-                    }
+                    boundaryShiftPending = true;
+                }
+            }
+
+            // Independent spread check — intentionally NOT gated behind divergence
+            // detection. Divergence measures internal grid-vs-ideal structure (fund
+            // ratio / RMS drift); a wide realized spread can exist even when the
+            // grid looks internally consistent — e.g. after a stale-order cleanup
+            // zeroed boundary-adjacent sell slots and a reconcile backfilled far-end
+            // slots instead (order count restored 20/20, so divergence never flags).
+            // Running the spread check here every pipeline-empty tick catches that
+            // case via prepareSpreadCorrectionOrders' orphaned-virtual candidates.
+            //
+            // The ONLY skip is a pending boundary-shift commit: placing orders
+            // against a stale boundary before the retry re-derives it would be
+            // a TOCTOU. checkSpreadCondition itself holds _gridLock, uses the
+            // committed boundary, and re-plans on fund change, so this tick is
+            // race-safe whenever it does run.
+            if (!boundaryShiftPending) {
+                const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
+                if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;
+                if (spreadResult && spreadResult.ordersPlaced > 0) {
+                    bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
+                    await bot._persistAndRecoverIfNeeded();
                 }
             }
         } catch (err: any) {
@@ -1888,9 +1911,7 @@ async function checkBtsBalanceAndAcquire(bot: any) {
 
     if (!bot.manager || !bot.manager.btsBalance) return;
 
-    const targetBuy = Math.max(0, bot.config.activeOrders?.buy ?? 1);
-    const targetSell = Math.max(0, bot.config.activeOrders?.sell ?? 1);
-    const totalTarget = targetBuy + targetSell;
+    const totalTarget = getActiveOrdersTotal(bot.config);
 
     const btsReservationMultiplier = bot.config?.feeParams?.BTS_RESERVATION_MULTIPLIER;
     const minBtsVal = calculateOrderCreationFees(

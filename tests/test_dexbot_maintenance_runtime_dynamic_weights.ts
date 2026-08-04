@@ -1056,6 +1056,169 @@ async function testRmsDivergenceRunsFullGridResync() {
     );
 }
 
+function installSpreadTestModules(opts: {
+    divergence: any;
+    applyCorrections: any;
+}) {
+    setCachedModule(bitsharesClientPath, { BitShares: {} });
+    setCachedModule(constantsPath, {
+        ORDER_STATES: { ACTIVE: 'active', PARTIAL: 'partial' },
+        ORDER_TYPES: { BUY: 'buy', SELL: 'sell' },
+        TIMING: {},
+        MAINTENANCE: {},
+        GRID_LIMITS: {},
+        LOGGING_CONFIG: {},
+    });
+    setCachedModule(systemPath, {
+        retryPersistenceIfNeeded: async () => {},
+        applyGridDivergenceCorrections: opts.applyCorrections,
+        loadAmaCenterSnapshot: () => null,
+        parseJsonWithComments: (text) => JSON.parse(text),
+    });
+    setCachedModule(gridPath, {
+        monitorDivergence: async () => opts.divergence,
+    });
+    setCachedModule(formatPath, {
+        formatPrice6: (value) => fixedTo(value, 6),
+    });
+    setCachedModule(orderUtilsPath, {
+        virtualizeOrder: (order) => order,
+    });
+    setCachedModule(accountBotsPath, {
+        isBotDynamicWeightWhitelisted: () => false,
+        resetMarketAdapterWhitelistCache: () => {},
+    });
+    setCachedModule(marketAdapterRuntimePath, {
+        getSharedMarketAdapterRuntime: () => ({
+            syncBot: async () => ({ running: false, started: false, stopped: false }),
+            releaseBot: async () => ({ running: false, stopped: false }),
+        }),
+    });
+}
+
+function makeSpreadTestSelf(opts: {
+    botKey: string;
+    logs: string[];
+    markSpreadChecked: () => void;
+    markResync?: () => void;
+}) {
+    return {
+        config: {
+            botKey: opts.botKey,
+            dryRun: true,
+            weightDistribution: { sell: 0.6, buy: 0.4 },
+        },
+        _baseWeightDistribution: { sell: 0.6, buy: 0.4 },
+        _maintenanceCooldownCycles: 0,
+        _dustSinceMap: new Map(),
+        manager: {
+            config: {
+                weightDistribution: { sell: 0.6, buy: 0.4 },
+            },
+            orders: new Map([
+                ['buy-0', { id: 'buy-0', type: 'buy', price: 1, size: 1 }],
+            ]),
+            recalculateFunds: async () => {},
+            _clearStaleBroadcastFlag: () => {},
+            clearStalePipelineOperations: () => {},
+            isPipelineEmpty: () => ({ isEmpty: true }),
+            checkGridHealth: async () => ({ buyDustOrders: [], sellDustOrders: [] }),
+            checkSpreadCondition: async () => {
+                opts.markSpreadChecked();
+                return null;
+            },
+        },
+        accountOrders: {
+            loadGrid: () => [{ id: 'buy-0', type: 'buy', price: 1, size: 1 }],
+        },
+        _getPipelineSignals: () => ({}),
+        _cancelDustOrders: async () => ({ cancelledCount: 0, batchResult: null }),
+        _abortFlowIfIllegalState: async () => false,
+        _autoCancelOneUnmatchedOrphan: async () => ({ cancelled: false, reason: 'test-noop' }),
+        _performGridResync: async () => {
+            opts.markResync?.();
+            return true;
+        },
+        updateOrdersOnChainBatch: async () => {},
+        updateOrdersOnChainPlan: async () => {},
+        _persistAndRecoverIfNeeded: async () => {},
+        _log: (msg) => opts.logs.push(String(msg)),
+        _warn: (msg) => opts.logs.push(`WARN:${msg}`),
+    };
+}
+
+async function testSpreadCheckRunsWithoutDivergence() {
+    delete require.cache[runtimePath];
+
+    let spreadChecked = false;
+    let correctionCalled = false;
+    let resyncCalled = false;
+
+    // Incidents scenario: the grid is internally consistent (order count was
+    // restored to 20/20) so divergence is NOT flagged, yet the realized spread
+    // is wide. The spread check must still run on this pipeline-empty tick.
+    installSpreadTestModules({
+        applyCorrections: async (_1: any, _2: any, _3: any, _4: any, _5: any) => {
+            correctionCalled = true;
+        },
+        divergence: {
+            needsUpdate: false,
+            buy: { updated: false, ratio: false, rms: false, metric: 0 },
+            sell: { updated: false, ratio: false, rms: false, metric: 0 },
+        },
+    });
+
+    const { executeMaintenanceLogic } = require(runtimePath);
+    await executeMaintenanceLogic(
+        makeSpreadTestSelf({
+            botKey: 'spread-no-divergence-bot-0',
+            logs: [],
+            markSpreadChecked: () => { spreadChecked = true; },
+            markResync: () => { resyncCalled = true; },
+        }),
+        'unit-test-no-divergence'
+    );
+
+    assert.strictEqual(correctionCalled, false, 'no divergence → no divergence corrections should run');
+    assert.strictEqual(resyncCalled, false, 'no divergence → no grid resync should run');
+    assert.strictEqual(spreadChecked, true, 'spread check must run on a pipeline-empty tick even when divergence is not flagged');
+
+    console.log('✓ spread check runs without divergence (no-divergence tick)');
+}
+
+async function testSpreadCheckSkippedOnPendingBoundaryShift() {
+    delete require.cache[runtimePath];
+
+    let spreadChecked = false;
+
+    installSpreadTestModules({
+        applyCorrections: async () => ({
+            committed: false,
+            boundaryChanged: true,
+            reason: 'RECOVERY_EXHAUSTED',
+        }),
+        divergence: {
+            needsUpdate: true,
+            buy: { ratio: true, rms: false, metric: 1 },
+            sell: { ratio: false, rms: false, metric: 0 },
+        },
+    });
+
+    const { executeMaintenanceLogic } = require(runtimePath);
+    await executeMaintenanceLogic(
+        makeSpreadTestSelf({
+            botKey: 'spread-boundary-pending-bot-0',
+            logs: [],
+            markSpreadChecked: () => { spreadChecked = true; },
+        }),
+        'unit-test-boundary-pending'
+    );
+
+    assert.strictEqual(spreadChecked, false, 'spread check must be skipped when a boundary-shift commit is pending');
+
+    console.log('✓ spread check skipped on pending boundary-shift commit');
+}
+
 async function testDexbotClassPerformGridResyncForwardsOptions() {
     delete require.cache[dexbotClassPath];
 
@@ -1158,6 +1321,8 @@ async function main() {
         await testMarketAdapterBootstrapTriggerResetRecordsBootstrapSource();
         await testMarketAdapterSlopeTriggerResetRecordsSlopeSource();
         await testRmsDivergenceRunsFullGridResync();
+        await testSpreadCheckRunsWithoutDivergence();
+        await testSpreadCheckSkippedOnPendingBoundaryShift();
         await testDexbotClassPerformGridResyncForwardsOptions();
         console.log('dexbot maintenance runtime dynamic weight tests passed');
     } finally {
