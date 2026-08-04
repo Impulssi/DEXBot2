@@ -152,6 +152,7 @@ import {
     isOrderPlaced,
     hasOnChainId,
     isEmptyGridSlot,
+    parseSlotIndex,
     calculateIdealBoundary,
     assignGridRoles,
     resolveOnChainRetypeType
@@ -710,7 +711,14 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                  // `type === SPREAD` count would include every empty slot on both
                  // rails.  countGapBandSpread requires both SPREAD type and band
                  // geometry (target = gapSlots).
-                 const spreadCount = countGapBandSpread(manager, grid, (_o: any, i: number) => i);
+                 // Index resolution: prefer the parsed slot id (price-monotonic
+                 // at creation) so the count is order-independent, matching the
+                 // accountant (accounting.ts).  Fall back to array position only
+                 // for ids that are not grid slot ids.
+                 const spreadCount = countGapBandSpread(manager, grid, (o: any, i: number) => {
+                     const idx = parseSlotIndex(o?.id);
+                     return idx === null ? i : idx;
+                 });
                  manager.initialSpreadCount = spreadCount;
                  manager.currentSpreadCount = spreadCount;
 
@@ -2338,6 +2346,12 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         // against a boundary that was never atomically committed to manager.orders.
         const resolved = resolveGapBand(manager);
         const gapSlots = resolved.gapSlots;
+        const boundaryKnown = resolved.boundaryIdx !== null && resolved.sellStartIdx !== null;
+        // NOTE: `?? 0` keeps the legacy classification fallback (boundary not
+        // restored yet → treat as bottom of the rail) so the correction can still
+        // act on concrete BUY/SELL candidates.  Boundary PROMOTION is gated on
+        // `boundaryKnown` below: deriving a new boundary from a fabricated 0 would
+        // silently commit a boundary that was never real.
         const buyEndIdx = resolved.boundaryIdx ?? 0;
         const sellStartIdx = resolved.sellStartIdx ?? getSellStartIdx(buyEndIdx, gapSlots);
         const getSlotCorrectType = (slot: any): string => {
@@ -2400,8 +2414,14 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         // nearest empty slots are still in the gap band. Promote contiguous
         // empty gap slots from that rail edge so correction can repair the
         // boundary and place orders in one atomic COW commit.
+        //
+        // Requires a KNOWN committed boundary: with a null/unknown boundary the
+        // rail edges are fabricated (buyEndIdx=0), so promotion would place
+        // orders at arbitrary prices and return a boundary derived from that
+        // fiction.  Without promotion there is nothing to commit, so falling
+        // back to the pre-existing candidate paths is safe.
         const promotedCandidates: any[] = [];
-        if (orphanedVirtualCandidates.length + typedSpreadCandidates.length < missingSlots) {
+        if (boundaryKnown && orphanedVirtualCandidates.length + typedSpreadCandidates.length < missingSlots) {
             const rawQuota = missingSlots - orphanedVirtualCandidates.length - typedSpreadCandidates.length;
             promotedCandidates.push(..._collectPromotableBoundarySlots(
                 allSlotsByPrice,
@@ -2426,6 +2446,22 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             ...typedSpreadCandidates.slice(0, remainingQuota),
             ...promotedCandidates
         ];
+
+        // Dedupe by slot id: an empty in-rail slot typed SPREAD (normalized) now
+        // qualifies for BOTH orphanedVirtualCandidates and typedSpreadCandidates
+        // (both accept SPREAD type + rail geometry), so a single slot can be
+        // planned twice.  Duplicate CREATEs would inflate the sizing denominator
+        // (diluting every order), mislead the plan counts, and get dropped by the
+        // COW same-batch collision filter anyway.  Keep the first occurrence
+        // (orphaned-priority — those already occupy correct grid positions).
+        {
+            const seenSlotIds = new Set<string>();
+            spreadCandidates = spreadCandidates.filter((c: any) => {
+                if (!c?.id || seenSlotIds.has(c.id)) return false;
+                seenSlotIds.add(c.id);
+                return true;
+            });
+        }
 
         // P2: Filter out candidates whose price already has a placed order from any slot.
         // This prevents creating a duplicate order at the same price when a prior cycle's

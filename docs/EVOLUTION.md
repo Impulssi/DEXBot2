@@ -191,11 +191,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.6 → v1.4.7 | 5 | Fund accounting race hardening, phantom-order startup inflation fix, create-cancel loop fix, negative free balance ordering, GRID_RECONCILE.md |
 | v1.4.7 → v1.4.8 | 26 | Uncertain-broadcast duplicate-order safety (verify-before-retry, per-node retry pin + blacklist), truncated-read ambiguity deferral (readOpenOrdersWithMeta), COW stale-plan replan + working-grid stack discipline, fill-authoritative rework, sell-rail re-anchor, orphan auto-cancel wiring, fill-batch fund-invariant deferral |
 | v1.4.8 → v1.4.9 | 2 | LP-collateral credit conversion rate via AMM (pool-derived source), flat CLI aliases (dexbot stop/restart/delete) for monolithic unlock controls |
+| v1.4.9 → v1.4.10 | 10 | Empty-slot normalization and spread boundary promotion, LP pool-share supply pricing fix, spread check independent of divergence, boundary-slot reconcile re-derivation, validation/broadcast dedup refactor, credit-unlock background daemon, test-suite runtime cut |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 3, 2026 (v1.4.10)
-**Total Commits**: 1,955
-**Date Range**: December 2, 2025 – August 3, 2026
+**Last Updated**: August 4, 2026 (v1.4.10)
+**Total Commits**: 1,964
+**Date Range**: December 2, 2025 – August 4, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

@@ -192,10 +192,115 @@ async function testPartialPlacementBoundaryPromotion() {
     console.log(`  PASS: partial placement boundary moves by placed count (${placedCount} of 4)`);
 }
 
+async function testNullBoundaryBlocksPromotion() {
+    console.log('Running test: NULL-boundary blocks boundary promotion');
+
+    // Fresh grid: all slots empty SPREAD VIRTUAL, no boundary restored yet
+    // (manager.boundaryIdx = null).  The spread-correction fallback fabricates
+    // boundary 0 for classification, but boundary PROMOTION must not run off
+    // that fiction: pre-fix this layout promoted gap slots 1-2 and returned
+    // boundaryIdx=2 (committed via COW from a boundary that was never real).
+    const manager = new OrderManager({
+        assetA: 'BASE',
+        assetB: 'QUOTE',
+        startPrice: 1,
+        botFunds: { buy: 1000, sell: 1000 },
+        activeOrders: { buy: 4, sell: 4 },
+        incrementPercent: 1,
+        targetSpreadPercent: 1
+    });
+    manager.assets = {
+        assetA: { id: '1.3.1', symbol: 'BASE', precision: 5 },
+        assetB: { id: '1.3.2', symbol: 'QUOTE', precision: 5 }
+    };
+
+    for (let i = 0; i < 8; i++) {
+        await manager._updateOrder({
+            id: `slot-${i}`,
+            price: 1 + i * 0.01,
+            type: ORDER_TYPES.SPREAD,
+            state: ORDER_STATES.VIRTUAL,
+            size: 0,
+            orderId: ''
+        });
+    }
+    manager.boundaryIdx = null;
+    manager._gapSlots = 2;
+    await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    await manager.recalculateFunds();
+
+    const correction = await Grid.prepareSpreadCorrectionOrders(manager, ORDER_TYPES.BUY, 5);
+
+    assert.strictEqual(correction.boundaryIdx, undefined,
+        'Must not return a boundary derived from the null fallback');
+    const placedIds = correction.ordersToPlace?.map((o: any) => o.id) || [];
+    assert.ok(placedIds.every((id: string) => id === 'slot-0'),
+        `Must not promote gap slots off a fabricated boundary (placed=${placedIds.join(',')})`);
+
+    console.log('  PASS: unknown boundary disables boundary promotion entirely');
+}
+
+async function testNoDuplicateInRailSlot() {
+    console.log('Running test: empty in-rail slot not planned twice');
+
+    // Layout: BUY 0-1 ACTIVE, slot-2 = empty in-rail SPREAD (correctType BUY
+    // under boundary 2), gap 3-4, SELL 5-7 VIRTUAL.  slot-2 qualifies for BOTH
+    // orphanedVirtualCandidates and typedSpreadCandidates (both accept SPREAD
+    // type + rail geometry), so pre-fix it was planned twice — inflating the
+    // sizing denominator and misreporting the plan count.
+    const manager = new OrderManager({
+        assetA: 'BASE',
+        assetB: 'QUOTE',
+        startPrice: 1,
+        botFunds: { buy: 1000, sell: 1000 },
+        activeOrders: { buy: 4, sell: 0 },
+        incrementPercent: 1,
+        targetSpreadPercent: 1
+    });
+    manager.assets = {
+        assetA: { id: '1.3.1', symbol: 'BASE', precision: 5 },
+        assetB: { id: '1.3.2', symbol: 'QUOTE', precision: 5 }
+    };
+
+    for (let i = 0; i < 8; i++) {
+        const isBuy = i <= 1;
+        const type = isBuy ? ORDER_TYPES.BUY : ORDER_TYPES.SPREAD;
+        const state = isBuy ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
+        const size = isBuy ? 10 : 0;
+        const orderId = isBuy ? `1.7.${100 + i}` : '';
+        await manager._updateOrder({
+            id: `slot-${i}`,
+            price: 1 + i * 0.01,
+            type,
+            state,
+            size,
+            orderId
+        });
+    }
+    manager.boundaryIdx = 2;
+    manager._gapSlots = 2;
+    await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    await manager.recalculateFunds();
+
+    const correction = await Grid.prepareSpreadCorrectionOrders(manager, ORDER_TYPES.BUY, 2);
+
+    const placedIds = correction.ordersToPlace?.map((o: any) => o.id) || [];
+    assert.strictEqual(new Set(placedIds).size, placedIds.length,
+        `Each slot id must be planned at most once (placed=${placedIds.join(',')})`);
+    assert.strictEqual(
+        placedIds.filter((id: string) => id === 'slot-2').length, 1,
+        'slot-2 should be planned exactly once'
+    );
+
+    console.log('  PASS: overlapping candidate filters no longer duplicate a slot');
+}
+
 async function runAll() {
     await testSpreadBoundaryPromotion();
     await testSellSideBoundaryPromotion();
     await testPartialPlacementBoundaryPromotion();
+    await testNullBoundaryBlocksPromotion();
+    await testNoDuplicateInRailSlot();
     console.log('✓ All spread boundary promotion tests passed');
 }
 
