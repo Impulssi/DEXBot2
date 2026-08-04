@@ -145,12 +145,16 @@ async function runTests() {
         console.log('  ✓ Phantom order excluded from placedCount');
     }
 
-    // Test 9: loadGrid stale virtual slot type reassignment
+    // Test 9: loadGrid stale slot type reassignment + empty-slot normalization
     // A grid with boundary=5 and gapSlots=4 (for 0.3% inc, 1.5% target) should have:
     //   slots 0-5: BUY
     //   slots 6-9: SPREAD
     //   slots 10+: SELL
     // We feed it with stale types and verify loadGrid corrects them.
+    //
+    // OPTION A INVARIANT: empty VIRTUAL slots (size 0, no orderId) are
+    // side-neutral and are normalized to SPREAD regardless of zone.  Only
+    // non-empty or on-chain slots carry the geometric BUY/SELL/SPREAD type.
     {
         const step = 1.003;
         const grid = [
@@ -203,30 +207,23 @@ async function runTests() {
         // Check that stale types were corrected
         const getType = (id: string) => mgr.orders.get(id)?.type;
 
-        // Slot-0: index 0 ≤ 5 → should be BUY (was SPREAD)
-        assert.strictEqual(getType('slot-0'), 'buy', 'slot-0 (index 0) should be BUY');
-        // Slot-1: index 1 ≤ 5 → should be BUY (was SELL)
-        assert.strictEqual(getType('slot-1'), 'buy', 'slot-1 (index 1) should be BUY');
-        // Slot-2: already BUY → should remain BUY
-        assert.strictEqual(getType('slot-2'), 'buy', 'slot-2 should remain BUY');
-        // Slot-3: ACTIVE on-chain — type corrected to BUY because
-        // index 3 is within the BUY zone (boundary=5, gapSlots=4 → buyEndIdx=5).
-        // Subsequent sync detects the chain mismatch and cancels/recreates.
+        // All empty (size-0, no orderId) VIRTUAL slots are side-neutral SPREAD
+        // regardless of zone (Option A normalizer).
+        assert.strictEqual(getType('slot-0'), 'spread', 'slot-0 (empty virtual) should be SPREAD');
+        assert.strictEqual(getType('slot-1'), 'spread', 'slot-1 (empty virtual) should be SPREAD');
+        assert.strictEqual(getType('slot-2'), 'spread', 'slot-2 (empty virtual) should be SPREAD');
+        assert.strictEqual(getType('slot-4'), 'spread', 'slot-4 (empty virtual) should be SPREAD');
+        assert.strictEqual(getType('slot-5'), 'spread', 'slot-5 (empty virtual) should be SPREAD');
+        assert.strictEqual(getType('slot-6'), 'spread', 'slot-6 (empty virtual) should be SPREAD');
+        assert.strictEqual(getType('slot-7'), 'spread', 'slot-7 (empty virtual) should be SPREAD');
+        assert.strictEqual(getType('slot-8'), 'spread', 'slot-8 (empty virtual) should be SPREAD');
+        assert.strictEqual(getType('slot-9'), 'spread', 'slot-9 (empty virtual) should be SPREAD');
+        assert.strictEqual(getType('slot-10'), 'spread', 'slot-10 (empty virtual) should be SPREAD');
+
+        // Slot-3: ACTIVE on-chain with size — corrected to BUY by geometry
+        // (index 3 within BUY zone).  Subsequent sync detects the chain
+        // mismatch and cancels/recreates.
         assert.strictEqual(getType('slot-3'), 'buy', 'slot-3 (active on-chain) corrected to BUY');
-        // Slot-4: index 4 ≤ 5 → should be BUY (was SPREAD)
-        assert.strictEqual(getType('slot-4'), 'buy', 'slot-4 (index 4) should be BUY');
-        // Slot-5: index 5 ≤ 5 → should be BUY (was SELL)
-        assert.strictEqual(getType('slot-5'), 'buy', 'slot-5 (index 5) should be BUY');
-        // Slot-6: index 6 is in gap [6,7] → should be SPREAD (was BUY)
-        assert.strictEqual(getType('slot-6'), 'spread', 'slot-6 (index 6) should be SPREAD');
-        // Slot-7: index 7 is in gap [6,7] → should be SPREAD (was SELL)
-        assert.strictEqual(getType('slot-7'), 'spread', 'slot-7 (index 7) should be SPREAD');
-        // Slot-8: index 8 < 10 → in spread zone → should be SPREAD (was SPREAD, stays SPREAD)
-        assert.strictEqual(getType('slot-8'), 'spread', 'slot-8 (index 8) should stay SPREAD');
-        // Slot-9: index 9 < 10 → in spread zone → should be SPREAD (was BUY)
-        assert.strictEqual(getType('slot-9'), 'spread', 'slot-9 (index 9) should be SPREAD');
-        // Slot-10: index 10 ≥ 10 → should be SELL (was SPREAD)
-        assert.strictEqual(getType('slot-10'), 'sell', 'slot-10 (index 10) should be SELL');
 
         const reassignLog = capturedLogs.find((l: string) => l.includes('Reassigned'));
         assert.ok(reassignLog, 'loadGrid should log [GRID-LOAD] Reassigned N stale virtual slot type(s)');

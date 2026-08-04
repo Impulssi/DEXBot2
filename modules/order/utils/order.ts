@@ -911,7 +911,7 @@ function calculateFundDrivenBoundary(allSlots: any, availA: any, availB: any, pr
  * @param {boolean} [options.assignOnChain=false] - Override on-chain orders if true
  * @returns {Array<Object>} Slots with updated type assignments
  */
-function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_TYPES: any, _ORDER_STATES: any, options: { assignOnChain?: boolean; getCurrentSlot?: (id: any) => any } = {}) {
+function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_TYPES: any, ORDER_STATES: any, options: { assignOnChain?: boolean; getCurrentSlot?: (id: any) => any } = {}) {
     const assignOnChain = options.assignOnChain === true;
     const getCurrentSlot = (typeof options.getCurrentSlot === 'function') ? options.getCurrentSlot : null;
     const buyEndIdx = boundaryIdx;
@@ -919,6 +919,29 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
 
     return allSlots.map((slot: any, i: any) => {
         const liveSlot = getCurrentSlot ? (getCurrentSlot(slot.id) || slot) : slot;
+
+        // Empty VIRTUAL slots (size 0, no orderId) are side-neutral SPREAD
+        // during grid load — a stale BUY/SELL type on an empty slot misleads
+        // candidate-selection code that picks by stored type.  Force SPREAD
+        // so the stored type never pre-biases which side reuses the slot.
+        //
+        // Only apply during non-assignOnChain paths (loadGrid, recalculateGrid
+        // without boundary shift).  When assignOnChain is true, geometry must
+        // win: strategy (calculateTargetGrid) and boundary-shift code re-type
+        // empty slots by position so they appear in the correct rail's budget
+        // and can be activated on the correct side.
+        if (!assignOnChain) {
+            const isEmptySlot = slot.type !== null
+                && !isOrderOnChain(liveSlot)
+                && liveSlot.state === ORDER_STATES.VIRTUAL
+                && !liveSlot.orderId
+                && Number(liveSlot.size || 0) === 0;
+            if (isEmptySlot) {
+                if (slot.type === ORDER_TYPES.SPREAD) return slot;
+                return { ...slot, type: ORDER_TYPES.SPREAD };
+            }
+        }
+
         const newType = (i <= buyEndIdx) ? ORDER_TYPES.BUY : (i >= sellStartIdx) ? ORDER_TYPES.SELL : ORDER_TYPES.SPREAD;
         if (slot.type === newType) return slot;
 

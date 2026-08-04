@@ -32,7 +32,7 @@ function createMockManager(buyFunds = 10000, sellFunds = 100, startPrice = 100) 
     };
 
     manager.boundaryIdx = 0;
-    manager.targetSpreadCount = 2;
+    manager.initialSpreadCount = 2;
     manager.outOfSpread = 0;
 
     manager.logger = createTestLogger({ includeFundsStatus: false });

@@ -1746,7 +1746,7 @@ class SyncEngine {
                             // For rotation: transition the old order to VIRTUAL, freeing its capital
                             if (isRotation && existingOrder) {
                                 if (!isOrderVirtual(existingOrder)) {
-                                    const oldVirtualOrder = { ...virtualizeOrder(existingOrder), size: 0 };
+                                    const oldVirtualOrder = convertToSpreadPlaceholder(existingOrder);
                                     await mgr._applyOrderUpdate(oldVirtualOrder, 'rotation-cleanup', {
                                         skipAccounting: chainData.skipAccounting || false,
                                         fee: 0
@@ -1754,7 +1754,7 @@ class SyncEngine {
                                 } else if (hasOnChainId(existingOrder)) {
                                     // Already VIRTUAL but still has orderId (from rebalance)
                                     // Just clear the orderId to reflect blockchain state
-                                    const clearedOrder = { ...virtualizeOrder(existingOrder), size: 0 };
+                                    const clearedOrder = convertToSpreadPlaceholder(existingOrder);
                                     await mgr._applyOrderUpdate(clearedOrder, 'fill-cleanup', {
                                         skipAccounting: chainData.skipAccounting || false,
                                         fee: 0
@@ -1838,7 +1838,7 @@ class SyncEngine {
                             const currentGridOrder = mgr.orders.get(gridOrder.id);
                             if (currentGridOrder && currentGridOrder.orderId === orderId) {
                                 const nextOrder = clearSize
-                                    ? { ...virtualizeOrder(currentGridOrder), size: 0 }
+                                    ? convertToSpreadPlaceholder(currentGridOrder)
                                     : virtualizeOrder(currentGridOrder);
                                 await mgr._applyOrderUpdate(nextOrder, 'cancel-order', {
                                     skipAccounting: false,

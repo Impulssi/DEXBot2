@@ -6,7 +6,8 @@
  *
  * Root cause chain:
  * 1. A COW batch dies on a stale order (atomic executeBatch) → rotations lost.
- * 2. recoverExplicitStaleOrders virtualizes the consumed slot with size 0.
+ * 2. recoverExplicitStaleOrders converts the consumed slot to a zero-sized
+ *    SPREAD placeholder.
  * 3. Reconcile's _pickVirtualSlotsToActivate filters in-rail VIRTUAL slots by
  *    `size >= effectiveMin` → the zeroed boundary-adjacent sell slots (136-138)
  *    are skipped.
@@ -20,7 +21,8 @@
  * boundary-adjacent slots pickable again with a real funded size.
  *
  * This test asserts:
- * - A size-0 VIRTUAL sell sitting boundary-adjacent (slots 136-138) is picked
+ * - A size-0 VIRTUAL SPREAD placeholder sitting boundary-adjacent
+ *   (slots 136-138) is picked
  *   with a re-derived size >= effectiveMin (previously skipped).
  * - Far-end virtual slots are NOT preferred when boundary-adjacent zeroed slots
  *   can be funded (pick order respects boundary geometry + price sorting).
@@ -123,7 +125,7 @@ async function testBoundaryZeroedSlotsArePicked() {
     // carry stored sizes (old behavior backfilled these instead of the boundary).
     const sellSlots = [];
     for (let i = 136; i <= 138; i++) {
-        sellSlots.push(makeSell(`slot-${i}`, { size: 0 })); // stale-zeroed boundary holes
+        sellSlots.push(makeSpread(`slot-${i}`)); // stale-zeroed SPREAD placeholders
     }
     for (let i = 139; i <= 155; i++) {
         sellSlots.push(makeSell(`slot-${i}`, { state: ORDER_STATES.ACTIVE, size: 3.3, orderId: `1.7.${i}` }));
@@ -184,7 +186,7 @@ async function testBudgetDerivationCreatesBoundarySlot() {
 
     const sellSlots = [];
     for (let i = 136; i <= 138; i++) {
-        sellSlots.push(makeSell(`slot-${i}`, { size: 0 }));
+        sellSlots.push(makeSpread(`slot-${i}`));
     }
     for (let i = 139; i <= 155; i++) {
         sellSlots.push(makeSell(`slot-${i}`, { state: ORDER_STATES.ACTIVE, size: 3.3, orderId: `1.7.${i}` }));
@@ -256,7 +258,7 @@ async function testLegacyFallbackWithoutBudget() {
 
     const sellSlots = [];
     for (let i = 136; i <= 138; i++) {
-        sellSlots.push(makeSell(`slot-${i}`, { size: 0 }));
+        sellSlots.push(makeSpread(`slot-${i}`));
     }
     for (let i = 139; i <= 155; i++) {
         sellSlots.push(makeSell(`slot-${i}`, { state: ORDER_STATES.ACTIVE, size: 3.3, orderId: `1.7.${i}` }));

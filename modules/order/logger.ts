@@ -547,7 +547,7 @@ class Logger {
             `committed.grid: ${buy}Buy ${Format.formatAmountByPrecision(committedGridBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmountByPrecision(committedGridSell, sellPrecision)}${reset} ${sellName}`,
             `committed.chain: ${buy}Buy ${Format.formatAmountByPrecision(committedChainBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmountByPrecision(committedChainSell, sellPrecision)}${reset} ${sellName}`,
             `Orders: Virtual ${virtualOrders.length} | Active ${activeOrders.length} | Partial ${partialOrders.length}`,
-            `Spreads: ${manager.currentSpreadCount}/${manager.targetSpreadCount}`,
+            `Spreads: ${manager.initialSpreadCount > 0 ? `${manager.currentSpreadCount}/${manager.initialSpreadCount} (gap)` : 'n/a (gap)'}`,
         ];
 
         if (typeof manager.calculateCurrentSpread === 'function') {

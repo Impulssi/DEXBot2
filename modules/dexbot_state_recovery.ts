@@ -7,10 +7,9 @@ import { readOpenOrdersGuarded } from './chain_orders';
 import { ORDER_TYPES } from './constants';
 import * as Format from './order/format';
 import * as grid from './order/grid';
+import { convertToSpreadPlaceholder, parseChainOrder } from './order/utils/order';
+import { blockchainToFloat } from './order/utils/math';
 import { getErrorMessage } from './utils/errors';
-function virtualizeOrder(...args: any) { return require('./order/utils/order').virtualizeOrder(...args); }
-function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
-function blockchainToFloat(...args: any) { return require('./order/utils/math').blockchainToFloat(...args); }
 const { isGridBloated } = grid;
 
 /**
@@ -199,7 +198,7 @@ async function recoverExplicitStaleOrders(bot: any, staleOrderIds: any, reason: 
     for (const [, gridOrder] of bot.manager.orders.entries()) {
         if (!gridOrder?.orderId || !staleOrderIds.has(gridOrder.orderId)) continue;
         bot._staleCleanedOrderIds.set(gridOrder.orderId, Date.now());
-        updates.push({ ...virtualizeOrder(gridOrder), size: 0 });
+        updates.push(convertToSpreadPlaceholder(gridOrder));
     }
 
     for (const orderId of staleIds) {
@@ -435,7 +434,11 @@ async function targetedOrderRepair(bot: any, orderIds: any) {
             if (!gridOrder) continue;
 
             if (!chainOrder || typeof chainOrder.for_sale === 'undefined') {
-                updates.push({ ...virtualizeOrder(gridOrder), size: 0 });
+                bot.manager.logger.log(
+                    `[RECOVERY] fill-cleanup: converting ${gridOrder.id} (${gridOrder.type}, size=${gridOrder.size}) to SPREAD placeholder`,
+                    'debug'
+                );
+                updates.push(convertToSpreadPlaceholder(gridOrder));
             } else {
                 const chainUnits = Number(chainOrder.for_sale);
                 if (Number.isFinite(chainUnits)) {

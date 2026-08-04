@@ -154,6 +154,7 @@ async function testPerformGridResyncAppliesVolatilityOnlyDynamicWeights() {
     setCachedModule(formatPath, {});
     setCachedModule(orderUtilsPath, {
         virtualizeOrder: (order) => order,
+        convertToSpreadPlaceholder: (order) => ({ ...order, type: 'spread', size: 0, state: 'virtual', orderId: null }),
     });
     setCachedModule(accountBotsPath, {});
     setCachedModule(marketAdapterRuntimePath, {
@@ -981,6 +982,7 @@ async function testRmsDivergenceRunsFullGridResync() {
     });
     setCachedModule(orderUtilsPath, {
         virtualizeOrder: (order) => order,
+        convertToSpreadPlaceholder: (order) => ({ ...order, type: 'spread', size: 0, state: 'virtual', orderId: null }),
     });
     setCachedModule(accountBotsPath, {
         isBotDynamicWeightWhitelisted: () => false,
@@ -1083,6 +1085,7 @@ function installSpreadTestModules(opts: {
     });
     setCachedModule(orderUtilsPath, {
         virtualizeOrder: (order) => order,
+        convertToSpreadPlaceholder: (order) => ({ ...order, type: 'spread', size: 0, state: 'virtual', orderId: null }),
     });
     setCachedModule(accountBotsPath, {
         isBotDynamicWeightWhitelisted: () => false,
@@ -1251,7 +1254,7 @@ async function testDexbotClassPerformGridResyncForwardsOptions() {
         getOrderTypeFromUpdatedFlags: () => null,
         virtualizeOrder: (order) => order,
         correctAllPriceMismatches: () => [],
-        convertToSpreadPlaceholder: () => null,
+        convertToSpreadPlaceholder: (order) => ({ ...order, type: 'spread', size: 0, state: 'virtual', orderId: null }),
         buildOutsideInPairGroups: () => [],
         extractBatchOperationResults: () => [],
         buildFillKey: () => 'fill-key',

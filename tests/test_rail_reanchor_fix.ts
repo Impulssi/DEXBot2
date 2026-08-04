@@ -86,8 +86,11 @@ async function run() {
     const stray = slots.find(s => s.id === 'slot-8');
     stray.orderId = 'o-stray';
     stray.size = 0.5;
-    slots.find(s => s.id === 'slot-9').state = ORDER_STATES.VIRTUAL;
-    slots.find(s => s.id === 'slot-9').orderId = null;
+    const filledPlaceholder = slots.find(s => s.id === 'slot-9');
+    filledPlaceholder.type = ORDER_TYPES.SPREAD;
+    filledPlaceholder.state = ORDER_STATES.VIRTUAL;
+    filledPlaceholder.orderId = null;
+    filledPlaceholder.size = 0;
 
     const manager = createManager(slots);
     // Fill two sells at slots 8,9 -> crawl +2 -> boundary 7, sellStart 10
@@ -158,7 +161,8 @@ async function run() {
     console.log('✓ Stray gap sell excluded from window and relocated back onto the rail');
 
     // ---- Second-order guard: startup reconcile must not re-pick the cleared
-    // stray slot (now VIRTUAL SELL) and place a new sell back inside the gap ----
+    // stray slot (now a VIRTUAL SPREAD placeholder) and place a new sell back
+    // inside the gap ----
     console.log('  - startup reconcile slot picking respects boundary geometry...');
     const slots2 = [];
     for (let i = 120; i <= 155; i++) {
@@ -191,6 +195,10 @@ async function run() {
     assert(
         picked.every(s => /slot-1(4[0-9]|5[0-5])/.test(s.id)),
         `picked slots should be on the sell rail, got: ${picked.map(s => s.id).join(', ')}`
+    );
+    assert(
+        picked.every(s => s.type === ORDER_TYPES.SELL),
+        `picked SPREAD placeholders must be re-typed SELL before activation, got: ${picked.map(s => `${s.id}:${s.type}`).join(', ')}`
     );
     console.log('✓ Startup reconcile slot picking stays on the sell rail (no gap re-placement)');
 }

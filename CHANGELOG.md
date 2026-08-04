@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [1.4.10] - 2026-08-03
 
+### 2026-08-04
+
+- **Fix**: re-place zeroed boundary slots on reconcile and run spread check independent of divergence — after a COW batch dies on a stale order, `recoverExplicitStaleOrders` zeroes the consumed slot; reconcile's `_pickVirtualSlotsToActivate` now re-derives a funded size for these zeroed boundary-adjacent slots so they become pickable again instead of being skipped (`modules/order/grid_reconcile_internal.ts`, `modules/dexbot_state_recovery.ts`).
+- **Feat**: empty-slot normalization and spread boundary promotion — all size-0 VIRTUAL slots are stored as `ORDER_TYPES.SPREAD` (side-neutral) during `loadGrid`, eliminating stale BUY/SELL type misleads in candidate-selection code; `currentSpreadCount`/`initialSpreadCount` now count gap-band SPREAD occupancy only; slot-picking accepts SPREAD-typed in-rail slots and re-types them to concrete BUY/SELL before activation; when the funded rail is full during spread correction, contiguous gap-band empty slots are promoted and the new boundary flows through the COW pipeline (`modules/order/grid.ts`, `modules/order/grid_reconcile_internal.ts`, `modules/order/accounting.ts`, `modules/dexbot_cow_runtime.ts`).
+- **Refactor**: `virtualizeOrder` → `convertToSpreadPlaceholder` replaces ad-hoc `{...virtualizeOrder(), size: 0}` patches at 6 call sites; new `resolveGapBand` helper centralises gap-band geometry computation previously duplicated across 3 files (`modules/order/utils/order.ts`, `modules/order/utils/math.ts`, `modules/order/grid.ts`, `modules/order/accounting.ts`, `modules/order/grid_reconcile_internal.ts`, `modules/order/strategy.ts`, `modules/order/sync_engine.ts`, `modules/dexbot_state_recovery.ts`).
+- **Test**: new `test_spread_boundary_promotion.ts` covers boundary promotion flow and COW boundary propagation; updated `test_grid_bloat.ts`, `test_cow_boundary_slot_replacement.ts`, `test_rail_reanchor_fix.ts` for SPREAD placeholder invariants.
+
 ### 2026-08-03
 
 - **Fix**: `dexbot unlock credit` now daemonizes to the background like `dexbot unlock` but runs only the credit-only bot — the previous credit path skipped the monolithic background daemon and stayed foreground; the credential daemon detaches to the monolithic log files the same way (`unlock.ts`).

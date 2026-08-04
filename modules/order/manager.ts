@@ -361,7 +361,7 @@ class OrderManager {
         this._ordersByStateCache = val;
         this._ordersByStateCacheVersion = this._gridVersion;
     }
-    targetSpreadCount: number;
+    initialSpreadCount: number;
     currentSpreadCount: number;
     outOfSpread: number;
     assets: any;
@@ -456,7 +456,7 @@ class OrderManager {
         // and no concurrent access exists during construction.
         this.accountant.resetFunds();
         this.btsBalance = { free: 0, total: 0, locked: 0 };
-        this.targetSpreadCount = 0;
+        this.initialSpreadCount = 0;
         this.currentSpreadCount = 0;
         this.outOfSpread = 0;
         this.assets = null;

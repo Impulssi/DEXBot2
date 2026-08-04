@@ -40,7 +40,7 @@ const mgrStub = {
 	config: { assetA: { symbol: 'BASE', precision: 8 }, assetB: { symbol: 'QUOTE', precision: 4 }, market: 'TEST/PAIR' },
 	funds: { available: { buy: 1.2345, sell: 2.3456 }, committed: { buy: 0.5, sell: 0.25 }, total: { buy: 10, sell: 20 } },
 	currentSpreadCount: 2,
-	targetSpreadCount: 3,
+	initialSpreadCount: 3,
 	outOfSpread: 0,
 	getOrdersByTypeAndState: (type, state) => {
 		if (state === 'active') return [1,2];

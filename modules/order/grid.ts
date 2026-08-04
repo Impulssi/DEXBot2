@@ -135,6 +135,8 @@ import {
     findPriceCollision,
     getBtsSide,
     getSellStartIdx,
+    resolveGapBand,
+    countGapBandSpread,
     adjustBudgetForBtsFees,
 } from './utils/math';
 import {
@@ -604,6 +606,29 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                         : (i >= sellStartIdx)
                             ? ORDER_TYPES.SELL
                             : ORDER_TYPES.SPREAD;
+
+                    // DEFENSIVE BACKSTOP: a VIRTUAL slot with no orderId and
+                    // zero size is side-neutral — it is a reusable placeholder
+                    // that may be activated on either rail.  Storing a stale
+                    // BUY/SELL type here misleads candidate-selection code
+                    // (e.g. spread-correction orphaned filters and reconcile
+                    // activation), which pick by stored type instead of boundary
+                    // geometry.  Force SPREAD so the stored type can never
+                    // pre-bias which side reuses the slot.  The VIRTUAL +
+                    // !orderId + size-0 combination already implies not on-chain
+                    // (on-chain requires ACTIVE/PARTIAL and an orderId).  This is
+                    // a defensive backstop for legacy persisted grids; the
+                    // boundary-shift and strategy re-plan paths use
+                    // assignGridRoles (order.ts) with assignOnChain, where
+                    // geometry-based typing wins.
+                    const isEmptySlot = slot.state === ORDER_STATES.VIRTUAL
+                        && !slot.orderId
+                        && Number(slot.size || 0) === 0;
+                    if (isEmptySlot) {
+                        if (slot.type !== ORDER_TYPES.SPREAD) reassignCount++;
+                        return { ...slot, type: ORDER_TYPES.SPREAD };
+                    }
+
                     if (slot.type !== correctType) {
                         let newType = correctType;
                         // On-chain slots must never be reassigned to SPREAD:
@@ -682,8 +707,13 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                     }
                     await manager._applyOrderUpdate(currentOrder, 'grid-load', { skipAccounting: true });
                 }
-                 const spreadCount = grid.filter((o: any) => o.type === ORDER_TYPES.SPREAD).length;
-                 manager.targetSpreadCount = spreadCount;
+                 // Gap-band occupancy for the spread metric.  Empty slots are
+                 // normalized to SPREAD (side-neutral) above, so a raw
+                 // `type === SPREAD` count would include every empty slot on both
+                 // rails.  countGapBandSpread requires both SPREAD type and band
+                 // geometry (target = gapSlots).
+                 const spreadCount = countGapBandSpread(manager, grid, (_o: any, i: number) => i);
+                 manager.initialSpreadCount = spreadCount;
                  manager.currentSpreadCount = spreadCount;
 
              } finally {
@@ -998,9 +1028,14 @@ export async function initializeGrid(manager: any): Promise<void> {
                 manager.resumeRecalcLogging();
             }
 
-            // RC-6: Spread count updates protected by grid lock
-            manager.targetSpreadCount = initialSpreadCount.buy + initialSpreadCount.sell;
-            manager.currentSpreadCount = manager.targetSpreadCount;
+            // RC-6: Spread count updates protected by grid lock.
+            // initializeGrid always sets initialSpreadCount = gapSlots (theoretical
+            // value for a fresh grid).  loadGrid uses the actual SPREAD-typed slot
+            // count in the gap band, which may be lower after promotions absorbed
+            // gap slots into a rail.  Both are correct for their context; callers
+            // should not assume the two paths agree.
+            manager.initialSpreadCount = initialSpreadCount.buy + initialSpreadCount.sell;
+            manager.currentSpreadCount = manager.initialSpreadCount;
         });
         // FIX: Use consistent optional chaining pattern for all logger calls
         manager.logger?.log?.(`Initialized grid with ${orders.length} orders.`, 'info');
@@ -1267,6 +1302,19 @@ export async function _recalculateGridOrderSizesFromBlockchain(manager: any, ord
         // correct side's size calculation — using manager.orders here would
         // filter by stale pre-shift types and miss the crossers, producing a
         // budget allocation that doesn't match the post-shift grid structure.
+        //
+        // Empty (size-0 VIRTUAL) slots are stored SPREAD (side-neutral) after
+        // normalization and are deliberately NOT included in the side's
+        // ideal-size denominator here: a SPREAD slot cannot carry a size
+        // (validateOrder forces SPREAD size back to 0), so including it would
+        // only dilute the budget without giving the slot a usable size.
+        // Activation sizing for empties is handled where re-typing happens:
+        // spread-correction (prepareSpreadCorrectionOrders) and startup
+        // reconcile (_deriveBudgetedSideSizes) both compute the full in-rail
+        // geometric progression including empties, then re-type the picked slot
+        // to BUY/SELL before placement.  The COW boundary-shift path re-types
+        // the working grid by geometry first, so crossers stay in the correct
+        // side's denominator.
         const orderSource = collectActions ? workingGrid : manager.orders;
         const allSideSlots = (Array.from(orderSource.values()) as Order[])
             .filter((o: any) => o.type === orderType)
@@ -2203,6 +2251,35 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds or committed inventory' };
     }
 
+    // Collect contiguous empty gap-band slots adjacent to a rail edge for boundary
+    // promotion.  BUY walks upward from the boundary into the gap, SELL walks
+    // downward from the sell start; both stop at the first unavailable slot.
+    // Mirrors are collapsed into one directional walk (step +/- 1).
+    function _collectPromotableBoundarySlots(
+        allSlotsByPrice: any[],
+        railType: string,
+        buyEndIdx: number,
+        sellStartIdx: number,
+        quota: number
+    ): any[] {
+        const isBuy = railType === ORDER_TYPES.BUY;
+        const maxIdx = allSlotsByPrice.length - 1;
+        const maxPromotable = isBuy
+            ? Math.max(0, maxIdx + 1 - sellStartIdx)
+            : Math.max(0, buyEndIdx);
+        const promotionQuota = Math.min(quota, maxPromotable);
+        const promoted: any[] = [];
+        const step = isBuy ? 1 : -1;
+        for (let idx = isBuy ? buyEndIdx + 1 : sellStartIdx - 1;
+            promoted.length < promotionQuota && (isBuy ? idx < sellStartIdx : idx > buyEndIdx);
+            idx += step) {
+            const slot = allSlotsByPrice[idx];
+            if (!slot || !isSlotAvailable(slot)) break;
+            promoted.push(slot);
+        }
+        return promoted;
+    }
+
     /**
      * Prepares one or more orders to correct a wide spread.
      * @param {import('./types').OrderManager} manager - The OrderManager instance.
@@ -2210,7 +2287,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
      * @returns {Promise<import('./types').SpreadCorrectionResult>}
      * @throws {Error} If preferredSide is invalid.
      */
-export async function prepareSpreadCorrectionOrders(manager: any, preferredSide: any, outOfSpread: number = 0): Promise<any> {
+    export async function prepareSpreadCorrectionOrders(manager: any, preferredSide: any, outOfSpread: number = 0): Promise<any> {
         // FIX: Validate preferredSide parameter to prevent silent logic errors
         if (preferredSide !== ORDER_TYPES.BUY && preferredSide !== ORDER_TYPES.SELL) {
             throw new Error(`Invalid preferredSide: ${preferredSide}. Must be '${ORDER_TYPES.BUY}' or '${ORDER_TYPES.SELL}'.`);
@@ -2245,11 +2322,6 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             .filter((o: any) => o.price != null && Number.isFinite(o.price))
             .sort((a: any, b: any) => a.price - b.price);
         const slotIndexMap = new Map(allSlotsByPrice.map((o: any, i: number) => [o.id, i]));
-        const gapSlots = manager._gapSlots ?? calculateGapSlots(
-            manager.config?.incrementPercent,
-            manager.config?.targetSpreadPercent,
-            manager.config?.gridLimits
-        );
 
         // Use the committed boundary for slot classification — never a speculative
         // value from syncBoundaryToFunds that hasn't been persisted through the COW
@@ -2257,8 +2329,10 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
         // spread correction cycle will re-classify with the updated committed value.
         // This prevents TOCTOU-style inconsistency where slot types are chosen
         // against a boundary that was never atomically committed to manager.orders.
-        const buyEndIdx = manager.boundaryIdx ?? 0;
-        const sellStartIdx = getSellStartIdx(manager.boundaryIdx, gapSlots);
+        const resolved = resolveGapBand(manager);
+        const gapSlots = resolved.gapSlots;
+        const buyEndIdx = resolved.boundaryIdx ?? 0;
+        const sellStartIdx = resolved.sellStartIdx ?? getSellStartIdx(buyEndIdx, gapSlots);
         const getSlotCorrectType = (slot: any): string => {
             const idx = slotIndexMap.get(slot.id);
             if (idx === undefined) return slot.type;
@@ -2292,18 +2366,21 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price)
             .slice(0, missingSlots);
 
-        // Secondary candidates: orphaned virtual slots of the correct side-type that have
-        // lost their order (e.g. stale-cleaned after a race condition during a crash).
-        // These sit inside the active window and are invisible to the SPREAD-type filter above.
+        // Secondary candidates: orphaned virtual slots that have lost their
+        // order (e.g. stale-cleaned after a race condition during a crash).
+        // These sit inside the active window and are invisible to the
+        // gap-band SPREAD filter above.
         //
-        // IMPORTANT: Filter by boundary-correct type so that filled-then-virtualized slots
-        // whose boundary position has moved into the spread or opposite zone are NOT
-        // re-activated on the stale side — doing so would compound inventory at prices
-        // where the bot already traded.  The boundary-correct type is computed from the
-        // current boundary index and the slot's price position in the sorted rail.
+        // Empty slots are stored SPREAD (side-neutral) after normalization, so
+        // the stored type can be railType OR SPREAD — what matters is that the
+        // boundary-correct type (geometry) matches the rail being corrected.
+        // Filter by boundary-correct type so that filled-then-virtualized slots
+        // whose boundary position has moved into the spread or opposite zone are
+        // NOT re-activated on the stale side — doing so would compound inventory
+        // at prices where the bot already traded.
         const orphanedVirtualCandidates = allOrders
             .filter((o: any) =>
-                o.type === railType
+                (o.type === railType || o.type === ORDER_TYPES.SPREAD)
                 && o.state === ORDER_STATES.VIRTUAL
                 && !o.orderId
                 && Number(o.size || 0) === 0
@@ -2312,12 +2389,35 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price)
             .slice(0, missingSlots);
 
+        // If the funded rail is full, the spread itself may be stale: the
+        // nearest empty slots are still in the gap band. Promote contiguous
+        // empty gap slots from that rail edge so correction can repair the
+        // boundary and place orders in one atomic COW commit.
+        const promotedCandidates: any[] = [];
+        if (orphanedVirtualCandidates.length + typedSpreadCandidates.length < missingSlots) {
+            const rawQuota = missingSlots - orphanedVirtualCandidates.length - typedSpreadCandidates.length;
+            promotedCandidates.push(..._collectPromotableBoundarySlots(
+                allSlotsByPrice,
+                railType,
+                buyEndIdx,
+                sellStartIdx,
+                rawQuota
+            ));
+            if (promotedCandidates.length > 0) {
+                manager.logger?.log?.(
+                    `[SPREAD-CORRECTION] ${promotedCandidates.length} gap slot(s) available for boundary promotion on ${sideName}`,
+                    'info'
+                );
+            }
+        }
+
         // Merge: prefer orphaned virtuals (they already occupy correct grid positions) then
         // fall back to SPREAD slots for any remaining quota.
         const remainingQuota = Math.max(0, missingSlots - orphanedVirtualCandidates.length);
         let spreadCandidates: any[] = [
             ...orphanedVirtualCandidates,
-            ...typedSpreadCandidates.slice(0, remainingQuota)
+            ...typedSpreadCandidates.slice(0, remainingQuota),
+            ...promotedCandidates
         ];
 
         // P2: Filter out candidates whose price already has a placed order from any slot.
@@ -2491,6 +2591,47 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             remainingBudget -= createSize;
         }
 
+        let boundaryIdx: number | undefined;
+        const placedPromotedIds = new Set(ordersToPlace
+            .filter((order: any) => promotedCandidates.some((slot: any) => slot.id === order.id))
+            .map((order: any) => order.id));
+        if (placedPromotedIds.size > 0) {
+            // Derive boundary from the placed promoted set's extremes (via
+            // slotIndexMap), not the contiguous prefix.  Any promoted-but-
+            // unplaced slots sit in-rail or in-band as normal empty slots.
+            let maxDist = 0;
+            for (const id of placedPromotedIds) {
+                const idx = slotIndexMap.get(id);
+                if (idx === undefined) continue;
+                const dist = railType === ORDER_TYPES.BUY
+                    ? idx - buyEndIdx
+                    : sellStartIdx - idx;
+                if (dist > maxDist) maxDist = dist;
+            }
+            if (maxDist > 0) {
+                boundaryIdx = railType === ORDER_TYPES.BUY
+                    ? buyEndIdx + maxDist
+                    : buyEndIdx - maxDist;
+                const maxIdx = allSlotsByPrice.length - 1;
+                const clamped = Math.max(0, Math.min(maxIdx, boundaryIdx));
+                if (clamped !== boundaryIdx) {
+                    manager.logger?.log?.(
+                        `[SPREAD-CORRECTION] Boundary promotion clamped on ${sideName}: ` +
+                        `${boundaryIdx} -> ${clamped}`,
+                        'warn'
+                    );
+                    boundaryIdx = clamped;
+                }
+                manager.logger?.log?.(
+                    `[SPREAD-CORRECTION] Boundary promotion on ${sideName}: ` +
+                    `${buyEndIdx} -> ${boundaryIdx} (${placedPromotedIds.size} placed, maxDist ${maxDist})`,
+                    'info'
+                );
+            } else {
+                boundaryIdx = undefined;
+            }
+        }
+
         const combinedUpdates = [...redistributionUpdates];
         for (const plannedUpdate of ordersToUpdate) {
             const id = plannedUpdate?.partialOrder?.id || (plannedUpdate as any)?.id;
@@ -2524,7 +2665,5 @@ export async function prepareSpreadCorrectionOrders(manager: any, preferredSide:
             );
         }
 
-        return { ordersToPlace, ordersToUpdate: combinedUpdates };
+        return { ordersToPlace, ordersToUpdate: combinedUpdates, ...(boundaryIdx === undefined ? {} : { boundaryIdx }) };
     }
-
-

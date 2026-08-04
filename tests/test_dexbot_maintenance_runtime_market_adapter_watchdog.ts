@@ -61,6 +61,7 @@ function loadRuntimeWithStubs({ marketAdapterRuntimeStub }: any = {}) {
     setCachedModule(formatPath, {});
     setCachedModule(orderUtilsPath, {
         virtualizeOrder: (order) => order,
+        convertToSpreadPlaceholder: (order) => ({ ...order, type: 'spread', size: 0, state: 'virtual', orderId: null }),
     });
     setCachedModule(accountBotsPath, {});
     setCachedModule(marketAdapterRuntimePath, marketAdapterRuntimeStub || {

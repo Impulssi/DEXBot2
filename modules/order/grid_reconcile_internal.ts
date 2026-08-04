@@ -9,8 +9,8 @@
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
 import { readOpenOrdersGuarded } from '../chain_orders';
-import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, calculateGapSlots as calculateGapSlotsFromMath } from './utils/math';
-import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order';
+import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, resolveGapBand } from './utils/math';
+import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder } from './utils/order';
 import { resolveAccountRef } from './utils/system';
 import * as Format from './format';
 import { getErrorMessage } from '../utils/errors';
@@ -80,8 +80,34 @@ function _deriveBudgetedSideSizes(manager: any, type: any): Map<string, number> 
     const budget = getSideBudget(side, funds, manager.config, totalTarget);
     if (!(budget > 0)) return derived;
 
+    // Include every in-rail slot that belongs to this side by geometry.  Empty
+    // slots are stored SPREAD (side-neutral) after normalization, so a plain
+    // `o.type === type` filter would exclude them and they'd never receive a
+    // re-derived size (staying un-pickable).  Only in-rail slots participate in
+    // the side budget; gap-band slots must not absorb a share.
+    //
+    // When boundary is unknown (null), geometry cannot classify an empty slot
+    // to a rail — the safe action is to not activate it (under-funded rail
+    // temporarily) rather than guess a side.  Only accept concrete BUY/SELL
+    // types in that case; this mirrors pre-commit behavior where the type
+    // filter was the only guard.
+    const resolved = resolveGapBand(manager);
+    const boundaryKnown = resolved.boundaryIdx !== null && resolved.sellStartIdx !== null;
+    const boundaryIdx = resolved.boundaryIdx;
+    const sellStartIdx = resolved.sellStartIdx;
+    const inSideRail = (o: any): boolean => {
+        if (!boundaryKnown) return true;
+        const idx = parseSlotIndex(o.id);
+        if (idx === null) return true;
+        if (type === ORDER_TYPES.BUY) return idx <= boundaryIdx!;
+        return idx >= sellStartIdx!;
+    };
+    const typeFilter = boundaryKnown
+        ? (o: any) => o && o.price != null && (o.type === type || o.type === ORDER_TYPES.SPREAD)
+        : (o: any) => o && o.price != null && o.type === type;
     const allSideSlots = (Array.from(manager.orders.values()) as any[])
-        .filter((o: any) => o && o.price != null && o.type === type)
+        .filter(typeFilter)
+        .filter(inSideRail)
         .sort((a: any, b: any) => a.price - b.price);
     if (allSideSlots.length === 0) return derived;
 
@@ -122,23 +148,31 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     // such slots typed BUY/SELL (never SPREAD+ACTIVE), so a VIRTUAL sell left
     // behind by a rotation/rebalance could otherwise be re-picked here and
     // placed back inside the gap. Filter by geometry, not just type.
-    const gapSlots = (manager._gapSlots ?? calculateGapSlotsFromConfig(manager)) || 0;
-    const boundaryIdx = manager.boundaryIdx;
-    const sellStartIdx = (boundaryIdx !== null && Number.isFinite(Number(boundaryIdx)))
-        ? Number(boundaryIdx) + gapSlots + 1
-        : null;
+    const resolved = resolveGapBand(manager);
+    const boundaryKnown = resolved.boundaryIdx !== null && resolved.sellStartIdx !== null;
+    const boundaryIdx = resolved.boundaryIdx;
+    const sellStartIdx = resolved.sellStartIdx;
     const inRail = (slot: any): boolean => {
-        if (sellStartIdx === null) return true;
+        if (!boundaryKnown) return true;
         const idx = parseSlotIndex(slot.id);
         if (idx === null) return true;
-        if (type === ORDER_TYPES.BUY) return idx <= Number(boundaryIdx);
-        return idx >= sellStartIdx;
+        if (type === ORDER_TYPES.BUY) return idx <= boundaryIdx!;
+        return idx >= sellStartIdx!;
     };
 
-    // CRITICAL FIX: Filter by type BEFORE sorting
-    // Only get slots of the requested type (SELL or BUY), not a mix
+    // CRITICAL FIX: Filter by type BEFORE sorting.
+    // Only get slots of the requested type (SELL or BUY), not a mix.  Empty
+    // (size-0 VIRTUAL) slots are normalized to SPREAD everywhere they are
+    // created (convertToSpreadPlaceholder) so the side-neutral representation
+    // never misleads selection; accept SPREAD-typed slots that sit in this
+    // side's rail (the inRail geometry filter below excludes gap-band slots).
+    // When boundary is unknown, geometry cannot classify an empty — only
+    // accept concrete BUY/SELL types (safe: don't activate what we can't place).
+    const typeFilter = boundaryKnown
+        ? (slot: any) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
+        : (slot: any) => slot && slot.type === type;
     const slotsOfType = (Array.from(manager.orders.values()) as any[])
-        .filter((slot: any) => slot && slot.type === type)
+        .filter(typeFilter)
         .filter(inRail)
         .sort((a: any, b: any) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
 
@@ -172,7 +206,15 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
             }
 
             if (slot.id && effectiveSize >= effectiveMin) {
-                valid.push(effectiveSize === storedSize ? slot : { ...slot, size: effectiveSize });
+                // Re-type the picked slot to the activation side: empty slots are
+                // stored SPREAD (side-neutral), but an order being placed here must
+                // carry the concrete BUY/SELL rail type (SPREAD+ACTIVE is illegal,
+                // and buildCreateOrderArgs derives the sell/receive assets from the
+                // type). Keep any existing size override.
+                valid.push({
+                    ...(effectiveSize === storedSize ? slot : { ...slot, size: effectiveSize }),
+                    type,
+                });
             }
         }
     }
@@ -180,17 +222,6 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     return valid;
 }
 
-function calculateGapSlotsFromConfig(manager: any): number | null {
-    try {
-        return calculateGapSlotsFromMath(
-            manager?.config?.incrementPercent,
-            manager?.config?.targetSpreadPercent,
-            manager?.config?.gridLimits
-        );
-    } catch (e: any) {
-        return null;
-    }
-}
 
 function _getStartupSideComparators(orderType: any, assets: any): { sortUpdateComparator: (a: any, b: any) => number; sortExcessCancelComparator: (a: any, b: any) => number; sortMatchedCancelComparator: (a: any, b: any) => number } {
     const isSell = orderType === ORDER_TYPES.SELL;
@@ -463,10 +494,15 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
             // Transition the slot to zero-size VIRTUAL to prevent duplicate
             // creation on the next COW cycle. The orphaned chain order will
             // be picked up by the next normal full sync.
+            // NOTE: convertToSpreadPlaceholder sets type=SPREAD (not the
+            // original BUY/SELL).  This is intentional: an empty VIRTUAL slot
+            // is a reusable placeholder that must be side-neutral, matching
+            // the assignGridRoles invariant.  The slot will be re-typed to
+            // BUY/SELL by geometry when it is next activated.
             // Note: caller does NOT hold _gridLock (Phase 2 runs outside lock),
             // so we acquire it explicitly for the grid mutation.
             try {
-                const zeroOrder = { ...gridOrder, state: ORDER_STATES.VIRTUAL, size: 0 };
+                const zeroOrder = convertToSpreadPlaceholder(gridOrder);
                 await manager._gridLock.acquire(async () => {
                     await manager._applyOrderUpdate(zeroOrder, 'createOrder-extraction-failure', { skipAccounting: true, fee: 0 });
                 });

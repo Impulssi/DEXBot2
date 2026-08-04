@@ -1540,7 +1540,13 @@ function buildCowResultFromPlan(bot: any, plan: any) {
     const workingGrid = new WorkingGrid(bot.manager.orders, {
         baseVersion: Number.isFinite(Number(bot.manager._gridVersion)) ? bot.manager._gridVersion : 0
     });
-    const workingBoundary = bot.manager.boundaryIdx;
+    // Guard null/undefined explicitly: Number(null) === 0 would be treated as a
+    // valid finite boundary (index 0), silently biasing role classification.
+    const rawBoundary = plan?.boundaryIdx;
+    const requestedBoundary = rawBoundary != null ? Number(rawBoundary) : NaN;
+    const workingBoundary = Number.isFinite(requestedBoundary)
+        ? requestedBoundary
+        : bot.manager.boundaryIdx;
     const actions = buildActionsFromPlan(bot, plan);
 
     for (const action of actions) {

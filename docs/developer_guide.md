@@ -580,18 +580,34 @@ if (isSlotAvailable(order)) {
 }
 ```
 
-### State Transition Helper
+### State Transition Helpers
 
 #### `virtualizeOrder(order)`
 ```javascript
 // Transition order to VIRTUAL state and clear blockchain metadata
-// Safely clears orderId, filledSize, and other blockchain-specific fields
+// Preserves the order's type (BUY/SELL) and size — use when the order
+// should remain pickable on its original rail (e.g. reservation keep).
 const virtualizedOrder = virtualizeOrder(order);
 // Result: {
 //     ...order,
 //     state: ORDER_STATES.VIRTUAL,
 //     orderId: null,
 //     filledSize: 0
+// }
+```
+
+#### `convertToSpreadPlaceholder(order)`
+```javascript
+// Transition order to a side-neutral SPREAD placeholder.
+// Zeroes size AND sets type to SPREAD — use when the slot becomes an
+// empty reusable placeholder that may be activated on either rail.
+const placeholder = convertToSpreadPlaceholder(order);
+// Result: {
+//     ...order,
+//     state: ORDER_STATES.VIRTUAL,
+//     type: ORDER_TYPES.SPREAD,
+//     orderId: null,
+//     size: 0
 // }
 ```
 

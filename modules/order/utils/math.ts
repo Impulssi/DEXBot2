@@ -1281,7 +1281,71 @@ function getSellStartIdx(boundaryIdx: any, gapSlots: any): number {
     return Number(boundaryIdx ?? 0) + Number(gapSlots) + 1;
 }
 
-export { getBtsSide, getSellStartIdx, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, deductOrderFeesFromFunds, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+/**
+ * Resolve gap-band geometry from a manager-like object.
+ * Centralises the gap-slots + sellStartIdx computation duplicated across
+ * grid.ts, accounting.ts, and grid_reconcile_internal.ts.
+ *
+ * @param manager - must expose `_gapSlots`, `boundaryIdx`, and `config`
+ *   (`incrementPercent`, `targetSpreadPercent`, `gridLimits`).
+ * @returns `{ gapSlots, boundaryIdx, sellStartIdx }`.  When `boundaryIdx` is
+ *   not a usable number (null, undefined, NaN), both `boundaryIdx` and
+ *   `sellStartIdx` are set to `null` — callers should treat this as "no
+ *   boundary restored yet" and skip geometry-based filtering.
+ */
+function resolveGapBand(manager: { _gapSlots?: any; boundaryIdx?: any; config?: any }): { gapSlots: number; boundaryIdx: number | null; sellStartIdx: number | null } {
+    const gapSlots = manager._gapSlots ?? calculateGapSlots(
+        manager.config?.incrementPercent,
+        manager.config?.targetSpreadPercent,
+        manager.config?.gridLimits
+    );
+    // Explicit null/undefined guard: Number(null) === 0, which would silently
+    // treat "no boundary" as boundary 0 — a valid index that biases all slots
+    // to the SELL rail.  Return null so callers can detect the unknown state.
+    if (manager.boundaryIdx == null) {
+        return { gapSlots, boundaryIdx: null, sellStartIdx: null };
+    }
+    const raw = Number(manager.boundaryIdx);
+    if (!Number.isFinite(raw)) {
+        return { gapSlots, boundaryIdx: null, sellStartIdx: null };
+    }
+    const sellStartIdx = getSellStartIdx(raw, gapSlots);
+    return { gapSlots, boundaryIdx: raw, sellStartIdx };
+}
+
+/**
+ * Count SPREAD-typed slots strictly inside the gap band
+ * (`boundaryIdx < idx < sellStartIdx`).  Empty slots are normalized to SPREAD
+ * (side-neutral), so a raw `type === SPREAD` count would include every empty
+ * slot on both rails.  The metric means "how many SPREAD slots occupy the
+ * spread gap" (target = gapSlots), so require both SPREAD type and band
+ * geometry — matching grid creation, which sets initialSpreadCount = gapSlots.
+ *
+ * @param manager - Manager holding `_gapSlots`, `boundaryIdx`, `config`.
+ * @param orders - Iterable of order slots.
+ * @param resolveIndex - Per-call slot-index resolver (array position or parsed
+ *   slot id); receives `(order, arrayIndex)` and returns `null` when unknown.
+ * @returns Count of SPREAD slots inside the gap band, or — when no usable
+ *   boundary is restored — the total count of SPREAD-typed slots (fallback).
+ */
+function countGapBandSpread(manager: any, orders: Iterable<any>, resolveIndex: (order: any, arrayIndex: number) => number | null): number {
+    const resolved = resolveGapBand(manager);
+    if (resolved.boundaryIdx === null || resolved.sellStartIdx === null) {
+        return Array.from(orders).filter((o: any) => o?.type === ORDER_TYPES.SPREAD).length;
+    }
+    let count = 0;
+    let arrayIndex = 0;
+    for (const o of orders) {
+        const idx = resolveIndex(o, arrayIndex);
+        if (o?.type === ORDER_TYPES.SPREAD && idx !== null && idx > resolved.boundaryIdx && idx < resolved.sellStartIdx) {
+            count++;
+        }
+        arrayIndex++;
+    }
+    return count;
+}
+
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, deductOrderFeesFromFunds, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.

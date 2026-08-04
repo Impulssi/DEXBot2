@@ -53,7 +53,7 @@ import { calculateGapSlots } from './grid';
 import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order';
 import { assignGridRoles } from './utils/order';
 import {
-    virtualizeOrder,
+    convertToSpreadPlaceholder,
     hasOnChainId,
     isOrderPlaced
 } from "./utils/order";
@@ -124,7 +124,7 @@ class StrategyEngine {
                 if (currentSlot && !slotReused && isOrderPlaced(currentSlot) && currentSlot.size > 0) {
                     mgr.logger.log(`[STRATEGY] Virtualizing filled slot ${filledOrder.id}`, 'debug');
                     const ok = await mgr._updateOrder(
-                        { ...virtualizeOrder(currentSlot), size: 0 },
+                        convertToSpreadPlaceholder(currentSlot),
                         'fill',
                         { skipAccounting: false, fee: 0 }
                     );

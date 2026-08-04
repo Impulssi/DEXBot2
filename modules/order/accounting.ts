@@ -78,7 +78,7 @@
 
 import { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS } from '../constants';
 import { resolveAccountRef } from './utils/system';
-import { resolveSpreadOrderSide } from './utils/order';
+import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order';
 import * as Format from './format';
 import * as fundRegistry from '../fund_registry';
 import * as chainOrders from '../chain_orders';
@@ -88,7 +88,8 @@ import {
     getAssetFees,
     blockchainToFloat,
     getPrecisionSlack,
-    getBtsSide
+    getBtsSide,
+    countGapBandSpread
 } from './utils/math';
 import {
     PROCESSED_FILL_PERSISTENCE_MODES,
@@ -361,7 +362,11 @@ class Accountant {
          let virtualBuy = 0, virtualSell = 0;
 
          // AUTO-SYNC SPREAD COUNT
-         mgr.currentSpreadCount = mgr._ordersByType[ORDER_TYPES.SPREAD]?.size || 0;
+         // Empty slots are normalized to SPREAD (side-neutral), so a raw
+         // SPREAD-type count would include every empty slot on both rails.
+         // countGapBandSpread requires both SPREAD type and band geometry —
+         // matching initialSpreadCount (gapSlots) set at grid load/creation.
+         mgr.currentSpreadCount = countGapBandSpread(mgr, orderSnapshot, (o: any) => parseSlotIndex(o.id));
 
           // STEP 1-4: Iterate all orders, classify, and aggregate by state
           for (const order of orderSnapshot) {

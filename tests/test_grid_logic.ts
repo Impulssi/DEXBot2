@@ -726,13 +726,15 @@ async function runTests() {
 
         // Case 2: assignOnChain=true with boundary shift left (boundary=0, gap=2)
         // → buyEndIdx=0, sellStartIdx=3. Indices 1-2 (on-chain BUY) now fall in the
-        // SPREAD band. Guard must keep them BUY, never SPREAD. Indices 3+ are SELL.
+        // SPREAD band. Guard must keep them BUY, never SPREAD. Indices 3+ are SELL
+        // zone — empty VIRTUAL slots (s3, s4) are re-typed SELL by geometry so
+        // strategy can allocate budget and activate them on the correct rail.
         result = assignGridRoles(slots, 0, 2, ORDER_TYPES_G, ORDER_STATES_G, { assignOnChain: true });
         assert.strictEqual(result[1].type, ORDER_TYPES_G.BUY, 'on-chain slot in gap keeps BUY rail type');
         assert.strictEqual(result[2].type, ORDER_TYPES_G.BUY, 'on-chain slot in gap keeps BUY rail type');
-        // Non-on-chain slots are freely retyped by position.
-        assert.strictEqual(result[3].type, ORDER_TYPES_G.SELL, 'virtual gap slot retyped by position');
-        assert.strictEqual(result[4].type, ORDER_TYPES_G.SELL, 'virtual gap slot retyped by position');
+        // Empty VIRTUAL slots re-typed by geometry when assignOnChain is true.
+        assert.strictEqual(result[3].type, ORDER_TYPES_G.SELL, 'empty VIRTUAL slot re-typed to SELL by geometry');
+        assert.strictEqual(result[4].type, ORDER_TYPES_G.SELL, 'empty VIRTUAL slot re-typed to SELL by geometry');
         // On-chain SELLs beyond sellStart keep SELL.
         assert.strictEqual(result[5].type, ORDER_TYPES_G.SELL, 'on-chain sell beyond sellStart stays SELL');
         assert.strictEqual(result[6].type, ORDER_TYPES_G.SELL, 'on-chain sell beyond sellStart stays SELL');
@@ -747,19 +749,28 @@ async function runTests() {
         result = assignGridRoles(ghostSlots, 0, 2, ORDER_TYPES_G, ORDER_STATES_G, { assignOnChain: true });
         assert.strictEqual(result[1].type, ORDER_TYPES_G.SELL, 'ghost order in gap keeps SELL rail type');
 
-        // Case 4: filled placeholder (VIRTUAL, no orderId) must still be re-typed —
-        // this is how a filled order is replaced with a new BUY/SELL to keep the
-        // spread constant. The guard must NOT apply to virtual slots.
+        // Case 4: empty VIRTUAL slot (size 0, no orderId) with assignOnChain=true
+        // is re-typed by geometry — strategy needs BUY/SELL types to allocate
+        // budget and activate slots on the correct rail.
         const fillSlots = [
             { id: 'f0', type: ORDER_TYPES_G.SPREAD, price: 100, state: ORDER_STATES_G.VIRTUAL, size: 0, orderId: null },
             { id: 'f1', type: ORDER_TYPES_G.SPREAD, price: 103, state: ORDER_STATES_G.VIRTUAL, size: 0, orderId: null }
         ];
-        // boundary=0, gap=0 → buyEndIdx=0, sellStartIdx=1. Index 0 is BUY zone,
-        // index 1 is SELL zone. Virtual placeholders are freely retyped — the
-        // guard must not block them.
+        // boundary=0, gap=0 → buyEndIdx=0, sellStartIdx=1. Geometry assigns
+        // index 0 to BUY, index 1 to SELL.
         result = assignGridRoles(fillSlots, 0, 0, ORDER_TYPES_G, ORDER_STATES_G, { assignOnChain: true });
-        assert.strictEqual(result[0].type, ORDER_TYPES_G.BUY, 'filled placeholder retyped to BUY for replacement');
-        assert.strictEqual(result[1].type, ORDER_TYPES_G.SELL, 'filled placeholder retyped to SELL for replacement');
+        assert.strictEqual(result[0].type, ORDER_TYPES_G.BUY, 'empty VIRTUAL slot re-typed to BUY by geometry');
+        assert.strictEqual(result[1].type, ORDER_TYPES_G.SELL, 'empty VIRTUAL slot re-typed to SELL by geometry');
+
+        // Case 5: empty VIRTUAL slot with stale type — assignOnChain=true means
+        // geometry re-types by position regardless of stored type.
+        const staleSlots = [
+            { id: 'st0', type: ORDER_TYPES_G.BUY, price: 100, state: ORDER_STATES_G.VIRTUAL, size: 0, orderId: null },
+            { id: 'st1', type: ORDER_TYPES_G.SELL, price: 103, state: ORDER_STATES_G.VIRTUAL, size: 0, orderId: null }
+        ];
+        result = assignGridRoles(staleSlots, 0, 0, ORDER_TYPES_G, ORDER_STATES_G, { assignOnChain: true });
+        assert.strictEqual(result[0].type, ORDER_TYPES_G.BUY, 'stale BUY empty slot re-typed to BUY by geometry');
+        assert.strictEqual(result[1].type, ORDER_TYPES_G.SELL, 'stale SELL empty slot re-typed to SELL by geometry');
     }
 
     console.log('✓ Grid logic tests passed!');
