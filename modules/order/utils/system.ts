@@ -413,8 +413,11 @@ async function getAssetCurrentSupply(BitShares: any, assetRef: any): Promise<any
         return null;
     }
 
-    const directSupply = toFiniteNumber(asset.current_supply?.amount ?? asset.current_supply, undefined);
-    if (Number.isFinite(directSupply) && directSupply >= 0) {
+    const hasDirectSupply = asset.current_supply != null;
+    const directSupply = hasDirectSupply
+        ? toFiniteNumber(asset.current_supply?.amount ?? asset.current_supply, -1)
+        : -1;
+    if (hasDirectSupply && Number.isFinite(directSupply) && directSupply >= 0) {
         return directSupply;
     }
 

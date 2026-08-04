@@ -1176,7 +1176,7 @@ class SyncEngine {
                 // to deadlock the COW create pipeline.
                 mgr.logger.log(
                     `[SYNC] Order ${matchedGridOrder.orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. ` +
-                    `Fill is authoritative: treating as full fill for rotation; residual dust left for reconciliation cancel.`,
+                    `Fill is authoritative: treating as full fill for rotation; chain culls sub-dust residual (no cancel needed).`,
                     'info'
                 );
                 isEffectivelyFull = true;
