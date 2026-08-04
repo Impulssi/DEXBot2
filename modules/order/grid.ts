@@ -151,6 +151,7 @@ import {
     isOrderOnChain,
     isOrderPlaced,
     hasOnChainId,
+    isEmptyGridSlot,
     calculateIdealBoundary,
     assignGridRoles,
     resolveOnChainRetypeType
@@ -621,10 +622,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                     // boundary-shift and strategy re-plan paths use
                     // assignGridRoles (order.ts) with assignOnChain, where
                     // geometry-based typing wins.
-                    const isEmptySlot = slot.state === ORDER_STATES.VIRTUAL
-                        && !slot.orderId
-                        && Number(slot.size || 0) === 0;
-                    if (isEmptySlot) {
+                    if (isEmptyGridSlot(slot, slot, { allowNullType: true })) {
                         if (slot.type !== ORDER_TYPES.SPREAD) reassignCount++;
                         return { ...slot, type: ORDER_TYPES.SPREAD };
                     }
@@ -2255,6 +2253,15 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
     // promotion.  BUY walks upward from the boundary into the gap, SELL walks
     // downward from the sell start; both stop at the first unavailable slot.
     // Mirrors are collapsed into one directional walk (step +/- 1).
+    //
+    // NOTE: the promotion cap is the OPPOSITE RAIL's span, NOT the gap-band size.
+    // SELL promotion moves the boundary down by the promoted count (boundary =
+    // buyEndIdx - count), so capping at buyEndIdx keeps it >= 0.  BUY promotion
+    // moves the boundary up; capping at the SELL rail size (maxIdx+1-sellStartIdx)
+    // keeps the promoted boundary at or below the last placed slot.  The walk's
+    // own idx < sellStartIdx / idx > buyEndIdx bounds already limit promotion to
+    // the band, so this cap only binds when the opposite rail is smaller than the
+    // band — i.e. an empty opposite rail (cap 0) blocks promotion entirely.
     function _collectPromotableBoundarySlots(
         allSlotsByPrice: any[],
         railType: string,

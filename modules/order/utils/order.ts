@@ -761,6 +761,38 @@ function resolveOnChainRetypeType(slot: any, idx: number, buyEndIdx: number, ORD
 function isOrderVirtual(order: any) { return order?.state === ORDER_STATES.VIRTUAL; }
 
 /**
+ * Whether a slot is an empty reusable placeholder: VIRTUAL, no chain order,
+ * and zero size.  Empty slots are normalized to SPREAD (side-neutral) so their
+ * stored type never pre-biases which rail reuses them.
+ *
+ * Shared by loadGrid (grid.ts) and assignGridRoles.  Callers differ in whether
+ * a `type: null` slot counts as empty:
+ * - loadGrid (defensive backstop for legacy persisted grids): any empty slot is
+ *   forced to SPREAD, including null-typed ones (allowNullType: true).
+ * - assignGridRoles (non-assignOnChain path): grid creation types fresh slots
+ *   null and must let geometry assign BUY/SELL, so a null type is NOT empty.
+ *
+ * The resolved `liveSlot` (when provided) supplies the state/orderId/size
+ * checks; the `slot` object supplies the type check.  `isOrderOnChain` is
+ * intentionally not checked: VIRTUAL + !orderId already implies off-chain.
+ *
+ * @param {Object} slot - The slot whose type is inspected.
+ * @param {Object|null} liveSlot - Runtime slot for state checks (defaults to slot).
+ * @param {Object} [opts] - Options.
+ * @param {boolean} [opts.allowNullType=false] - Treat `type: null` slots as empty.
+ * @returns {boolean} True when the slot is a size-0 VIRTUAL placeholder.
+ */
+function isEmptyGridSlot(slot: any, liveSlot: any = null, opts: { allowNullType?: boolean } = {}): boolean {
+    if (!slot) return false;
+    const target = liveSlot || slot;
+    if (target.state !== ORDER_STATES.VIRTUAL) return false;
+    if (target.orderId) return false;
+    if (Number(target.size || 0) !== 0) return false;
+    if (opts.allowNullType !== true && slot.type === null) return false;
+    return true;
+}
+
+/**
  * Check if order has on-chain ID.
  * 
  * @param {Object} order - Order to check
@@ -911,7 +943,7 @@ function calculateFundDrivenBoundary(allSlots: any, availA: any, availB: any, pr
  * @param {boolean} [options.assignOnChain=false] - Override on-chain orders if true
  * @returns {Array<Object>} Slots with updated type assignments
  */
-function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_TYPES: any, ORDER_STATES: any, options: { assignOnChain?: boolean; getCurrentSlot?: (id: any) => any } = {}) {
+function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_TYPES: any, _ORDER_STATES: any, options: { assignOnChain?: boolean; getCurrentSlot?: (id: any) => any } = {}) {
     const assignOnChain = options.assignOnChain === true;
     const getCurrentSlot = (typeof options.getCurrentSlot === 'function') ? options.getCurrentSlot : null;
     const buyEndIdx = boundaryIdx;
@@ -930,16 +962,9 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
         // win: strategy (calculateTargetGrid) and boundary-shift code re-type
         // empty slots by position so they appear in the correct rail's budget
         // and can be activated on the correct side.
-        if (!assignOnChain) {
-            const isEmptySlot = slot.type !== null
-                && !isOrderOnChain(liveSlot)
-                && liveSlot.state === ORDER_STATES.VIRTUAL
-                && !liveSlot.orderId
-                && Number(liveSlot.size || 0) === 0;
-            if (isEmptySlot) {
-                if (slot.type === ORDER_TYPES.SPREAD) return slot;
-                return { ...slot, type: ORDER_TYPES.SPREAD };
-            }
+        if (!assignOnChain && isEmptyGridSlot(slot, liveSlot)) {
+            if (slot.type === ORDER_TYPES.SPREAD) return slot;
+            return { ...slot, type: ORDER_TYPES.SPREAD };
         }
 
         const newType = (i <= buyEndIdx) ? ORDER_TYPES.BUY : (i >= sellStartIdx) ? ORDER_TYPES.SELL : ORDER_TYPES.SPREAD;
@@ -1409,5 +1434,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
     );
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
 
