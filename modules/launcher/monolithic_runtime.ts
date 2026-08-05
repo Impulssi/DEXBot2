@@ -120,9 +120,26 @@ function isExpectedMonolithicBotPid(pid: any, botInfo: any) {
 
 // ── Credential daemon management ───────────────────────────────────
 
+function isProcessInDstate(pid: number): boolean {
+    try {
+        const stat = storage.readFile(`/proc/${pid}/stat`);
+        const lastParen = stat.lastIndexOf(')');
+        if (lastParen === -1) return false;
+        const state = stat.slice(lastParen + 2, lastParen + 3);
+        return state === 'D';
+    } catch {
+        return false;
+    }
+}
+
 async function stopCredentialDaemonPid(pid: string | number) {
     const daemonPid = Number(pid);
     if (!Number.isInteger(daemonPid) || daemonPid <= 0) {
+        return;
+    }
+
+    if (isProcessInDstate(daemonPid)) {
+        console.warn(`stopCredentialDaemonPid: pid ${daemonPid} is in uninterruptible sleep (D-state), cannot kill.`);
         return;
     }
 
@@ -138,7 +155,15 @@ async function stopCredentialDaemonPid(pid: string | number) {
         if (!isPidAlive(daemonPid)) {
             return;
         }
+        if (isProcessInDstate(daemonPid)) {
+            console.warn(`stopCredentialDaemonPid: pid ${daemonPid} entered D-state during SIGTERM wait, skipping.`);
+            return;
+        }
         await sleep(100);
+    }
+    if (isProcessInDstate(daemonPid)) {
+        console.warn(`stopCredentialDaemonPid: pid ${daemonPid} is in D-state, skipping SIGKILL.`);
+        return;
     }
 
     const SIGKILL_DEADLINE_MS = LAUNCHER.MONOLITHIC.DAEMON_SIGKILL_DEADLINE_MS;
@@ -153,6 +178,10 @@ async function stopCredentialDaemonPid(pid: string | number) {
     if (sigkillSent) {
         while ((Date.now() - sigkillStartedAt) < SIGKILL_DEADLINE_MS) {
             if (!isPidAlive(daemonPid)) {
+                return;
+            }
+            if (isProcessInDstate(daemonPid)) {
+                console.warn(`stopCredentialDaemonPid: pid ${daemonPid} entered D-state during SIGKILL wait, skipping.`);
                 return;
             }
             await sleep(100);
@@ -377,7 +406,7 @@ function getControlActionLabel(cmd: any) {
 function getControlServiceNames(cmd: any, botNames: any) {
     if (!['stop-all', 'restart-all', 'delete', 'shutdown'].includes(cmd)) return [];
     const serviceNames: string[] = [];
-    if (cmd === 'delete' || cmd === 'shutdown') {
+    if (cmd === 'restart-all' || cmd === 'delete' || cmd === 'shutdown') {
         serviceNames.push('credential daemon');
     }
     const botNameSet = new Set(botNames);
@@ -404,5 +433,5 @@ function printControlActionSummary(action: any, botNames: any, serviceNames: any
     console.log();
 }
 
-export { MONOLITHIC_PID_FILE, MONOLITHIC_BOT_PID_FILE, MONOLITHIC_BOT_INFO_FILE, MONOLITHIC_CRED_PID_FILE, MONOLITHIC_OUT_LOG, MONOLITHIC_ERROR_LOG, CREDENTIAL_SOCKET_FILE, CREDENTIAL_READY_FILE, cleanupStateFiles, readLiveMonolithicPid, readMonolithicBotInfo, isLikelyCredentialDaemonProcess, isLikelyDexbotProcess, isLikelyUnlockProcess, isExpectedProcessStarttime, isExpectedMonolithicBotPid, readProcStat, stopCredentialDaemonPid, cleanupCredentialRuntimeFiles, stopCredentialDaemon, ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialDaemonStatus, ensureLogDir, buildDexbotStartArgs, buildUnlockArgs, createUpdateScheduler, getActiveAmaBotFingerprint, listConfiguredBots, getAllControlBotNames, getControlBotNames, getControlActionLabel, getControlServiceNames, printControlActionSummary, formatBotCount }
+export { MONOLITHIC_PID_FILE, MONOLITHIC_BOT_PID_FILE, MONOLITHIC_BOT_INFO_FILE, MONOLITHIC_CRED_PID_FILE, MONOLITHIC_OUT_LOG, MONOLITHIC_ERROR_LOG, CREDENTIAL_SOCKET_FILE, CREDENTIAL_READY_FILE, cleanupStateFiles, readLiveMonolithicPid, readMonolithicBotInfo, isLikelyCredentialDaemonProcess, isLikelyDexbotProcess, isLikelyUnlockProcess, isExpectedProcessStarttime, isExpectedMonolithicBotPid, readProcStat, isProcessInDstate, stopCredentialDaemonPid, cleanupCredentialRuntimeFiles, stopCredentialDaemon, ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialDaemonStatus, ensureLogDir, buildDexbotStartArgs, buildUnlockArgs, createUpdateScheduler, getActiveAmaBotFingerprint, listConfiguredBots, getAllControlBotNames, getControlBotNames, getControlActionLabel, getControlServiceNames, printControlActionSummary, formatBotCount }
 

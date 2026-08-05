@@ -81,9 +81,9 @@ const {
     cleanupStateFiles, readLiveMonolithicPid, readMonolithicBotInfo,
     isLikelyCredentialDaemonProcess,
     isExpectedMonolithicBotPid,
-    stopCredentialDaemonPid, stopCredentialDaemon,
+    isProcessInDstate, stopCredentialDaemonPid, stopCredentialDaemon,
     ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid,
-    readCredentialDaemonStatus, ensureLogDir: ensureMonolithicLogDir,
+    cleanupCredentialRuntimeFiles, readCredentialDaemonStatus, ensureLogDir: ensureMonolithicLogDir,
     buildDexbotStartArgs, createUpdateScheduler,
     listConfiguredBots, getControlBotNames, getControlActionLabel,
     getControlServiceNames, printControlActionSummary, formatBotCount,
@@ -729,16 +729,30 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
             const summaryServiceNames = getControlServiceNames(effectiveCmd, summaryBotNames);
 
             if (effectiveCmd === 'restart-all') {
-                const adapterResult = await stopMarketAdapterFromLock();
-                if (adapterResult.stopped) {
-                    console.log(`Stop signal sent to market adapter PID ${adapterResult.pid}`);
+                if (process.stdin.isTTY) {
+                    const credResult = await stopCredentialDaemon();
+                    if (credResult.signaled) {
+                        console.log('Stop signal sent to credential daemon');
+                    }
+                    const daemonOpts: any = { detached: true };
+                    const unlockedNow = await controller.ensureCredentialDaemon(daemonOpts);
+                    if (unlockedNow) {
+                        console.log(statusSuccess('✓ Authentication successful'));
+                    }
+                    const newCredPid = controller.getManagedDaemonPid();
+                    if (newCredPid) {
+                        try { storage.writeFile(MONOLITHIC_CRED_PID_FILE, String(newCredPid), { mode: 0o600 }); } catch (_) {}
+                    }
+                    controller.releaseManagedDaemon();
                 }
+                await stopMarketAdapterFromLock();
                 try {
                     runtime.kill(pid, 'SIGUSR2');
                 } catch (err: any) {
                     if (err.code !== 'ESRCH') throw err;
                 }
                 printControlActionSummary(actionLabel, summaryBotNames, summaryServiceNames);
+                process.exit(0);
                 return;
             }
 
@@ -851,28 +865,37 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
 
             let monolithicExited = false;
             try {
-                runtime.kill(pid, 'SIGTERM');
-                const timeoutMs = effectiveCmd === 'delete' ? LAUNCHER.MONOLITHIC.controlStopTimeoutMs : 5000;
-                monolithicExited = await waitForPidExit(pid, timeoutMs);
-                if (!monolithicExited && effectiveCmd === 'delete') {
-                    runtime.kill(pid, 'SIGKILL');
-                    monolithicExited = await waitForPidExit(pid, 2000);
-                    if (!monolithicExited) {
-                        throw new Error(`monolithic wrapper PID ${pid} did not exit after SIGKILL`);
-                    }
-                }
-                if (effectiveCmd === 'delete') {
-                    const credResult = await stopCredentialDaemon();
-                    if (credResult.signaled) {
-                        console.log('Stop signal sent to credential daemon');
+                if (isProcessInDstate(pid)) {
+                    console.warn(`monolithic wrapper PID ${pid} is in uninterruptible sleep (D-state), cannot kill. Cleaning up state.`);
+                    monolithicExited = true;
+                } else {
+                    runtime.kill(pid, 'SIGTERM');
+                    const timeoutMs = effectiveCmd === 'delete' ? LAUNCHER.MONOLITHIC.controlStopTimeoutMs : 5000;
+                    monolithicExited = await waitForPidExit(pid, timeoutMs);
+                    if (!monolithicExited && effectiveCmd === 'delete') {
+                        if (isProcessInDstate(pid)) {
+                            console.warn(`monolithic wrapper PID ${pid} is in D-state, skipping SIGKILL.`);
+                        } else {
+                            runtime.kill(pid, 'SIGKILL');
+                            monolithicExited = await waitForPidExit(pid, 2000);
+                            if (!monolithicExited) {
+                                console.warn(`monolithic wrapper PID ${pid} did not exit after SIGKILL (may be in uninterruptible sleep). Cleaning up state.`);
+                            }
+                        }
                     }
                 }
             } catch (err: any) {
                 if (err.code !== 'ESRCH') throw err;
                 monolithicExited = true;
             } finally {
-                if (effectiveCmd !== 'delete' || monolithicExited) {
+                if (effectiveCmd === 'delete' || monolithicExited) {
                     cleanupStateFiles();
+                }
+            }
+            if (effectiveCmd === 'delete') {
+                const credResult = await stopCredentialDaemon();
+                if (credResult.signaled) {
+                    console.log('Stop signal sent to credential daemon');
                 }
             }
             printControlActionSummary(actionLabel, summaryBotNames, summaryServiceNames);
@@ -910,6 +933,21 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
     const controlCmd: any = { cmd: effectiveCmd };
     if (target) controlCmd.bot = target;
 
+    // Restart credential daemon for restart-all (no target) in isolated mode
+    if (!target && effectiveCmd === 'restart-all' && process.stdin.isTTY) {
+        const ownerPid = findCredentialSocketOwnerPid();
+        if (ownerPid > 0 && isLikelyCredentialDaemonProcess(ownerPid)) {
+            await stopCredentialDaemonPid(ownerPid);
+        }
+        cleanupCredentialRuntimeFiles();
+        const daemonOpts: any = { detached: true };
+        const unlockedNow = await controller.ensureCredentialDaemon(daemonOpts);
+        if (unlockedNow) {
+            console.log(statusSuccess('✓ Authentication successful'));
+        }
+        controller.releaseManagedDaemon();
+    }
+
     try {
         const resp: any = await sendControlCommand(controlCmd);
         if (resp.ok && resp.status) {
@@ -930,6 +968,7 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
         console.error(statusError(`control ${cmd}: ${getErrorMessage(err)}`));
         process.exitCode = 1;
     }
+    process.exit(0);
 }
 
 // ── Bootstrap ──────────────────────────────────────────────────────

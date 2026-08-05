@@ -33,9 +33,8 @@ export class LinuxProcessDiscovery implements ProcessDiscovery {
     isAlive(pid: number): boolean {
         if (!Number.isInteger(pid) || pid <= 0) return false;
         try {
-            runtime.kill(pid, 0);
-            return true;
-        } catch (_: any) {
+            return runtime.kill(pid, 0);
+        } catch {
             return false;
         }
     }

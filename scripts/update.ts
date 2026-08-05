@@ -129,11 +129,16 @@ function restartMonolithicRuntime(monolithic: any) {
         monolithic.botNames.length ? `bots: ${monolithic.botNames.join(', ')}` : null,
     ].filter(Boolean).join('; ');
 
-    log(`Monolithic runtime detected (${details}). Restarting via unlock control...`);
-    const unlockPath = fs.existsSync(path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js'))
-        ? path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js')
-        : path.join(PATHS.PROJECT_ROOT, 'unlock.js');
-    run(`node "${unlockPath}" restart all`);
+    log(`Monolithic runtime detected (${details}). Restarting via SIGUSR2...`);
+    try {
+        const lockRaw = fs.readFileSync(PATHS.MARKET_ADAPTER.LOCK_FILE, 'utf8').trim();
+        const info = JSON.parse(lockRaw);
+        const adapterPid = Number(info.pid);
+        if (Number.isInteger(adapterPid) && adapterPid > 0) {
+            try { process.kill(adapterPid, 'SIGTERM'); } catch (_) {}
+        }
+    } catch (_) {}
+    try { process.kill(monolithic.wrapperPid, 'SIGUSR2'); } catch (_) {}
 }
 
 /**
@@ -512,12 +517,11 @@ try {
     try {
         // Try loading from compiled dist/ first, then fall back to source dir
         let generateEcosystemConfig;
-        try {
-            const pm2Module = await import(path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js'));
-            generateEcosystemConfig = pm2Module.generateEcosystemConfig;
-        } catch (_) {
-            const pm2Module = await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
-            generateEcosystemConfig = pm2Module.generateEcosystemConfig;
+        const distPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
+        if (fs.existsSync(distPath)) {
+            generateEcosystemConfig = require(distPath).generateEcosystemConfig;
+        } else {
+            generateEcosystemConfig = require(path.join(PATHS.PROJECT_ROOT, 'pm2.js')).generateEcosystemConfig;
         }
         generateEcosystemConfig({ clawOnly: false, exitOnError: false });
         log('Ecosystem config regenerated successfully.');
@@ -585,12 +589,11 @@ try {
                         const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
                         const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
                         let needsMarketAdapter: any;
-                        try {
-                            const pm2Module = await import(path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js'));
-                            needsMarketAdapter = pm2Module.needsMarketAdapter;
-                        } catch (_) {
-                            const pm2Module = await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
-                            needsMarketAdapter = pm2Module.needsMarketAdapter;
+                        const maPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
+                        if (fs.existsSync(maPath)) {
+                            needsMarketAdapter = require(maPath).needsMarketAdapter;
+                        } else {
+                            needsMarketAdapter = require(path.join(PATHS.PROJECT_ROOT, 'pm2.js')).needsMarketAdapter;
                         }
                         const marketAdapterRequired = needsMarketAdapter(runningActiveBots);
 
