@@ -55,6 +55,13 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Configuration**: Per-source thresholds, whitelist requirements, and defaults
 - **Trigger Execution**: How `profiles/recalculate.<botKey>.trigger` is consumed under the fill-processing lock
 
+### 🔁 [Grid Reconciliation](GRID_RECONCILE.md)
+*How the bot re-aligns its intended grid with on-chain reality at startup.*
+- **3-Phase Plan-then-Execute**: Phase 1 pure in-memory planning under `_gridLock`, Phase 2 blockchain execution outside the lock, Phase 3 fresh re-read and stale surplus cleanup
+- **Safety Guardrails**: Fresh-grid `matchedOnGrid > 0` guard, 5× duplicate tolerance, freshly-assigned deferral, and truncated-read ambiguity handling
+- **Partial Failure State**: No rollback on partial Phase 2 success; remaining mismatches caught by the next maintenance or startup cycle
+- **Lock Hierarchy**: Canonical `_syncLock`/`_gridLock` level reference and the 1.4.6 ABBA deadlock correction
+
 ### 📝 [Logging System](LOGGING.md)
 *Configuration reference for log levels, rotation, JSON output, and categories.*
 - **5 Severity Levels**: `debug`, `info`, `warn`, `error`, `critical`.

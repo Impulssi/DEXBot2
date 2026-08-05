@@ -267,6 +267,7 @@ Logs are written to `profiles/logs/<bot-name>.log` (errors to `<bot-name>-error.
 
 - **[Credential Security](docs/CREDENTIAL_SECURITY.md)** - Key handling, daemon-backed signing, and runtime file hardening
 - **[Grid Recalculation](docs/GRID_RECALCULATION.md)** - Market-adapter bootstrap/delta/slope resets, divergence correction, fund regeneration, and runtime trigger handling
+- **[Grid Reconciliation](docs/GRID_RECONCILE.md)** - Startup 3-phase reconcile, offline fill detection, and stale surplus cleanup
 - **[Logging](docs/LOGGING.md)** - Logging system documentation
 - **[Docker](docs/docker.md)** - Container build, release images, and secure startup
 
