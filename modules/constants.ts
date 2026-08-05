@@ -91,7 +91,7 @@
  *   14. LOGGING_CONFIG - Structured logging configuration
  *       changeTracking: Smart change detection
  *       display.colors: TTY color support
- *       display.fundStatus, display.statusSummary, display.gridDiagnostics
+ *       display.fundStatus, display.statusSummary
  *       Categories for enabling/disabling log types
  *
  *   15. LOG_LEVEL - Current logging verbosity level
@@ -1237,10 +1237,6 @@ let LOGGING_CONFIG = {
         enabled: false
     },
     display: {
-        gridDiagnostics: {
-            enabled: false,
-            showOnDemandOnly: true
-        },
         fundStatus: {
             enabled: false,
             showDetailed: false,

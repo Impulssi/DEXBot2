@@ -51,12 +51,10 @@ import {
 import {
     validateOrder,
     validateGridForPersistence,
-    calculateRequiredFunds,
     validateWorkingGridFunds,
     checkFundDrift,
     reconcileGrid,
     optimizeRebalanceActions,
-    summarizeActions,
     projectTargetToWorkingGrid,
     buildStateUpdates,
     buildAbortedResult,
@@ -749,24 +747,6 @@ class OrderManager {
         return await this._fundLock.acquire(async () => {
             return this.accountant.resetFunds();
         });
-    }
-
-    async _deductFromChainFree(orderType: any, size: any, operation: any) {
-        if (!this.accountant) return;
-        return await this._fundLock.acquire(async () => {
-            return await this.accountant.tryDeductFromChainFree(orderType, size, operation);
-        });
-    }
-
-    async _addToChainFree(orderType: any, size: any, operation: any) {
-        if (!this.accountant) return;
-        return await this._fundLock.acquire(async () => {
-            return await this.accountant.addToChainFree(orderType, size, operation);
-        });
-    }
-
-    _getGridTotal(side: any) {
-        return (this.funds?.committed?.grid?.[side] || 0) + (this.funds?.virtual?.[side] || 0);
     }
 
     /**
@@ -1532,14 +1512,6 @@ class OrderManager {
     }
 
     /**
-     * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
-     * @returns {Array<import('./types').Order>}
-     */
-    getPartialOrdersOnSide(type: any) {
-        return this.getOrdersByTypeAndState(type, ORDER_STATES.PARTIAL);
-    }
-
-    /**
      * Write boundaryIdx under COW-commit-only discipline.
      *
      * Must only be called from within _commitWorkingGrid (which holds _gridLock).
@@ -1687,25 +1659,6 @@ class OrderManager {
     }
 
     /**
-     * @returns {import('./types').PipelineHealth}
-     */
-    getPipelineHealth() {
-        const blockedDuration = this._pipelineBlockedSince
-            ? Date.now() - this._pipelineBlockedSince
-            : 0;
-        const timeoutMs = this.config?.pipelineTiming?.TIMEOUT_MS ?? PIPELINE_TIMING.TIMEOUT_MS;
-
-        return {
-            isBlocked: this._pipelineBlockedSince !== null,
-            blockedDurationMs: blockedDuration,
-            hasStalled: blockedDuration > timeoutMs,
-            recoveryAttempted: this._recoveryAttempted,
-            correctionsPending: this.ordersNeedingPriceCorrection.length,
-            gridSidesUpdated: this._gridSidesUpdated?.size || 0
-        };
-    }
-
-    /**
      * @param {Map<string, import('./types').Order>} targetGrid
      * @param {number} targetBoundary
      * @returns {Object}
@@ -1757,34 +1710,6 @@ class OrderManager {
         return result;
     }
 
-    _reconcileGridCOW(targetGrid: any, targetBoundary: any, workingGrid: any) {
-        const result = this.reconcileGrid(targetGrid, targetBoundary);
-        if (result.aborted) return result;
-
-        const actions = optimizeRebalanceActions(result.actions || [], this.orders);
-        projectTargetToWorkingGrid(workingGrid, targetGrid, { actions });
-
-        return {
-            ...result,
-            actions,
-            ...summarizeActions(actions)
-        };
-    }
-
-    _validateWorkingGridFunds(workingGrid: any, projectedFunds: any) {
-        return validateWorkingGridFunds(workingGrid, projectedFunds, {
-            buyPrecision: this.assets?.assetB?.precision,
-            sellPrecision: this.assets?.assetA?.precision
-        }, this.assets);
-    }
-
-    _calculateRequiredFundsFromGrid(workingGrid: any, precisions: Record<string, any> = {}) {
-        return calculateRequiredFunds(workingGrid, {
-            buyPrecision: precisions.buyPrecision || this.assets?.assetB?.precision,
-            sellPrecision: precisions.sellPrecision || this.assets?.assetA?.precision
-        });
-    }
-
     _getCowComparePrecisions() {
         const buyPrecisionRaw = this.assets?.assetB?.precision;
         const sellPrecisionRaw = this.assets?.assetA?.precision;
@@ -1816,14 +1741,6 @@ class OrderManager {
             sellPrecision,
             priceRelativeTolerance
         };
-    }
-
-    _buildStateUpdates(actions: any, masterGrid: any) {
-        return buildStateUpdates(actions, masterGrid);
-    }
-
-    _buildAbortedCOWResult(reason: any) {
-        return buildAbortedResult(reason);
     }
 
     async _commitWorkingGrid(workingGrid: any, _workingIndexes: any, workingBoundary: any, options: any = {}) {
@@ -2087,34 +2004,6 @@ class OrderManager {
             },
             currentTime: Date.now()
         };
-    }
-
-    _projectTargetToWorkingGrid(workingGrid: any, targetGrid: any) {
-        return projectTargetToWorkingGrid(workingGrid, targetGrid);
-    }
-
-    _summarizeCowActions(actions: any) {
-        return summarizeActions(actions);
-    }
-
-    _evaluateWorkingGridCommit(workingGrid: any, hasLock: any = false) {
-        let comparePrecisions;
-        try {
-            comparePrecisions = this._getCowComparePrecisions();
-        } catch (precisionErr: any) {
-            return {
-                canCommit: false,
-                reason: getErrorMessage(precisionErr),
-                level: 'error'
-            };
-        }
-
-        return evaluateCommit(workingGrid, {
-            hasLock,
-            currentVersion: this._gridVersion,
-            masterGrid: this.orders,
-            comparePrecisions
-        });
     }
 
     get _lastIllegalState() {

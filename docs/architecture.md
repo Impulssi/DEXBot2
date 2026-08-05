@@ -1034,7 +1034,7 @@ sequenceDiagram
 | **SyncEngine** | Blockchain sync, fill detection | `syncFromOpenOrders()`, `synchronizeWithChain()` |
 | **Grid** | Grid creation, sizing, divergence | `createOrderGrid()`, `compareGrids()`, `checkAndUpdateGridIfNeeded()` |
 | **Utils** | Shared utilities, conversions | `quantizeFloat()`, `normalizeInt()` (`math.ts`); order predicates (`order.ts`); COW action building (`validate.ts`); price derivation (`system.ts`) |
-| **Logger** | Formatted logging, diagnostics | `logOrderGrid()`, `logFundsStatus()`, `logGridDiagnostics()` |
+| **Logger** | Formatted logging, diagnostics | `logOrderGrid()`, `logFundsStatus()` |
 
 ---
 

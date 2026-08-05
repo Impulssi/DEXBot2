@@ -72,7 +72,6 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | Term | Meaning |
 |------|---------|
 | **Pipeline Timeout Safeguard** | 5-minute timeout preventing indefinite blocking on pipeline checks |
-| **Pipeline Health Diagnostics** | `getPipelineHealth()` method returning 8 diagnostic fields for monitoring |
 | **Stale Operation Clearing** | Non-destructive recovery clearing operation flags without touching orders |
 
 #### Fill Batching & Recovery Retries
@@ -1249,8 +1248,8 @@ if (!isValid) {
 
 **3. Grid Diagnostics**
 ```javascript
-// After fills or rotations
-manager.logger.logGridDiagnostics(manager, 'AFTER FILL');
+// After fills or rotations — use logFundsStatus for structured fund/order summaries
+manager.logger.logFundsStatus(manager, 'AFTER FILL');
 ```
 
 ---
@@ -1492,11 +1491,6 @@ manager.logger.level = 'debug';
 ### View Fund Status
 ```javascript
 manager.logger.logFundsStatus(manager, 'CONTEXT');
-```
-
-### View Grid Diagnostics
-```javascript
-manager.logger.logGridDiagnostics(manager, 'CONTEXT');
 ```
 
 ### View Metrics

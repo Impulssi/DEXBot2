@@ -4,7 +4,7 @@ import { path } from '../path_api';
 import { runtime } from '../runtime';
 import * as Format from './format';
 import LoggerState from './logger_state';
-import { LOGGING_CONFIG, ORDER_STATES, ORDER_TYPES } from '../constants';
+import { LOGGING_CONFIG, ORDER_STATES } from '../constants';
 import { Config } from '../config';
 import { getErrorMessage } from '../utils/errors';
 import { withTimeout } from './utils/timeout';
@@ -20,7 +20,6 @@ const storage = getStorage();
  * - display.colors.enabled: Force colors on/off (null = auto-detect TTY)
  * - display.fundStatus: Enable/disable fund status display
  * - display.statusSummary: Enable/disable comprehensive status summaries
- * - display.gridDiagnostics: Enable/disable detailed grid diagnostics
  * - rotation: Size-based log rotation (total budget / maxFiles)
  * - json: Structured JSON output to file (optional)
  */
@@ -556,85 +555,6 @@ class Logger {
         }
 
         lines.push(`Spread Condition: ${manager.outOfSpread > 0 ? 'TOO WIDE (' + manager.outOfSpread + ')' : 'Normal'}`);
-
-        lines.forEach(line => {
-            if (!this.quiet) console.log(line);
-            this._enqueueWrite(line);
-        });
-    }
-
-    /**
-     * Log detailed grid diagnostic: ACTIVE, SPREAD, PARTIAL orders and first VIRTUAL on boundary.
-     * @param {Object} manager - Manager instance
-     * @param {string} context - Context label
-     * @param {boolean} forceOutput - Force output even if disabled in config
-     */
-    logGridDiagnostics(manager: any, context = '', forceOutput = false) {
-        if (!manager) return;
-        if (!this.config.display?.gridDiagnostics?.enabled && !forceOutput) return;
-
-        const c = this.colors;
-        const reset = c.reset;
-        const buy = c.buy;
-        const sell = c.sell;
-        const active = c.active;
-        const spread = c.spread;
-        const partial = c.partial;
-        const virtual = c.virtual;
-
-        const allOrders: any[] = Array.from(manager.orders?.values?.() || []).sort((a: any, b: any) => b.price - a.price);
-
-        const activeOrders = allOrders.filter(o => o.state === ORDER_STATES.ACTIVE);
-        const activeBuys = activeOrders.filter(o => o.type === ORDER_TYPES.BUY);
-        const activeSells = activeOrders.filter(o => o.type === ORDER_TYPES.SELL);
-
-        const spreadOrders = allOrders.filter(o => o.type === ORDER_TYPES.SPREAD && o.state === ORDER_STATES.VIRTUAL);
-        const partialOrders = allOrders.filter(o => o.state === ORDER_STATES.PARTIAL);
-
-        const virtualOrders = allOrders.filter(o => o.state === ORDER_STATES.VIRTUAL && o.type !== ORDER_TYPES.SPREAD);
-        const firstVirtualSell = virtualOrders.find(o => o.type === ORDER_TYPES.SELL);
-        const firstVirtualBuy = virtualOrders.find(o => o.type === ORDER_TYPES.BUY);
-
-        const ctxStr = context ? ` [${context}]` : '';
-        const header = `\n${spread}=== GRID DIAGNOSTICS${ctxStr} ===${reset}`;
-
-        const lines = [header];
-        lines.push(`\n${active}ACTIVE ORDERS${reset}: ${buy}Buy=${activeBuys.length}${reset}, ${sell}Sell=${activeSells.length}${reset}`);
-
-        if (activeBuys.length > 0) {
-            lines.push(`  ${buy}BUY:${reset}  ${activeBuys.map(o => `${o.id}@${Format.formatPrice4(o.price)}`).join(', ')}`);
-        }
-        if (activeSells.length > 0) {
-            lines.push(`  ${sell}SELL:${reset} ${activeSells.map(o => `${o.id}@${Format.formatPrice4(o.price)}`).join(', ')}`);
-        }
-
-        lines.push(`\n${spread}SPREAD PLACEHOLDERS${reset}: ${spreadOrders.length}`);
-        if (spreadOrders.length > 0) {
-            for (const order of spreadOrders) {
-                const isBoundary = (order === firstVirtualBuy || order === firstVirtualSell);
-                const boundaryMarker = isBoundary ? ' ← BOUNDARY' : '';
-                lines.push(`  ${spread}${order.id}@${Format.formatPrice4(order.price)}${boundaryMarker}${reset}`);
-            }
-        }
-
-        lines.push(`\n${partial}PARTIAL ORDERS${reset}: ${partialOrders.length}`);
-        if (partialOrders.length > 0) {
-            for (const order of partialOrders) {
-                lines.push(`  ${partial}${order.id}@${Format.formatPrice4(order.price)} size=${Format.formatSizeByOrderType(order.size, order.type, manager.assets)}${reset}`);
-            }
-        }
-
-        lines.push(`\n${virtual}FIRST VIRTUAL ON BOUNDARY${reset}:`);
-        if (firstVirtualSell) {
-            lines.push(`  ${virtual}SELL: ${firstVirtualSell.id}@${Format.formatPrice4(firstVirtualSell.price)}${reset}`);
-        } else {
-            lines.push(`  ${virtual}SELL: (none)${reset}`);
-        }
-        if (firstVirtualBuy) {
-            lines.push(`  ${virtual}BUY:  ${firstVirtualBuy.id}@${Format.formatPrice4(firstVirtualBuy.price)}${reset}`);
-        } else {
-            lines.push(`  ${virtual}BUY:  (none)${reset}`);
-        }
 
         lines.forEach(line => {
             if (!this.quiet) console.log(line);

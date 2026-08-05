@@ -1,5 +1,3 @@
-import { getStorage } from '../../modules/storage/index.js';
-const storage = getStorage();
 import { path } from '../../modules/path_api.js';
 import { PATHS } from '../../modules/paths.js';
 const { version: DEXBOT_VERSION } = require(path.join(PATHS.PROJECT_ROOT, 'package.json'));
@@ -70,14 +68,4 @@ export function buildSkillTomlLines(skillName: string, description: string, tags
 
   lines.push('');
   return lines.join('\n');
-}
-
-export function writeSkillFile(outputPath: string, content: string) {
-  if (!outputPath) {
-    throw new Error('outputPath is required');
-  }
-
-  storage.ensureDir(path.dirname(outputPath));
-  storage.writeFile(outputPath, content, 'utf8');
-  return content;
 }

@@ -105,7 +105,6 @@ The default `LOG_LEVEL` is `"info"`. For production or minimal output, set to `"
     },
     "display": {
       "fundStatus": { "enabled": true, "showDetailed": true },
-      "gridDiagnostics": { "enabled": false },
       "statusSummary": { "enabled": false }
     }
   }
@@ -118,7 +117,6 @@ The default `LOG_LEVEL` is `"info"`. For production or minimal output, set to `"
 
 | Feature | Default | Method | Purpose |
 |---------|---------|--------|---------|
-| **gridDiagnostics** | off | `logGridDiagnostics(mgr, ctx, force)` | Active/spread/partial order summary |
 | **fundStatus** | off | `logFundsStatus(mgr, ctx, force)` | Detailed fund breakdown |
 | **statusSummary** | off | `displayStatus(mgr, force)` | Comprehensive account/order status |
 
@@ -126,7 +124,6 @@ The default `LOG_LEVEL` is `"info"`. For production or minimal output, set to `"
 {
   "LOGGING_CONFIG": {
     "display": {
-      "gridDiagnostics": { "enabled": true, "showOnDemandOnly": true },
       "fundStatus": { "enabled": true, "showDetailed": true },
       "statusSummary": { "enabled": true }
     }
