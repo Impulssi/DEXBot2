@@ -168,7 +168,7 @@ const PROFILES_DIR = PATHS.PROFILES_DIR;
 
 const BUILD_DIR = 'dist';
 const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'help'];
-const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'test', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart' };
+const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
@@ -220,7 +220,7 @@ function printCLIUsage() {
     console.log('Usage: dexbot [command] [bot-name]');
     console.log('Commands:');
     console.log('  test <bot>        Test-run the named bot (one-shot, live trading).');
-    console.log('  start <bot>       Alias for test (legacy).');
+    console.log('  start [bot]       Start the monolithic runtime (alias for unlock). Counterpart to stop.');
     console.log('  drystart <bot>    Same as test but forces dry-run execution.');
     console.log('  reset all         Trigger grid resets for all active bots.');
     console.log('  reset <bot>       Trigger a grid reset (auto-reloads if running, or applies on next start).');

@@ -231,7 +231,7 @@ the canonical name is preferred in scripts and docs.
 | `dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds) |
 | `dexbot status` | `stat` | Unified runtime health — daemon, adapter, bots |
 | `dexbot unlock` | — | Run credential daemon + bot (equivalent to `node unlock`) |
-| `dexbot stop` | `stp`, `stopall` | Stop the monolithic runtime (unlock mode) |
+| `dexbot stop` / `dexbot start` | `stp`, `stopall` | Stop/start the monolithic runtime (unlock mode) |
 | `dexbot restart` | `restartall` | Restart the monolithic runtime (unlock mode) |
 | `dexbot delete` | — | Shut down and clean up the monolithic runtime (unlock mode) |
 | `dexbot whitelist` | `white` | Generate market adapter whitelist from AMA bot configs |
