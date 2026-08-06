@@ -66,7 +66,7 @@ Fee deduction, fund tracking, precision, invariant checks.
 
 ### Integration & Workflows
 Cross-module scenarios: startup reconciliation, engine integration, market simulations.
-*Examples:* `test_engine_integration.ts`, `test_market_scenarios.ts`, `test_grid_reconcile.ts` ([GRID_RECONCILE.md](../../docs/GRID_RECONCILE.md)), `test_startup_decision.ts`, `test_main_loop_sync_fill_rebalance.ts`
+*Examples:* `test_engine_integration.ts`, `test_market_scenarios.ts`, `test_grid_reconcile.ts` ([GRID_RECONCILE.md](../docs/GRID_RECONCILE.md)), `test_startup_decision.ts`, `test_main_loop_sync_fill_rebalance.ts`
 
 ### Credential Daemon & Runtime
 Credential management, daemon lifecycle, session caching, debt policy.

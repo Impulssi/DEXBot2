@@ -20,7 +20,7 @@ Reconciliation aligns the bot's model with on-chain reality. It runs at startup 
 
 ## Architecture: 3-Phase Plan-then-Execute
 
-The reconcile runs from [`recalculateGrid`](modules/order/grid.ts) during startup full-resync. **There is no per-attempt wall-clock race around the reconcile itself** — an outer timeout would fire mid-batch and orphan in-flight broadcasts (the duplicate-accumulation death spiral). The reconcile is bounded only by the 10-minute total resync safety net, and every internal chain read follows the shared guarded-read standard.
+The reconcile runs from [`recalculateGrid`](../modules/order/grid.ts) during startup full-resync. **There is no per-attempt wall-clock race around the reconcile itself** — an outer timeout would fire mid-batch and orphan in-flight broadcasts (the duplicate-accumulation death spiral). The reconcile is bounded only by the 10-minute total resync safety net, and every internal chain read follows the shared guarded-read standard.
 
 Phase 1 does all reasoning in memory under `_gridLock` (fast); Phases 2 and 3 execute outside the lock — holding a lock across RPC calls would block fills, sync, and divergence checks for hundreds of milliseconds each. All execution operations in Phases 2–3 re-acquire `_gridLock` individually (via `synchronizeWithChain` / per-op guards) so the lock is held briefly per operation, never for an entire phase.
 
@@ -129,7 +129,7 @@ If Phase 2 partially succeeds (some cancels, some creates fail), there is no rol
 
 ### Timeouts and Read Coverage
 
-- **No per-attempt race** around the reconcile itself — the 1.4.8 change removed it to avoid orphaning mid-batch broadcasts (see the [`recalculateGrid`](modules/order/grid.ts) call site in `modules/order/grid.ts`).
+- **No per-attempt race** around the reconcile itself — the 1.4.8 change removed it to avoid orphaning mid-batch broadcasts (see the [`recalculateGrid`](../modules/order/grid.ts) call site in `modules/order/grid.ts`).
 - The whole resync is bounded by a **10-minute total timeout** (`PIPELINE_TIMING.TIMEOUT_MS * 2` at `grid.ts:1025`), applied via `Promise.race` at `grid.ts:1120-1131`.
 - Every internal chain read goes through `readOpenOrdersGuarded` (`chain_orders.ts:628`) with the 30s / 3-retry / node-failover standard, and empty/truncated reads are treated as **ambiguous** — never as authoritative absence.
 
