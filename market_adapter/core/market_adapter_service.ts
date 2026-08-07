@@ -887,6 +887,9 @@ class MarketAdapterService {
                 maxAsymmetryFactor:  (cfg.asymmetricBounds?.maxAsymmetryFactor != null)
                     ? cfg.asymmetricBounds.maxAsymmetryFactor
                     : null,
+                minScaleSlots: (cfg.asymmetricBounds?.minScaleSlots != null)
+                    ? cfg.asymmetricBounds.minScaleSlots
+                    : null,
                 clipPercentile,
                 neutralZonePct: nz,
                 volatilityThreshold,
@@ -949,6 +952,9 @@ class MarketAdapterService {
             rawFinalOffset:      rawFinalOff,
             maxAsymmetryFactor:  (cfg.asymmetricBounds?.maxAsymmetryFactor != null)
                 ? cfg.asymmetricBounds.maxAsymmetryFactor
+                : null,
+            minScaleSlots: (cfg.asymmetricBounds?.minScaleSlots != null)
+                ? cfg.asymmetricBounds.minScaleSlots
                 : null,
             amaChannelContribution: amaSlopeGated,
             trend:                   slopeResult.trend,
@@ -2140,6 +2146,9 @@ class MarketAdapterService {
                             rawAsymmetryFactor: asymmetryMetrics.rawAsymmetryFactor,
                             appliedAsymmetryFactor: asymmetryMetrics.appliedAsymmetryFactor,
                             trend: asymTrend,
+                            minScaleSlots: (cfg.asymmetricBounds?.minScaleSlots != null)
+                                ? cfg.asymmetricBounds.minScaleSlots
+                                : MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS,
                         };
                     }
                 }

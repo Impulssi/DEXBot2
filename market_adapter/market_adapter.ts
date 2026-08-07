@@ -258,10 +258,15 @@ function applyMarketAdapterOverrides(target: any, overrides: any, opts: { includ
         'kalmanSmoothSpanPct',
         'signalConfirmBars',
         'dispScaleMinPct',
-        'asymmetricBounds',
     ]);
     if (overrides.maxVolatilityOffset != null) {
         target.maxVolatilityOffset = normalizeMaxVolatilityOffset(overrides.maxVolatilityOffset);
+    }
+    // Per-field merge for asymmetricBounds so a bot-level override (e.g. only
+    // minScaleSlots) does not wipe a market-level maxAsymmetryFactor. Mirrors how
+    // amaSlope/kalmanSlope are merged across the globals/pair/bot layers.
+    if (overrides.asymmetricBounds && typeof overrides.asymmetricBounds === 'object') {
+        target.asymmetricBounds = { ...(target.asymmetricBounds || {}), ...overrides.asymmetricBounds };
     }
     if (overrides.atrPeriod != null) target.atrPeriod = normalizeAtrPeriod(overrides.atrPeriod);
     if (overrides.volatilityThreshold != null) {

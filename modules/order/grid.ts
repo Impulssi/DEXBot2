@@ -730,10 +730,18 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
         });
     }
 
-    /**
-     * Initialize the order grid with blockchain-aware sizing.
-     * @param {import('./types').OrderManager} manager - The manager instance.
-     * @returns {Promise<void>}
+function resolveMinScaleSlots(primary: any, secondary: any): number {
+    const p = Number(primary);
+    if (Number.isFinite(p)) return Math.max(0, Math.floor(p));
+    const s = Number(secondary);
+    if (Number.isFinite(s)) return Math.max(0, Math.floor(s));
+    return MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS;
+}
+
+/**
+     * Initialize and orchestrate the order grid.
+     *
+     * @return {Promise<void>}
      * @throws {Error} If initialization fails or account totals are missing.
      */
 export async function initializeGrid(manager: any): Promise<void> {
@@ -839,6 +847,8 @@ export async function initializeGrid(manager: any): Promise<void> {
         let resolvedMinP = minP;
         let resolvedMaxP = maxP;
         let rangeScalingFactor: number | null = null;
+        let appliedTrend: 'UP' | 'DOWN' | null = null;
+        let minScaleSlots: number | null = null;
         if (gpSource === 'ama' && Number.isFinite(minP) && Number.isFinite(maxP)
             && isGridRangeScalingWhitelisted) {
             const dw = amaSnapshot?.dynamicWeights;
@@ -867,6 +877,8 @@ export async function initializeGrid(manager: any): Promise<void> {
                     resolvedMinP = adjustment.resolvedMinPrice;
                     resolvedMaxP = adjustment.resolvedMaxPrice;
                     rangeScalingFactor = Number(adjustment.appliedAsymmetryFactor);
+                    appliedTrend = (dw?.trend === 'UP' || dw?.trend === 'DOWN') ? dw.trend : null;
+                    minScaleSlots = resolveMinScaleSlots(manager.config.asymmetricBounds?.minScaleSlots, dw?.minScaleSlots);
                     manager.logger?.log?.(
                         `[BOUND-ASYMMETRY] trend=${dw.trend} slopeOffset=${dw.slopeOffset.toFixed(4)} `
                         + `raw=${((adjustment.rawAsymmetryFactor ?? 0) * 100).toFixed(1)}% `
@@ -889,6 +901,8 @@ export async function initializeGrid(manager: any): Promise<void> {
                     resolvedMaxP = gp * ((maxP! / gp) * (1 + asymmetry));
                 }
                 rangeScalingFactor = asymmetry;
+                appliedTrend = rootTrend;
+                minScaleSlots = resolveMinScaleSlots(manager.config.asymmetricBounds?.minScaleSlots, rootBounds.minScaleSlots);
                 manager.logger?.log?.(
                     `[BOUND-ASYMMETRY] trend=${rootTrend} `
                     + `asymmetry=${(asymmetry * 100).toFixed(1)}% `
@@ -927,6 +941,41 @@ export async function initializeGrid(manager: any): Promise<void> {
                     'warn'
                 );
                 gridStartPrice = clamped;
+            }
+        }
+
+        // Narrowing-side slot guard: range scaling tightens one bound toward the
+        // center. Without a floor this can collapse that side into a near-center
+        // sliver holding few or zero active orders. Guarantee at least
+        // minScaleSlots price levels remain between the grid center and the
+        // tightened bound (in multiples of incrementPercent). The widened side
+        // still extends freely.
+        if (appliedTrend && Number.isFinite(gridStartPrice) && gridStartPrice > 0) {
+            const inc = Number(manager.config.incrementPercent);
+            const mss = Number.isFinite(minScaleSlots) ? Math.floor(Number(minScaleSlots)) : 0;
+            if (Number.isFinite(inc) && inc > 0 && mss > 0) {
+                const stepMult = 1 + (inc / 100);
+                if (appliedTrend === 'DOWN' && resolvedMaxP != null) {
+                    const keepAbove = gridStartPrice * Math.pow(stepMult, mss);
+                    if (resolvedMaxP < keepAbove) {
+                        manager.logger?.log?.(
+                            `[BOUND-ASYMMETRY] narrowing-side guard: max ${resolvedMaxP.toFixed(8)} collapses ` +
+                            `${mss} levels; holding at ${keepAbove.toFixed(8)}`,
+                            'info'
+                        );
+                        resolvedMaxP = keepAbove;
+                    }
+                } else if (appliedTrend === 'UP' && resolvedMinP != null) {
+                    const belowMin = gridStartPrice * Math.pow(1 - (inc / 100), mss);
+                    if (resolvedMinP > belowMin) {
+                        manager.logger?.log?.(
+                            `[BOUND-ASYMMETRY] narrowing-side guard would pull min ${resolvedMinP.toFixed(8)} ` +
+                            `short of ${mss} levels; holding at ${belowMin.toFixed(8)}`,
+                            'info'
+                        );
+                        resolvedMinP = belowMin;
+                    }
+                }
             }
         }
 

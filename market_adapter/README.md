@@ -650,15 +650,38 @@ Neutral:   symmetric bounds (asymmetry = 0)
 ```
 
 `ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR` defaults to `0.35`; `0` disables the
-tilt. Override per bot in `profiles/market_adapter_settings.json`:
+tilt. `ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS` defaults to `10` and sets the minimum
+number of price levels the *tightened* side of a range-scaled grid must keep
+between the grid center and its bound (measured in `incrementPercent` steps);
+`0` disables the guard. Together they keep the widened side aggressively
+extended while guaranteeing the narrowed side never collapses into a near-center
+sliver with few or no active orders.
+
+Both are configurable per bot or per market via
+`profiles/market_adapter_settings.json` (see the layering in
+[Per-Bot Overrides](#per-bot-overrides)):
 
 ```json
 {
-  "asymmetricBounds": {
-    "maxAsymmetryFactor": 0.35
-  }
+  "globals": {
+    "asymmetricBounds": {
+      "maxAsymmetryFactor": 0.35,
+      "minScaleSlots": 10
+    }
+  },
+  "pairs": [{
+    "assetASymbol": "IOB.XRP",
+    "assetBSymbol": "BTS",
+    "marketAdapterSettings": {
+      "asymmetricBounds": { "minScaleSlots": 3 }
+    }
+  }]
 }
 ```
+
+`asymmetricBounds` is merged per-field across the `globals` → `pairs[].marketAdapterSettings` →
+`pairs[].botOverrides.<bot>` layers, so overriding one field (e.g. a market-level
+`minScaleSlots`) does not wipe another (e.g. a bot-level `maxAsymmetryFactor`).
 
 ### Trigger Files
 

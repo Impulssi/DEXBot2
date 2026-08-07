@@ -510,6 +510,81 @@ async function runTests() {
         }
     }
 
+    console.log(' - Testing narrowing-side guard keeps a minimum number of order slots...');
+    {
+        const botKey = `test-grid-min-slots-${process.pid}`;
+        const ordersDir = path.join(__dirname, '..', 'profiles', 'orders');
+        const amaFile = path.join(ordersDir, `${botKey}.dynamicgrid.json`);
+        const originalWhitelist = fs.existsSync(WHITELIST_FILE)
+            ? fs.readFileSync(WHITELIST_FILE, 'utf8')
+            : null;
+
+        ensureDir(ordersDir);
+        writeJSON(WHITELIST_FILE, {
+            whitelist: {
+                [botKey]: { ama: true, dynamicWeight: false, asymmetricBounds: true }
+            }
+        });
+        _resetBothWhitelistCaches();
+        // DOWN trend: the upper bound tightens toward center. With a near upper
+        // bound (1.5x) the old model collapses max to 1050, below the 10-level
+        // floor (1.01^10 * 1000 ≈ 1104.62). The guard must hold max above it.
+        writeJSON(amaFile, {
+            centerPrice: 1000,
+            amaCenterPrice: 1000,
+            asymmetricBounds: {
+                rawAsymmetryFactor: 0.3,
+                appliedAsymmetryFactor: 0.3,
+                trend: 'DOWN',
+            },
+            updatedAt: new Date().toISOString(),
+        });
+
+        try {
+            delete require.cache[gridModulePath];
+            delete require.cache[managerModulePath];
+            const FreshGrid = require('../modules/order/grid');
+            const { OrderManager: FreshOrderManager } = require('../modules/order/manager');
+            const manager = new FreshOrderManager({
+                assetA: 'TESTA',
+                assetB: 'TESTB',
+                botKey,
+                startPrice: 100,
+                gridPrice: 'ama',
+                minPrice: '2x',
+                maxPrice: '1.5x',
+                incrementPercent: 1,
+                targetSpreadPercent: 2,
+                weightDistribution: { buy: 0.5, sell: 0.5 },
+                botFunds: { buy: '100%', sell: '100%' },
+                activeOrders: { buy: 6, sell: 6 }
+            });
+
+            manager.assets = {
+                assetA: { id: '1.3.1', symbol: 'TESTA', precision: 5 },
+                assetB: { id: '1.3.2', symbol: 'TESTB', precision: 5 }
+            };
+            await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
+
+            await FreshGrid.initializeGrid(manager);
+
+            // minPrice widened DOWN: 1000 / (2 * (1 + 0.3)) = 384.615
+            assert(manager.orders.size > 0, 'initializeGrid should succeed with the narrowing-side guard');
+            assert(Math.abs(manager.config.minPrice - 384.6153846153846) < 1e-9,
+                'minPrice should be widened (DOWN) by the asymmetric bounds');
+            assert(Math.abs(manager.config.maxPrice - 1104.6221254112045) < 1e-9,
+                'maxPrice should be held at the minimum-slots floor, not collapsed to 1050');
+        } finally {
+            safeUnlink(amaFile)
+            if (originalWhitelist == null) {
+                safeUnlink(WHITELIST_FILE)
+            } else {
+                fs.writeFileSync(WHITELIST_FILE, originalWhitelist, 'utf8');
+            }
+            _resetBothWhitelistCaches();
+        }
+    }
+
     console.log(' - Testing AMA gridPrice ignores spread offset without grid range scaling whitelist...');
     {
         const botKey = `test-grid-ama-offset-disabled-${process.pid}`;

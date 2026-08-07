@@ -1061,6 +1061,14 @@ let MARKET_ADAPTER = {
     // Overridable per bot via market_adapter_settings.json.
     ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR: 0.35,
 
+    // ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS: Minimum number of price levels the
+    // narrowed/tightened side of a range-scaled grid must keep between the grid
+    // center and its bound. Prevents range scaling from collapsing one side to
+    // a near-center sliver with little or no active orders. Overspecified in
+    // multiples of incrementPercent. 0 disables the guard.
+    // Overridable per bot via market_adapter_settings.json.
+    ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS: 10,
+
     // STALE_TAIL_THRESHOLD_CANDLES: Number of consecutive candles with an identical close
     // price that triggers pruning of the trailing tail. Prevents gap-filled synthetic candles
     // from carrying a frozen price forward indefinitely when the pool has no activity.
