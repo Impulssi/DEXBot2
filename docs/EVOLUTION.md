@@ -126,7 +126,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 - **Backtesting Engine**: Historical candle replay through the trading engine via exchange abstraction
 - **Injectable Interfaces**: Dependency inversion at call boundaries for improved testability
 - **Database + Validation**: SQLite persistence with Zod schema validation at the blockchain boundary
-- **Telegram Bot**: standalone BitShares account bot — independent of DEXBot2, node-only, read + notify (no private keys, no signing), fund tracking, LP pool-token value, and grid analysis via on-chain data, chat-whitelist protected
+- **Telegram Bot**: built-in, owner-gated Telegram control surface bundled into DEXBot2 — a thin relay module that forwards intents into DEXBot2's hardened paths. Monitoring (`/status`, `/orders`, `/grid`, `/balance`, alerts) is owner-gated; control (`/start`, `/stop`, `/pause`, `/set`) requires an explicit opt-in plus a confirm step; DEXBot is the only writer and private keys never reach the module. Config via `TELEGRAM` block + `DEXBOT_TELEGRAM_TOKEN` env.
 
 ## Version History
 
