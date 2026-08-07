@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.10 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.11 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 1,950 commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
-- **Stability**: Progression from manual testing to a suite of 234 automated test files
-- **Releases**: 91 release entries (v0.1.0 to v1.4.10)
+- **Stability**: Progression from manual testing to a suite of 243 automated test files
+- **Releases**: 92 release entries (v0.1.0 to v1.4.11)
 
 ---
 
@@ -191,11 +191,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.7 → v1.4.8 | 26 | Uncertain-broadcast duplicate-order safety (verify-before-retry, per-node retry pin + blacklist), truncated-read ambiguity deferral (readOpenOrdersWithMeta), COW stale-plan replan + working-grid stack discipline, fill-authoritative rework, sell-rail re-anchor, orphan auto-cancel wiring, fill-batch fund-invariant deferral |
 | v1.4.8 → v1.4.9 | 2 | LP-collateral credit conversion rate via AMM (pool-derived source), flat CLI aliases (dexbot stop/restart/delete) for monolithic unlock controls |
 | v1.4.9 → v1.4.10 | 10 | Empty-slot normalization and spread boundary promotion, LP pool-share supply pricing fix, spread check independent of divergence, boundary-slot reconcile re-derivation, validation/broadcast dedup refactor, credit-unlock background daemon, test-suite runtime cut |
+| v1.4.10 → v1.4.11 | 8 | Minimum-slots guard for grid range scaling, monolithic restart restarts credential daemon, dexbot start→unlock alias + runtime-layout-aware unlock spawn fix, dead COW/diagnostic code prune, GRID_RECONCILE.md exposure, Telegram docs, CLI test retargeting to `dexbot test`, `dexbot status` reporting a surviving credential daemon after `stop` |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 4, 2026 (v1.4.10)
-**Total Commits**: 1,964
-**Date Range**: December 2, 2025 – August 4, 2026
+**Last Updated**: August 7, 2026 (v1.4.11)
+**Total Commits**: 1,972
+**Date Range**: December 2, 2025 – August 7, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

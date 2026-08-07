@@ -717,6 +717,96 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
 
 // ── Control command handling ───────────────────────────────────────
 
+/**
+ * Resolve the live credential daemon PID (owned or foreign) for status
+ * reporting. Falls back to the socket owner when the tracked PID file is
+ * missing or stale.
+ */
+function resolveCredentialDaemonForStatus(): { pid: number | null; foreign: boolean } {
+    let credPid: any = null;
+    let credForeign = false;
+    try {
+        const raw = storage.readFile(MONOLITHIC_CRED_PID_FILE).trim();
+        const n = Number(raw);
+        if (Number.isInteger(n) && n > 0) credPid = n;
+    } catch (_) {}
+
+    if (!credPid && storage.exists(CREDENTIAL_SOCKET_FILE)) {
+        const ownerPid = findCredentialSocketOwnerPid();
+        if (ownerPid > 0 && isLikelyCredentialDaemonProcess(ownerPid)) {
+            credPid = ownerPid;
+            credForeign = true;
+        }
+    }
+
+    return { pid: credPid, foreign: credForeign };
+}
+
+/**
+ * Print the "Credential daemon:" status block for a resolved daemon PID.
+ */
+async function printCredentialDaemonStatusBlock(credPid: number | null, credForeign: boolean): Promise<{ alive: boolean; ready: boolean; socket: boolean }> {
+    const credStatus = await readCredentialDaemonStatus(credPid);
+    console.log(`  ${statusTitle('Credential daemon:')}`);
+    if (credPid && credForeign) {
+        console.log(`    ${statusLabel('PID:')}   ${credPid} ${colorStatus('(foreign/unowned)', STATUS_COLORS.warn)}`);
+    } else {
+        console.log(`    ${statusLabel('PID:')}   ${credPid || '-'}`);
+    }
+    if (credPid && isPidAlive(credPid) && isLikelyCredentialDaemonProcess(credPid)) {
+        const credUptime = readProcUptime(credPid);
+        const credMem = readProcMemMB(credPid);
+        console.log(`    ${statusLabel('Memory:')}  ${formatMemoryWithUptime(credMem, credUptime)}`);
+        console.log(`    ${statusLabel('Alive:')} ${statusBool(true)}`);
+    } else {
+        console.log(`    ${statusLabel('Alive:')} ${statusBool(false)}`);
+    }
+    console.log(`    ${statusLabel('Ready:')} ${statusBool(credStatus.ready)}`);
+    console.log(`    ${statusLabel('Socket:')} ${statusBool(credStatus.socket)}`);
+    if (credForeign) {
+        console.log(
+            `    ${colorStatus(
+                'Rerun `dexbot unlock` to detach the foreign daemon and unlock with a fresh master password.',
+                STATUS_COLORS.warn
+            )}`
+        );
+    }
+    return credStatus;
+}
+
+/**
+ * Print the "Market adapter:" status block for the running adapter (or note
+ * that it is not running).
+ */
+function printMarketAdapterStatusBlock() {
+    const adapterPid = readMarketAdapterLockPid();
+    const adapterAlive = adapterPid > 0 && isLikelyMarketAdapterProcess(adapterPid);
+    console.log(`  ${statusTitle('Market adapter:')}`);
+    if (adapterAlive) {
+        console.log(`    ${statusLabel('PID:')}     ${adapterPid}`);
+        console.log(`    ${statusLabel('Memory:')}  ${formatMemoryWithUptime(readProcMemMB(adapterPid), readProcUptime(adapterPid))}`);
+    } else if (adapterPid > 0) {
+        console.log(`    ${colorStatus('(offline)', STATUS_COLORS.warn)}`);
+        return;
+    } else {
+        console.log(`    ${colorStatus('(not running)', STATUS_COLORS.muted)}`);
+        return;
+    }
+    const amaBots = listConfiguredBots().filter((b: any) => b.active && usesAmaGridPrice(b));
+    function botKeyFromName(name: string) {
+        return String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'bot';
+    }
+    console.log(`    ${statusLabel('Active:')}  ${formatBotCount(amaBots.length)}`);
+    for (const b of amaBots) {
+        const flags = getWhitelistFlags(botKeyFromName(b.name));
+        const indicators: string[] = [];
+        if (flags.asymmetricBounds) indicators.push('range');
+        if (flags.dynamicWeight) indicators.push('weight');
+        const suffix = indicators.length > 0 ? `, ${indicators.join(', ')}` : '';
+        console.log(`      - ${colorStatus(b.name, STATUS_COLORS.ok)} (${b.gridPrice}${suffix})`);
+    }
+}
+
 async function handleControl({ cmd, target }: { cmd: string; target?: string }) {
     const effectiveCmd = cmd === 'shutdown' ? 'delete' : cmd === 'stat' ? 'status' : cmd;
     const actionLabel = getControlActionLabel(cmd);
@@ -785,24 +875,6 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                     }
                 }
 
-                let credPid: any = null;
-                let credForeign = false;
-                try {
-                    const raw = storage.readFile(MONOLITHIC_CRED_PID_FILE).trim();
-                    const n = Number(raw);
-                    if (Number.isInteger(n) && n > 0) credPid = n;
-                } catch (_) {}
-
-                if (!credPid && storage.exists(CREDENTIAL_SOCKET_FILE)) {
-                    const ownerPid = findCredentialSocketOwnerPid();
-                    if (ownerPid > 0 && isLikelyCredentialDaemonProcess(ownerPid)) {
-                        credPid = ownerPid;
-                        credForeign = true;
-                    }
-                }
-
-                const credStatus = await readCredentialDaemonStatus(credPid);
-
                 console.log(statusTitle('Monolithic bot'));
                 console.log(`  ${statusLabel('PID:')}     ${targetPid}`);
                 console.log(`  ${statusLabel('Memory:')}  ${formatMemoryWithUptime(mem, uptime)}`);
@@ -811,55 +883,11 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                 for (const b of displayedBots) {
                     console.log(`    - ${statusActiveBotName(b.name)}`);
                 }
-                console.log(`  ${statusTitle('Credential daemon:')}`);
-                if (credPid && credForeign) {
-                    console.log(`    ${statusLabel('PID:')}   ${credPid} ${colorStatus('(foreign/unowned)', STATUS_COLORS.warn)}`);
-                } else {
-                    console.log(`    ${statusLabel('PID:')}   ${credPid || '-'}`);
-                }
-                if (credPid && isPidAlive(credPid) && isLikelyCredentialDaemonProcess(credPid)) {
-                    const credUptime = readProcUptime(credPid);
-                    const credMem = readProcMemMB(credPid);
-                    console.log(`    ${statusLabel('Memory:')}  ${formatMemoryWithUptime(credMem, credUptime)}`);
-                    console.log(`    ${statusLabel('Alive:')} ${statusBool(true)}`);
-                } else {
-                    console.log(`    ${statusLabel('Alive:')} ${statusBool(false)}`);
-                }
-                console.log(`    ${statusLabel('Ready:')} ${statusBool(credStatus.ready)}`);
-                console.log(`    ${statusLabel('Socket:')} ${statusBool(credStatus.socket)}`);
-                if (credForeign) {
-                    console.log(
-                        `    ${colorStatus(
-                            'Rerun `dexbot unlock` to detach the foreign daemon and unlock with a fresh master password.',
-                            STATUS_COLORS.warn
-                        )}`
-                    );
-                }
 
-                const adapterPid = readMarketAdapterLockPid();
-                const adapterAlive = adapterPid > 0 && isLikelyMarketAdapterProcess(adapterPid);
-                const amaBots = listConfiguredBots().filter((b: any) => b.active && usesAmaGridPrice(b));
-                console.log(`  ${statusTitle('Market adapter:')}`);
-                if (adapterAlive) {
-                    console.log(`    ${statusLabel('PID:')}     ${adapterPid}`);
-                    console.log(`    ${statusLabel('Memory:')}  ${formatMemoryWithUptime(readProcMemMB(adapterPid), readProcUptime(adapterPid))}`);
-                } else if (adapterPid > 0) {
-                    console.log(`    ${statusLabel('PID:')}     ${adapterPid} ${colorStatus('(not alive)', STATUS_COLORS.warn)}`);
-                } else {
-                    console.log(`    ${colorStatus('(not running)', STATUS_COLORS.muted)}`);
-                }
-                function botKeyFromName(name: string) {
-                    return String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'bot';
-                }
-                console.log(`    ${statusLabel('Active:')}  ${formatBotCount(amaBots.length)}`);
-                for (const b of amaBots) {
-                    const flags = getWhitelistFlags(botKeyFromName(b.name));
-                    const indicators: string[] = [];
-                    if (flags.asymmetricBounds) indicators.push('range');
-                    if (flags.dynamicWeight) indicators.push('weight');
-                    const suffix = indicators.length > 0 ? `, ${indicators.join(', ')}` : '';
-                    console.log(`      - ${colorStatus(b.name, STATUS_COLORS.ok)} (${b.gridPrice}${suffix})`);
-                }
+                const { pid: credPid, foreign: credForeign } = resolveCredentialDaemonForStatus();
+                await printCredentialDaemonStatusBlock(credPid, credForeign);
+
+                printMarketAdapterStatusBlock();
                 return;
             }
 
@@ -913,6 +941,21 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
             }
             console.log(effectiveCmd === 'delete' ? 'Removed stale monolithic PID file' : 'Monolithic bot not running (stale PID file)');
             return;
+        } else if (effectiveCmd === 'status') {
+            // The monolithic runtime is stopped (bots + market adapter down),
+            // but the credential daemon may still be running — a `dexbot stop`
+            // leaves it alive for faster re-unlock. Report that state instead of
+            // falling through to an isolated supervisor socket that is absent.
+            const daemon = resolveCredentialDaemonForStatus();
+            if (daemon.pid && isPidAlive(daemon.pid) && isLikelyCredentialDaemonProcess(daemon.pid)) {
+                console.log(statusTitle('Monolithic bot'));
+                console.log(`  ${colorStatus('(offline)', STATUS_COLORS.warn)}`);
+                console.log();
+                await printCredentialDaemonStatusBlock(daemon.pid, daemon.foreign);
+                console.log();
+                printMarketAdapterStatusBlock();
+                return;
+            }
         }
     }
 

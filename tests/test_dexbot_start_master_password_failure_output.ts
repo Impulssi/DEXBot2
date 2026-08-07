@@ -5,6 +5,13 @@ const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache
 
 console.log('Running dexbot master password failure output tests');
 
+// NOTE: `dexbot start` aliases the persistent unlock launcher (spawns the
+// unlock runtime) since commit 42724793. The one-shot in-process runner that
+// prints the PM-style master-password failure output and exits 1 is
+// `dexbot test` (formerly reached via the `start` alias), so this test
+// exercises that command. Launching the real unlock.js here would block the
+// suite on live password prompts.
+
 const dexbotPath = require.resolve('../dexbot.js');
 const botSettingsPath = require.resolve('../modules/bot_settings');
 const dexbotClassPath = require.resolve('../modules/dexbot_class');
@@ -129,7 +136,7 @@ function installStubs() {
         waitForConnected: async () => {},
     });
 
-    process.argv = ['node', dexbotPath, 'start'];
+    process.argv = ['node', dexbotPath, 'test'];
     (process as any).exit = ((code: any) => {
         exitCode = code;
     });
@@ -171,13 +178,13 @@ require('../dexbot');
     try {
         await new Promise((resolve) => setImmediate(resolve));
 
-        assert.strictEqual(exitCode, 1, 'dexbot start should exit with code 1 on master password failure');
+        assert.strictEqual(exitCode, 1, 'dexbot test should exit with code 1 on master password failure');
         assert.ok(suppressCalls.includes(true), 'dexbot startup should suppress BitShares connection logs');
         assert.ok(suppressCalls.includes(false), 'dexbot startup should restore BitShares connection logs after startup');
-        assert.ok(errors.some((line) => stripAnsi(line).includes('Incorrect master password after 3 attempts.')), 'dexbot start should match the PM2-style failure output');
-        assert.ok(!errors.some((line) => line.includes('Failed to start bot:')), 'dexbot start should not print the generic failure prefix');
-        assert.ok(!errors.some((line) => line.includes('Aborting because the master password failed 3 times.')), 'dexbot start should not print the extra abort line');
-        assert.ok(logs.includes('Connected to BitShares'), 'dexbot start should still print the connection banner before failure');
+        assert.ok(errors.some((line) => stripAnsi(line).includes('Incorrect master password after 3 attempts.')), 'dexbot test should match the PM2-style failure output');
+        assert.ok(!errors.some((line) => line.includes('Failed to start bot:')), 'dexbot test should not print the generic failure prefix');
+        assert.ok(!errors.some((line) => line.includes('Aborting because the master password failed 3 times.')), 'dexbot test should not print the extra abort line');
+        assert.ok(logs.includes('Connected to BitShares'), 'dexbot test should still print the connection banner before failure');
 
         restoreStubs();
         originalConsoleLog('dexbot master password failure output tests passed');

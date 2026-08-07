@@ -165,8 +165,6 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-
-const BUILD_DIR = 'dist';
 const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
@@ -962,8 +960,15 @@ async function handleCLICommands() {
         }
         case 'unlock': {
             const { spawnSync } = require('child_process') as any as any;
-            const unlockScript = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js');
-            const unlockArgs = [unlockScript, ...cliArgs.slice(1)];
+            // buildRuntimeScriptArgs resolves the unlock entry point for both
+            // runtime layouts: dist/unlock.js when compiled, unlock.ts via tsx
+            // in source mode. A hard-coded dist path silently no-ops under
+            // `tsx dexbot.ts start` (ENOENT -> exit 0), hiding the launcher.
+            const unlockArgs = buildRuntimeScriptArgs({
+                codeRoot: __dirname,
+                scriptSegments: ['unlock'],
+                scriptArgs: cliArgs.slice(1),
+            });
             const result = spawnSync(Config.EXEC_PATH, unlockArgs, {
                 cwd: PATHS.PROJECT_ROOT,
                 stdio: 'inherit',
@@ -1000,6 +1005,7 @@ async function handleCLICommands() {
             console.log();
             const { spawnSync, execSync } = require('child_process') as any as any;
             const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
+            const MONOLITHIC_CRED_PID_FILE = PATHS.PROFILES.MONOLITHIC_CRED_PID;
             const SUPERVISOR_SOCK = PATHS.PROFILES.SUPERVISOR_SOCK;
             let unlockRunning = false;
 
@@ -1023,9 +1029,28 @@ async function handleCLICommands() {
                 unlockRunning = true;
             }
 
+            // A credential daemon can outlive a `dexbot stop` (bots + market
+            // adapter stop; the daemon stays up for fast re-unlock). Report it
+            // too, so `stat` does not show "No DEXBot2 processes running." when
+            // only the daemon remains.
+            if (!unlockRunning && storage.exists(MONOLITHIC_CRED_PID_FILE)) {
+                try {
+                    const pid = Number(storage.readFile(MONOLITHIC_CRED_PID_FILE).trim());
+                    if (Number.isInteger(pid) && pid > 0) {
+                        try { process.kill(pid, 0); unlockRunning = true; } catch (err: any) {
+                            if (err.code === 'EACCES') unlockRunning = true;
+                        }
+                    }
+                } catch (_) {}
+            }
+
             if (unlockRunning) {
-                const unlockScript = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js');
-                const result = spawnSync(Config.EXEC_PATH, [unlockScript, 'status'], {
+                const unlockArgs = buildRuntimeScriptArgs({
+                    codeRoot: __dirname,
+                    scriptSegments: ['unlock'],
+                    scriptArgs: ['status'],
+                });
+                const result = spawnSync(Config.EXEC_PATH, unlockArgs, {
                     cwd: PATHS.PROJECT_ROOT,
                     stdio: 'inherit',
                 });
@@ -1122,8 +1147,11 @@ async function handleCLICommands() {
         case 'stop':
         case 'restart': {
             const { spawnSync } = require('child_process') as any as any;
-            const unlockScript = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js');
-            const unlockArgs = [unlockScript, command, ...cliArgs.slice(1)];
+            const unlockArgs = buildRuntimeScriptArgs({
+                codeRoot: __dirname,
+                scriptSegments: ['unlock'],
+                scriptArgs: [command, ...cliArgs.slice(1)],
+            });
             const result = spawnSync(Config.EXEC_PATH, unlockArgs, {
                 cwd: PATHS.PROJECT_ROOT,
                 stdio: 'inherit',

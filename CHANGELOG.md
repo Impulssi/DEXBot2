@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.11] - 2026-08-07 - Minimum-Slots Grid Guard, Credential-Daemon Restart, CLI Alias Hardening
+
+### 2026-08-07
+
+- **Feat**: add a minimum-slots guard to grid range scaling — the existing asymmetry clamp (`1 - 1/D`) only prevented the tightened bound from crossing the grid center; it did not stop that side from collapsing into a near-center sliver holding few or no active orders. New `ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS` (default 10, `0` disables; overridable per bot/market) guarantees at least N `incrementPercent` steps remain between the grid center and the narrowed bound while the widened side still extends freely. `asymmetricBounds` is now merged per-field across the `globals` → `pairs[].marketAdapterSettings` → `pairs[].botOverrides.<bot>` layers so a bot-level `minScaleSlots` no longer wipes a market-level `maxAsymmetryFactor` (`modules/constants.ts`, `modules/order/grid.ts`, `market_adapter/market_adapter.ts`, `market_adapter/core/market_adapter_service.ts`, `tests/test_grid_logic.ts`).
+- **Fix**: `dexbot start` (and `status`/`stop`/`restart`/`delete`) no longer spawn a hard-coded `dist/unlock.js` — they use `buildRuntimeScriptArgs`, which resolves the unlock entry point per runtime layout (`dist/unlock.js` compiled, `unlock.ts` via tsx in source mode). Previously the source-mode path resolved `modules/dist/unlock.js` (ENOENT → silent `process.exit(0)`), so `dexbot start` was a silent no-op; removed the now-unused `BUILD_DIR` constant (`dexbot.ts`).
+- **Test**: retarget the CLI tests that validated the in-process one-shot flow to `dexbot test` — after the `start` alias change that flow is covered by the `test` command. `test_dexbot_start_master_password_failure_output.ts`, `test_dexbot_startup_output.ts`, and `test_dexbot_daemon_ready_output.ts` now invoke `test` (previously 282-second suite stall + spurious failures from spawning the real `dist/unlock.js` unlocked password prompts); add `test_dexbot_start_alias_unlock.ts` guarding the `start`→unlock delegation (entry point + exit-status forwarding).
+- **Fix**: `dexbot status`/`stat` after `dexbot stop` no longer reports "No DEXBot2 processes running" while the credential daemon still runs — `stop` stops bots + market adapter by design but keeps the daemon up for fast re-unlock. `dexbot.ts` now treats a live daemon (via `monolithic-cred.pid`) as a running runtime and delegates to `unlock status`, which gained a branch rendering the daemon (PID/memory/alive/ready/socket) alongside a note that the monolithic runtime (bots + adapter) is stopped; shared `resolveCredentialDaemonForStatus`, `printCredentialDaemonStatusBlock`, and `printMarketAdapterStatusBlock` helpers (`dexbot.ts`, `unlock.ts`, `tests/test_unlock_status_cred_daemon_only.ts`).
+- **Docs**: Telegram module implementation and aligned EVOLUTION entry (`docs/TELEGRAM_IMPLEMENTATION.md`, `docs/EVOLUTION.md`).
+
+### 2026-08-06
+
+- **Docs**: fix stale EVOLUTION release header and broken internal doc links; add Telegram bot to the planned EVOLUTION features.
+
+### 2026-08-05
+
+- **Feat**: `dexbot restart` (no target) also restarts the credential daemon with a password prompt before restarting bots (guarded by `!target` + TTY); targeted restarts unaffected. Root-cause fix: `isAlive()` in `process_discovery.ts` discarded `runtime.kill(pid, 0)`'s return value and always returned `true`, so the credential-daemon kill waited the full 5s SIGTERM timeout despite normal exit; it now returns the kill result, with D-state detection at every kill stage as a safety net. `process.exit(0)` closes out spawned `unlock.js` runs and the noisy stop-signal log line is removed (`modules/launcher/monolithic_runtime.ts`, `modules/process_discovery.ts`, `unlock.ts`, `scripts/update.ts`).
+- **Fix**: alias `dexbot start` → `unlock` (persistent monolithic runtime) instead of `test` (one-shot), properly pairing it with `dexbot stop`; `dexbot test <bot>` still runs one-shot (`dexbot.ts`, `README.md`, `docs/WORKFLOW.md`).
+- **Refactor**: prune dead COW/diagnostic methods and orphaned exports — removed 14 zero-reference `OrderManager` methods and helpers (stale pre-guard copies from the earlier COW rewrite, accountant extraction, and immediate dust-cancel rework), `logGridDiagnostics` and the dormant `grid.displayDiagnostics` flag, and `writeSkillFile`; tests call `validateWorkingGridFunds` directly instead of the removed wrapper (`modules/order/manager.ts`, `modules/order/logger.ts`, `modules/constants.ts`, `claw/modules/skill_utils.ts`, `docs/*`).
+- **Docs**: expose `docs/GRID_RECONCILE.md` in the root README and docs index.
+
 ## [1.4.10] - 2026-08-04
 
 ### 2026-08-04

@@ -5,6 +5,13 @@ const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache
 
 console.log('Running dexbot daemon-ready output tests');
 
+// NOTE: `dexbot start` aliases the persistent unlock launcher (spawns the
+// unlock runtime) since commit 42724793. The one-shot in-process runner that
+// skips master-password auth when the then-credential daemon is ready is
+// `dexbot test` (formerly reached via the `start` alias), so this test
+// exercises that command. Launching the real unlock.js here would block the
+// suite on live password prompts (3 failed attempts before abort).
+
 const dexbotPath = require.resolve('../dexbot.js');
 const botSettingsPath = require.resolve('../modules/bot_settings');
 const dexbotClassPath = require.resolve('../modules/dexbot_class');
@@ -128,7 +135,7 @@ function installStubs() {
         waitForConnected: async () => {},
     });
 
-    process.argv = ['node', dexbotPath, 'start'];
+    process.argv = ['node', dexbotPath, 'test'];
 
     console.log = (...args) => {
         const line = args.map((part) => String(part)).join(' ').trim();
@@ -171,11 +178,11 @@ require('../dexbot');
         await new Promise((resolve) => setImmediate(resolve));
         await new Promise((resolve) => setImmediate(resolve));
 
-        assert.deepStrictEqual(state.startArgs, [null], 'dexbot startup should pass null master password in daemon-ready mode');
-        assert.strictEqual(state.authCalls, 0, 'dexbot startup should not prompt for the master password when the daemon is ready');
-        assert.ok(suppressCalls.includes(true), 'dexbot startup should suppress BitShares connection logs');
-        assert.ok(suppressCalls.includes(false), 'dexbot startup should restore BitShares connection logs after startup');
-        assert.ok(!logs.includes('✓ Authentication successful'), 'dexbot startup should not print the auth banner when the daemon is ready');
+        assert.deepStrictEqual(state.startArgs, [null], 'dexbot test should pass null master password in daemon-ready mode');
+        assert.strictEqual(state.authCalls, 0, 'dexbot test should not prompt for the master password when the daemon is ready');
+        assert.ok(suppressCalls.includes(true), 'dexbot test should suppress BitShares connection logs');
+        assert.ok(suppressCalls.includes(false), 'dexbot test should restore BitShares connection logs after startup');
+        assert.ok(!logs.includes('✓ Authentication successful'), 'dexbot test should not print the auth banner when the daemon is ready');
         assert.deepStrictEqual(warns, [], 'dexbot daemon-ready startup should not emit warnings');
         assert.deepStrictEqual(errors, [], 'dexbot daemon-ready startup should not emit errors');
 

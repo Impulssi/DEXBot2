@@ -5,6 +5,13 @@ const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache
 
 console.log('Running dexbot startup output tests');
 
+// NOTE: `dexbot start` aliases the persistent unlock launcher (spawns the
+// unlock runtime) since commit 42724793. The one-shot in-process runner with
+// the launcher banner ("DEXBot2 Start Launcher", connection/auth colors) is
+// `dexbot test` (formerly reached via the `start` alias), so this test
+// exercises that command. Launching the real unlock.js here would block the
+// suite on live password prompts.
+
 const dexbotPath = require.resolve('../dexbot.js');
 const botSettingsPath = require.resolve('../modules/bot_settings');
 const dexbotClassPath = require.resolve('../modules/dexbot_class');
@@ -128,7 +135,7 @@ function installStubs() {
         waitForConnected: async () => {},
     });
 
-    process.argv = ['node', dexbotPath, 'start'];
+    process.argv = ['node', dexbotPath, 'test'];
 
     console.log = (...args) => {
         const line = args.map((part) => String(part)).join(' ').trim();
@@ -188,22 +195,22 @@ async function runStartupColorTest() {
 
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.ok(logs.includes('Active bots:'), 'dexbot start should print the active-bot summary header');
+    assert.ok(logs.includes('Active bots:'), 'dexbot test should print the active-bot summary header');
     assert.ok(
         logs.some((line) => line.includes('\x1b[1;92m') && line.includes('XRP-BTS')),
-        'dexbot start should color active bot names green'
+        'dexbot test should color active bot names green'
     );
     assert.ok(
         logs.some((line) => line.includes('\x1b[1;92m') && line.includes('Connected to BitShares')),
-        'dexbot start should color connection success green'
+        'dexbot test should color connection success green'
     );
     assert.ok(
         logs.some((line) => line.includes('\x1b[1;92m') && line.includes('✓ Authentication successful')),
-        'dexbot start should color authentication success green'
+        'dexbot test should color authentication success green'
     );
     assert.ok(
         logs.some((line) => line.includes('\x1b[1;92m') && line.includes('DEXBot2 started successfully!')),
-        'dexbot start should color the final success footer green'
+        'dexbot test should color the final success footer green'
     );
 }
 
@@ -230,21 +237,21 @@ require('../dexbot');
 
         await new Promise((resolve) => setImmediate(resolve));
 
-        assert.ok(suppressCalls.includes(true), 'dexbot startup should suppress BitShares connection logs');
-        assert.ok(suppressCalls.includes(false), 'dexbot startup should restore BitShares connection logs after startup');
-        assert.ok(logs.includes('DEXBot2 Start Launcher'), 'dexbot start should print a launcher title');
-        assert.ok(logs.includes('Starting all bots'), 'dexbot start should print the selected launch mode');
-        assert.ok(logs.includes('Connected to BitShares'), 'dexbot start should print BitShares connection status');
-        assert.ok(logs.includes('✓ Authentication successful'), 'dexbot start should confirm successful authentication');
-        assert.ok(logs.includes('Number active bots: 1'), 'dexbot start should print the active bot count');
-        assert.ok(logs.includes('Starting bot runtime...'), 'dexbot start should print the runtime transition');
-        assert.ok(logs.includes('DEXBot2 started successfully!'), 'dexbot start should print a success footer');
-        assert.ok(logs.includes('If the bots stop, rerun `dexbot unlock`.'), 'dexbot start should print the restart hint');
-        assert.deepStrictEqual(logs.filter((line) => line.startsWith('┌') || line.startsWith('│') || line.startsWith('├') || line.startsWith('└')), [], 'dexbot start should not emit PM2-style tables');
-        assert.ok(!logs.some((line) => line.includes('Connecting to BitShares...')), 'dexbot start should not print a separate connection banner');
-        assert.ok(!logs.some((line) => line.includes('Authenticating master password...')), 'dexbot start should not print an auth banner');
-        assert.deepStrictEqual(warns, [], 'dexbot startup should not emit warnings');
-        assert.deepStrictEqual(errors, [], 'dexbot startup should not emit errors');
+        assert.ok(suppressCalls.includes(true), 'dexbot test should suppress BitShares connection logs');
+        assert.ok(suppressCalls.includes(false), 'dexbot test should restore BitShares connection logs after startup');
+        assert.ok(logs.includes('DEXBot2 Start Launcher'), 'dexbot test should print a launcher title');
+        assert.ok(logs.includes('Starting all bots'), 'dexbot test should print the selected launch mode');
+        assert.ok(logs.includes('Connected to BitShares'), 'dexbot test should print BitShares connection status');
+        assert.ok(logs.includes('✓ Authentication successful'), 'dexbot test should confirm successful authentication');
+        assert.ok(logs.includes('Number active bots: 1'), 'dexbot test should print the active bot count');
+        assert.ok(logs.includes('Starting bot runtime...'), 'dexbot test should print the runtime transition');
+        assert.ok(logs.includes('DEXBot2 started successfully!'), 'dexbot test should print a success footer');
+        assert.ok(logs.includes('If the bots stop, rerun `dexbot unlock`.'), 'dexbot test should print the restart hint');
+        assert.deepStrictEqual(logs.filter((line) => line.startsWith('┌') || line.startsWith('│') || line.startsWith('├') || line.startsWith('└')), [], 'dexbot test should not emit PM2-style tables');
+        assert.ok(!logs.some((line) => line.includes('Connecting to BitShares...')), 'dexbot test should not print a separate connection banner');
+        assert.ok(!logs.some((line) => line.includes('Authenticating master password...')), 'dexbot test should not print an auth banner');
+        assert.deepStrictEqual(warns, [], 'dexbot test should not emit warnings');
+        assert.deepStrictEqual(errors, [], 'dexbot test should not emit errors');
 
         await runStartupColorTest();
         restoreStubs();
