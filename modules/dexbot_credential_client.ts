@@ -59,6 +59,11 @@ interface CredentialDaemonResponse {
     code?: string;
     raw?: any;
     operation_results?: any[];
+    /** Transaction envelope returned by some daemon/API broadcast replies. */
+    trx?: {
+        operation_results?: any[];
+        [key: string]: any;
+    } | null;
     /** Node reported by the daemon as in play at the failure (typed replies). */
     nodeUrl?: string | null;
 }

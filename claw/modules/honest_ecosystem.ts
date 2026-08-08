@@ -75,7 +75,12 @@ async function getHonestMoneyBridge() {
     const core = live.assetA.symbol === CORE_SYMBOL ? live.assetA : live.assetB;
     const honestMoney = live.assetA.symbol === REFERENCE_SYMBOL ? live.assetA : live.assetB;
     const latestHonestMoneyPerBts = Number(core.amount) > 0 ? honestMoney.amount / core.amount : null;
-    return { liquidityPool: live, latestHonestMoneyPerBts, market: `${REFERENCE_SYMBOL}/${CORE_SYMBOL}`, source: live.source };
+    return {
+      liquidityPool: { ...live, reserves: [live.assetA, live.assetB] },
+      latestHonestMoneyPerBts,
+      market: `${REFERENCE_SYMBOL}/${CORE_SYMBOL}`,
+      source: live.source
+    };
   }
   return getHardcodedHonestMoneyBridge();
 }

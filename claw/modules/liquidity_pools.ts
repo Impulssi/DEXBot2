@@ -6,12 +6,13 @@ function getDexbotSystem() {
   return loadDexbotOrderSystemUtils();
 }
 
-function derivePoolPrice(assetA: any, assetB: any, poolRef?: string | null) {
+function derivePoolPrice(assetA: any, assetB: any, poolRef?: string | null | Record<string, any>) {
   const system = getDexbotSystem();
-  if (poolRef) {
+  const resolvedPoolRef = typeof poolRef === 'string' ? poolRef : (poolRef && typeof poolRef.poolRef === 'string' ? poolRef.poolRef : null);
+  if (resolvedPoolRef) {
     try {
       const { withPoolRef: wrapWithPoolRef } = requireDexbot2Module('order/utils/withPoolRef') as any;
-      const override = wrapWithPoolRef(client.BitShares, poolRef);
+      const override = wrapWithPoolRef(client.BitShares, resolvedPoolRef);
       if (override) return override.derivePoolPrice(assetA, assetB);
     } catch (e: any) {
       console.warn(`[liquidity-pools] derivePoolPrice with poolRef failed: ${e?.message || e}`);

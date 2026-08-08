@@ -330,7 +330,7 @@ async function launcherRun(botName: string | null, options: Record<string, any> 
   // User is overriding the mode
   if (options.deploymentMode) {
     const validModes = ['dexbot-direct', 'pm2', 'unlock', 'claw-only'];
-    if (!validModes.includes(deploymentMode)) {
+    if (deploymentMode === null || !validModes.includes(deploymentMode)) {
       throw new Error(`Invalid deploymentMode: ${options.deploymentMode}. Must be one of: ${validModes.join(', ')}`);
     }
 

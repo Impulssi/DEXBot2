@@ -270,7 +270,7 @@ function computePriceRangeRatioPlan(botConfig: Record<string, any> = {}, options
     currentClassification: classifyPriceRangeRatio(current.ratio),
     currentRatio: roundToDecimals(current.ratio, 2),
     isSymmetric: current.isSymmetric,
-    observedRatio: Number.isFinite(observedRatio) ? roundToDecimals(observedRatio, 2) : null,
+    observedRatio: observedRatio !== null && Number.isFinite(observedRatio) ? roundToDecimals(observedRatio, 2) : null,
     ratioDelta,
     reason,
     recommendedRatio: roundedRecommendedRatio,

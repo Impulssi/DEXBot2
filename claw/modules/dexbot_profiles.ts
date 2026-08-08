@@ -975,7 +975,7 @@ function buildClawProfileContext(bundle: Record<string, any>, options: Partial<P
  * Load the full DEXBot2 profile bundle from disk: bots.json, general.settings.json,
  * market_profiles.json, and order snapshots. Returns normalized parsings of each.
  */
-async function loadDexbotProfileBundle(profileRoot: string, options: Partial<ProfileOptions> = {}) {
+async function loadDexbotProfileBundle(profileRoot: string | null, options: Partial<ProfileOptions> = {}) {
   const profilesDir = resolveProfilesDir(profileRoot || options.profileRoot);
   const ordersDir = path.join(profilesDir, DEFAULT_ORDERS_DIR);
   const manifestFile = options.manifestFile || path.join(profilesDir, DEFAULT_MANIFEST_FILE);
@@ -1029,7 +1029,7 @@ async function loadDexbotProfileBundle(profileRoot: string, options: Partial<Pro
  * @returns {Object} Adapter with loadBundle, listBots, findBot, getBotBundle,
  *   getBotSettings, previewBotSettingsUpdate, applyBotSettingsPatch, getProfilesDir
  */
-function createDexbotProfileAdapter(profileRoot: string, options: Partial<ProfileOptions> = {}) {
+function createDexbotProfileAdapter(profileRoot: string | null, options: Partial<ProfileOptions> = {}) {
   let cachedBundle: any = null;
 
   async function loadBundle(forceReload = false) {

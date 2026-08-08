@@ -39,7 +39,7 @@ export function createMessageParser(onMessage: any) {
     throw new Error('MCP stdio transport not available in this environment');
   }
   const decoder = new TextDecoder('utf-8');
-  let buffer = new Uint8Array(0);
+  let buffer: Uint8Array = new Uint8Array(0);
   let queue = Promise.resolve();
 
   function processBuffer() {
