@@ -9,16 +9,12 @@
  * loaded through the require-hook (the test runtime graph) — resolves to the
  * same mutable instance.
  */
-import { setCachedModule } from './module_cache_stub.js';
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+const { setCachedModule } = require('./module_cache_stub');
+const path = require('node:path');
 
-const require = createRequire(import.meta.url);
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const chainOrdersPath = path.resolve(__dirname, '..', '..', 'modules', 'chain_orders.ts');
 
-export function installChainOrdersStub() {
+function installChainOrdersStub() {
     const real = require(path.resolve(__dirname, '..', '..', 'modules', 'chain_orders'));
     const writable: Record<string, unknown> = {};
     for (const key of Object.keys(real)) {
@@ -32,3 +28,7 @@ export function installChainOrdersStub() {
         },
     };
 }
+
+module.exports = {
+    installChainOrdersStub,
+};

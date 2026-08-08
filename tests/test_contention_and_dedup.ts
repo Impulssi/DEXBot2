@@ -93,7 +93,7 @@ async function runTests() {
         assert.strictEqual(acqFired, true, 'Acquire-level callback fired');
 
         // Without acquire option, constructor callback is used
-        const combined2 = undefined || lock._onContention;
+        const combined2 = lock._onContention;
         assert.strictEqual(typeof combined2, 'function', 'Constructor callback used as fallback');
     }
 
@@ -108,8 +108,8 @@ async function runTests() {
                 ['key2', Date.now() - 1000],
             ]),
             _fillDedupeWindowMs: 5000,
-            _getRecentFillKeysSnapshot: function () {
-                const snapshot = {};
+            _getRecentFillKeysSnapshot: function (): Record<string, number> {
+                const snapshot: Record<string, number> = {};
                 const now = Date.now();
                 for (const [key, timestamp] of this._recentlyQueuedFills) {
                     if (now - Number(timestamp) < this._fillDedupeWindowMs) {
@@ -133,8 +133,8 @@ async function runTests() {
                 ['stale', Date.now() - 10000],
             ]),
             _fillDedupeWindowMs: 5000,
-            _getRecentFillKeysSnapshot: function () {
-                const snapshot = {};
+            _getRecentFillKeysSnapshot: function (): Record<string, number> {
+                const snapshot: Record<string, number> = {};
                 const now = Date.now();
                 for (const [key, timestamp] of this._recentlyQueuedFills) {
                     if (now - Number(timestamp) < this._fillDedupeWindowMs) {

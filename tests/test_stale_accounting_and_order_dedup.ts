@@ -14,7 +14,7 @@ const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
 const { createSilentLogger, createTestLogger } = require('./helpers/silent_logger');
 
 // Stub chain_orders so correctOrderPriceOnChain doesn't require real blockchain
-function createStubAccountOrders(cancelBehavior) {
+function createStubAccountOrders(cancelBehavior = null) {
     return {
         cancelOrder: cancelBehavior || (async () => {}),
         updateOrder: async () => ({ /* stub */ }),

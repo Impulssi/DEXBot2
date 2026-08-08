@@ -8,7 +8,7 @@ console.log('Running authority resolver tests');
 /**
  * Create a mock chain client with configurable get_full_accounts responses.
  */
-function createMockChain(accounts) {
+function createMockChain(accounts: Record<string, any>) {
     const fullAccounts = new Map();
 
     for (const [key, acct] of Object.entries(accounts)) {

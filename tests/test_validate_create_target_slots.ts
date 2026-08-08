@@ -17,11 +17,11 @@ function makeOrder(id, type, price, size, state, orderId) {
     return { id, type, price, size, state, orderId: orderId || `${id}-oid` };
 }
 
-function makeCreateAction(targetId, price, type, size) {
+function makeCreateAction(targetId, price, type, size = 100) {
     return {
         type: COW_ACTIONS.CREATE,
         id: targetId,
-        order: { id: targetId, price, type, size: size || 100 }
+        order: { id: targetId, price, type, size }
     };
 }
 

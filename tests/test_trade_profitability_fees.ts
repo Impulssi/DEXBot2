@@ -24,7 +24,7 @@ console.log('Running trade profitability fee tests');
 const BTS_ID = '1.3.0';
 const ASSET_A = '1.3.5589'; // XBTSX.USDT (precision 6)
 
-function t(overrides = {}) {
+function t(overrides: Record<string, any> = {}) {
     return {
         time: overrides.time || '2025-01-01T12:00:00Z',
         orderId: overrides.orderId || '1.7.1',

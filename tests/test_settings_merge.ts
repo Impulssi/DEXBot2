@@ -107,7 +107,7 @@ const DEFAULTS = Object.freeze({
 (function testShallowMergeIgnoresCommentKeys() {
     const r = mergeSettings({ TIMING: { SYNC_DELAY_MS: 777, _comment: 'ignored' } }, DEFAULTS);
     assert.strictEqual(r.TIMING.SYNC_DELAY_MS, 777);
-    // @ts-expect-error _comment should be filtered
+    // _comment filtered (runtime check; return type is Record<string, any>)
     assert.strictEqual(r.TIMING._comment, undefined);
 })();
 
@@ -153,7 +153,7 @@ const DEFAULTS = Object.freeze({
     }, DEFAULTS);
     assert.strictEqual(r.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE, 50);
     assert.strictEqual(r.GRID_LIMITS.GRID_COMPARISON.MEAN_PERCENTAGE, 10);
-    // @ts-expect-error _note should be filtered
+    // _note filtered (runtime check; return type is Record<string, any>)
     assert.strictEqual(r.GRID_LIMITS.GRID_COMPARISON._note, undefined);
 })();
 
@@ -250,7 +250,7 @@ const DEFAULTS = Object.freeze({
         EXPERT: { GRID_LIMITS: { MIN_ORDER_COUNT: 55, _comment: 'ignored' } }
     }, DEFAULTS);
     assert.strictEqual(r.GRID_LIMITS.MIN_ORDER_COUNT, 55);
-    // @ts-expect-error _comment should be filtered
+    // _comment filtered (runtime check; return type is Record<string, any>)
     assert.strictEqual(r.GRID_LIMITS._comment, undefined);
 })();
 
@@ -263,9 +263,9 @@ const DEFAULTS = Object.freeze({
         FILL_PROCESSING: { MODE: 'live', _comment: 'test', _deprecated: true },
     }, DEFAULTS);
     assert.strictEqual(r.FILL_PROCESSING.MODE, 'live');
-    // @ts-expect-error _comment filtered
+    // _comment filtered (runtime check; return type is Record<string, any>)
     assert.strictEqual(r.FILL_PROCESSING._comment, undefined);
-    // @ts-expect-error _deprecated filtered
+    // _deprecated filtered (runtime check; return type is Record<string, any>)
     assert.strictEqual(r.FILL_PROCESSING._deprecated, undefined);
 })();
 
@@ -274,7 +274,7 @@ const DEFAULTS = Object.freeze({
         LOGGING_CONFIG: { rotation: { enabled: false, _comment: 'test' } },
     }, DEFAULTS);
     assert.strictEqual(r.LOGGING_CONFIG.rotation.enabled, false);
-    // @ts-expect-error _comment filtered
+    // _comment filtered (runtime check; return type is Record<string, any>)
     assert.strictEqual(r.LOGGING_CONFIG.rotation._comment, undefined);
 })();
 

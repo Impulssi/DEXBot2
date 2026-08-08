@@ -6,16 +6,12 @@
  * `native.createChainClient = ...` without hitting the immutable ESM
  * namespace (getter-only exports).
  */
-import { setCachedModule } from './module_cache_stub.js';
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+const { setCachedModule } = require('./module_cache_stub');
+const path = require('node:path');
 
-const require = createRequire(import.meta.url);
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const nativePath = path.resolve(__dirname, '..', '..', 'modules', 'bitshares-native', 'index.ts');
 
-export function installBitsharesNativeStub() {
+function installBitsharesNativeStub() {
     const real = require(path.resolve(__dirname, '..', '..', 'modules', 'bitshares-native'));
     const writable: Record<string, unknown> = {};
     for (const key of Object.keys(real)) {
@@ -29,3 +25,7 @@ export function installBitsharesNativeStub() {
         },
     };
 }
+
+module.exports = {
+    installBitsharesNativeStub,
+};

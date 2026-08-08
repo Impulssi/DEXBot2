@@ -402,7 +402,7 @@ async function testSpreadSlotFullFillResolvesBuySide() {
         `filled slot must become SPREAD placeholder, got ${slot.type}`);
 
     // Boundary crawl: BUY fill shifts boundary left; the pre-fix SPREAD type must NOT.
-    const allSlots = Array.from(mgr.orders.values()).filter((o) => o.price != null).sort((a, b) => a.price - b.price);
+    const allSlots = Array.from<any>(mgr.orders.values()).filter((o) => o.price != null).sort((a, b) => a.price - b.price);
     assert.strictEqual(boundaryShiftOf(filledOrder, allSlots), 0, 'BUY-typed fill must shift boundary left');
     assert.strictEqual(boundaryShiftOf({ ...filledOrder, type: ORDER_TYPES.SPREAD }, allSlots), 1,
         'SPREAD-typed fill (pre-fix) must not shift the boundary');
@@ -507,7 +507,7 @@ async function testPostBatchReanchorAndInvariantGuard() {
     );
 
     // Final invariant must hold: Total = Free + Committed per side.
-    const chainBuy = Array.from(mgr.orders.values())
+    const chainBuy = Array.from<any>(mgr.orders.values())
         .filter(o => (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL) && o.orderId && o.type === ORDER_TYPES.BUY)
         .reduce((s, o) => s + Number(o.size || 0), 0);
     assert.ok(Math.abs(mgr.accountTotals.buyFree + chainBuy - mgr.accountTotals.buy) < 0.0001,

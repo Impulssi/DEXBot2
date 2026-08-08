@@ -102,7 +102,7 @@ async function createBoundaryShiftFixture(sellFunds = 30, buyFunds = 5700) {
         [ORDER_TYPES.SELL]: new Set(),
         [ORDER_TYPES.SPREAD]: new Set(),
     };
-    for (const [, o] of patched) {
+    for (const [, o] of patched as Map<string, any>) {
         if (byState[o.state]) byState[o.state].add(o.id);
         if (byType[o.type]) byType[o.type].add(o.id);
     }

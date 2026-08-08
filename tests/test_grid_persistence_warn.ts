@@ -56,7 +56,10 @@ function createFixture() {
             log: (msg, level) => logs.push({ msg, level }),
             logFundsStatus: () => {}
         },
-        _clearWorkingGridRef: () => {}
+        _clearWorkingGridRef: () => {},
+        _updateOrder: async () => true,
+        persistGrid: async () => ({ isValid: true }),
+        applyGridUpdateBatch: async () => {}
     };
     bot.manager = manager;
     bot.account = 'test-account';

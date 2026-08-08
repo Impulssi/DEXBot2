@@ -123,7 +123,7 @@ function createCowExecutionFixture(masterOrders = new Map()) {
         },
         orders: Object.freeze(masterOrders),
         logger: {
-            log: () => {},
+            log: (msg?: any) => {},
             logFundsStatus: () => {}
         },
         lockOrders: () => {},
@@ -134,7 +134,7 @@ function createCowExecutionFixture(masterOrders = new Map()) {
         stopBroadcasting: () => {},
         pauseFundRecalc: () => {},
         resumeFundRecalc: async () => {},
-        _commitWorkingGrid: async () => {},
+        _commitWorkingGrid: async (): Promise<boolean> => true,
         persistGrid: async () => {},
         _clearWorkingGridRef: () => {},
         getChainFundsSnapshot: () => ({ chainFreeSell: 1e9, chainFreeBuy: 1e9 }),
