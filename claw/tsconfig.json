@@ -1,5 +1,10 @@
 {
   "compilerOptions": {
+    // rootDir ".." + outDir "../dist" compiles claw/* to dist/claw/* AND the
+    // imported root modules (../../modules, ../../market_adapter) to dist/modules
+    // and dist/market_adapter, matching the root build layout. Emit options are
+    // kept in sync with the root tsconfig.json so a claw build never leaves a
+    // stale/hybrid dist (same declarations + sourcemaps as `npm run build`).
     "target": "ES2022",
     "module": "node16",
     "lib": ["ES2022"],
@@ -12,9 +17,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "declaration": false,
-    "declarationMap": false,
-    "sourceMap": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
     "moduleResolution": "node16",
     "allowJs": false,
     "types": ["node"]
