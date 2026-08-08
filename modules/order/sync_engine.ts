@@ -337,10 +337,11 @@ class SyncEngine {
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
         }
 
-        // Skip re-acquiring if we're already inside _fillProcessingLock's
-        // execution context (the lock is re-entrant). The old fillLockAlreadyHeld
-        // flag achieved the same goal by being passed through the call chain;
-        // now the lock knows whether the caller already holds it.
+        // CRITICAL: The gate below is the recursion breaker. syncFromOpenOrders
+        // re-invokes itself as the acquire() callback, so without this check the
+        // acquire() re-entrant short-circuit alone would recurse forever (each
+        // nested call is re-entrant and runs the body again). Only run through
+        // the lock when the caller does NOT already hold it.
         if (mgr._fillProcessingLock && !mgr._fillProcessingLock.isReentrant()) {
             return mgr._fillProcessingLock.acquire(async () => {
                 return this.syncFromOpenOrders(chainOrders, options);
@@ -770,14 +771,14 @@ class SyncEngine {
                 // The chain snapshot may lag behind confirmed transactions,
                 // causing correctly-placed orders to appear missing. _committedOrderIds
                 // is atomically rebuilt from every successful COW commit
-                // (manager.ts:_commitCowPlan) and is always active for all sync
+                // (manager.ts:_commitWorkingGrid) and is always active for all sync
                 // paths — previously gated on options.protectCommittedOrders.
                 // Always-on is safe because committed IDs are self-cleaning:
                 // filled/virtualized orders are absent from the next commit's
                 // finalMap, so their IDs drop out on the next atomic rebuild.
                 //
                 // SAFETY: _committedOrderIds is replaced atomically (reference swap)
-                // by _commitCowPlan. The sync reads has(gridOrder.orderId) against the
+                // by _commitWorkingGrid. The sync reads has(gridOrder.orderId) against the
                 // current reference. If a concurrent COW commit replaces the set mid-sync,
                 // the new set is a superset (only adds entries for newly committed orders).
                 // An order in the superset was just committed, so it is genuinely on-chain

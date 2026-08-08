@@ -148,7 +148,6 @@ export interface OrderBase {
   orderId: string | null;
   committedSide?: OrderType;
   rawOnChain?: { for_sale?: number };
-  isDustRefill?: boolean;
   metadata?: Record<string, any>;
   gridIndex?: number;
   idealSize?: number;
@@ -590,13 +589,11 @@ export interface BotGridLimitsOverrides {
   minOrderSizeFactor?: number;
   gridRegenerationPercentage?: number;
   partialDustThresholdPercentage?: number;
-  dustCancelDelaySec?: number;
   fundInvariantPercentTolerance?: number;
   minSpreadOrders?: number;
   gridComparison?: { rmsPercentage?: number };
   priceDriftToleranceMultiplier?: number;
   relativeOrderUpdateThresholdPercent?: number;
-  stateChangeHistoryMax?: number;
 }
 
 export interface BotFeeParamsOverrides {

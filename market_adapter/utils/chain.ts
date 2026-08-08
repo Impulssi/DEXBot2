@@ -1,5 +1,7 @@
 'use strict';
 
+import { API_LIMITS } from '../../modules/constants';
+
 let _bitsharesClient: any = null;
 
 function getBitsharesClient() {
@@ -66,11 +68,13 @@ async function findPoolByAssets(assetAId: any, assetBId: any, options: any = {})
     const listFn = BitShares.db?.list_liquidity_pools ?? BitShares.db?.get_liquidity_pools;
     if (typeof listFn === 'function') {
         let startId = '1.19.0';
-        const page = 100;
+        const page = API_LIMITS.POOL_BATCH_SIZE;
         const a = String(assetAId);
         const b = String(assetBId);
 
+        let scannedBatches = 0;
         while (true) {
+            if (scannedBatches++ >= API_LIMITS.MAX_POOL_SCAN_BATCHES) break;
             const pools = await listFn(page, startId);
             if (!Array.isArray(pools) || pools.length === 0) break;
 

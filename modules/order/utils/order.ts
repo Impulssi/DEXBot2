@@ -213,7 +213,6 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder: any, opts: any) {
 /**
  * Update grid order size based on blockchain state.
  * Detects partial fills and updates accounting if size changed.
- * Skips dust refills (prevents unnecessary sync when size decreases).
  * 
  * Returns the updated order object or null if no update needed.
  * 
@@ -241,16 +240,6 @@ async function applyChainSizeToGridOrder(manager: any, gridOrder: any, chainSize
 
     const oldSize = toFiniteNumber(gridOrder.size);
     const newSize = isValidNumber(chainSize) ? toFiniteNumber(chainSize) : oldSize;
-
-    if (gridOrder.isDustRefill && newSize < oldSize) {
-        const oldInt = floatToBlockchainInt(oldSize, precision);
-        const newInt = floatToBlockchainInt(newSize, precision);
-        const deltaInt = Math.max(0, oldInt - newInt);
-
-        // Ignore only negligible one-unit quantization noise on dust refill orders.
-        // Real decreases must still be synchronized to avoid stuck PARTIAL states.
-        if (deltaInt <= 1) return null;
-    }
 
     if (floatToBlockchainInt(oldSize, precision) === floatToBlockchainInt(newSize, precision)) { 
         return null; 

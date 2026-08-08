@@ -37,28 +37,7 @@ async function testLockTimeout() {
     assert.strictEqual(executed, false, 'Callback should not have executed');
     assert.strictEqual(lock.isLocked(), false);
 
-    // 2. Test clearQueue
-    console.log(' - Testing clearQueue...');
-    lock.acquire(async () => {
-        await new Promise(r => setTimeout(r, 40));
-    });
-
-    let q1 = false, q2 = false;
-    const p1 = lock.acquire(async () => { q1 = true; });
-    const p2 = lock.acquire(async () => { q2 = true; });
-
-    assert.strictEqual(lock.getQueueLength(), 2);
-    const cleared = lock.clearQueue();
-    assert.strictEqual(cleared, 2);
-    assert.strictEqual(lock.getQueueLength(), 0);
-
-    // Ensure they were rejected
-    await Promise.all([
-        p1.catch(e => assert.strictEqual(getErrorMessage(e), 'Lock queue cleared')),
-        p2.catch(e => assert.strictEqual(getErrorMessage(e), 'Lock queue cleared'))
-    ]);
-
-    // 3. Test immediate cancellation after acquisition (SyncEngine style)
+    // 2. Test immediate cancellation after acquisition (SyncEngine style)
     console.log(' - Testing immediate abortion after acquisition...');
     let abortExecuted = false;
     const abortToken = { isCancelled: false };

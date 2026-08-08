@@ -503,7 +503,7 @@ async function testRecalculateGridFundLockSerialization() {
     // Manager with a real _fundLock so serialization is observable.
     let accountTotals: any = { sellFree: 100, buyFree: 100 };
     const manager = {
-        _fundLock: new AsyncLock({ level: 4 }),
+        _fundLock: new AsyncLock(),
         funds: { btsFeesOwed: 50 },
         accountTotals,
         resetFunds: () => {

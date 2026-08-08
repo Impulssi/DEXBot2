@@ -177,10 +177,10 @@ const buyLeftover = buyExpected - buyRotationTotal;
 console.log(`Buy Side:`);
 console.log(`  Available Total: ${Format.formatMetric2(buyExpected)} USDT (available ${Format.formatMetric2(availableFundsBuy)} + grid ${Format.formatMetric2(buyGridTotal)})`);
 console.log(`  Calculated Rotation Sizes: ${Format.formatMetric2(buyRotationTotal)} USDT`);
-console.log(`  Leftover: ${Format.formatRatio(buyLeftover, 4)} USDT`);
+console.log(`  Leftover: ${Format.safeFormat(buyLeftover, 4)} USDT`);
 
 if (buyRotationTotal < buyExpected) {
-     console.log(`  → Calculated < Available: ${Format.formatRatio(buyLeftover, 4)} USDT remains free\n`);
+     console.log(`  → Calculated < Available: ${Format.safeFormat(buyLeftover, 4)} USDT remains free\n`);
 } else {
      console.log('  → Calculated >= Available\n');
 }
@@ -191,10 +191,10 @@ const sellLeftover = sellExpected - sellRotationTotal;
 console.log(`Sell Side:`);
 console.log(`  Available Total: ${Format.formatMetric2(sellExpected)} BTS (available ${Format.formatMetric2(availableFundsSell)} + grid ${Format.formatMetric2(sellGridTotal)})`);
 console.log(`  Calculated Rotation Sizes: ${Format.formatMetric2(sellRotationTotal)} BTS`);
-console.log(`  Leftover: ${Format.formatRatio(sellLeftover, 4)} BTS`);
+console.log(`  Leftover: ${Format.safeFormat(sellLeftover, 4)} BTS`);
 
 if (sellRotationTotal < sellExpected) {
-     console.log(`  → Calculated < Available: ${Format.formatRatio(sellLeftover, 4)} BTS remains free\n`);
+     console.log(`  → Calculated < Available: ${Format.safeFormat(sellLeftover, 4)} BTS remains free\n`);
 } else {
      console.log('  → Calculated >= Available\n');
 }

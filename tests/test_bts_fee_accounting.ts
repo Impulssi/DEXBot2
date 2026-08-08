@@ -124,7 +124,7 @@ async function testFeeAccounting() {
     }
 
     const totalFees = deductedAmount + directDeductedAmount + manager.funds.btsFeesOwed;
-    console.log(`  Total BTS fees (deducted + remaining): ${Format.formatMetric5(totalFees)}`);
+    console.log(`  Total BTS fees (deducted + remaining): ${Format.safeFormat(totalFees, 5)}`);
 
     const updateFee = utils.getAssetFees('BTS').updateFee;
     const expected = updates.length * updateFee;

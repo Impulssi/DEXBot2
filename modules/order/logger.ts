@@ -4,7 +4,7 @@ import { path } from '../path_api';
 import { runtime } from '../runtime';
 import * as Format from './format';
 import LoggerState from './logger_state';
-import { LOGGING_CONFIG, ORDER_STATES } from '../constants';
+import { LOGGING_CONFIG, ORDER_STATES, TIMING } from '../constants';
 import { Config } from '../config';
 import { getErrorMessage } from '../utils/errors';
 import { withTimeout } from './utils/timeout';
@@ -125,7 +125,7 @@ class Logger {
         // indefinitely. If _drainQueue runs past this timeout, force-resolve
         // the flush promise and drop remaining lines rather than blocking
         // shutdown or the caller forever.
-        const drainDeadline = Date.now() + 10000; // 10s max per drain cycle
+        const drainDeadline = Date.now() + TIMING.LOGGER_DRAIN_TIMEOUT_MS; // 10s max per drain cycle
         this._draining = true;
 
         const batch = this._writeQueue.splice(0, this._maxQueueSize);

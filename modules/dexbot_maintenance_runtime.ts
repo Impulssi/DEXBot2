@@ -2105,10 +2105,13 @@ async function requestGridReset(bot: any, reason: any = 'structural change', opt
     // Structural recovery resyncs are chain-read/rebuild operations that do not
     // mutate order state in place; running them behind the fill-processing lock
     // lets a fill storm starve recovery indefinitely. Skip the lock when the
-    // caller explicitly requests it (structural resync wiring). While the
-    // rebuild runs unlocked, raise _recoverySyncInFlight so the fill consumer
-    // defers fills entirely (no concurrent mutation race) instead of racing
-    // them behind a lock.
+    // caller explicitly requests it (structural resync wiring), when there is
+    // no lock, or when re-entrant (already under the fill lock — acquire()
+    // would just re-run the callback and we want the in-flight guard active
+    // so the fill consumer defers fills entirely). While the rebuild runs
+    // unlocked, raise _recoverySyncInFlight so the fill consumer defers fills
+    // entirely (no concurrent mutation race) instead of racing them behind a
+    // lock.
     if (options.skipFillLock === true || !bot.manager._fillProcessingLock || bot.manager._fillProcessingLock.isReentrant()) {
         bot._recoverySyncInFlight = (bot._recoverySyncInFlight || 0) + 1;
         try {

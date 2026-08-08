@@ -1,5 +1,7 @@
 'use strict';
 
+import { GRID_LIMITS } from '../constants';
+
 /**
  * modules/order/logger_state.ts - Logger State Manager
  *
@@ -83,7 +85,7 @@ class LoggerState {
             errors: null
         };
         this.changeHistory = [];
-        this.maxHistory = 100;
+        this.maxHistory = GRID_LIMITS.STATE_CHANGE_HISTORY_MAX;
     }
 
     /**

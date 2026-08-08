@@ -228,11 +228,13 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
             if (typeof listFn === 'function') {
                 try {
                     let startId = '1.19.0';
-                    const PAGE_SIZE = 100;
+                    const pageSize = API_LIMITS.POOL_BATCH_SIZE;
                     const allMatches: any[] = [];
 
+                    let scannedBatches = 0;
                     while (true) {
-                        const pools = await listFn(PAGE_SIZE, startId);
+                        if (scannedBatches++ >= API_LIMITS.MAX_POOL_SCAN_BATCHES) break;
+                        const pools = await listFn(pageSize, startId);
                         if (!pools || pools.length === 0) break;
 
                         // BitShares list_liquidity_pools is inclusive of startId.
@@ -249,7 +251,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
                             allMatches.push(...matches);
                         }
 
-                        if (pools.length < PAGE_SIZE) {
+                        if (pools.length < pageSize) {
                             break;
                         } else {
                             startId = pools[pools.length - 1].id;

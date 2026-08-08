@@ -257,7 +257,7 @@ class COWRebalanceEngine {
         const stateUpdates = buildStateUpdates(optimizedActions, masterGrid);
 
         const duration = Date.now() - startTime;
-        if (duration > 100) {
+        if (duration > COW_PERFORMANCE.MAX_REBALANCE_PLANNING_MS) {
             this.logger?.log(`[COW] Rebalance planning took ${duration}ms`, 'warn');
         }
 
@@ -475,15 +475,14 @@ class OrderManager {
         //   Level 2: _syncLock         (sync operations — timeout-protected)
         //   Level 3: _gridLock         (grid mutations)
         //   Level 4: _fundLock         (fund operations — innermost)
-        // Note: AsyncLock IS re-entrant (acquire detects nested calls via _holding).
-        this._fillProcessingLock = new AsyncLock({ level: 0, timeout: TIMING.SYNC_LOCK_TIMEOUT_MS });
-        this._divergenceLock = new AsyncLock({ level: 1 });
-        this._syncLock = new AsyncLock({ level: 2 });
+        // Note: AsyncLock IS re-entrant (acquire detects nested calls via context).
+        this._fillProcessingLock = new AsyncLock({ timeout: TIMING.SYNC_LOCK_TIMEOUT_MS });
+        this._divergenceLock = new AsyncLock();
+        this._syncLock = new AsyncLock();
         this._gridLock = new AsyncLock({
-            level: 3,
             onContention: () => { this._metrics.gridLockContention++; }
         });
-        this._fundLock = new AsyncLock({ level: 4, timeout: 30000 });
+        this._fundLock = new AsyncLock({ timeout: 30000 });
 
         this._recentlyRotatedOrderIds = new Set();
         this._gridSidesUpdated = new Set();

@@ -167,16 +167,8 @@ function formatPercent(value: number, decimals: number = 2): string {
  * @param {number} [decimals=5] - Number of decimal places (default 5)
  * @returns {string} Formatted ratio
  */
-function formatRatio(value: number, decimals: number = 5): string {
-	return safeFormat(value, decimals);
-}
-
 function formatMetric2(value: number): string {
 	return safeFormat(value, 2);
-}
-
-function formatMetric5(value: number): string {
-	return safeFormat(value, 5);
 }
 
 // ===============================================================================
@@ -230,5 +222,5 @@ function safeFormat(value: any, decimals: number, fallback: string = 'N/A'): str
 // EXPORTS
 // ===============================================================================
 
-export { formatAmount8, formatAmount, formatAmountByPrecision, formatSizeByOrderType, formatPrice, formatPrice6, formatPrice4, formatPercent2, formatPercent, formatRatio, formatMetric2, formatMetric5, isValidNumber, isNumeric, toFiniteNumber, safeFormat }
+export { formatAmount8, formatAmount, formatAmountByPrecision, formatSizeByOrderType, formatPrice, formatPrice6, formatPrice4, formatPercent2, formatPercent, formatMetric2, isValidNumber, isNumeric, toFiniteNumber, safeFormat }
 

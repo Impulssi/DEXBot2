@@ -2066,7 +2066,7 @@ export async function checkGridHealth(manager: any, _updateOrdersOnChainBatch: a
      * the sibling active order already covers that price level.
      *
      * Returns boolean flags plus the actual dust order objects so callers can act
-     * on individual orders (e.g. DUST_CANCEL_DELAY_SEC auto-cancel).
+     * on individual orders (dust is cancelled immediately on detection).
      *
      * @param {import('./types').OrderManager} manager
      * @returns {Promise<import('./types').DustCheckResult>}

@@ -1937,7 +1937,7 @@ class CreditRuntime {
         };
 
         try {
-            if (!lock || typeof lock.acquire !== 'function' || lock.isReentrant()) {
+            if (!lock || typeof lock.acquire !== 'function') {
                 return await runCheck();
             }
             return await lock.acquire(runCheck);

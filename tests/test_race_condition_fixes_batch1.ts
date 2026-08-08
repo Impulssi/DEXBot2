@@ -602,8 +602,8 @@ async function testGridLockSyncLockCorrectOrder() {
     // After the refactor the canonical order is:
     //   _fillProcessingLock(0) → _syncLock(2) → _gridLock(3) → _fundLock(4)
     const mgr: any = {
-        _syncLock: new AsyncLock({ level: 2 }),
-        _gridLock: new AsyncLock({ level: 3 }),
+        _syncLock: new AsyncLock(),
+        _gridLock: new AsyncLock(),
         _fillProcessingLock: null,
         _pauseFundRecalc: 0,
         orders: new Map(),

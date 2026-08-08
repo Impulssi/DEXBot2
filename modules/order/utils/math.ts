@@ -643,18 +643,6 @@ function getPrecisionByOrderType(assets: any, orderType: any) {
 }
 
 /**
- * Get asset precision for a specific trading side.
- * 
- * @param {Object} assets - Asset metadata with assetA and assetB
- * @param {string} side - Side ("buy" or "sell")
- * @returns {number} Asset precision for the side
- * @throws {Error} If precision missing
- */
-function getPrecisionForSide(assets: any, side: any) {
-    return getPrecision(assets, { side });
-}
-
-/**
  * Get asset precisions for both assetA and assetB.
  * 
  * @param {Object} assets - Asset metadata with assetA and assetB
@@ -1196,33 +1184,6 @@ function calculateOrderCreationFees(assetA: any, assetB: any, totalOrders: any, 
 }
 
 /**
- * Deduct order fees from available buy/sell funds.
- * If BTS is the buy asset, deducts from buyFunds; if sell asset, deducts from sellFunds.
- * 
- * @param {number} buyFunds - Available buy-side funds
- * @param {number} sellFunds - Available sell-side funds
- * @param {number} fees - Fee amount to deduct
- * @param {Object} config - Configuration with assetA and assetB
- * @param {Object} [logger=null] - Optional logger for logging deductions
- * @returns {Object} Updated funds object {buyFunds, sellFunds}
- */
-function deductOrderFeesFromFunds(buyFunds: any, sellFunds: any, fees: any, config: any, logger: any = null) {
-    let finalBuy = buyFunds;
-    let finalSell = sellFunds;
-    if (fees > 0) {
-        const btsOrderType = getBtsSide(config?.assetA, config?.assetB);
-        if (btsOrderType === ORDER_TYPES.BUY) {
-            finalBuy = Math.max(0, buyFunds - fees);
-            logger?.log?.(`Reduced available BTS (buy) funds by ${Format.formatAmount8(fees)}`, 'info');
-        } else if (btsOrderType === ORDER_TYPES.SELL) {
-            finalSell = Math.max(0, sellFunds - fees);
-            logger?.log?.(`Reduced available BTS (sell) funds by ${Format.formatAmount8(fees)}`, 'info');
-        }
-    }
-    return { buyFunds: finalBuy, sellFunds: finalSell };
-}
-
-/**
  * Calculate how much input asset to swap into a constant-product AMM pool
  * to receive a target amount of output asset.
  *
@@ -1345,7 +1306,7 @@ function countGapBandSpread(manager: any, orders: Iterable<any>, resolveIndex: (
     return count;
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, deductOrderFeesFromFunds, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.

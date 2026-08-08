@@ -473,11 +473,6 @@ let GRID_LIMITS = {
     //   - This order would be rotated to free the slot
     PARTIAL_DUST_THRESHOLD_PERCENTAGE: 5,
 
-    // DUST_CANCEL_DELAY_SEC: Legacy — no longer used. Dust is cancelled immediately on detection
-    // (no delay, no timer). Kept for backward-compat so existing configs don't break on load.
-    // Default -1 (disabled) makes freshly-written configs self-documenting.
-    DUST_CANCEL_DELAY_SEC: -1,
-
     // Allowed drift fraction before triggering fund-invariant recovery (0.1% = 0.001).
     FUND_INVARIANT_PERCENT_TOLERANCE: 0.1,
 
@@ -503,7 +498,6 @@ let GRID_LIMITS = {
         // Metric calculation: RMS (Root Mean Square) of relative order size differences
         // Formula: RMS = √(mean of ((calculated - persisted) / persisted)²)
         // Represents the quadratic mean of relative size errors
-        SUMMED_RELATIVE_SQUARED_DIFFERENCE: 'summedRelativeSquaredDiff',
 
         // Divergence threshold for automatic grid regeneration (RMS as percentage)
         // When compareGrids() metric exceeds this threshold, updateGridOrderSizes will be triggered
@@ -525,8 +519,8 @@ let GRID_LIMITS = {
     },
 
     // STATE_CHANGE_HISTORY_MAX: Maximum number of state changes to retain in circular buffer.
-    // Used by StateChangeLogger for tracking recent grid/fund mutations.
-    // Default: 100 entries (balances memory usage with debugging utility).
+    // Used by StateChangeLogger (modules/order/logger_state.ts) for tracking recent
+    // grid/fund mutations. Default: 100 entries (balances memory usage with debugging utility).
     STATE_CHANGE_HISTORY_MAX: 100,
 
     // RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT: Relative threshold for in-memory
@@ -690,14 +684,12 @@ let BTS_PRECISION = 5;
 
 // API request limits and batch sizes for blockchain operations
 let API_LIMITS = {
-    // Maximum number of liquidity pools per batch request
+    // Maximum number of liquidity pools per batch request during pool scanning
     POOL_BATCH_SIZE: 100,
     // Maximum number of batch iterations for pool scanning (~10k total pools)
     MAX_POOL_SCAN_BATCHES: 100,
     // Depth of order book to fetch for market price derivation
     ORDERBOOK_DEPTH: 5,
-    // Maximum number of limit orders per batch request
-    LIMIT_ORDERS_BATCH: 100,
     // Maximum page for LP history API queries (market adapter)
     LP_API_MAX_PAGE: 101,
 };
@@ -708,8 +700,6 @@ let FILL_PROCESSING = {
     MODE: 'history',
     // Operation type for fill_order blockchain operations
     OPERATION_TYPE: 4,
-    // Indicator for taker (non-maker) fills
-    TAKER_INDICATOR: 0,
 
     // Maximum fills processed per rebalance/broadcast cycle.
     // Behavior:
@@ -1325,14 +1315,14 @@ let LAUNCHER = {
 };
 
 // Copy-on-Write (COW) Grid performance thresholds
-// NOTE: Currently unused — reserved for future COW performance monitoring.
 let COW_PERFORMANCE = {
+    // MAX_REBALANCE_PLANNING_MS: Planning-phase duration (ms) above which a
+    // "rebalance planning took N ms" warning is logged (manager.ts).
     MAX_REBALANCE_PLANNING_MS: 100,
-    MAX_COMMIT_MS: 50,
-    MAX_MEMORY_MB: 50,
-    INDEX_REBUILD_THRESHOLD: 10000,
+
+    // GRID_MEMORY_WARNING: Size (bytes) of the working grid that triggers a
+    // memory warning log during COW commit.
     GRID_MEMORY_WARNING: 5000,
-    GRID_MEMORY_CRITICAL: 10000,
 
     // WORKING_GRID_BYTES_PER_ORDER: Estimated memory usage per order in working grid (bytes).
     // Used for memory profiling and warning thresholds.

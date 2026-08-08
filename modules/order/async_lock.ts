@@ -37,12 +37,9 @@
  *      Marks as locked, executes callback, handles errors, unlocks, processes next
  *      Recursive: processes next item after each callback completes
  *
- * STATUS QUERIES (3 methods)
+ * STATUS QUERIES (2 methods)
  *   4. isLocked() - Check if lock is currently acquired
  *   5. getQueueLength() - Get number of operations waiting for lock
- *   6. clearQueue() - Reject and discard all pending queued operations
- *      Returns: number of operations that were cleared
- *      Does NOT stop the currently executing operation
  *
  * ===============================================================================
  *
@@ -97,14 +94,12 @@ interface QueueItem<T = unknown> {
 
 interface AsyncLockOptions {
     timeout?: number;
-    level?: number;
     onContention?: () => void;
 }
 
 interface AcquireOptions {
     timeout?: number;
     cancelToken?: { isCancelled: boolean };
-    level?: number;
     onContention?: () => void;
 }
 
@@ -315,24 +310,9 @@ class AsyncLock {
     }
 
     /**
-     * Clear all pending operations in the queue.
-     * Does NOT stop the currently executing operation if it is already locked.
-     * @returns {number} Count of cleared items
-     */
-    clearQueue(): number {
-        const count = this._queue.length;
-        while (this._queue.length > 0) {
-            const { reject } = this._queue.shift()!;
-            reject(new Error('Lock queue cleared'));
-        }
-        return count;
-    }
-
-    /**
      * Force-release the lock and clear all queued operations.
-     * Unlike clearQueue() which keeps the lock held, this resets both
-     * the locked state AND the queue. Use when an operation has timed out
-     * but the underlying callback may still be running — subsequent
+     * Resets both the locked state AND the queue. Use when an operation has
+     * timed out but the underlying callback may still be running — subsequent
      * acquirers will be allowed in while the stale callback eventually
      * completes and is silently ignored via the generation-guard in
      * _processQueue's finally block.

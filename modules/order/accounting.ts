@@ -1263,7 +1263,9 @@ class Accountant {
             if (btsOrderType) {
                 const { balanceDelta } = this._resolveBtsFeeLifecycle(oldOrder, newOrder, context, fee);
                 if (Math.abs(balanceDelta) > 0) {
-                    await this.adjustTotalBalance(btsOrderType, balanceDelta, `${context}-fee`);
+                    // Caller already holds _fundLock, so use the locked body directly
+                    // (adjustTotalBalance would re-acquire the re-entrant lock).
+                    this._adjustTotalBalanceLocked(btsOrderType, balanceDelta, `${context}-fee`);
                 }
             }
         });
