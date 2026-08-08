@@ -108,7 +108,7 @@ function createBaseBotConfig(overrides = {}) {
                     asset: 'HONEST.USD',
                     collateralAsset: 'BTS',
                     type: 'mpa',
-                    ratio: 1,
+                    outputWeight: 1,
                     maxBorrowAmount: 1000,
                     maxCollateralAmount: 10000,
                     minCollateralRatio: 2,

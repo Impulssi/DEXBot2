@@ -116,22 +116,15 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
                         problems.push(`debtPolicy.lending[${idx}].type must be 'mpa' or 'creditOffer'`);
                     }
 
-                    // outputWeight: canonical field, ratio: deprecated alias
-                    const hasRatio = 'ratio' in item;
-                    const hasOutputWeight = 'outputWeight' in item;
-
-                    if (hasRatio && hasOutputWeight && item.ratio !== item.outputWeight) {
-                        problems.push(`debtPolicy.lending[${idx}]: both 'ratio' (deprecated) and 'outputWeight' are set with conflicting values`);
-                    } else if (hasRatio && !hasOutputWeight) {
-                        console.warn(`[deprecated] debtPolicy.lending[${idx}].ratio is deprecated; use outputWeight instead`);
-                    } else if (hasRatio && hasOutputWeight) {
-                        console.warn(`[deprecated] debtPolicy.lending[${idx}].ratio is a deprecated alias of outputWeight; safe to remove`);
+                    // outputWeight: canonical field (deprecated 'ratio' alias removed)
+                    if ('ratio' in item) {
+                        problems.push(`debtPolicy.lending[${idx}].ratio is no longer supported; use outputWeight instead`);
                     }
 
-                    const weightVal = item.outputWeight ?? item.ratio;
-                    if (weightVal !== undefined) {
+                    if ('outputWeight' in item) {
+                        const weightVal = item.outputWeight;
                         if (!Number.isFinite(weightVal) || weightVal < 0) {
-                            problems.push(`debtPolicy.lending[${idx}].${hasOutputWeight ? 'outputWeight' : 'ratio'} must be a non-negative number`);
+                            problems.push(`debtPolicy.lending[${idx}].outputWeight must be a non-negative number`);
                         }
                     }
 

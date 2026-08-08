@@ -58,9 +58,9 @@ async function testCollateralDistribution() {
                 maxCollateralAmount: 10000,
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
                     { asset: 'CNY',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 3.0 }
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 3.0 }
                 ]
             }
         },
@@ -108,9 +108,9 @@ async function testCollateralDistributionWithCredit() {
                 maxCollateralAmount: 10000,
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
                     { asset: 'CNY',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: 2, maxCollateralRatio: 2.0 }
+                    collateralAsset: 'BTS', type: 'creditOffer', outputWeight: 2, maxCollateralRatio: 2.0 }
                 ]
             }
         },
@@ -158,9 +158,9 @@ async function testRefreshStateMulti() {
                 maxCollateralAmount: 10000,
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
                     { asset: 'CNY',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 }
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 }
                 ]
             }
         },
@@ -277,7 +277,7 @@ async function testStatePersistenceWithPositions() {
             debtPolicy: {
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 }
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 }
                 ]
             }
         },
@@ -325,11 +325,11 @@ async function testThreeAssetEqualSplit() {
                 maxCollateralAmount: 9000,
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
                     { asset: 'CNY',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
                     { asset: 'EUR',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 }
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 }
                 ]
             }
         },
@@ -374,9 +374,9 @@ async function testMaxCollateralCap() {
                 maxCollateralAmount: 5000,
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
                     { asset: 'CNY',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 }
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 }
                 ]
             }
         },
@@ -417,7 +417,7 @@ async function testBuildMpaPlanUsesAssignedBudget() {
             debtPolicy: {
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.2, maxCollateralAmount: 9999, maxBorrowAmount: 110, minCollateralRatio: 2.0, maxCollateralRatio: 2.5 }
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.2, maxCollateralAmount: 9999, maxBorrowAmount: 110, minCollateralRatio: 2.0, maxCollateralRatio: 2.5 }
                 ]
             }
         },
@@ -555,9 +555,9 @@ async function testRunMaintenanceIteratesLending() {
             debtPolicy: {
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
                     { asset: 'CNY',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: 1, maxCollateralRatio: 2.0 }
+                    collateralAsset: 'BTS', type: 'creditOffer', outputWeight: 1, maxCollateralRatio: 2.0 }
                 ]
             }
         },
@@ -607,7 +607,7 @@ async function testCreditMaintenanceUsesDealCollateral() {
             debtPolicy: {
                 lending: [
                     { asset: 'CNY',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: 1, maxCollateralRatio: 2.0, autoReborrow: true }
+                    collateralAsset: 'BTS', type: 'creditOffer', outputWeight: 1, maxCollateralRatio: 2.0, autoReborrow: true }
                 ]
             }
         },
@@ -675,7 +675,7 @@ async function testCreditMaintenanceResistsAssignedBudgetUnderflow() {
             debtPolicy: {
                 lending: [
                     { asset: 'CNY',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: 1, maxCollateralRatio: 2.0, autoReborrow: true }
+                    collateralAsset: 'BTS', type: 'creditOffer', outputWeight: 1, maxCollateralRatio: 2.0, autoReborrow: true }
                 ]
             }
         },
@@ -743,7 +743,7 @@ async function testCreditAcceptUsesSpecificPolicy() {
             debtPolicy: {
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: 1, maxCollateralRatio: 5.0, maxFeeRatePerDay: 0.05, autoReborrow: true }
+                    collateralAsset: 'BTS', type: 'creditOffer', outputWeight: 1, maxCollateralRatio: 5.0, maxFeeRatePerDay: 0.05, autoReborrow: true }
                 ]
             }
         },
@@ -805,7 +805,7 @@ async function testCreditMaintenancePassesSpecificPolicy() {
             debtPolicy: {
                 lending: [
                     { asset: 'EUR',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: 1, maxCollateralRatio: 2.0, autoReborrow: true }
+                    collateralAsset: 'BTS', type: 'creditOffer', outputWeight: 1, maxCollateralRatio: 2.0, autoReborrow: true }
                 ]
             }
         },
@@ -868,9 +868,9 @@ async function testMpaDistributionWithDifferentFeedPrices() {
                 maxCollateralAmount: 10000,
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
                     { asset: 'CNY',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 }
+                    collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 }
                 ]
             }
         },
@@ -928,9 +928,9 @@ async function testCreditDistributionWithDiscoveredPrice() {
                 maxCollateralAmount: 10000,
                 lending: [
                     { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: 1, maxCollateralRatio: 2.0, allowedOfferIds: ['1.18.1'] },
+                    collateralAsset: 'BTS', type: 'creditOffer', outputWeight: 1, maxCollateralRatio: 2.0, allowedOfferIds: ['1.18.1'] },
                     { asset: 'CNY',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: 1, maxCollateralRatio: 2.0, allowedOfferIds: ['1.18.2'] }
+                    collateralAsset: 'BTS', type: 'creditOffer', outputWeight: 1, maxCollateralRatio: 2.0, allowedOfferIds: ['1.18.2'] }
                 ]
             }
         },
@@ -1014,8 +1014,8 @@ async function testCreditDistributionTreatsOfferPricingAsPairScoped() {
             debtPolicy: {
                 maxCollateralAmount: 10000,
                 lending: [
-                    { asset: 'USD', collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
-                    { asset: 'CNY', collateralAsset: 'BTS', type: 'creditOffer', ratio: 1, maxCollateralRatio: 2.0, allowedOfferIds: ['1.18.999'] }
+                    { asset: 'USD', collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
+                    { asset: 'CNY', collateralAsset: 'BTS', type: 'creditOffer', outputWeight: 1, maxCollateralRatio: 2.0, allowedOfferIds: ['1.18.999'] }
                 ]
             }
         },
@@ -1081,8 +1081,8 @@ async function testMpaDistributionUsesLastKnownFeedPrice() {
             debtPolicy: {
                 maxCollateralAmount: 10000,
                 lending: [
-                    { asset: 'USD', collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
-                    { asset: 'CNY', collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 3.0 }
+                    { asset: 'USD', collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
+                    { asset: 'CNY', collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 3.0 }
                 ]
             }
         },
@@ -1147,8 +1147,8 @@ async function testCreditDistributionUsesLastKnownOfferPrice() {
             debtPolicy: {
                 maxCollateralAmount: 10000,
                 lending: [
-                    { asset: 'USD', collateralAsset: 'BTS', type: 'mpa', ratio: 1, targetCollateralRatio: 2.0 },
-                    { asset: 'CNY', collateralAsset: 'BTS', type: 'creditOffer', ratio: 1, maxCollateralRatio: 2.0, maxFeeRatePerDay: 0.05, allowedOfferIds: ['1.18.2'] }
+                    { asset: 'USD', collateralAsset: 'BTS', type: 'mpa', outputWeight: 1, targetCollateralRatio: 2.0 },
+                    { asset: 'CNY', collateralAsset: 'BTS', type: 'creditOffer', outputWeight: 1, maxCollateralRatio: 2.0, maxFeeRatePerDay: 0.05, allowedOfferIds: ['1.18.2'] }
                 ]
             }
         },

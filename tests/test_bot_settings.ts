@@ -488,8 +488,8 @@ assert(
     'validateBotEntry should reject negative outputWeight'
 );
 
-// Test: deprecated ratio alone is accepted
-const deprecatedRatioAlone = {
+// Test: legacy ratio field is no longer supported and is rejected
+const removedRatio = {
     name: 'N2',
     assetA: 'BTS',
     assetB: 'USD',
@@ -503,14 +503,14 @@ const deprecatedRatioAlone = {
     },
 };
 
-assert.strictEqual(
-    validateBotEntry(deprecatedRatioAlone, 0, 'test'),
-    null,
-    'validateBotEntry should accept deprecated ratio alone'
+const removedRatioResult = validateBotEntry(removedRatio, 0, 'test');
+assert(
+    removedRatioResult !== null && removedRatioResult.includes('no longer supported'),
+    'validateBotEntry should reject legacy ratio field'
 );
 
-// Test: both ratio and outputWeight (same value) is accepted with deprecation
-const deprecationSameValue = {
+// Test: ratio + outputWeight is also rejected (ratio is fully removed)
+const removedRatioWithOutputWeight = {
     name: 'N3',
     assetA: 'BTS',
     assetB: 'USD',
@@ -524,92 +524,9 @@ const deprecationSameValue = {
     },
 };
 
-assert.strictEqual(
-    validateBotEntry(deprecationSameValue, 0, 'test'),
-    null,
-    'validateBotEntry should accept both ratio and outputWeight (same value)'
-);
-
-// Test: conflicting ratio and outputWeight is rejected
-const deprecationConflict = {
-    name: 'N4',
-    assetA: 'BTS',
-    assetB: 'USD',
-    activeOrders: { sell: 20, buy: 20 },
-    botFunds: { sell: '100%', buy: '100%' },
-    debtPolicy: {
-        lending: [
-            { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: 1, outputWeight: 3, maxCollateralRatio: 2.5 },
-        ],
-    },
-};
-
 assert(
-    validateBotEntry(deprecationConflict, 0, 'test').includes('conflicting'),
-    'validateBotEntry should reject conflicting ratio and outputWeight'
-);
-
-// Test: deprecated negative ratio is rejected
-const deprecatedNegativeRatio = {
-    name: 'N5',
-    assetA: 'BTS',
-    assetB: 'USD',
-    activeOrders: { sell: 20, buy: 20 },
-    botFunds: { sell: '100%', buy: '100%' },
-    debtPolicy: {
-        lending: [
-            { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'mpa', ratio: -5, maxCollateralRatio: 2.0 },
-        ],
-    },
-};
-
-assert(
-    validateBotEntry(deprecatedNegativeRatio, 0, 'test').includes('ratio must be a non-negative'),
-    'validateBotEntry should reject deprecated negative ratio'
-);
-
-// Test: ratio: 0 is accepted (non-negative includes zero)
-const deprecatedZeroRatio = {
-    name: 'N6',
-    assetA: 'BTS',
-    assetB: 'USD',
-    activeOrders: { sell: 20, buy: 20 },
-    botFunds: { sell: '100%', buy: '100%' },
-    debtPolicy: {
-        lending: [
-            { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: 0, maxCollateralRatio: 2.5 },
-        ],
-    },
-};
-
-assert.strictEqual(
-    validateBotEntry(deprecatedZeroRatio, 0, 'test'),
-    null,
-    'validateBotEntry should accept deprecated ratio: 0 (non-negative)'
-);
-
-// Test: negative ratio + valid outputWeight with different value reports conflict (not negative-value)
-const negativeRatioWithValidOutputWeight = {
-    name: 'N7',
-    assetA: 'BTS',
-    assetB: 'USD',
-    activeOrders: { sell: 20, buy: 20 },
-    botFunds: { sell: '100%', buy: '100%' },
-    debtPolicy: {
-        lending: [
-            { asset: 'USD',
-                    collateralAsset: 'BTS', type: 'creditOffer', ratio: -1, outputWeight: 1, maxCollateralRatio: 2.5 },
-        ],
-    },
-};
-
-const n7Result = validateBotEntry(negativeRatioWithValidOutputWeight, 0, 'test');
-assert(
-    n7Result !== null && n7Result.includes('conflicting'),
-    'validateBotEntry should reject negative ratio + different valid outputWeight as conflict'
+    validateBotEntry(removedRatioWithOutputWeight, 0, 'test').includes('no longer supported'),
+    'validateBotEntry should reject ratio even when outputWeight is present'
 );
 
 // Test: global maxCollateralAmount percentage is accepted

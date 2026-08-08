@@ -161,7 +161,7 @@ market volatility instead of using an unnecessarily wide range.
 
 Configuration options from `dexbot bot`, stored in `profiles/bots.json`:
 
-<details><summary>Full parameter reference (click to expand)</summary>
+<details><summary><mark>Full parameter reference (click to expand)</mark></summary>
 
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
@@ -188,7 +188,7 @@ Configuration options from `dexbot bot`, stored in `profiles/bots.json`:
 
 Global settings via `dexbot bot`, stored in `profiles/general.settings.json`:
 
-<details><summary>Global settings reference (click to expand)</summary>
+<details><summary><mark>Global settings reference (click to expand)</mark></summary>
 
 - **Grid Health**: Grid Ratio Regeneration % (default `3%`), RMS Divergence Threshold % (default `14.3%`), AMA Delta Threshold % (default `1%`)
 - **Order Recovery**: Partial Dust Threshold % (default `5%`), Dust Cancel Delay (default `30s`, `-1` = off, `0` = instant)

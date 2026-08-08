@@ -705,8 +705,6 @@ export interface DebtPolicy {
 export interface LendingEntryBase {
   asset: string;
   collateralAsset: string;
-  /** @deprecated Use `outputWeight` instead. */
-  ratio?: number;
   outputWeight?: number;
   maxBorrowAmount?: number;
   /** Max debt per single borrow operation (per-op cap, independent of

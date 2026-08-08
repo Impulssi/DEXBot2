@@ -182,7 +182,7 @@ async function main() {
           type: 'creditOffer',
           asset: debtAssetRef,
           collateralAsset: collateralAssetRef,
-          ratio: 1,
+          outputWeight: 1,
           maxBorrowAmount: 1,
           maxCollateralRatio: args.maxCollateralRatio || DEFAULT_MAX_COLLATERAL_RATIO,
           maxFeeRatePerDay: args.maxFeeRatePerDay,
