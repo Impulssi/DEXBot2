@@ -110,7 +110,7 @@
 import * as client from './bitshares_client';
 const { BitShares, createAccountClient, waitForConnected, withTimeout } = client;
 import { floatToBlockchainInt, blockchainToFloat, normalizeInt, validateOrderAmountsWithinLimits } from './order/utils/math';
-import { FILL_PROCESSING, TIMING, NATIVE_CLIENT } from './constants';
+import { FILL_PROCESSING, TIMING, NATIVE_CLIENT, DAEMON_CODES } from './constants';
 import * as Format from './order/format';
 import AsyncLock from './order/async_lock';
 import { readInput } from './order/utils/system';
@@ -490,7 +490,7 @@ async function executeViaDaemonToken(accountName: any, signingToken: any, operat
     if (healthyNodes.length > 0 && nodeManager && !opts.fallbackNodes && !opts.nodeUrl) {
         opts.nodeUrl = healthyNodes[0];
         opts.fallbackNodes = fallbackNodes;
-        opts.onNodeFailed = (nodeUrl: string) => nodeManager.reportNodeFailure(nodeUrl, 'BROADCAST_DEADLINE', 'broadcast');
+        opts.onNodeFailed = (nodeUrl: string) => nodeManager.reportNodeFailure(nodeUrl, DAEMON_CODES.BROADCAST_DEADLINE, 'broadcast');
     }
     return getKeyStore().executeOperations(accountName, operations, signingToken, opts);
 }
@@ -745,7 +745,7 @@ async function listenForFills(accountRef: any, callback: any) {
     }
 
     if (accountId) {
-        readOpenOrders(accountId, 30000, true).catch((error: any) => chainOrdersLogger.error(`Error loading account for listening: ${getErrorMessage(error)}`));
+        readOpenOrders(accountId, TIMING.CONNECTION_TIMEOUT_MS, true).catch((error: any) => chainOrdersLogger.error(`Error loading account for listening: ${getErrorMessage(error)}`));
     } else {
         chainOrdersLogger.warn('Unable to derive account id before listening for fills; skipping open-order prefetch.');
     }

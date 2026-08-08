@@ -66,7 +66,7 @@ const BUILTIN_DEFAULT_POLICY = Object.freeze({
         credit_deal_repay: null,
         credit_deal_update: null,
     }),
-    maxOpsPerBatch: 200,
+    maxOpsPerBatch: NATIVE_CLIENT.TRANSACTION.MAX_OPS_PER_TX,
     allowedAssetIds: null,
     executable: null,
 });
@@ -908,7 +908,7 @@ async function evaluatePolicy(policy: any, context: PolicyContext): Promise<{ al
 
         // Step 2: maxOpsPerBatch check
         {
-            const max = policy.maxOpsPerBatch || 200;
+            const max = policy.maxOpsPerBatch || NATIVE_CLIENT.TRANSACTION.MAX_OPS_PER_TX;
             if (context.operations.length > max) {
                 return {
                     allow: false,

@@ -8,7 +8,7 @@ import { getErrorMessage } from '../../utils/errors';
 
 const txCacheLogger = new Logger('TxCache');
 
-const { TX_BUILDER } = NATIVE_CLIENT;
+const { TX_BUILDER, RESOLVERS } = NATIVE_CLIENT;
 
 // Resolve fee cache TTL: env override > constants default
 function _resolveFeeCacheTtl(): number {
@@ -27,7 +27,7 @@ let _feeCache: any = null;
 
 function _ensureFeeCache(): any {
     if (!_feeCache) {
-        _feeCache = new LRUCache(1000, _resolveFeeCacheTtl());
+        _feeCache = new LRUCache(RESOLVERS.LRU_DEFAULT_SIZE, _resolveFeeCacheTtl());
     }
     return _feeCache;
 }

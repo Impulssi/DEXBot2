@@ -16,7 +16,7 @@ function createSubscriptionManager(chainClient: any): any {
     let unsubscribeNotice: any = null;
     const reconnectRetryDelayMs = Number.isFinite(SUBSCRIPTIONS.RECONNECT_RETRY_DELAY_MS)
         ? Math.max(1000, SUBSCRIPTIONS.RECONNECT_RETRY_DELAY_MS)
-        : 5000;
+        : SUBSCRIPTIONS.RECONNECT_RETRY_DELAY_MS;
     const noticeCoalesceMs = Number.isFinite(SUBSCRIPTIONS.NOTICE_COALESCE_MS)
         ? Math.max(0, SUBSCRIPTIONS.NOTICE_COALESCE_MS)
         : 0;
@@ -302,7 +302,7 @@ function createSubscriptionManager(chainClient: any): any {
             for (const item of data) {
                 if (!item || typeof item !== 'object') continue;
                 const id = item.id;
-                if (typeof id !== 'string' || !id.startsWith('1.11.')) continue;
+                if (typeof id !== 'string' || !id.startsWith(`${SUBSCRIPTIONS.OPERATION_HISTORY_PREFIX}.`)) continue;
                 const inst = parseObjectIdInstance(id);
                 if (Number.isFinite(inst) && inst > noticeMaxInstance) {
                     noticeMaxInstance = inst;
@@ -653,7 +653,7 @@ function createSubscriptionManager(chainClient: any): any {
 
         const intervalMs = Number.isFinite(SUBSCRIPTIONS.FILL_POLL_INTERVAL_MS)
             ? Math.max(10000, SUBSCRIPTIONS.FILL_POLL_INTERVAL_MS)
-            : 60000;
+            : SUBSCRIPTIONS.FILL_POLL_INTERVAL_MS;
 
         fillPollTimer = setInterval(async () => {
             if (fillPollInProgress) return;

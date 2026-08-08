@@ -201,7 +201,7 @@ async function maybeRunTargetedDriftReconciliation(bot: any, context: any) {
     const now = Date.now();
     const cooldownMs = Number.isFinite(Number(bot._targetedDriftSyncCooldownMs))
         ? Number(bot._targetedDriftSyncCooldownMs)
-        : 60_000;
+        : TIMING.TARGETED_DRIFT_SYNC_COOLDOWN_MS;
     const lastSyncAt = Number(bot._lastTargetedDriftSyncAt || 0);
     if (lastSyncAt > 0 && now - lastSyncAt < cooldownMs) {
         bot._log(
@@ -1350,7 +1350,7 @@ function isOrderDoesNotExistError(message: any, orderId: any) {
 function getMaintenanceIdleDelayMs(ctx: any) {
     const settleDelayMs = Number.isFinite(TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
         ? Math.max(0, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
-        : 6_000;
+        : TIMING.BLOCKCHAIN_SETTLE_DELAY_MS;
     if (settleDelayMs <= 0) return 0;
 
     if (ctx?._incomingFillQueue?.length > 0) return settleDelayMs;
@@ -1409,7 +1409,7 @@ function scheduleDeferredGridResync(ctx: any, options: any = {}) {
     const triggerFileWasPresent = !!(ctx.triggerFile && storage.exists(ctx.triggerFile));
     const settleDelayMs = Number.isFinite(TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
         ? Math.max(0, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
-        : 6_000;
+        : TIMING.BLOCKCHAIN_SETTLE_DELAY_MS;
     const delayMs = idleDelayMs + settleDelayMs;
     if (!(delayMs > 0)) return;
 

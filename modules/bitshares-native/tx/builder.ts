@@ -7,7 +7,7 @@ import * as txCache from './tx_cache';
 import { getErrorMessage } from '../../utils/errors';
 'use strict';
 
-const { TRANSACTION, CHAIN } = NATIVE_CLIENT;
+const { TRANSACTION, CHAIN, OPERATIONS } = NATIVE_CLIENT;
 const { sha256, sign } = getEcc();
 const builderLogger = new Logger('TxBuilder');
 
@@ -19,17 +19,17 @@ const DEFAULT_FEE_ASSET: string = CHAIN.CORE_ASSET_ID;
 const GRAPHENE_CHAIN_ID: string = CHAIN.CHAIN_ID;
 
 const OP_TYPE_IDS: Record<string, number> = {
-    transfer: 0,
-    limit_order_create: 1,
-    limit_order_cancel: 2,
-    call_order_update: 3,
-    fill_order: 4,
-    asset_settle: 17,
-    credit_offer_accept: 72,
-    credit_deal_repay: 73,
-    credit_deal_update: 76,
-    limit_order_update: 77,
-    liquidity_pool_exchange: 63,
+    transfer: OPERATIONS.TRANSFER,
+    limit_order_create: OPERATIONS.LIMIT_ORDER_CREATE,
+    limit_order_cancel: OPERATIONS.LIMIT_ORDER_CANCEL,
+    call_order_update: OPERATIONS.CALL_ORDER_UPDATE,
+    fill_order: OPERATIONS.FILL_ORDER,
+    asset_settle: OPERATIONS.ASSET_SETTLE,
+    credit_offer_accept: OPERATIONS.CREDIT_OFFER_ACCEPT,
+    credit_deal_repay: OPERATIONS.CREDIT_DEAL_REPAY,
+    credit_deal_update: OPERATIONS.CREDIT_DEAL_UPDATE,
+    limit_order_update: OPERATIONS.LIMIT_ORDER_UPDATE,
+    liquidity_pool_exchange: OPERATIONS.LIQUIDITY_POOL_EXCHANGE,
 };
 
 class TransactionTooLargeError extends Error {

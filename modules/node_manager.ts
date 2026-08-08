@@ -121,7 +121,7 @@ class NodeManager {
                 enabled: config.healthCheck?.enabled ?? true
             },
             selection: {
-                strategy: config.selection?.strategy || 'latency',
+                strategy: config.selection?.strategy || NODE_MANAGEMENT.SELECTION_STRATEGY,
                 preferredNode: config.selection?.preferredNode || null
             }
         };

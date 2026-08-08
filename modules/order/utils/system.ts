@@ -50,7 +50,7 @@
 import { path } from '../../path_api';
 import { getStorage } from '../../storage';
 const storage = getStorage();
-import { API_LIMITS, ORDER_TYPES, COW_ACTIONS, FEE_PARAMETERS, BTS_PRECISION, PIPELINE_TIMING } from '../../constants';
+import { API_LIMITS, ORDER_TYPES, COW_ACTIONS, FEE_PARAMETERS, BTS_PRECISION, PIPELINE_TIMING, NATIVE_CLIENT } from '../../constants';
 import { PATHS } from '../../paths';
 import { toFiniteNumber, isValidNumber } from '../format';
 import * as MathUtils from './math';
@@ -658,13 +658,13 @@ export async function initializeFeeCache(botsConfig: any[], BitShares: any): Pro
                     };
                     const makerFeeDiscountRaw = toFiniteNumber(
                         globalProps?.parameters?.extensions?.maker_fee_discount_percent,
-                        FEE_PARAMETERS.MAKER_REFUND_PERCENT * 10000
+                        FEE_PARAMETERS.MAKER_REFUND_PERCENT * NATIVE_CLIENT.CHAIN.PERCENT_100
                     );
                     cache.BTS = {
-                        limitOrderCreate: findFee(1),
-                        limitOrderCancel: findFee(2),
-                        limitOrderUpdate: findFee(77),
-                        makerFeeDiscountPercent: Math.max(0, makerFeeDiscountRaw) / 10000
+                        limitOrderCreate: findFee(NATIVE_CLIENT.OPERATIONS.LIMIT_ORDER_CREATE),
+                        limitOrderCancel: findFee(NATIVE_CLIENT.OPERATIONS.LIMIT_ORDER_CANCEL),
+                        limitOrderUpdate: findFee(NATIVE_CLIENT.OPERATIONS.LIMIT_ORDER_UPDATE),
+                        makerFeeDiscountPercent: Math.max(0, makerFeeDiscountRaw) / NATIVE_CLIENT.CHAIN.PERCENT_100
                     };
                 } else {
                     const fullAsset = await lookupAsset(BitShares, assetSymbol);

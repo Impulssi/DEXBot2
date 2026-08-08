@@ -541,9 +541,9 @@ async function askNumberWithBounds(promptText: string, defaultValue?: any, minVa
  * @param {number} minSpreadFactor - The minimum spread factor from GRID_LIMITS.
  * @returns {Promise<number|string>} The spread percentage or '\x1b' if ESC.
  */
-async function askTargetSpreadPercent(promptText: string, defaultValue?: any, incrementPercent: number = 0, minSpreadFactor: number = 2.1): Promise<any> {
+async function askTargetSpreadPercent(promptText: string, defaultValue?: any, incrementPercent: number = 0, minSpreadFactor: number = GRID_LIMITS.MIN_SPREAD_FACTOR): Promise<any> {
     const safeIncrement = Number.isFinite(incrementPercent) ? incrementPercent : 0;
-    const safeMinSpreadFactor = Number.isFinite(minSpreadFactor) ? minSpreadFactor : 2.1;
+    const safeMinSpreadFactor = Number.isFinite(minSpreadFactor) ? minSpreadFactor : GRID_LIMITS.MIN_SPREAD_FACTOR;
     const minRequired = safeIncrement * safeMinSpreadFactor;
     const minRequiredLabel = minRequired.toFixed(6);
     const effectiveDefault = Number.isFinite(defaultValue) ? Math.max(defaultValue, minRequired) : defaultValue;
@@ -926,7 +926,7 @@ async function promptBotData(base = {}) {
                 if (wSell === '\x1b') break;
                 const wBuy = await askWeightDistributionNoLegend('Weight distribution (buy)', data.weightDistribution.buy);
                 if (wBuy === '\x1b') break;
-                const incrP = await askNumberWithBounds('incrementPercent', data.incrementPercent, 0.01, 10);
+                const incrP = await askNumberWithBounds('incrementPercent', data.incrementPercent, INCREMENT_BOUNDS.MIN_PERCENT, INCREMENT_BOUNDS.MAX_PERCENT);
                 if (incrP === '\x1b') break;
                 const defaultSpread = data.targetSpreadPercent || incrP * 4;
 
@@ -966,7 +966,7 @@ async function promptBotData(base = {}) {
                     const currentSettings = loadGeneralSettings();
                     const spreadFactor = Number.isFinite(currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR)
                         ? currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR
-                        : 2.1;
+                        : GRID_LIMITS.MIN_SPREAD_FACTOR;
                     const minRequiredSpread = data.incrementPercent * spreadFactor;
                     if (data.targetSpreadPercent + Number.EPSILON < minRequiredSpread) {
                         console.log(`\x1b[38;5;160mError: targetSpreadPercent (${data.targetSpreadPercent}) must be >= ${spreadFactor}x incrementPercent (${minRequiredSpread.toFixed(6)}).\x1b[0m`);

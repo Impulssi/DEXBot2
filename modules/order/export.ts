@@ -107,7 +107,7 @@ function parseFillLine(line: string): FillEntry | null {
     if (!fillMatch) return null;
 
     return {
-        timestamp: new Date(fillMatch[1]).getTime() / 1000,  // Unix timestamp in seconds
+        timestamp: new Date(fillMatch[1]).getTime() / TIMING.MILLISECONDS_PER_SECOND,  // Unix timestamp in seconds
         side: fillMatch[2],                                   // 'buy' or 'sell'
         amount: parseFloat(fillMatch[3]),                     // Size in base asset
         price: parseFloat(fillMatch[4]),                      // Execution price

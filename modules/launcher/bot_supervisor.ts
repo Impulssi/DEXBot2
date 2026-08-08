@@ -77,9 +77,9 @@ function buildSupervisedApps(bots: any, updaterActive: any) {
             max_memory_restart: '250M',
             error_file: path.join(PATHS.LOGS_DIR, `${botName}-error.log`),
             out_file: path.join(PATHS.LOGS_DIR, `${botName}.log`),
-            max_restarts: 13,
-            min_uptime: 86400000,
-            restart_delay: 3000,
+            max_restarts: MAX_RESTARTS,
+            min_uptime: MIN_UPTIME_MS,
+            restart_delay: RESTART_DELAY_MS,
         };
     });
 
@@ -92,9 +92,9 @@ function buildSupervisedApps(bots: any, updaterActive: any) {
             max_memory_restart: '150M',
             error_file: path.join(PATHS.LOGS_DIR, 'dexbot-adapter-error.log'),
             out_file: path.join(PATHS.LOGS_DIR, 'dexbot-adapter.log'),
-            max_restarts: 13,
+            max_restarts: MAX_RESTARTS,
             min_uptime: 60000,
-            restart_delay: 3000,
+            restart_delay: RESTART_DELAY_MS,
         });
     }
 

@@ -410,7 +410,7 @@ async function processFillsWithBootstrapMode(bot: any, chainOrders: any) {
     let requiresOpenOrdersSync = false;
 
     for (const fill of fills) {
-        if (!fill || fill.op?.[0] !== 4) continue;
+        if (!fill || fill.op?.[0] !== FILL_PROCESSING.OPERATION_TYPE) continue;
 
         const fillOp = fill.op[1];
         const gridOrder = bot.manager.orders.get(fillOp.order_id) ||
@@ -665,7 +665,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
 
                 const processValidFills = async (fillsToSync: any) => {
                     let resolvedOrders: any[] = [];
-                    if (fillMode === 'history') {
+                    if (fillMode === FILL_PROCESSING.MODE) {
                         bot.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (history mode)`, 'info');
 
                         if (fillsToSync.length >= 2) {
@@ -716,8 +716,8 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                         }
                     }
 
-                    if (fillMode !== 'history' || requiresOpenOrdersSync) {
-                        if (fillMode === 'history' && requiresOpenOrdersSync) {
+                    if (fillMode !== FILL_PROCESSING.MODE || requiresOpenOrdersSync) {
+                        if (fillMode === FILL_PROCESSING.MODE && requiresOpenOrdersSync) {
                             bot.manager.logger.log(
                                 'Falling back to open-orders sync for fill(s) missing replay-safe history identifiers',
                                 'warn'

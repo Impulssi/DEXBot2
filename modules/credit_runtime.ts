@@ -9,7 +9,7 @@ import { toFiniteNumber } from './order/format';
 import { createBotKey } from './account_orders';
 import * as fundRegistry from './fund_registry';
 import { writeJsonFileAtomic } from './bots_file_lock';
-import { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING } from './constants';
+import { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING, NATIVE_CLIENT } from './constants';
 import { roundToDecimals } from './order/utils/math';
 import { PATHS } from './paths';
 import { readJSON } from './utils/fs_utils';
@@ -26,8 +26,8 @@ import {
 } from './cr_planner';
 import { getErrorMessage } from './utils/errors';
 
-const CREDIT_FEE_RATE_DENOM = 1_000_000;
-const ZERO_ASSET_ID = '1.3.0';
+const CREDIT_FEE_RATE_DENOM = FEE_PARAMETERS.GRAPHENE_FEE_RATE_DENOM;
+const ZERO_ASSET_ID = NATIVE_CLIENT.CHAIN.CORE_ASSET_ID;
 const DEFAULT_STATE_DIR = PATHS.CREDIT_RUNTIME_DIR;
 const GRAPHENE_COLLATERAL_RATIO_DENOM = FEE_PARAMETERS.GRAPHENE_COLLATERAL_RATIO_DENOM;
 
