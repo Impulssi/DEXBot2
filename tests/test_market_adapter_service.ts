@@ -476,7 +476,7 @@ async function testNumericStartPriceSkipsAllMarketFetches() {
         kibanaMarketSource: {
             getMarketCandles: async () => {
                 bookCalls += 1;
-                throw new Error('orderbook fetch should not run for fixed startPrice bots');
+                throw new Error('book fetch should not run for fixed startPrice bots');
             },
         },
         root: process.cwd(),
@@ -510,14 +510,14 @@ async function testNumericStartPriceSkipsAllMarketFetches() {
     assert.strictEqual(result.source, 'fixed-start-price', 'fixed startPrice should use the fixed-price source label');
     assert.strictEqual(resolveCalls, 0, 'resolveBotContext should not run for fixed startPrice bots');
     assert.strictEqual(poolCalls, 0, 'LP fetch should be skipped for fixed startPrice bots');
-    assert.strictEqual(bookCalls, 0, 'orderbook fetch should be skipped for fixed startPrice bots');
+    assert.strictEqual(bookCalls, 0, 'book fetch should be skipped for fixed startPrice bots');
     assert.strictEqual(saveCalls, 0, 'no candle file should be written for fixed startPrice bots');
     assert.strictEqual((state.bots['fixed-start-price'] as any).priceMode, 'fixed', 'state should record fixed-price mode');
     assert.strictEqual((state.bots['fixed-start-price'] as any).candleFile, null, 'fixed-price state should clear any previous candle file reference');
     assert.strictEqual((state.bots['fixed-start-price'] as any).centerPrice, null, 'fixed-price state should clear any previous market center');
 }
 
-async function testOrderbookNativeFetchUsesBitsharesHistory() {
+async function testBookNativeFetchUsesBitsharesHistory() {
     let savedPayload = null;
     let nativeCalls = 0;
     let kibanaCalls = 0;
@@ -566,12 +566,12 @@ async function testOrderbookNativeFetchUsesBitsharesHistory() {
         kibanaMarketSource: {
             getMarketCandles: async () => {
                 kibanaCalls += 1;
-                throw new Error('orderbook Kibana fetch should not run when native history is available');
+                throw new Error('book Kibana fetch should not run when native history is available');
             },
         },
         kibanaSource: {
             getLpCandlesForPool: async () => {
-                throw new Error('LP fetch should not run for orderbook bots');
+                throw new Error('LP fetch should not run for book bots');
             },
         },
         fetchNativeTradesSince: async () => ({ trades: [], truncated: false, pages: 1 }),
@@ -622,15 +622,15 @@ async function testOrderbookNativeFetchUsesBitsharesHistory() {
 
     const result = await service.processBot(bot, state, cfg, new Map(), {});
 
-    assert.strictEqual(result.ok, true, 'processBot should succeed for orderbook bots');
-    assert.strictEqual(nativeCalls, 1, 'orderbook mode should use native BitShares history');
-    assert.strictEqual(kibanaCalls, 0, 'orderbook mode should not hit Kibana when native history returns data');
-    assert.strictEqual(result.source, 'native-book-history', 'orderbook mode should label native history updates');
+    assert.strictEqual(result.ok, true, 'processBot should succeed for book bots');
+    assert.strictEqual(nativeCalls, 1, 'book mode should use native BitShares history');
+    assert.strictEqual(kibanaCalls, 0, 'book mode should not hit Kibana when native history returns data');
+    assert.strictEqual(result.source, 'native-book-history', 'book mode should label native history updates');
     assert.ok(savedPayload?.candles?.length >= 3, 'native merge should retain the prior candle and add new history');
-    assert.strictEqual(savedPayload.meta.marketSource, 'book', 'saved payload should mark the bot as orderbook sourced');
+    assert.strictEqual(savedPayload.meta.marketSource, 'book', 'saved payload should mark the bot as book sourced');
 }
 
-async function testOrderbookIncrementalFillsVerifiedLongSilence() {
+async function testBookIncrementalFillsVerifiedLongSilence() {
     let savedPayload = null;
     let silenceVerificationCalls = 0;
     let kibanaCalls = 0;
@@ -676,7 +676,7 @@ async function testOrderbookIncrementalFillsVerifiedLongSilence() {
         },
         kibanaSource: {
             getLpCandlesForPool: async () => {
-                throw new Error('LP fetch should not run for orderbook silence verification');
+                throw new Error('LP fetch should not run for book silence verification');
             },
         },
         fillCandleGaps,
@@ -714,20 +714,20 @@ async function testOrderbookIncrementalFillsVerifiedLongSilence() {
         maxNativeGapFillCandles: MARKET_ADAPTER.STALE_TAIL_THRESHOLD_CANDLES,
     }, new Map(), {});
 
-    assert.strictEqual(result.ok, true, 'orderbook processBot should complete after verified long silence');
-    assert.ok(kibanaCalls >= 1, 'orderbook flow should use orderbook Kibana candles');
-    assert.strictEqual(silenceVerificationCalls, 1, 'orderbook verified silence query should cover the missing closed buckets once');
-    assert.strictEqual(savedPayload.meta.marketSource, 'book', 'saved payload should remain orderbook sourced');
-    assert.ok(savedPayload.candles.length >= 38, 'orderbook verified silence should preserve enough continuous flat candles');
-    assert.strictEqual(savedPayload.candles[savedPayload.candles.length - 1][0], baseTs + (37 * hour), 'orderbook verified silence should extend through the latest closed bucket');
-    assert.strictEqual(savedPayload.candles[savedPayload.candles.length - 1][4], 100, 'orderbook verified silence should carry the prior close');
-    assert.strictEqual(savedPayload.meta.staleTailVerifiedStartTs, baseTs + hour, 'orderbook verified silence start should be saved');
-    assert.strictEqual(savedPayload.meta.staleTailVerifiedEndTs, baseTs + (37 * hour), 'orderbook verified silence end should be saved');
-    assert.strictEqual(result.staleData, false, 'orderbook verified silence should not look like stale data');
-    assert.ok(logs.some((entry) => entry.level === 'info' && entry.message.includes('verified no trades')), 'orderbook verified silence should be logged');
+    assert.strictEqual(result.ok, true, 'book processBot should complete after verified long silence');
+    assert.ok(kibanaCalls >= 1, 'book flow should use book Kibana candles');
+    assert.strictEqual(silenceVerificationCalls, 1, 'book verified silence query should cover the missing closed buckets once');
+    assert.strictEqual(savedPayload.meta.marketSource, 'book', 'saved payload should remain book sourced');
+    assert.ok(savedPayload.candles.length >= 38, 'book verified silence should preserve enough continuous flat candles');
+    assert.strictEqual(savedPayload.candles[savedPayload.candles.length - 1][0], baseTs + (37 * hour), 'book verified silence should extend through the latest closed bucket');
+    assert.strictEqual(savedPayload.candles[savedPayload.candles.length - 1][4], 100, 'book verified silence should carry the prior close');
+    assert.strictEqual(savedPayload.meta.staleTailVerifiedStartTs, baseTs + hour, 'book verified silence start should be saved');
+    assert.strictEqual(savedPayload.meta.staleTailVerifiedEndTs, baseTs + (37 * hour), 'book verified silence end should be saved');
+    assert.strictEqual(result.staleData, false, 'book verified silence should not look like stale data');
+    assert.ok(logs.some((entry) => entry.level === 'info' && entry.message.includes('verified no trades')), 'book verified silence should be logged');
 }
 
-async function testOrderbookIncrementalFillsBoundedNoTradeSilence() {
+async function testBookIncrementalFillsBoundedNoTradeSilence() {
     let savedPayload = null;
     let kibanaCalls = 0;
     const baseTs = Date.parse('2026-04-28T00:00:00Z');
@@ -762,12 +762,12 @@ async function testOrderbookIncrementalFillsBoundedNoTradeSilence() {
         kibanaMarketSource: {
             getMarketCandles: async () => {
                 kibanaCalls += 1;
-                throw new Error('bounded orderbook silence should not require Kibana verification');
+                throw new Error('bounded book silence should not require Kibana verification');
             },
         },
         kibanaSource: {
             getLpCandlesForPool: async () => {
-                throw new Error('LP fetch should not run for orderbook bots');
+                throw new Error('LP fetch should not run for book bots');
             },
         },
         fillCandleGaps,
@@ -802,17 +802,17 @@ async function testOrderbookIncrementalFillsBoundedNoTradeSilence() {
         maxNativeGapFillCandles: MARKET_ADAPTER.STALE_TAIL_THRESHOLD_CANDLES,
     }, new Map(), {});
 
-    assert.strictEqual(result.ok, true, 'orderbook processBot should complete after bounded no-trade silence');
-    assert.strictEqual(kibanaCalls, 0, 'bounded orderbook silence should not call Kibana');
-    assert.strictEqual(savedPayload.meta.marketSource, 'book', 'saved payload should remain orderbook sourced');
-    assert.strictEqual(savedPayload.candles.length, 94, 'bounded orderbook silence should be materialized as flat closed candles');
-    assert.strictEqual(savedPayload.candles[93][0], baseTs + (4 * hour), 'bounded orderbook silence should extend through the latest closed bucket');
-    assert.strictEqual(savedPayload.candles[93][4], 100, 'bounded orderbook silence should carry the prior close');
+    assert.strictEqual(result.ok, true, 'book processBot should complete after bounded no-trade silence');
+    assert.strictEqual(kibanaCalls, 0, 'bounded book silence should not call Kibana');
+    assert.strictEqual(savedPayload.meta.marketSource, 'book', 'saved payload should remain book sourced');
+    assert.strictEqual(savedPayload.candles.length, 94, 'bounded book silence should be materialized as flat closed candles');
+    assert.strictEqual(savedPayload.candles[93][0], baseTs + (4 * hour), 'bounded book silence should extend through the latest closed bucket');
+    assert.strictEqual(savedPayload.candles[93][4], 100, 'bounded book silence should carry the prior close');
     assert.strictEqual(result.triggerSuppressedReason, null, 'bounded silence should pass the closed-candle gate');
-    assert.strictEqual(result.unresolvedGapCount, 0, 'bounded orderbook silence should not leave unresolved gaps');
+    assert.strictEqual(result.unresolvedGapCount, 0, 'bounded book silence should not leave unresolved gaps');
 }
 
-async function testOrderbookIncrementalFillsVerifiedLongSilenceBeforeLaterNativeActivity() {
+async function testBookIncrementalFillsVerifiedLongSilenceBeforeLaterNativeActivity() {
     let savedPayload = null;
     let kibanaCalls = 0;
     const baseTs = Date.parse('2026-04-28T00:00:00Z');
@@ -853,14 +853,14 @@ async function testOrderbookIncrementalFillsVerifiedLongSilenceBeforeLaterNative
                         gte: new Date(baseTs + hour).toISOString(),
                         lte: new Date(baseTs + (49 * hour)).toISOString(),
                     },
-                    'orderbook silence verification should stop before the first later native candle'
+                    'book silence verification should stop before the first later native candle'
                 );
                 return [];
             },
         },
         kibanaSource: {
             getLpCandlesForPool: async () => {
-                throw new Error('LP fetch should not run for orderbook silence verification');
+                throw new Error('LP fetch should not run for book silence verification');
             },
         },
         fillCandleGaps,
@@ -895,16 +895,16 @@ async function testOrderbookIncrementalFillsVerifiedLongSilenceBeforeLaterNative
         maxNativeGapFillCandles: MARKET_ADAPTER.STALE_TAIL_THRESHOLD_CANDLES,
     }, new Map(), {});
 
-    assert.strictEqual(result.ok, true, 'orderbook processBot should complete when later native activity follows verified silence');
-    assert.strictEqual(kibanaCalls, 1, 'orderbook mixed silence verification should call Kibana once');
-    assert.strictEqual(savedPayload.candles.length, 70, 'orderbook mixed silence should remain a continuous hourly series');
-    assert.strictEqual(savedPayload.candles[49][4], 100, 'orderbook verified pre-activity silence should keep the prior close');
-    assert.strictEqual(savedPayload.candles[50][4], 120, 'orderbook later native activity should remain a real candle');
-    assert.strictEqual(savedPayload.candles[69][4], 120, 'orderbook bounded post-activity silence should be filled from the later native close');
-    assert.strictEqual(result.unresolvedGapCount, 0, 'orderbook mixed silence should not leave unresolved gaps');
+    assert.strictEqual(result.ok, true, 'book processBot should complete when later native activity follows verified silence');
+    assert.strictEqual(kibanaCalls, 1, 'book mixed silence verification should call Kibana once');
+    assert.strictEqual(savedPayload.candles.length, 70, 'book mixed silence should remain a continuous hourly series');
+    assert.strictEqual(savedPayload.candles[49][4], 100, 'book verified pre-activity silence should keep the prior close');
+    assert.strictEqual(savedPayload.candles[50][4], 120, 'book later native activity should remain a real candle');
+    assert.strictEqual(savedPayload.candles[69][4], 120, 'book bounded post-activity silence should be filled from the later native close');
+    assert.strictEqual(result.unresolvedGapCount, 0, 'book mixed silence should not leave unresolved gaps');
 }
 
-async function testOrderbookIncrementalIgnoresNativeOverlapWhenVerifyingSilenceBeforeActivity() {
+async function testBookIncrementalIgnoresNativeOverlapWhenVerifyingSilenceBeforeActivity() {
     let savedPayload = null;
     let kibanaCalls = 0;
     const baseTs = Date.parse('2026-04-28T00:00:00Z');
@@ -946,14 +946,14 @@ async function testOrderbookIncrementalIgnoresNativeOverlapWhenVerifyingSilenceB
                         gte: new Date(baseTs + hour).toISOString(),
                         lte: new Date(baseTs + (49 * hour)).toISOString(),
                     },
-                    'orderbook silence verification should ignore overlap candles and stop before later activity'
+                    'book silence verification should ignore overlap candles and stop before later activity'
                 );
                 return [];
             },
         },
         kibanaSource: {
             getLpCandlesForPool: async () => {
-                throw new Error('LP fetch should not run for orderbook silence verification');
+                throw new Error('LP fetch should not run for book silence verification');
             },
         },
         fillCandleGaps,
@@ -988,14 +988,14 @@ async function testOrderbookIncrementalIgnoresNativeOverlapWhenVerifyingSilenceB
         maxNativeGapFillCandles: MARKET_ADAPTER.STALE_TAIL_THRESHOLD_CANDLES,
     }, new Map(), {});
 
-    assert.strictEqual(result.ok, true, 'orderbook processBot should complete when native history includes overlap plus later activity');
-    assert.strictEqual(kibanaCalls, 1, 'orderbook overlap scenario should verify the long silence once');
-    assert.strictEqual(savedPayload.candles.length, 70, 'orderbook overlap scenario should remain a continuous hourly series');
+    assert.strictEqual(result.ok, true, 'book processBot should complete when native history includes overlap plus later activity');
+    assert.strictEqual(kibanaCalls, 1, 'book overlap scenario should verify the long silence once');
+    assert.strictEqual(savedPayload.candles.length, 70, 'book overlap scenario should remain a continuous hourly series');
     assert.strictEqual(savedPayload.candles[49][4], 100, 'verified pre-activity silence should keep the prior close');
     assert.strictEqual(savedPayload.candles[50][4], 120, 'later native activity should remain a real candle');
     assert.strictEqual(savedPayload.meta.staleTailVerifiedStartTs, null, 'post-activity bounded fill should not be marked as verified long silence');
     assert.strictEqual(savedPayload.meta.staleTailVerifiedEndTs, null, 'verified silence metadata should not extend across later native activity');
-    assert.strictEqual(result.unresolvedGapCount, 0, 'orderbook overlap mixed silence should not leave unresolved gaps');
+    assert.strictEqual(result.unresolvedGapCount, 0, 'book overlap mixed silence should not leave unresolved gaps');
 }
 
 async function testAmaWithFlatCandlesComputesValidPrice() {
@@ -6051,11 +6051,11 @@ async function testNewerDynamicGridResetCenterOverridesStaleAdapterState() {
 async function run() {
     await testTriggerHookCalledOnThreshold();
     await testNumericStartPriceSkipsAllMarketFetches();
-    await testOrderbookNativeFetchUsesBitsharesHistory();
-    await testOrderbookIncrementalFillsVerifiedLongSilence();
-    await testOrderbookIncrementalFillsBoundedNoTradeSilence();
-    await testOrderbookIncrementalFillsVerifiedLongSilenceBeforeLaterNativeActivity();
-    await testOrderbookIncrementalIgnoresNativeOverlapWhenVerifyingSilenceBeforeActivity();
+    await testBookNativeFetchUsesBitsharesHistory();
+    await testBookIncrementalFillsVerifiedLongSilence();
+    await testBookIncrementalFillsBoundedNoTradeSilence();
+    await testBookIncrementalFillsVerifiedLongSilenceBeforeLaterNativeActivity();
+    await testBookIncrementalIgnoresNativeOverlapWhenVerifyingSilenceBeforeActivity();
     await testAmaWithFlatCandlesComputesValidPrice();
     await testKibanaBackfillFillsHistoricalShortfall();
     await testRestartBackfillsOldAma3WindowBeforeWaitingForNextClosedCandle();

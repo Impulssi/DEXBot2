@@ -333,7 +333,7 @@ async function testMarketSourceResolution() {
 
     assert.strictEqual(resolveMarketSourceForBot({ startPrice: 'pool' }), 'pool', 'pool startPrice should map to pool source');
     assert.strictEqual(resolveMarketSourceForBot({ startPrice: 'book' }), 'book', 'book startPrice should map to book source');
-    assert.strictEqual(resolveMarketSourceForBot({ startPrice: 'orderbook' }), 'book', 'orderbook alias should map to book source');
+    assert.strictEqual(resolveMarketSourceForBot({ startPrice: 'orderbook' }), 'pool', 'orderbook alias should fall back to pool source');
     assert.strictEqual(
         resolveMarketSourceForBot({ startPrice: 'pool', marketSource: 'book' }),
         'pool',

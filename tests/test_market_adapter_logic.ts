@@ -16,7 +16,7 @@ const {
     normalizeNativeMarketHistoryCandles,
     fetchNativeMarketHistorySince,
     usesAmaGridPrice,
-    usesOrderbookMarketSource,
+    usesBookMarketSource,
     applyRuntimeDefaultsFromGeneralSettings,
     _setBitsharesClientForTests,
 } = require('../market_adapter/market_adapter');
@@ -294,20 +294,20 @@ assert.strictEqual(usesAmaGridPrice({ gridPrice: null }), false, 'missing gridPr
 
 assert.strictEqual(normalizeMarketSource('pool'), 'pool', 'pool should normalize to pool');
 assert.strictEqual(normalizeMarketSource('book'), 'book', 'book should stay book');
-assert.strictEqual(normalizeMarketSource('orderbook'), 'book', 'orderbook should normalize to book');
-assert.strictEqual(normalizeMarketSource('market'), 'book', 'legacy market should normalize to book');
+assert.strictEqual(normalizeMarketSource('orderbook'), null, 'orderbook should no longer normalize to book');
+assert.strictEqual(normalizeMarketSource('market'), null, 'market should no longer normalize to book');
 assert.strictEqual(normalizeMarketSource('anything-else'), null, 'unknown source should normalize to null');
 
 assert.strictEqual(resolveMarketSourceForBot({ startPrice: 'pool' }), 'pool', 'startPrice=pool should select pool mode');
-assert.strictEqual(resolveMarketSourceForBot({ startPrice: 'book' }), 'book', 'startPrice=book should select orderbook mode');
-assert.strictEqual(resolveMarketSourceForBot({ startPrice: 'orderbook' }), 'book', 'startPrice=orderbook should normalize to book mode');
+assert.strictEqual(resolveMarketSourceForBot({ startPrice: 'book' }), 'book', 'startPrice=book should select book mode');
+assert.strictEqual(resolveMarketSourceForBot({ startPrice: 'orderbook' }), 'pool', 'startPrice=orderbook should fall back to pool source');
 assert.strictEqual(
     resolveMarketSourceForBot({ startPrice: 'book', marketSource: 'pool' }),
     'book',
     'marketSource should not override startPrice for the market adapter'
 );
 assert.strictEqual(resolveMarketSourceForBot({ startPrice: 1.2345 }), null, 'numeric startPrice should disable market-source selection');
-assert.strictEqual(usesOrderbookMarketSource({ startPrice: 'book' }), true, 'book startPrice should enable orderbook mode');
+assert.strictEqual(usesBookMarketSource({ startPrice: 'book' }), true, 'book startPrice should enable book mode');
 
 {
     const candles = normalizeNativeMarketHistoryCandles([{

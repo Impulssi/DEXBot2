@@ -148,7 +148,7 @@ function isSamePairIds(aId: any, bId: any, targetAId: any, targetBId: any) {
 function normalizeMarketSource(raw: any) {
     const value = String(raw || '').trim().toLowerCase();
     if (value === 'pool') return 'pool';
-    if (value === 'book' || value === 'orderbook' || value === 'market') return 'book';
+    if (value === 'book') return 'book';
     return null;
 }
 

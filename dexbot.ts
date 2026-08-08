@@ -613,7 +613,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                 console.error(startupError(`Failed to start bot: ${getErrorMessage(err)}`));
                 if (err && getErrorMessage(err) && String(getErrorMessage(err)).toLowerCase().includes('marketprice')) {
                     console.info('Hint: startPrice could not be derived.');
-                    console.info(' - If using profiles/bots.json with "pool" or "book" signals, ensure the chain contains a matching liquidity pool or orderbook for the configured pair.');
+                    console.info(' - If using profiles/bots.json with "pool" or "book" signals, ensure the chain contains a matching liquidity pool or order book for the configured pair.');
                     console.info(' - Alternatively, set a numeric `startPrice` directly in profiles/bots.json for this bot to avoid auto-derive.');
                     console.info(' - You can also set LIVE_BOT_NAME or BOT_NAME to select a different bot from the profiles settings.');
                 }

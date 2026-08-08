@@ -1050,7 +1050,7 @@ class MarketAdapterService {
             };
             if (isBookSource) {
                 if (!deps.kibanaMarketSource || typeof deps.kibanaMarketSource.getMarketCandles !== 'function') {
-                    throw new Error('orderbook candle source unavailable');
+                    throw new Error('order book candle source unavailable');
                 }
                 return deps.kibanaMarketSource.getMarketCandles(ctx.assetA, ctx.assetB, kibanaOptions);
             }
@@ -1314,9 +1314,9 @@ class MarketAdapterService {
                             consolidateByTimestamp: true,
                             fillGapsToRequestedRange: false,
                             apiKey: null,
-                        }), cfg.sourceRetries, cfg.retryDelayMs, 'kibana orderbook bootstrap failed');
+                        }), cfg.sourceRetries, cfg.retryDelayMs, 'kibana order book bootstrap failed');
                     } catch (_: any) {
-                        if (typeof deps.logger?.warn === 'function') deps.logger.warn(`[market_adapter] ${ctx.botKey}: kibana orderbook bootstrap failed`);
+                        if (typeof deps.logger?.warn === 'function') deps.logger.warn(`[market_adapter] ${ctx.botKey}: kibana order book bootstrap failed`);
                     }
 
                     if (Array.isArray(kibanaCandles) && kibanaCandles.length > 0) {
@@ -1350,7 +1350,7 @@ class MarketAdapterService {
                             nextCandles = nativeCandles;
                             sourceLabel = 'native-book-bootstrap';
                         } else {
-                            throw new Error('both kibana and native orderbook bootstrap failed');
+                            throw new Error('both kibana and native order book bootstrap failed');
                         }
                     }
                 } else {

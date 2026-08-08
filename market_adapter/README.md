@@ -58,8 +58,8 @@ default preset.
 
 | `startPrice` | Adapter source |
 |--------------|----------------|
-| `pool` | LP history |
-| `book` | Orderbook history |
+| `pool` | Liquidity pool price |
+| `book` | Order book mid price (best bid/ask) |
 | numeric value | Fixed anchor (skips candle fetching and SMA warmup); used directly as the static seed price |
 
 When fetching candles (`pool` or `book`), the adapter requires a full historical window. The oldest `erPeriod` candles are used for an initial SMA (Simple Moving Average) warmup phase to seed the AMA and establish the first Efficiency Ratio (ER) calculation. See [AMA Warmup Window](#ama-warmup-window--why-candle-length-matters) for technical details.
@@ -559,7 +559,7 @@ market_adapter/
 |   |-- config_normalizers.ts      shared config normalization
 |   |-- kibana_client.ts           low-level Kibana/ES query client
 |   |-- kibana_candles.ts          LP pool candle fetch engine
-|   |-- kibana_market_candles.ts   orderbook candle fetch and transform
+|   |-- kibana_market_candles.ts   book candle fetch and transform
 |   `-- strategies/
 |       |-- ama.ts                 Kaufman's Adaptive Moving Average (KAMA)
 |       |-- ama_slope_model.ts     AMA slope and trend weight logic
