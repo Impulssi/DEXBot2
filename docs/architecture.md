@@ -1182,7 +1182,7 @@ manager.getMetrics()
 
 ### Zero-Dependency Policy
 
-DEXBot2 operates under a **zero mandatory production dependency** policy. The only declared dependency (`ws`) is **optional** — the bot works without it (falling back to built-in Node.js HTTP). Every production capability — blockchain client, crypto/signing, serialization, testing, price feeds, credential vault — is implemented natively within the codebase.
+DEXBot2 operates under a **zero mandatory production dependency** policy. The dependency tree is empty — every production capability (blockchain client, WebSocket transport via Node's native `globalThis.WebSocket`, crypto/signing, serialization, testing, price feeds, credential vault) is implemented natively within the codebase. Requires **Node.js >= 22** for the built-in WebSocket.
 
 **Why:** Trading bots handle real money. Every external dependency is a supply-chain risk surface. Keeping the dependency tree empty means no `npm audit` surprises, no supply-chain attacks on upstream packages, and no version-migration overhead for the core runtime.
 

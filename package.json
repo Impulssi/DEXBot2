@@ -22,7 +22,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "os": [
     "linux",
@@ -127,9 +127,6 @@
     "url": "https://github.com/froooze/DEXBot2/issues"
   },
   "homepage": "https://github.com/froooze/DEXBot2#readme",
-  "optionalDependencies": {
-    "ws": "^8.0.0"
-  },
   "tsx": {
     "tsconfig": true
   },

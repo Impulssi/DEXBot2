@@ -4,31 +4,18 @@ import Logger from '../logger';
 import { getErrorMessage } from '../utils/errors';
 'use strict';
 
-// Ambient WebSocket declaration for the ws module (no @types/ws installed)
-declare class _WebSocket {
-    readyState: number;
-    onopen: ((evt: any) => void) | null;
-    onmessage: ((evt: any) => void) | null;
-    onclose: ((evt: any) => void) | null;
-    onerror: ((evt: any) => void) | null;
-    send(data: string): void;
-    close(): void;
-    constructor(url: string);
-}
-
-type WebSocketLike = _WebSocket;
+// Native WebSocket only — Node >= 22 provides globalThis.WebSocket. No fallback package.
+type WebSocketLike = WebSocket;
 
 let _WebSocketCtor: (new (url: string) => WebSocketLike) | null = null;
 function getWebSocketConstructor(): new (url: string) => WebSocketLike {
     if (!_WebSocketCtor) {
         const ws = (globalThis as any).WebSocket;
-        if (ws) {
-            _WebSocketCtor = ws;
-        } else {
-            _WebSocketCtor = require('ws');
+        if (!ws) {
+            throw new Error('WebSocket is not available — DEXBot2 requires Node.js >= 22 (native globalThis.WebSocket)');
         }
+        _WebSocketCtor = ws as new (url: string) => WebSocketLike;
     }
-    if (!_WebSocketCtor) throw new Error('No WebSocket constructor available');
     return _WebSocketCtor;
 }
 

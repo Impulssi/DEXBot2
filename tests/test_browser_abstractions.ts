@@ -1277,19 +1277,8 @@ async function testEccComprehensive() {
 // ── 16. claw/index.ts loads cleanly ─────────────────────────────────────────
 
 async function testClawIndexLoad() {
-    let claw: any;
-    try {
-        claw = require('../claw/index');
-        assert.ok(claw, 'claw/index loaded successfully');
-    } catch (err: any) {
-        assert.ok(
-            getErrorMessage(err)?.includes('ws') || getErrorMessage(err)?.includes('Cannot find module'),
-            `claw/index load error: ${getErrorMessage(err)}`
-        );
-        console.log('  ~ claw/index: blocked by ws dependency (expected without npm install)');
-        return;
-    }
-
+    const claw = require('../claw/index');
+    assert.ok(claw, 'claw/index loaded successfully');
     assert.ok(claw.broadcastOperationViaCredentialDaemon,
         'claw has broadcastOperationViaCredentialDaemon');
     assert.ok(claw.describeMemuBridge, 'claw has describeMemuBridge');
