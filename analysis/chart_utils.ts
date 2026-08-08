@@ -1,7 +1,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { ensureDir } from '../modules/utils/fs_utils';
+import { getStorage } from '../modules/storage';
+const { ensureDir } = getStorage();
 'use strict';
 
 /**

@@ -68,14 +68,6 @@ const { PATHS } = require('./modules/paths');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
 
-// Auto-migrate bot state files from old stable-ID key format to sanitized-name format
-try {
-    const { runMigration } = require('./scripts/migrate_bot_keys');
-    runMigration();
-} catch (err: any) {
-    console.error(`Migration error: ${getErrorMessage(err)}`);
-}
-
 // Setup graceful shutdown handlers
 setupGracefulShutdown();
 

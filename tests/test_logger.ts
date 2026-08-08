@@ -8,7 +8,7 @@ console.log('Running logger tests');
 
 const Logger = require('../modules/order/index').logger;
 const { createPm2AwareLogger } = require('../modules/logger');
-const { safeUnlink } = require('../modules/utils/fs_utils');
+const { unlink: safeUnlink } = require('../modules/storage').getStorage();
 
 // Capture console output by stream
 let captured: any[] = [];

@@ -85,12 +85,11 @@ import { setupGracefulShutdown } from './modules/graceful_shutdown';
 import { UPDATER, TIMING } from './modules/constants';
 import { PATHS } from './modules/paths';
 import { isDistCodeRoot, buildRuntimeScriptPath } from './modules/launcher/runtime_entry';
-import { getStorage } from './modules/storage';
-import { ensureDir, safeUnlink } from './modules/utils/fs_utils';
 import { Config } from './modules/config';
 import { waitForConnected } from './modules/bitshares_client';
 import * as readline from 'node:readline';
 import { getErrorMessage } from './modules/utils/errors';
+import { getStorage } from './modules/storage';
 setUmask(0o077);
 
 const {
@@ -99,6 +98,7 @@ const {
     getCredentialSocketPath,
 } = require('./modules/credential_runtime');
 const storage = getStorage();
+const { ensureDir, unlink: safeUnlink } = storage;
 
 // Setup graceful shutdown handlers
 setupGracefulShutdown();

@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const { Config } = require('../modules/config');
 
-const { ensureDir, writeJSON } = require('../modules/utils/fs_utils');
+const { ensureDir, writeJSON } = require('../modules/storage').getStorage();
 const ORDERS_DIR = path.join(__dirname, '..', 'profiles', 'orders');
 const ANALYZER_PATH = path.resolve(__dirname, '..', 'scripts', 'analyze-orders.ts');
 const WHITELIST_MODULE_PATH = path.resolve(__dirname, '..', 'modules', 'market_adapter_whitelist.ts');

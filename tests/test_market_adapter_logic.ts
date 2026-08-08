@@ -25,7 +25,7 @@ const { parseNativeMarketHistoryTimestamp } = require('../market_adapter/utils/n
 const { detectMissingCandleTimestamps, fillCandleGaps, pruneStaleTail, tradesToCandles } = require('../market_adapter/candle_utils');
 const { MarketAdapterService } = require('../market_adapter/core/market_adapter_service');
 const { loadStrategiesFromProfiles } = require('../market_adapter/lp_chart_strategy_loader');
-const { ensureDir, writeJSON } = require('../modules/utils/fs_utils');
+const { ensureDir, writeJSON } = require('../modules/storage').getStorage();
 
 const MARKET_PROFILES_FILE = path.join(__dirname, '..', 'profiles', 'market_profiles.json');
 

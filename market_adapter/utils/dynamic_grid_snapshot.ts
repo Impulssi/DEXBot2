@@ -2,7 +2,8 @@
 import { path } from '../../modules/path_api';
 import { writeJsonAtomic } from './atomic_write';
 import { acquirePathLockSync, releaseFileLockSync } from './file_lock';
-import { ensureDir, readJSON } from '../../modules/utils/fs_utils';
+import { getStorage } from '../../modules/storage';
+const { ensureDir, readJSON } = getStorage();
 'use strict';
 
 

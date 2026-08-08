@@ -47,7 +47,7 @@ const fcd = require(helperPath);
 // to the repo root; using the candidate-aware variant lets the test
 // pass our temp path and still validate the same algorithm.
 const unlock = require('../unlock');
-const { safeUnlink } = require('../modules/utils/fs_utils');
+const { unlink: safeUnlink } = require('../modules/storage').getStorage();
 if (typeof unlock.pidMatchesScriptCandidates !== 'function') {
     throw new Error('unlock.pidMatchesScriptCandidates is not exported; cannot validate the predicate algorithm');
 }

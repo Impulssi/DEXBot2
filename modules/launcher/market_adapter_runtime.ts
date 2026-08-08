@@ -1,16 +1,16 @@
 
-import { getStorage } from '../storage';
-import { spawn } from 'node:child_process';
 import { buildScopedChildEnv } from './child_env';
 import { Config } from '../config';
 import { LAUNCHER, MARKET_ADAPTER } from '../constants';
 import { PATHS } from '../paths';
-import { readJSON, safeUnlink } from '../utils/fs_utils';
 import { getProcessDiscovery } from '../process_discovery';
 import { withTimeout } from '../order/utils/timeout';
+import { spawn } from 'node:child_process';
+import { getStorage } from '../storage';
 'use strict';
 
 const storage = getStorage();
+const { readJSON, unlink: safeUnlink } = storage;
 import { buildRuntimeScriptPath, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
 
 const DEFAULT_SCRIPT = buildRuntimeScriptPath(DEFAULT_CODE_ROOT, ['market_adapter', 'market_adapter']);

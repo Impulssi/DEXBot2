@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { MARKET_ADAPTER } from '../../modules/constants';
-import { readJSON } from '../../modules/utils/fs_utils';
+import { getStorage } from '../../modules/storage';
+const { readJSON } = getStorage();
 import { PATHS } from '../../modules/paths';
 import { roundTo } from '../../modules/utils/math_utils';
 

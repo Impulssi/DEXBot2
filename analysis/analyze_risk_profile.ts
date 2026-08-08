@@ -38,7 +38,8 @@ function quantileToSigma(q) {
     return normSInv((1 + q) / 2);
 }
 import { calcStdDev } from './math_utils';
-import { readJSON } from '../modules/utils/fs_utils';
+import { getStorage } from '../modules/storage';
+const { readJSON } = getStorage();
 function getAmaDeltaStdDev(closes, amaConfig, warmup) {
     const amaValues = calculateAMA(closes, amaConfig);
     const deltas: number[] = [];

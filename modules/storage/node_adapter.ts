@@ -8,9 +8,8 @@
  *             → rename over target
  *             → cleanup tmp on failure
  *
- * This subsumes the 5 prior implementations:
- *   1. fs_utils.writeJSON             (tmp+rename, no mode/fsync)
- *   2. bots_file_lock.writeJsonFileAtomic (tmp+rename + crypto.randomBytes + ensureDir)
+ * This subsumes the prior implementations (the old fs_utils shim has been removed):
+ *   1. bots_file_lock.writeJsonFileAtomic (tmp+rename + crypto.randomBytes + ensureDir)
  *   3. atomic_write.writeJsonAtomic   (tmp+rename + Math.random + ensureDir)
  *   4. chain_keys inline              (openSync 0o600 + writeSync + fsyncSync + renameSync)
  *   5. credential_policy inline       (openSync 0o600 + writeSync + fsyncSync + renameSync)

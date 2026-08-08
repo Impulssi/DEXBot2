@@ -5,7 +5,8 @@ import { Worker, isMainThread, parentPort, workerData } from 'node:worker_thread
 import { calculateAMA } from '../../market_adapter/core/strategies/ama';
 import { range } from '../math_utils';
 import { parseListOrRange, loadLpData, fmt } from './shared_utils';
-import { readJSON, writeJSON } from '../../modules/utils/fs_utils';
+import { getStorage } from '../../modules/storage';
+const { readJSON, writeJSON } = getStorage();
 'use strict';
 
 /**

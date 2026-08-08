@@ -11,7 +11,7 @@ const { Config } = require('../modules/config');
 console.log('Running chain_keys vault tests');
 
 const chainKeys = require('../modules/chain_keys');
-const { readJSON, writeJSON } = require('../modules/utils/fs_utils');
+const { readJSON, writeJSON } = require('../modules/storage').getStorage();
 
 function writeModernVault(keysFile, password, accounts = {}) {
     const vaultSalt = Buffer.from('00112233445566778899aabbccddeeff', 'hex');

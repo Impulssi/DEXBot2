@@ -35,13 +35,13 @@ import { parseJsonWithComments } from '../../modules/order/utils/system';
 import { MARKET_ADAPTER } from '../../modules/constants';
 import { normalizePoolId, resolveAsset, findPoolByAssets } from '../utils/chain';
 import { writeJsonAtomic } from '../utils/atomic_write';
-import { readJSON } from '../../modules/utils/fs_utils';
 import { PATHS } from '../../modules/paths';
 import * as bitsharesClient from '../../modules/bitshares_client';
 import { getErrorMessage } from '../../modules/utils/errors';
 'use strict';
 
 const storage = getStorage();
+const { readJSON } = storage;
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 

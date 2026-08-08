@@ -1,5 +1,7 @@
 
-import { readJSON } from './utils/fs_utils';
+import { getStorage } from './storage';
+const storage = getStorage();
+const { readJSON } = storage;
 import { PATHS } from './paths';
 import { normalizeBotEntry } from './bot_settings';
 import { getErrorMessage } from './utils/errors';

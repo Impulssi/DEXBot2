@@ -2,7 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { createMarketAdapterRuntime, isLockStale } = require('../modules/launcher/market_adapter_runtime');
-const { safeUnlink, writeJSON } = require('../modules/utils/fs_utils');
+const { unlink: safeUnlink, writeJSON } = require('../modules/storage').getStorage();
 
 console.log('Running market adapter runtime tests');
 

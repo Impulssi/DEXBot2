@@ -5,7 +5,6 @@ import { spawn } from 'node:child_process';
 import { PATHS } from '../paths';
 import { buildScopedChildEnv } from './child_env';
 import { UPDATER, LAUNCHER } from '../constants';
-import { safeUnlink } from '../utils/fs_utils';
 import { readProcStat } from './status_reporting';
 import * as foreignCredDaemon from './foreign_cred_daemon';
 import { Config } from '../config';
@@ -17,6 +16,7 @@ import * as chainKeys from '../chain_keys';
 'use strict';
 
 const storage = getStorage();
+const { unlink: safeUnlink } = storage;
 import {
     isPidAlive,
     usesAmaGridPrice,

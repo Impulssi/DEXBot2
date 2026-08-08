@@ -15,7 +15,7 @@ const path = require('path');
 const { initializeFeeCache } = require('../modules/order/utils/system');
 const { getAssetFees } = require('../modules/order/utils/math');
 const Format = require('../modules/order/format');
-const { readJSON } = require('../modules/utils/fs_utils');
+const { readJSON } = require('../modules/storage').getStorage();
 const { getErrorMessage } = require('../modules/utils/errors');
 
 async function main() {

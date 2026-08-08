@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { ensureDir, writeJSON } = require('../../modules/utils/fs_utils');
+const { ensureDir, writeJSON } = require('../../modules/storage').getStorage();
 
 const PROFILES_DIR = path.resolve(__dirname, '..', '..', 'profiles');
 const ORDERS_DIR = path.join(PROFILES_DIR, 'orders');

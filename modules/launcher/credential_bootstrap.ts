@@ -3,11 +3,11 @@ import net from 'node:net';
 import os from 'node:os';
 import { path } from '../path_api';
 import { TIMING } from '../constants';
-import { safeUnlink } from '../utils/fs_utils';
 import { assertPrivatePathSecurity } from '../credential_runtime';
-import { getStorage } from '../storage';
 import { getErrorMessage } from '../utils/errors';
+import { getStorage } from '../storage';
 const storage = getStorage();
+const { unlink: safeUnlink } = storage;
 
 const BOOTSTRAP_SOCKET_PREFIX = 'dexbot-cred-bootstrap-';
 const DEFAULT_TIMEOUT_MS = TIMING.DAEMON_STARTUP_TIMEOUT_MS;

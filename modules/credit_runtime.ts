@@ -12,9 +12,10 @@ import { writeJsonFileAtomic } from './bots_file_lock';
 import { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING, NATIVE_CLIENT } from './constants';
 import { roundToDecimals } from './order/utils/math';
 import { PATHS } from './paths';
-import { readJSON } from './utils/fs_utils';
-import _sysUtils = require('./order/utils/system');
-const { deriveLiquidityPoolTokenValue, ensureDir: ensureDirSync } = _sysUtils;
+import {
+    deriveLiquidityPoolTokenValue,
+    ensureDir as ensureDirSync,
+} from './order/utils/system';
 'use strict';
 
 const storage = getStorage();
@@ -393,7 +394,7 @@ class CreditRuntime {
         }
 
         try {
-            const parsed = readJSON(this.statePath);
+            const parsed = storage.readJSON(this.statePath);
             this.state = this._stateWithDefaults(parsed);
         } catch (err: any) {
             this.warn(`credit runtime: failed to load ${this.statePath}: ${getErrorMessage(err)}`);

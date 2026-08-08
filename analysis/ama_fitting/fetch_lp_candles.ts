@@ -6,7 +6,8 @@ import { toIntervalLabel } from '../../market_adapter/interval_utils';
 import { MARKET_ADAPTER } from '../../modules/constants';
 import * as kibanaSource from '../../market_adapter/inputs/kibana_source';
 import { PATHS } from '../../modules/paths';
-import { ensureDir, writeJSON } from '../../modules/utils/fs_utils';
+import { getStorage } from '../../modules/storage';
+const { ensureDir, writeJSON } = getStorage();
 import { getErrorMessage } from '../../modules/utils/errors';
 
 'use strict';

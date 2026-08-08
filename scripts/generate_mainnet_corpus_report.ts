@@ -29,7 +29,7 @@ const serial = require('../modules/bitshares-native/serial');
 const ecc = require('../modules/bitshares-native/crypto/ecc');
 const { NODE_MANAGEMENT } = require('../modules/constants');
 const { PATHS } = require('../modules/paths');
-const { ensureDir, writeJSON } = require('../modules/utils/fs_utils');
+const { ensureDir, writeJSON } = require('../modules/storage').getStorage();
 const { getErrorMessage } = require('../modules/utils/errors');
 
 const argv: string[] = process.argv.slice(2);

@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fillCandleGaps } from '../market_adapter/candle_utils';
 import { getCandleClose, getCandleTimestamp, loadCandleFile } from './math_utils';
 import { PATHS } from '../modules/paths';
-import { readJSON } from '../modules/utils/fs_utils';
+import { getStorage } from '../modules/storage';
+const { readJSON } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors';
 'use strict';
 

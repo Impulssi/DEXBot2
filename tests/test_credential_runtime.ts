@@ -8,7 +8,7 @@ console.log('Running credential runtime path tests');
 
 const runtime = require('../modules/credential_runtime');
 const { Config } = require('../modules/config');
-const { ensureDir } = require('../modules/utils/fs_utils');
+const { ensureDir } = require('../modules/storage').getStorage();
 
 function withConfigSnapshot(fn) {
     const snapshot = {

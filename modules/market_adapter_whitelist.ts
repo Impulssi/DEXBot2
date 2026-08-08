@@ -1,11 +1,11 @@
 
 import { PATHS } from './paths';
 import { getStorage } from './storage';
-import { readJSON } from './utils/fs_utils';
 import { getErrorMessage } from './utils/errors';
 'use strict';
 
 const storage = getStorage();
+const { readJSON } = storage;
 
 const WHITELIST_FILE = PATHS.PROFILES.MARKET_ADAPTER_WHITELIST_JSON();
 

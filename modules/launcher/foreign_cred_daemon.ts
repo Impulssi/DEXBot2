@@ -1,11 +1,11 @@
 
 import { getStorage } from '../storage';
-import { safeUnlink } from '../utils/fs_utils';
 import { getProcessDiscovery } from '../process_discovery';
 import { isPidAlive } from './bot_supervisor';
 import { runtime } from '../runtime';
 import { sleep } from '../order/utils/system';
 const storage = getStorage();
+const { unlink: safeUnlink } = storage;
 
 /**
  * Foreign credential daemon detection.

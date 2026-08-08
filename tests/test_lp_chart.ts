@@ -21,7 +21,7 @@ const {
     DEFAULT_STRATEGIES,
 } = require('../analysis/ama_fitting/generate_unified_comparison_chart');
 const { MARKET_ADAPTER } = require('../modules/constants');
-const { writeJSON } = require('../modules/utils/fs_utils');
+const { writeJSON } = require('../modules/storage').getStorage();
 
 function testParseArgs() {
     const parsed = parseArgs(['--data', 'foo.json', '--out', 'out.html', '--no-open']);

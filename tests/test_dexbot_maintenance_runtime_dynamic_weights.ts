@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
-const { ensureDir, readJSON, writeJSON } = require('../modules/utils/fs_utils');
+const { ensureDir, readJSON, writeJSON } = require('../modules/storage').getStorage();
 const { fixedTo } = require('../modules/utils/math_utils');
 
 console.log('Running dexbot maintenance runtime dynamic weight tests');

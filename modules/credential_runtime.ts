@@ -3,8 +3,8 @@ import { path } from './path_api';
 import { getStorage } from './storage';
 import { Config } from './config';
 import { runtime } from './runtime';
-import { ensureDir } from './utils/fs_utils';
 const storage = getStorage();
+const { ensureDir } = storage;
 
 interface RuntimeDirOptions {
     runtimeDir?: string;

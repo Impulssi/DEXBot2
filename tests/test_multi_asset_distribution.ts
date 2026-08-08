@@ -46,7 +46,7 @@ setCachedModule(path.resolve(__dirname, '../modules/chain_orders.ts'), {
 });
 
 const CreditRuntime = require('../modules/credit_runtime');
-const { readJSON } = require('../modules/utils/fs_utils');
+const { readJSON } = require('../modules/storage').getStorage();
 
 async function testCollateralDistribution() {
     console.log('Testing collateral distribution logic...');

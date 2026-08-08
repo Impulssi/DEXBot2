@@ -141,13 +141,7 @@ const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
 
-// Auto-migrate bot state files from old stable-ID key format to sanitized-name format
-try {
-    const { runMigration } = require('./scripts/migrate_bot_keys');
-    runMigration();
-} catch (err: any) {
-    console.error(`\x1b[1;31mMigration error:\x1b[0m ${getErrorMessage(err)}`);
-}
+// Setup graceful shutdown handlers
 
 // Setup graceful shutdown handlers
 setupGracefulShutdown();
@@ -1251,7 +1245,7 @@ async function bootstrap() {
             COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS,
             API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER,
         } = require('./modules/constants');
-const { writeJSON } = require('./modules/utils/fs_utils');
+const { writeJSON } = storage;
 
         // Create NODES config from NODE_MANAGEMENT constants
         const nodesConfig = {

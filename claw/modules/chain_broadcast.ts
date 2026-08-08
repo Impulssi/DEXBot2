@@ -7,9 +7,9 @@ import { getDexbot2Root, requireDexbot2Module } from './dexbot_bridge';
 import { Config } from '../../modules/config';
 import { DAEMON_ERRORS } from '../../modules/constants';
 import { getCredentialReadyFilePath } from '../../modules/credential_runtime';
-import { readJSON } from '../../modules/utils/fs_utils';
 import { runtime } from '../../modules/runtime';
 const storage = getStorage();
+const { readJSON } = storage;
 import { isCredentialDaemonReady, DEFAULT_BROADCAST_TIMEOUT_MS, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, waitForCredentialDaemon, BroadcastUncertainError } from './dexbot_credential_client.js';
 import { getErrorMessage } from '../../modules/utils/errors';
 

@@ -89,7 +89,6 @@ import { TIMING, CREDENTIAL_PROMPTS } from './constants';
 import { PATHS } from './paths';
 import Logger from './logger';
 import { getStorage } from './storage';
-import { ensureDir } from './utils/fs_utils';
 import { sendSocketJsonRequest } from './socket_json_client';
 import { resolvePrivateKey as resolveAuthKey } from './authority_resolver';
 import { Config } from './config';
@@ -126,6 +125,7 @@ import {
 import { getErrorMessage } from './utils/errors';
 import { hasProcess } from './env';
 const storage = getStorage();
+const { ensureDir } = storage;
 
 const chainKeysLogger = new Logger('chain-keys');
 

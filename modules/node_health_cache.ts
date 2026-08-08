@@ -3,7 +3,9 @@
 import { NODE_MANAGEMENT } from './constants';
 import { PATHS, getNodeHealthCacheFile } from './paths';
 import { writeJsonFileAtomic } from './bots_file_lock';
-import { readJSON } from './utils/fs_utils';
+import { getStorage } from './storage';
+const storage = getStorage();
+const { readJSON } = storage;
 const DEFAULT_HEALTH_CACHE_FILE = PATHS.PROFILES.NODE_HEALTH_CACHE_JSON;
 
 interface HealthCacheOptions {

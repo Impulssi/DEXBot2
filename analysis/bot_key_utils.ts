@@ -2,7 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PATHS } from '../modules/paths';
-import { readJSON } from '../modules/utils/fs_utils';
+import { getStorage } from '../modules/storage';
+const { readJSON } = getStorage();
 import { MARKET_ADAPTER } from '../modules/constants';
 import { loadMarketProfiles } from './tradingview/tradingview_uplot_chart_generator';
 'use strict';

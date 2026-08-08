@@ -17,7 +17,7 @@ const {
 
 const { KalmanTrendAnalyzer } = require('../analysis/trend_detection/kalman_trend_analyzer');
 const { MarketAdapterService } = require('../market_adapter/core/market_adapter_service');
-const { writeJSON } = require('../modules/utils/fs_utils');
+const { writeJSON } = require('../modules/storage').getStorage();
 const {
     buildWhitelist,
     loadExistingWhitelist,

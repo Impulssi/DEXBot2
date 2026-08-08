@@ -11,6 +11,7 @@ const { PATHS } = require('./paths');
 const Format = require('./order/format');
 const { getStorage } = require('./storage');
 const storage = getStorage();
+const { ensureDir, unlink: safeUnlink } = storage;
 const fundRegistry = require('./fund_registry');
 
 const { BitShares } = require('./bitshares_client');
@@ -47,7 +48,6 @@ function getActiveOrdersTotal(config: any) { return require('./order/utils/order
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function isOrderOnChain(...args: any) { return require('./order/utils/order').isOrderOnChain(...args); }
 function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
-const { ensureDir, safeUnlink } = require('./utils/fs_utils');
 const { getErrorMessage } = require('./utils/errors');
 
 const CODE_ROOT = path.join(__dirname, '..');

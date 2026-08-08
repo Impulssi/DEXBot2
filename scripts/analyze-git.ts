@@ -13,7 +13,8 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { formatMetric2 } from '../modules/order/format.js';
-import { ensureDir } from '../modules/utils/fs_utils.js';
+import { getStorage } from '../modules/storage/index.js';
+const { ensureDir } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors.js';
 
 /**

@@ -1,9 +1,9 @@
 
 import { getStorage } from './storage';
 import { PATHS } from './paths';
-import { writeJSON, readJSON } from './utils/fs_utils';
 import AsyncLock from './order/async_lock';
 const storage = getStorage();
+const { readJSON, writeJSON } = storage;
 
 const REGISTRY_FILE = PATHS.PROFILES.FUND_REGISTRY_JSON;
 

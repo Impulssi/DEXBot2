@@ -5,7 +5,6 @@ import { LAUNCHER, MARKET_ADAPTER } from '../constants';
 import { Config } from '../config';
 import { PATHS } from '../paths';
 import { isLikelyMarketAdapterProcess, isLockStale } from './market_adapter_runtime';
-import { readJSON, safeUnlink } from '../utils/fs_utils';
 import { readProcMemMB, readProcUptime } from './status_reporting';
 import { getActiveAmaBotFingerprint } from './monolithic_runtime';
 'use strict';
@@ -13,6 +12,9 @@ import { getActiveAmaBotFingerprint } from './monolithic_runtime';
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
 import { getErrorMessage } from '../utils/errors';
 import { withTimeout } from '../order/utils/timeout';
+import { getStorage } from '../storage';
+const storage = getStorage();
+const { readJSON, unlink: safeUnlink } = storage;
 
 function createMarketAdapterWatchdog({
     codeRoot = DEFAULT_CODE_ROOT,

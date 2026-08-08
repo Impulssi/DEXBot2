@@ -5,9 +5,9 @@ import { parseJsonWithComments } from './order/utils/system';
 import { createBotKey } from './account_orders';
 import { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } from './order/utils/math';
 import { resolveMinCollateralIncreaseThreshold } from './cr_planner';
-import { writeJSON } from './utils/fs_utils';
 import { getErrorMessage } from './utils/errors';
 const storage = getStorage();
+const { writeJSON } = storage;
 
 function loadSettingsFile(filePath: string, { silent = false, exitOnError = true }: { silent?: boolean; exitOnError?: boolean } = {}): { config: any; filePath: string } {
     if (!storage.exists(filePath)) {

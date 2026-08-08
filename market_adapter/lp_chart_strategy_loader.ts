@@ -4,10 +4,10 @@ import { getStorage } from '../modules/storage';
 import { normalizeAssetSymbol, isExactPair, isSamePair } from './utils/chain';
 import { toIntervalLabel } from './interval_utils';
 import { PROJECT_ROOT } from './utils/paths';
-import { readJSON } from '../modules/utils/fs_utils';
 'use strict';
 
 const storage = getStorage();
+const { readJSON } = storage;
 
 
 const ANALYSIS_AMA_FITTING_DIR = path.join(PROJECT_ROOT, 'analysis', 'ama_fitting');

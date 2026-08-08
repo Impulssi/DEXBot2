@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const policy = require('../modules/credential_policy');
-const { readJSON, writeJSON } = require('../modules/utils/fs_utils');
+const { readJSON, writeJSON } = require('../modules/storage').getStorage();
 
 console.log('Testing allowedOps per-operation parameter constraints...\n');
 

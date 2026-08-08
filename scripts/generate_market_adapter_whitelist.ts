@@ -2,7 +2,8 @@
 import fs from 'node:fs';
 import { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries } from '../modules/bot_settings';
 import { PATHS } from '../modules/paths';
-import { readJSON } from '../modules/utils/fs_utils';
+import { getStorage } from '../modules/storage';
+const { readJSON } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors';
 'use strict';
 

@@ -3,10 +3,10 @@ import { path } from '../../modules/path_api';
 import { getStorage } from '../../modules/storage';
 import { PATHS } from '../../modules/paths';
 import { runtime } from '../../modules/runtime';
-import { ensureDir, safeUnlink } from '../../modules/utils/fs_utils';
-import { Config } from '../../modules/config';
 import { getErrorMessage } from '../../modules/utils/errors';
+import { Config } from '../../modules/config';
 const storage = getStorage();
+const { ensureDir, unlink: safeUnlink } = storage;
 
 let _spawn: any;
 function getSpawn(): any {

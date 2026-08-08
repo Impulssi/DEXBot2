@@ -1,5 +1,6 @@
 
-import { readJSON } from '../../modules/utils/fs_utils';
+import { getStorage } from '../../modules/storage';
+const { readJSON } = getStorage();
 'use strict';
 
 /**

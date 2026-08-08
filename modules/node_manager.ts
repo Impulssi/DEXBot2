@@ -45,7 +45,9 @@ import Logger from './logger';
 import { NODE_MANAGEMENT } from './constants';
 import { PATHS, getNodeBlacklistFile } from './paths';
 import { writeJsonFileAtomic } from './bots_file_lock';
-import { readJSON } from './utils/fs_utils';
+import { getStorage } from './storage';
+const storage = getStorage();
+const { readJSON } = storage;
 import { createFailureLedger } from './node_failure_ledger';
 const _WebSocket = globalThis.WebSocket;
 import {

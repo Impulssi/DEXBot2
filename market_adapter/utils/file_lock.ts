@@ -1,8 +1,8 @@
 import { getStorage } from '../../modules/storage';
-import { readJSON, safeUnlink } from '../../modules/utils/fs_utils';
 import { getProcessDiscovery } from '../../modules/process_discovery';
 import { runtime } from '../../modules/runtime';
 const storage = getStorage();
+const { readJSON, unlink: safeUnlink } = storage;
 
 function _lockOwnerId(): number | string {
     if (runtime.pid > 0) {

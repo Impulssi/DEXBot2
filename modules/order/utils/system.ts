@@ -57,9 +57,9 @@ import * as MathUtils from './math';
 import * as OrderUtils from './order';
 import Logger from '../../logger';
 import { runtime } from '../../runtime';
-import { ensureDir, readJSON } from '../../utils/fs_utils';
 import { getErrorMessage } from '../../utils/errors';
 import { withTimeout } from './timeout';
+const { ensureDir, readJSON } = storage;
 const systemLogger = new Logger('System');
 
 function _debugLogAndNull(method: any, symA: any, symB: any) {

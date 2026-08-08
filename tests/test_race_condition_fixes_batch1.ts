@@ -47,7 +47,7 @@ const path = require('path');
 
 const { setCachedModule, restoreCachedModule } = require('./helpers/module_cache_stub');
 const { writeJsonFileAtomic, writeBotsFileWithLock } = require('../modules/bots_file_lock');
-const { readJSON } = require('../modules/utils/fs_utils');
+const { readJSON } = require('../modules/storage').getStorage();
 const AsyncLock = require('../modules/order/async_lock');
 
 const creditRuntimePath = path.resolve(__dirname, '../modules/credit_runtime.ts');

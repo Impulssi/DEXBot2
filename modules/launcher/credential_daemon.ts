@@ -9,11 +9,11 @@ import { createPasswordBootstrapServer } from './credential_bootstrap';
 import { buildScopedChildEnv } from './child_env';
 import { Config } from '../config';
 import { PATHS } from '../paths';
-import { safeUnlink } from '../utils/fs_utils';
 import { readHeadlessPassword } from './headless_password';
 import { sleep } from '../order/utils/system';
 import { withTimeout } from '../order/utils/timeout';
 const storage = getStorage();
+const { unlink: safeUnlink } = storage;
 import type { StdioOptions } from 'child_process';
 import {
     assertPrivatePathSecurity,

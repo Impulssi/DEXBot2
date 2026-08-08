@@ -5,7 +5,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { ensureDir } = require('../../modules/utils/fs_utils');
+const { getStorage } = require('../../modules/storage');
+const { ensureDir } = getStorage();
 
 function writeFakeMemuPackage(tmpRoot) {
   const memuDir = path.join(tmpRoot, 'memu');

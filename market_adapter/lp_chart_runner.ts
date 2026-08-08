@@ -9,7 +9,6 @@ import { generateHTML } from './lp_chart_core';
 import { loadStrategiesForLpChart } from './lp_chart_strategy_loader';
 import { findLatestLpData } from './utils/data_discovery';
 import { PATHS } from '../modules/paths';
-import { ensureDir, readJSON } from '../modules/utils/fs_utils';
 'use strict';
 
 /**
@@ -34,6 +33,7 @@ import { ensureDir, readJSON } from '../modules/utils/fs_utils';
  */
 
 const storage = getStorage();
+const { ensureDir, readJSON } = storage;
 
 
 const LP_DATA_DIR = PATHS.MARKET_ADAPTER.LP_DATA_DIR;

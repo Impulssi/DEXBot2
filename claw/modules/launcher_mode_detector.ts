@@ -4,10 +4,10 @@ import { getStorage } from '../../modules/storage';
 import { PATHS } from '../../modules/paths';
 import { loadSettingsFile, resolveRawBotEntries } from '../../modules/bot_settings';
 import { normalizeProfileDir } from './launcher_paths';
-import { ensureDir, readJSON, writeJSON } from '../../modules/utils/fs_utils';
 'use strict';
 
 const storage = getStorage();
+const { ensureDir, readJSON, writeJSON } = storage;
 
 const LEGACY_MODE_ALIASES = {
   'unlock-start': 'unlock',

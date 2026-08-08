@@ -6,7 +6,8 @@ import { generateHTML } from '../../market_adapter/lp_chart_core';
 import { toIntervalLabel } from '../../market_adapter/interval_utils';
 import { loadCandleFile } from '../math_utils';
 import { MARKET_ADAPTER } from '../../modules/constants';
-import { ensureDir } from '../../modules/utils/fs_utils';
+import { getStorage } from '../../modules/storage';
+const { ensureDir } = getStorage();
 import { PATHS } from '../../modules/paths';
 'use strict';
 

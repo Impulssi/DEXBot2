@@ -8,7 +8,6 @@ import { buildScopedChildEnv } from './child_env';
 import { PATHS } from '../paths';
 import { normalizeBotEntries, resolveRawBotEntries, loadSettingsFile } from '../bot_settings';
 import { UPDATER, BUILD_DIR, LAUNCHER } from '../constants';
-import { ensureDir, readJSON, safeUnlink } from '../utils/fs_utils';
 import { Config } from '../config';
 import { getProcessDiscovery, formatUptime } from '../process_discovery';
 import { runtime } from '../runtime';
@@ -17,6 +16,7 @@ import { sleep } from '../order/utils/system';
 
 import type { Socket } from 'net';
 const storage = getStorage();
+const { ensureDir, readJSON, unlink: safeUnlink } = storage;
 import { buildRuntimeScriptPath, isDistCodeRoot, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry';
 import { getErrorMessage } from '../utils/errors';
 

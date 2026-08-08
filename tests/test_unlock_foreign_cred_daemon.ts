@@ -2,7 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { safeUnlink } = require('../modules/utils/fs_utils');
+const { unlink: safeUnlink } = require('../modules/storage').getStorage();
 
 console.log('Running foreign credential daemon detection tests');
 

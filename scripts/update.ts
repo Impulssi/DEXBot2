@@ -32,7 +32,8 @@ import { sendControlCommand } from '../modules/launcher/supervisor_control.js';
 import { UPDATER, BUILD_DIR } from '../modules/constants.js';
 import { PATHS } from '../modules/paths.js';
 import { Config } from '../modules/config.js';
-import { readJSON } from '../modules/utils/fs_utils.js';
+import { getStorage } from '../modules/storage/index.js';
+const { readJSON } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors.js';
 
 

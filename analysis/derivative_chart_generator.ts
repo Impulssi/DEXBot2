@@ -3,7 +3,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from './chart_utils';
-import { ensureDir, readJSON } from '../modules/utils/fs_utils';
+import { getStorage } from '../modules/storage';
+const { ensureDir, readJSON } = getStorage();
 import { fixedTo } from '../modules/utils/math_utils';
 'use strict';
 function parseArgs(argv = process.argv.slice(2)) {

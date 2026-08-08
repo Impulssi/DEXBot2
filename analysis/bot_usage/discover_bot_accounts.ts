@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-import { writeJSON } from '../../modules/utils/fs_utils';
+import { getStorage } from '../../modules/storage';
+const { writeJSON } = getStorage();
 
 /**
  * DEXBOT ACCOUNT DISCOVERY

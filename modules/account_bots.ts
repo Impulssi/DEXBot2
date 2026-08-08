@@ -104,11 +104,11 @@ import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER, MARKET_ADAPTER
 import { PATHS } from './paths';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings';
 import { parseJsonWithComments } from './order/utils/system';
-import { writeJSON } from './utils/fs_utils';
 import { assertNoDuplicateBotKeys } from './bot_settings';
 import { mergeSettings } from './settings_merge';
 import { getErrorMessage } from './utils/errors';
 const storage = getStorage();
+const { writeJSON } = storage;
 
 
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;

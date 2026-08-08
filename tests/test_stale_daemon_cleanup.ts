@@ -5,7 +5,7 @@ const chainKeys = require('../modules/chain_keys');
 const childProcess = require('child_process');
 const { EventEmitter } = require('events');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
-const { ensureDir, safeUnlink } = require('../modules/utils/fs_utils');
+const { ensureDir, unlink: safeUnlink } = require('../modules/storage').getStorage();
 
 console.log('Running stale daemon cleanup tests');
 

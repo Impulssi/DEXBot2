@@ -51,16 +51,15 @@ import { normalizeBotEntry, resolveRawBotEntries, loadSettingsFile } from './mod
 import * as chainKeys from './modules/chain_keys';
 import * as credentialPolicy from './modules/credential_policy';
 import { getWhitelistFlags } from './modules/market_adapter_whitelist';
-import { ensureDir } from './modules/utils/fs_utils';
 import { createMarketAdapterWatchdog } from './modules/launcher/market_adapter_watchdog';
 import { isLikelyMarketAdapterProcess } from './modules/launcher/market_adapter_runtime';
 import { Config } from './modules/config';
-import { runMigration } from './scripts/migrate_bot_keys';
 import { getErrorMessage } from './modules/utils/errors';
 import { withTimeout } from './modules/order/utils/timeout';
 setUmask(0o077);
 
 const storage = getStorage();
+const { ensureDir } = storage;
 const {
     createBotSupervisor, SOCKET_PATH,
     forwardSignal, isPidAlive, waitForPidExit,
@@ -88,13 +87,6 @@ const {
     listConfiguredBots, getControlBotNames, getControlActionLabel,
     getControlServiceNames, printControlActionSummary, formatBotCount,
 } = require('./modules/launcher/monolithic_runtime');
-
-// Auto-migrate bot state files from old stable-ID key format to sanitized-name format
-try {
-    runMigration();
-} catch (err: any) {
-    console.error(`Migration error: ${getErrorMessage(err)}`);
-}
 
 const CODE_ROOT = __dirname;
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;

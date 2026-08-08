@@ -9,7 +9,8 @@ import { generateHTML } from '../../market_adapter/lp_chart_core';
 import { PATHS } from '../../modules/paths';
 import { ensureDir } from '../../modules/order/utils/system';
 import { range } from '../math_utils';
-import { readJSON, writeJSON } from '../../modules/utils/fs_utils';
+import { getStorage } from '../../modules/storage';
+const { readJSON, writeJSON } = getStorage();
 'use strict';
 
 import {

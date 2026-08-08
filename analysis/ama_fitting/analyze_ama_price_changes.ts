@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { calculateAMA } from '../../market_adapter/core/strategies/ama';
-import { readJSON } from '../../modules/utils/fs_utils';
+import { getStorage } from '../../modules/storage';
+const { readJSON } = getStorage();
 import { MARKET_ADAPTER } from '../../modules/constants';
 
 'use strict';

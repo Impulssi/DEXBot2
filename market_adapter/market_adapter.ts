@@ -17,7 +17,6 @@ import { acquireFileLockSync, releaseFileLockSync } from './utils/file_lock';
 import { updateDynamicGridSnapshotSync } from './utils/dynamic_grid_snapshot';
 import { PATHS, getRecalculateTriggerFile } from '../modules/paths';
 import Logger from '../modules/logger';
-import { readJSON } from '../modules/utils/fs_utils';
 import { fixedTo, roundTo } from '../modules/utils/math_utils';
 import {
     normalizeAtrPeriod,
@@ -69,6 +68,7 @@ import {
  */
 
 const storage = getStorage();
+const { readJSON } = storage;
 
 const ROOT = PATHS.PROJECT_ROOT;
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;

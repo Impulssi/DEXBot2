@@ -20,11 +20,11 @@ import { PATHS } from './paths';
 import Logger from './logger';
 import { getStorage } from './storage';
 import { runtime } from './runtime';
-import { readJSON } from './utils/fs_utils';
 import { LRUCache } from './bitshares-native/lru_cache';
 import { getErrorMessage } from './utils/errors';
 const { RESOLVERS } = NATIVE_CLIENT;
 const storage = getStorage();
+const { readJSON } = storage;
 
 // Module-scope logger for library-style helpers that don't own a process
 // logger.  The class honours PM2 auto-quiet and routes to a log file when one
