@@ -19,7 +19,6 @@
  * - Raw 64-character hexadecimal private keys
  *
  * Security: Master password never stored; only a derived vault key is kept in memory.
- * Legacy SHA-256 password hashes are supported only to migrate existing vaults.
  * All newly written private keys use the v2 vault format.
  *
  * ===============================================================================
@@ -303,7 +302,6 @@ function normalizeAccountsData(data: Record<string, any> = {}) {
         vaultVersion: Number(data.vaultVersion) || 0,
         vaultSalt: typeof data.vaultSalt === 'string' ? data.vaultSalt : '',
         vaultVerifier: typeof data.vaultVerifier === 'string' ? data.vaultVerifier : '',
-        masterPasswordHash: typeof data.masterPasswordHash === 'string' ? data.masterPasswordHash : '',
         accounts: accountsSource,
     };
 }
@@ -471,7 +469,7 @@ function validatePrivateKey(key: any) {
 /**
  * Load stored accounts from profiles/keys.json.
  * Returns empty structure if file doesn't exist or is corrupted.
- * @returns {Object} { vaultVersion: number, vaultSalt: string, vaultVerifier: string, masterPasswordHash: string, accounts: Object }
+ * @returns {Object} { vaultVersion: number, vaultSalt: string, vaultVerifier: string, accounts: Object }
  */
 function loadAccounts() {
     try {
@@ -490,7 +488,6 @@ function setupModernVault(accountsData: any, password: any) {
     accountsData.vaultVersion = VAULT_VERSION;
     accountsData.vaultSalt = vaultSalt.toString('hex');
     accountsData.vaultVerifier = createVaultVerifier(vaultKey);
-    delete accountsData.masterPasswordHash;
     return createVaultSecret(vaultKey);
 }
 
@@ -729,7 +726,7 @@ async function selectKeyName(accounts: any, promptText: any) {
  * @returns {Promise<Object|Buffer|null>} The new vault secret, or the old one if failed/cancelled.
  */
 async function changeMasterPassword(accountsData: any, currentSecret: any) {
-    if (!hasModernVault(accountsData) && !accountsData.masterPasswordHash) {
+    if (!hasModernVault(accountsData)) {
         console.log('No master password is set yet.');
         return currentSecret;
     }
@@ -800,13 +797,9 @@ function saveAccounts(data: any) {
         vaultVersion: data && Number(data.vaultVersion) ? Number(data.vaultVersion) : 0,
         vaultSalt: data && typeof data.vaultSalt === 'string' ? data.vaultSalt : '',
         vaultVerifier: data && typeof data.vaultVerifier === 'string' ? data.vaultVerifier : '',
-        masterPasswordHash: data && typeof data.masterPasswordHash === 'string' ? data.masterPasswordHash : '',
         accounts: data && data.accounts && typeof data.accounts === 'object' ? data.accounts : {},
     };
 
-    if (!serialized.masterPasswordHash) {
-        delete serialized.masterPasswordHash;
-    }
     if (!serialized.vaultSalt) {
         delete serialized.vaultSalt;
     }

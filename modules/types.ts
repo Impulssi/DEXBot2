@@ -777,7 +777,6 @@ export interface KeysFile {
   vaultVersion: number;
   vaultSalt: string;
   vaultVerifier: string;
-  masterPasswordHash?: string;
   accounts: Record<string, { encryptedKey: string }>;
 }
 

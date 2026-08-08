@@ -24,7 +24,6 @@ interface CredentialClientOptions {
     readyFilePath?: string;
     pollIntervalMs?: number;
     requestType?: string;
-    isBroadcast?: boolean;
     timeoutMs?: number;
     sessionId?: string | null;
     botHmacSecret?: string | null;
@@ -200,7 +199,7 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
     const socketPath = getSocketPath(options);
     // Broadcast requests have their own (longer) outer timeout. Non-broadcast
     // callers can still pass timeoutMs explicitly to override.
-    const isBroadcast = options.requestType === 'broadcast' || options.isBroadcast === true;
+    const isBroadcast = options.requestType === 'broadcast';
     const defaultTimeout = isBroadcast ? DEFAULT_BROADCAST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS;
     const timeoutMs = Number.isFinite(Number(options.timeoutMs))
         ? Number(options.timeoutMs)

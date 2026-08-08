@@ -508,15 +508,6 @@ function validatePolicyConfig(raw: any): { valid: boolean; errors: string[] } {
 function validatePolicyObject(policy: any): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
 
-    // allowedOpTypes: must be array of strings
-    if (policy.allowedOpTypes !== undefined) {
-        if (!Array.isArray(policy.allowedOpTypes)) {
-            errors.push('allowedOpTypes must be an array');
-        } else if (!policy.allowedOpTypes.every((x: any) => typeof x === 'string')) {
-            errors.push('allowedOpTypes must be an array of strings');
-        }
-    }
-
     // maxOpsPerBatch: must be positive integer
     if (policy.maxOpsPerBatch !== undefined) {
         if (typeof policy.maxOpsPerBatch !== 'number' || policy.maxOpsPerBatch <= 0) {
@@ -870,7 +861,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
  */
 async function evaluatePolicy(policy: any, context: PolicyContext): Promise<{ allow: boolean; reason: string | null; policyId: string | null }> {
     try {
-        // Step 1: allowedOps check (if present) or allowedOpTypes fallback
+        // Step 1: allowedOps check (if present)
         if (policy.allowedOps && typeof policy.allowedOps === 'object') {
             for (const op of context.operations) {
                 if (!op || typeof op !== 'object') continue;
@@ -890,21 +881,6 @@ async function evaluatePolicy(policy: any, context: PolicyContext): Promise<{ al
                 const result = await evaluateOpConstraints(opName, op.op_data, constraints);
                 if (!result.allow) {
                     return result;
-                }
-            }
-        } else {
-            // Fallback: allowedOpTypes check (backward compat)
-            const allowed = policy.allowedOpTypes || [];
-            if (Array.isArray(allowed) && allowed.length > 0) {
-                for (const op of context.operations) {
-                    if (!op || typeof op !== 'object') continue;
-                    if (!allowed.includes(op.op_name)) {
-                        return {
-                            allow: false,
-                            reason: `op type "${op.op_name}" not permitted`,
-                            policyId: 'allowedOpTypes',
-                        };
-                    }
                 }
             }
         }
@@ -1218,22 +1194,21 @@ function loadBotHmacSecret(accountName: string, policyConfigPath: string, option
  *
  * @param {object} request - Parsed request: { accountName, sessionId, operations, hmac }
  * @param {object|null} policyConfig - Loaded daemon-policies.json content
- * @returns {{ valid: boolean, reason: string|null, skipped: boolean }}
- *   skipped is always false — missing secrets are rejected in strict mode.
+ * @returns {{ valid: boolean, reason: string|null }}
  */
-function verifySourceHmac(request: any, policyConfig: any): { valid: boolean; reason: string | null; skipped: boolean } {
+function verifySourceHmac(request: any, policyConfig: any): { valid: boolean; reason: string | null } {
     const accountPolicy =
         policyConfig && policyConfig.accounts && policyConfig.accounts[request.accountName];
     const secretHex = accountPolicy && accountPolicy.botHmacSecret;
 
     // Strict Mode Enforcement: Reject instantly if no secret is configured
     if (!secretHex) {
-        return { valid: false, reason: 'Strict Mode: botHmacSecret missing in daemon-policies.json', skipped: false };
+        return { valid: false, reason: 'Strict Mode: botHmacSecret missing in daemon-policies.json' };
     }
 
     const providedHmac = request.hmac;
     if (!providedHmac || typeof providedHmac !== 'string') {
-        return { valid: false, reason: 'missing hmac field', skipped: false };
+        return { valid: false, reason: 'missing hmac field' };
     }
 
     // Canonical signing payload: must match exactly what the bot computed
@@ -1251,10 +1226,10 @@ function verifySourceHmac(request: any, policyConfig: any): { valid: boolean; re
             Buffer.from(expected, 'hex'),
             Buffer.from(providedHmac, 'hex'),
         );
-        return { valid, reason: valid ? null : 'hmac mismatch', skipped: false };
+        return { valid, reason: valid ? null : 'hmac mismatch' };
     } catch {
         // Buffer.from throws if provided hmac is not valid hex or wrong length
-        return { valid: false, reason: 'invalid hmac format', skipped: false };
+        return { valid: false, reason: 'invalid hmac format' };
     }
 }
 

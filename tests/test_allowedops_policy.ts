@@ -179,8 +179,8 @@ console.log('[Test 4] Evaluate allowedOps - asset whitelist enforcement');
     assert(evalResult5.reason.includes('maxSellAmount'));
     console.log('  ✓ Amount exceeding sell limit denied');
 
-    // Test 6: Backward compatibility - fallback to allowedOpTypes
-    console.log('[Test 6] Backward compatibility - fallback to allowedOpTypes');
+    // Test 6: legacy allowedOpTypes fallback removed — ignored when allowedOps absent
+    console.log('[Test 6] legacy allowedOpTypes is no longer a restriction');
     const legacyPolicy = {
         allowedOpTypes: ['limit_order_create'],
         maxOpsPerBatch: 20,
@@ -194,10 +194,10 @@ console.log('[Test 4] Evaluate allowedOps - asset whitelist enforcement');
         ],
     };
     const evalResult6 = await policy.evaluatePolicy(legacyPolicy, context6);
-    assert.strictEqual(evalResult6.allow, true, 'Legacy allowedOpTypes should work');
-    console.log('  ✓ Legacy allowedOpTypes fallback works');
+    assert.strictEqual(evalResult6.allow, true, 'allowedOpTypes should not block an op');
+    console.log('  ✓ allowedOpTypes fallback no longer enforced');
 
-    // Should deny: operation not in legacy allowedOpTypes
+    // Operation outside the legacy allowedOpTypes list is allowed too (no restriction applied)
     const context7 = {
         accountName: 'test',
         requestType: 'sign',
@@ -206,9 +206,8 @@ console.log('[Test 4] Evaluate allowedOps - asset whitelist enforcement');
         ],
     };
     const evalResult7 = await policy.evaluatePolicy(legacyPolicy, context7);
-    assert.strictEqual(evalResult7.allow, false);
-    assert.strictEqual(evalResult7.policyId, 'allowedOpTypes');
-    console.log('  ✓ Legacy allowedOpTypes denies unlisted op types');
+    assert.strictEqual(evalResult7.allow, true, 'allowedOpTypes should be ignored when allowedOps is absent');
+    console.log('  ✓ allowedOpTypes ignored (no op-type restriction without allowedOps)');
 
     // Test 7: limit_order_update delta amount
     console.log('[Test 7] Evaluate allowedOps - limit_order_update delta amount');
@@ -734,7 +733,7 @@ console.log('[Test 4] Evaluate allowedOps - asset whitelist enforcement');
         requestType: 'sign',
         operations: new Array(150).fill({ op_name: 'limit_order_create' })
     };
-    const batchResult = await policy.evaluatePolicy({ allowedOpTypes: ['limit_order_create'] }, batchContext);
+    const batchResult = await policy.evaluatePolicy({ allowedOps: { limit_order_create: null } }, batchContext);
     assert.strictEqual(batchResult.allow, true, `Expected allow for batch size 150, got: ${batchResult.reason}`);
     console.log('  ✓ Batch size 150 allowed by default');
 
@@ -743,7 +742,7 @@ console.log('[Test 4] Evaluate allowedOps - asset whitelist enforcement');
         requestType: 'sign',
         operations: new Array(201).fill({ op_name: 'limit_order_create' })
     };
-    const batchResultTooBig = await policy.evaluatePolicy({ allowedOpTypes: ['limit_order_create'] }, batchContextTooBig);
+    const batchResultTooBig = await policy.evaluatePolicy({ allowedOps: { limit_order_create: null } }, batchContextTooBig);
     assert.strictEqual(batchResultTooBig.allow, false, 'Expected deny for batch size 201');
     assert(batchResultTooBig.reason.includes('exceeds maxOpsPerBatch 200'));
     console.log('  ✓ Batch size 201 denied by default');

@@ -28,7 +28,6 @@
  * REQUEST FORMAT:
  *   {"type": "ping", "accountName": "account-name"}
  *   {"type": "probe-account", "accountName": "account-name"}
- *   {"type": "broadcast-operation", "sessionId": "...", "accountName": "account-name", "operation": {...}}
  *   {"type": "execute-operations", "sessionId": "...", "accountName": "account-name", "operations": [...]}
  *
  * RESPONSE FORMAT:
@@ -1154,144 +1153,6 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
             return;
         }
 
-        if (type === 'broadcast-operation') {
-            const operation = request.operation;
-            if (!operation || typeof operation !== 'object') {
-                return sendError(socket, 'Missing "operation" field');
-            }
-
-            const sessionId = request.sessionId || null;
-
-            // Session validation
-            if (!checkSessionValid(accountName, sessionId)) {
-                const reason = DAEMON_ERRORS.SESSION_EXPIRED;
-                appendAuditLog({
-                    event: 'sign_denied',
-                    accountName,
-                    sessionId,
-                    reason: 'session: ' + reason,
-                    timestamp: new Date().toISOString(),
-                });
-                return sendError(socket, credentialPolicy.POLICY_DENIED_PREFIX + reason);
-            }
-
-            // Source authentication (HMAC verification)
-            // For broadcast-operation, we verify HMAC over [operation] (single-element array)
-            const hmacResult = credentialPolicy.verifySourceHmac(
-                { ...request, operations: [operation] },
-                policyConfig
-            );
-            if (!hmacResult.valid) {
-                appendAuditLog({
-                    event: 'sign_denied',
-                    accountName,
-                    sessionId,
-                    reason: 'source: ' + hmacResult.reason,
-                    timestamp: new Date().toISOString(),
-                });
-                return sendError(socket, credentialPolicy.POLICY_DENIED_PREFIX + DAEMON_ERRORS.SOURCE_AUTH_DENIED);
-            }
-            if (hmacResult.skipped) {
-                debugLog(`[warn] no botHmacSecret configured for ${accountName} — source authentication skipped`);
-            }
-
-            // Policy evaluation — treat as single-operation batch
-            const policy = credentialPolicy.resolveAccountPolicy(policyConfig, accountName);
-            const context = credentialPolicy.buildPolicyContext({
-                ...request,
-                operations: [operation],
-            });
-
-            credentialPolicy.evaluatePolicy(policy, context)
-                .then(async (result: any) => {
-                    if (!result.allow) {
-                        appendAuditLog({
-                            event: 'sign_denied',
-                            accountName,
-                            sessionId,
-                            policyId: result.policyId,
-                            reason: result.reason,
-                            opCount: 1,
-                            opTypes: [operation && operation.op_name].filter(Boolean),
-                            timestamp: new Date().toISOString(),
-                        });
-                        sendError(socket, credentialPolicy.POLICY_DENIED_PREFIX + result.reason);
-                        return;
-                    }
-
-                    const privateKey = await loadCurrentPrivateKey(accountName);
-                    const broadcastNodeUrl = typeof request.nodeUrl === 'string' ? request.nodeUrl : null;
-                    // Start the broadcast deadline NOW, before the
-                    // serializeBroadcast queue wait, so total daemon wall time
-                    // per request stays inside the bot's outer socket window.
-                    // If the deadline fires while queued (burst concurrency),
-                    // the queued broadcast aborts via guard.isFired() before
-                    // it starts — it can never land after the bot verified
-                    // chain absence and re-broadcast the same operation.
-                    const broadcastStartedAt = Date.now();
-                    const broadcastGuard = createBroadcastGuard(accountName, broadcastStartedAt, resolveInnerDeadlineMs());
-                    activeGuards.add(broadcastGuard);
-                    const broadcastWorkRef: { work: Promise<unknown> | null } = { work: null };
-                    let signResult: any;
-                    try {
-                        signResult = await serializeBroadcast(
-                            () => broadcastWithDeadline(
-                                accountName, privateKey,
-                                (client: any) => client.broadcast(operation),
-                                broadcastNodeUrl,
-                                { guard: broadcastGuard, startedAt: broadcastStartedAt, workRef: broadcastWorkRef }
-                            ),
-                            () => broadcastWorkRef.work || Promise.resolve()
-                        );
-                    } catch (broadcastErr: any) {
-                        if (broadcastErr && broadcastErr.code === DAEMON_CODES.BROADCAST_DEADLINE) {
-                            appendAuditLog({
-                                event: 'sign_timeout',
-                                accountName,
-                                sessionId,
-                                nodeUrl: broadcastGuard.currentNode || broadcastNodeUrl,
-                                opCount: 1,
-                                opTypes: [operation && operation.op_name].filter(Boolean),
-                                ageMs: broadcastErr.ageMs,
-                                startedAt: broadcastErr.startedAt
-                                    ? new Date(broadcastErr.startedAt).toISOString()
-                                    : null,
-                                timestamp: new Date().toISOString(),
-                            });
-                            // Tell the bot the chain state is uncertain so it
-                            // can run the recovery path (read chain, match by
-                            // fingerprint, adopt or discard). Name the node
-                            // actually in play at the deadline (the bot's
-                            // preferred node may be innocent after daemon-side
-                            // rotation, and a queued deadline involves none).
-                            return sendError(
-                                socket,
-                                'chain status uncertain after inner deadline',
-                                DAEMON_CODES.BROADCAST_DEADLINE,
-                                broadcastGuard.currentNode
-                                    ? { nodeUrl: broadcastGuard.currentNode }
-                                    : {}
-                            );
-                        }
-                        throw broadcastErr;
-                    } finally {
-                        activeGuards.delete(broadcastGuard);
-                    }
-
-                    appendAuditLog({
-                        event: 'sign_allowed',
-                        accountName,
-                        sessionId,
-                        opCount: 1,
-                        opTypes: [operation && operation.op_name].filter(Boolean),
-                        timestamp: new Date().toISOString(),
-                    });
-                    sendSuccess(socket, signResult);
-                })
-                .catch((error: any) => sendError(socket, getErrorMessage(error)));
-            return;
-        }
-
         if (type === 'execute-operations') {
             const operations = request.operations;
             if (!Array.isArray(operations)) {
@@ -1324,9 +1185,6 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
                     timestamp: new Date().toISOString(),
                 });
                 return sendError(socket, credentialPolicy.POLICY_DENIED_PREFIX + DAEMON_ERRORS.SOURCE_AUTH_DENIED);
-            }
-            if (hmacResult.skipped) {
-                debugLog(`[warn] no botHmacSecret configured for ${accountName} — source authentication skipped`);
             }
 
             // Policy evaluation — before any key material is touched

@@ -97,7 +97,7 @@ modules/
 │   ├── bot_supervisor.ts          per-bot process supervision
 │   ├── child_env.ts               child process environment
 │   ├── credential_bootstrap.ts    daemon startup
-│   ├── credential_daemon.ts       signing daemon
+│   ├── credential_daemon.ts       daemon launch controller
 │   ├── credential_secret.ts       secret management
 │   ├── foreign_cred_daemon.ts     external daemon client
 │   ├── headless_password.ts       headless password storage
@@ -125,7 +125,7 @@ modules/
 └── utils/
     ├── base58check.ts             Base58Check encoding
     ├── build_dir.ts               BUILD_DIR constant helper
-    ├── fs_utils.ts                atomic JSON, read/write, mkdirp
+    ├── errors.ts                  getErrorMessage helper
     └── math_utils.ts              re-exports roundTo, fixedTo, roundToDecimals from order/utils/math
 ```
 

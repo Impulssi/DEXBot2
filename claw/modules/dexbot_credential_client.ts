@@ -19,9 +19,9 @@ function getSocketPath(options: Record<string, any> = {}) {
  * - the daemon retries internally only failures that provably never reached
  *   the chain; an uncertain broadcast is never re-signed.
  *
- * The daemon's broadcast-operation handler and the execute-operations handler
- * evaluate identical policy/HMAC contexts for a single-operation array, so
- * this delegation changes no daemon-side semantics.
+ * The daemon's execute-operations handler evaluates the single-operation array
+ * with the same policy/HMAC context as any other batch, so this delegation
+ * changes no daemon-side semantics.
  */
 function broadcastOperationViaCredentialDaemon(accountName: any, operation: any, options: Record<string, any> = {}) {
   if (!accountName) {

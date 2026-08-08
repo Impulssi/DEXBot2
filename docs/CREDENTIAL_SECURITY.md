@@ -159,7 +159,6 @@ the bootstrap socket from being left open indefinitely.
 |-----------------------|-------------|
 | `ping`                | Lightweight health check (no session created, no audit log entry) |
 | `probe-account`       | Confirms an account is available and creates a session (no key material returned) |
-| `broadcast-operation` | Signs and broadcasts a single operation; returns result |
 | `execute-operations`  | Signs and broadcasts a batch; returns result |
 
 The daemon **never** exports raw private keys. All signing happens internally;
@@ -292,17 +291,12 @@ predictable for monitoring and alerting.
 ### Legacy vault migration
 
 Older vaults stored a plain **SHA-256** hash of the master password for
-verification. This hash is deliberately weak by modern standards. During the
-first successful unlock of a legacy vault, the code:
-
-1. Verifies the password against the SHA-256 hash.
-2. Re-encrypts all keys under the v2 scrypt-derived vault key.
-3. Writes the HMAC-SHA256 vault verifier.
-4. **Deletes `masterPasswordHash`** from the vault file.
-
-After migration the weak hash is gone and subsequent unlocks use only the
-HMAC-SHA256 verifier. Legacy data cannot be decrypted without first migrating
-through this path.
+verification. This hash is deliberately weak by modern standards. The v2
+scrypt-derived vault format replaced it entirely: `masterPasswordHash` is no
+longer read, written, or migrated. A legacy vault that has not been converted
+is rejected by `unlockWithPassword` with "Unsupported key vault format" —
+recreate `profiles/keys.json` with the current key manager to adopt the v2
+format (HMAC-SHA256 vault verifier, scrypt-derived key).
 
 ---
 
@@ -397,7 +391,7 @@ accounts or after an unclean exit.
 | `probeBootstrapSocket` (live probe before cleanup) | Bootstrap dir cleanup | Prevents removing a live bootstrap directory |
 | `delete process.env.DEXBOT_CRED_BOOTSTRAP_PATH_FILE` | Daemon startup | Bootstrap path cannot be inherited by child processes or read from /proc |
 | Attempt limit (3) + immediate exit | Interactive auth | Limits online brute-force window |
-| SHA-256 hash deleted after migration | Legacy vault upgrade | Weak verifier removed on first successful unlock |
+| `masterPasswordHash` removed | Legacy vault upgrade | Weak SHA-256 verifier no longer read, written, or migrated |
 
 ---
 
