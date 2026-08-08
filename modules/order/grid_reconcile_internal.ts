@@ -7,13 +7,13 @@
 
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
-import { readOpenOrdersGuarded } from '../chain_orders';
-import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, resolveGapBand } from './utils/math';
-import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder } from './utils/order';
-import { resolveAccountRef } from './utils/system';
-import * as Format from './format';
-import { getErrorMessage } from '../utils/errors';
+import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
+import { readOpenOrdersGuarded } from '../chain_orders.js';
+import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, resolveGapBand } from './utils/math.js';
+import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder } from './utils/order.js';
+import { resolveAccountRef } from './utils/system.js';
+import * as Format from './format.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 function computePlacementPriceCollision(manager: any, gridOrder: any): any {
     const createPrice = gridOrder.price;

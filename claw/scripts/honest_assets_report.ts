@@ -1,6 +1,6 @@
 import { getAsset, getBackingAsset, getBitassetData, getCallOrders, getDynamicGlobalProperties, listAssets } from '../modules/chain_queries.js';
 import { getHardcodedHonestMoneyBridge } from '../modules/honest_ecosystem.js';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_MAX_PAGES = 100;

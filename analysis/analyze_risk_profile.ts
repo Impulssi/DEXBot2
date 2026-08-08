@@ -9,9 +9,9 @@
  * (σ_ama_delta) for calibrating AMA_DELTA_THRESHOLD_PERCENT.
  */
 import fs from 'node:fs';
-import { calculateAMA } from '../market_adapter/core/strategies/ama';
-import { MARKET_ADAPTER } from '../modules/constants';
-import { generateHTML } from '../market_adapter/lp_chart_core';
+import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
+import { MARKET_ADAPTER } from '../modules/constants.js';
+import { generateHTML } from '../market_adapter/lp_chart_core.js';
 
 'use strict';
 function normSInv(p) {
@@ -37,8 +37,8 @@ function normSInv(p) {
 function quantileToSigma(q) {
     return normSInv((1 + q) / 2);
 }
-import { calcStdDev } from './math_utils';
-import { getStorage } from '../modules/storage';
+import { calcStdDev } from './math_utils.js';
+import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
 function getAmaDeltaStdDev(closes, amaConfig, warmup) {
     const amaValues = calculateAMA(closes, amaConfig);

@@ -16,10 +16,13 @@
  */
 
 
-import { discoverPositions } from './position_discovery';
-import { assessPosition } from './position_health';
-import { fetchTrendInput } from './feed_price_source';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { discoverPositions } from './position_discovery.js';
+import { assessPosition } from './position_health.js';
+import { fetchTrendInput } from './feed_price_source.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 'use strict';
 
 

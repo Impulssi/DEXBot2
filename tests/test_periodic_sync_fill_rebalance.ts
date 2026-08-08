@@ -13,9 +13,10 @@ setCachedModule(
         setSuppressConnectionLog() {},
     }
 );
-const chainOrders = require('../modules/chain_orders');
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
 const maintenanceRuntime = require('../modules/dexbot_maintenance_runtime');
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 const { withDynamicWeightFiles } = require('./helpers/dynamic_weight_files');
 
 class MockAsyncLock {

@@ -1,11 +1,14 @@
 
-import { getStorage } from '../../modules/storage';
-import { path } from '../../modules/path_api';
-import { PATHS, getRecalculateTriggerFile } from '../../modules/paths';
-import { loadSettingsFile, resolveRawBotEntries, saveSettingsFile, normalizeBotEntries } from '../../modules/bot_settings';
-import { normalizeMode, detectMode, setPreferredMode, describeModeChoice } from './launcher_mode_detector';
-import { normalizeRoot, resolveRuntimeScript } from './launcher_paths';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { getStorage } from '../../modules/storage/index.js';
+import { path } from '../../modules/path_api.js';
+import { PATHS, getRecalculateTriggerFile } from '../../modules/paths.js';
+import { loadSettingsFile, resolveRawBotEntries, saveSettingsFile, normalizeBotEntries } from '../../modules/bot_settings.js';
+import { normalizeMode, detectMode, setPreferredMode, describeModeChoice } from './launcher_mode_detector.js';
+import { normalizeRoot, resolveRuntimeScript } from './launcher_paths.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 'use strict';
 
 const storage = getStorage();

@@ -1,14 +1,17 @@
 
-import { createClawInfrastructure } from './claw_infra';
-import { describeClawBridge } from './claw_manifest';
-import { runMemuCommand } from './memu_bridge';
-import { clone } from './utils';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { createClawInfrastructure } from './claw_infra.js';
+import { describeClawBridge } from './claw_manifest.js';
+import { runMemuCommand } from './memu_bridge.js';
+import { clone } from './utils.js';
 import { adjustMpaCollateral, borrowMpa, cancelLimitOrder, createLimitOrder, executeBatch, getMpaPosition, getOpenOrders, repayMpaDebt, buildUpdateLimitOrderOperation, updateLimitOrder, settleMpa } from './chain_actions.js';
 import { buildCloseShortPlan, buildOpenShortPlan, buildTakeProfitPlan, closeShortOnBts, openShortOnBts, placeTakeProfitBuyOrderOnBts } from './short_mpa_strategy.js';
 import { launcherRun, launcherDrystart, launcherReset, launcherDisable, launcherPm2Start, launcherPm2Stop, launcherPm2Delete, launcherPm2Restart } from './claw_launcher.js';
 
 
-import type { ClawBridgeOptions, Logger } from './types';
+import type { ClawBridgeOptions, Logger } from './types.js';
 
 function stripPrivateKey(options: ClawBridgeOptions = {}): ClawBridgeOptions {
   const sanitized = { ...options };

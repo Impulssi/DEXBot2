@@ -1,14 +1,14 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { calculateAMA } from '../../market_adapter/core/strategies/ama';
-import { generateHTML } from '../../market_adapter/lp_chart_core';
-import { toIntervalLabel } from '../../market_adapter/interval_utils';
-import { loadCandleFile } from '../math_utils';
-import { MARKET_ADAPTER } from '../../modules/constants';
-import { getStorage } from '../../modules/storage';
+import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
+import { generateHTML } from '../../market_adapter/lp_chart_core.js';
+import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
+import { loadCandleFile } from '../math_utils.js';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
+import { getStorage } from '../../modules/storage/index.js';
 const { ensureDir } = getStorage();
-import { PATHS } from '../../modules/paths';
+import { PATHS } from '../../modules/paths.js';
 'use strict';
 
 /**

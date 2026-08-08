@@ -1,11 +1,11 @@
 
 import net from 'node:net';
 import os from 'node:os';
-import { path } from '../path_api';
-import { TIMING } from '../constants';
-import { assertPrivatePathSecurity } from '../credential_runtime';
-import { getErrorMessage } from '../utils/errors';
-import { getStorage } from '../storage';
+import { path } from '../path_api.js';
+import { TIMING } from '../constants.js';
+import { assertPrivatePathSecurity } from '../credential_runtime.js';
+import { getErrorMessage } from '../utils/errors.js';
+import { getStorage } from '../storage/index.js';
 const storage = getStorage();
 const { unlink: safeUnlink } = storage;
 

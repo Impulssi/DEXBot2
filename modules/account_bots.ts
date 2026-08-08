@@ -97,16 +97,16 @@
  */
 
 
-import { path } from './path_api';
-import { getStorage } from './storage';
-import { ensureProfilesDirectory, readInput } from './order/utils/system';
-import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER, MARKET_ADAPTER, NODE_MANAGEMENT, FILL_PROCESSING, PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE, COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER } from './constants';
-import { PATHS } from './paths';
-import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings';
-import { parseJsonWithComments } from './order/utils/system';
-import { assertNoDuplicateBotKeys } from './bot_settings';
-import { mergeSettings } from './settings_merge';
-import { getErrorMessage } from './utils/errors';
+import { path } from './path_api.js';
+import { getStorage } from './storage/index.js';
+import { ensureProfilesDirectory, readInput } from './order/utils/system.js';
+import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER, MARKET_ADAPTER, NODE_MANAGEMENT, FILL_PROCESSING, PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE, COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER } from './constants.js';
+import { PATHS } from './paths.js';
+import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
+import { parseJsonWithComments } from './order/utils/system.js';
+import { assertNoDuplicateBotKeys } from './bot_settings.js';
+import { mergeSettings } from './settings_merge.js';
+import { getErrorMessage } from './utils/errors.js';
 const storage = getStorage();
 const { writeJSON } = storage;
 

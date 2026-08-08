@@ -45,8 +45,9 @@ const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, TIMING } = require('../modules/constants');
 const { checkWindowDust, hasAnyDust, getDustOrders } = require('../modules/order/grid');
 const { _setFeeCache } = require('../modules/order/utils/math');
-const chainOrders = require('../modules/chain_orders');
-const DEXBot = require('../modules/dexbot_class');
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
+const DEXBot = require('../modules/dexbot_class').default;
 const {
     isOrderDoesNotExistError,
     recordDustFirstSeen,

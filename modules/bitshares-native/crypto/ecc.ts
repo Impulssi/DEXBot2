@@ -1,8 +1,8 @@
 'use strict';
 
-import { createHash, createHmac, randomBytes as cryptoRandomBytes, createECDH } from '../../crypto/sync';
-import { base58Encode as _base58Encode, base58Decode as _base58Decode } from '../../utils/base58check';
-import { getErrorMessage } from '../../utils/errors';
+import { createHash, createHmac, randomBytes as cryptoRandomBytes, createECDH } from '../../crypto/sync.js';
+import { base58Encode as _base58Encode, base58Decode as _base58Decode } from '../../utils/base58check.js';
+import { getErrorMessage } from '../../utils/errors.js';
 
 interface EcPoint {
     x: bigint;

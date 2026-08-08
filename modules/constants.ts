@@ -127,10 +127,10 @@
 
 // Order categories used by the OrderManager when classifying grid entries.
 
-import { BUILD_DIR } from './utils/build_dir';
-import { readGeneralSettings } from './general_settings';
-import { mergeSettings } from './settings_merge';
-import { getErrorMessage } from './utils/errors';
+import { BUILD_DIR } from './utils/build_dir.js';
+import { readGeneralSettings } from './general_settings.js';
+import { mergeSettings } from './settings_merge.js';
+import { getErrorMessage } from './utils/errors.js';
 const ORDER_TYPES = Object.freeze({
     SELL: 'sell',
     BUY: 'buy',

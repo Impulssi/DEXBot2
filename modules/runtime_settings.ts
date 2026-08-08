@@ -1,8 +1,11 @@
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 import {
     GRID_LIMITS, FEE_PARAMETERS, INCREMENT_BOUNDS, TIMING,
     LOG_LEVEL, LOGGING_CONFIG, FILL_PROCESSING,
     PIPELINE_TIMING, API_LIMITS,
-} from './constants';
+} from './constants.js';
 
 function _toScreamingCase(key: string): string {
     return key.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();

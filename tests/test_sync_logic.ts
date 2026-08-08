@@ -21,7 +21,7 @@ setCachedModule(
         setSuppressConnectionLog() {},
     }
 );
-const { OrderManager } = require('../modules/order/index');
+const { OrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
 

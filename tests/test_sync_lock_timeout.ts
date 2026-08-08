@@ -1,6 +1,6 @@
 
 const assert = require('assert');
-const AsyncLock = require('../modules/order/async_lock');
+const AsyncLock = require('../modules/order/async_lock').default;
 const { getErrorMessage } = require('../modules/utils/errors');
 
 

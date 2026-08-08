@@ -1,6 +1,6 @@
 const assert = require('assert');
 const Grid = require('../modules/order/grid');
-const { utils: OrderUtils } = require('../modules/order/index');
+const { utils: OrderUtils } = require('../modules/order/index').default;
 const { ORDER_TYPES, DEFAULT_CONFIG } = require('../modules/constants');
 const Format = require('../modules/order/format');
 

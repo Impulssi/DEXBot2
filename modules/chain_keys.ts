@@ -83,16 +83,19 @@
  */
 
 
-import { path } from './path_api';
-import { readInput, readPassword, sleep } from './order/utils/system';
-import { TIMING, CREDENTIAL_PROMPTS } from './constants';
-import { PATHS } from './paths';
-import Logger from './logger';
-import { getStorage } from './storage';
-import { sendSocketJsonRequest } from './socket_json_client';
-import { resolvePrivateKey as resolveAuthKey } from './authority_resolver';
-import { Config } from './config';
-import * as base58check from './utils/base58check';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { path } from './path_api.js';
+import { readInput, readPassword, sleep } from './order/utils/system.js';
+import { TIMING, CREDENTIAL_PROMPTS } from './constants.js';
+import { PATHS } from './paths.js';
+import Logger from './logger.js';
+import { getStorage } from './storage/index.js';
+import { sendSocketJsonRequest } from './socket_json_client.js';
+import { resolvePrivateKey as resolveAuthKey } from './authority_resolver.js';
+import { Config } from './config.js';
+import * as base58check from './utils/base58check.js';
 import {
     randomBytes,
     hkdfSync,
@@ -101,7 +104,7 @@ import {
     timingSafeEqual,
     createCipheriv,
     createDecipheriv,
-} from './crypto/sync';
+} from './crypto/sync.js';
 
 let _net: any;
 function getNet(): any {
@@ -121,9 +124,9 @@ import {
     getCredentialReadyFilePath,
     getCredentialSocketPath,
     assertPrivatePathSecurity,
-} from './credential_runtime';
-import { getErrorMessage } from './utils/errors';
-import { hasProcess } from './env';
+} from './credential_runtime.js';
+import { getErrorMessage } from './utils/errors.js';
+import { hasProcess } from './env.js';
 const storage = getStorage();
 const { ensureDir } = storage;
 
@@ -525,8 +528,8 @@ function checkKeysFileSecurity() {
  * Unlock the key vault with a master password.
  * Uses modern scrypt v2 vault format with HMAC verification.
  * @param {string} password - Master password
- * @param {import('./types').KeysFile} [accountsData=loadAccounts()] - Accounts data object
- * @returns {import('./types').VaultSecret} Derived vault secret
+ * @param {import('./types.js').KeysFile} [accountsData=loadAccounts()] - Accounts data object
+ * @returns {import('./types.js').VaultSecret} Derived vault secret
  * @throws {MasterPasswordError} If password is incorrect
  * @throws {Error} If vault format is unsupported
  */
@@ -1138,5 +1141,3 @@ function probeAccountInDaemon(accountName: any, timeout: any = TIMING.DAEMON_PIN
 }
 
 export { validatePrivateKey, loadAccounts, saveAccounts, checkKeysFileSecurity, encrypt, decrypt, deriveVaultKey, createDaemonSigningToken, createSessionSecret, createVaultSecret, isVaultSecret, isDaemonSigningToken, unlockWithPassword, main, authenticate, getPrivateKey, resolvePrivateKey, isMasterPasswordFailure, MasterPasswordError, isDaemonReady, isDaemonResponsive, waitForDaemon, probeAccountInDaemon, pingDaemon }
-module.exports = { validatePrivateKey, loadAccounts, saveAccounts, checkKeysFileSecurity, encrypt, decrypt, deriveVaultKey, createDaemonSigningToken, createSessionSecret, createVaultSecret, isVaultSecret, isDaemonSigningToken, unlockWithPassword, main, authenticate, getPrivateKey, resolvePrivateKey, isMasterPasswordFailure, MasterPasswordError, isDaemonReady, isDaemonResponsive, waitForDaemon, probeAccountInDaemon, pingDaemon }
-

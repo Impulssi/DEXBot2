@@ -1,7 +1,8 @@
 process.env.OPEN_ORDERS_SYNC_LOOP_MS = '20';
 const assert = require('assert');
-const chainOrders = require('../modules/chain_orders');
-const DEXBot = require('../modules/dexbot_class');
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
+const DEXBot = require('../modules/dexbot_class').default;
 const { withDynamicWeightFiles } = require('./helpers/dynamic_weight_files');
 
 class MockAsyncLock {

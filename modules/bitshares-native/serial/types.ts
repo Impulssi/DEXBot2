@@ -1,11 +1,11 @@
 
-import { getNodeRequire } from '../../env';
-import * as CC from './chain_constants';
-import { BufferWriter } from './serializer';
-import { OBJECT_TYPE } from './chain_constants';
+import { createRequire } from 'node:module';
+import * as CC from './chain_constants.js';
+import { BufferWriter } from './serializer.js';
+import { OBJECT_TYPE } from './chain_constants.js';
 'use strict';
 
-const _require = getNodeRequire();
+const _require = createRequire(import.meta.url);
 let _Buffer: any;
 const Buffer = new Proxy({} as any, {
     get(_, prop) {

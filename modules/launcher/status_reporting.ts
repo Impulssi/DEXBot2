@@ -1,7 +1,7 @@
 
-import { getProcessDiscovery, formatUptime } from '../process_discovery';
-import { Config } from '../config';
-import { runtime } from '../runtime';
+import { getProcessDiscovery, formatUptime } from '../process_discovery.js';
+import { Config } from '../config.js';
+import { runtime } from '../runtime.js';
 'use strict';
 
 

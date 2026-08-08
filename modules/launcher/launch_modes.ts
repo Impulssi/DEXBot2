@@ -1,5 +1,5 @@
 
-import { Config } from '../config';
+import { Config } from '../config.js';
 const CONTROL_COMMANDS = new Set(['status', 'stat', 'stop', 'delete', 'restart', 'stop-all', 'restart-all', 'shutdown']);
 
 function findFirstPositionalArg(args: string[]): string | null {

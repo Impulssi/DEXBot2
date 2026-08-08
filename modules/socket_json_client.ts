@@ -18,8 +18,8 @@
  */
 'use strict';
 
-import { getNodeRequire } from './env';
-const _require = getNodeRequire();
+import { createRequire } from 'node:module';
+const _require = createRequire(import.meta.url);
 
 export type SocketJsonFailureKind = 'timeout' | 'connection' | 'closed' | 'invalid';
 

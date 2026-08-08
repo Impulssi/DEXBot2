@@ -1,11 +1,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { PATHS } from '../modules/paths';
-import { getStorage } from '../modules/storage';
+import { PATHS } from '../modules/paths.js';
+import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
-import { MARKET_ADAPTER } from '../modules/constants';
-import { loadMarketProfiles } from './tradingview/tradingview_uplot_chart_generator';
+import { MARKET_ADAPTER } from '../modules/constants.js';
+import { loadMarketProfiles } from './tradingview/tradingview_uplot_chart_generator.js';
 'use strict';
 
 

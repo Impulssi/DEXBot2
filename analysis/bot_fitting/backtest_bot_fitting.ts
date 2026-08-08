@@ -1,8 +1,8 @@
 import path from 'node:path';
-import { calculateAMA } from '../../market_adapter/core/strategies/ama';
-import { range } from '../math_utils';
-import { parseListOrRange, loadLpData, fmt } from './shared_utils';
-import { getStorage } from '../../modules/storage';
+import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
+import { range } from '../math_utils.js';
+import { parseListOrRange, loadLpData, fmt } from './shared_utils.js';
+import { getStorage } from '../../modules/storage/index.js';
 const { ensureDir, readJSON, writeJSON } = getStorage();
 
 'use strict';

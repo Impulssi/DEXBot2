@@ -1,5 +1,5 @@
 
-import { Config } from '../../modules/config';
+import { Config } from '../../modules/config.js';
 import { borrowMpa, createLimitOrder, repayMpaDebt } from './chain_actions.js';
 import { requireBtsBackedMpa } from './mpa_utils.js';
 

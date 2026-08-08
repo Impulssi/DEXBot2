@@ -1,4 +1,7 @@
-import type { CryptoProvider, ScryptOptions, Aes256GcmEncryptResult } from './provider';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import type { CryptoProvider, ScryptOptions, Aes256GcmEncryptResult } from './provider.js';
 
 let _crypto: any;
 function getNodeCrypto(): any {

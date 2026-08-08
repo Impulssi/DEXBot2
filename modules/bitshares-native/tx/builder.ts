@@ -1,10 +1,10 @@
 
-import { NATIVE_CLIENT } from '../../constants';
-import { ops as serialOps } from '../serial';
-import getEcc from '../crypto/ecc_selector';
-import Logger from '../../logger';
-import * as txCache from './tx_cache';
-import { getErrorMessage } from '../../utils/errors';
+import { NATIVE_CLIENT } from '../../constants.js';
+import { ops as serialOps } from '../serial/index.js';
+import getEcc from '../crypto/ecc_selector.js';
+import Logger from '../../logger.js';
+import * as txCache from './tx_cache.js';
+import { getErrorMessage } from '../../utils/errors.js';
 'use strict';
 
 const { TRANSACTION, CHAIN, OPERATIONS } = NATIVE_CLIENT;

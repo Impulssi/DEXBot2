@@ -1,6 +1,7 @@
 const assert = require('assert');
 const Module = require('module');
 const path = require('path');
+const { setCachedModule, restoreCachedModule } = require('../../tests/helpers/module_cache_stub');
 
 function clearModule(modulePath) {
   delete require.cache[modulePath];
@@ -26,36 +27,30 @@ async function testClawBitsharesClientNativePathAndConnection() {
 async function testClawBitsharesClientWaitForConnectedTriggersNativeConnect() {
   const clawBitsharesPath = require.resolve('../modules/bitshares_client');
   const nativePath = require.resolve('../../modules/bitshares-native');
-  const originalNativeEntry = require.cache[nativePath];
   let connectCalls = 0;
   let nodes = [];
   let connected = false;
 
-  require.cache[nativePath] = {
-    id: nativePath,
-    filename: nativePath,
-    loaded: true,
-    exports: {
-      createChainClient: ({ onStatusChange }) => ({
-        connect: async () => {
-          connectCalls += 1;
-          connected = true;
-          if (typeof onStatusChange === 'function') onStatusChange('connected');
-        },
-        disconnect: () => {
-          connected = false;
-          if (typeof onStatusChange === 'function') onStatusChange('closed');
-        },
-        getStatus: () => connected ? 'connected' : 'closed',
-        setNodes: (nextNodes) => { nodes = Array.isArray(nextNodes) ? nextNodes.slice() : []; },
-        getNodes: () => nodes.slice(),
-        getCoreAsset: () => '1.3.0',
-        db: {},
-        history: {},
-      }),
-      createSigningClient: () => ({ client: { initPromise: Promise.resolve(), newTx() {} } }),
-    }
-  } as any;
+  const originalNativeEntry = setCachedModule(nativePath, {
+    createChainClient: ({ onStatusChange }) => ({
+      connect: async () => {
+        connectCalls += 1;
+        connected = true;
+        if (typeof onStatusChange === 'function') onStatusChange('connected');
+      },
+      disconnect: () => {
+        connected = false;
+        if (typeof onStatusChange === 'function') onStatusChange('closed');
+      },
+      getStatus: () => connected ? 'connected' : 'closed',
+      setNodes: (nextNodes) => { nodes = Array.isArray(nextNodes) ? nextNodes.slice() : []; },
+      getNodes: () => nodes.slice(),
+      getCoreAsset: () => '1.3.0',
+      db: {},
+      history: {},
+    }),
+    createSigningClient: () => ({ client: { initPromise: Promise.resolve(), newTx() {} } }),
+  } as any);
 
   try {
     clearModule(clawBitsharesPath);
@@ -68,11 +63,7 @@ async function testClawBitsharesClientWaitForConnectedTriggersNativeConnect() {
     assert.ok(Array.isArray(clawBitshares.BitShares.node) && clawBitshares.BitShares.node.length > 0, 'default node list should be populated');
   } finally {
     clearModule(clawBitsharesPath);
-    if (originalNativeEntry) {
-      require.cache[nativePath] = originalNativeEntry;
-    } else {
-      delete require.cache[nativePath];
-    }
+    restoreCachedModule(nativePath, originalNativeEntry);
   }
 }
 
@@ -80,7 +71,7 @@ function testClawRootExportsAvoidSilentCollisions() {
   const clawIndexPath = require.resolve('..');
   clearModule(clawIndexPath);
 
-  const claw = require('..');
+  const claw = require('..').default;
   const hermesManifest = claw.describeClawBridge({ runtimeName: 'hermes' });
   const openclawManifest = claw.describeClawBridge({ runtimeName: 'openclaw' });
   const openfangManifest = claw.describeClawBridge({ runtimeName: 'openfang' });
@@ -109,19 +100,16 @@ function testClawCommandInjectsRuntimeNameViaOption() {
   const clawInfraPath = require.resolve('../modules/claw_infra');
 
   let capturedOptions = null;
-  require.cache[clawInfraPath] = {
-    id: clawInfraPath, filename: clawInfraPath, loaded: true,
-    exports: {
-      createClawInfrastructure: (opts) => {
-        capturedOptions = opts;
-        return {
-          runtime: { name: opts.runtime?.name || 'claw-bridge', accountName: null },
-          profiles: {},
-          market: {}
-        };
-      }
+  const originalClawInfra = setCachedModule(clawInfraPath, {
+    createClawInfrastructure: (opts) => {
+      capturedOptions = opts;
+      return {
+        runtime: { name: opts.runtime?.name || 'claw-bridge', accountName: null },
+        profiles: {},
+        market: {}
+      };
     }
-  } as any;
+  } as any);
 
   clearModule(clawBridgePath);
   const { runClawCommand } = require('../modules/claw_bridge');
@@ -130,7 +118,7 @@ function testClawCommandInjectsRuntimeNameViaOption() {
   assert.strictEqual(capturedOptions.runtime.name, 'openfang', 'runtimeName option should propagate to runtime.name');
 
   clearModule(clawBridgePath);
-  clearModule(clawInfraPath);
+  restoreCachedModule(clawInfraPath, originalClawInfra);
 }
 
 function testRuntimeSkillTomlQuotesPayloadPlaceholders() {
@@ -160,35 +148,25 @@ function testLiquidityPoolWrapperInjectsSharedBitSharesClient() {
   let capturedPoolArgs = null;
   let capturedPriceArgs = null;
 
-  require.cache[bitsharesPath] = {
-    id: bitsharesPath,
-    filename: bitsharesPath,
-    loaded: true,
-    exports: { BitShares: sharedBitShares }
-  } as any;
-  require.cache[dexbotBridgePath] = {
-    id: dexbotBridgePath,
-    filename: dexbotBridgePath,
-    loaded: true,
-    exports: {
-      getDexbot2Root: () => '/tmp',
-      loadDexbotOrderSystemUtils: () => ({
-        cloneMap: (value) => value,
-        deepFreeze: (value) => value,
-        derivePoolPrice: (...args) => {
-          capturedPoolArgs = args;
-          return 'pool-price';
-        },
-        derivePrice: (...args) => {
-          capturedPriceArgs = args;
-          return 'derived-price';
-        },
-        loadAmaCenterPrice: () => null,
-        lookupAsset: () => null
-      }),
-      requireDexbot2Module: () => null
-    }
-  } as any;
+  const originalBitshares = setCachedModule(bitsharesPath, { BitShares: sharedBitShares } as any);
+  const originalDexbotBridge = setCachedModule(dexbotBridgePath, {
+    getDexbot2Root: () => '/tmp',
+    loadDexbotOrderSystemUtils: () => ({
+      cloneMap: (value) => value,
+      deepFreeze: (value) => value,
+      derivePoolPrice: (...args) => {
+        capturedPoolArgs = args;
+        return 'pool-price';
+      },
+      derivePrice: (...args) => {
+        capturedPriceArgs = args;
+        return 'derived-price';
+      },
+      loadAmaCenterPrice: () => null,
+      lookupAsset: () => null
+    }),
+    requireDexbot2Module: () => null
+  } as any);
   clearModule(liquidityPoolsPath);
 
   const liquidityPools = require('../modules/liquidity_pools');
@@ -208,8 +186,8 @@ function testLiquidityPoolWrapperInjectsSharedBitSharesClient() {
   );
 
   clearModule(liquidityPoolsPath);
-  clearModule(dexbotBridgePath);
-  clearModule(bitsharesPath);
+  restoreCachedModule(dexbotBridgePath, originalDexbotBridge);
+  restoreCachedModule(bitsharesPath, originalBitshares);
 }
 
 async function testDecisionLoopReusesAnalyzerStateForDuplicateMarkets() {
@@ -247,50 +225,30 @@ async function testDecisionLoopReusesAnalyzerStateForDuplicateMarkets() {
     }
   }
 
-  require.cache[discoveryPath] = {
-    id: discoveryPath,
-    filename: discoveryPath,
-    loaded: true,
-    exports: {
-      discoverPositions: async () => ([
-        { id: 'pos-1', market: 'HONEST.USD/BTS', mpaSymbol: 'HONEST.USD', onChain: { debtAmount: 5 } },
-        { id: 'pos-2', market: 'HONEST.USD/BTS', mpaSymbol: 'HONEST.USD', onChain: { debtAmount: 3 } }
-      ])
+  const originalDiscovery = setCachedModule(discoveryPath, {
+    discoverPositions: async () => ([
+      { id: 'pos-1', market: 'HONEST.USD/BTS', mpaSymbol: 'HONEST.USD', onChain: { debtAmount: 5 } },
+      { id: 'pos-2', market: 'HONEST.USD/BTS', mpaSymbol: 'HONEST.USD', onChain: { debtAmount: 3 } }
+    ])
+  } as any);
+  const originalHealth = setCachedModule(healthPath, {
+    assessPosition: (position, trendSignal) => ({
+      actions: [],
+      positionId: position.id,
+      trend: trendSignal
+    })
+  } as any);
+  const originalFeedPriceSource = setCachedModule(feedPriceSourcePath, {
+    fetchTrendInput: async () => {
+      trendFetchCount += 1;
+      return {
+        feedPrice: 100,
+        marketPrice: 95,
+        premium: -5
+      };
     }
-  } as any;
-  require.cache[healthPath] = {
-    id: healthPath,
-    filename: healthPath,
-    loaded: true,
-    exports: {
-      assessPosition: (position, trendSignal) => ({
-        actions: [],
-        positionId: position.id,
-        trend: trendSignal
-      })
-    }
-  } as any;
-  require.cache[feedPriceSourcePath] = {
-    id: feedPriceSourcePath,
-    filename: feedPriceSourcePath,
-    loaded: true,
-    exports: {
-      fetchTrendInput: async () => {
-        trendFetchCount += 1;
-        return {
-          feedPrice: 100,
-          marketPrice: 95,
-          premium: -5
-        };
-      }
-    }
-  } as any;
-  require.cache[trendAnalyzerPath] = {
-    id: trendAnalyzerPath,
-    filename: trendAnalyzerPath,
-    loaded: true,
-    exports: { KalmanTrendAnalyzer: FakeTrendAnalyzer }
-  } as any;
+  } as any);
+  const originalTrendAnalyzer = setCachedModule(trendAnalyzerPath, { KalmanTrendAnalyzer: FakeTrendAnalyzer } as any);
   clearModule(decisionLoopPath);
 
   const { evaluate, resetAnalyzers } = require('../modules/decision_loop');
@@ -304,10 +262,10 @@ async function testDecisionLoopReusesAnalyzerStateForDuplicateMarkets() {
 
   resetAnalyzers();
   clearModule(decisionLoopPath);
-  clearModule(discoveryPath);
-  clearModule(healthPath);
-  clearModule(feedPriceSourcePath);
-  clearModule(trendAnalyzerPath);
+  restoreCachedModule(trendAnalyzerPath, originalTrendAnalyzer);
+  restoreCachedModule(feedPriceSourcePath, originalFeedPriceSource);
+  restoreCachedModule(healthPath, originalHealth);
+  restoreCachedModule(discoveryPath, originalDiscovery);
 }
 
 async function testDecisionLoopReplacesAnalyzerOnConfigChange() {
@@ -334,26 +292,18 @@ async function testDecisionLoopReplacesAnalyzerOnConfigChange() {
     }
   }
 
-  require.cache[discoveryPath] = {
-    id: discoveryPath, filename: discoveryPath, loaded: true,
-    exports: {
-      discoverPositions: async () => ([
-        { id: 'pos-1', market: 'HONEST.USD/BTS', mpaSymbol: 'HONEST.USD', onChain: { debtAmount: 5 } }
-      ])
-    }
-  } as any;
-  require.cache[healthPath] = {
-    id: healthPath, filename: healthPath, loaded: true,
-    exports: { assessPosition: (position, trendSignal) => ({ actions: [], positionId: position.id, trend: trendSignal }) }
-  } as any;
-  require.cache[feedPriceSourcePath] = {
-    id: feedPriceSourcePath, filename: feedPriceSourcePath, loaded: true,
-    exports: { fetchTrendInput: async () => ({ feedPrice: 100, marketPrice: 95, premium: -5 }) }
-  } as any;
-  require.cache[trendAnalyzerPath] = {
-    id: trendAnalyzerPath, filename: trendAnalyzerPath, loaded: true,
-    exports: { KalmanTrendAnalyzer: ConfigTrackingAnalyzer }
-  } as any;
+  const originalDiscovery = setCachedModule(discoveryPath, {
+    discoverPositions: async () => ([
+      { id: 'pos-1', market: 'HONEST.USD/BTS', mpaSymbol: 'HONEST.USD', onChain: { debtAmount: 5 } }
+    ])
+  } as any);
+  const originalHealth = setCachedModule(healthPath, {
+    assessPosition: (position, trendSignal) => ({ actions: [], positionId: position.id, trend: trendSignal })
+  } as any);
+  const originalFeedPriceSource = setCachedModule(feedPriceSourcePath, {
+    fetchTrendInput: async () => ({ feedPrice: 100, marketPrice: 95, premium: -5 })
+  } as any);
+  const originalTrendAnalyzer = setCachedModule(trendAnalyzerPath, { KalmanTrendAnalyzer: ConfigTrackingAnalyzer } as any);
   clearModule(decisionLoopPath);
 
   const { evaluate, resetAnalyzers } = require('../modules/decision_loop');
@@ -369,26 +319,22 @@ async function testDecisionLoopReplacesAnalyzerOnConfigChange() {
 
   resetAnalyzers();
   clearModule(decisionLoopPath);
-  clearModule(discoveryPath);
-  clearModule(healthPath);
-  clearModule(feedPriceSourcePath);
-  clearModule(trendAnalyzerPath);
+  restoreCachedModule(trendAnalyzerPath, originalTrendAnalyzer);
+  restoreCachedModule(feedPriceSourcePath, originalFeedPriceSource);
+  restoreCachedModule(healthPath, originalHealth);
+  restoreCachedModule(discoveryPath, originalDiscovery);
 }
 
 async function testPositionManagerEntryExposesSellPriceInBts() {
   const positionManagerPath = require.resolve('../modules/position_manager');
   const mpaUtilsPath = require.resolve('../modules/mpa_utils');
 
-  clearModule(mpaUtilsPath);
-  require.cache[mpaUtilsPath] = {
-    id: mpaUtilsPath, filename: mpaUtilsPath, loaded: true,
-    exports: {
-      requireBtsBackedMpa: async (sym) => ({
-        backingAsset: { id: '1.3.0', symbol: 'BTS', precision: 5 },
-        mpaAsset: { id: `1.3.${sym.length}`, symbol: sym, precision: 5, bitasset_data_id: '2.4.1' }
-      })
-    }
-  } as any;
+  const originalMpaUtils = setCachedModule(mpaUtilsPath, {
+    requireBtsBackedMpa: async (sym) => ({
+      backingAsset: { id: '1.3.0', symbol: 'BTS', precision: 5 },
+      mpaAsset: { id: `1.3.${sym.length}`, symbol: sym, precision: 5, bitasset_data_id: '2.4.1' }
+    })
+  } as any);
 
   clearModule(positionManagerPath);
   const { PositionManager } = require('../modules/position_manager');
@@ -411,7 +357,7 @@ async function testPositionManagerEntryExposesSellPriceInBts() {
   assert.strictEqual(position.entry.priceInBts, 1000, 'entry must also have generic priceInBts from createOrderTracking');
 
   clearModule(positionManagerPath);
-  clearModule(mpaUtilsPath);
+  restoreCachedModule(mpaUtilsPath, originalMpaUtils);
 }
 
 function testClawBridgeRespectsRuntimeNameOption() {
@@ -419,19 +365,16 @@ function testClawBridgeRespectsRuntimeNameOption() {
   const clawInfraPath = require.resolve('../modules/claw_infra');
 
   let capturedOptions = null;
-  require.cache[clawInfraPath] = {
-    id: clawInfraPath, filename: clawInfraPath, loaded: true,
-    exports: {
-      createClawInfrastructure: (opts) => {
-        capturedOptions = opts;
-        return {
-          runtime: { name: opts.runtime?.name || 'claw-bridge' },
-          profiles: {},
-          market: {}
-        };
-      }
+  const originalClawInfra = setCachedModule(clawInfraPath, {
+    createClawInfrastructure: (opts) => {
+      capturedOptions = opts;
+      return {
+        runtime: { name: opts.runtime?.name || 'claw-bridge' },
+        profiles: {},
+        market: {}
+      };
     }
-  } as any;
+  } as any);
 
   clearModule(clawBridgePath);
   const { createClawBridge } = require('../modules/claw_bridge');
@@ -446,7 +389,7 @@ function testClawBridgeRespectsRuntimeNameOption() {
   assert.strictEqual(capturedOptions.runtime.name, 'claw-bridge', 'should fall back to claw-bridge');
 
   clearModule(clawBridgePath);
-  clearModule(clawInfraPath);
+  restoreCachedModule(clawInfraPath, originalClawInfra);
 }
 
 function testClawBridgeScriptManifestUsesRuntimeSpecificDescriptors() {

@@ -1,18 +1,18 @@
 
-import { path } from '../path_api';
-import { getStorage } from '../storage';
+import { path } from '../path_api.js';
+import { getStorage } from '../storage/index.js';
 import { spawn } from 'node:child_process';
-import { PATHS } from '../paths';
-import { buildScopedChildEnv } from './child_env';
-import { UPDATER, LAUNCHER } from '../constants';
-import { readProcStat } from './status_reporting';
-import * as foreignCredDaemon from './foreign_cred_daemon';
-import { Config } from '../config';
-import { runtime } from '../runtime';
-import { getCredentialReadyFilePath, getCredentialSocketPath } from '../credential_runtime';
-import { resolveRawBotEntries, loadSettingsFile } from '../bot_settings';
-import { sleep } from '../order/utils/system';
-import * as chainKeys from '../chain_keys';
+import { PATHS } from '../paths.js';
+import { buildScopedChildEnv } from './child_env.js';
+import { UPDATER, LAUNCHER } from '../constants.js';
+import { readProcStat } from './status_reporting.js';
+import * as foreignCredDaemon from './foreign_cred_daemon.js';
+import { Config } from '../config.js';
+import { runtime } from '../runtime.js';
+import { getCredentialReadyFilePath, getCredentialSocketPath } from '../credential_runtime.js';
+import { resolveRawBotEntries, loadSettingsFile } from '../bot_settings.js';
+import { sleep } from '../order/utils/system.js';
+import * as chainKeys from '../chain_keys.js';
 'use strict';
 
 const storage = getStorage();
@@ -23,9 +23,9 @@ import {
     parseCronExpression,
     getNextCronDate,
     isNodeProcessWithExactScript,
-} from './bot_supervisor';
-import { buildRuntimeScriptArgs, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry';
-import { getErrorMessage } from '../utils/errors';
+} from './bot_supervisor.js';
+import { buildRuntimeScriptArgs, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
 const MONOLITHIC_BOT_PID_FILE = PATHS.PROFILES.MONOLITHIC_BOT_PID;

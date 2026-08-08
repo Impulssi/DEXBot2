@@ -70,12 +70,12 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS } from '../../constants';
-import * as Format from '../format';
-import * as MathUtils from './math';
-import Logger from '../../logger';
-import { sleep } from './system';
-import { getErrorMessage } from '../../utils/errors';
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS } from '../../constants.js';
+import * as Format from '../format.js';
+import * as MathUtils from './math.js';
+import Logger from '../../logger.js';
+import { sleep } from './system.js';
+import { getErrorMessage } from '../../utils/errors.js';
 const { isValidNumber, toFiniteNumber } = Format;
 const { blockchainToFloat, floatToBlockchainInt, quantizeFloat, calculatePriceTolerance } = MathUtils;
 const orderLogger = new Logger('Order');

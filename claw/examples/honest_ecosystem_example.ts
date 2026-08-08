@@ -1,3 +1,6 @@
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const { createClawInfrastructure } = require('../modules/claw_infra');
 const { getErrorMessage } = require('../../modules/utils/errors');
 

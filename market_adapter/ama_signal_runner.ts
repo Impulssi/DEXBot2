@@ -2,7 +2,7 @@
 'use strict';
 
 import '../modules/storage/index.js';
-import { getErrorMessage } from '../modules/utils/errors';
+import { getErrorMessage } from '../modules/utils/errors.js';
 /**
  * AMA SIGNAL RUNNER
  *

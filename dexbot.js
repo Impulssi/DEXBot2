@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// Shim: prefers compiled dist/dexbot.js, falls back to tsx for direct TS execution
-'use strict';
-const fs = require('fs');
-const path = require('path');
-const distTarget = path.join(__dirname, 'dist', 'dexbot.js');
-if (fs.existsSync(distTarget)) {
-  require(distTarget);
+// Shim: prefers dist/dexbot.js, falls back to tsx for direct TS execution
+import { existsSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const distTarget = join(__dirname, 'dist', 'dexbot.js');
+if (existsSync(distTarget)) {
+  await import(distTarget);
 } else {
-  require('tsx/cjs');
-  require('./dexbot.ts');
+  await import('tsx');
+  await import('./dexbot.ts');
 }

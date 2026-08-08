@@ -7,5 +7,6 @@
     "optimize": "npm --prefix ../.. run build && node ../../dist/analysis/ama_fitting/optimizer_high_resolution.js",
     "chart:lp-local": "npm --prefix ../.. run build && node ../../dist/analysis/ama_fitting/generate_unified_comparison_chart.js"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "type": "module"
 }

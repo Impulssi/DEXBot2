@@ -1,6 +1,6 @@
 
 
-import * as chainKeys from '../chain_keys';
+import * as chainKeys from '../chain_keys.js';
 function normalizeBootstrapCredential(credential: any): any {
     if (chainKeys.isVaultSecret(credential)) {
         return credential;

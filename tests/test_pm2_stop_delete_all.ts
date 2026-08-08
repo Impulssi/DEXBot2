@@ -9,7 +9,7 @@ console.log('Running PM2 stop/delete all tests');
 
 const pm2Path = require.resolve('../pm2');
 const botSettingsPath = require.resolve('../modules/bot_settings');
-const ecosystemConfigPath = path.join(__dirname, '..', 'profiles', 'ecosystem.config.js');
+const ecosystemConfigPath = path.join(__dirname, '..', 'profiles', 'ecosystem.config.cjs');
 
 const originalPm2Module = require.cache[pm2Path];
 const originalBotSettings = require.cache[botSettingsPath];
@@ -94,7 +94,7 @@ function installStubs() {
     };
 
     fs.existsSync = (targetPath) => {
-        if (String(targetPath).endsWith('profiles/ecosystem.config.js')) return scenario === 'output';
+        if (String(targetPath).endsWith('profiles/ecosystem.config.cjs')) return scenario === 'output';
         if (String(targetPath).endsWith('profiles/bots.json')) return true;
         if (String(targetPath).endsWith('profiles/logs')) return true;
         return originalExistsSync(targetPath);

@@ -6,9 +6,10 @@
  */
 
 const assert = require('assert');
-const { OrderManager } = require('../modules/order/index');
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
+const { OrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-const chainOrders = require('../modules/chain_orders');
 
 const TEST_TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MS || 30000);
 const testTimeoutHandle = setTimeout(() => {

@@ -1,10 +1,10 @@
 
-import { getStorage } from './storage';
+import { getStorage } from './storage/index.js';
 const storage = getStorage();
 const { readJSON } = storage;
-import { PATHS } from './paths';
-import { normalizeBotEntry } from './bot_settings';
-import { getErrorMessage } from './utils/errors';
+import { PATHS } from './paths.js';
+import { normalizeBotEntry } from './bot_settings.js';
+import { getErrorMessage } from './utils/errors.js';
 'use strict';
 
 

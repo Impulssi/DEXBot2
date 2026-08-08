@@ -1,13 +1,13 @@
 
-import { getStorage } from '../storage';
-import { path } from '../path_api';
-import { runtime } from '../runtime';
-import * as Format from './format';
-import LoggerState from './logger_state';
-import { LOGGING_CONFIG, ORDER_STATES, TIMING } from '../constants';
-import { Config } from '../config';
-import { getErrorMessage } from '../utils/errors';
-import { withTimeout } from './utils/timeout';
+import { getStorage } from '../storage/index.js';
+import { path } from '../path_api.js';
+import { runtime } from '../runtime.js';
+import * as Format from './format.js';
+import LoggerState from './logger_state.js';
+import { LOGGING_CONFIG, ORDER_STATES, TIMING } from '../constants.js';
+import { Config } from '../config.js';
+import { getErrorMessage } from '../utils/errors.js';
+import { withTimeout } from './utils/timeout.js';
 
 const storage = getStorage();
 
@@ -572,8 +572,5 @@ function createPm2AwareLogger(category: string, options: { quietUnderPm2?: boole
 }
 export { createPm2AwareLogger, isPm2Runtime }
 export default Logger
-module.exports = Logger
-
-Object.assign(module.exports, { createPm2AwareLogger, isPm2Runtime });
 
 

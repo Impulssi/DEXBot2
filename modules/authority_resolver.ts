@@ -1,8 +1,8 @@
 
-import getEcc from './bitshares-native/crypto/ecc_selector';
-import { NATIVE_CLIENT } from './constants';
-import Logger from './logger';
-import { getErrorMessage } from './utils/errors';
+import getEcc from './bitshares-native/crypto/ecc_selector.js';
+import { NATIVE_CLIENT } from './constants.js';
+import Logger from './logger.js';
+import { getErrorMessage } from './utils/errors.js';
 'use strict';
 
 const ecc = getEcc();

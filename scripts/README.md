@@ -218,7 +218,7 @@ npm run verify:browser-bundle
 
 ### Create PM2 Bot Symlinks
 **File:** `create-bot-symlinks.sh`
-**Purpose:** Create `profiles/<bot-name>.config.js` symlinks pointing to `profiles/ecosystem.config.js` so you can run `pm2 start <bot-name>` directly.
+**Purpose:** Create `profiles/<bot-name>.config.cjs` symlinks pointing to `profiles/ecosystem.config.cjs` so you can run `pm2 start <bot-name>` directly.
 ```bash
 bash scripts/create-bot-symlinks.sh
 ```

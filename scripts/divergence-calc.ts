@@ -23,6 +23,9 @@
  * Exit code: 0 on success, 1 on error
  */
 
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const fs = require('fs');
 const path = require('path');
 const Format = require('../modules/order/format');

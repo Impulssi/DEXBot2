@@ -1,8 +1,8 @@
 'use strict';
 
-import { getStorage } from './storage';
-import { runtime } from './runtime';
-import { sleep } from './order/utils/system';
+import { getStorage } from './storage/index.js';
+import { runtime } from './runtime.js';
+import { sleep } from './order/utils/system.js';
 
 const storage = getStorage();
 

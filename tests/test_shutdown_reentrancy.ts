@@ -19,7 +19,7 @@ console.log('=== Shutdown Reentrancy Tests ===\n');
 (async () => {
     console.log(' - Testing shutdown() is idempotent: second call waits without running cleanup body...');
     {
-        const DEXBot = require('../modules/dexbot_class');
+        const DEXBot = require('../modules/dexbot_class').default;
         const logCalls = [];
         const warnCalls = [];
         const stopCalls = [];
@@ -91,7 +91,7 @@ console.log('=== Shutdown Reentrancy Tests ===\n');
 
     console.log(' - Testing concurrent shutdown() calls wait for the first shutdown promise...');
     {
-        const DEXBot = require('../modules/dexbot_class');
+        const DEXBot = require('../modules/dexbot_class').default;
         const logCalls = [];
 
         // Slow down final persistence so the first call is still in-flight when

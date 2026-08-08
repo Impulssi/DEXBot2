@@ -1,6 +1,6 @@
 
-import { NODE_MANAGEMENT, TIMING } from '../../modules/constants';
-import { createReadOnlyClient } from '../../modules/bitshares-native';
+import { NODE_MANAGEMENT, TIMING } from '../../modules/constants.js';
+import { createReadOnlyClient } from '../../modules/bitshares-native/index.js';
 'use strict';
 
 /**

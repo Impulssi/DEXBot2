@@ -1,14 +1,14 @@
 
-import { path } from '../modules/path_api';
-import { getStorage } from '../modules/storage';
+import { path } from '../modules/path_api.js';
+import { getStorage } from '../modules/storage/index.js';
 import { exec } from 'node:child_process';
-import { getErrorMessage } from '../modules/utils/errors';
-import { calculateAMA } from './core/strategies/ama';
-import { MARKET_ADAPTER } from '../modules/constants';
-import { generateHTML } from './lp_chart_core';
-import { loadStrategiesForLpChart } from './lp_chart_strategy_loader';
-import { findLatestLpData } from './utils/data_discovery';
-import { PATHS } from '../modules/paths';
+import { getErrorMessage } from '../modules/utils/errors.js';
+import { calculateAMA } from './core/strategies/ama.js';
+import { MARKET_ADAPTER } from '../modules/constants.js';
+import { generateHTML } from './lp_chart_core.js';
+import { loadStrategiesForLpChart } from './lp_chart_strategy_loader.js';
+import { findLatestLpData } from './utils/data_discovery.js';
+import { PATHS } from '../modules/paths.js';
 'use strict';
 
 /**

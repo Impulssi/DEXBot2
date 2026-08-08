@@ -62,6 +62,9 @@
  * ===============================================================================
  */
 
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const { setUmask } = require('./modules/config');
 setUmask(0o077);
 

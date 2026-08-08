@@ -71,11 +71,11 @@
  */
 
 
-import { ORDER_TYPES, FEE_PARAMETERS, DEFAULT_CONFIG, GRID_LIMITS } from '../../constants';
-import * as Format from '../format';
-import Logger from '../../logger';
-import * as fundRegistry from '../../fund_registry';
-import { getErrorMessage } from '../../utils/errors';
+import { ORDER_TYPES, FEE_PARAMETERS, DEFAULT_CONFIG, GRID_LIMITS } from '../../constants.js';
+import * as Format from '../format.js';
+import Logger from '../../logger.js';
+import * as fundRegistry from '../../fund_registry.js';
+import { getErrorMessage } from '../../utils/errors.js';
 const { isValidNumber, toFiniteNumber } = Format;
 const mathLogger = new Logger('Math');
 

@@ -299,7 +299,7 @@ async function testConfig() {
 
 async function testBrowserStorage() {
     const { setAdapter } = require('../modules/storage');
-    const createBrowserStorageAdapter = require('../modules/storage/browser_adapter');
+    const createBrowserStorageAdapter = require('../modules/storage/browser_adapter').default;
 
     const adapter = createBrowserStorageAdapter();
 
@@ -441,7 +441,7 @@ async function testBrowserStorage() {
 // ── 6. NodeStorageAdapter ────────────────────────────────────────────────────
 
 async function testNodeStorage() {
-    const NodeStorageAdapter = require('../modules/storage/node_adapter');
+    const NodeStorageAdapter = require('../modules/storage/node_adapter').default;
     const fs = require('fs');
     const os = require('os');
     const path = require('path');
@@ -1115,7 +1115,7 @@ async function testKeyStore() {
 // ── 15. ECC — comprehensive ─────────────────────────────────────────────────
 
 async function testEccComprehensive() {
-    const ecc = require('../modules/bitshares-native/crypto/ecc_selector')();
+    const ecc = require('../modules/bitshares-native/crypto/ecc_selector').default();
 
     // Verify all exports
     const expectedExports = [
@@ -1277,7 +1277,7 @@ async function testEccComprehensive() {
 // ── 16. claw/index.ts loads cleanly ─────────────────────────────────────────
 
 async function testClawIndexLoad() {
-    const claw = require('../claw/index');
+    const claw = require('../claw/index').default;
     assert.ok(claw, 'claw/index loaded successfully');
     assert.ok(claw.broadcastOperationViaCredentialDaemon,
         'claw has broadcastOperationViaCredentialDaemon');

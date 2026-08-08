@@ -1,5 +1,5 @@
 
-import { MARKET_ADAPTER } from '../../modules/constants';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
 'use strict';
 
 

@@ -3,16 +3,16 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { createSource } from '../price_sources';
-import { generateHTML } from './tradingview_uplot_chart_generator';
-import { MARKET_ADAPTER } from '../../modules/constants';
-import { loadCandleFile } from '../math_utils';
-import { getStorage } from '../../modules/storage';
+import { createSource } from '../price_sources.js';
+import { generateHTML } from './tradingview_uplot_chart_generator.js';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
+import { loadCandleFile } from '../math_utils.js';
+import { getStorage } from '../../modules/storage/index.js';
 const { ensureDir } = getStorage();
-import { getErrorMessage } from '../../modules/utils/errors';
-import { toIntervalLabel } from '../../market_adapter/interval_utils';
-import { loadBotSettings, resolveCandleFile, candleFileForBot, loadBotMeta, resolveAmaConfig } from '../bot_key_utils';
-import { PATHS } from '../../modules/paths';
+import { getErrorMessage } from '../../modules/utils/errors.js';
+import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
+import { loadBotSettings, resolveCandleFile, candleFileForBot, loadBotMeta, resolveAmaConfig } from '../bot_key_utils.js';
+import { PATHS } from '../../modules/paths.js';
 'use strict';
 
 

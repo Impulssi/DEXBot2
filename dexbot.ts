@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+
+import { fileURLToPath } from 'node:url';
+import { dirname as _esmDirname } from 'node:path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = _esmDirname(__filename);
 // node-only entry point — primary CLI driver (process.argv, process.exit, process.stdout/stderr, process.stdin)
 /**
  * dexbot.ts - DEXBot2 Primary CLI Driver
@@ -73,7 +78,7 @@
  *   dexbot help                 - Show this help message
  *
  * NPM SCRIPTS (alternative invocation):
- *   npm run pm2:start                - Start bots (requires ecosystem.config.js pre-generated)
+ *   npm run pm2:start                - Start bots (requires ecosystem.config.cjs pre-generated)
  *   npm run pm2:stop                 - Stop all PM2 bots
  *
  * ===============================================================================
@@ -91,6 +96,9 @@
 // Restrict default file permissions: files created by this process default to
 // 0o600 (owner-only) unless explicitly opened with a wider mode.  Protects
 // keys.json and daemon-policies.json from world-readable exposure.
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const { setUmask } = require('./modules/config');
 setUmask(0o077);
 
@@ -101,7 +109,7 @@ const storage = getStorage();
 const chainKeys = require('./modules/chain_keys');
 const { initializeFeeCache, ensureProfilesDirectory, readInput } = require('./modules/order/utils/system');
 const accountBots = require('./modules/account_bots');
-const SharedDEXBot = require('./modules/dexbot_class');
+const SharedDEXBot = require('./modules/dexbot_class').default;
 const fundRegistry = require('./modules/fund_registry');
 
 /**

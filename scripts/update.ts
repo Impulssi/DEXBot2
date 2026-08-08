@@ -510,21 +510,18 @@ try {
 
     /**
      * STEP 8c: Regenerate Ecosystem Config
-     * Ensures profiles/ecosystem.config.js reflects the current bots.json
+     * Ensures profiles/ecosystem.config.cjs reflects the current bots.json
      * state, including service apps like dexbot-adapter and dexbot-update.
      * Uses the compiled dist/pm2.js (after TS build) for correct dist/ paths.
      */
     log('Regenerating PM2 ecosystem config...');
     try {
         // Try loading from compiled dist/ first, then fall back to source dir
-        let generateEcosystemConfig;
         const distPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
-        if (fs.existsSync(distPath)) {
-            generateEcosystemConfig = require(distPath).generateEcosystemConfig;
-        } else {
-            generateEcosystemConfig = require(path.join(PATHS.PROJECT_ROOT, 'pm2.js')).generateEcosystemConfig;
-        }
-        generateEcosystemConfig({ clawOnly: false, exitOnError: false });
+        const pm2Module = fs.existsSync(distPath)
+            ? await import(distPath)
+            : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
+        pm2Module.generateEcosystemConfig({ clawOnly: false, exitOnError: false });
         log('Ecosystem config regenerated successfully.');
     } catch (err: any) {
         log(`Warning: Ecosystem config regeneration failed (${getErrorMessage(err)}). Continuing with existing config.`);
@@ -589,14 +586,11 @@ try {
                         const botsToRestart = activeInConfig.filter((name: string) => (runningProcesses as string[]).includes(name));
                         const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
                         const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
-                        let needsMarketAdapter: any;
                         const maPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
-                        if (fs.existsSync(maPath)) {
-                            needsMarketAdapter = require(maPath).needsMarketAdapter;
-                        } else {
-                            needsMarketAdapter = require(path.join(PATHS.PROJECT_ROOT, 'pm2.js')).needsMarketAdapter;
-                        }
-                        const marketAdapterRequired = needsMarketAdapter(runningActiveBots);
+                        const pm2Module = fs.existsSync(maPath)
+                            ? await import(maPath)
+                            : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
+                        const marketAdapterRequired = pm2Module.needsMarketAdapter(runningActiveBots);
 
                         const serviceAppsToRestart: string[] = marketAdapterRequired ? ['dexbot-adapter'] : [];
                         const servicesToRestart: string[] = serviceAppsToRestart.filter((name: string) => (runningProcesses as string[]).includes(name));
@@ -619,7 +613,7 @@ try {
                         if (marketAdapterRequired && !runningProcesses.includes('dexbot-adapter')) {
                             log('dexbot-adapter is required by an AMA-grid bot but not running. Starting from ecosystem...');
                             try {
-                                run('pm2 start profiles/ecosystem.config.js --only dexbot-adapter');
+                                run('pm2 start profiles/ecosystem.config.cjs --only dexbot-adapter');
                             } catch (e) {
                                 log('Warning: Failed to start dexbot-adapter from ecosystem config.');
                             }

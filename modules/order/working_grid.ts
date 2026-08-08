@@ -74,8 +74,8 @@
 
 
 
-import { buildDelta, buildIndexes } from './utils/order';
-import { COW_PERFORMANCE } from '../constants';
+import { buildDelta, buildIndexes } from './utils/order.js';
+import { COW_PERFORMANCE } from '../constants.js';
 class WorkingGrid {
     grid: Map<string, any>;
     modified: Set<string>;

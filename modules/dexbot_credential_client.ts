@@ -1,16 +1,16 @@
 /** Credential client module - connects to credential daemon for key operations */
 
-import { getStorage } from './storage';
-import { createHmac } from './crypto/sync';
-import { TIMING, DAEMON_CODES } from './constants';
+import { getStorage } from './storage/index.js';
+import { createHmac } from './crypto/sync.js';
+import { TIMING, DAEMON_CODES } from './constants.js';
 const storage = getStorage();
 import {
     getCredentialReadyFilePath,
     getCredentialSocketPath,
     isPrivatePathSecure,
-} from './credential_runtime';
-import { sendSocketJsonRequest } from './socket_json_client';
-import { getErrorMessage } from './utils/errors';
+} from './credential_runtime.js';
+import { sendSocketJsonRequest } from './socket_json_client.js';
+import { getErrorMessage } from './utils/errors.js';
 interface BroadcastUncertainErrorDetails {
     operations?: any[] | null;
     accountName?: string | null;

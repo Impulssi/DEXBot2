@@ -1,6 +1,9 @@
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 'use strict';
 
-import { API_LIMITS } from '../../modules/constants';
+import { API_LIMITS } from '../../modules/constants.js';
 
 let _bitsharesClient: any = null;
 

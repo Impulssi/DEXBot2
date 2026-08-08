@@ -4,6 +4,7 @@ import path from 'path';
 import { PATHS } from '../../modules/paths.js';
 import { buildRuntimeSkillMarkdown, writeRuntimeSkillMarkdown } from '../modules/claw_skill_md.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
+import { pathToFileURL } from 'node:url';
 
 const CS_PROJECT_ROOT = PATHS.PROJECT_ROOT;
 
@@ -82,7 +83,7 @@ async function main() {
   })}\n`);
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
     console.error(err && err.stack ? err.stack : getErrorMessage(err));
     process.exit(1);

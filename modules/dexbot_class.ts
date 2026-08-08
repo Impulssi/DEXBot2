@@ -54,30 +54,33 @@
  */
 
 
-import * as client from './bitshares_client';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import * as client from './bitshares_client.js';
 const { BitShares } = client;
-import * as chainKeys from './chain_keys';
-import * as chainOrders from './chain_orders';
-import * as fundRegistry from './fund_registry';
-import * as DexbotFillRuntime from './dexbot_fill_runtime';
-import DexbotMaintenanceRuntime from './dexbot_maintenance_runtime';
-import * as DexbotStateRecovery from './dexbot_state_recovery';
-import * as DexbotStartupRuntime from './dexbot_startup_runtime';
-import CreditRuntime from './credit_runtime';
-import { PATHS } from './paths';
-import * as Format from './order/format';
-import cowRuntime from './dexbot_cow_runtime';
+import * as chainKeys from './chain_keys.js';
+import * as chainOrders from './chain_orders.js';
+import * as fundRegistry from './fund_registry.js';
+import * as DexbotFillRuntime from './dexbot_fill_runtime.js';
+import DexbotMaintenanceRuntime from './dexbot_maintenance_runtime.js';
+import * as DexbotStateRecovery from './dexbot_state_recovery.js';
+import * as DexbotStartupRuntime from './dexbot_startup_runtime.js';
+import CreditRuntime from './credit_runtime.js';
+import { PATHS } from './paths.js';
+import * as Format from './order/format.js';
+import cowRuntime from './dexbot_cow_runtime.js';
 import {
     ProcessedFillStore,
     PROCESSED_FILL_PERSISTENCE_MODES
-} from './order/processed_fill_store';
+} from './order/processed_fill_store.js';
 import {
     TIMING,
     FILL_PROCESSING,
     DAEMON_CODES,
-} from './constants';
-import { normalizeBotEntry } from './bot_settings';
-import { getErrorMessage } from './utils/errors';
+} from './constants.js';
+import { normalizeBotEntry } from './bot_settings.js';
+import { getErrorMessage } from './utils/errors.js';
 
 function waitForConnected(...args: any) { return require('./bitshares_client').waitForConnected(...args); }
 function getKeyStore(...args: any) { return require('./key_store').getKeyStore(...args); }
@@ -559,7 +562,7 @@ class DEXBot {
     /**
      * Apply replay-safe fill accounting using a provided fill key.
      * @param {Object} fill - Fill event object
-     * @param {import('./types').FillOperationData} fillOp - Fill operation data
+     * @param {import('./types.js').FillOperationData} fillOp - Fill operation data
      * @param {Object} [options={}] - Options
      * @param {string} [options.missingKeyMessage]
      * @param {string} [options.fallbackKeyMessage]
@@ -571,7 +574,7 @@ class DEXBot {
      * @param {string} [options.replayLevel='debug']
      * @param {string} [options.persistenceMode='immediate']
      * @param {boolean} [options.allowOrphanFallbackKey=false]
-     * @returns {Promise<import('./types').ReplaySafeFillResult>}
+     * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
      */
     async _applyReplaySafeFillAccounting(fill: any, fillOp: any, {
         missingKeyMessage,
@@ -613,13 +616,13 @@ class DEXBot {
     /**
      * Apply replay-safe fill accounting for tracked fills (those with a valid grid order).
      * @param {Object} fill - Fill event object
-     * @param {import('./types').FillOperationData} fillOp - Fill operation data
+     * @param {import('./types.js').FillOperationData} fillOp - Fill operation data
      * @param {Object} [options={}]
      * @param {string} [options.context]
      * @param {Object} [options.logger]
      * @param {string} [options.replayMessage]
      * @param {string} [options.persistenceMode='batched']
-     * @returns {Promise<import('./types').ReplaySafeFillResult>}
+     * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
      */
     async _applyReplaySafeTrackedFillAccounting(fill: any, fillOp: any, {
         context,
@@ -643,13 +646,13 @@ class DEXBot {
     /**
      * Apply replay-safe fill accounting for orphan fills (grid order not found).
      * @param {Object} fill - Fill event object
-     * @param {import('./types').FillOperationData} fillOp - Fill operation data
+     * @param {import('./types.js').FillOperationData} fillOp - Fill operation data
      * @param {Object} [options={}]
      * @param {string} [options.context]
      * @param {Object} [options.logger]
      * @param {string} [options.replayMessage]
      * @param {string} [options.persistenceMode='batched']
-     * @returns {Promise<import('./types').ReplaySafeFillResult>}
+     * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
      */
     async _applyReplaySafeOrphanFillAccounting(fill: any, fillOp: any, {
         context,
@@ -673,7 +676,7 @@ class DEXBot {
     /**
      * Refresh dynamic weight distribution from market adapter.
      * @param {string} [context='runtime'] - Context label for logging
-     * @returns {import('./types').DynamicWeightRefreshResult|null}
+     * @returns {import('./types.js').DynamicWeightRefreshResult|null}
      */
     _refreshDynamicWeightDistribution(context: any = 'runtime') {
         return DexbotMaintenanceRuntime.refreshDynamicWeightDistribution(this, context);
@@ -1120,7 +1123,7 @@ class DEXBot {
 
     /**
      * Execute blockchain operations with appropriate strategy (single batch or pair mode).
-     * @param {Array<import('./types').CreatedOperation>} operations - Array of operation objects
+     * @param {Array<import('./types.js').CreatedOperation>} operations - Array of operation objects
      * @param {Array<Object>} opContexts - Array of operation context metadata (1:1 with operations)
      * @returns {Promise<{result: Object, opContexts: Array}>} Execution result with contexts
      */
@@ -1157,7 +1160,7 @@ class DEXBot {
      * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
      * @param {Object|null} [orderLike=null] - Optional order-like object for ideal size comparison
      * @param {number|null} [fallbackSize=null] - Fallback ideal size
-     * @returns {import('./types').OrderValidationResult}
+     * @returns {import('./types.js').OrderValidationResult}
      */
     _validateOrderSizeForExecution(size: any, type: any, orderLike: any = null, fallbackSize: any = null) {
         return cowRuntime.validateOrderSizeForExecution(this, size, type, orderLike, fallbackSize);
@@ -1575,7 +1578,7 @@ class DEXBot {
     /**
      * Build a COW result object (workingGrid + actions) from a simple plan.
      * @param {Object|Array} plan - Plan object or array of ordersToPlace
-     * @returns {{workingGrid: import('./types').WorkingGrid, workingIndexes: Object, workingBoundary: number, actions: Array}}
+     * @returns {{workingGrid: import('./types.js').WorkingGrid, workingIndexes: Object, workingBoundary: number, actions: Array}}
      */
     _buildCowResultFromPlan(plan: any) {
         return cowRuntime.buildCowResultFromPlan(this, plan);
@@ -1583,7 +1586,7 @@ class DEXBot {
 
     /**
      * Restore skipped update slots in the working grid to master state.
-     * @param {import('./types').WorkingGrid} workingGrid - Working grid to restore slots into
+     * @param {import('./types.js').WorkingGrid} workingGrid - Working grid to restore slots into
      * @param {Set<string>} skippedSlotIds - Set of slot IDs that were skipped
      * @param {number} [skippedCount=0] - Count of skipped actions for logging
      * @returns {void}
@@ -1757,7 +1760,7 @@ class DEXBot {
 
     /**
      * Get or create the credit runtime for debt policy management.
-     * @returns {import('./credit_runtime').CreditRuntime|null}
+     * @returns {import('./credit_runtime.js').CreditRuntime|null}
      */
     _getCreditRuntime() {
         const lending = this.config?.debtPolicy?.lending;
@@ -1778,7 +1781,7 @@ class DEXBot {
 
     /**
      * Set up the credit runtime by loading its persisted state.
-     * @returns {Promise<import('./credit_runtime').CreditRuntime|null>}
+     * @returns {Promise<import('./credit_runtime.js').CreditRuntime|null>}
      */
     async _setupCreditRuntime() {
         const runtime = this._getCreditRuntime();
@@ -2206,4 +2209,3 @@ class DEXBot {
 
 export default DEXBot
 
-module.exports = DEXBot

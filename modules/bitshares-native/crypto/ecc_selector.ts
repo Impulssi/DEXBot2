@@ -1,5 +1,8 @@
 
-import { isBrowser } from '../../env';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { isBrowser } from '../../env.js';
 'use strict';
 
 
@@ -20,5 +23,3 @@ function getEcc(): any {
 }
 
 export default getEcc
-module.exports = getEcc
-

@@ -83,7 +83,7 @@
 
 
 
-import { getNodeRequire } from '../env';
+import { createRequire } from 'node:module';
 interface QueueItem<T = unknown> {
     callback: () => Promise<T>;
     cancelToken?: { isCancelled: boolean };
@@ -104,7 +104,7 @@ interface AcquireOptions {
 }
 
 let _AsyncLocalStorage: any;
-const _nodeRequire = getNodeRequire();
+const _nodeRequire = createRequire(import.meta.url);
 if (_nodeRequire) {
     try {
         _AsyncLocalStorage = _nodeRequire('node:async_hooks')?.AsyncLocalStorage;
@@ -361,5 +361,3 @@ class AsyncLock {
 }
 
 export default AsyncLock
-module.exports = AsyncLock
-

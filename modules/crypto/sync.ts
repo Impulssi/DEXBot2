@@ -1,3 +1,5 @@
+
+
 'use strict';
 
 /**
@@ -10,8 +12,9 @@
  * In browser environments, all exports are stub functions that throw a clear error.
  */
 
-import { isBrowser, getNodeRequire } from '../env';
-const _require = getNodeRequire();
+import { isBrowser } from '../env.js';
+import { createRequire } from 'node:module';
+const _require = createRequire(import.meta.url);
 
 let _crypto: any;
 try {

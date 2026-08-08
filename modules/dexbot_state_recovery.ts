@@ -1,20 +1,20 @@
 /** State recovery runtime - grid persistence, recovery sync, size-drift repair */
 
-import * as client from './bitshares_client';
+import * as client from './bitshares_client.js';
 const { BitShares } = client;
-import * as chainOrders from './chain_orders';
-import { readOpenOrdersGuarded } from './chain_orders';
-import { ORDER_TYPES } from './constants';
-import * as Format from './order/format';
-import * as grid from './order/grid';
-import { convertToSpreadPlaceholder, parseChainOrder } from './order/utils/order';
-import { blockchainToFloat } from './order/utils/math';
-import { getErrorMessage } from './utils/errors';
+import * as chainOrders from './chain_orders.js';
+import { readOpenOrdersGuarded } from './chain_orders.js';
+import { ORDER_TYPES } from './constants.js';
+import * as Format from './order/format.js';
+import * as grid from './order/grid.js';
+import { convertToSpreadPlaceholder, parseChainOrder } from './order/utils/order.js';
+import { blockchainToFloat } from './order/utils/math.js';
+import { getErrorMessage } from './utils/errors.js';
 const { isGridBloated } = grid;
 
 /**
  * Persist the current grid state and trigger recovery if validation fails.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  */
 async function persistAndRecoverIfNeeded(bot: any) {
     bot.manager._recentFillKeysSnapshot = bot._getRecentFillKeysSnapshot();
@@ -34,7 +34,7 @@ async function persistAndRecoverIfNeeded(bot: any) {
 
 /**
  * Snapshot the recently queued fill keys as a plain object for crash-durable persistence.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Record<string, number>}
  */
 function getRecentFillKeysSnapshot(bot: any) {
@@ -57,7 +57,7 @@ function getRecentFillKeysSnapshot(bot: any) {
 
 /**
  * Trigger a full state recovery sync (fetch chain + sync from open orders + persist).
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [reason='state recovery sync']
  */
 async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery sync') {
@@ -92,7 +92,7 @@ async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery 
 
 /**
  * Abort the current flow if an illegal state signal was raised.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} flowContext
  * @returns {Promise<boolean>}
  */
@@ -113,7 +113,7 @@ async function abortFlowIfIllegalState(bot: any, flowContext: any) {
 
 /**
  * Handle a hard abort from batch processing due to illegal state or accounting failure.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Error} err
  * @param {string} [phase='batch processing']
  * @param {number} [opsCount=0]
@@ -145,7 +145,7 @@ async function handleBatchHardAbort(bot: any, err: any, phase: any = 'batch proc
 
 /**
  * Apply recoverable grid updates (order virtualisation) after a batch failure.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array<Object>} updates
  * @param {string} [context='recoverable-grid-update']
  * @returns {Promise<number>}
@@ -177,7 +177,7 @@ async function applyRecoverableGridUpdates(bot: any, updates: any, context: any 
 
 /**
  * Recover from explicit stale order errors by virtualizing affected grid slots.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Set<string>|string[]} staleOrderIds
  * @param {string} [reason='stale order cleanup']
  * @returns {Promise<Object>}
@@ -226,7 +226,7 @@ async function recoverExplicitStaleOrders(bot: any, staleOrderIds: any, reason: 
 
 /**
  * Recover from on-chain size drift detected during batch broadcast.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Error} err
  * @param {Array<Object>} [opContexts=[]]
  * @returns {Promise<Object>}
@@ -287,7 +287,7 @@ function extractSizeDriftOrderIds(opContexts: any) {
 
 /**
  * Reload the grid from the persisted on-disk snapshot and reconcile with chain.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<{success: boolean, reason?: string}>}
  */
 async function recoverFromPersistedGrid(bot: any) {
@@ -389,7 +389,7 @@ async function recoverFromPersistedGrid(bot: any) {
 
 /**
  * Reject a corrupted grid snapshot when catastrophic fund drift is detected.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {'startup'|'recovery'} context
  * @returns {Promise<boolean>}
  */
@@ -417,7 +417,7 @@ async function rejectCorruptedGridSnapshot(bot: any, context: any) {
 
 /**
  * Attempt to repair size-drift for specific order IDs from chain state.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string[]} orderIds
  * @returns {Promise<boolean>}
  */

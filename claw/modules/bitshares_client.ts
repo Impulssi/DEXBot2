@@ -1,11 +1,11 @@
 // Claw shares the DEXBot2 chain client infrastructure but tracks connection state separately for subsystem isolation.
 
 
-import { TIMING, NODE_MANAGEMENT } from '../../modules/constants';
-import { sleep } from '../../modules/order/utils/system';
-import { getErrorMessage } from '../../modules/utils/errors';
-import * as native from '../../modules/bitshares-native';
-import { createSigningClient } from '../../modules/bitshares-native';
+import { TIMING, NODE_MANAGEMENT } from '../../modules/constants.js';
+import { sleep } from '../../modules/order/utils/system.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
+import * as native from '../../modules/bitshares-native/index.js';
+import { createSigningClient } from '../../modules/bitshares-native/index.js';
 const DEFAULT_TIMEOUT_MS = TIMING.CONNECTION_TIMEOUT_MS;
 const DEFAULT_CHECK_INTERVAL_MS = TIMING.CHECK_INTERVAL_MS;
 

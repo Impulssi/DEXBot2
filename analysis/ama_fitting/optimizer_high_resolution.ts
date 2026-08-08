@@ -3,19 +3,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
-import { calculateAMA } from '../../market_adapter/core/strategies/ama';
-import { toIntervalLabel } from '../../market_adapter/interval_utils';
-import { generateHTML } from '../../market_adapter/lp_chart_core';
-import { PATHS } from '../../modules/paths';
-import { ensureDir } from '../../modules/order/utils/system';
-import { range } from '../math_utils';
-import { getStorage } from '../../modules/storage';
+import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
+import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
+import { generateHTML } from '../../market_adapter/lp_chart_core.js';
+import { PATHS } from '../../modules/paths.js';
+import { ensureDir } from '../../modules/order/utils/system.js';
+import { range } from '../math_utils.js';
+import { getStorage } from '../../modules/storage/index.js';
 const { readJSON, writeJSON } = getStorage();
 'use strict';
 
 import {
     loadLpDataFile,
-} from '../../market_adapter/lp_chart_runner';
+} from '../../market_adapter/lp_chart_runner.js';
 
 const AMA_PROFILES_FILE = PATHS.PROFILES.MARKET_PROFILES_JSON;
 

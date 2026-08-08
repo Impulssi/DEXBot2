@@ -6,7 +6,9 @@
  */
 
 const assert = require('assert');
-const { OrderManager } = require('../modules/order/index');
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
+const { OrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
 const { getErrorMessage } = require('../modules/utils/errors');

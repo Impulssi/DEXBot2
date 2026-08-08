@@ -37,14 +37,14 @@
  */
 
 
-import { TIMING, NODE_MANAGEMENT, NATIVE_CLIENT } from './constants';
-import NodeManager from './node_manager';
-import { readGeneralSettings } from './general_settings';
-import { sleep } from './order/utils/system';
-import Logger from './logger';
-import * as native from './bitshares-native';
-import { createSigningClient } from './bitshares-native';
-import { getErrorMessage } from './utils/errors';
+import { TIMING, NODE_MANAGEMENT, NATIVE_CLIENT } from './constants.js';
+import NodeManager from './node_manager.js';
+import { readGeneralSettings } from './general_settings.js';
+import { sleep } from './order/utils/system.js';
+import Logger from './logger.js';
+import * as native from './bitshares-native/index.js';
+import { createSigningClient } from './bitshares-native/index.js';
+import { getErrorMessage } from './utils/errors.js';
 const { TRANSPORT } = NATIVE_CLIENT;
 const logger = new Logger('bitshares_client');
 
@@ -641,6 +641,5 @@ const _internal = {
 };
 
 const _default = { BitShares: _lazyBitShares, createAccountClient, waitForConnected, getConnectionStatus, disconnectClient, reconnectForCycle, setSuppressConnectionLog, onReconnect, removeOnReconnect, withTimeout, _assessFailover: assessFailover, getNodeManager, getNodeStats, getNodeSummary, getConnectionError, _internal }
+export default _default;
 export { _lazyBitShares as BitShares, createAccountClient, waitForConnected, getConnectionStatus, disconnectClient, reconnectForCycle, setSuppressConnectionLog, onReconnect, removeOnReconnect, withTimeout, assessFailover as _assessFailover, getNodeManager, getNodeStats, getNodeSummary, getConnectionError, _internal }
-module.exports = _default
-

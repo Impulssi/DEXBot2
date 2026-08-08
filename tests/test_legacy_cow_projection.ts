@@ -4,7 +4,7 @@ const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub'
 const bitsharesClientPath = require.resolve('../modules/bitshares_client');
 installBitsharesClientStub(bitsharesClientPath);
 
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../modules/constants');
 
 let testsComplete = false;

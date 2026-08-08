@@ -1,12 +1,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fillCandleGaps } from '../market_adapter/candle_utils';
-import { getCandleClose, getCandleTimestamp, loadCandleFile } from './math_utils';
-import { PATHS } from '../modules/paths';
-import { getStorage } from '../modules/storage';
+import { fillCandleGaps } from '../market_adapter/candle_utils.js';
+import { getCandleClose, getCandleTimestamp, loadCandleFile } from './math_utils.js';
+import { PATHS } from '../modules/paths.js';
+import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
-import { getErrorMessage } from '../modules/utils/errors';
+import { getErrorMessage } from '../modules/utils/errors.js';
 'use strict';
 
 /**

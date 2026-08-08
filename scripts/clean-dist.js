@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-'use strict';
+import { rmSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
-const fs = require('fs');
-const path = require('path');
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const distDir = join(__dirname, '..', 'dist');
 
-const distDir = path.join(__dirname, '..', 'dist');
-
-fs.rmSync(distDir, { recursive: true, force: true });
+rmSync(distDir, { recursive: true, force: true });

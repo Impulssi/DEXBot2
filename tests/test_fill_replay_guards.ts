@@ -1,8 +1,9 @@
 const assert = require('assert');
 
-const DEXBot = require('../modules/dexbot_class');
-const chainOrders = require('../modules/chain_orders');
-const { OrderManager } = require('../modules/order');
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
+const DEXBot = require('../modules/dexbot_class').default;
+const { OrderManager } = require('../modules/order').default;
 const { ORDER_STATES, ORDER_TYPES, TIMING, DAEMON_CODES } = require('../modules/constants');
 const { buildFillKey } = require('../modules/order/utils/order');
 const {

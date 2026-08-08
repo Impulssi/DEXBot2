@@ -1,15 +1,16 @@
 
-import { getStorage } from '../../modules/storage';
-import { path } from '../../modules/path_api';
-import { PATHS } from '../../modules/paths';
-import { PositionManager, DEFAULT_STATE_PATH } from './position_manager';
-import * as client from './bitshares_client';
+import { getStorage } from '../../modules/storage/index.js';
+import { path } from '../../modules/path_api.js';
+import { PATHS } from '../../modules/paths.js';
+import { PositionManager, DEFAULT_STATE_PATH } from './position_manager.js';
+import * as client from './bitshares_client.js';
 const { waitForConnected } = client;
-import { PIPELINE_TIMING } from '../../modules/constants';
-import { Config } from '../../modules/config';
-import { runtime } from '../../modules/runtime';
-import { clone } from './utils';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { PIPELINE_TIMING } from '../../modules/constants.js';
+import { Config } from '../../modules/config.js';
+import { runtime } from '../../modules/runtime.js';
+import { clone } from './utils.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
+import { pathToFileURL } from 'node:url';
 const storage = getStorage();
 
 const DEFAULT_HEALTH_PATH = PATHS.CLAW.WATCHER_HEALTH_FILE;
@@ -242,7 +243,7 @@ async function runPositionManagerWatch(options: Record<string, any> = {}) {
 
 export { DEFAULT_HEALTH_PATH, DEFAULT_MAX_CONSECUTIVE_FAILURES, createPositionManagerWatcher, parsePositionManagerWatchArgs, runPositionManagerWatch, main }
 
-if (typeof require !== 'undefined' && require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
     console.error(getErrorMessage(err));
     runtime.exit(1);

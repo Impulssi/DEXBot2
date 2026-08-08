@@ -2,7 +2,7 @@ import assert from 'node:assert';
 import {
     buildKalmanVelocitySeries,
     smoothKalmanVelocityPoint,
-} from '../kalman_velocity_smoothing';
+} from '../kalman_velocity_smoothing.js';
 
 'use strict';
 

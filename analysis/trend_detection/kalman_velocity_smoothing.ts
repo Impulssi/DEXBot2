@@ -1,6 +1,6 @@
 
-import { clamp } from '../../modules/order/utils/math';
-import { MARKET_ADAPTER } from '../../modules/constants';
+import { clamp } from '../../modules/order/utils/math.js';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
 'use strict';
 
 

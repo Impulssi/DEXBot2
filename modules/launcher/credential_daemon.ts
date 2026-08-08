@@ -1,17 +1,17 @@
 
-import { path } from '../path_api';
-import { LAUNCHER } from '../constants';
-import { getStorage } from '../storage';
+import { path } from '../path_api.js';
+import { LAUNCHER } from '../constants.js';
+import { getStorage } from '../storage/index.js';
 import { spawn } from 'node:child_process';
-import * as chainKeys from '../chain_keys';
-import * as credentialPolicy from '../credential_policy';
-import { createPasswordBootstrapServer } from './credential_bootstrap';
-import { buildScopedChildEnv } from './child_env';
-import { Config } from '../config';
-import { PATHS } from '../paths';
-import { readHeadlessPassword } from './headless_password';
-import { sleep } from '../order/utils/system';
-import { withTimeout } from '../order/utils/timeout';
+import * as chainKeys from '../chain_keys.js';
+import * as credentialPolicy from '../credential_policy.js';
+import { createPasswordBootstrapServer } from './credential_bootstrap.js';
+import { buildScopedChildEnv } from './child_env.js';
+import { Config } from '../config.js';
+import { PATHS } from '../paths.js';
+import { readHeadlessPassword } from './headless_password.js';
+import { sleep } from '../order/utils/system.js';
+import { withTimeout } from '../order/utils/timeout.js';
 const storage = getStorage();
 const { unlink: safeUnlink } = storage;
 import type { StdioOptions } from 'child_process';
@@ -20,9 +20,9 @@ import {
     ensureCredentialRuntimeDirSync,
     getCredentialReadyFilePath,
     getCredentialSocketPath,
-} from '../credential_runtime';
-import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
-import { getErrorMessage } from '../utils/errors';
+} from '../credential_runtime.js';
+import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 

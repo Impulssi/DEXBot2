@@ -15,7 +15,7 @@ const { OrderManager } = require('../modules/order/manager');
 const { allocateFundsByWeights, getSingleDustThreshold } = require('../modules/order/utils/math');
 const { shouldFlagOutOfSpread, assignGridRoles } = require('../modules/order/utils/order');
 const { WHITELIST_FILE, resetMarketAdapterWhitelistCache } = require('../modules/market_adapter_whitelist');
-const { ensureDir, safeUnlink, writeJSON } = require('../modules/storage').getStorage();
+const { ensureDir, unlink: safeUnlink, writeJSON } = require('../modules/storage').getStorage();
 const _distWhitelist = require(`../${BUILD_DIR}/modules/market_adapter_whitelist.js`);
 const _resetBothWhitelistCaches = () => {
     resetMarketAdapterWhitelistCache();

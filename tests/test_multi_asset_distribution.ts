@@ -45,7 +45,7 @@ setCachedModule(path.resolve(__dirname, '../modules/chain_orders.ts'), {
     executeBatch: async () => ({ tx_id: 'noop', operation_results: [] }),
 });
 
-const CreditRuntime = require('../modules/credit_runtime');
+const CreditRuntime = require('../modules/credit_runtime').default;
 const { readJSON } = require('../modules/storage').getStorage();
 
 async function testCollateralDistribution() {

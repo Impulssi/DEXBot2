@@ -1,4 +1,11 @@
 /** Maintenance runtime - periodic sync loops, grid health checks, rebalance */
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { dirname as _esmDirname } from 'node:path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = _esmDirname(__filename);
+const require = createRequire(import.meta.url);
+
 const { createHash } = require('./crypto/sync');
 const fs = require('fs');
 const { path } = require('./path_api');
@@ -105,7 +112,7 @@ function usesAmaGridPrice(bot: any) {
 /**
  * Find a bot entry in the bots config snapshot that matches a runtime config.
  * Matches by botKey or name.
- * @param {import('./types').BotsConfigSnapshot} snapshot - Bots configuration snapshot
+ * @param {import('./types.js').BotsConfigSnapshot} snapshot - Bots configuration snapshot
  * @param {Object} config - Runtime bot configuration
  * @returns {Object|null} Matched bot entry or null
  */
@@ -126,7 +133,7 @@ function findSnapshotBotForRuntimeConfig(snapshot: any, config: any) {
 
 /**
  * Check if a runtime bot configuration requires the market adapter.
- * @param {import('./types').BotsConfigSnapshot} snapshot - Bots configuration snapshot
+ * @param {import('./types.js').BotsConfigSnapshot} snapshot - Bots configuration snapshot
  * @param {Object} config - Runtime bot configuration
  * @returns {boolean} True if the bot uses AMA grid pricing
  */
@@ -261,7 +268,7 @@ async function maybeRunTargetedDriftReconciliation(bot: any, context: any) {
 
 /**
  * Load and fingerprint the bots.json configuration file.
- * @returns {import('./types').BotsConfigSnapshot} Snapshot with exists flag, fingerprint, active bots list, and adapter requirement
+ * @returns {import('./types.js').BotsConfigSnapshot} Snapshot with exists flag, fingerprint, active bots list, and adapter requirement
  */
 function loadBotsConfigSnapshot() {
     if (!storage.exists(PROFILES_BOTS_FILE)) {
@@ -409,9 +416,9 @@ async function stopMarketAdapterPm2() {
 /**
  * Synchronize market adapter state based on periodic config checks.
  * Starts or stops the market adapter based on whether any active bot uses AMA grid pricing.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [context='periodic'] - Context label for logging
- * @returns {Promise<import('./types').MarketAdapterSyncResult>}
+ * @returns {Promise<import('./types.js').MarketAdapterSyncResult>}
  */
 async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = 'periodic') {
     if (bot._marketAdapterWatchdogInFlight) {
@@ -558,9 +565,9 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
 /**
  * Refresh the dynamic weight distribution from the AMA center snapshot.
  * Applies live dynamic weights if the bot is whitelisted and weights are ready.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [context='runtime'] - Context label for logging
- * @returns {import('./types').DynamicWeightRefreshResult}
+ * @returns {import('./types.js').DynamicWeightRefreshResult}
  */
 function refreshDynamicWeightDistribution(bot: any, context: any = 'runtime') {
     const baseWeights = cloneWeightDistribution(
@@ -631,7 +638,7 @@ function refreshDynamicWeightDistribution(bot: any, context: any = 'runtime') {
  * Read and parse a trigger file's metadata payload.
  * Determines whether the trigger originated from the market adapter or was manual.
  * @param {string} triggerFile - Path to the trigger file
- * @returns {import('./types').GridResyncMetadata} Parsed trigger metadata
+ * @returns {import('./types.js').GridResyncMetadata} Parsed trigger metadata
  */
 function readTriggerMetadata(triggerFile: any) {
     const manualTriggerMetadata = (payload: any = null) => ({
@@ -668,7 +675,7 @@ function readTriggerMetadata(triggerFile: any) {
  * Build grid resync metadata from a reason string.
  * Maps known reason strings to structured metadata with refresh flags.
  * @param {string} reason - Resync reason identifier (e.g. 'manual_grid_resync', 'rms_structural_grid_resync')
- * @returns {import('./types').GridResyncMetadata}
+ * @returns {import('./types.js').GridResyncMetadata}
  */
 function buildGridResyncMetadata(reason: any) {
     const resetSource = String(reason || '').trim() || 'dexbot_grid_resync';
@@ -693,8 +700,8 @@ function buildGridResyncMetadata(reason: any) {
 
 /**
  * Build grid resync options from a reason string or metadata object.
- * @param {string|import('./types').GridResyncMetadata} reasonOrMetadata - Reason string or metadata object
- * @returns {import('./types').GridResyncOptions}
+ * @param {string|import('./types.js').GridResyncMetadata} reasonOrMetadata - Reason string or metadata object
+ * @returns {import('./types.js').GridResyncOptions}
  */
 function buildGridResyncOptions(reasonOrMetadata: any) {
     const metadata = typeof reasonOrMetadata === 'string'
@@ -785,8 +792,8 @@ function updateBotGridResetMetadata(botKey: any, options: { resetAt?: string; re
 /**
  * Perform a full grid resync: reload config, optionally refresh center price,
  * recalculate the grid, persist, and record reset metadata.
- * @param {import('./dexbot_class').DEXBot} bot
- * @param {import('./types').GridResyncOptions} [options] - Grid resync options
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {import('./types.js').GridResyncOptions} [options] - Grid resync options
  * @param {boolean} [options.skipIdle=false] - Skip the idle-cooldown deferral
  * @returns {Promise<boolean>} True if resync succeeded
  */
@@ -943,7 +950,7 @@ function performGridResync(bot: any, options: {
 /**
  * Handle a pending trigger file detected at startup or during runtime.
  * Processes the trigger and performs a grid resync if the trigger file exists.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<boolean>} True if reset was handled successfully
  */
 async function handlePendingTriggerReset(bot: any) {
@@ -969,7 +976,7 @@ async function handlePendingTriggerReset(bot: any) {
 /**
  * Set up a file watcher on the profiles directory to detect trigger file creation.
  * When a trigger file appears, debounces and processes the grid resync.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<void>}
  */
 async function setupTriggerFileDetection(bot: any) {
@@ -1026,7 +1033,7 @@ async function setupTriggerFileDetection(bot: any) {
 /**
  * Perform periodic grid health checks (divergence, spread condition, dust detection).
  * Called as part of the periodic blockchain fetch interval.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<void>}
  */
 async function performPeriodicGridChecks(bot: any) {
@@ -1039,7 +1046,7 @@ async function performPeriodicGridChecks(bot: any) {
 
 /**
  * Check if the continuous open-orders sync loop is enabled.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {boolean} True if the sync loop is enabled in TIMING config
  */
 function isOpenOrdersSyncLoopEnabled(bot: any) {
@@ -1052,7 +1059,7 @@ function isOpenOrdersSyncLoopEnabled(bot: any) {
 /**
  * Start the continuous open-orders sync loop.
  * Periodically reads on-chain orders and synchronizes with the grid manager.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  */
 function startOpenOrdersSyncLoop(bot: any) {
     if (bot._mainLoopPromise) return;
@@ -1133,7 +1140,7 @@ function startOpenOrdersSyncLoop(bot: any) {
 
 /**
  * Stop the continuous open-orders sync loop.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<void>}
  */
 async function stopOpenOrdersSyncLoop(bot: any) {
@@ -1146,7 +1153,7 @@ async function stopOpenOrdersSyncLoop(bot: any) {
 /**
  * Set up the periodic blockchain fetch interval.
  * Periodically fetches account totals and syncs open orders from the blockchain.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  */
 function setupBlockchainFetchInterval(bot: any) {
     let intervalMin = bot.config?.timing?.BLOCKCHAIN_FETCH_INTERVAL_MIN;
@@ -1282,7 +1289,7 @@ function setupBlockchainFetchInterval(bot: any) {
 
 /**
  * Stop the periodic blockchain fetch interval.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  */
 function stopBlockchainFetchInterval(bot: any) {
     if (bot._blockchainFetchInterval !== null && bot._blockchainFetchInterval !== undefined) {
@@ -1295,10 +1302,10 @@ function stopBlockchainFetchInterval(bot: any) {
 /**
  * Release the market adapter runtime for a bot.
  * In PM2 mode this is a no-op; in direct mode it calls the shared runtime's releaseBot.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} botId - Bot identifier
  * @param {string} [context='shutdown'] - Context label for logging
- * @returns {Promise<import('./types').MarketAdapterReleaseResult>}
+ * @returns {Promise<import('./types.js').MarketAdapterReleaseResult>}
  */
 async function releaseMarketAdapterRuntime(_bot: any, botId: any, context: any = 'shutdown') {
     if (isPm2Runtime()) {
@@ -1393,7 +1400,7 @@ function scheduleMaintenanceAfterIdle(ctx: any, context: any, options: any = {})
 /**
  * Schedule a deferred grid resync after idle delay elapses.
  * @param {Object} ctx - Bot context
- * @param {import('./types').GridResyncOptions} [options] - Grid resync options
+ * @param {import('./types.js').GridResyncOptions} [options] - Grid resync options
  */
 function scheduleDeferredGridResync(ctx: any, options: any = {}) {
     if (
@@ -1440,7 +1447,7 @@ function scheduleDeferredGridResync(ctx: any, options: any = {}) {
  * Execute the core maintenance logic: recalculate funds, check pipeline,
  * refresh dynamic weights, check grid health, cancel dust orders,
  * apply divergence corrections, and fix spread conditions.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} context - Context label for logging (e.g. 'periodic', 'dust-timer')
  * @returns {Promise<void>}
  */
@@ -1744,8 +1751,8 @@ async function executeMaintenanceLogic(bot: any, context: any) {
  * broadcast), so a BROADCAST_DEADLINE reply cannot be caused by an expired
  * session — re-using the original signing token is correct.
  *
- * @param {import('./dexbot_class').DEXBot} bot
- * @param {import('./types').Order} order
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {import('./types.js').Order} order
  * @returns {Promise<*>} Result from chainOrders.cancelOrder
  */
 async function cancelOrderDeferredOnUncertain(bot: any, order: any) {
@@ -1764,10 +1771,10 @@ async function cancelOrderDeferredOnUncertain(bot: any, order: any) {
  * Each dust order is cancelled on chain and its slot is rotated through
  * the normal synthetic-fill pipeline. Failures are logged and retried on
  * the next detection cycle (next fill batch or 5-min health check).
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} [options] - Dust cancellation options
- * @param {import('./types').Order[]} [options.buy=[]] - Buy-side dust orders
- * @param {import('./types').Order[]} [options.sell=[]] - Sell-side dust orders
+ * @param {import('./types.js').Order[]} [options.buy=[]] - Buy-side dust orders
+ * @param {import('./types.js').Order[]} [options.sell=[]] - Sell-side dust orders
  * @returns {Promise<{cancelledCount: number, batchResult: {aborted: boolean}|null}>}
  */
 async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = [] }: any = {}) {
@@ -1831,7 +1838,7 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
 /**
  * Run grid maintenance with idle detection and lock acquisition.
  * Checks if the bot is idle before proceeding, and acquires the fill processing lock.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [context='periodic'] - Context label for logging
  * @param {Object} [options] - Maintenance options
  * @param {boolean} [options.skipIdle=false] - Skip idle delay check
@@ -1883,7 +1890,7 @@ const _lastBtsAcquisitionTimestamps = new Map();
  * Check if the bot's BTS balance is below the minimum threshold and trigger acquisition.
  * Only applies to non-BTS pairs. Uses hysteresis: triggers at 1× min_BTS_value,
  * fills to BTS_ACQUIRE_TARGET_MULTIPLIER × min_BTS_value.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<void>}
  */
 async function checkBtsBalanceAndAcquire(bot: any) {
@@ -1941,7 +1948,7 @@ async function checkBtsBalanceAndAcquire(bot: any) {
 /**
  * Acquire BTS by swapping one of the trading pair assets through an AMM pool.
  * Tries both assets for a BTS pool, picks the best (lowest price impact).
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {number} deficit - Amount of BTS needed (float)
  * @returns {Promise<void>}
  */
@@ -2032,7 +2039,7 @@ async function acquireBts(bot: any, deficit: any) {
 
 /**
  * Run a single dust health check cycle.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  */
 async function runDustHealthCheck(bot: any) {
     if (bot._shuttingDown || !bot.manager) return;
@@ -2072,7 +2079,7 @@ async function runDustHealthCheck(bot: any) {
 
 /**
  * Set up the periodic dust health check interval.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  */
 function setupDustHealthCheckInterval(bot: any) {
     bot._dustHealthCheckTimer = setInterval(() => {
@@ -2085,7 +2092,7 @@ function setupDustHealthCheckInterval(bot: any) {
 
 /**
  * Request a full grid reset from fresh on-chain state.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [reason='structural change']
  * @param {{refreshCenterPrice?: boolean, skipIdle?: boolean, skipFillLock?: boolean}} [options={}]
  * @returns {Promise<Object>}
@@ -2126,7 +2133,7 @@ async function requestGridReset(bot: any, reason: any = 'structural change', opt
 
 /**
  * Wire the structural grid resync request handler on the manager.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  */
 function wireStructuralGridResyncRequest(bot: any) {
     if (!bot.manager || bot.manager.requestStructuralGridResync) return;
@@ -2210,7 +2217,7 @@ function wireStructuralGridResyncRequest(bot: any) {
 
 /**
  * Get current pipeline signal state for congestion checks.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Object}
  */
 function getPipelineSignals(bot: any) {
@@ -2226,7 +2233,7 @@ function getPipelineSignals(bot: any) {
 
 /**
  * Mark that grid activity occurred (updates idle timer).
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [reason='activity']
  */
 function markGridActivity(bot: any, reason: any = 'activity') {
@@ -2236,7 +2243,7 @@ function markGridActivity(bot: any, reason: any = 'activity') {
 
 /**
  * Get current metrics for monitoring and debugging.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Object}
  */
 function getMetrics(bot: any) {
@@ -2254,7 +2261,7 @@ function getMetrics(bot: any) {
 
 /**
  * Read open orders from chain, sync with local state, and process any fills found.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} tag - Context label for logging
  * @returns {Promise<Object>}
  */
@@ -2313,8 +2320,10 @@ async function syncOpenOrdersAndProcessFills(bot: any, tag: any) {
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }
 }
+export { loadBotsConfigSnapshot, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, executeMaintenanceLogic, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
 
-export = {
+
+export default {
     loadBotsConfigSnapshot,
     refreshDynamicWeightDistribution,
     performGridResync,

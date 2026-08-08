@@ -1,17 +1,17 @@
 
-import { buildScopedChildEnv } from './child_env';
-import { Config } from '../config';
-import { LAUNCHER, MARKET_ADAPTER } from '../constants';
-import { PATHS } from '../paths';
-import { getProcessDiscovery } from '../process_discovery';
-import { withTimeout } from '../order/utils/timeout';
+import { buildScopedChildEnv } from './child_env.js';
+import { Config } from '../config.js';
+import { LAUNCHER, MARKET_ADAPTER } from '../constants.js';
+import { PATHS } from '../paths.js';
+import { getProcessDiscovery } from '../process_discovery.js';
+import { withTimeout } from '../order/utils/timeout.js';
 import { spawn } from 'node:child_process';
-import { getStorage } from '../storage';
+import { getStorage } from '../storage/index.js';
 'use strict';
 
 const storage = getStorage();
 const { readJSON, unlink: safeUnlink } = storage;
-import { buildRuntimeScriptPath, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
+import { buildRuntimeScriptPath, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry.js';
 
 const DEFAULT_SCRIPT = buildRuntimeScriptPath(DEFAULT_CODE_ROOT, ['market_adapter', 'market_adapter']);
 const DEFAULT_STALE_LOCK_MS = (

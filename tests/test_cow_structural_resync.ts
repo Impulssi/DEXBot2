@@ -1,6 +1,6 @@
 const assert = require('assert');
 
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 const { OrderManager } = require('../modules/order/manager');
 const { WorkingGrid } = require('../modules/order/working_grid');
 const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../modules/constants');

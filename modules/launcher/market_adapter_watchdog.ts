@@ -1,18 +1,18 @@
 
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
-import { LAUNCHER, MARKET_ADAPTER } from '../constants';
-import { Config } from '../config';
-import { PATHS } from '../paths';
-import { isLikelyMarketAdapterProcess, isLockStale } from './market_adapter_runtime';
-import { readProcMemMB, readProcUptime } from './status_reporting';
-import { getActiveAmaBotFingerprint } from './monolithic_runtime';
+import { LAUNCHER, MARKET_ADAPTER } from '../constants.js';
+import { Config } from '../config.js';
+import { PATHS } from '../paths.js';
+import { isLikelyMarketAdapterProcess, isLockStale } from './market_adapter_runtime.js';
+import { readProcMemMB, readProcUptime } from './status_reporting.js';
+import { getActiveAmaBotFingerprint } from './monolithic_runtime.js';
 'use strict';
 
-import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry';
-import { getErrorMessage } from '../utils/errors';
-import { withTimeout } from '../order/utils/timeout';
-import { getStorage } from '../storage';
+import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry.js';
+import { getErrorMessage } from '../utils/errors.js';
+import { withTimeout } from '../order/utils/timeout.js';
+import { getStorage } from '../storage/index.js';
 const storage = getStorage();
 const { readJSON, unlink: safeUnlink } = storage;
 

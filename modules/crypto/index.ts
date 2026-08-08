@@ -1,10 +1,13 @@
-export type { CryptoProvider, EcPoint, ScryptOptions, Aes256GcmEncryptResult } from './provider';
-import type { CryptoProvider } from './provider';
-import { isBrowser } from '../env';
-import { BrowserCryptoProvider } from './browser_provider';
-export { BrowserCryptoProvider } from './browser_provider';
-export { ripemd160 as pureRipemd160 } from './pure_ripemd160';
-export { scrypt as pureScrypt } from './pure_scrypt';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+export type { CryptoProvider, EcPoint, ScryptOptions, Aes256GcmEncryptResult } from './provider.js';
+import type { CryptoProvider } from './provider.js';
+import { isBrowser } from '../env.js';
+import { BrowserCryptoProvider } from './browser_provider.js';
+export { BrowserCryptoProvider } from './browser_provider.js';
+export { ripemd160 as pureRipemd160 } from './pure_ripemd160.js';
+export { scrypt as pureScrypt } from './pure_scrypt.js';
 export {
     secp256k1,
     privateKeyToPublicKey as pureSecp256k1Pubkey,
@@ -18,7 +21,7 @@ export {
     mod,
     bigIntFromBuffer,
     bufferFromBigInt,
-} from './pure_secp256k1';
+} from './pure_secp256k1.js';
 
 // ── Singleton accessor (mirrors getStorage() pattern) ────────────────
 let _crypto: CryptoProvider | null = null;

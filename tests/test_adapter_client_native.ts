@@ -1,37 +1,32 @@
 const assert = require('assert');
+const { setCachedModule, restoreCachedModule } = require('./helpers/module_cache_stub');
 
 const adapterPath = require.resolve('../market_adapter/utils/adapter_client');
 const nativePath = require.resolve('../modules/bitshares-native');
 
 async function main() {
-    const originalNativeEntry = require.cache[nativePath];
+    const originalNativeEntry = setCachedModule(nativePath, {
+        createReadOnlyClient: () => ({
+            connect: async (nodes) => {
+                connectArg = Array.isArray(nodes) ? nodes.slice() : nodes;
+            },
+            disconnect: () => {
+                disconnectCalls += 1;
+            },
+            db: async () => null,
+            history: async () => null,
+            getNodeUrl: () => null,
+            isConnected: () => false,
+            setNodes: () => {},
+            getNodes: () => [],
+        }),
+    } as any);
     const originalFlag = process.env.DEXBOT_NATIVE_CHAIN;
     let connectArg = null;
     let disconnectCalls = 0;
 
     process.env.DEXBOT_NATIVE_CHAIN = '1';
     delete require.cache[adapterPath];
-    require.cache[nativePath] = {
-        id: nativePath,
-        filename: nativePath,
-        loaded: true,
-        exports: {
-            createReadOnlyClient: () => ({
-                connect: async (nodes) => {
-                    connectArg = Array.isArray(nodes) ? nodes.slice() : nodes;
-                },
-                disconnect: () => {
-                    disconnectCalls += 1;
-                },
-                db: async () => null,
-                history: async () => null,
-                getNodeUrl: () => null,
-                isConnected: () => false,
-                setNodes: () => {},
-                getNodes: () => [],
-            }),
-        },
-    } as any;
 
     try {
         const adapter = require('../market_adapter/utils/adapter_client');
@@ -46,11 +41,7 @@ async function main() {
         console.log('adapter client native tests passed');
     } finally {
         delete require.cache[adapterPath];
-        if (originalNativeEntry) {
-            require.cache[nativePath] = originalNativeEntry;
-        } else {
-            delete require.cache[nativePath];
-        }
+        restoreCachedModule(nativePath, originalNativeEntry);
         if (originalFlag === undefined) {
             delete process.env.DEXBOT_NATIVE_CHAIN;
         } else {

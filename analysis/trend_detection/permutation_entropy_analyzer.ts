@@ -1,6 +1,6 @@
 
-import { MARKET_ADAPTER } from '../../modules/constants';
-import { roundTo } from '../../modules/utils/math_utils';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
+import { roundTo } from '../../modules/utils/math_utils.js';
 'use strict';
 
 

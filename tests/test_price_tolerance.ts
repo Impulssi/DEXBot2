@@ -3,7 +3,7 @@ const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running price_tolerance tests');
 
-const { OrderManager, utils } = require('../modules/order/index');
+const { OrderManager, utils } = require('../modules/order/index').default;
 
 const calc = utils.calculatePriceTolerance;
 

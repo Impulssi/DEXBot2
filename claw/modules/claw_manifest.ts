@@ -1,6 +1,6 @@
 
-import { Config } from '../../modules/config';
-import { getSupportedClawRuntime, listSupportedClawRuntimes } from './claw_runtime_matrix';
+import { Config } from '../../modules/config.js';
+import { getSupportedClawRuntime, listSupportedClawRuntimes } from './claw_runtime_matrix.js';
 import { buildClawCommandExamples, getClawToolCatalog, listClawCommandNames } from './claw_catalog.js';
 
 function groupCommandsByRisk(tools: any[]) {

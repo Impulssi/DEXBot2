@@ -27,8 +27,8 @@
  */
 
 
-import { fetchKibanaCandles, fetchKibanaClosePrices } from '../core/kibana_candles';
-import { normalizePoolId } from '../utils/chain';
+import { fetchKibanaCandles, fetchKibanaClosePrices } from '../core/kibana_candles.js';
+import { normalizePoolId } from '../utils/chain.js';
 import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from '../core/kibana_client.js';
 'use strict';
 

@@ -1,10 +1,11 @@
 
 import fs from 'node:fs';
-import { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries } from '../modules/bot_settings';
-import { PATHS } from '../modules/paths';
-import { getStorage } from '../modules/storage';
+import { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries } from '../modules/bot_settings.js';
+import { PATHS } from '../modules/paths.js';
+import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
-import { getErrorMessage } from '../modules/utils/errors';
+import { getErrorMessage } from '../modules/utils/errors.js';
+import { pathToFileURL } from 'node:url';
 'use strict';
 
 
@@ -112,7 +113,7 @@ function main() {
     process.stdout.write(`Wrote ${WHITELIST_FILE} with ${botCount} ${botCount === 1 ? 'bot' : 'bots'}\n`);
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     main();
 }
 

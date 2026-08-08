@@ -11,13 +11,13 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
-import { PATHS } from '../modules/paths';
-import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer';
-import { generateHTML } from './trend_detection/kalman_chart_generator';
-import { createSource } from './price_sources';
-import { calculateAMA } from '../market_adapter/core/strategies/ama';
-import { getCandleClose } from './math_utils';
-import { writeChartFile } from './chart_utils';
+import { PATHS } from '../modules/paths.js';
+import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer.js';
+import { generateHTML } from './trend_detection/kalman_chart_generator.js';
+import { createSource } from './price_sources.js';
+import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
+import { getCandleClose } from './math_utils.js';
+import { writeChartFile } from './chart_utils.js';
 
 'use strict';
 

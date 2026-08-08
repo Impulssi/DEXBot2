@@ -1,10 +1,13 @@
 
-import { path } from '../../modules/path_api';
-import { getStorage } from '../../modules/storage';
-import { PATHS } from '../../modules/paths';
-import { runtime } from '../../modules/runtime';
-import { getErrorMessage } from '../../modules/utils/errors';
-import { Config } from '../../modules/config';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { path } from '../../modules/path_api.js';
+import { getStorage } from '../../modules/storage/index.js';
+import { PATHS } from '../../modules/paths.js';
+import { runtime } from '../../modules/runtime.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
+import { Config } from '../../modules/config.js';
 const storage = getStorage();
 const { ensureDir, unlink: safeUnlink } = storage;
 

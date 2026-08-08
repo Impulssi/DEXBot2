@@ -17,10 +17,8 @@ console.log('NATIVE_CLIENT.TRANSPORT.CONNECT_TIMEOUT_MS =', NATIVE_CLIENT.TRANSP
 console.log('NATIVE_CLIENT.TRANSPORT.RPC_TIMEOUT_MS     =', NATIVE_CLIENT.TRANSPORT.RPC_TIMEOUT_MS);
 console.log('');
 
-const nativePath = require.resolve('../modules/bitshares-native');
-delete require.cache[nativePath];
-delete require.cache[require.resolve('../modules/bitshares-native/chain_client')];
-const native = require('../modules/bitshares-native');
+const { installBitsharesNativeStub } = require('./helpers/bitshares_native_stub');
+const { native } = installBitsharesNativeStub();
 
 let capturedConfig: any = null;
 native.createChainClient = function (config) {

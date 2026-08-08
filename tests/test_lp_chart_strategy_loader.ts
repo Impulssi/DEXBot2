@@ -3,7 +3,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { ensureDir, safeUnlink, writeJSON } = require('../modules/storage').getStorage();
+const { ensureDir, unlink: safeUnlink, writeJSON } = require('../modules/storage').getStorage();
 
 const {
     findLatestLpData,

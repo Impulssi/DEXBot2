@@ -1,23 +1,26 @@
 #!/usr/bin/env node
 
-import { path } from '../modules/path_api';
-import { getStorage } from '../modules/storage';
-import { parseJsonWithComments, sleep, ensureDir } from '../modules/order/utils/system';
-import { readGeneralSettings } from '../modules/general_settings';
-import { DEFAULT_CONFIG, MARKET_ADAPTER, NATIVE_CLIENT, API_LIMITS, TIMING } from '../modules/constants';
-import { normalizeBotEntry } from '../modules/bot_settings';
-import { calculateAMA } from './core/strategies/ama';
-import * as kibanaSource from './inputs/kibana_source';
-import * as kibanaMarketSource from './core/kibana_market_candles';
-import { tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles } from './candle_utils';
-import { toIntervalLabel } from './interval_utils';
-import { loadMarketProfiles } from '../analysis/tradingview/tradingview_uplot_chart_generator';
-import { writeJsonAtomic } from './utils/atomic_write';
-import { acquireFileLockSync, releaseFileLockSync } from './utils/file_lock';
-import { updateDynamicGridSnapshotSync } from './utils/dynamic_grid_snapshot';
-import { PATHS, getRecalculateTriggerFile } from '../modules/paths';
-import Logger from '../modules/logger';
-import { fixedTo, roundTo } from '../modules/utils/math_utils';
+import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
+const __filename = fileURLToPath(import.meta.url);
+import { path } from '../modules/path_api.js';
+import { getStorage } from '../modules/storage/index.js';
+import { parseJsonWithComments, sleep, ensureDir } from '../modules/order/utils/system.js';
+import { readGeneralSettings } from '../modules/general_settings.js';
+import { DEFAULT_CONFIG, MARKET_ADAPTER, NATIVE_CLIENT, API_LIMITS, TIMING } from '../modules/constants.js';
+import { normalizeBotEntry } from '../modules/bot_settings.js';
+import { calculateAMA } from './core/strategies/ama.js';
+import * as kibanaSource from './inputs/kibana_source.js';
+import * as kibanaMarketSource from './core/kibana_market_candles.js';
+import { tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles } from './candle_utils.js';
+import { toIntervalLabel } from './interval_utils.js';
+import { loadMarketProfiles } from '../analysis/tradingview/tradingview_uplot_chart_generator.js';
+import { writeJsonAtomic } from './utils/atomic_write.js';
+import { acquireFileLockSync, releaseFileLockSync } from './utils/file_lock.js';
+import { updateDynamicGridSnapshotSync } from './utils/dynamic_grid_snapshot.js';
+import { PATHS, getRecalculateTriggerFile } from '../modules/paths.js';
+import Logger from '../modules/logger.js';
+import { fixedTo, roundTo } from '../modules/utils/math_utils.js';
 import {
     normalizeAtrPeriod,
     normalizeMaxVolatilityOffset,
@@ -1040,7 +1043,7 @@ import {
     normalizeAmaSlopePercentMode,
     convertSlopePercentToPerBar,
 } from './core/market_adapter_service.js';
-import { getErrorMessage } from '../modules/utils/errors';
+import { getErrorMessage } from '../modules/utils/errors.js';
 const adapterService = new MarketAdapterService({
     resolveBotContext,
     resolveAmaForBot,
@@ -1423,7 +1426,7 @@ async function main() {
     }
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     main()
         .then((exitCode: any) => process.exit(Number.isInteger(exitCode) ? exitCode : 0))
         .catch((err: any) => {

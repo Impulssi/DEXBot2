@@ -1,12 +1,12 @@
 
 import fs from 'node:fs';
-import { MARKET_ADAPTER } from '../../modules/constants';
-import { escapeHtml, serializeJsonForScript } from '../chart_utils';
-import { normalizeCandle } from '../math_utils';
-import { PATHS } from '../../modules/paths';
-import { getStorage } from '../../modules/storage';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
+import { escapeHtml, serializeJsonForScript } from '../chart_utils.js';
+import { normalizeCandle } from '../math_utils.js';
+import { PATHS } from '../../modules/paths.js';
+import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
-import { getErrorMessage } from '../../modules/utils/errors';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 'use strict';
 
 

@@ -20,12 +20,12 @@
  */
 
 
-import { PATHS } from '../modules/paths';
-import { DerivativeAnalyzer } from './trend_detection/derivative_analyzer';
-import { generateHTML } from './derivative_chart_generator';
-import { createSource } from './price_sources';
-import { findLatestLpData } from '../market_adapter/utils/data_discovery';
-import { writeChartFile } from './chart_utils';
+import { PATHS } from '../modules/paths.js';
+import { DerivativeAnalyzer } from './trend_detection/derivative_analyzer.js';
+import { generateHTML } from './derivative_chart_generator.js';
+import { createSource } from './price_sources.js';
+import { findLatestLpData } from '../market_adapter/utils/data_discovery.js';
+import { writeChartFile } from './chart_utils.js';
 'use strict';
 
 

@@ -1,3 +1,7 @@
+import { fileURLToPath } from 'node:url';
+import { dirname as _esmDirname } from 'node:path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = _esmDirname(__filename);
 
 /**
  * Resolve the DEXBot2 project root from any directory path inside the
@@ -10,8 +14,8 @@
  *     path.basename(dir) === BUILD_DIR ? path.dirname(dir) : dir
  */
 
-import { path } from '../path_api';
-import { isDistRuntime as isDistCodeRoot } from '../utils/build_dir';
+import { path } from '../path_api.js';
+import { isDistRuntime as isDistCodeRoot } from '../utils/build_dir.js';
 function resolveProjectRoot(dirPath: string): string {
     return isDistCodeRoot(dirPath) ? path.dirname(dirPath) : dirPath;
 }

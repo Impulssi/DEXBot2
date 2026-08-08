@@ -1,7 +1,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { getStorage } from '../modules/storage';
+import { getStorage } from '../modules/storage/index.js';
 const { ensureDir } = getStorage();
 'use strict';
 

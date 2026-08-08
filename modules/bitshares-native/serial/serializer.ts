@@ -1,8 +1,8 @@
 
-import { getNodeRequire } from '../../env';
+import { createRequire } from 'node:module';
 'use strict';
 
-const _require = getNodeRequire();
+const _require = createRequire(import.meta.url);
 let _Buffer: any;
 const Buffer = new Proxy({} as any, {
     get(_, prop) {

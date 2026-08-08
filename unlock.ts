@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
+import { dirname as _esmDirname } from 'node:path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = _esmDirname(__filename);
 // node-only entry point — credential daemon launcher (Unix socket, child_process, fs)
 /**
  * unlock.ts - Credential Daemon Launcher
@@ -33,29 +38,32 @@
  */
 
 
-import { setUmask } from './modules/config';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { setUmask } from './modules/config.js';
 import fs from 'node:fs';
-import { path } from './modules/path_api';
-import { getStorage } from './modules/storage';
+import { path } from './modules/path_api.js';
+import { getStorage } from './modules/storage/index.js';
 import { spawn } from 'node:child_process';
-import { createCredentialDaemonController } from './modules/launcher/credential_daemon';
-import { buildScopedChildEnv } from './modules/launcher/child_env';
-import { parseUnlockArgs } from './modules/launcher/launch_modes';
-import { UPDATER, LAUNCHER } from './modules/constants';
-import { runtime } from './modules/runtime';
-import { PATHS } from './modules/paths';
-import { buildRuntimeScriptArgs } from './modules/launcher/runtime_entry';
-import { sendControlCommand } from './modules/launcher/supervisor_control';
-import { registerCleanup, setupGracefulShutdown } from './modules/graceful_shutdown';
-import { normalizeBotEntry, resolveRawBotEntries, loadSettingsFile } from './modules/bot_settings';
-import * as chainKeys from './modules/chain_keys';
-import * as credentialPolicy from './modules/credential_policy';
-import { getWhitelistFlags } from './modules/market_adapter_whitelist';
-import { createMarketAdapterWatchdog } from './modules/launcher/market_adapter_watchdog';
-import { isLikelyMarketAdapterProcess } from './modules/launcher/market_adapter_runtime';
-import { Config } from './modules/config';
-import { getErrorMessage } from './modules/utils/errors';
-import { withTimeout } from './modules/order/utils/timeout';
+import { createCredentialDaemonController } from './modules/launcher/credential_daemon.js';
+import { buildScopedChildEnv } from './modules/launcher/child_env.js';
+import { parseUnlockArgs } from './modules/launcher/launch_modes.js';
+import { UPDATER, LAUNCHER } from './modules/constants.js';
+import { runtime } from './modules/runtime.js';
+import { PATHS } from './modules/paths.js';
+import { buildRuntimeScriptArgs } from './modules/launcher/runtime_entry.js';
+import { sendControlCommand } from './modules/launcher/supervisor_control.js';
+import { registerCleanup, setupGracefulShutdown } from './modules/graceful_shutdown.js';
+import { normalizeBotEntry, resolveRawBotEntries, loadSettingsFile } from './modules/bot_settings.js';
+import * as chainKeys from './modules/chain_keys.js';
+import * as credentialPolicy from './modules/credential_policy.js';
+import { getWhitelistFlags } from './modules/market_adapter_whitelist.js';
+import { createMarketAdapterWatchdog } from './modules/launcher/market_adapter_watchdog.js';
+import { isLikelyMarketAdapterProcess } from './modules/launcher/market_adapter_runtime.js';
+import { Config } from './modules/config.js';
+import { getErrorMessage } from './modules/utils/errors.js';
+import { withTimeout } from './modules/order/utils/timeout.js';
 setUmask(0o077);
 
 const storage = getStorage();
@@ -1008,8 +1016,8 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
 
 // ── Bootstrap ──────────────────────────────────────────────────────
 
-const isUnlockStartDirectRun = require.main === module || (
-    process.argv[1] &&
+const isUnlockStartDirectRun = !!process.argv[1] && (
+    import.meta.url === pathToFileURL(process.argv[1]).href ||
     path.parse(process.argv[1]).name === 'unlock'
 );
 if (isUnlockStartDirectRun) {

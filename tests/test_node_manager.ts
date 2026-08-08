@@ -9,7 +9,7 @@
  * - Statistics tracking
  */
 
-const NodeManager = require('../modules/node_manager');
+const NodeManager = require('../modules/node_manager').default;
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');

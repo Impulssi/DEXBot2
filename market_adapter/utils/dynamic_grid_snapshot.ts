@@ -1,8 +1,8 @@
 
-import { path } from '../../modules/path_api';
-import { writeJsonAtomic } from './atomic_write';
-import { acquirePathLockSync, releaseFileLockSync } from './file_lock';
-import { getStorage } from '../../modules/storage';
+import { path } from '../../modules/path_api.js';
+import { writeJsonAtomic } from './atomic_write.js';
+import { acquirePathLockSync, releaseFileLockSync } from './file_lock.js';
+import { getStorage } from '../../modules/storage/index.js';
 const { ensureDir, readJSON } = getStorage();
 'use strict';
 

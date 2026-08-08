@@ -8,20 +8,23 @@
  */
 
 
-import { path } from './path_api';
-import { randomBytes, createHmac, timingSafeEqual } from './crypto/sync';
-import * as client from './bitshares_client';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { path } from './path_api.js';
+import { randomBytes, createHmac, timingSafeEqual } from './crypto/sync.js';
+import * as client from './bitshares_client.js';
 const { BitShares } = client;
-import { isPositiveInt } from './order/utils/math';
-import { parseJsonWithComments } from './order/utils/system';
-import { FEE_PARAMETERS, NATIVE_CLIENT } from './constants';
-import { getCredentialReadyFilePath, assertPrivatePathSecurity } from './credential_runtime';
-import { PATHS } from './paths';
-import Logger from './logger';
-import { getStorage } from './storage';
-import { runtime } from './runtime';
-import { LRUCache } from './bitshares-native/lru_cache';
-import { getErrorMessage } from './utils/errors';
+import { isPositiveInt } from './order/utils/math.js';
+import { parseJsonWithComments } from './order/utils/system.js';
+import { FEE_PARAMETERS, NATIVE_CLIENT } from './constants.js';
+import { getCredentialReadyFilePath, assertPrivatePathSecurity } from './credential_runtime.js';
+import { PATHS } from './paths.js';
+import Logger from './logger.js';
+import { getStorage } from './storage/index.js';
+import { runtime } from './runtime.js';
+import { LRUCache } from './bitshares-native/lru_cache.js';
+import { getErrorMessage } from './utils/errors.js';
 const { RESOLVERS } = NATIVE_CLIENT;
 const storage = getStorage();
 const { readJSON } = storage;

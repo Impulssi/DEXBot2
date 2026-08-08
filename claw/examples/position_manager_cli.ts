@@ -1,3 +1,6 @@
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const { DEFAULT_STATE_PATH, PositionManager } = require('../modules/position_manager');
 const { getErrorMessage } = require('../../modules/utils/errors');
 

@@ -130,7 +130,7 @@ function installStubs() {
                 return;
             }
 
-            if (args[0] === 'start' && String(args[1]).includes('ecosystem.config.js')) {
+            if (args[0] === 'start' && String(args[1]).includes('ecosystem.config.cjs')) {
                 emitStdout([
                     '[PM2] cron restart at 0 0 * * *',
                     '[PM2][WARN] Applications XRP-BTS, H-BTS, T-BTS, dexbot-update not running, starting...',
@@ -228,7 +228,7 @@ const { main } = require('../pm2');
         assert.ok(logs.includes('[PM2] App [dexbot-update] launched'), 'launcher should keep the app launch line without the instance count');
         assert.ok(!logs.some((line) => line.startsWith('┌') || line.startsWith('│') || line.startsWith('├') || line.startsWith('└')), 'launcher should strip PM2 table output');
         assert.deepStrictEqual(errors, [], 'launcher should not emit console errors during a normal start');
-        assert.ok(spawnCalls.some((call) => call.args[0] === 'start' && String(call.args[1]).includes('ecosystem.config.js')), 'launcher should still start the PM2 ecosystem');
+        assert.ok(spawnCalls.some((call) => call.args[0] === 'start' && String(call.args[1]).includes('ecosystem.config.cjs')), 'launcher should still start the PM2 ecosystem');
 
         assert.ok(
             logs.some((line) => line.includes('\x1b[1;92m') && line.includes('Connected to BitShares')),

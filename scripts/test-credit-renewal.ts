@@ -1,10 +1,13 @@
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 'use strict';
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const CreditRuntime = require('../modules/credit_runtime');
+const CreditRuntime = require('../modules/credit_runtime').default;
 const { disconnectClient, waitForConnected } = require('../modules/bitshares_client');
 const chainOrders = require('../modules/chain_orders');
 const { PATHS } = require('../modules/paths');

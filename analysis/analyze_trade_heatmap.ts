@@ -23,8 +23,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { calculateAMA } from '../market_adapter/core/strategies/ama';
-import { MARKET_ADAPTER } from '../modules/constants';
+import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
+import { MARKET_ADAPTER } from '../modules/constants.js';
 
 'use strict';
 /**
@@ -56,8 +56,8 @@ function parseArgs() {
         verbose: has('verbose'),
     };
 }
-import { calcStdDev } from './math_utils';
-import { getStorage } from '../modules/storage';
+import { calcStdDev } from './math_utils.js';
+import { getStorage } from '../modules/storage/index.js';
 const { ensureDir, readJSON } = getStorage();
 /**
  * Main entry point.

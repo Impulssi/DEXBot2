@@ -1,9 +1,12 @@
 
-import { path } from '../../modules/path_api';
-import { getStorage } from '../../modules/storage';
-import { BUILD_DIR } from '../../modules/constants';
-import { PATHS } from '../../modules/paths';
-import { Config } from '../../modules/config';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { path } from '../../modules/path_api.js';
+import { getStorage } from '../../modules/storage/index.js';
+import { BUILD_DIR } from '../../modules/constants.js';
+import { PATHS } from '../../modules/paths.js';
+import { Config } from '../../modules/config.js';
 const storage = getStorage();
 
 function candidateExists(candidatePath: string) {

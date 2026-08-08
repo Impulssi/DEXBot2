@@ -1,9 +1,9 @@
 
-import { NATIVE_CLIENT } from '../../constants';
-import { LRUCache } from '../lru_cache';
-import Logger from '../../logger';
-import { hasTxBuilderFeeCacheTtlSet, getTxBuilderFeeCacheTtl } from '../../config';
-import { getErrorMessage } from '../../utils/errors';
+import { NATIVE_CLIENT } from '../../constants.js';
+import { LRUCache } from '../lru_cache.js';
+import Logger from '../../logger.js';
+import { hasTxBuilderFeeCacheTtlSet, getTxBuilderFeeCacheTtl } from '../../config.js';
+import { getErrorMessage } from '../../utils/errors.js';
 'use strict';
 
 const txCacheLogger = new Logger('TxCache');

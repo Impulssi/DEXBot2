@@ -13,13 +13,13 @@
  * Exports the same API shape as ecc.ts (async where hashing/crypto is needed).
  */
 
-import { getCrypto } from '../../crypto';
-import * as pureSecp from '../../crypto/pure_secp256k1';
+import { getCrypto } from '../../crypto/index.js';
+import * as pureSecp from '../../crypto/pure_secp256k1.js';
 'use strict';
 
-import type { EcPoint } from '../../crypto/provider';
+import type { EcPoint } from '../../crypto/provider.js';
 
-import { base58Encode as _base58Encode, base58Decode as _base58Decode } from '../../utils/base58check';
+import { base58Encode as _base58Encode, base58Decode as _base58Decode } from '../../utils/base58check.js';
 const secp256k1 = pureSecp.secp256k1;
 const pointFromPublicKey = pureSecp.pointFromPublicKey;
 const publicKeyFromPoint = pureSecp.publicKeyFromPoint;

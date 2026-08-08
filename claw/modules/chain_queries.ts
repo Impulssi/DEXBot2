@@ -1,8 +1,8 @@
 
 
-import * as client from './bitshares_client';
+import * as client from './bitshares_client.js';
 const { BitShares, waitForConnected } = client;
-import { loadDexbotOrderSystemUtils, loadDexbotOrderUtils } from './dexbot_bridge';
+import { loadDexbotOrderSystemUtils, loadDexbotOrderUtils } from './dexbot_bridge.js';
 function getDexbotSystem() {
   return loadDexbotOrderSystemUtils();
 }

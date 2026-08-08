@@ -1,18 +1,18 @@
 
-import { path } from '../../modules/path_api';
-import { getStorage } from '../../modules/storage';
-import { DEFAULT_CONFIG, GRID_LIMITS, INCREMENT_BOUNDS } from '../../modules/constants';
-import { resolveRelativePrice } from '../../modules/order/utils/math';
-import { Config } from '../../modules/config';
-import { PATHS, getRecalculateTriggerFile } from '../../modules/paths';
-import { writeJsonFileAtomic as baseWriteJsonFileAtomic } from '../../modules/bots_file_lock';
-import { acquireFileLock } from '../../market_adapter/utils/file_lock';
-import { assertNoDuplicateBotKeys } from '../../modules/bot_settings';
-import { clone } from './utils';
+import { path } from '../../modules/path_api.js';
+import { getStorage } from '../../modules/storage/index.js';
+import { DEFAULT_CONFIG, GRID_LIMITS, INCREMENT_BOUNDS } from '../../modules/constants.js';
+import { resolveRelativePrice } from '../../modules/order/utils/math.js';
+import { Config } from '../../modules/config.js';
+import { PATHS, getRecalculateTriggerFile } from '../../modules/paths.js';
+import { writeJsonFileAtomic as baseWriteJsonFileAtomic } from '../../modules/bots_file_lock.js';
+import { acquireFileLock } from '../../market_adapter/utils/file_lock.js';
+import { assertNoDuplicateBotKeys } from '../../modules/bot_settings.js';
+import { clone } from './utils.js';
 const storage = getStorage();
 
-import type { BotSettings, ProfileOptions, Logger, ClawProfileBundle } from './types';
-import { getErrorMessage } from '../../modules/utils/errors';
+import type { BotSettings, ProfileOptions, Logger, ClawProfileBundle } from './types.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 
 const DEFAULT_MANIFEST_FILE = 'config.json';
 const DEFAULT_BOTS_FILE = 'bots.json';

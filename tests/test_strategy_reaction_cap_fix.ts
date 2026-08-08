@@ -1,7 +1,7 @@
 import assert from 'assert';
-import StrategyEngine from '../modules/order/strategy';
-import { ORDER_TYPES, ORDER_STATES } from '../modules/constants';
-import { getErrorMessage } from '../modules/utils/errors';
+import StrategyEngine from '../modules/order/strategy.js';
+import { ORDER_TYPES, ORDER_STATES } from '../modules/constants.js';
+import { getErrorMessage } from '../modules/utils/errors.js';
 
 function buildSlots() {
     const slots = [];

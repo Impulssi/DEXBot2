@@ -1,8 +1,15 @@
 
-import { path } from './path_api';
-import { getStorage } from './storage';
-import { Config } from './config';
-import { runtime } from './runtime';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { dirname as _esmDirname } from 'node:path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = _esmDirname(__filename);
+const require = createRequire(import.meta.url);
+
+import { path } from './path_api.js';
+import { getStorage } from './storage/index.js';
+import { Config } from './config.js';
+import { runtime } from './runtime.js';
 const storage = getStorage();
 const { ensureDir } = storage;
 

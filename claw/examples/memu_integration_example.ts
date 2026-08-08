@@ -1,3 +1,6 @@
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const { createMemuBridge } = require('../modules/memu_bridge');
 
 async function main() {

@@ -40,8 +40,10 @@
  */
 
 
-import { getStorage } from './storage';
-import AsyncLock from './order/async_lock';
+
+
+import { getStorage } from './storage/index.js';
+import AsyncLock from './order/async_lock.js';
 const storage = getStorage();
 
 /**

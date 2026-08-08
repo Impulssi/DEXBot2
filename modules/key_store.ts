@@ -1,18 +1,21 @@
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 'use strict';
 
-import * as chainKeys from './chain_keys';
-import * as credentialPolicy from './credential_policy';
-import * as credentialRuntime from './credential_runtime';
+import * as chainKeys from './chain_keys.js';
+import * as credentialPolicy from './credential_policy.js';
+import * as credentialRuntime from './credential_runtime.js';
 import {
     executeOperationsViaCredentialDaemon,
     BroadcastUncertainError,
-} from './dexbot_credential_client';
-import { DAEMON_ERRORS } from './constants';
-import { PATHS } from './paths';
-import { getStorage } from './storage';
-import { runtime } from './runtime';
-import { sleep } from './order/utils/system';
-import { getErrorMessage } from './utils/errors';
+} from './dexbot_credential_client.js';
+import { DAEMON_ERRORS } from './constants.js';
+import { PATHS } from './paths.js';
+import { getStorage } from './storage/index.js';
+import { runtime } from './runtime.js';
+import { sleep } from './order/utils/system.js';
+import { getErrorMessage } from './utils/errors.js';
 
 const storage = getStorage();
 

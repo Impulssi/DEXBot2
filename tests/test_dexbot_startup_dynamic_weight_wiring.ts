@@ -34,12 +34,13 @@ setCachedModule(startupReconcilePath, {
 });
 
 const gridModulePath = require.resolve('../modules/order/grid');
-const chainOrders = require('../modules/chain_orders');
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
 const realGrid = require('../modules/order/grid');
 const gridStub = Object.assign({}, realGrid);
 setCachedModule(gridModulePath, gridStub);
 delete require.cache[dexbotClassPath];
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 
 async function testPlaceInitialOrdersRefreshesAndFallsBack() {
     const botKey = 'test_startup_dynamic_weight_initial';

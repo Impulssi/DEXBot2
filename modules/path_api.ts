@@ -1,6 +1,9 @@
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 'use strict';
 
-import { isBrowser } from './env';
+import { isBrowser } from './env.js';
 
 export interface PathApi {
   join(...paths: string[]): string;

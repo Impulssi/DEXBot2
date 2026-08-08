@@ -1,7 +1,7 @@
 
 
-import * as chainKeys from './chain_keys';
-import { getErrorMessage } from './utils/errors';
+import * as chainKeys from './chain_keys.js';
+import { getErrorMessage } from './utils/errors.js';
 interface SessionAccount {
     encryptedKey: string;
 }

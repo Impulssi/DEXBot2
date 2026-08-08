@@ -7,9 +7,11 @@
  * Any violations found represent COW invariant breaches.
  */
 
+
+
 const fs = require('fs');
 const path = require('path');
-import { assertOrdersStructurallySound } from './helpers/order_test_helpers';
+import { assertOrdersStructurallySound } from './helpers/order_test_helpers.js';
 const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('=== COW Index Set Mutation Detection Report ===\n');
@@ -164,7 +166,7 @@ if (violations.length === 0) {
 console.log('='.repeat(80));
 console.log('\n[ANALYSIS-2] Runtime Index Integrity Verification...\n');
 
-const { OrderManager } = require('../modules/order');
+const { OrderManager } = require('../modules/order').default;
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 let runtimeVerificationFailed = false;
 

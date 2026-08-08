@@ -2,10 +2,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from './chart_utils';
-import { getStorage } from '../modules/storage';
+import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from './chart_utils.js';
+import { getStorage } from '../modules/storage/index.js';
 const { ensureDir, readJSON } = getStorage();
-import { fixedTo } from '../modules/utils/math_utils';
+import { fixedTo } from '../modules/utils/math_utils.js';
 'use strict';
 function parseArgs(argv = process.argv.slice(2)) {
     const cfg: { inputFile: string | null; outputFile: string; title: string; quiet: boolean } = {

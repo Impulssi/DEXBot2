@@ -21,28 +21,28 @@
 // Note: test_helpers excluded — only consumed by test files referencing explicit paths.
 
 
-import { MarketAdapterService } from './core/market_adapter_service';
-import * as candleUtils from './candle_utils';
-import * as intervalUtils from './interval_utils';
-import * as kibanaClient from './core/kibana_client';
-import * as kibanaMarketCandles from './core/kibana_market_candles';
-import * as kibanaCandles from './core/kibana_candles';
-import * as kibanaSource from './inputs/kibana_source';
-import * as fetchLpData from './inputs/fetch_lp_data';
-import * as ama from './core/strategies/ama';
-import * as amaSlope from './core/strategies/ama_slope_model';
-import * as regimeGate from './core/strategies/regime_gate';
-import * as atrCalc from './core/strategies/atr/calculator';
-import * as asymBounds from './core/asymmetric_bounds';
-import * as configNormalizers from './core/config_normalizers';
-import * as lpChartCore from './lp_chart_core';
-import * as lpChartRunner from './lp_chart_runner';
-import * as lpChartStrategyLoader from './lp_chart_strategy_loader';
-import * as adapterClient from './utils/adapter_client';
-import * as chainUtils from './utils/chain';
-import * as nativeHistory from './utils/native_history';
-import * as fileLock from './utils/file_lock';
-import * as dataDiscovery from './utils/data_discovery';
-import * as dynamicGridSnapshot from './utils/dynamic_grid_snapshot';
+import { MarketAdapterService } from './core/market_adapter_service.js';
+import * as candleUtils from './candle_utils.js';
+import * as intervalUtils from './interval_utils.js';
+import * as kibanaClient from './core/kibana_client.js';
+import * as kibanaMarketCandles from './core/kibana_market_candles.js';
+import * as kibanaCandles from './core/kibana_candles.js';
+import * as kibanaSource from './inputs/kibana_source.js';
+import * as fetchLpData from './inputs/fetch_lp_data.js';
+import * as ama from './core/strategies/ama.js';
+import * as amaSlope from './core/strategies/ama_slope_model.js';
+import * as regimeGate from './core/strategies/regime_gate.js';
+import * as atrCalc from './core/strategies/atr/calculator.js';
+import * as asymBounds from './core/asymmetric_bounds.js';
+import * as configNormalizers from './core/config_normalizers.js';
+import * as lpChartCore from './lp_chart_core.js';
+import * as lpChartRunner from './lp_chart_runner.js';
+import * as lpChartStrategyLoader from './lp_chart_strategy_loader.js';
+import * as adapterClient from './utils/adapter_client.js';
+import * as chainUtils from './utils/chain.js';
+import * as nativeHistory from './utils/native_history.js';
+import * as fileLock from './utils/file_lock.js';
+import * as dataDiscovery from './utils/data_discovery.js';
+import * as dynamicGridSnapshot from './utils/dynamic_grid_snapshot.js';
 export { MarketAdapterService, candleUtils as candle_utils, intervalUtils as interval_utils, kibanaClient as kibana_client, kibanaMarketCandles as kibana_market_candles, kibanaCandles as kibana_candles, kibanaSource as kibana_source, fetchLpData as fetch_lp_data, ama, amaSlope as ama_slope_model, regimeGate as regime_gate, atrCalc as atr_calculator, asymBounds as asymmetric_bounds, configNormalizers as config_normalizers, lpChartCore as lp_chart_core, lpChartRunner as lp_chart_runner, lpChartStrategyLoader as lp_chart_strategy_loader, adapterClient as adapter_client, chainUtils as chain, nativeHistory as native_history, fileLock as file_lock, dataDiscovery as data_discovery, dynamicGridSnapshot as dynamic_grid_snapshot }
 

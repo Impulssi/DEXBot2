@@ -1,7 +1,7 @@
 
-import { clamp } from '../../../modules/order/utils/math';
-import { MARKET_ADAPTER } from '../../../modules/constants';
-import { roundTo } from '../../../modules/utils/math_utils';
+import { clamp } from '../../../modules/order/utils/math.js';
+import { MARKET_ADAPTER } from '../../../modules/constants.js';
+import { roundTo } from '../../../modules/utils/math_utils.js';
 import {
     normalizeMaxVolatilityOffset,
     normalizeVolatilityThreshold,

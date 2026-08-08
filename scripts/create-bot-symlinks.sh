@@ -8,7 +8,7 @@
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 PROFILE_ROOT="${DEXBOT_PROFILE_ROOT:-${REPO_ROOT}/profiles}"
 BOTS_CONFIG="${PROFILE_ROOT}/bots.json"
-ECOSYSTEM_CONFIG="${PROFILE_ROOT}/ecosystem.config.js"
+ECOSYSTEM_CONFIG="${PROFILE_ROOT}/ecosystem.config.cjs"
 PROFILES_DIR="${PROFILE_ROOT}"
 
 if [ ! -f "$BOTS_CONFIG" ]; then
@@ -43,7 +43,7 @@ const ecoConfig = '$ECOSYSTEM_CONFIG';
     // Create symlink
     try {
         fs.symlinkSync(ecoConfig, symlink);
-        console.log('✓ Created symlink: profiles/' + botName + '.config.js -> ecosystem.config.js');
+        console.log('✓ Created symlink: profiles/' + botName + '.config.cjs -> ecosystem.config.cjs');
     } catch (err) {
         console.error('✗ Error creating symlink for ' + botName + ':', err.message);
     }

@@ -1,9 +1,9 @@
 
 
-import { NODE_MANAGEMENT } from './constants';
-import { PATHS, getNodeHealthCacheFile } from './paths';
-import { writeJsonFileAtomic } from './bots_file_lock';
-import { getStorage } from './storage';
+import { NODE_MANAGEMENT } from './constants.js';
+import { PATHS, getNodeHealthCacheFile } from './paths.js';
+import { writeJsonFileAtomic } from './bots_file_lock.js';
+import { getStorage } from './storage/index.js';
 const storage = getStorage();
 const { readJSON } = storage;
 const DEFAULT_HEALTH_CACHE_FILE = PATHS.PROFILES.NODE_HEALTH_CACHE_JSON;

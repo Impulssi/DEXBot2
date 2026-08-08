@@ -1,11 +1,11 @@
 
-import { getStorage } from './storage';
-import { readBotsFileSync } from './bots_file_lock';
-import { parseJsonWithComments } from './order/utils/system';
-import { createBotKey } from './account_orders';
-import { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } from './order/utils/math';
-import { resolveMinCollateralIncreaseThreshold } from './cr_planner';
-import { getErrorMessage } from './utils/errors';
+import { getStorage } from './storage/index.js';
+import { readBotsFileSync } from './bots_file_lock.js';
+import { parseJsonWithComments } from './order/utils/system.js';
+import { createBotKey } from './account_orders.js';
+import { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } from './order/utils/math.js';
+import { resolveMinCollateralIncreaseThreshold } from './cr_planner.js';
+import { getErrorMessage } from './utils/errors.js';
 const storage = getStorage();
 const { writeJSON } = storage;
 

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 'use strict';
 
-import { getStorage } from '../../modules/storage';
+import { getStorage } from '../../modules/storage/index.js';
 const { writeJSON } = getStorage();
 
 /**
@@ -49,7 +52,7 @@ import {
     buildTopCancellerAccountsQuery,
     buildTopFilledAccountsQuery,
     DEFAULT_CONFIG,
-} from './kibana_bot_queries';
+} from './kibana_bot_queries.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

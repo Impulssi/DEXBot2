@@ -1,17 +1,17 @@
 
-import * as client from './bitshares_client';
+import * as client from './bitshares_client.js';
 const { createAccountClient } = client;
-import { path } from '../../modules/path_api';
-import { getStorage } from '../../modules/storage';
-import { getDexbot2Root, requireDexbot2Module } from './dexbot_bridge';
-import { Config } from '../../modules/config';
-import { DAEMON_ERRORS } from '../../modules/constants';
-import { getCredentialReadyFilePath } from '../../modules/credential_runtime';
-import { runtime } from '../../modules/runtime';
+import { path } from '../../modules/path_api.js';
+import { getStorage } from '../../modules/storage/index.js';
+import { getDexbot2Root, requireDexbot2Module } from './dexbot_bridge.js';
+import { Config } from '../../modules/config.js';
+import { DAEMON_ERRORS } from '../../modules/constants.js';
+import { getCredentialReadyFilePath } from '../../modules/credential_runtime.js';
+import { runtime } from '../../modules/runtime.js';
 const storage = getStorage();
 const { readJSON } = storage;
 import { isCredentialDaemonReady, DEFAULT_BROADCAST_TIMEOUT_MS, broadcastOperationViaCredentialDaemon, executeOperationsViaCredentialDaemon, waitForCredentialDaemon, BroadcastUncertainError } from './dexbot_credential_client.js';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 
 // Lazy-load DEXBot2 modules
 let chainKeys: any = null;

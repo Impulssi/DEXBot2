@@ -1,5 +1,5 @@
 const assert = require('assert');
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 const mathUtils = require('../modules/order/utils/math');
 
 const bsModule = require('../modules/bitshares_client');

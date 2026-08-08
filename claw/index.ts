@@ -1,30 +1,30 @@
 
 
-import * as bitsharesClient from './modules/bitshares_client';
-import * as chainActions from './modules/chain_actions';
-import * as chainBroadcast from './modules/chain_broadcast';
-import * as chainQueries from './modules/chain_queries';
-import * as clawBridge from './modules/claw_bridge';
-import * as clawCatalog from './modules/claw_catalog';
-import * as clawInfra from './modules/claw_infra';
-import * as clawManifest from './modules/claw_manifest';
-import * as clawRuntimeMatrix from './modules/claw_runtime_matrix';
-import * as clawSkillMd from './modules/claw_skill_md';
-import * as creditRuntimeAdapter from './modules/credit_runtime_adapter';
-import * as decisionLoop from './modules/decision_loop';
-import * as dexbotBridge from './modules/dexbot_bridge';
-import * as dexbotCredentialClient from './modules/dexbot_credential_client';
-import * as dexbotProfiles from './modules/dexbot_profiles';
-import * as feedPriceSource from './modules/feed_price_source';
-import * as honestEcosystem from './modules/honest_ecosystem';
-import * as kibanaPriceSource from './modules/kibana_price_source';
-import * as liquidityPools from './modules/liquidity_pools';
-import * as memuBridge from './modules/memu_bridge';
-import * as positionDiscovery from './modules/position_discovery';
-import * as positionHealth from './modules/position_health';
-import * as positionManager from './modules/position_manager';
-import * as positionManagerWatch from './modules/position_manager_watch';
-import * as shortMpaStrategy from './modules/short_mpa_strategy';
+import * as bitsharesClient from './modules/bitshares_client.js';
+import * as chainActions from './modules/chain_actions.js';
+import * as chainBroadcast from './modules/chain_broadcast.js';
+import * as chainQueries from './modules/chain_queries.js';
+import * as clawBridge from './modules/claw_bridge.js';
+import * as clawCatalog from './modules/claw_catalog.js';
+import * as clawInfra from './modules/claw_infra.js';
+import * as clawManifest from './modules/claw_manifest.js';
+import * as clawRuntimeMatrix from './modules/claw_runtime_matrix.js';
+import * as clawSkillMd from './modules/claw_skill_md.js';
+import * as creditRuntimeAdapter from './modules/credit_runtime_adapter.js';
+import * as decisionLoop from './modules/decision_loop.js';
+import * as dexbotBridge from './modules/dexbot_bridge.js';
+import * as dexbotCredentialClient from './modules/dexbot_credential_client.js';
+import * as dexbotProfiles from './modules/dexbot_profiles.js';
+import * as feedPriceSource from './modules/feed_price_source.js';
+import * as honestEcosystem from './modules/honest_ecosystem.js';
+import * as kibanaPriceSource from './modules/kibana_price_source.js';
+import * as liquidityPools from './modules/liquidity_pools.js';
+import * as memuBridge from './modules/memu_bridge.js';
+import * as positionDiscovery from './modules/position_discovery.js';
+import * as positionHealth from './modules/position_health.js';
+import * as positionManager from './modules/position_manager.js';
+import * as positionManagerWatch from './modules/position_manager_watch.js';
+import * as shortMpaStrategy from './modules/short_mpa_strategy.js';
 const _default = {
   ...bitsharesClient,
   ...chainActions,
@@ -60,5 +60,5 @@ const _default = {
 };
 export default _default;
 // CJS compatibility - tsx/require gets the object directly
-module.exports = _default;
+
 

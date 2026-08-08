@@ -94,13 +94,16 @@
  * ===============================================================================
  */
 
-import { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, PIPELINE_TIMING, MARKET_ADAPTER, INCREMENT_BOUNDS } from '../constants';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, PIPELINE_TIMING, MARKET_ADAPTER, INCREMENT_BOUNDS } from '../constants.js';
 const { GRID_COMPARISON } = GRID_LIMITS;
-import * as Format from './format';
+import * as Format from './format.js';
 import {
     resolveMaxAsymmetryFactor,
     applyAsymmetricBounds,
-} from '../../market_adapter/core/asymmetric_bounds';
+} from '../../market_adapter/core/asymmetric_bounds.js';
 
 // FIX: Extract magic numbers to named constants for maintainability
 const GRID_CONSTANTS = {
@@ -138,7 +141,7 @@ import {
     resolveGapBand,
     countGapBandSpread,
     adjustBudgetForBtsFees,
-} from './utils/math';
+} from './utils/math.js';
 import {
     filterOrdersByType,
     checkSizesBeforeMinimum,
@@ -156,13 +159,13 @@ import {
     calculateIdealBoundary,
     assignGridRoles,
     resolveOnChainRetypeType
-} from './utils/order';
-import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system';
-import { derivePriceWithPoolRef } from './utils/withPoolRef';
-import { getWhitelistFlags } from '../market_adapter_whitelist';
+} from './utils/order.js';
+import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system.js';
+import { derivePriceWithPoolRef } from './utils/withPoolRef.js';
+import { getWhitelistFlags } from '../market_adapter_whitelist.js';
 
 import type { Order } from '../types.js';
-import { getErrorMessage } from '../utils/errors';
+import { getErrorMessage } from '../utils/errors.js';
 
 export function calculateGapSlots(incrementPercent: any, targetSpreadPercent: any, gridLimitsOverride?: Record<string, any>): any {
     return _mathGapSlots(incrementPercent, targetSpreadPercent, gridLimitsOverride ?? GRID_LIMITS);
@@ -1330,7 +1333,7 @@ export function checkAndUpdateGridIfNeeded(manager: any): any {
      * @param {import('./types').OrderManager} manager - OrderManager instance
      * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
      * @param {Object} [options] - Options object
-     * @param {import('./working_grid')} [options.workingGrid] - Working grid for COW pattern
+     * @param {import('./working_grid.js')} [options.workingGrid] - Working grid for COW pattern
      * @returns {Promise<{actions: Array, changed: boolean}|undefined>} - COW result or undefined
      * @private
      */
@@ -1494,7 +1497,7 @@ export async function _recalculateGridOrderSizesFromBlockchain(manager: any, ord
      * @param {string} orderType - 'buy', 'sell', or 'both' - which sides to update
      * @param {boolean} [fromBlockchainTimer=false] - If true, skip refetch of account totals (already current)
      * @param {number|null} [overrideBoundaryIdx=null] - Optional override for boundary index
-     * @returns {Promise<{actions: Array, workingGrid: import('./working_grid'), workingIndexes: Object, workingBoundary: number, hasWorkingChanges: boolean, aborted: boolean}|null>}
+     * @returns {Promise<{actions: Array, workingGrid: import('./working_grid.js'), workingIndexes: Object, workingBoundary: number, hasWorkingChanges: boolean, aborted: boolean}|null>}
      */
 export async function updateGridFromBlockchainSnapshot(manager: any, orderType: any = 'both', fromBlockchainTimer: any = false, overrideBoundaryIdx: any = null) {
         if (!fromBlockchainTimer && manager.config?.accountId) {

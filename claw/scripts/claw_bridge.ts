@@ -2,9 +2,10 @@
 
 
 
-import { listClawCommandNames } from '../modules/claw_catalog';
-import { describeRuntimeManifest, runClawCommand } from '../modules/claw_bridge';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { listClawCommandNames } from '../modules/claw_catalog.js';
+import { describeRuntimeManifest, runClawCommand } from '../modules/claw_bridge.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
+import { pathToFileURL } from 'node:url';
 function parseJson(value: any, fieldName: any) {
   if (value === undefined || value === null || value === '') {
     return {};
@@ -127,7 +128,7 @@ async function main(runtimeName = null, scriptPath = 'tsx scripts/claw_bridge.ts
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
     console.error(err && err.stack ? err.stack : getErrorMessage(err));
     process.exit(1);

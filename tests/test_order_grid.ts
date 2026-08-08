@@ -1,7 +1,7 @@
 const assert = require('assert');
 console.log('Running order_grid tests');
 
-const Grid = require('../modules/order/index').grid;
+const Grid = require('../modules/order/index').default.grid;
 const { calculateOrderSizes } = require('../modules/order/utils/math');
 
 const cfg = {

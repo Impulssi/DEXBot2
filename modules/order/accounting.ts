@@ -76,13 +76,16 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS } from '../constants';
-import { resolveAccountRef } from './utils/system';
-import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order';
-import * as Format from './format';
-import * as fundRegistry from '../fund_registry';
-import * as chainOrders from '../chain_orders';
-import { readOpenOrdersGuarded } from '../chain_orders';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS } from '../constants.js';
+import { resolveAccountRef } from './utils/system.js';
+import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order.js';
+import * as Format from './format.js';
+import * as fundRegistry from '../fund_registry.js';
+import * as chainOrders from '../chain_orders.js';
+import { readOpenOrdersGuarded } from '../chain_orders.js';
 import {
     calculateAvailableFundsValue,
     getAssetFees,
@@ -90,12 +93,12 @@ import {
     getPrecisionSlack,
     getBtsSide,
     countGapBandSpread
-} from './utils/math';
+} from './utils/math.js';
 import {
     PROCESSED_FILL_PERSISTENCE_MODES,
     resolveProcessedFillPersistenceMode
-} from './processed_fill_store';
-import { getErrorMessage } from '../utils/errors';
+} from './processed_fill_store.js';
+import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
 /**

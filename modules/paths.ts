@@ -1,9 +1,13 @@
 
 
 import fs from 'node:fs';
-import { path } from './path_api';
-import { Config } from './config';
-import { isDistRuntime } from './utils/build_dir';
+import { path } from './path_api.js';
+import { Config } from './config.js';
+import { isDistRuntime } from './utils/build_dir.js';
+import { fileURLToPath } from 'node:url';
+import { dirname as _esmDirname } from 'node:path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = _esmDirname(__filename);
 const MODULE_DIR = path.dirname(__dirname);
 const PROJECT_ROOT = isDistRuntime(MODULE_DIR)
     ? path.dirname(MODULE_DIR)
@@ -47,7 +51,7 @@ const PATHS = {
     NODE_HEALTH_CACHE_JSON: path.join(PROFILES_DIR, 'node_health_cache.json'),
     MARKET_ADAPTER_WHITELIST_JSON: (): string =>
       Config.DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE || path.join(PROFILES_DIR, 'market_adapter_whitelist.json'),
-    ECOSYSTEM_CONFIG_JS: path.join(PROFILES_DIR, 'ecosystem.config.js'),
+    ECOSYSTEM_CONFIG_JS: path.join(PROFILES_DIR, 'ecosystem.config.cjs'),
     SUPERVISOR_SOCK: path.join(PROFILES_DIR, 'supervisor.sock'),
     MONOLITHIC_PID: path.join(PROFILES_DIR, 'monolithic.pid'),
     MONOLITHIC_BOT_PID: path.join(PROFILES_DIR, 'monolithic-bot.pid'),

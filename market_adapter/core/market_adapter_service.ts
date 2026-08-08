@@ -1,14 +1,14 @@
 
-import { calculateATR } from './strategies/atr/calculator';
-import { normalizeMarketSource, hasNumericStartPrice, resolveMarketSourceForBot } from '../utils/chain';
-import { computeRegimeMultiplier } from './strategies/regime_gate';
-import { calculateAMA, getAmaWarmupBars } from './strategies/ama';
-import { KalmanTrendAnalyzer } from '../../analysis/trend_detection/kalman_trend_analyzer';
-import { adjustCollateralRatio } from './strategies/collateral_manager';
-import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants';
-import { resolveConfiguredPriceBound } from '../../modules/order/utils/order';
-import Logger from '../../modules/logger';
-import { roundTo } from '../../modules/utils/math_utils';
+import { calculateATR } from './strategies/atr/calculator.js';
+import { normalizeMarketSource, hasNumericStartPrice, resolveMarketSourceForBot } from '../utils/chain.js';
+import { computeRegimeMultiplier } from './strategies/regime_gate.js';
+import { calculateAMA, getAmaWarmupBars } from './strategies/ama.js';
+import { KalmanTrendAnalyzer } from '../../analysis/trend_detection/kalman_trend_analyzer.js';
+import { adjustCollateralRatio } from './strategies/collateral_manager.js';
+import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants.js';
+import { resolveConfiguredPriceBound } from '../../modules/order/utils/order.js';
+import Logger from '../../modules/logger.js';
+import { roundTo } from '../../modules/utils/math_utils.js';
 'use strict';
 
 import {
@@ -28,7 +28,7 @@ import {
     resolveMaxAsymmetryFactor,
     computeAsymmetricBoundsMetrics,
 } from './asymmetric_bounds.js';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 const marketAdapterServiceLogger = new Logger('MarketAdapterService');
 
 const AMA_SLOPE_PERCENT_MODE_PER_BAR = 'perBar';

@@ -108,7 +108,7 @@ const { startManagedRuntimePM2 } = require('../pm2');
 
         const appStartIndex = events.indexOf('spawn-apps');
         const credSpawn = spawnCalls.find((call) => call.args[0] === 'start' && String(call.args[1]).includes('credential-daemon.js'));
-        const appSpawn = spawnCalls.find((call) => call.args[0] === 'start' && String(call.args[1]).includes('ecosystem.config.js'));
+        const appSpawn = spawnCalls.find((call) => call.args[0] === 'start' && String(call.args[1]).includes('ecosystem.config.cjs'));
         assert.ok(appStartIndex !== -1, 'managed apps should be started');
         assert.ok(appStartIndex > events.indexOf('wait-transfer-done'), 'apps should start after password transfer completes');
         assert.ok(appStartIndex > events.indexOf('wait-ready-done'), 'apps should start after daemon readiness completes');

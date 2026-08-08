@@ -1,12 +1,12 @@
 
-import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants';
-import { getAmaWarmupBars } from '../../market_adapter/core/strategies/ama';
-import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils';
+import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants.js';
+import { getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
+import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
 'use strict';
 
 import {
     buildKalmanVelocitySeries,
-} from './kalman_velocity_smoothing';
+} from './kalman_velocity_smoothing.js';
 
 function generateHTML(data, title = 'Dynamic Weight Research') {
     const results = data.allResults || [];

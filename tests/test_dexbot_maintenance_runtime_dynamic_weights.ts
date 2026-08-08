@@ -1295,7 +1295,7 @@ async function testDexbotClassPerformGridResyncForwardsOptions() {
     });
     setCachedModule(formatPath, {});
 
-    const DEXBot = require(dexbotClassPath);
+    const DEXBot = require(dexbotClassPath).default;
     const fakeBot = { config: { botKey: 'forward-bot' } };
     const options = {
         refreshCenterPrice: true,

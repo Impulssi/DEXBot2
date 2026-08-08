@@ -8,6 +8,9 @@
  * the same pattern as dexbot_fill_runtime.ts.
  */
 
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const chainOrders = require('./chain_orders');
 const { readOpenOrdersWithMetaSafe, readOpenOrdersGuarded } = require('./chain_orders');
 const { BroadcastUncertainError } = require('./dexbot_credential_client');
@@ -119,7 +122,7 @@ function findMissingCreateResultContexts(operationResults: any, opContexts: any)
 
 /**
  * Run an immediate chain sync after a successful CREATE broadcast returned incomplete ids.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [reason]
  * @returns {Promise<void>}
  */
@@ -177,7 +180,7 @@ async function recoverAfterMissingCreateResults(bot: any, reason: any = 'missing
 
 /**
  * Restore unresolved missing-create blockers after recovery if sync did not adopt them.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array} blockers
  * @param {Object} recoveryResult
  */
@@ -216,7 +219,7 @@ function preserveMissingCreateBlockersAfterRecovery(bot: any, blockers: any, rec
 
 /**
  * Merge missing CREATE result contexts into manager._lastUnmatchedChainOrders.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array<{index:number, ctx:Object}>} missingCreateResults
  */
 function markMissingCreateResultsAsStructuralBlocker(bot: any, missingCreateResults: any) {
@@ -270,7 +273,7 @@ function formatUnmatchedChainOrderForLog(order: any) {
 
 /**
  * Record a pending CREATE broadcast on the manager.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} entry
  */
 function recordPendingBroadcast(bot: any, entry: any) {
@@ -328,7 +331,7 @@ function clearPendingBroadcasts(pendingBroadcasts: any) {
  * (duplicate orders). The batch-entry guard only fires for batches WITH
  * CREATE actions, so a create-less batch can reach the re-plan path while
  * earlier entries are still live.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array} actions - The abandoned batch's actions (COW_ACTIONS)
  */
 function clearPendingBroadcastsForSlots(bot: any, actions: any) {
@@ -354,7 +357,7 @@ function clearPendingBroadcastsForSlots(bot: any, actions: any) {
  * no-trigger processFilledOrders outputs, updateOrdersOnChainPlan cowResults,
  * reconcileGridOrders null results) leave the stack untouched — an unmatched
  * pop could steal a nested grid's entry.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} cowResult - Rebalance/COW result carrying _workingGridPushed
  */
 function popPushedWorkingGrid(bot: any, cowResult: any) {
@@ -368,7 +371,7 @@ function popPushedWorkingGrid(bot: any, cowResult: any) {
  * omits the freshest orders (exactly the batch's creates), so absence is
  * never authoritative: the pending-broadcast protection is kept and a
  * structural resync is requested so the next cycle adopts any landed orders.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} detail - The failure detail (before the common suffix)
  * @param {string} suffix - Parenthetical explanation appended to the message
  * @param {string} resyncReason - Reason string passed to the structural resync
@@ -389,7 +392,7 @@ async function deferUncertainBroadcastRead(bot: any, detail: string, suffix: str
 /**
  * Build a fingerprint for an on-chain order so it can be matched against
  * the pending-broadcast cache.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} chainOrder
  * @param {string} slotId
  * @returns {string|null}
@@ -411,7 +414,7 @@ function buildChainOrderFingerprint(bot: any, chainOrder: any, slotId: any) {
 /**
  * Normalize raw BitShares limit_order_object data into the integer tuple
  * used by pending-broadcast recovery.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} chainOrder
  * @returns {{side: string, assetA: string, assetB: string, sellInt: number, receiveInt: number}|null}
  */
@@ -454,7 +457,7 @@ function normalizeChainOrderForPendingMatch(bot: any, chainOrder: any) {
 
 /**
  * Find a chain order that matches a planned slot using price+size proximity.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array} chainOrders - Open chain orders for the account
  * @param {string} slotId - Planned grid slot id
  * @param {Object} planned - { sell, receive, orderType } integers from the planned op
@@ -511,7 +514,7 @@ function findChainOrderForSlot(bot: any, chainOrders: any, slotId: any, planned:
 /**
  * Reconcile a broadcast whose chain state is unknown.
  * Thin wrapper that optionally acquires _fillProcessingLock before delegating.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {BroadcastUncertainError} err
  * @param {Array<Object>} opContexts
  * @param {Object} [options]
@@ -532,7 +535,7 @@ async function reconcileAfterUncertainBroadcast(bot: any, err: any, opContexts: 
 
 /**
  * Reconcile a broadcast whose chain state is unknown (implementation).
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {BroadcastUncertainError} err
  * @param {Array<Object>} opContexts
  * @param {Object} options
@@ -914,7 +917,7 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
 
 /**
  * Auto-cancel one unmatched orphan (price-drift orphan) per cycle.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<{cancelled: boolean, reason?: string, orderId?: string}>}
  */
 async function autoCancelOneUnmatchedOrphan(bot: any) {
@@ -981,7 +984,7 @@ async function autoCancelOneUnmatchedOrphan(bot: any) {
 
 /**
  * Check whether to execute creates in outside-in pair mode.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array} opContexts
  * @returns {boolean}
  */
@@ -1005,7 +1008,7 @@ function shouldExecuteCreatePairMode(_bot: any, opContexts: any) {
  *  - 'absent'  → provably never transmitted → retry safe
  *  - 'landed'  → provably applied on chain → must defer
  *  - 'unknown' → chain state unverifiable → must defer
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array} freshChain - Non-empty, non-truncated chain snapshot
  * @param {Object} ctx - Operation context (kind: create/cancel/size-update/rotation)
  * @returns {'absent' | 'landed' | 'unknown'}
@@ -1093,7 +1096,7 @@ function verifyUpdateUnapplied(freshChain: any[], ctx: any): 'absent' | 'landed'
  * reconciliation machinery (pollChainForConfirmation +
  * reconcileAfterUncertainBroadcast), which verifies inclusion and adopts
  * landed orders before the next cycle.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array} operations
  * @param {Array} opContexts
  * @returns {Promise<{result: Object, opContexts: Array}>}
@@ -1205,7 +1208,7 @@ function chainOrderUnchangedFromCache(chainOrder: any, cachedRaw: any) {
 
 /**
  * Execute blockchain operations with appropriate strategy (single batch or pair mode).
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array} operations
  * @param {Array} opContexts
  * @returns {Promise<{result: Object, opContexts: Array}>}
@@ -1279,7 +1282,7 @@ async function executeOperationsWithStrategy(bot: any, operations: any, opContex
 
 /**
  * Validate that operations can be executed with available funds before broadcasting.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array} operations
  * @param {Object} assetA
  * @param {Object} assetB
@@ -1395,7 +1398,7 @@ function validateOperationFunds(bot: any, operations: any, assetA: any, assetB: 
 
 /**
  * Resolve the ideal size from an order-like object with fallback.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object|null} orderLike
  * @param {number|null} [fallbackSize=null]
  * @returns {number|null}
@@ -1421,12 +1424,12 @@ function resolveIdealSizeForValidation(_bot: any, orderLike: any, fallbackSize: 
 
 /**
  * Validate that an order size is safe to execute.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {number} size
  * @param {string} type
  * @param {Object|null} [orderLike=null]
  * @param {number|null} [fallbackSize=null]
- * @returns {import('./types').OrderValidationResult}
+ * @returns {import('./types.js').OrderValidationResult}
  */
 function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike: any = null, fallbackSize: any = null) {
     return validateOrderSize(
@@ -1441,7 +1444,7 @@ function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike
 
 /**
  * Build COW actions array from a simple plan object.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object|Array} plan
  * @returns {Array}
  */
@@ -1532,9 +1535,9 @@ function buildActionsFromPlan(_bot: any, plan: any) {
 
 /**
  * Build a COW result object (workingGrid + actions) from a simple plan.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object|Array} plan
- * @returns {{workingGrid: import('./types').WorkingGrid, workingIndexes: Object, workingBoundary: number, actions: Array}}
+ * @returns {{workingGrid: import('./types.js').WorkingGrid, workingIndexes: Object, workingBoundary: number, actions: Array}}
  */
 function buildCowResultFromPlan(bot: any, plan: any) {
     const workingGrid = new WorkingGrid(bot.manager.orders, {
@@ -1616,8 +1619,8 @@ function buildCowResultFromPlan(bot: any, plan: any) {
 
 /**
  * Restore skipped update slots in the working grid to master state.
- * @param {import('./dexbot_class').DEXBot} bot
- * @param {import('./types').WorkingGrid} workingGrid
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {import('./types.js').WorkingGrid} workingGrid
  * @param {Set<string>} skippedSlotIds
  * @param {number} [skippedCount=0]
  */
@@ -1844,7 +1847,7 @@ function restoreSkippedUpdateSlotsInWorkingGrid(bot: any, workingGrid: any, skip
  * release exactly the entry they were pushed with, instead of underflowing
  * or stealing a nested grid's entry.
  *
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} cowResult - The stale plan result
  * @param {number} replanDepth - Recursion depth (0 = first attempt)
  * @param {Object} preBroadcastGuard - The failed evaluateCommit result
@@ -1969,7 +1972,7 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
 
 /**
  * COW broadcast: Execute blockchain operations and commit working grid on success.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} cowResult
  * @param {Object} [options={}] - Internal execution options (replanDepth)
  * @returns {Promise<Object>}
@@ -2905,7 +2908,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
  * Request a structural grid resync with the recovery-state flag raised, so a
  * later plan cannot duplicate orders placed by a batch whose chain adoption is
  * pending. No-op when the manager has no structural-resync handler.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} reason - Human-readable resync reason
  * @param {Object} [details={}] - Details passed to the resync handler
  */
@@ -2926,7 +2929,7 @@ async function requestStructuralResync(bot: any, reason: string, details: any = 
  * not be read (empty/lagging read, truncated read, or sync failure) — the
  * caller then keeps the pending-broadcast protection and defers adoption to
  * a structural resync.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} chainOrders - Chain orders module
  * @param {string} logPrefix - Log prefix for sync failure messages
  * @returns {Promise<boolean>}
@@ -2966,7 +2969,7 @@ async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: 
  * Persist the master grid after a chain adoption and clear the pending
  * broadcast protection. Persist failures are logged, not thrown — the
  * in-memory master is authoritative and the next sync/persist converges disk.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} logPrefix - Log prefix for persist failure messages
  */
 async function persistGridAndClearPendingBroadcasts(bot: any, logPrefix: string) {
@@ -2995,7 +2998,7 @@ async function persistGridAndClearPendingBroadcasts(bot: any, logPrefix: string)
  * capital release for cancelled orders (diff-based, applying it again would
  * double-release), and rotations without a committed destination cannot be
  * accounted locally.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array<Object>} contexts - Executed op contexts (create/rotation/cancel)
  */
 async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
@@ -3063,7 +3066,7 @@ async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
 /**
  * Process results from batch transaction execution.
  * Updates order state, synchronizes with chain, and deducts BTS fees.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} result
  * @param {Array} opContexts
  * @returns {Object} Result with { executed: boolean, hadRotation: boolean }
@@ -3290,8 +3293,10 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
+export { buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, recoverAfterMissingCreateResults, preserveMissingCreateBlockersAfterRecovery, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults };
 
-export = {
+
+export default {
     buildOutsideInPairGroupsForOrders,
     buildOutsideInPairGroupsForCreateEntries,
     extractOperationResults,

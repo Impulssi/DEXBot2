@@ -23,6 +23,11 @@ function setCachedModule(modulePath, exports, opts = {}) {
         exports,
     } as any;
 
+    const tsPath = modulePath.replace(/\.js$/i, '.ts');
+    if (tsPath !== modulePath) {
+        require.cache[tsPath] = require.cache[modulePath];
+    }
+
     if ((opts as any).mirrorDist !== false) {
         const distPath = _deriveDistPath(modulePath);
         if (distPath) {
@@ -38,6 +43,15 @@ function restoreCachedModule(modulePath, original, opts = {}) {
         require.cache[modulePath] = original;
     } else {
         delete require.cache[modulePath];
+    }
+
+    const tsPath = modulePath.replace(/\.js$/i, '.ts');
+    if (tsPath !== modulePath) {
+        if (original) {
+            require.cache[tsPath] = original;
+        } else {
+            delete require.cache[tsPath];
+        }
     }
 
     if ((opts as any).mirrorDist !== false) {

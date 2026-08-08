@@ -33,10 +33,10 @@
  */
 'use strict';
 
-import { NODE_MANAGEMENT } from './constants';
-import { createFailureLedger } from './node_failure_ledger';
-import { removeNodesFromHealthCache } from './node_health_cache';
-import { getErrorMessage } from './utils/errors';
+import { NODE_MANAGEMENT } from './constants.js';
+import { createFailureLedger } from './node_failure_ledger.js';
+import { removeNodesFromHealthCache } from './node_health_cache.js';
+import { getErrorMessage } from './utils/errors.js';
 
 export interface NodeHealthLedgerEntry {
     failureCount: number;

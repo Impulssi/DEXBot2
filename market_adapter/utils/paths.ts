@@ -1,5 +1,5 @@
 
-import { PATHS } from '../../modules/paths';
+import { PATHS } from '../../modules/paths.js';
 'use strict';
 
 const PROJECT_ROOT = PATHS.PROJECT_ROOT;

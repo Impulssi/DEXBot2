@@ -3,9 +3,10 @@
 // MCP stdio reserves stdout for JSON-RPC frames. Some shared DEXBot2 modules
 // log during require-time initialization, so suppress incidental console logs.
 
-import { getClawToolByName, getClawToolCatalog } from '../modules/claw_catalog';
-import { runClawCommand } from '../modules/claw_bridge';
-import { success, failure, runMcpServer, createMessageParser } from '../modules/mcp_utils';
+import { getClawToolByName, getClawToolCatalog } from '../modules/claw_catalog.js';
+import { runClawCommand } from '../modules/claw_bridge.js';
+import { success, failure, runMcpServer, createMessageParser } from '../modules/mcp_utils.js';
+import { pathToFileURL } from 'node:url';
 console.log = () => {};
 console.warn = () => {};
 
@@ -121,7 +122,7 @@ async function handleRequest(message: any, defaults: any) {
   }
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runMcpServer(parseArgs, handleRequest).catch((err: unknown) => {
     process.stderr.write(`${err instanceof Error && err.stack ? err.stack : String(err)}\n`);
     process.exit(1);

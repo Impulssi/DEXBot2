@@ -1,6 +1,6 @@
 
-import { MARKET_ADAPTER } from '../../modules/constants';
-import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
+import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
 'use strict';
 
 

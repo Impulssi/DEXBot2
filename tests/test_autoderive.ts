@@ -69,7 +69,7 @@ async function runAutoderiveForBot(botCfg) {
     const originalSystemModule = setCachedModule(systemPath, stubbedSystemModule);
 
     // Create and initialize the OrderManager which triggers auto-derive.
-    const { OrderManager, grid: Grid } = require('../modules/order');
+    const { OrderManager, grid: Grid } = require('../modules/order').default;
     // Override minPrice/maxPrice with bounds around the mocked derived price.
     // The mock derivePrice/pool price resolve to 150, so a tight window keeps
     // the grid small (a handful of slots) while still guaranteeing startPrice

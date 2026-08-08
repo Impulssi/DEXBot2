@@ -1,8 +1,8 @@
 import assert from 'assert';
-import SyncEngine from '../modules/order/sync_engine';
-import AsyncLock from '../modules/order/async_lock';
-import { ORDER_TYPES, ORDER_STATES } from '../modules/constants';
-import { calculatePriceTolerance } from '../modules/order/utils/math';
+import SyncEngine from '../modules/order/sync_engine.js';
+import AsyncLock from '../modules/order/async_lock.js';
+import { ORDER_TYPES, ORDER_STATES } from '../modules/constants.js';
+import { calculatePriceTolerance } from '../modules/order/utils/math.js';
 
 function makeMgr(opts = {}) {
     const orders = new Map();

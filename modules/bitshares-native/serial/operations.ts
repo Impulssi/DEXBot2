@@ -1,5 +1,5 @@
 
-import { Serializer } from './serializer';
+import { Serializer } from './serializer.js';
 'use strict';
 
 import {
@@ -11,7 +11,7 @@ import {
     time_point_sec,
     void_type,
     public_key,
-} from './types';
+} from './types.js';
 
 const future_extensions = void_type;
 

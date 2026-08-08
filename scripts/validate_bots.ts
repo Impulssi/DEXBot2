@@ -14,6 +14,9 @@
  * Exit code: 0 (always, even if warnings found)
  */
 
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const fs = require('fs');
 const { PATHS } = require('../modules/paths');
 const { getErrorMessage } = require('../modules/utils/errors');

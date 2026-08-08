@@ -1,8 +1,11 @@
 /** Fill processing runtime - handles order fill events and replay-safe accounting */
 
-import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store';
-import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants';
-import { getErrorMessage } from './utils/errors';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store.js';
+import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants.js';
+import { getErrorMessage } from './utils/errors.js';
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function retryPersistenceIfNeeded(...args: any) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
@@ -59,7 +62,7 @@ function wireProcessedFillTracking(bot: any) {
 
 /**
  * Flush all pending processed fill writes to persistent storage.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [reason='manual'] - Reason label for the flush
  * @param {Object} [options] - Flush options forwarded to ProcessedFillStore.flush
  * @returns {Promise<void>}
@@ -71,7 +74,7 @@ async function flushProcessedFillPersistence(bot: any, reason: any = 'manual', o
 
 /**
  * Flush pending processed fill writes for specific fill keys.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string[]|Set<string>} fillKeys - Fill keys to flush
  * @param {string} [reason='manual-selected'] - Reason label for the flush
  * @param {Object} [options] - Flush options forwarded to ProcessedFillStore.flushKeys
@@ -84,7 +87,7 @@ async function flushProcessedFillPersistenceForKeys(bot: any, fillKeys: any, rea
 
 /**
  * Discard pending processed fill writes for specific fill keys from the queue.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string[]|Set<string>} fillKeys - Fill keys to discard
  */
 function discardPendingProcessedFillPersistence(bot: any, fillKeys: any) {
@@ -94,8 +97,8 @@ function discardPendingProcessedFillPersistence(bot: any, fillKeys: any) {
 /**
  * Build a degraded orphan fill replay key when the standard fill history id is missing.
  * The fallback key is derived from order_id, block_num, pays/receives amounts and asset IDs.
- * @param {import('./dexbot_class').DEXBot} bot
- * @param {import('./types').FillEvent} fill - Raw fill event
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {import('./types.js').FillEvent} fill - Raw fill event
  * @returns {string|null} Orphan fallback key or null if insufficient data
  */
 function buildOrphanFillFallbackKey(bot: any, fill: any) {
@@ -125,9 +128,9 @@ function buildOrphanFillFallbackKey(bot: any, fill: any) {
 /**
  * Apply fill accounting with replay-safe deduplication.
  * Prevents the same fill from being accounted twice across restarts or re-syncs.
- * @param {import('./dexbot_class').DEXBot} bot
- * @param {import('./types').FillEvent} fill - Raw fill event
- * @param {import('./types').FillOperationData} fillOp - Extracted fill operation data
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {import('./types.js').FillEvent} fill - Raw fill event
+ * @param {import('./types.js').FillOperationData} fillOp - Extracted fill operation data
  * @param {Object} [options] - Options
  * @param {Function} [options.missingKeyMessage] - Callback to generate log message when fill key is missing
  * @param {Function} [options.fallbackKeyMessage] - Callback to generate log message when fallback key is used
@@ -139,7 +142,7 @@ function buildOrphanFillFallbackKey(bot: any, fill: any) {
  * @param {string} [options.replayLevel='debug'] - Log level for replay messages
  * @param {string} [options.persistenceMode='immediate'] - Processed fill persistence mode (wrappers default to 'batched')
  * @param {boolean} [options.allowOrphanFallbackKey=false] - Allow degraded orphan fallback key
- * @returns {Promise<import('./types').ReplaySafeFillResult>}
+ * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
  */
 async function applyReplaySafeFillAccounting(bot: any, fill: any, fillOp: any, {
     missingKeyMessage,
@@ -204,15 +207,15 @@ async function applyReplaySafeFillAccounting(bot: any, fill: any, fillOp: any, {
 /**
  * Apply replay-safe fill accounting for tracked fills (with fill history id).
  * Wraps applyReplaySafeFillAccounting with context and default message builders.
- * @param {import('./dexbot_class').DEXBot} bot
- * @param {import('./types').FillEvent} fill - Raw fill event
- * @param {import('./types').FillOperationData} fillOp - Extracted fill operation data
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {import('./types.js').FillEvent} fill - Raw fill event
+ * @param {import('./types.js').FillOperationData} fillOp - Extracted fill operation data
  * @param {Object} [options] - Options
  * @param {string} [options.context] - Context label for log messages
  * @param {Object} [options.logger] - Logger instance
  * @param {Function} [options.replayMessage] - Callback to generate log message on duplicate fill
  * @param {string} [options.persistenceMode='batched'] - Processed fill persistence mode
- * @returns {Promise<import('./types').ReplaySafeFillResult>}
+ * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
  */
 async function applyReplaySafeTrackedFillAccounting(bot: any, fill: any, fillOp: any, {
     context,
@@ -237,15 +240,15 @@ async function applyReplaySafeTrackedFillAccounting(bot: any, fill: any, fillOp:
 /**
  * Apply replay-safe fill accounting for orphan fills (missing fill history id).
  * Uses a degraded orphan fallback key when the standard key is unavailable.
- * @param {import('./dexbot_class').DEXBot} bot
- * @param {import('./types').FillEvent} fill - Raw fill event
- * @param {import('./types').FillOperationData} fillOp - Extracted fill operation data
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {import('./types.js').FillEvent} fill - Raw fill event
+ * @param {import('./types.js').FillOperationData} fillOp - Extracted fill operation data
  * @param {Object} [options] - Options
  * @param {string} [options.context] - Context label for log messages
  * @param {Object} [options.logger] - Logger instance
  * @param {Function} [options.replayMessage] - Callback to generate log message on duplicate fill
  * @param {string} [options.persistenceMode='batched'] - Processed fill persistence mode
- * @returns {Promise<import('./types').ReplaySafeFillResult>}
+ * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
  */
 async function applyReplaySafeOrphanFillAccounting(bot: any, fill: any, fillOp: any, {
     context,
@@ -272,7 +275,7 @@ async function applyReplaySafeOrphanFillAccounting(bot: any, fill: any, fillOp: 
 /**
  * Create a fill callback handler for blockchain subscription events.
  * Queues incoming fills and triggers fill queue consumption.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} chainOrders - Chain orders module
  * @returns {Function} Async callback function accepting an array of fill events
  */
@@ -300,7 +303,7 @@ function createFillCallback(bot: any, chainOrders: any) {
 
 /**
  * Returns the maximum consecutive fill consumer failures allowed before backoff.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {number}
  */
 function maxConsecutiveFillConsumerFailures(bot: any) {
@@ -312,7 +315,7 @@ function maxConsecutiveFillConsumerFailures(bot: any) {
  * budget (MAX_CONSECUTIVE_CONSUMER_FAILURES) is exhausted. Each retry
  * doubles the previous delay, capped at CONSUMER_BACKOFF_MAX_MS. The
  * consumer NEVER permanently stops re-scheduling — it just slows down.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {number} failures The current consecutive-failure count.
  * @returns {number} Delay in milliseconds before the next retry.
  */
@@ -328,7 +331,7 @@ function computeFillConsumerBackoffMs(bot: any, failures: any) {
  * Schedule a fill consumer restart with exponential backoff when the
  * failure budget is exhausted, or immediate retry via setImmediate when
  * within the budget. The consumer NEVER permanently stops re-scheduling.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} chainOrders - Chain orders module
  */
 function scheduleFillConsumerRestart(bot: any, chainOrders: any) {
@@ -396,7 +399,7 @@ function scheduleFillConsumerRestart(bot: any, chainOrders: any) {
 /**
  * Process fills during bootstrap phase using the standard fill pipeline.
  * Delegates to the same fill pipeline as the post-reset path.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} chainOrders - Chain orders module for blockchain operations
  * @returns {Promise<void>}
  */
@@ -505,7 +508,7 @@ async function processFillsWithBootstrapMode(bot: any, chainOrders: any) {
  * orders from history or open orders mode, handles price mismatches, processes
  * fills sequentially with interruptible rebalancing, and periodically cleans old
  * fill records.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} chainOrders - Chain orders module for blockchain operations
  */
 async function consumeFillQueue(bot: any, chainOrders: any) {

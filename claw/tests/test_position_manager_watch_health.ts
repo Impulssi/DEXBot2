@@ -17,13 +17,13 @@ function loadWatcherModule(mockPositionManager, waitForConnected) {
   delete require.cache[bitsharesClientPath];
 
   Module._load = function(request, parent, isMain) {
-    if (request === './position_manager' && parent?.filename === watcherModulePath) {
+    if (['./position_manager', './position_manager.js'].includes(request) && parent?.filename === watcherModulePath) {
       return {
         DEFAULT_STATE_PATH: path.join(os.tmpdir(), 'unused-positions.json'),
         PositionManager: mockPositionManager
       };
     }
-    if (request === './bitshares_client' && parent?.filename === watcherModulePath) {
+    if (['./bitshares_client', './bitshares_client.js'].includes(request) && parent?.filename === watcherModulePath) {
       return {
         waitForConnected
       };

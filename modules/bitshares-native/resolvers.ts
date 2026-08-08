@@ -1,7 +1,7 @@
 
-import { NATIVE_CLIENT } from '../constants';
-import { LRUCache } from './lru_cache';
-import { getErrorMessage } from '../utils/errors';
+import { NATIVE_CLIENT } from '../constants.js';
+import { LRUCache } from './lru_cache.js';
+import { getErrorMessage } from '../utils/errors.js';
 'use strict';
 
 const { RESOLVERS } = NATIVE_CLIENT;

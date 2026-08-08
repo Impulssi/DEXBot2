@@ -1,18 +1,21 @@
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 import {
     _countActiveOnGrid, _cancelChainOrder, _recoverStartupSyncFailure,
     _refreshStartupUpdatePlans,
     _executeStartupUpdateBatch,
     _executeStartupSequentialUpdateFallback,
     _executePlannedStartupCreates, _reconcileStartupSide,
-} from './grid_reconcile_internal';
-import { ORDER_TYPES, ORDER_STATES, TIMING } from '../constants';
-import { readOpenOrdersGuarded } from '../chain_orders';
-import { calculatePriceTolerance, getAssetFeesSafe } from './utils/math';
+} from './grid_reconcile_internal.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING } from '../constants.js';
+import { readOpenOrdersGuarded } from '../chain_orders.js';
+import { calculatePriceTolerance, getAssetFeesSafe } from './utils/math.js';
 import {
     isOrderPlaced, parseChainOrder, isOrderOnChain, chainOrderMatchesSlot,
-} from './utils/order';
-import * as Format from './format';
-import { getErrorMessage } from '../utils/errors';
+} from './utils/order.js';
+import * as Format from './format.js';
+import { getErrorMessage } from '../utils/errors.js';
 const SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5;
 
 

@@ -34,8 +34,8 @@
  */
 
 
-import { toIntervalLabel } from '../../market_adapter/interval_utils';
-import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from '../../market_adapter/core/kibana_client';
+import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
+import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from '../../market_adapter/core/kibana_client.js';
 'use strict';
 
 // ─── Constants ────────────────────────────────────────────────────────────────

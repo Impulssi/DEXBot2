@@ -27,8 +27,8 @@
  */
 
 
-import { toIntervalLabel } from '../interval_utils';
-import { fetchKibanaCandles, fetchKibanaClosePrices } from './kibana_candles';
+import { toIntervalLabel } from '../interval_utils.js';
+import { fetchKibanaCandles, fetchKibanaClosePrices } from './kibana_candles.js';
 'use strict';
 
 

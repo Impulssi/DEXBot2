@@ -2,9 +2,10 @@
 
 
 
-import { createMemuBridge, describeMemuBridge } from '../modules/memu_bridge';
-import { success, failure, runMcpServer, createMessageParser } from '../modules/mcp_utils';
-import { runMemuCommand } from '../modules/memu_bridge';
+import { createMemuBridge, describeMemuBridge } from '../modules/memu_bridge.js';
+import { success, failure, runMcpServer, createMessageParser } from '../modules/mcp_utils.js';
+import { runMemuCommand } from '../modules/memu_bridge.js';
+import { pathToFileURL } from 'node:url';
 function parseArgs(argv: any) {
   const options: Record<string, any> = {};
 
@@ -426,7 +427,7 @@ async function runMemuTool(command: any, args: any, defaults: any) {
   return runMemuCommand(command, { ...defaults, ...args });
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runMcpServer(parseArgs, handleRequest).catch((err: unknown) => {
     process.stderr.write(`${err instanceof Error && err.stack ? err.stack : String(err)}\n`);
     process.exit(1);

@@ -295,7 +295,7 @@ async function testRefreshAndMpaPlan() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({ botKey: 'credit-bot-0' }),
       account: { id: '1.2.3', name: 'alice' },
@@ -370,7 +370,7 @@ async function testCreditOfferCollateralPercentUsesDebtSnapshot() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-percent-snapshot',
@@ -462,7 +462,7 @@ async function testCreditOfferCollateralPercentDoesNotRequireRefresh() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-stale-free',
@@ -562,7 +562,7 @@ async function testMpaPrecisionAwareBroadcast() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({ botKey: 'credit-bot-precision' }),
       account: { id: '1.2.3', name: 'alice' },
@@ -646,7 +646,7 @@ async function testMpaDebtFailureFallsBackToCollateral() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-mpa-fallback',
@@ -740,7 +740,7 @@ async function testMpaDebtFailureDoesNotFallbackOnAmbiguousError() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({ botKey: 'credit-bot-mpa-no-fallback' }),
       account: { id: '1.2.3', name: 'alice' },
@@ -817,7 +817,7 @@ async function testMpaDebtFailureSurfacesWhenCollateralFallbackUnavailable() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-mpa-fallback-unavailable',
@@ -967,7 +967,7 @@ async function testMpaDebtFallbackRespectsAssignedCollateralBudget() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-mpa-budget-fallback',
@@ -1081,7 +1081,7 @@ async function testMpaDebtFirstThenCollateralFallbackTriggersReset() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-cr-reset',
@@ -1154,7 +1154,7 @@ async function testRepayAndReborrowFlow() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-1',
@@ -1212,7 +1212,7 @@ async function testRenewOnlyRejectsStandaloneCreditBorrow() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-renew-only-standalone',
@@ -1277,7 +1277,7 @@ async function testFixedCreditCollateralDoesNotResolvePercentageBase() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-fixed-collateral',
@@ -1362,7 +1362,7 @@ async function testMultipleMpaPositionsAreBlocked() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({ botKey: 'credit-bot-mpa-block' }),
       account: { id: '1.2.3', name: 'alice' },
@@ -1393,7 +1393,7 @@ async function testRemovedCreditPolicyPrunesGlobalTracking() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({ botKey: 'credit-bot-prune' }),
       account: { id: '1.2.3', name: 'alice' },
@@ -1437,7 +1437,7 @@ async function testDefaultFeeRateCapRejectsExpensiveOffer() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: {
         botKey: 'credit-bot-fee-cap',
@@ -1495,7 +1495,7 @@ async function testMaxFeeRatePerDayRejectsExpensiveOffer() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: {
         botKey: 'credit-bot-fee-day',
@@ -1568,7 +1568,7 @@ async function testCreditBorrowIsDerivedFromCollateral() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({ botKey: 'credit-bot-borrow-cap' }),
       account: { id: '1.2.3', name: 'alice' },
@@ -1634,7 +1634,7 @@ async function testCreditOfferTotalCeilingEnforcement() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-total-ceiling',
@@ -1751,7 +1751,7 @@ async function testCreditOfferTotalCeilingUsesAssetPrecision() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-total-ceiling-precision',
@@ -1898,7 +1898,7 @@ async function testLpCollateralRatioGate() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const offer = {
       id: '1.18.42',
       asset_type: '1.3.10',
@@ -2018,7 +2018,7 @@ async function testDealDisappearanceDoesNotAutoQueueReborrow() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-reborrow',
@@ -2091,7 +2091,7 @@ async function testDeferredReborrowQueuesAfterConfirmedRepay() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-reborrow-confirmed',
@@ -2174,7 +2174,7 @@ async function testFallbackOfferSelectedWhenOriginalOfferUnavailable() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-fallback-offer',
@@ -2244,7 +2244,7 @@ async function testPendingReborrowUsesFallbackOfferWhenOriginalUnavailable() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const gridMaintenanceCalls = [];
     const fetchTotalsCalls = [];
     const policy = {
@@ -2337,7 +2337,7 @@ async function testPendingFallbackWaitsWhileSourceDealActive() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const gridMaintenanceCalls = [];
     const fetchTotalsCalls = [];
     const policy = {
@@ -2410,7 +2410,7 @@ async function testCreditDealUpdatePreservesAutoRepayMode() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-update',
@@ -2473,7 +2473,7 @@ async function testAutoReborrowQueueIsIgnoredWhenDisabled() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-reborrow-off',
@@ -2524,7 +2524,7 @@ async function testPendingReborrowResolvesPolicyWithColdAssetCache() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-reborrow-cold-cache',
@@ -2616,7 +2616,7 @@ async function testCreditMaintenanceBorrowsTowardAssignedTarget() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const gridMaintenanceCalls = [];
     const fetchTotalsCalls = [];
     const policy = {
@@ -2711,7 +2711,7 @@ async function testCreditMaintenanceSkipsSmallCollateralIncrease() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const policy = {
       asset: 'HONEST.USD',
       collateralAsset: 'BTS',
@@ -2781,7 +2781,7 @@ async function testCreditMaintenanceAllowsZeroThreshold() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const policy = {
       asset: 'HONEST.USD',
       collateralAsset: 'BTS',
@@ -2851,7 +2851,7 @@ async function testCreditMaintenanceCapsIncreaseAtBorrowCeiling() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const policy = {
       asset: 'HONEST.USD',
       collateralAsset: 'BTS',
@@ -2960,7 +2960,7 @@ async function testCreditMaintenanceCapsIncreaseAtBorrowCeilingForMultiCollatera
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const policy = {
       asset: 'HONEST.USD',
       collateralAsset: 'BTS',
@@ -3027,7 +3027,7 @@ async function testStatePersistsAcrossRestart() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
 
     const firstRuntime = new CreditRuntime({
       config: createBaseBotConfig({ botKey: 'credit-bot-persist' }),
@@ -3053,7 +3053,7 @@ async function testStatePersistsAcrossRestart() {
     await firstRuntime.shutdown();
 
     delete require.cache[creditRuntimePath];
-    const ReloadedCreditRuntime = require('../modules/credit_runtime');
+    const ReloadedCreditRuntime = require('../modules/credit_runtime').default;
     const secondRuntime = new ReloadedCreditRuntime({
       config: createBaseBotConfig({ botKey: 'credit-bot-persist' }),
       account: { id: '1.2.3', name: 'alice' },
@@ -3121,7 +3121,7 @@ async function testGetCollateralOffsets() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({ botKey: 'credit-bot-offsets' }),
       account: { id: '1.2.3', name: 'alice' },
@@ -3169,7 +3169,7 @@ async function testProactiveRepayBundlesReborrowInSingleBatch() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const policy = {
       asset: 'HONEST.USD',
       collateralAsset: 'BTS',
@@ -3318,7 +3318,7 @@ async function testProactiveRepayReborrowMultiAssetOffer() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const policy = {
       asset: 'HONEST.USD',
       collateralAsset: 'BTS',
@@ -3423,7 +3423,7 @@ async function testMismatchDealAppearsInNewPosKey() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const policy = {
       asset: 'HONEST.USD',
       collateralAsset: 'BTS',
@@ -3501,7 +3501,7 @@ async function testRepayWithUnacceptableCollateralThrowsSpecificError() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-repay-bad-coll',
@@ -3604,7 +3604,7 @@ async function testCollateralSwitchSkippedWithoutBalance() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const policy = {
       asset: 'HONEST.USD',
       collateralAsset: 'BTS',
@@ -3698,7 +3698,7 @@ async function testPendingReborrowStoresPendingRepayAmount() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-pending-repay-amount',
@@ -3764,7 +3764,7 @@ async function testPendingReborrowDropsStaleEntryWhenReplacementExists() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const policy = {
       asset: 'HONEST.USD',
       collateralAsset: 'BTS',
@@ -3859,7 +3859,7 @@ async function testProactiveRepayPrunesStalePendingReborrow() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const policy = {
       asset: 'HONEST.USD',
       collateralAsset: 'BTS',
@@ -3960,7 +3960,7 @@ async function testMaxBorrowAmountPerOperationRejectsOversizedBorrows() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-perop-reject',
@@ -4043,7 +4043,7 @@ async function testMaxBorrowAmountPerOperationWithSelection() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-perop-sel',
@@ -4134,7 +4134,7 @@ async function testSplitOversizedCreditDealsSplitsCorrectly() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-split',
@@ -4236,7 +4236,7 @@ async function testSplitOversizedCreditDealsSkipsWithinLimit() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-skip-split',
@@ -4315,7 +4315,7 @@ async function testSplitOversizedCreditDealsSkipsWhenNoPerOpLimit() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime({
       config: createBaseBotConfig({
         botKey: 'credit-bot-no-perop',
@@ -4377,7 +4377,7 @@ async function testMaxBorrowAmountPerOperationIsMaxBorrowAmountError() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
 
     // Force a borrow that exceeds maxBorrowAmountPerOperation to see the error is caught
     const runtime = new CreditRuntime({
@@ -4504,7 +4504,7 @@ async function testLpCollateralResolvesCreditConversionRate() {
 
   try {
     delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime');
+    const CreditRuntime = require('../modules/credit_runtime').default;
     const runtime = new CreditRuntime(
       {
         config: createBaseBotConfig({

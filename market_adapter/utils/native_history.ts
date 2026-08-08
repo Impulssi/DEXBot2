@@ -1,5 +1,5 @@
 
-import { blockchainToFloat } from '../../modules/order/utils/math';
+import { blockchainToFloat } from '../../modules/order/utils/math.js';
 'use strict';
 
 /**

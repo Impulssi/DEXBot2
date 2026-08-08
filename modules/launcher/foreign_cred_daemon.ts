@@ -1,9 +1,9 @@
 
-import { getStorage } from '../storage';
-import { getProcessDiscovery } from '../process_discovery';
-import { isPidAlive } from './bot_supervisor';
-import { runtime } from '../runtime';
-import { sleep } from '../order/utils/system';
+import { getStorage } from '../storage/index.js';
+import { getProcessDiscovery } from '../process_discovery.js';
+import { isPidAlive } from './bot_supervisor.js';
+import { runtime } from '../runtime.js';
+import { sleep } from '../order/utils/system.js';
 const storage = getStorage();
 const { unlink: safeUnlink } = storage;
 

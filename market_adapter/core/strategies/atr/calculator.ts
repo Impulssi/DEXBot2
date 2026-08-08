@@ -3,7 +3,7 @@
  * Computes market volatility for symmetrical weight shifts.
  */
 
-import { normalizeAtrPeriod } from '../../config_normalizers';
+import { normalizeAtrPeriod } from '../../config_normalizers.js';
 'use strict';
 
 

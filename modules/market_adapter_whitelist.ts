@@ -1,7 +1,7 @@
 
-import { PATHS } from './paths';
-import { getStorage } from './storage';
-import { getErrorMessage } from './utils/errors';
+import { PATHS } from './paths.js';
+import { getStorage } from './storage/index.js';
+import { getErrorMessage } from './utils/errors.js';
 'use strict';
 
 const storage = getStorage();

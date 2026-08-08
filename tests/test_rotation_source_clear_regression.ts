@@ -1,5 +1,5 @@
 const assert = require('assert');
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { initializeFeeCache } = require('../modules/order/utils/system');
 

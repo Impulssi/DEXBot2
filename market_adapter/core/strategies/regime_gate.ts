@@ -1,8 +1,8 @@
 
-import { HurstAnalyzer } from '../../../analysis/trend_detection/hurst_analyzer';
-import { PermutationEntropyAnalyzer } from '../../../analysis/trend_detection/permutation_entropy_analyzer';
-import { MARKET_ADAPTER } from '../../../modules/constants';
-import { roundTo } from '../../../modules/utils/math_utils';
+import { HurstAnalyzer } from '../../../analysis/trend_detection/hurst_analyzer.js';
+import { PermutationEntropyAnalyzer } from '../../../analysis/trend_detection/permutation_entropy_analyzer.js';
+import { MARKET_ADAPTER } from '../../../modules/constants.js';
+import { roundTo } from '../../../modules/utils/math_utils.js';
 'use strict';
 
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;

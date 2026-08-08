@@ -1,6 +1,6 @@
 
 import net from 'node:net';
-import { SOCKET_PATH } from './bot_supervisor';
+import { SOCKET_PATH } from './bot_supervisor.js';
 'use strict';
 
 

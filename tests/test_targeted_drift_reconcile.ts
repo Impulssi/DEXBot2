@@ -1,7 +1,8 @@
 const assert = require('assert');
 
 const MaintenanceRuntime = require('../modules/dexbot_maintenance_runtime');
-const chainOrders = require('../modules/chain_orders');
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
 const grid = require('../modules/order/grid');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 

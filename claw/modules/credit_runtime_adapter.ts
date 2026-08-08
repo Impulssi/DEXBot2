@@ -1,8 +1,8 @@
 
-import { path } from '../../modules/path_api';
-import { Config } from '../../modules/config';
-import CreditRuntime from '../../modules/credit_runtime';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { path } from '../../modules/path_api.js';
+import { Config } from '../../modules/config.js';
+import CreditRuntime from '../../modules/credit_runtime.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 'use strict';
 
 

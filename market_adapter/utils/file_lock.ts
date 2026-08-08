@@ -1,6 +1,6 @@
-import { getStorage } from '../../modules/storage';
-import { getProcessDiscovery } from '../../modules/process_discovery';
-import { runtime } from '../../modules/runtime';
+import { getStorage } from '../../modules/storage/index.js';
+import { getProcessDiscovery } from '../../modules/process_discovery.js';
+import { runtime } from '../../modules/runtime.js';
 const storage = getStorage();
 const { readJSON, unlink: safeUnlink } = storage;
 

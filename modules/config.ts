@@ -1,7 +1,13 @@
 
 import path from 'node:path';
-import { hasProcess } from './env';
-import { isDistRuntime } from './utils/build_dir';
+import { createRequire } from 'node:module';
+import { hasProcess } from './env.js';
+import { isDistRuntime } from './utils/build_dir.js';
+import { fileURLToPath } from 'node:url';
+import { dirname as _esmDirname } from 'node:path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = _esmDirname(__filename);
+const require = createRequire(import.meta.url);
 'use strict';
 
 /**

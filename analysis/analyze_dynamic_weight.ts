@@ -13,17 +13,17 @@
  */
 
 import path from 'node:path';
-import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer';
-import { HurstAnalyzer } from './trend_detection/hurst_analyzer';
-import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer';
-import { generateHTML } from './trend_detection/dynamic_weight_chart_generator';
-import { createSource } from './price_sources';
-import { calculateAMA } from '../market_adapter/core/strategies/ama';
-import { computeAmaSlopeWeights } from '../market_adapter/core/strategies/ama_slope_model';
-import { MARKET_ADAPTER } from '../modules/constants';
-import { writeChartFile } from './chart_utils';
-import { getCandleClose } from './math_utils';
-import { resolveCandleFile, resolveAmaConfig, resolveAmaKey } from './bot_key_utils';
+import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer.js';
+import { HurstAnalyzer } from './trend_detection/hurst_analyzer.js';
+import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer.js';
+import { generateHTML } from './trend_detection/dynamic_weight_chart_generator.js';
+import { createSource } from './price_sources.js';
+import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
+import { computeAmaSlopeWeights } from '../market_adapter/core/strategies/ama_slope_model.js';
+import { MARKET_ADAPTER } from '../modules/constants.js';
+import { writeChartFile } from './chart_utils.js';
+import { getCandleClose } from './math_utils.js';
+import { resolveCandleFile, resolveAmaConfig, resolveAmaKey } from './bot_key_utils.js';
 
 'use strict';
 

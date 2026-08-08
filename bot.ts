@@ -50,6 +50,9 @@
 // Restrict default file permissions: files created by this process default to
 // 0o600 (owner-only) unless explicitly opened with a wider mode.  Protects
 // keys.json and daemon-policies.json from world-readable exposure.
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const { setUmask } = require('./modules/config');
 setUmask(0o077);
 
@@ -57,8 +60,8 @@ const { getStorage } = require('./modules/storage');
 const storage = getStorage();
 const { runtime } = require('./modules/runtime');
 const { createPm2AwareLogger } = require('./modules/logger');
-const DEXBot = require('./modules/dexbot_class');
-const { normalizeBotEntry } = require('./modules/dexbot_class');
+const DEXBot = require('./modules/dexbot_class').default;
+const { normalizeBotEntry } = require('./modules/dexbot_class').default;
 const { loadSettingsFile, resolveRawBotEntries, selectBotEntry } = require('./modules/bot_settings');
 const { setupGracefulShutdown, registerCleanup, unregisterCleanup } = require('./modules/graceful_shutdown');
 const chainKeys = require('./modules/chain_keys');

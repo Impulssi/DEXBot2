@@ -107,7 +107,7 @@ function installStubs() {
         botKey: `bot-${index}`,
     });
 
-    setCachedModule(dexbotClassPath, StubSharedDEXBot);
+    setCachedModule(dexbotClassPath, { default: StubSharedDEXBot });
     setCachedModule(chainKeysPath, {
         authenticate: async () => 'test-password',
         isDaemonReady: () => false,

@@ -21,14 +21,14 @@
  */
 
 import path from 'node:path';
-import { PATHS } from '../modules/paths';
+import { PATHS } from '../modules/paths.js';
 
-import { createSource } from './price_sources';
-import { calculateAMA } from '../market_adapter/core/strategies/ama';
-import { generateHTML } from './trend_detection/volatility_chart_generator';
-import { MARKET_ADAPTER } from '../modules/constants';
-import { computeATR, getCandleClose } from './math_utils';
-import { writeChartFile } from './chart_utils';
+import { createSource } from './price_sources.js';
+import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
+import { generateHTML } from './trend_detection/volatility_chart_generator.js';
+import { MARKET_ADAPTER } from '../modules/constants.js';
+import { computeATR, getCandleClose } from './math_utils.js';
+import { writeChartFile } from './chart_utils.js';
 
 'use strict';
 

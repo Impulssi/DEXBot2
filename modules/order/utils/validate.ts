@@ -36,13 +36,13 @@
 // ===============================================================================
 
 
-import * as Format from '../format';
+import * as Format from '../format.js';
 import {
     ORDER_STATES,
     ORDER_TYPES,
     COW_ACTIONS,
     GRID_LIMITS
-} from '../../constants';
+} from '../../constants.js';
 import {
     floatToBlockchainInt,
     blockchainToFloat,
@@ -50,13 +50,13 @@ import {
     getDoubleDustThreshold,
     findPriceCollision,
     calculatePriceTolerance
-} from './math';
+} from './math.js';
 import {
     isOrderOnChain,
     isPhantomOrder,
     convertToSpreadPlaceholder,
     isOrderPlaced
-} from './order';
+} from './order.js';
 const { isValidNumber, toFiniteNumber } = Format;
 
 // Pre-computed valid sets

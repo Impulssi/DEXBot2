@@ -1,7 +1,7 @@
 
-import { toIntervalLabel } from './interval_utils';
-import { escapeHtml, serializeJsonForScript } from '../analysis/chart_utils';
-import { fixedTo, roundTo, roundToDecimals } from '../modules/utils/math_utils';
+import { toIntervalLabel } from './interval_utils.js';
+import { escapeHtml, serializeJsonForScript } from '../analysis/chart_utils.js';
+import { fixedTo, roundTo, roundToDecimals } from '../modules/utils/math_utils.js';
 'use strict';
 
 

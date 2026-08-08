@@ -1,24 +1,27 @@
 
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 import fs from 'node:fs';
-import { path } from '../path_api';
+import { path } from '../path_api.js';
 import net from 'node:net';
-import { getStorage } from '../storage';
+import { getStorage } from '../storage/index.js';
 import { spawn } from 'node:child_process';
-import { buildScopedChildEnv } from './child_env';
-import { PATHS } from '../paths';
-import { normalizeBotEntries, resolveRawBotEntries, loadSettingsFile } from '../bot_settings';
-import { UPDATER, BUILD_DIR, LAUNCHER } from '../constants';
-import { Config } from '../config';
-import { getProcessDiscovery, formatUptime } from '../process_discovery';
-import { runtime } from '../runtime';
-import { sleep } from '../order/utils/system';
+import { buildScopedChildEnv } from './child_env.js';
+import { PATHS } from '../paths.js';
+import { normalizeBotEntries, resolveRawBotEntries, loadSettingsFile } from '../bot_settings.js';
+import { UPDATER, BUILD_DIR, LAUNCHER } from '../constants.js';
+import { Config } from '../config.js';
+import { getProcessDiscovery, formatUptime } from '../process_discovery.js';
+import { runtime } from '../runtime.js';
+import { sleep } from '../order/utils/system.js';
 'use strict';
 
 import type { Socket } from 'net';
 const storage = getStorage();
 const { ensureDir, readJSON, unlink: safeUnlink } = storage;
-import { buildRuntimeScriptPath, isDistCodeRoot, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry';
-import { getErrorMessage } from '../utils/errors';
+import { buildRuntimeScriptPath, isDistCodeRoot, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 const BOT_SCRIPT = buildRuntimeScriptPath(CODE_ROOT, ['bot']);
 const SOCKET_PATH = Config.DEXBOT_SUPERVISOR_SOCKET || PATHS.PROFILES.SUPERVISOR_SOCK;

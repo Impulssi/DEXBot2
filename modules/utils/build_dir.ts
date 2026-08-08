@@ -1,6 +1,6 @@
 
 
-import { path } from '../path_api';
+import { path } from '../path_api.js';
 const BUILD_DIR = 'dist';
 
 function isDistRuntime(projectRoot: string): boolean {

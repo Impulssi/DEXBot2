@@ -4,9 +4,10 @@ const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub'
 const bitsharesClientPath = require.resolve('../modules/bitshares_client');
 installBitsharesClientStub(bitsharesClientPath);
 
-const chainOrders = require('../modules/chain_orders');
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
 const chainKeys = require('../modules/chain_keys');
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 const { OrderManager } = require('../modules/order/manager');
 const { WorkingGrid } = require('../modules/order/working_grid');
 const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../modules/constants');

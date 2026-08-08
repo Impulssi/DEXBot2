@@ -17,11 +17,11 @@
  */
 
 
-import { getNodeRequire } from '../env';
-import { path } from '../path_api';
-import { randomBytes } from '../crypto/sync';
-import { runtime } from '../runtime';
-const _require = getNodeRequire();
+import { createRequire } from 'node:module';
+import { path } from '../path_api.js';
+import { randomBytes } from '../crypto/sync.js';
+import { runtime } from '../runtime.js';
+const _require = createRequire(import.meta.url);
 let _fs: any;
 const fs = new Proxy({} as any, {
     get(_: any, prop: any) {
@@ -35,7 +35,7 @@ class NodeStorageAdapter {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
   }
 
-  writeJSON(filePath: string, data: any, options: any = {}) {
+  writeJSON = (filePath: string, data: any, options: any = {}) => {
     const dir = path.dirname(filePath);
     if (dir && !this.exists(dir)) {
       this.ensureDir(dir);
@@ -186,5 +186,3 @@ class NodeStorageAdapter {
 }
 
 export default NodeStorageAdapter
-module.exports = NodeStorageAdapter
-

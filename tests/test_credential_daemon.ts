@@ -9,7 +9,8 @@ const {
 
 console.log('Running credential daemon tests');
 
-const chainKeys = require('../modules/chain_keys');
+const { installChainKeysStub } = require('./helpers/chain_keys_stub');
+const { chainKeys } = installChainKeysStub();
 const {
     createCredentialDaemonController,
 } = require('../modules/launcher/credential_daemon');

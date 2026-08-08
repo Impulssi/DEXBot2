@@ -1,5 +1,5 @@
 
-import { getStorage } from '../../modules/storage';
+import { getStorage } from '../../modules/storage/index.js';
 'use strict';
 
 const storage = getStorage();

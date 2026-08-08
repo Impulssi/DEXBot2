@@ -1,8 +1,8 @@
 
-import { Serializer, BufferWriter, BufferReader } from './serializer';
-import * as types from './types';
-import * as ops from './operations';
-import * as constants from './chain_constants';
+import { Serializer, BufferWriter, BufferReader } from './serializer.js';
+import * as types from './types.js';
+import * as ops from './operations.js';
+import * as constants from './chain_constants.js';
 'use strict';
 
 

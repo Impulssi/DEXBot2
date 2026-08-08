@@ -19,16 +19,16 @@
 // ===============================================================================
 
 
-import { persistGridSnapshot, deepFreeze, cloneMap, withBlockchainRetry } from './utils/system';
-import { withTimeout } from './utils/timeout';
-import { WorkingGrid } from './working_grid';
-import Logger from './logger';
-import AsyncLock from './async_lock';
-import Accountant from './accounting';
-import StrategyEngine from './strategy';
-import SyncEngine from './sync_engine';
-import { calculateCurrentSpread, checkSpreadCondition, checkGridHealth } from './grid';
-import * as Format from './format';
+import { persistGridSnapshot, deepFreeze, cloneMap, withBlockchainRetry } from './utils/system.js';
+import { withTimeout } from './utils/timeout.js';
+import { WorkingGrid } from './working_grid.js';
+import Logger from './logger.js';
+import AsyncLock from './async_lock.js';
+import Accountant from './accounting.js';
+import StrategyEngine from './strategy.js';
+import SyncEngine from './sync_engine.js';
+import { calculateCurrentSpread, checkSpreadCondition, checkGridHealth } from './grid.js';
+import * as Format from './format.js';
 import {
     ORDER_TYPES,
     ORDER_STATES,
@@ -39,7 +39,7 @@ import {
     PIPELINE_TIMING,
     COW_PERFORMANCE,
     COW_ACTIONS
-} from '../constants';
+} from '../constants.js';
 import {
     getMinAbsoluteOrderSize,
     computeChainFundTotals,
@@ -47,7 +47,7 @@ import {
     resolveConfigValueWithRegistry,
     isExplicitZeroAllocation,
     floatToBlockchainInt
-} from './utils/math';
+} from './utils/math.js';
 import {
     validateOrder,
     validateGridForPersistence,
@@ -60,9 +60,9 @@ import {
     buildAbortedResult,
     buildSuccessResult,
     evaluateCommit
-} from './utils/validate';
-import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order';
-import { getErrorMessage } from '../utils/errors';
+} from './utils/validate.js';
+import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order.js';
+import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
 // ===============================================================================

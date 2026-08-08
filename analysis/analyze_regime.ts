@@ -18,18 +18,18 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
-import { PATHS } from '../modules/paths';
+import { PATHS } from '../modules/paths.js';
 
-import { MARKET_ADAPTER }              from '../modules/constants';
+import { MARKET_ADAPTER }              from '../modules/constants.js';
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
 const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
-import { HurstAnalyzer }               from './trend_detection/hurst_analyzer';
-import { PermutationEntropyAnalyzer }  from './trend_detection/permutation_entropy_analyzer';
-import { generateRegimeHTML }          from './trend_detection/regime_chart_generator';
-import { createSource }                from './price_sources';
-import { calculateAMA }                from '../market_adapter/core/strategies/ama';
-import { writeChartFile }              from './chart_utils';
-import { getCandleClose }              from './math_utils';
+import { HurstAnalyzer }               from './trend_detection/hurst_analyzer.js';
+import { PermutationEntropyAnalyzer }  from './trend_detection/permutation_entropy_analyzer.js';
+import { generateRegimeHTML }          from './trend_detection/regime_chart_generator.js';
+import { createSource }                from './price_sources.js';
+import { calculateAMA }                from '../market_adapter/core/strategies/ama.js';
+import { writeChartFile }              from './chart_utils.js';
+import { getCandleClose }              from './math_utils.js';
 
 'use strict';
 

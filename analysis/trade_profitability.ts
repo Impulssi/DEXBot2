@@ -2,8 +2,9 @@
 'use strict';
 
 import fs from 'node:fs';
-import * as KC from '../market_adapter/core/kibana_client';
-import * as C from '../modules/constants';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as KC from '../market_adapter/core/kibana_client.js';
+import * as C from '../modules/constants.js';
 
 const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = KC;
 
@@ -279,8 +280,7 @@ function parseArgs() {
 // ─── Account name resolution ─────────────────────────────────────────────────
 
 async function resolveAccountId(name: string, nodeUrl: string): Promise<string | null> {
-    const mod: any = await import('../modules/bitshares-native/index.js');
-    const { createReadOnlyClient } = mod.default;
+    const { createReadOnlyClient } = await import('../modules/bitshares-native/index.js');
     const client = createReadOnlyClient({ nodes: [nodeUrl] });
     // Suppress transport INFO logs during ephemeral connection:
     // bitshares-native transport logger (new Logger('Transport')) writes
@@ -323,8 +323,7 @@ async function resolveAssetPrecisions(fills: FillRecord[], nodeUrl: string | nul
     const ids = [...unknownIds];
     console.log(`  Resolving ${ids.length} unknown asset(s) from blockchain...`);
 
-    const mod: any = await import('../modules/bitshares-native/index.js');
-    const { createReadOnlyClient } = mod.default;
+    const { createReadOnlyClient } = await import('../modules/bitshares-native/index.js');
     const client = createReadOnlyClient({ nodes: [nodeUrl] });
     try {
         await client.connect();
@@ -1404,7 +1403,7 @@ async function run() {
 
 export { analyzePair, classifyFills, computeMetrics, TradeFill, FillRecord, RealizedPnl, PairAnalysis, TradingMetrics };
 
-if (require.main === module) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     run().then(() => process.exit(0)).catch(e => {
         console.error('\n[fatal]', e.message);
         if (process.env.DEBUG) console.error(e.stack);

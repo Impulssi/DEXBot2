@@ -1,18 +1,18 @@
 
-import { getStorage } from '../../modules/storage';
-import { path } from '../../modules/path_api';
-import { PATHS } from '../../modules/paths';
-import { Config } from '../../modules/config';
-import * as bitsharesClient from './bitshares_client';
-import * as chainBroadcast from './chain_broadcast';
-import * as chainQueries from './chain_queries';
-import * as credentialClient from './dexbot_credential_client';
-import { createHonestEcosystemAdapter } from './honest_ecosystem';
-import { loadDexbotOrderSubsystem } from './dexbot_bridge';
-import { createDexbotProfileAdapter } from './dexbot_profiles';
-import { createCreditRuntimeAdapter } from './credit_runtime_adapter';
-import { acquireFileLock } from '../../market_adapter/utils/file_lock';
-import { clone } from './utils';
+import { getStorage } from '../../modules/storage/index.js';
+import { path } from '../../modules/path_api.js';
+import { PATHS } from '../../modules/paths.js';
+import { Config } from '../../modules/config.js';
+import * as bitsharesClient from './bitshares_client.js';
+import * as chainBroadcast from './chain_broadcast.js';
+import * as chainQueries from './chain_queries.js';
+import * as credentialClient from './dexbot_credential_client.js';
+import { createHonestEcosystemAdapter } from './honest_ecosystem.js';
+import { loadDexbotOrderSubsystem } from './dexbot_bridge.js';
+import { createDexbotProfileAdapter } from './dexbot_profiles.js';
+import { createCreditRuntimeAdapter } from './credit_runtime_adapter.js';
+import { acquireFileLock } from '../../market_adapter/utils/file_lock.js';
+import { clone } from './utils.js';
 const storage = getStorage();
 
 import { createPositionManagerWatcher, parsePositionManagerWatchArgs, runPositionManagerWatch } from './position_manager_watch.js';
@@ -24,8 +24,8 @@ import type {
   BitsharesClientOptions,
   BroadcastOptions,
   ClawInfrastructureOptions,
-} from './types';
-import { getErrorMessage } from '../../modules/utils/errors';
+} from './types.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 
 const CLAW_ROOT = PATHS.CLAW.DIR;
 const DEFAULT_DATA_DIR = PATHS.CLAW.DATA_DIR;

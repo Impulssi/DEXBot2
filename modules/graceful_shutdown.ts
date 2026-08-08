@@ -59,9 +59,11 @@
  */
 
 
-import Logger from './logger';
-import { runtime } from './runtime';
-import { getErrorMessage } from './utils/errors';
+
+
+import Logger from './logger.js';
+import { runtime } from './runtime.js';
+import { getErrorMessage } from './utils/errors.js';
 let cleanupHandlers: any[] = [];
 let shutdownInProgress = false;
 const shutdownLogger = new Logger('Shutdown');

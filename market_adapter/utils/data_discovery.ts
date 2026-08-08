@@ -1,7 +1,7 @@
 
-import { path } from '../../modules/path_api';
-import { getStorage } from '../../modules/storage';
-import { PROJECT_ROOT } from './paths';
+import { path } from '../../modules/path_api.js';
+import { getStorage } from '../../modules/storage/index.js';
+import { PROJECT_ROOT } from './paths.js';
 'use strict';
 
 const storage = getStorage();

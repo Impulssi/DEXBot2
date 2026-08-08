@@ -14,12 +14,12 @@
  */
 
 
-import { getNodeRequire } from '../../modules/env';
-import { MARKET_ADAPTER } from '../../modules/constants';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { createRequire } from 'node:module';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 'use strict';
 
-const _require = getNodeRequire();
+const _require = createRequire(import.meta.url);
 let _https: any;
 const https = new Proxy({} as any, {
     get(_, prop) {

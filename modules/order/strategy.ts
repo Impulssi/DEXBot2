@@ -48,15 +48,15 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES } from '../constants';
-import { calculateGapSlots } from './grid';
-import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order';
-import { assignGridRoles } from './utils/order';
+import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
+import { calculateGapSlots } from './grid.js';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order.js';
+import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
     hasOnChainId,
     isOrderPlaced
-} from "./utils/order";
+} from "./utils/order.js";
 
 class StrategyEngine {
     manager: any;

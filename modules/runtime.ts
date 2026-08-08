@@ -1,6 +1,6 @@
 'use strict';
 
-import { isBrowser } from './env';
+import { isBrowser } from './env.js';
 
 declare var window: any;
 

@@ -17,16 +17,16 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
-import { PATHS } from '../modules/paths';
-import { HurstAnalyzer }              from './trend_detection/hurst_analyzer';
-import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer';
-import { MARKET_ADAPTER } from '../modules/constants';
+import { PATHS } from '../modules/paths.js';
+import { HurstAnalyzer }              from './trend_detection/hurst_analyzer.js';
+import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer.js';
+import { MARKET_ADAPTER } from '../modules/constants.js';
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
 const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
-import { createSource }              from './price_sources';
-import { writeChartFile }            from './chart_utils';
-import { getCandleClose }            from './math_utils';
-import { roundTo } from '../modules/utils/math_utils';
+import { createSource }              from './price_sources.js';
+import { writeChartFile }            from './chart_utils.js';
+import { getCandleClose }            from './math_utils.js';
+import { roundTo } from '../modules/utils/math_utils.js';
 
 'use strict';
 

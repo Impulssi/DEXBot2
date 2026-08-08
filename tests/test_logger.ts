@@ -6,7 +6,7 @@ const path = require('path');
 async function main() {
 console.log('Running logger tests');
 
-const Logger = require('../modules/order/index').logger;
+const Logger = require('../modules/order/index').default.logger;
 const { createPm2AwareLogger } = require('../modules/logger');
 const { unlink: safeUnlink } = require('../modules/storage').getStorage();
 

@@ -59,15 +59,15 @@
  */
 
 
-import { getStorage } from '../storage';
-import { getNodeRequire } from '../env';
-import { path } from '../path_api';
-import * as Format from './format';
-import { TIMING, DEFAULT_CONFIG } from '../constants';
-import { PATHS } from '../paths';
-import Logger from '../logger';
-import { getErrorMessage } from '../utils/errors';
-const _require = getNodeRequire();
+import { getStorage } from '../storage/index.js';
+import { createRequire } from 'node:module';
+import { path } from '../path_api.js';
+import * as Format from './format.js';
+import { TIMING, DEFAULT_CONFIG } from '../constants.js';
+import { PATHS } from '../paths.js';
+import Logger from '../logger.js';
+import { getErrorMessage } from '../utils/errors.js';
+const _require = createRequire(import.meta.url);
 const storage = getStorage();
 let _readline: any;
 function getReadline() {

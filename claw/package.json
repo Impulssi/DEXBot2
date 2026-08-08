@@ -3,7 +3,7 @@
   "version": "1.4.11",
   "private": true,
   "description": "Claw bridge and runtime integration layer for BitShares and DEXBot2.",
-  "type": "commonjs",
+  "type": "module",
   "main": "index.js",
   "peerDependencies": {
     "openclaw": ">=2026.3.27"
@@ -47,12 +47,12 @@
     "memu:bridge": "npx tsx scripts/memu_mcp_server.ts",
     "memu:mcp": "npx tsx scripts/memu_mcp_server.ts",
     "memu:skill": "npx tsx scripts/claw_skill_md.ts --runtime memu",
-    "memu:status": "npm run build && node -e \"const {runMemuCommand}=require('../dist/claw/modules/memu_bridge.js');runMemuCommand('status').then(r=>console.log(JSON.stringify(r,null,2))).catch(e=>console.error(e.message))\"",
+    "memu:status": "npm run build && node --input-type=module -e \"const {runMemuCommand}=await import('../dist/claw/modules/memu_bridge.js');runMemuCommand('status').then(r=>console.log(JSON.stringify(r,null,2))).catch(e=>console.error(e.message))\"",
     "service:position-watch": "npm run build && node ../dist/claw/modules/position_manager_watch.js",
-    "pm2:start": "npm run build && pm2 start ../dist/claw/ecosystem.config.js",
-    "pm2:stop": "pm2 stop ../dist/claw/ecosystem.config.js",
+    "pm2:start": "npm run build && pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop ecosystem.config.cjs",
     "report:honest-assets": "npx tsx scripts/honest_assets_report.ts",
     "test": "npm run build && npx tsx tests/test_claw_regressions.ts && npx tsx tests/test_claw_state_store.ts && npx tsx tests/test_dexbot_profiles.ts && npx tsx tests/test_position_manager_watch_health.ts && npx tsx tests/test_claw_bridge.ts && npx tsx tests/test_memu_bridge.ts && npx tsx tests/test_short_mpa_strategy.ts && npx tsx tests/test_position_health.ts && npx tsx tests/test_claw_chain_layer.ts && npx tsx tests/test_claw_domain_logic.ts && npx tsx tests/test_claw_catalog_and_credentials.ts && npx tsx tests/test_claw_data_flow.ts && npx tsx tests/test_position_manager.ts && npx tsx tests/test_claw_skill_generation.ts && npx tsx tests/test_claw_manifest_and_matrix.ts && npx tsx tests/test_claw_mcp_transport.ts && npx tsx tests/test_nullclaw_tmp_integration.ts",
-    "check": "npm run build && node -e \"require('./index.js')\" && node -c ../dist/claw/ecosystem.config.js && node -c ../dist/claw/runtimes/openclaw-plugin/index.js"
+    "check": "npm run build && node --input-type=module -e \"await import('../dist/claw/index.js')\" && node -c ecosystem.config.cjs && node -c ../dist/claw/runtimes/openclaw-plugin/index.js"
   }
 }

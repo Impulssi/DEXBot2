@@ -18,8 +18,10 @@
  *   - Explicit override via `setAdapter(adapter)` for DI/testing.
  */
 
-import { IStorageAdapter } from './types';
-import { isBrowser } from '../env';
+import type { IStorageAdapter } from './types.js';
+import { isBrowser } from '../env.js';
+import createBrowserStorageAdapter from './browser_adapter.js';
+import NodeStorageAdapter from './node_adapter.js';
 
 let _adapter: IStorageAdapter | null = null;
 
@@ -27,10 +29,8 @@ function getStorage(): IStorageAdapter {
   if (_adapter) return _adapter;
 
   if (isBrowser()) {
-    const createBrowserStorageAdapter = require('./browser_adapter');
     _adapter = createBrowserStorageAdapter();
   } else {
-    const NodeStorageAdapter = require('./node_adapter') as any;
     _adapter = new NodeStorageAdapter();
   }
 
@@ -49,4 +49,5 @@ function setAdapter(adapter: any) {
   _adapter = adapter;
 }
 
-export { getStorage, setAdapter, IStorageAdapter };
+export { getStorage, setAdapter };
+export type { IStorageAdapter };

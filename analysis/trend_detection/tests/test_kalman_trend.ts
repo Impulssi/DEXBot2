@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { KalmanTrendAnalyzer, KalmanFilter } from '../kalman_trend_analyzer';
+import { KalmanTrendAnalyzer, KalmanFilter } from '../kalman_trend_analyzer.js';
 
 'use strict';
 

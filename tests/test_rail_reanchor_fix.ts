@@ -18,7 +18,7 @@
  * window (target state VIRTUAL), so reconcile relocates them back onto the rail.
  */
 const assert = require('assert');
-const StrategyModule = require('../modules/order/strategy');
+const StrategyModule = require('../modules/order/strategy').default;
 const StrategyEngine = StrategyModule.default || StrategyModule.StrategyEngine || StrategyModule;
 const { reconcileGrid } = require('../modules/order/utils/validate');
 const { _pickVirtualSlotsToActivate } = require('../modules/order/grid_reconcile_internal');

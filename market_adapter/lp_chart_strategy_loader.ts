@@ -1,9 +1,9 @@
 
-import { path } from '../modules/path_api';
-import { getStorage } from '../modules/storage';
-import { normalizeAssetSymbol, isExactPair, isSamePair } from './utils/chain';
-import { toIntervalLabel } from './interval_utils';
-import { PROJECT_ROOT } from './utils/paths';
+import { path } from '../modules/path_api.js';
+import { getStorage } from '../modules/storage/index.js';
+import { normalizeAssetSymbol, isExactPair, isSamePair } from './utils/chain.js';
+import { toIntervalLabel } from './interval_utils.js';
+import { PROJECT_ROOT } from './utils/paths.js';
 'use strict';
 
 const storage = getStorage();

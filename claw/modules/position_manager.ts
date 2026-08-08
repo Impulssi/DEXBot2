@@ -1,18 +1,18 @@
 
-import { getStorage } from '../../modules/storage';
-import { path } from '../../modules/path_api';
-import { PATHS } from '../../modules/paths';
-import { Config } from '../../modules/config';
-import { requireBtsBackedMpa } from './mpa_utils';
-import { listenForFills } from './chain_actions';
-import { writeJsonFileAtomic } from './dexbot_profiles';
-import { loadDexbotOrderUtils } from './dexbot_bridge';
-import { clone } from './utils';
+import { getStorage } from '../../modules/storage/index.js';
+import { path } from '../../modules/path_api.js';
+import { PATHS } from '../../modules/paths.js';
+import { Config } from '../../modules/config.js';
+import { requireBtsBackedMpa } from './mpa_utils.js';
+import { listenForFills } from './chain_actions.js';
+import { writeJsonFileAtomic } from './dexbot_profiles.js';
+import { loadDexbotOrderUtils } from './dexbot_bridge.js';
+import { clone } from './utils.js';
 const storage = getStorage();
 import { closeShortOnBts, openShortOnBts, placeTakeProfitBuyOrderOnBts } from './short_mpa_strategy.js';
 import { getAsset, getBackingAsset, getBalances, getBitassetData, getFullAccount } from './chain_queries.js';
 
-import type { ShortPositionOptions, PositionManagerOptions, PositionData, AssetData, ChainPosition } from './types';
+import type { ShortPositionOptions, PositionManagerOptions, PositionData, AssetData, ChainPosition } from './types.js';
 
 function getBlockchainToFloat() {
   return loadDexbotOrderUtils().blockchainToFloat;

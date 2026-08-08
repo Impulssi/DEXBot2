@@ -1,5 +1,9 @@
 
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 'use strict';
 
 
@@ -104,7 +108,7 @@ function run() {
     });
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     run();
 }
 

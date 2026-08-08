@@ -10,7 +10,7 @@
  */
 
 const { AccountOrders, createBotKey } = require('../modules/account_orders');
-const { OrderManager } = require('../modules/order');
+const { OrderManager } = require('../modules/order').default;
 const Format = require('../modules/order/format');
 const { getErrorMessage } = require('../modules/utils/errors');
 

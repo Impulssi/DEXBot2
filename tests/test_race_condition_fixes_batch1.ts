@@ -48,7 +48,7 @@ const path = require('path');
 const { setCachedModule, restoreCachedModule } = require('./helpers/module_cache_stub');
 const { writeJsonFileAtomic, writeBotsFileWithLock } = require('../modules/bots_file_lock');
 const { readJSON } = require('../modules/storage').getStorage();
-const AsyncLock = require('../modules/order/async_lock');
+const AsyncLock = require('../modules/order/async_lock').default;
 
 const creditRuntimePath = path.resolve(__dirname, '../modules/credit_runtime.ts');
 const bitsharesClientPath = path.resolve(__dirname, '../modules/bitshares_client.ts');
@@ -130,7 +130,7 @@ async function testCreditMaintenanceInFlightGuard() {
 
     try {
         delete require.cache[creditRuntimePath];
-        const CreditRuntime = require('../modules/credit_runtime');
+        const CreditRuntime = require('../modules/credit_runtime').default;
 
         const runtime = new CreditRuntime({
             config: createBaseBotConfig({ botKey: 'credit-bot-rc1' }),
@@ -182,7 +182,7 @@ async function testCreditWatchdogRunsAlongsideMaintenance() {
 
     try {
         delete require.cache[creditRuntimePath];
-        const CreditRuntime = require('../modules/credit_runtime');
+        const CreditRuntime = require('../modules/credit_runtime').default;
 
         const runtime = new CreditRuntime({
             config: createBaseBotConfig({ botKey: 'credit-bot-watchdog' }),
@@ -236,7 +236,7 @@ async function testCreditWatchdogInFlightGuard() {
 
     try {
         delete require.cache[creditRuntimePath];
-        const CreditRuntime = require('../modules/credit_runtime');
+        const CreditRuntime = require('../modules/credit_runtime').default;
 
         const runtime = new CreditRuntime({
             config: createBaseBotConfig({ botKey: 'credit-bot-watchdog-self' }),
@@ -348,13 +348,13 @@ function loadWatcherWithMockedDeps(mockPositionManager, waitForConnected) {
 
     const originalLoad = Module._load;
     Module._load = function (request, parent, isMain) {
-        if (request === './position_manager' && parent?.filename === watcherModulePath) {
+        if (['./position_manager', './position_manager.js'].includes(request) && parent?.filename === watcherModulePath) {
             return {
                 DEFAULT_STATE_PATH: path.join(os.tmpdir(), 'unused-positions.json'),
                 PositionManager: mockPositionManager,
             };
         }
-        if (request === './bitshares_client' && parent?.filename === watcherModulePath) {
+        if (['./bitshares_client', './bitshares_client.js'].includes(request) && parent?.filename === watcherModulePath) {
             return { waitForConnected };
         }
         return originalLoad.call(this, request, parent, isMain);
@@ -563,7 +563,7 @@ async function testCreditRuntimePersistIsAtomic() {
 
     try {
         delete require.cache[creditRuntimePath];
-        const CreditRuntime = require('../modules/credit_runtime');
+        const CreditRuntime = require('../modules/credit_runtime').default;
 
         const runtime = new CreditRuntime({
             config: createBaseBotConfig({ botKey: 'credit-atomic-bot' }),
@@ -621,7 +621,7 @@ async function testGridLockSyncLockCorrectOrder() {
         unlockOrders() {},
     };
 
-    const SyncEngineModule = require('../modules/order/sync_engine');
+    const SyncEngineModule = require('../modules/order/sync_engine').default;
     const SyncEngine = SyncEngineModule.default || SyncEngineModule;
     const syncEngine = new SyncEngine(mgr);
 

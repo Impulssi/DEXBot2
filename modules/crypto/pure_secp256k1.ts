@@ -5,7 +5,7 @@
  * Extracted from modules/bitshares-native/crypto/ecc.ts.
  */
 
-import type { EcPoint } from './provider';
+import type { EcPoint } from './provider.js';
 
 // ── Cross-platform byte helpers (no Buffer dependency) ──────────────────────
 

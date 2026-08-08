@@ -1,6 +1,6 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
-const { grid: Grid } = require('../modules/order');
+const { grid: Grid } = require('../modules/order').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const cowRuntime = require('../modules/dexbot_cow_runtime');
 

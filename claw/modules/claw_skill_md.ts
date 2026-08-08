@@ -1,9 +1,9 @@
 
-import { getStorage } from '../../modules/storage';
-import { path } from '../../modules/path_api';
-import { getClawToolCatalog } from './claw_catalog';
-import { getSupportedClawRuntime } from './claw_runtime_matrix';
-import { buildBridgeCommand, buildSkillTomlLines, createTool, normalizeRepoRoot, normalizeProfileRoot } from './skill_utils';
+import { getStorage } from '../../modules/storage/index.js';
+import { path } from '../../modules/path_api.js';
+import { getClawToolCatalog } from './claw_catalog.js';
+import { getSupportedClawRuntime } from './claw_runtime_matrix.js';
+import { buildBridgeCommand, buildSkillTomlLines, createTool, normalizeRepoRoot, normalizeProfileRoot } from './skill_utils.js';
 const storage = getStorage();
 
 function normalizeClawRepoRoot(repoRoot: string) {

@@ -1,8 +1,8 @@
 
-import { getStorage } from '../storage';
-import { assertPrivatePathSecurity } from '../credential_runtime';
-import { Config } from '../config';
-import { getErrorMessage } from '../utils/errors';
+import { getStorage } from '../storage/index.js';
+import { assertPrivatePathSecurity } from '../credential_runtime.js';
+import { Config } from '../config.js';
+import { getErrorMessage } from '../utils/errors.js';
 const storage = getStorage();
 
 function readHeadlessPassword({ passwordFile }: { passwordFile?: string | null } = {}): string {

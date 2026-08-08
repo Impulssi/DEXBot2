@@ -6,7 +6,7 @@
  */
 
 const assert = require('assert');
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 require('../modules/order/grid'); // ensure loaded
 const { FILL_PROCESSING, ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 

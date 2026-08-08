@@ -107,19 +107,22 @@
  */
 
 
-import * as client from './bitshares_client';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import * as client from './bitshares_client.js';
 const { BitShares, createAccountClient, waitForConnected, withTimeout } = client;
-import { floatToBlockchainInt, blockchainToFloat, normalizeInt, validateOrderAmountsWithinLimits } from './order/utils/math';
-import { FILL_PROCESSING, TIMING, NATIVE_CLIENT, DAEMON_CODES } from './constants';
-import * as Format from './order/format';
-import AsyncLock from './order/async_lock';
-import { readInput } from './order/utils/system';
-import * as chainKeys from './chain_keys';
-import { getKeyStore } from './key_store';
-import { BroadcastUncertainError } from './dexbot_credential_client';
-import { classifyBroadcastFailure } from './broadcast_failure';
-import Logger from './logger';
-import { getErrorMessage } from './utils/errors';
+import { floatToBlockchainInt, blockchainToFloat, normalizeInt, validateOrderAmountsWithinLimits } from './order/utils/math.js';
+import { FILL_PROCESSING, TIMING, NATIVE_CLIENT, DAEMON_CODES } from './constants.js';
+import * as Format from './order/format.js';
+import AsyncLock from './order/async_lock.js';
+import { readInput } from './order/utils/system.js';
+import * as chainKeys from './chain_keys.js';
+import { getKeyStore } from './key_store.js';
+import { BroadcastUncertainError } from './dexbot_credential_client.js';
+import { classifyBroadcastFailure } from './broadcast_failure.js';
+import Logger from './logger.js';
+import { getErrorMessage } from './utils/errors.js';
 function getNodeManager() { return require('./bitshares_client').getNodeManager(); }
 const { toFiniteNumber } = Format;
 
@@ -479,8 +482,8 @@ function isDaemonSigningToken(value: any) {
  * Execute blockchain operations via the credential daemon.
  * @param {string} accountName - Account name
  * @param {Object} signingToken - Daemon signing token with socketPath, sessionId, botHmacSecret
- * @param {Array<import('./types').CreatedOperation>} operations - Array of operation objects
- * @returns {Promise<import('./types').BroadcastResult>} Broadcast result
+ * @param {Array<import('./types.js').CreatedOperation>} operations - Array of operation objects
+ * @returns {Promise<import('./types.js').BroadcastResult>} Broadcast result
  */
 async function executeViaDaemonToken(accountName: any, signingToken: any, operations: any, extraOptions: any = {}) {
     const nodeManager = getNodeManager();
@@ -1488,6 +1491,3 @@ function getFillProcessingMode() {
     return FILL_PROCESSING_MODE;
 }
 export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
-
-module.exports = { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
-

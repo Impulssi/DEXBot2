@@ -25,7 +25,7 @@ const { getErrorMessage } = require('../modules/utils/errors');
 const bitsharesClientPath = require.resolve('../modules/bitshares_client');
 installBitsharesClientStub(bitsharesClientPath);
 
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 const { hasExecutableActions } = require('../modules/order/utils/validate');
 
 let testsComplete = false;

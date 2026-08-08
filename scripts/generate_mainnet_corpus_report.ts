@@ -21,6 +21,9 @@
  *   --out PATH       Output path (default profiles/native_validation/...)
  */
 
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 'use strict';
 
 const path = require('path');

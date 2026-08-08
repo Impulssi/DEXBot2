@@ -49,17 +49,20 @@
 // Runner may contain I/O and larger logic; require lazily to avoid loading it
 // during small unit tests. Expose a lazy accessor instead.
 
-import { OrderManager } from './manager';
-import * as math from './utils/math';
-import * as order from './utils/order';
-import * as system from './utils/system';
-import * as constants from '../constants';
-import * as grid from './grid';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { OrderManager } from './manager.js';
+import * as math from './utils/math.js';
+import * as order from './utils/order.js';
+import * as system from './utils/system.js';
+import * as constants from '../constants.js';
+import * as grid from './grid.js';
 const utils = { ...math, ...order, ...system };
 
 let _logger: any;
 function getLogger(): any {
-    if (!_logger) _logger = require('./logger');
+    if (!_logger) _logger = require('./logger').default;
     return _logger;
 }
 
@@ -71,5 +74,3 @@ const _export: any = {
 };
 Object.defineProperty(_export, 'logger', { get: getLogger, enumerable: true });
 export default _export
-module.exports = _export
-

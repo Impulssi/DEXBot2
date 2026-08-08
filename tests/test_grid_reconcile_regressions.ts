@@ -5,7 +5,7 @@ const {
     attemptResumePersistedGridByPriceMatch,
 } = require('../modules/order/grid_reconcile');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-const AsyncLock = require('../modules/order/async_lock');
+const AsyncLock = require('../modules/order/async_lock').default;
 
 function createManager(overrides = {}) {
     const orders = new Map();

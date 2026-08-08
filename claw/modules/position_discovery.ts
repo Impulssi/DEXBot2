@@ -9,8 +9,8 @@
  */
 
 
-import { loadDexbotOrderUtils } from './dexbot_bridge';
-import { roundTo } from '../../modules/utils/math_utils';
+import { loadDexbotOrderUtils } from './dexbot_bridge.js';
+import { roundTo } from '../../modules/utils/math_utils.js';
 'use strict';
 
 import { getAsset, getBackingAsset, getBitassetData, getFullAccount } from './chain_queries.js';

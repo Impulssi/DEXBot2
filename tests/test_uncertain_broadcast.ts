@@ -9,8 +9,10 @@ ensureFeeCache();
 const bitsharesClientPath = require.resolve('../modules/bitshares_client');
 installBitsharesClientStub(bitsharesClientPath);
 
-const chainOrders = require('../modules/chain_orders');
-const chainKeys = require('../modules/chain_keys');
+const { installChainKeysStub } = require('./helpers/chain_keys_stub');
+const { chainKeys } = installChainKeysStub();
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
 const { OrderManager } = require('../modules/order/manager');
 const { WorkingGrid } = require('../modules/order/working_grid');
 const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DAEMON_CODES, DAEMON_ERRORS } = require('../modules/constants');
@@ -1045,7 +1047,7 @@ async function testAutoCancelOnlyPriceDriftOrphans() {
 }
 
 function makeBot() {
-    const DEXBot = require('../modules/dexbot_class');
+    const DEXBot = require('../modules/dexbot_class').default;
     const bot = new DEXBot({
         botKey: 'test_uncertain_broadcast',
         dryRun: false,

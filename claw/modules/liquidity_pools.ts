@@ -1,7 +1,7 @@
 
 
-import * as client from './bitshares_client';
-import { getDexbot2Root, loadDexbotOrderSystemUtils, requireDexbot2Module } from './dexbot_bridge';
+import * as client from './bitshares_client.js';
+import { getDexbot2Root, loadDexbotOrderSystemUtils, requireDexbot2Module } from './dexbot_bridge.js';
 function getDexbotSystem() {
   return loadDexbotOrderSystemUtils();
 }

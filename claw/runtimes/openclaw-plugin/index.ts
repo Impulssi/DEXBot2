@@ -1,8 +1,8 @@
 
 
 import definePluginEntry from 'openclaw/plugin-sdk/plugin-entry';
-import { getClawToolCatalog } from '../../modules/claw_catalog';
-import { runClawCommand } from '../../modules/claw_bridge';
+import { getClawToolCatalog } from '../../modules/claw_catalog.js';
+import { runClawCommand } from '../../modules/claw_bridge.js';
 function formatResult(result: any) {
   return JSON.stringify(result, null, 2);
 }

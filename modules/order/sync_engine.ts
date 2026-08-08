@@ -95,13 +95,13 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants';
-import * as Format from './format';
-import { lookupAsset } from './utils/system';
-import * as chainOrders from '../chain_orders';
-import * as client from '../bitshares_client';
+import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
+import * as Format from './format.js';
+import { lookupAsset } from './utils/system.js';
+import * as chainOrders from '../chain_orders.js';
+import * as client from '../bitshares_client.js';
 const { BitShares } = client;
-import { NATIVE_CLIENT } from '../constants';
+import { NATIVE_CLIENT } from '../constants.js';
 const { toFiniteNumber } = Format;
 import {
     blockchainToFloat,
@@ -109,7 +109,7 @@ import {
     calculatePriceTolerance,
     getAssetFees,
     getBtsSide
-} from './utils/math';
+} from './utils/math.js';
 import {
     parseChainOrder,
     findMatchingGridOrderByOpenOrder,
@@ -121,11 +121,11 @@ import {
     hasOnChainId,
     isOrderVirtual,
     resolveSpreadOrderSide
-} from './utils/order';
+} from './utils/order.js';
 import {
     resolveProcessedFillPersistenceMode
-} from './processed_fill_store';
-import { getErrorMessage } from '../utils/errors';
+} from './processed_fill_store.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision: any, calcTolerance: any, matchedGridOrderIds: Set<string> | null = null) {
     if (!mgr?.orders || !chainOrder || typeof precision !== 'number') return 'candidate diagnostics unavailable';

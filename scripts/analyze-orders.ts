@@ -19,14 +19,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { formatPrice6 } from '../modules/order/format';
-import { resolveConfiguredPriceBound } from '../modules/order/utils/order';
-import { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } from '../modules/constants';
-import { PATHS } from '../modules/paths';
-import { getWhitelistFlags } from '../modules/market_adapter_whitelist';
-import { getStorage } from '../modules/storage';
+import { formatPrice6 } from '../modules/order/format.js';
+import { resolveConfiguredPriceBound } from '../modules/order/utils/order.js';
+import { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } from '../modules/constants.js';
+import { PATHS } from '../modules/paths.js';
+import { getWhitelistFlags } from '../modules/market_adapter_whitelist.js';
+import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
-import { getErrorMessage } from '../modules/utils/errors';
+import { getErrorMessage } from '../modules/utils/errors.js';
+import { pathToFileURL } from 'node:url';
 const ORDERS_DIR = PATHS.ORDERS_DIR;
 const BOTS_CONFIG = PATHS.PROFILES.BOTS_JSON;
 
@@ -1670,7 +1671,7 @@ function main() {
 
 // Execute analysis only when invoked as a script. When required from a test we
 // expose the helpers below without triggering the analyzer side effects.
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }
 

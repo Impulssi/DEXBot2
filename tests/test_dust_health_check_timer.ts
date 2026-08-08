@@ -1,5 +1,5 @@
 const assert = require('assert');
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 
 class MockAsyncLock {
     acquireCalled = false;

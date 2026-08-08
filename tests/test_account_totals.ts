@@ -2,7 +2,7 @@ const assert = require('assert');
 
 console.log('Running account totals waiter tests');
 
-const { OrderManager } = require('../modules/order/index');
+const { OrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 (async () => {

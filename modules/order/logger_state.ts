@@ -1,6 +1,6 @@
 'use strict';
 
-import { GRID_LIMITS } from '../constants';
+import { GRID_LIMITS } from '../constants.js';
 
 /**
  * modules/order/logger_state.ts - Logger State Manager
@@ -183,4 +183,3 @@ class LoggerState {
 
 export default LoggerState
 
-module.exports = LoggerState

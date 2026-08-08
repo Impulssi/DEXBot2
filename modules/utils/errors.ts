@@ -3,5 +3,3 @@ export function getErrorMessage(err: unknown): string {
   if (typeof err === 'string') return err;
   return String(err);
 }
-
-module.exports = { getErrorMessage };

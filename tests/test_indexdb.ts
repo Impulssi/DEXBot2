@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 
 const { AccountOrders, createBotKey } = require('../modules/account_orders');
-const { OrderManager, utils } = require('../modules/order');
+const { OrderManager, utils } = require('../modules/order').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 async function main() {

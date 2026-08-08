@@ -30,7 +30,7 @@
  *
  * In bitshares_client.ts:
  *
- *   const NodeManager = require('./node_manager');
+ *   const NodeManager = require('./node_manager').default;
  *   const nodeManager = new NodeManager(config);
  *   await nodeManager.checkAllNodes();
  *   const bestNode = nodeManager.getBestNode();
@@ -41,20 +41,23 @@
  */
 
 
-import Logger from './logger';
-import { NODE_MANAGEMENT } from './constants';
-import { PATHS, getNodeBlacklistFile } from './paths';
-import { writeJsonFileAtomic } from './bots_file_lock';
-import { getStorage } from './storage';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import Logger from './logger.js';
+import { NODE_MANAGEMENT } from './constants.js';
+import { PATHS, getNodeBlacklistFile } from './paths.js';
+import { writeJsonFileAtomic } from './bots_file_lock.js';
+import { getStorage } from './storage/index.js';
 const storage = getStorage();
 const { readJSON } = storage;
-import { createFailureLedger } from './node_failure_ledger';
+import { createFailureLedger } from './node_failure_ledger.js';
 const _WebSocket = globalThis.WebSocket;
 import {
     resolveHealthCacheFile,
     writeHealthCache,
-} from './node_health_cache';
-import { getErrorMessage } from './utils/errors';
+} from './node_health_cache.js';
+import { getErrorMessage } from './utils/errors.js';
 
 interface NodeManagerConfig {
     list?: string[];
@@ -752,4 +755,3 @@ class NodeManager {
 
 export default NodeManager
 
-module.exports = NodeManager

@@ -105,7 +105,7 @@ function installStubs() {
         botKey: `bot-${index}`,
     });
 
-    setCachedModule(dexbotClassPath, StubDEXBot);
+    setCachedModule(dexbotClassPath, { default: StubDEXBot });
     setCachedModule(chainKeysPath, {
         authenticate: async () => {
             state.authCalls += 1;

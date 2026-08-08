@@ -71,13 +71,15 @@
  * @throws {Error} If config invalid, BitShares unavailable, or grid init fails
  */
 
-import { OrderManager } from '../modules/order/manager';
-import { PATHS } from '../modules/paths';
-import { initializeGrid } from '../modules/order/grid';
-import { readBotsFileSync } from '../modules/bots_file_lock';
-import { Config } from '../modules/config';
-import { parseJsonWithComments, sleep } from '../modules/order/utils/system';
-import { getErrorMessage } from '../modules/utils/errors';
+
+
+import { OrderManager } from '../modules/order/manager.js';
+import { PATHS } from '../modules/paths.js';
+import { initializeGrid } from '../modules/order/grid.js';
+import { readBotsFileSync } from '../modules/bots_file_lock.js';
+import { Config } from '../modules/config.js';
+import { parseJsonWithComments, sleep } from '../modules/order/utils/system.js';
+import { getErrorMessage } from '../modules/utils/errors.js';
 async function runOrderManagerCalculation() {
     const cfgFile = PATHS.PROFILES.BOTS_JSON;
     let botConfig: any = {};

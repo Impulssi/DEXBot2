@@ -24,7 +24,7 @@
 import { path } from '../modules/path_api.js';
 import { getStorage } from '../modules/storage/index.js';
 import { mergeCandles } from './candle_utils.js';
-import { getErrorMessage } from '../modules/utils/errors';
+import { getErrorMessage } from '../modules/utils/errors.js';
 const storage = getStorage();
 const { ensureDir, readJSON, writeJSON } = storage;
 

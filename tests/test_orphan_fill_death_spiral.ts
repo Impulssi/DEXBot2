@@ -17,7 +17,7 @@
 
 const assert = require('assert');
 
-const DEXBot = require('../modules/dexbot_class');
+const DEXBot = require('../modules/dexbot_class').default;
 const { OrderManager } = require('../modules/order/manager');
 const {
   ORDER_TYPES, ORDER_STATES, TIMING,

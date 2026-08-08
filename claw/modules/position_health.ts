@@ -7,8 +7,8 @@
  */
 
 
-import { CR_ZONES } from '../../modules/constants';
-import { roundToDecimals } from '../../modules/utils/math_utils';
+import { CR_ZONES } from '../../modules/constants.js';
+import { roundToDecimals } from '../../modules/utils/math_utils.js';
 'use strict';
 
 

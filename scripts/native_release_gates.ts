@@ -7,7 +7,7 @@ import { PATHS } from '../modules/paths.js';
 import { Config } from '../modules/config.js';
 import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
-import { getErrorMessage } from '../modules/utils/errors';
+import { getErrorMessage } from '../modules/utils/errors.js';
 const nodeBin = process.execPath;
 
 function run(label: any, args: any, env: any = {}) {

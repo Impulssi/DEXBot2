@@ -243,5 +243,3 @@ function createBrowserStorageAdapter() {
 }
 
 export default createBrowserStorageAdapter
-module.exports = createBrowserStorageAdapter
-

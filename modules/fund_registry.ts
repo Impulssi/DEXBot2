@@ -1,7 +1,10 @@
 
-import { getStorage } from './storage';
-import { PATHS } from './paths';
-import AsyncLock from './order/async_lock';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { getStorage } from './storage/index.js';
+import { PATHS } from './paths.js';
+import AsyncLock from './order/async_lock.js';
 const storage = getStorage();
 const { readJSON, writeJSON } = storage;
 

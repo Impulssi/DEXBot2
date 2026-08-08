@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import { normalizePoolId } from '../../market_adapter/utils/chain';
-import { toIntervalLabel } from '../../market_adapter/interval_utils';
-import { MARKET_ADAPTER } from '../../modules/constants';
-import * as kibanaSource from '../../market_adapter/inputs/kibana_source';
-import { PATHS } from '../../modules/paths';
-import { getStorage } from '../../modules/storage';
+import { normalizePoolId } from '../../market_adapter/utils/chain.js';
+import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
+import * as kibanaSource from '../../market_adapter/inputs/kibana_source.js';
+import { PATHS } from '../../modules/paths.js';
+import { getStorage } from '../../modules/storage/index.js';
 const { ensureDir, writeJSON } = getStorage();
-import { getErrorMessage } from '../../modules/utils/errors';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 
 'use strict';
 /**

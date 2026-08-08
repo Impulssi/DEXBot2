@@ -1,7 +1,7 @@
 
 
-import { createHash, timingSafeEqual } from '../crypto/sync';
-import { getCrypto } from '../crypto';
+import { createHash, timingSafeEqual } from '../crypto/sync.js';
+import { getCrypto } from '../crypto/index.js';
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const ALPHABET_MAP = new Map([...ALPHABET].map((ch, index) => [ch, index]));
 

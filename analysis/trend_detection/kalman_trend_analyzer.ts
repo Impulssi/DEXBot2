@@ -1,6 +1,6 @@
 
-import { smoothKalmanVelocityPoint } from './kalman_velocity_smoothing';
-import { roundTo } from '../../modules/utils/math_utils';
+import { smoothKalmanVelocityPoint } from './kalman_velocity_smoothing.js';
+import { roundTo } from '../../modules/utils/math_utils.js';
 'use strict';
 
 

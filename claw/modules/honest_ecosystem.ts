@@ -1,8 +1,8 @@
 
 
-import { getAsset, getBackingAsset, getBitassetData, getCallOrders, getObjects, listAssets } from './chain_queries';
-import { derivePoolPrice } from './liquidity_pools';
-import { clone } from './utils';
+import { getAsset, getBackingAsset, getBitassetData, getCallOrders, getObjects, listAssets } from './chain_queries.js';
+import { derivePoolPrice } from './liquidity_pools.js';
+import { clone } from './utils.js';
 const REFERENCE_SYMBOL = 'HONEST.MONEY';
 const CORE_SYMBOL = 'BTS';
 const DEFAULT_PREFIX = 'HONEST.';

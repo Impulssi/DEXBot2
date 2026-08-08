@@ -11,6 +11,9 @@
  *   npx tsx scripts/sync-version.ts --check    # exit 1 if any mismatch
  */
 
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const fs = require('fs');
 const path = require('path');
 const { PATHS } = require('../modules/paths');

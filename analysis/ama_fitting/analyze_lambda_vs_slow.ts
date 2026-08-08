@@ -2,12 +2,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { calculateAMA } from '../../market_adapter/core/strategies/ama';
-import { loadLpDataFile } from '../../market_adapter/lp_chart_runner';
-import { ensureDir } from '../../modules/order/utils/system';
-import { PATHS } from '../../modules/paths';
-import { MARKET_ADAPTER } from '../../modules/constants';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
+import { loadLpDataFile } from '../../market_adapter/lp_chart_runner.js';
+import { ensureDir } from '../../modules/order/utils/system.js';
+import { PATHS } from '../../modules/paths.js';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 'use strict';
 
 /**

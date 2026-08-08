@@ -6,10 +6,10 @@
  */
 
 
-import { getStorage } from './storage';
-import { PATHS } from './paths';
-import { writeJsonFileAtomic } from './bots_file_lock';
-import { getErrorMessage } from './utils/errors';
+import { getStorage } from './storage/index.js';
+import { PATHS } from './paths.js';
+import { writeJsonFileAtomic } from './bots_file_lock.js';
+import { getErrorMessage } from './utils/errors.js';
 const storage = getStorage();
 
 const PROFILES_DIR = PATHS.PROFILES_DIR;

@@ -1,7 +1,7 @@
-import { lookupAsset, derivePrice as systemDerivePrice, deriveMarketPrice as systemDeriveMarketPrice } from './system';
-import { toFiniteNumber, isValidNumber } from '../format';
-import * as MathUtils from './math';
-import Logger from '../../logger';
+import { lookupAsset, derivePrice as systemDerivePrice, deriveMarketPrice as systemDeriveMarketPrice } from './system.js';
+import { toFiniteNumber, isValidNumber } from '../format.js';
+import * as MathUtils from './math.js';
+import Logger from '../../logger.js';
 
 const log = new Logger('PoolRef');
 

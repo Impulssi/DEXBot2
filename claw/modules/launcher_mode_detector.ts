@@ -1,9 +1,9 @@
 
-import { path } from '../../modules/path_api';
-import { getStorage } from '../../modules/storage';
-import { PATHS } from '../../modules/paths';
-import { loadSettingsFile, resolveRawBotEntries } from '../../modules/bot_settings';
-import { normalizeProfileDir } from './launcher_paths';
+import { path } from '../../modules/path_api.js';
+import { getStorage } from '../../modules/storage/index.js';
+import { PATHS } from '../../modules/paths.js';
+import { loadSettingsFile, resolveRawBotEntries } from '../../modules/bot_settings.js';
+import { normalizeProfileDir } from './launcher_paths.js';
 'use strict';
 
 const storage = getStorage();

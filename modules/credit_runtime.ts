@@ -1,21 +1,24 @@
 
-import { path } from './path_api';
-import { getStorage } from './storage';
-import * as client from './bitshares_client';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { path } from './path_api.js';
+import { getStorage } from './storage/index.js';
+import * as client from './bitshares_client.js';
 const { BitShares, waitForConnected } = client;
-import * as chainOrders from './chain_orders';
-import { blockchainToFloat, floatToBlockchainInt, resolveConfigValue } from './order/utils/math';
-import { toFiniteNumber } from './order/format';
-import { createBotKey } from './account_orders';
-import * as fundRegistry from './fund_registry';
-import { writeJsonFileAtomic } from './bots_file_lock';
-import { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING, NATIVE_CLIENT } from './constants';
-import { roundToDecimals } from './order/utils/math';
-import { PATHS } from './paths';
+import * as chainOrders from './chain_orders.js';
+import { blockchainToFloat, floatToBlockchainInt, resolveConfigValue } from './order/utils/math.js';
+import { toFiniteNumber } from './order/format.js';
+import { createBotKey } from './account_orders.js';
+import * as fundRegistry from './fund_registry.js';
+import { writeJsonFileAtomic } from './bots_file_lock.js';
+import { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING, NATIVE_CLIENT } from './constants.js';
+import { roundToDecimals } from './order/utils/math.js';
+import { PATHS } from './paths.js';
 import {
     deriveLiquidityPoolTokenValue,
     ensureDir as ensureDirSync,
-} from './order/utils/system';
+} from './order/utils/system.js';
 'use strict';
 
 const storage = getStorage();
@@ -24,8 +27,8 @@ import {
     buildDebtFirstCrPlan,
     resolveMinCollateralIncreaseThreshold,
     resolveTargetCollateralRatio,
-} from './cr_planner';
-import { getErrorMessage } from './utils/errors';
+} from './cr_planner.js';
+import { getErrorMessage } from './utils/errors.js';
 
 const CREDIT_FEE_RATE_DENOM = FEE_PARAMETERS.GRAPHENE_FEE_RATE_DENOM;
 const ZERO_ASSET_ID = NATIVE_CLIENT.CHAIN.CORE_ASSET_ID;
@@ -3155,4 +3158,3 @@ class CreditRuntime {
 
 export default CreditRuntime
 
-module.exports = CreditRuntime

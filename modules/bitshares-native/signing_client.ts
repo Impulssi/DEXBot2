@@ -1,8 +1,11 @@
 
-import { createTransactionBuilder } from './tx/builder';
-import * as txCache from './tx/tx_cache';
-import Logger from '../logger';
-import { getErrorMessage } from '../utils/errors';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { createTransactionBuilder } from './tx/builder.js';
+import * as txCache from './tx/tx_cache.js';
+import Logger from '../logger.js';
+import { getErrorMessage } from '../utils/errors.js';
 'use strict';
 
 
@@ -11,7 +14,7 @@ const signingClientLogger = new Logger('SigningClient');
 function wifToBuffer(wif: any): any {
     if (typeof wif !== 'string') return wif;
     try {
-        const { wifDecode } = require('./crypto/ecc_selector')();
+        const { wifDecode } = require('./crypto/ecc_selector').default();
         return wifDecode(wif).privateKey;
     } catch (_: any) {
         return Buffer.from(wif, 'hex');

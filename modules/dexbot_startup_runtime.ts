@@ -1,18 +1,21 @@
 /** Startup runtime - bot initialization, grid placement, and startup sequence */
 
-import { path } from './path_api';
-import * as chainOrders from './chain_orders';
-import { readOpenOrdersGuarded } from './chain_orders';
-import { ORDER_STATES } from './constants';
-import { PATHS } from './paths';
-import { getStorage } from './storage';
-import { normalizeBotEntry } from './bot_settings';
-import * as Format from './order/format';
-import { AccountOrders } from './account_orders';
-import { BitShares, onReconnect as registerReconnectHook } from './bitshares_client';
-import orderModule from './order';
-import { getErrorMessage } from './utils/errors';
-import { processSweepOrphanFill } from './dexbot_fill_runtime';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+import { path } from './path_api.js';
+import * as chainOrders from './chain_orders.js';
+import { readOpenOrdersGuarded } from './chain_orders.js';
+import { ORDER_STATES } from './constants.js';
+import { PATHS } from './paths.js';
+import { getStorage } from './storage/index.js';
+import { normalizeBotEntry } from './bot_settings.js';
+import * as Format from './order/format.js';
+import { AccountOrders } from './account_orders.js';
+import { BitShares, onReconnect as registerReconnectHook } from './bitshares_client.js';
+import orderModule from './order/index.js';
+import { getErrorMessage } from './utils/errors.js';
+import { processSweepOrphanFill } from './dexbot_fill_runtime.js';
 const { OrderManager, grid: Grid } = orderModule;
 function initializeFeeCache(...args: any) { return require('./order/utils/system').initializeFeeCache(...args); }
 function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
@@ -31,7 +34,7 @@ const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 
 /**
  * Initialize the startup state: account orders, manager, persisted data.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<Object>} startupState
  */
 async function initializeStartupState(bot: any) {
@@ -121,7 +124,7 @@ async function initializeStartupState(bot: any) {
 
 /**
  * Finish the startup sequence: activate fill listener, reconcile grid, place initial orders.
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} startupState
  */
 async function finishStartupSequence(bot: any, startupState: any) {
@@ -611,7 +614,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
 
 /**
  * Place initial orders on the blockchain (extracted logic from original placeInitialOrders).
- * @param {import('./dexbot_class').DEXBot} bot
+ * @param {import('./dexbot_class.js').DEXBot} bot
  */
 async function placeInitialOrdersImpl(bot: any) {
     if (!bot.manager) {

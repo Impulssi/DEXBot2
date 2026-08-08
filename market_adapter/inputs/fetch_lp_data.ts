@@ -26,18 +26,19 @@
  */
 
 
-import { path } from '../../modules/path_api';
-import { getStorage } from '../../modules/storage';
-import * as kibanaSource from './kibana_source';
-import { mergeCandles } from '../candle_utils';
-import { toIntervalLabel } from '../interval_utils';
-import { parseJsonWithComments } from '../../modules/order/utils/system';
-import { MARKET_ADAPTER } from '../../modules/constants';
-import { normalizePoolId, resolveAsset, findPoolByAssets } from '../utils/chain';
-import { writeJsonAtomic } from '../utils/atomic_write';
-import { PATHS } from '../../modules/paths';
-import * as bitsharesClient from '../../modules/bitshares_client';
-import { getErrorMessage } from '../../modules/utils/errors';
+import { path } from '../../modules/path_api.js';
+import { getStorage } from '../../modules/storage/index.js';
+import * as kibanaSource from './kibana_source.js';
+import { mergeCandles } from '../candle_utils.js';
+import { toIntervalLabel } from '../interval_utils.js';
+import { parseJsonWithComments } from '../../modules/order/utils/system.js';
+import { MARKET_ADAPTER } from '../../modules/constants.js';
+import { normalizePoolId, resolveAsset, findPoolByAssets } from '../utils/chain.js';
+import { writeJsonAtomic } from '../utils/atomic_write.js';
+import { PATHS } from '../../modules/paths.js';
+import * as bitsharesClient from '../../modules/bitshares_client.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
+import { pathToFileURL } from 'node:url';
 'use strict';
 
 const storage = getStorage();
@@ -774,7 +775,7 @@ async function run() {
     console.log(`  npm run lp:chart -- --data ${path.relative(process.cwd(), outPath)}`);
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     run().catch((err: any) => {
         console.error('Fatal:', err);
         process.exit(1);

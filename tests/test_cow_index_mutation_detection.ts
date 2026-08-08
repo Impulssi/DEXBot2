@@ -8,7 +8,7 @@
  */
 
 const assert = require('assert');
-const { OrderManager } = require('../modules/order');
+const { OrderManager } = require('../modules/order').default;
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 const { getErrorMessage } = require('../modules/utils/errors');
 

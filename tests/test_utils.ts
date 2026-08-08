@@ -2,7 +2,7 @@ const assert = require('assert');
 
 console.log('Running utils tests');
 
-const { utils } = require('../modules/order/index');
+const { utils } = require('../modules/order/index').default;
 
 // isPercentageString
 assert.strictEqual(utils.isPercentageString('50%'), true, 'isPercentageString should detect percentages');

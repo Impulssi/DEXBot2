@@ -90,7 +90,7 @@ async function main() {
   let bot;
   try {
     delete require.cache[dexbotClassPath];
-    const DEXBot = require('../modules/dexbot_class');
+    const DEXBot = require('../modules/dexbot_class').default;
 
     bot = new DEXBot({
       name: 'credit-bot',

@@ -20,10 +20,12 @@
  */
 
 const assert = require('assert');
+
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
+
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-
-const chainOrders = require('../modules/chain_orders');
 
 function suppressNoise() {
     const bsModule = require('../modules/bitshares_client');
