@@ -1,5 +1,8 @@
 /** Fill processing runtime - handles order fill events and replay-safe accounting */
 
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 import * as chainOrders from './chain_orders.js';
 import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store.js';
 import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants.js';
