@@ -2,6 +2,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from './chart_utils.js';
 import { getStorage } from '../modules/storage/index.js';
 const { ensureDir, readJSON } = getStorage();
@@ -870,7 +871,7 @@ async function main() {
     fs.writeFileSync(cfg.outputFile, html, 'utf8');
     if (!cfg.quiet) console.log(`Chart written to ${cfg.outputFile}`);
 }
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     main().catch((err) => {
         console.error(err);
         process.exit(1);

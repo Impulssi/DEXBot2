@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
 import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
@@ -780,7 +781,7 @@ if (!isMainThread) {
     } else {
         throw new Error('Unknown worker task type');
     }
-} else if (require.main === module) {
+} else if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     run().catch((err) => {
         console.error('Fatal:', err);
         process.exit(1);

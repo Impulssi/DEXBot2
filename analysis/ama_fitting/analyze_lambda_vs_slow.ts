@@ -2,6 +2,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
 import { loadLpDataFile } from '../../market_adapter/lp_chart_runner.js';
 import { ensureDir } from '../../modules/order/utils/system.js';
@@ -395,7 +396,7 @@ async function run() {
     console.log('');
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     run().catch(err => {
         console.error('Fatal:', getErrorMessage(err));
         process.exit(1);

@@ -34,6 +34,7 @@ analysis/**/*.json
 market_adapter/**/*.json
 !**/package.json
 !**/package-lock.json
+!analysis/tsconfig.json
 
 # Test temporary files
 tests/tmp/

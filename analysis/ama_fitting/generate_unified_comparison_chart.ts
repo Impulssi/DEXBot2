@@ -1,6 +1,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
 import { generateHTML } from '../../market_adapter/lp_chart_core.js';
 import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
@@ -260,7 +261,7 @@ function run(argv = process.argv.slice(2)) {
     }
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     run();
 }
 

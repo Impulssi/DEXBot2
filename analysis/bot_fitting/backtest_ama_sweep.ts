@@ -1,6 +1,7 @@
 
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
 import { range } from '../math_utils.js';
@@ -807,7 +808,7 @@ async function run() {
     console.log(`\nSaved: ${path.relative(process.cwd(), outPath)}`);
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     run().catch((err) => { console.error(err); process.exit(1); });
 }
 

@@ -172,9 +172,7 @@ async function main() {
     }
 }
 
-if (require.main === module) {
-    main();
-}
+main().catch((err: unknown) => { console.error(err); process.exit(1); });
 
 export { main, parseArgs, loadJsonMeta, loadBotSettings, inferTitle }
 

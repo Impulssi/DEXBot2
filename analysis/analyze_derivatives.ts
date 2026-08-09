@@ -20,6 +20,7 @@
  */
 
 
+import { pathToFileURL } from 'node:url';
 import { PATHS } from '../modules/paths.js';
 import { DerivativeAnalyzer } from './trend_detection/derivative_analyzer.js';
 import { generateHTML } from './derivative_chart_generator.js';
@@ -328,7 +329,7 @@ async function main(): Promise<void> {
     }
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     main().catch((err: unknown) => { console.error(err); process.exit(1); });
 }
 
