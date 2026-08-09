@@ -10,7 +10,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, resolveGapBand } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder } from './utils/order.js';
+import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -533,28 +533,52 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
 async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun, chainOrderObj, releaseUntrackedFunds = false }: { chainOrders: any; account: any; privateKey: any; manager: any; chainOrderId: any; dryRun: any; chainOrderObj: any; releaseUntrackedFunds?: boolean; }): Promise<void> {
     if (dryRun) return;
 
-    const cancelResult = await chainOrders.cancelOrder(account, privateKey, chainOrderId);
-    if (cancelResult?.verifiedAfterFailure) {
-        const recovered = await _recoverSyncFromChain({
-            chainOrders,
-            manager,
-            account,
-            logger: manager && manager.logger,
-            source: 'cancelOrder',
-        });
-        if (!recovered) {
-            // The cancellation was authoritatively confirmed absent inside
-            // cancelOrder, but the recovery refetch was skipped (empty/
-            // truncated read — ambiguous, so the full sync must NOT run) or
-            // failed. The order is provably gone, so apply the local cancel
-            // sync to release its capital and clear the slot — same fallback
-            // as the dust-cancel path. Skipping it would leave the slot stuck
-            // ACTIVE with a chain order that no longer exists.
+    // The snapshot this cancel is based on may be stale: another path (e.g. the
+    // sync-layer cancel-only correction) may already have cancelled the order and
+    // the wasRecentlyOwnCancelled 5s TTL lapsed before reconcile's Phase-2 ran.
+    // When releasing untracked funds, treat "order does not exist" as a successful
+    // cancel and still release the capital — otherwise the funds are stranded and
+    // the chainTotal = chainFree + chainCommitted invariant is violated. Non-release
+    // cancels (matched slots) keep the previous throw-and-log behavior.
+    let cancelResult: any = null;
+    let orderGone = false;
+    try {
+        cancelResult = await chainOrders.cancelOrder(account, privateKey, chainOrderId);
+    } catch (cancelErr: any) {
+        const errMsg = getErrorMessage(cancelErr) || '';
+        if (releaseUntrackedFunds && isOrderGoneErrorMessage(errMsg)) {
+            orderGone = true;
+        } else {
+            throw cancelErr;
+        }
+    }
+
+    if (!orderGone) {
+        if (cancelResult?.verifiedAfterFailure) {
+            const recovered = await _recoverSyncFromChain({
+                chainOrders,
+                manager,
+                account,
+                logger: manager && manager.logger,
+                source: 'cancelOrder',
+            });
+            if (!recovered) {
+                // The cancellation was authoritatively confirmed absent inside
+                // cancelOrder, but the recovery refetch was skipped (empty/
+                // truncated read — ambiguous, so the full sync must NOT run) or
+                // failed. The order is provably gone, so apply the local cancel
+                // sync to release its capital and clear the slot — same fallback
+                // as the dust-cancel path. Skipping it would leave the slot stuck
+                // ACTIVE with a chain order that no longer exists.
+                await manager._applySync({ orderId: chainOrderId }, 'cancelOrder');
+            }
+        } else {
             await manager._applySync({ orderId: chainOrderId }, 'cancelOrder');
         }
-    } else {
-        await manager._applySync({ orderId: chainOrderId }, 'cancelOrder');
     }
+
+    // Resolved: forget any persistent-duplicate escalation counter for this orphan.
+    clearDuplicateOrphanDetection(chainOrderId);
 
     // Unmatched chain orders are not represented as ACTIVE/PARTIAL grid slots, so
     // synchronizeWithChain('cancelOrder') cannot release their commitment.

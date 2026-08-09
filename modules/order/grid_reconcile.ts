@@ -13,6 +13,7 @@ import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { calculatePriceTolerance, getAssetFeesSafe } from './utils/math.js';
 import {
     isOrderPlaced, parseChainOrder, isOrderOnChain, chainOrderMatchesSlot,
+    duplicateOrphanLogInfo,
 } from './utils/order.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -297,12 +298,13 @@ export async function reconcileGridOrders({
                     cancelledDuplicateIds.add(p.orderId);
                     continue;
                 }
+                const { level, suffix } = duplicateOrphanLogInfo(p.orderId);
                 logger?.log?.(
                     `SUSPECTED DUPLICATE: ${desc} - nearest active grid ${nearest.gridOrder.id} ` +
                     `(orderId=${nearest.gridOrder.orderId}, price=${Format.formatPrice6(nearest.gridOrder.price)}, ` +
                     `diff=${Format.formatPrice6(nearest.priceDiff)}, tolerance=${Format.formatPrice6(nearest.tolerance)}, ` +
-                    `looseTolerance=${Format.formatPrice6(nearest.looseTolerance)})`,
-                    'info'
+                    `looseTolerance=${Format.formatPrice6(nearest.looseTolerance)})${suffix}`,
+                    level
                 );
                 // Queue duplicate for Phase 2 cancellation instead of executing under lock
                 cancelledDuplicateIds.add(p.orderId);

@@ -1332,22 +1332,14 @@ async function releaseMarketAdapterRuntime(_bot: any, botId: any, context: any =
 
 /**
  * Check if an error message indicates that an order does not exist on the blockchain.
+ * Delegates to the canonical implementation in order/utils/order.ts (single source
+ * of truth shared with the correction/reconcile-cancel paths).
  * @param {string} message - Error message to check
  * @param {string} [orderId] - Optional order ID for context-aware matching
  * @returns {boolean} True if the message indicates a nonexistent order
  */
 function isOrderDoesNotExistError(message: any, orderId: any) {
-    if (typeof message !== 'string' || message.length === 0) return false;
-    const normalized = message.toLowerCase();
-    if (/\border\b.*\bdoes not exist\b/i.test(message)) return true;
-    if (/\bdoes not exist\b.*\border\b/i.test(message)) return true;
-    if (orderId && normalized.includes(String(orderId).toLowerCase())) {
-        return /\bdoes not exist\b/i.test(message)
-            || /\bcould not find object\b/i.test(message)
-            || /\bunable to find object\b/i.test(message)
-            || /\bobject\b.*\bnot found\b/i.test(message);
-    }
-    return false;
+    return require('./order/utils/order').isOrderGoneErrorMessage(message, orderId);
 }
 
 /**

@@ -70,7 +70,7 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS } from '../../constants.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT } from '../../constants.js';
 import * as Format from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../logger.js';
@@ -81,6 +81,112 @@ const { blockchainToFloat, floatToBlockchainInt, quantizeFloat, calculatePriceTo
 const orderLogger = new Logger('Order');
 
 const ORDER_GONE_ERROR_FRAGMENT = 'not found';
+
+/**
+ * Detect a "chain order does not exist" error from a broadcast/read failure.
+ * Single canonical implementation used by the correction, reconcile-cancel,
+ * dust-cancel, and residual-cancel paths.
+ *
+ * The explicit "order ... does not exist" phrasings always match. The legacy
+ * generic 'not found' fragment and the object-missing phrasings match as-is
+ * when no orderId is given (legacy order.ts behavior for the correction path);
+ * when an orderId IS given (dust/residual cancel paths) they additionally
+ * require the orderId to appear in the message, so an unrelated missing-object
+ * error is never mistaken for a gone order.
+ * @param {string} message - Error message to inspect.
+ * @param {string} [orderId] - Order ID required to be present in the message
+ *   for generic object-missing phrasings (precision mode).
+ * @returns {boolean} True if the message indicates the order is gone.
+ */
+function isOrderGoneErrorMessage(message: any, orderId?: any) {
+    if (typeof message !== 'string' || message.length === 0) return false;
+    if (/\border\b.*\bdoes not exist\b/i.test(message)) return true;
+    if (/\bdoes not exist\b.*\border\b/i.test(message)) return true;
+    if (orderId && !message.toLowerCase().includes(String(orderId).toLowerCase())) return false;
+    if (message.includes(ORDER_GONE_ERROR_FRAGMENT)) return true;
+    if (/\bdoes not exist\b/i.test(message)) return true;
+    if (/\bcould not find object\b/i.test(message)) return true;
+    if (/\bunable to find object\b/i.test(message)) return true;
+    if (/\bobject\b.*\bnot found\b/i.test(message)) return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Persistent duplicate-orphan detection escalation. A duplicate-price-level
+// orphan is expected self-healing (fully filled order leaves a sub-dust
+// residual that collides with the rotated replacement). First sightings log at
+// info; if the SAME orderId keeps being re-detected — its cancel keeps failing
+// or it keeps getting re-created — the detection sites escalate to warn so the
+// silent loop is surfaced instead of degrading quietly. Reuses the existing
+// warn-rate-limit and recent-orderId-map tuning from constants.ts rather than
+// defining new knobs: repeats are rate-limited by TIMING.STALE_TOTALS_WARN_
+// RATE_LIMIT_MS and the counter map is capped by ORDER_EVENTS.
+// RECENT_OWN_CANCEL_MAX_ENTRIES (same lazy-GC pattern as chain_orders.ts).
+// ---------------------------------------------------------------------------
+const _duplicateOrphanDetections = new Map<string, { count: number; lastWarnAt: number | null }>();
+
+/**
+ * Record a duplicate-orphan detection for an orderId.
+ * First sighting stays quiet (count 1). A repeated sighting of the same
+ * orderId escalates, but no more often than TIMING.STALE_TOTALS_WARN_RATE_LIMIT_MS.
+ * @param {string} orderId - Duplicate orphan chain order ID.
+ * @returns {{ count: number; shouldEscalate: boolean }} Detection stats.
+ */
+function recordDuplicateOrphanDetection(orderId: any) {
+    if (!orderId) return { count: 0, shouldEscalate: false };
+    const warnRateLimitMs = Number.isFinite(TIMING?.STALE_TOTALS_WARN_RATE_LIMIT_MS)
+        ? TIMING.STALE_TOTALS_WARN_RATE_LIMIT_MS
+        : 60000;
+    const maxEntries = Number.isFinite(NATIVE_CLIENT?.ORDER_EVENTS?.RECENT_OWN_CANCEL_MAX_ENTRIES)
+        ? NATIVE_CLIENT.ORDER_EVENTS.RECENT_OWN_CANCEL_MAX_ENTRIES
+        : 256;
+
+    const now = Date.now();
+    const existing = _duplicateOrphanDetections.get(String(orderId));
+    const count = existing ? existing.count + 1 : 1;
+    let shouldEscalate = false;
+    let lastWarnAt = existing ? existing.lastWarnAt : null;
+    if (count >= 2 && (lastWarnAt == null || now - lastWarnAt >= warnRateLimitMs)) {
+        shouldEscalate = true;
+        lastWarnAt = now;
+    }
+    _duplicateOrphanDetections.set(String(orderId), { count, lastWarnAt });
+
+    // Lazy GC: drop the oldest entries when the map exceeds the shared budget.
+    if (_duplicateOrphanDetections.size > maxEntries) {
+        let toDelete = _duplicateOrphanDetections.size - maxEntries;
+        for (const [id] of _duplicateOrphanDetections) {
+            if (toDelete <= 0) break;
+            _duplicateOrphanDetections.delete(id);
+            toDelete--;
+        }
+    }
+    return { count, shouldEscalate };
+}
+
+/**
+ * Clear the detection counter for an orderId (e.g. after a confirmed cancel),
+ * so a resolved orphan never lingers and false-escalates later.
+ * @param {string} orderId - Chain order ID to forget.
+ */
+function clearDuplicateOrphanDetection(orderId: any) {
+    if (orderId) _duplicateOrphanDetections.delete(String(orderId));
+}
+
+/**
+ * Record a duplicate-orphan detection and return the log level + re-detection
+ * suffix for the caller's diagnostic line. First sightings log at info; a
+ * repeat escalates to warn (rate-limited).
+ * @param {string} orderId - Duplicate orphan chain order ID.
+ * @returns {{ level: 'info'|'warn'; suffix: string }} Log level and suffix text.
+ */
+function duplicateOrphanLogInfo(orderId: any) {
+    const { count, shouldEscalate } = recordDuplicateOrphanDetection(orderId);
+    return {
+        level: shouldEscalate ? 'warn' : 'info',
+        suffix: count > 1 ? ` [re-detected ${count}×; cancel may be failing or the order keeps getting re-created]` : '',
+    };
+}
 
 function _filterUnmatchedChainOrders(manager: any, chainOrderId: string): void {
     if (Array.isArray(manager._lastUnmatchedChainOrders)) {
@@ -297,12 +403,14 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
             const sideLabel = type === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
             manager.logger?.log?.(`[CORRECTION] Cancelling duplicate orphan ${sideLabel} order ${chainOrderId}`, 'info');
             await accountOrders.cancelOrder(accountName, privateKey, chainOrderId);
+            clearDuplicateOrphanDetection(chainOrderId);
             _filterUnmatchedChainOrders(manager, chainOrderId);
             shouldRemove = true;
             return { success: true, cancelled: true };
         } catch (error: any) {
-            const orderGone = getErrorMessage(error)?.includes(ORDER_GONE_ERROR_FRAGMENT);
+            const orderGone = isOrderGoneErrorMessage(getErrorMessage(error));
             if (orderGone) {
+                clearDuplicateOrphanDetection(chainOrderId);
                 shouldRemove = true;
                 _filterUnmatchedChainOrders(manager, chainOrderId);
             }
@@ -1423,5 +1531,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
     );
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
 

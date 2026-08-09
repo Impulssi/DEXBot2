@@ -4,6 +4,7 @@ const {
     reconcileGridOrders,
     attemptResumePersistedGridByPriceMatch,
 } = require('../modules/order/grid_reconcile');
+const { clearDuplicateOrphanDetection } = require('../modules/order/utils/order');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const AsyncLock = require('../modules/order/async_lock').default;
 
@@ -671,6 +672,70 @@ async function testUntrackedDuplicateStillCancelledAndReleasesFunds() {
     console.log('✅ Regression 9c passed: untracked duplicate still cancelled with fund release');
 }
 
+// Regression 9d: when the cancel hits "order does not exist" (stale snapshot —
+// the sync-layer correction beat reconcile to it and the 5s own-cancel TTL
+// lapsed), the untracked funds must STILL be released. Before the fix the
+// throw skipped the addToChainFree block and the funds were stranded.
+async function testOrderGoneCancelStillReleasesFunds() {
+    const cancelAttempts = [];
+    const { manager, chainOpenOrders, chainOrders } = makeDuplicateOrphanScenario({
+        chainOrders: {
+            cancelOrder: async () => {
+                cancelAttempts.push('1.7.U');
+                throw new Error('assert_exception: Assert Exception: unable to find object 1.7.U');
+            },
+        },
+    });
+
+    await reconcileGridOrders({
+        manager,
+        config: { activeOrders: { sell: 1, buy: 0 } },
+        account: 'acct',
+        privateKey: 'pk',
+        chainOrders,
+        chainOpenOrders,
+    });
+
+    assert.strictEqual(cancelAttempts.length, 1, 'cancelOrder must be attempted once');
+    assert.strictEqual(manager.accountTotals.sellFree, 100.1,
+        'ORDER_GONE cancel must still release untracked funds to sellFree');
+    console.log('✅ Regression 9d passed: order-gone cancel still releases untracked funds');
+}
+
+// Regression 9e: a duplicate orphan whose cancel keeps failing must NOT loop
+// silently at info — the same orderId re-detected on a later reconcile
+// escalates to warn (rate-limited).
+async function testPersistentDuplicateEscalatesToWarn() {
+    const cancelAttempts = [];
+    const { manager, chainOpenOrders, chainOrders } = makeDuplicateOrphanScenario({
+        chainOrders: {
+            cancelOrder: async () => {
+                cancelAttempts.push('1.7.U');
+                throw new Error('transient rpc failure');
+            },
+        },
+    });
+    const logs = [];
+    manager.logger = { log: (msg, level) => logs.push({ msg: String(msg), level }) };
+    const cfg = { activeOrders: { sell: 1, buy: 0 } };
+
+    try {
+        await reconcileGridOrders({ manager, config: cfg, account: 'acct', privateKey: 'pk', chainOrders, chainOpenOrders });
+        await reconcileGridOrders({ manager, config: cfg, account: 'acct', privateKey: 'pk', chainOrders, chainOpenOrders });
+
+        const dupLogs = logs.filter(l => l.msg.includes('SUSPECTED DUPLICATE'));
+        assert.ok(dupLogs.length >= 2, `duplicate must be re-detected across reconciles, got ${dupLogs.length}`);
+        assert.strictEqual(dupLogs[0].level, 'info', `first sighting must log at info, got ${dupLogs[0].level}`);
+        assert.strictEqual(dupLogs[1].level, 'warn', `persistent duplicate must escalate to warn, got ${dupLogs[1].level}`);
+        assert.ok(dupLogs[1].msg.includes('re-detected'), 'escalated log should note the re-detection');
+        assert.ok(cancelAttempts.length >= 2, 'cancel must keep being attempted');
+    } finally {
+        // Reset the module-level escalation counter so other regressions stay clean.
+        clearDuplicateOrphanDetection('1.7.U');
+    }
+    console.log('✅ Regression 9e passed: persistent duplicate escalates info -> warn');
+}
+
 (async () => {
     console.log('\n========== STARTUP RECONCILE REGRESSION TESTS ==========\n');
     await testUnmatchedCancelReleasesFundsAndHandlesNullEntries();
@@ -684,6 +749,8 @@ async function testUntrackedDuplicateStillCancelledAndReleasesFunds() {
     await testQueuedDuplicateDefersCancelButReleasesFunds();
     await testOwnCancelledDuplicateDefersCancelButReleasesFunds();
     await testUntrackedDuplicateStillCancelledAndReleasesFunds();
+    await testOrderGoneCancelStillReleasesFunds();
+    await testPersistentDuplicateEscalatesToWarn();
     console.log('\n✅ Startup reconcile regression tests passed!\n');
 })().catch((err) => {
     console.error('\n❌ STARTUP RECONCILE REGRESSION TEST FAILED:');
