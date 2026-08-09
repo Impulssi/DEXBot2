@@ -1,10 +1,7 @@
 /**
  * @enum {string}
  */
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-
-const { getErrorMessage } = require('../utils/errors');
+import { getErrorMessage } from '../utils/errors.js';
 const PROCESSED_FILL_PERSISTENCE_MODES: { readonly IMMEDIATE: string; readonly BATCHED: string; readonly MANUAL: string } = Object.freeze({
     IMMEDIATE: 'immediate',
     BATCHED: 'batched',

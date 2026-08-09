@@ -6,30 +6,33 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = _esmDirname(__filename);
 const require = createRequire(import.meta.url);
 
-const { createHash } = require('./crypto/sync');
-const fs = require('fs');
-const { path } = require('./path_api');
-const { spawn } = require('child_process');
-const chainOrders = require('./chain_orders');
-const { readOpenOrdersGuarded } = require('./chain_orders');
-const grid = require('./order/grid');
-const { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } = require('./constants');
-const { PATHS } = require('./paths');
-const Format = require('./order/format');
-const { getStorage } = require('./storage');
+import fs from 'node:fs';
+import { spawn } from 'node:child_process';
+import { createHash } from './crypto/sync.js';
+import { path } from './path_api.js';
+import * as chainOrders from './chain_orders.js';
+import * as grid from './order/grid.js';
+import { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } from './constants.js';
+const { readOpenOrdersGuarded } = chainOrders;
+import { PATHS } from './paths.js';
+import * as Format from './order/format.js';
+import { getStorage } from './storage/index.js';
 const storage = getStorage();
 const { ensureDir, unlink: safeUnlink } = storage;
-const fundRegistry = require('./fund_registry');
+import * as fundRegistry from './fund_registry.js';
 
-const { BitShares } = require('./bitshares_client');
-const { BroadcastUncertainError } = require('./dexbot_credential_client');
-const { Config } = require('./config');
+import * as bitsharesModule from './bitshares_client.js';
+const { BitShares } = bitsharesModule as any;
+import { BroadcastUncertainError } from './dexbot_credential_client.js';
+import * as configModule from './config.js';
+const { Config } = configModule;
+import { getErrorMessage } from './utils/errors.js';
 function hasOpenOrdersSyncLoopMsSet(...args: any) { return require('./config').hasOpenOrdersSyncLoopMsSet(...args); }
 function getOpenOrdersSyncLoopMs(...args: any) { return require('./config').getOpenOrdersSyncLoopMs(...args); }
-function isGridBloated(...args: any) { return grid.isGridBloated(...args); }
-function isGridBloatGraceActive(...args: any) { return grid.isGridBloatGraceActive(...args); }
-function clearGridBloatFlag(...args: any) { return grid.clearGridBloatFlag(...args); }
-function recalculateGrid(...args: any) { return grid.recalculateGrid(...args); }
+function isGridBloated(...args: any) { return (grid.isGridBloated as any)(...args); }
+function isGridBloatGraceActive(...args: any) { return (grid.isGridBloatGraceActive as any)(...args); }
+function clearGridBloatFlag(...args: any) { return (grid.clearGridBloatFlag as any)(...args); }
+function recalculateGrid(...args: any) { return (grid.recalculateGrid as any)(...args); }
 function buildRuntimeScriptPath(...args: any) { return require('./launcher/runtime_entry').buildRuntimeScriptPath(...args); }
 function isDistCodeRoot(...args: any) { return require('./launcher/runtime_entry').isDistCodeRoot(...args); }
 function applyGridDivergenceCorrections(...args: any) { return require('./order/utils/system').applyGridDivergenceCorrections(...args); }
@@ -55,7 +58,6 @@ function getActiveOrdersTotal(config: any) { return require('./order/utils/order
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function isOrderOnChain(...args: any) { return require('./order/utils/order').isOrderOnChain(...args); }
 function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
-const { getErrorMessage } = require('./utils/errors');
 
 const CODE_ROOT = path.join(__dirname, '..');
 const PROFILES_DIR = PATHS.PROFILES_DIR;
@@ -1227,7 +1229,7 @@ function setupBlockchainFetchInterval(bot: any) {
                     bot._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
                     await bot.manager.fetchAccountTotals(bot.accountId);
 
-                    let chainOpenOrders = [];
+                    let chainOpenOrders: any = [];
                     if (!bot.config.dryRun) {
                         try {
                             // Truncated-read guard: a partial get_full_accounts

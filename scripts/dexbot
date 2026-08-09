@@ -1,12 +1,16 @@
 #!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const root = path.resolve(__dirname, '..');
 const distTarget = path.join(root, 'dist', 'dexbot.js');
 
-if (fs.existsSync(distTarget)) {
-  require(distTarget);
+if (existsSync(distTarget)) {
+  await import(pathToFileURL(distTarget).href);
 } else {
   require('tsx/cjs');
   require(path.join(root, 'dexbot.ts'));

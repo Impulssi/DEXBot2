@@ -1,15 +1,13 @@
 /** Fill processing runtime - handles order fill events and replay-safe accounting */
 
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-
+import * as chainOrders from './chain_orders.js';
 import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store.js';
 import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants.js';
 import { getErrorMessage } from './utils/errors.js';
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function retryPersistenceIfNeeded(...args: any) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
-const { readOpenOrdersGuarded } = require('./chain_orders');
+const { readOpenOrdersGuarded } = chainOrders;
 
 interface SweepOrphanFillOptions {
     context: string;

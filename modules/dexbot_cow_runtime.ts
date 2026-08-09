@@ -8,12 +8,12 @@
  * the same pattern as dexbot_fill_runtime.ts.
  */
 
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-
-const chainOrders = require('./chain_orders');
-const { readOpenOrdersWithMetaSafe, readOpenOrdersGuarded } = require('./chain_orders');
-const { BroadcastUncertainError } = require('./dexbot_credential_client');
+import * as chainOrdersModule from './chain_orders.js';
+const chainOrders = chainOrdersModule as any;
+const { readOpenOrdersWithMetaSafe, readOpenOrdersGuarded } = chainOrdersModule as any;
+import { BroadcastUncertainError as BroadcastUncertainErrorBinding } from './dexbot_credential_client.js';
+const BroadcastUncertainError = BroadcastUncertainErrorBinding as any;
+import * as orderUtils from './order/utils/order.js';
 const {
     buildCreateOrderArgs,
     buildCreateOpFingerprint,
@@ -22,20 +22,27 @@ const {
     convertToSpreadPlaceholder,
     buildOutsideInPairGroups,
     isOrderPlaced,
-} = require('./order/utils/order');
-const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = require('./order/utils/validate');
-const { validateOrderSize, findPriceCollision } = require('./order/utils/math');
+} = orderUtils as any;
+import * as validate from './order/utils/validate.js';
+const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = validate as any;
+import * as math from './order/utils/math.js';
+const { validateOrderSize, findPriceCollision } = math as any;
 // Lazy accessor so test mocks on the math module export take effect at call time.
 function getAssetFeesSafe(...args: any) { return require('./order/utils/math').getAssetFeesSafe(...args); }
+import * as constantsModule from './constants.js';
 const {
     COW_ACTIONS,
     ORDER_STATES,
     ORDER_TYPES,
     REBALANCE_STATES,
-} = require('./constants');
-const Format = require('./order/format');
-const { WorkingGrid } = require('./order/working_grid');
-const { getErrorMessage } = require('./utils/errors');
+} = constantsModule as any;
+import * as FormatModule from './order/format.js';
+const Format = FormatModule as any;
+import * as workingGridModule from './order/working_grid.js';
+const { WorkingGrid } = workingGridModule as any;
+import { getErrorMessage } from './utils/errors.js';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 
 // Maximum number of times the pre-broadcast staleness guard may re-plan the
 // batch from a fresh master before proceeding anyway. Bounded so a master
