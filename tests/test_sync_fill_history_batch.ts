@@ -88,6 +88,20 @@ function installBatchReadOrdersMock(_mgr, mockImpl) {
     return () => { chainOrders.batchReadOrders = original; };
 }
 
+function installReadSingleOrderMock(_mgr, mockImpl) {
+    const original = chainOrders.readSingleOrder;
+    chainOrders.readSingleOrder = mockImpl;
+    return () => { chainOrders.readSingleOrder = original; };
+}
+
+// The sub-dust fill path now verifies the chain for a real residual before
+// treating the fill as a full fill (see sync_engine _computeFillTransitionResult).
+// Default: the order is already gone from chain (residual culled), so no
+// residual-cancel is requested and the slot clears as before.
+function installDefaultReadSingleOrderGone() {
+    return installReadSingleOrderMock(null, async () => null);
+}
+
 async function testTwoPartialFillsBatch() {
     console.log('\n - Two partial fills in one batch (batched drift refetch)...');
     const mgr = createManager();
@@ -603,28 +617,82 @@ async function testPostBatchReanchorAndInvariantGuard() {
     console.log('  PASS');
 }
 
+async function testResidualCancelRequestedWhenChainStillHoldsOrder() {
+    console.log('\n - Sub-dust full fill with chain STILL holding residual requests explicit cancel...');
+    const mgr = createManager();
+    const orderId = '1.7.900001';
+
+    // Sell 1.0 XRP at 0.0001 (other side rounds to 0), but the chain still has
+    // the order (for_sale=1 unit) because the fill consumed less than for_sale.
+    await mgr._updateOrder({
+        id: 'slot-0', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SELL,
+        size: 1.0, price: 0.0001, orderId: orderId,
+        rawOnChain: { for_sale: String(Math.round(1.0 * 10000)), fetchedAt: Date.now() }
+    });
+
+    // Chain still holds the order with for_sale > 0 → the bot must request an
+    // explicit cancel (previously it relied on "chain culls sub-dust residual").
+    const restore = installReadSingleOrderMock(mgr, async () => ({
+        id: orderId,
+        for_sale: String(Math.round(1.0 * 10000) - 9999) // residual 1 unit
+    }));
+    try {
+        const fill = makeSellFillEvent(orderId, 0.9999, 900, '1.11.9001');
+        const result = await mgr.syncFromFillHistoryBatch([fill], {
+            persistenceMode: 'batched'
+        });
+
+        // Fill is authoritative → full fill → SPREAD placeholder (rotation).
+        const slot0 = mgr.orders.get('slot-0');
+        assert.strictEqual(slot0.state, ORDER_STATES.VIRTUAL,
+            `slot should still be virtualized (fill authoritative), got ${slot0.state}`);
+        assert.strictEqual(slot0.type, ORDER_TYPES.SPREAD,
+            `slot should be SPREAD placeholder, got ${slot0.type}`);
+
+        // But a residual-cancel must be requested so the dust is cancelled
+        // explicitly instead of relying on the chain culling it.
+        assert.ok(
+            Array.isArray(result.residualCancels) && result.residualCancels.length === 1,
+            `residualCancels should contain the residual order, got ${JSON.stringify(result.residualCancels)}`
+        );
+        assert.strictEqual(result.residualCancels[0].orderId, orderId,
+            'residual cancel must reference the orderId still held on chain');
+    } finally {
+        restore();
+    }
+    console.log('  PASS');
+}
+
 async function runTests() {
     suppressNoise();
 
-    await testTwoPartialFillsBatch();
-    await testFullAndPartialMix();
-    await testGhostOrderInBatch();
-    await testReplayFillSkippedInBatch();
-    await testMissingGridOrderSkipped();
-    await testBatchDriftRefetchFallback();
-    await testEmptyFillsArray();
-    await testAggregatedGhostOrderIds();
-    await testSingleFillViaBatch();
-    await testSameOrderMultiFillBatchAggregates();
-    await testSameOrderThreeFillBatchPartialRemainder();
-    await testSpreadSlotFullFillResolvesBuySide();
-    await testSpreadSlotPartialFillResolvesBuySide();
-    await testPostBatchReanchorAndInvariantGuard();
+    // Sub-dust full fills now verify the residual against the chain. Default to
+    // "order gone" so existing sub-dust assertions keep passing.
+    const restoreReadGone = installDefaultReadSingleOrderGone();
+    try {
+        await testTwoPartialFillsBatch();
+        await testFullAndPartialMix();
+        await testGhostOrderInBatch();
+        await testReplayFillSkippedInBatch();
+        await testMissingGridOrderSkipped();
+        await testBatchDriftRefetchFallback();
+        await testEmptyFillsArray();
+        await testAggregatedGhostOrderIds();
+        await testSingleFillViaBatch();
+        await testSameOrderMultiFillBatchAggregates();
+        await testSameOrderThreeFillBatchPartialRemainder();
+        await testSpreadSlotFullFillResolvesBuySide();
+        await testSpreadSlotPartialFillResolvesBuySide();
+        await testPostBatchReanchorAndInvariantGuard();
+        await testResidualCancelRequestedWhenChainStillHoldsOrder();
+    } finally {
+        restoreReadGone();
+    }
 
     console.log('\n✓ All syncFromFillHistoryBatch tests passed!\n');
 }
 
-runTests().catch(err => {
+runTests().then(() => process.exit(0)).catch(err => {
     console.error('Test failed:', err);
     process.exit(1);
 });

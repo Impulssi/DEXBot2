@@ -1157,6 +1157,18 @@ class SyncEngine {
         const gridAlsoEmpty = currentSizeIntFromGrid <= 0;
         let isEffectivelyFull = resolvedChainConfirmsEmpty || gridAlsoEmpty;
 
+        // If the chain retains a real residual order after this fill, the bot
+        // must cancel it explicitly. The chain only auto-culls ("culls small")
+        // an order when its residual value in the QUOTE asset truncates to 0
+        // (amount_to_receive() == 0, i.e. for_sale × price == 0 in quote units,
+        // see maybe_cull_small_order in bitshares-core). A residual of >= 1 base
+        // unit whose quote value is non-zero is NOT culled — it would be
+        // orphaned on-chain once the slot is converted to a SPREAD placeholder.
+        // Verified fills stay authoritative (rotation proceeds), but the leftover
+        // dust is handled by an explicit cancel rather than trusting the chain to
+        // sweep it.
+        let residualCancel: { orderId: string; id: string } | null = null;
+
         if (!isEffectivelyFull) {
             const otherPrecision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetB.precision : mgr.assets.assetA.precision;
             const otherSidePrice = matchedGridOrder.price;
@@ -1166,21 +1178,59 @@ class SyncEngine {
                 // A fill event is authoritative: the order WAS on-chain and this
                 // fill consumed the tradeable remainder. A fill is a fill — we do
                 // not need to preserve the orderId as a "ghost" PARTIAL to block
-                // a duplicate CREATE. Any residual dust that remains on-chain
-                // after rounding is cancelled by the normal reconciliation /
-                // duplicate-price cancel path, not by stalling the grid. Treating
-                // every sub-dust other-side fill as a real full fill lets rotation
-                // immediately plan the opposite-side replacement, preserving the
-                // grid invariant (each filled side produces a new order on the
-                // other side). This replaces the legacy ghost mechanism whose
-                // preserved orderIds caused instantly-filled replacement orders
-                // to deadlock the COW create pipeline.
-                mgr.logger.log(
-                    `[SYNC] Order ${matchedGridOrder.orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. ` +
-                    `Fill is authoritative: treating as full fill for rotation; chain culls sub-dust residual (no cancel needed).`,
-                    'info'
-                );
+                // a duplicate CREATE. Treating every sub-dust other-side fill as
+                // a real full fill lets rotation immediately plan the opposite-side
+                // replacement, preserving the grid invariant (each filled side
+                // produces a new order on the other side). This replaces the legacy
+                // ghost mechanism whose preserved orderIds caused instantly-filled
+                // replacement orders to deadlock the COW create pipeline.
+                //
+                // However, the chain does NOT reliably cull the leftover residual:
+                // maybe_cull_small_order only removes an order whose QUOTE-side
+                // value rounds to zero. Verify the order against the chain; if it
+                // still exists with for_sale > 0, schedule an explicit cancel so
+                // the dust is not stranded on the book (previously it could remain
+                // forever because the slot was virtualized and nothing referenced
+                // the orderId anymore).
                 isEffectivelyFull = true;
+                // Reuse a drift-refetch result when present: it is a live
+                // post-fill read, so for_sale > 0 already proves a real residual
+                // remains. Avoids a second RPC for the same order in the exact
+                // scenario that triggered this branch.
+                let residualForSale: number | null = null;
+                if (chainRefetched && Number.isFinite(effectiveRawForSale)) {
+                    residualForSale = Math.round(effectiveRawForSale);
+                } else {
+                    try {
+                        const residualOrder = await chainOrders.readSingleOrder(matchedGridOrder.orderId, 3000);
+                        residualForSale = residualOrder ? toFiniteNumber(residualOrder.for_sale, undefined) : null;
+                    } catch (residualErr: any) {
+                        // The read is best-effort: if it fails, fall back to the old
+                        // behavior (rely on reconciliation) rather than blocking the
+                        // authoritative fill transition.
+                        mgr.logger.log(
+                            `[SYNC] Order ${matchedGridOrder.orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. ` +
+                            `Fill is authoritative: treating as full fill for rotation. Residual verification read failed (${getErrorMessage(residualErr)}); ` +
+                            `relying on reconciliation for any residual.`,
+                            'warn'
+                        );
+                    }
+                }
+                if (Number.isFinite(residualForSale) && Math.round(residualForSale as number) > 0) {
+                    residualCancel = { orderId: matchedGridOrder.orderId, id: matchedGridOrder.id };
+                    mgr.logger.log(
+                        `[SYNC] Order ${matchedGridOrder.orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. ` +
+                        `Fill is authoritative: treating as full fill for rotation, but chain still holds residual for_sale=${residualForSale} ` +
+                        `(not culled); scheduling explicit cancel.`,
+                        'warn'
+                    );
+                } else {
+                    mgr.logger.log(
+                        `[SYNC] Order ${matchedGridOrder.orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. ` +
+                        `Fill is authoritative: treating as full fill for rotation; chain confirms residual gone (for_sale=0), no cancel needed.`,
+                        'info'
+                    );
+                }
             }
         }
 
@@ -1234,7 +1284,8 @@ class SyncEngine {
             filledOrder: filledOrderResult,
             fullUpdate,
             partialUpdate,
-            newSize
+            newSize,
+            residualCancel
         };
     }
 
@@ -1387,7 +1438,12 @@ class SyncEngine {
                 // syncFromFillHistoryBatch for rationale).
                 await mgr.reanchorAccountTotals('fill-sync');
 
-                return { filledOrders, updatedOrders, partialFill: result.isFull ? false : true };
+                return {
+                    filledOrders,
+                    updatedOrders,
+                    partialFill: result.isFull ? false : true,
+                    residualCancels: result.residualCancel ? [result.residualCancel] : []
+                };
                 } finally {
                     // Lower the guard before the final consolidated recalc so the
                     // settled (re-anchored) state is still verified.
@@ -1603,6 +1659,7 @@ class SyncEngine {
                     const gridUpdates: any[] = [];
                     const filledOrders: any[] = [];
                     const updatedOrders: any[] = [];
+                    const residualCancels: any[] = [];
                     let anyPartialFill = false;
 
                     const fillContextsBySlot = new Map<string, any[]>();
@@ -1658,6 +1715,7 @@ class SyncEngine {
                             mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
                             gridUpdates.push({ id: matchedGridOrder.id, ...result.fullUpdate, context: 'handle-fill-full' });
                             filledOrders.push(result.filledOrder);
+                            if (result.residualCancel) residualCancels.push(result.residualCancel);
                         } else {
                             mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${result.newSize}`, 'info');
                             gridUpdates.push({ id: matchedGridOrder.id, ...result.partialUpdate, context: 'handle-fill-partial' });
@@ -1689,7 +1747,7 @@ class SyncEngine {
                     // (tryDeductFromChainFree) a fresh snapshot.
                     await mgr.reanchorAccountTotals('fill-batch');
 
-                    return { filledOrders, updatedOrders, partialFill: anyPartialFill, requiresOpenOrdersSync: anyRequiresSync };
+                    return { filledOrders, updatedOrders, partialFill: anyPartialFill, requiresOpenOrdersSync: anyRequiresSync, residualCancels };
                 } finally {
                     // Lower the guard before the final consolidated recalc so the
                     // settled (re-anchored) state is still verified.

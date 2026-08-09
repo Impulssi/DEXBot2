@@ -7,6 +7,7 @@ import * as chainOrders from './chain_orders.js';
 import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store.js';
 import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants.js';
 import { getErrorMessage } from './utils/errors.js';
+import { isOrderDoesNotExistError } from './dexbot_maintenance_runtime.js';
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function retryPersistenceIfNeeded(...args: any) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
@@ -59,6 +60,42 @@ function wireProcessedFillTracking(bot: any) {
 
     bot.manager.processedFillTracker = bot._recentlyProcessedFills;
     bot.manager.processedFillStore = bot._processedFillStore;
+}
+
+/**
+ * Explicitly cancel residual orders that the chain still holds after a fill was
+ * treated as a full fill (other-side rounds to 0). The chain only auto-culls an
+ * order when its residual value in the QUOTE asset truncates to 0 (bitshares-core
+ * maybe_cull_small_order); a residual of >= 1 base unit with non-zero quote value
+ * is NOT culled and would be stranded once the slot is virtualized. Best-effort:
+ * tolerates "order does not exist"
+ * (already culled), logs other failures for the next cycle's reconciliation.
+ */
+async function cancelResidualOrders(bot: any, residualCancels: any[]) {
+    if (!residualCancels || residualCancels.length === 0) return;
+    for (const rc of residualCancels) {
+        if (!rc || !rc.orderId) continue;
+        try {
+            await chainOrders.cancelOrder(bot.account, bot.privateKey, rc.orderId);
+            bot.manager.logger.log(
+                `[RESIDUAL] Cancelled residual order ${rc.orderId}${rc.id ? ` (slot ${rc.id})` : ''} left on chain after sub-dust fill`,
+                'warn'
+            );
+        } catch (err: any) {
+            const errMsg = getErrorMessage(err) || '';
+            if (isOrderDoesNotExistError(errMsg, rc.orderId)) {
+                bot.manager.logger.log(
+                    `[RESIDUAL] Residual order ${rc.orderId} already gone from chain; nothing to cancel`,
+                    'debug'
+                );
+            } else {
+                bot.manager.logger.log(
+                    `[RESIDUAL] Failed to cancel residual order ${rc.orderId}: ${errMsg}`,
+                    'warn'
+                );
+            }
+        }
+    }
 }
 
 /**
@@ -666,6 +703,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                 let allFilledOrders: any[] = [];
                 let ordersNeedingCorrection: any[] = [];
                 const fillMode = chainOrders.getFillProcessingMode();
+                const residualCancels: any[] = [];
 
                 const processValidFills = async (fillsToSync: any) => {
                     let resolvedOrders: any[] = [];
@@ -695,6 +733,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                                 if (fillKey) pendingFillKeysForCurrentCycle.add(fillKey);
                             }
                             if (batchResult.filledOrders) resolvedOrders.push(...batchResult.filledOrders);
+                            if (batchResult.residualCancels) residualCancels.push(...batchResult.residualCancels);
                             if (batchResult.requiresOpenOrdersSync) requiresOpenOrdersSync = true;
                         } else {
                             for (const fill of fillsToSync) {
@@ -715,6 +754,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                                 }
                                 if (fillKey) pendingFillKeysForCurrentCycle.add(fillKey);
                                 if (resultHistory.filledOrders) resolvedOrders.push(...resultHistory.filledOrders);
+                                if (resultHistory.residualCancels) residualCancels.push(...resultHistory.residualCancels);
                                 if (resultHistory.requiresOpenOrdersSync) requiresOpenOrdersSync = true;
                             }
                         }
@@ -856,6 +896,18 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                                 abortedFillCycle = true;
                             }
                         }
+                    }
+
+                    // Cancel residuals the chain still holds after sub-dust full
+                    // fills were virtualized. The chain only auto-culls orders whose
+                    // QUOTE-side residual rounds to 0; a leftover of >= 1 base unit
+                    // is NOT culled and would otherwise sit on the book forever once
+                    // the slot stopped referencing it. Runs BEFORE post-fill grid
+                    // maintenance so the residual cannot be re-adopted into a slot
+                    // first (which would turn this cancel into a ghost: a grid order
+                    // referencing a chain order that no longer exists).
+                    if (!abortedFillCycle && residualCancels.length > 0) {
+                        await cancelResidualOrders(bot, residualCancels);
                     }
 
                     if (shouldRunPostFillChecks && !abortedFillCycle) {

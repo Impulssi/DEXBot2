@@ -6,6 +6,8 @@
  */
 
 const assert = require('assert');
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
 const { OrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { _setFeeCache } = require('../modules/order/utils/math');
@@ -37,6 +39,12 @@ async function runTests() {
     {
         const manager = await createManager();
 
+        // Sub-dust full fills now verify the residual against the chain
+        // (sync_engine _computeFillTransitionResult). Stub the read to report
+        // the order is gone so the test is deterministic and offline.
+        const originalRead = chainOrders.readSingleOrder;
+        chainOrders.readSingleOrder = async () => null;
+        try {
         // Setup initial order: Buy XRP with 249.27798 BTS (exactly the case from the log)
         const initialSize = 249.27798;
         // Provide a fresh rawOnChain snapshot. With drift-only refetch (no TTL),
@@ -84,12 +92,17 @@ async function runTests() {
             'sub-dust fill slot should be SPREAD type, got ' + slot.type);
         assert.strictEqual(slot.size, 0, 'full-filled slot size should be 0');
         assert.strictEqual(slot.orderId, null, 'real full fill must clear the orderId (no ghost preservation)');
+        assert.ok(Array.isArray(result.residualCancels) && result.residualCancels.length === 0,
+            'order confirmed gone on chain -> no residual cancel request expected');
+        } finally {
+            chainOrders.readSingleOrder = originalRead;
+        }
     }
 
     console.log('✓ Ghost order fix tests passed!');
 }
 
-runTests().catch(err => {
+runTests().then(() => process.exit(0)).catch(err => {
     console.error('Test failed!');
     console.error(err);
     process.exit(1);
