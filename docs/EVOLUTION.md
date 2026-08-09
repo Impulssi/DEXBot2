@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.11 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.12 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 1,950 commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 243 automated test files
-- **Releases**: 92 release entries (v0.1.0 to v1.4.11)
+- **Releases**: 93 release entries (v0.1.0 to v1.4.12)
 
 ---
 
@@ -39,45 +39,35 @@ Added AMA trend detection, blockchain integer-based precision system, comprehens
 Implemented Copy-on-Write grid architecture with immutable master grid, atomic boundary shifts, and deadlock resolution. Added multi-node health checking and spread correction redesign with edge-based strategy.
 
 ### Phase 4: Market Adapter & Production Hardening (Late Feb - March 2026)
-Consolidated the market adapter with split data sources, AMA-derived grid center, fixed-cap fill batching, and credential daemon scaffolding. Replaced cached fund tracking with real-time commitment accounting. Expanded the Claw runtime. Released v0.6.0.
+Consolidated the market adapter with split data sources, AMA-derived grid center, fixed-cap fill batching, and credential daemon scaffolding. Replaced cached fund tracking with real-time commitment accounting. Expanded the Claw runtime. Released v0.6.0. This decoupled signal generation from execution — the AMA-derived grid center feeds the order engine as a pure input.
 
 ---
 
 ### Phase 5: Signal Intelligence, Stable Release & Browser Compatibility (March – June 2026)
 
-The project entered its most transformative phase. A derivative signal engine with dynamic trend-weighting and volatility scaling was added, alongside regime classification for adaptive trading behavior. A credit and debt runtime was built to manage MPA borrowing, repayment, and credit offers.
-
-Stabilization followed: the market adapter was hardened, AMA warmup reworked, and the codebase shed all external runtime dependencies while migrating fully to TypeScript. Fill detection was overhauled, logging centralized, and the unlock/daemon infrastructure received a comprehensive security audit culminating in the first stable release — v1.0.0 on Jun 16.
-
-The release introduced profile validation, on-chain authority resolution, a shared-account fund registry with cross-bot invariants, and proportional collateral allocation for credit positions. Immediately afterward, the codebase underwent a browser compatibility transformation — six portable abstractions replaced platform-specific code, pure-JS crypto fallbacks enabled browser execution, and the entire I/O pipeline was centralized through a storage adapter, making 140+ files browser-safe.
+The project entered its most transformative phase: a derivative signal engine (dynamic trend-weighting, volatility scaling, regime classification) and a credit/debt MPA runtime were added, the codebase shed all external runtime dependencies while migrating fully to TypeScript, and a security audit of the unlock/daemon stack culminated in the first stable release — v1.0.0 on Jun 16, introducing profile validation, a shared-account fund registry with cross-bot invariants, and proportional collateral allocation. A browser-compatibility transformation followed — portable abstractions, pure-JS crypto, and storage-adapter I/O centralization made 140+ files browser-safe. This produced the multi-layered runtime that still shapes the project: COW order core, signal pipeline, credit/debt MPA runtime, and a browser-compatible core.
 
 ### Phase 6: Production Hardening & Iterative Refinement (June – July 2026)
 
-Post-stable work focused on reliability: subscription health watchdogs, broadcast deadlock recovery at bot and daemon level, and documented system invariants. Iterative releases (v1.0.1–v1.3.3) delivered multi-round AMA refits, oversize credit deal splitting with per-operation caps, COW broadcast recovery hardening, centralized node-fallback for BROADCAST_DEADLINE, credit-only mode for MPA workflows, credential daemon memory fixes, and runtime extraction (COW, fill, state recovery).
+Post-stable work focused on reliability: subscription health watchdogs, broadcast deadlock recovery at bot and daemon level, and documented system invariants. Iterative releases (v1.0.1–v1.3.3) delivered multi-round AMA refits, oversize credit deal splitting, COW broadcast recovery hardening, centralized node-fallback for BROADCAST_DEADLINE, credit-only mode, credential daemon memory fixes, and runtime extraction (COW, fill, state recovery) — an incremental-hardening phase that layered new subsystems (active fill polling, chart controls, HTML order export) onto the existing COW core without altering the core concurrency model.
 
 ### Phase 7: Concurrency Model Correction (Late July 2026)
 
-CJS→ESM migration and strict-mode zero-errors across all source files completed the module transition. The v1.4.x releases that followed corrected the concurrency model — centralized `withBlockchainRetry` with node failover, a 4-layer duplicate CREATE guard, corrected lock hierarchy with refcount/stack state hardening, AsyncLock forceRelease safety, and fund-accounting race hardening — fixing stale COW fund snapshots, phantom-order fund inflation, and the create-cancel loop.
+CJS→ESM migration and strict-mode zero-errors across all source files completed the module transition. The v1.4.x releases that followed corrected the concurrency model — centralized `withBlockchainRetry` with node failover, a 4-layer duplicate CREATE guard, reordered lock hierarchy (`_syncLock`/`_gridLock` swap, refcount/stack nesting safety), AsyncLock forceRelease safety, and fund-accounting race hardening — fixing stale COW fund snapshots, phantom-order fund inflation, and the create-cancel loop.
 
 ### Phase 8: Uncertain-Broadcast Safety & Truncated-Read Ambiguity (Late July 2026)
 
 v1.4.8 closed the duplicate-order and ambiguity classes found in an order-engine audit of test vs main. Broadcasts are never blindly re-signed — the credential daemon retries only provably-untransmitted failures (per-node pin + rotation + blacklist), and uncertain outcomes surface as typed errors so the COW runtime verifies chain inclusion before re-broadcasting. Truncated `get_full_accounts` reads are treated as ambiguous in every absence decision, so cancel/discard/recovery paths defer instead of freeing slots or capital for possibly-live orders. The COW pipeline also gained bounded stale-plan re-planning and exactly-once working-grid stack discipline.
 
----
+### Phase 9: Native ESM Runtime & Legacy-Compat Removal (August 2026)
 
-## Architecture Evolution
+v1.4.12 completed the module transition to native ES modules (root + claw flip to `"type": "module"`, Node >= 22 native WebSocket, dist-first ESM entry shims) and removed all one-time upgrade shims and backward-compat paths (pre-1.4.0 `fs_utils` re-export and `migrate_bot_keys`, legacy `broadcast-operation` daemon protocol and `allowedOpTypes`, pre-1.1.0 wrapper migration, `unlock-start` aliases, and the `debtPolicy.ratio` / `market`/`orderbook` price-source aliases). A dead-code audit pruned unused constants and helpers, and the claw build was aligned with the root build so it never leaves a hybrid `dist`.
 
-DEXBot2's architecture progressed through distinct maturity stages:
-- **Phases 1–2**: Modular order/account management and basic grid trading.
-- **Phases 3–4**: Copy-on-Write grid with atomic modifications; Market Adapter decoupling signals from execution.
-- **Phase 5**: Multi-layered runtime — COW core, signal pipeline, credit/debt MPA runtime, browser compatibility core, portable abstractions, and pure-JS crypto.
-- **Phase 6**: Incremental production hardening — iterative AMA refits, oversize deal splitting, lock contention reduction, unique bot name enforcement, chart controls, HTML order analysis export, committed order protection, price correction queue processing, AMA config centralization, COW broadcast recovery hardening (UPDATE→CREATE fallback, fresh-snapshot recovery, persisted-grid reload, orphan-fill death spiral fix), centralized node-fallback for BROADCAST_DEADLINE, fee cache persistence, node-failure blacklist sync, gap regression fixes, credit-only mode, boundary shift recovery, order system hardening (stale broadcast flag, orphan-fill tolerance, grid-bloat resync), parallel node connect, subscription re-entrancy guards, fund accounting stale-fetch guard, AsyncLock re-entrancy, credential daemon memory leak, order correction reliability, StateManager inline refactor, uncertain-broadcast grid corruption fix, unmatched-order adoption, grid-bloat loop fix, credential daemon signing client cache with session purge, daemon-signing node failover, runtime extraction, active fill polling.
-- **Phase 7**: CJS→ESM migration, strict-mode zero-errors, lock hierarchy correction (`_syncLock`/`_gridLock` swap, `gridLockAlreadyHeld` elimination), refcounts/stacks for nesting safety, `Set<symbol>` ALS store for nested lock identity, `withBlockchainRetry` centralization + node failover, 4-layer duplicate CREATE guard, poolRef pinned-pool price derivation, grid engine consolidation, stale COW fund snapshot fix, `gapSlots` persistence, cross-chunk boundary shift cap.
 ---
 
 ## Development Statistics
 
-The project has accumulated 234 automated test files across 90 release entries. See the **Version History** below for a per-release commit breakdown.
+The project has accumulated 243 automated test files across 93 release entries. See the **Version History** below for a per-release commit breakdown.
 
 ---
 
@@ -192,11 +182,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.8 → v1.4.9 | 2 | LP-collateral credit conversion rate via AMM (pool-derived source), flat CLI aliases (dexbot stop/restart/delete) for monolithic unlock controls |
 | v1.4.9 → v1.4.10 | 10 | Empty-slot normalization and spread boundary promotion, LP pool-share supply pricing fix, spread check independent of divergence, boundary-slot reconcile re-derivation, validation/broadcast dedup refactor, credit-unlock background daemon, test-suite runtime cut |
 | v1.4.10 → v1.4.11 | 8 | Minimum-slots guard for grid range scaling, monolithic restart restarts credential daemon, dexbot start→unlock alias + runtime-layout-aware unlock spawn fix, dead COW/diagnostic code prune, GRID_RECONCILE.md exposure, Telegram docs, CLI test retargeting to `dexbot test`, `dexbot status` reporting a surviving credential daemon after `stop` |
+| v1.4.11 → v1.4.12 | 12 | Full ESM migration (root + claw `"type": "module"`, dist-first entry shims, Node >= 22 native WebSocket, `ws` dep removal), legacy-compat removal (fs_utils shim, migrate_bot_keys, `broadcast-operation` daemon protocol, `allowedOpTypes`, pre-1.1.0 wrapper migration, `unlock-start` aliases, `debtPolicy.ratio` + `market`/`orderbook` price-source aliases), dead-code constant/helper prune + re-entrancy guard restore, claw build green + aligned with root build, 80 test typecheck errors fixed |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 7, 2026 (v1.4.11)
-**Total Commits**: 1,972
-**Date Range**: December 2, 2025 – August 7, 2026
+**Last Updated**: August 9, 2026 (v1.4.12)
+**Total Commits**: 1,985
+**Date Range**: December 2, 2025 – August 9, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

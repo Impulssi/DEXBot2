@@ -245,7 +245,7 @@ dexbot pm2 [<bot-name>]                    # Start with PM2
 dexbot pm2 restart {all|<bot>|dexbot-cred} # Safe restart
 dexbot pm2 stop {all|<bot>}                # Stop (via wrapper)
 dexbot pm2 delete {all|<bot>}              # Delete (via wrapper)
-pm2 logs [<bot-name>]                       # Real-time logs
+pm2 logs [<bot-name>]                      # Real-time logs
 ```
 
 Always use `dexbot pm2 restart` instead of raw `pm2 restart all` — the wrapper safely handles the credential daemon. If the credential daemon stops, rerun `dexbot pm2`.
