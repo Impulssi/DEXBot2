@@ -1590,15 +1590,48 @@ class SyncEngine {
                         }
                     }
 
-                    // Phase 6: Compute state transitions and collect grid updates
+                    // Phase 6: Compute state transitions and collect grid updates.
+                    // Multiple fills for the SAME order inside one batch are
+                    // aggregated into a single cumulative transition. Each fill is
+                    // still accounted individually (Phase 3), but the grid mutation
+                    // must reflect the COMBINED consumption. Without aggregation every
+                    // fill recomputes newSize from the same stale pre-batch baseline
+                    // and the last update wins (`applyGridUpdateBatch` is last-wins
+                    // per slot), leaving a phantom residual equal to the earlier
+                    // fills' sum — exactly the fund-invariant CRITICAL seen in the
+                    // XRP-BTS log whenever a batch contained 2+ fills of one order.
                     const gridUpdates: any[] = [];
                     const filledOrders: any[] = [];
                     const updatedOrders: any[] = [];
                     let anyPartialFill = false;
 
+                    const fillContextsBySlot = new Map<string, any[]>();
                     for (const ctx of entryContexts) {
-                        const { entry, matchedGridOrder, orderType, precision, filledAmount, filledAmountInt, currentSizeIntFromGrid, rawForSaleInt } = ctx;
-                        const { orderId, blockNum, historyId, isMaker } = entry;
+                        const slotId = ctx.matchedGridOrder.id;
+                        const group = fillContextsBySlot.get(slotId);
+                        if (group) group.push(ctx);
+                        else fillContextsBySlot.set(slotId, [ctx]);
+                    }
+
+                    for (const group of fillContextsBySlot.values()) {
+                        const lastCtx = group[group.length - 1];
+                        const { matchedGridOrder, orderType, precision, currentSizeIntFromGrid, rawForSaleInt } = lastCtx;
+                        const { orderId } = lastCtx.entry;
+
+                        // Sum the integer filled amounts across this order's fills so
+                        // the single transition reflects the total consumption.
+                        let totalFilledAmountInt = 0;
+                        for (const ctx of group) {
+                            totalFilledAmountInt += ctx.filledAmountInt;
+                        }
+                        const totalFilledAmount = blockchainToFloat(totalFilledAmountInt, precision);
+
+                        if (group.length > 1) {
+                            mgr.logger.log(
+                                `[SYNC] Aggregated ${group.length} fill(s) for order ${orderId} (slot ${matchedGridOrder.id}): total filled=${totalFilledAmount}`,
+                                'debug'
+                            );
+                        }
 
                         const refetchInfo = refetchMap.get(orderId);
                         const chainRefetched = refetchInfo?.chainRefetched || false;
@@ -1609,16 +1642,16 @@ class SyncEngine {
                             matchedGridOrder,
                             orderType,
                             precision,
-                            filledAmount,
-                            filledAmountInt,
+                            filledAmount: totalFilledAmount,
+                            filledAmountInt: totalFilledAmountInt,
                             currentSizeIntFromGrid,
                             rawForSaleInt,
                             chainRefetched,
                             chainConfirmsEmpty,
                             effectiveRawForSale,
-                            blockNum,
-                            historyId,
-                            isMaker
+                            blockNum: lastCtx.entry.blockNum,
+                            historyId: lastCtx.entry.historyId,
+                            isMaker: lastCtx.entry.isMaker
                         });
 
                         if (result.isFull) {

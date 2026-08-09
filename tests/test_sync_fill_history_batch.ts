@@ -17,6 +17,9 @@
  *  10. SPREAD-slot full/partial fills resolve the real side (BUY/SELL) on the
  *      fill object so the boundary crawl is not lost (regression for the
  *      filledOrderResult.type gap).
+ *  11. Same-order multi-fill in one batch aggregates to a single cumulative
+ *      transition (no phantom residual / fund-invariant CRITICAL).
+ *  12. Same-order 3-fill partial batch keeps the exact cumulative remainder.
  */
 
 const assert = require('assert');
@@ -315,6 +318,88 @@ async function testAggregatedGhostOrderIds() {
     console.log('  PASS');
 }
 
+/**
+ * Regression: two fills for the SAME order in one batch (e.g. a partial fill
+ * followed by the dust fill consuming the rest) must be aggregated into a
+ * single cumulative transition. Before the fix each fill recomputed newSize
+ * against the same stale pre-batch baseline and the last update won,
+ * leaving a phantom PARTIAL residual equal to the earlier fills' sum —
+ * exactly the "diff == earlier fills' size" fund-invariant CRITICAL in the
+ * XRP-BTS log (08-07 10:21, 08-08 14:26, 08-08 14:37, 08-09 07:53).
+ */
+async function testSameOrderMultiFillBatchAggregates() {
+    console.log('\n - Same-order 2-fill batch aggregates and fully consumes the order...');
+    const mgr = createManager();
+    const orderId = '1.7.850001';
+
+    // 0.4177 XRP offer, consumed by 0.4176 (partial) + 0.0001 (dust) in one batch.
+    await mgr._updateOrder({
+        id: 'slot-0', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SELL,
+        size: 0.4177, price: 1041.273399444015, orderId: orderId,
+        rawOnChain: { for_sale: String(Math.round(0.4177 * 10000)), fetchedAt: Date.now() }
+    });
+
+    const fill1 = makeSellFillEvent(orderId, 0.4176, 160, '1.11.8501');
+    const fill2 = makeSellFillEvent(orderId, 0.0001, 160, '1.11.8502');
+
+    const result = await mgr.syncFromFillHistoryBatch([fill1, fill2], {
+        persistenceMode: 'batched'
+    });
+
+    // Both fills collapse into ONE aggregated transition.
+    assert.strictEqual(result.filledOrders.length, 1,
+        `Same-order fills must aggregate to one filled order, got ${result.filledOrders.length}`);
+    assert.strictEqual(result.filledOrders[0].isPartial, undefined,
+        'aggregated consumption must resolve to a full fill, not a partial');
+
+    // Cumulative 0.4176 + 0.0001 = 0.4177 consumes the order entirely → the slot
+    // must become a VIRTUAL SPREAD placeholder with the orderId cleared (no ghost
+    // preserving a phantom PARTIAL like the log's slot-137).
+    const slot0 = mgr.orders.get('slot-0');
+    assert.strictEqual(slot0.state, ORDER_STATES.VIRTUAL,
+        `fully-consumed slot must be VIRTUAL, got ${slot0.state}`);
+    assert.strictEqual(slot0.size, 0, 'fully-consumed slot must be zero-sized');
+    assert.strictEqual(slot0.orderId, null, 'fully-consumed slot must clear the orderId');
+    console.log('  PASS');
+}
+
+async function testSameOrderThreeFillBatchPartialRemainder() {
+    console.log('\n - Same order 3-fill partial batch keeps the exact cumulative remainder...');
+    const mgr = createManager();
+    const orderId = '1.7.850011';
+
+    // Three partial sells for the same 5.0 order: 0.5 + 0.3 + 0.2 = 1.0 consumed.
+    await mgr._updateOrder({
+        id: 'slot-0', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SELL,
+        size: 5.0, price: 1041.273399444015, orderId: orderId,
+        rawOnChain: { for_sale: String(Math.round(5.0 * 10000)), fetchedAt: Date.now() }
+    });
+
+    const fills = [
+        makeSellFillEvent(orderId, 0.5, 161, '1.11.8511'),
+        makeSellFillEvent(orderId, 0.3, 161, '1.11.8512'),
+        makeSellFillEvent(orderId, 0.2, 161, '1.11.8513')
+    ];
+    const result = await mgr.syncFromFillHistoryBatch(fills, {
+        persistenceMode: 'batched'
+    });
+
+    assert.strictEqual(result.filledOrders.length, 1,
+        `Three same-order fills must aggregate to one filled order, got ${result.filledOrders.length}`);
+    assert.strictEqual(result.partialFill, true, 'aggregated fill must remain partial');
+    assert.strictEqual(result.filledOrders[0].size, 1.0,
+        `aggregated filled order must report the total 1.0 consumed, got ${result.filledOrders[0].size}`);
+
+    const slot0 = mgr.orders.get('slot-0');
+    assert.strictEqual(slot0.state, ORDER_STATES.PARTIAL,
+        `slot must stay PARTIAL, got ${slot0.state}`);
+    assert.strictEqual(slot0.size, 4.0,
+        `slot must keep the exact cumulative remainder 4.0, got ${slot0.size}`);
+    assert.strictEqual(slot0.rawOnChain.for_sale, '40000',
+        `rawOnChain.for_sale must reflect the cumulative 1.0 consumption, got ${slot0.rawOnChain.for_sale}`);
+    console.log('  PASS');
+}
+
 async function testSingleFillViaBatch() {
     console.log('\n - syncFromFillHistoryBatch handles a single fill correctly...');
     const mgr = createManager();
@@ -530,6 +615,8 @@ async function runTests() {
     await testEmptyFillsArray();
     await testAggregatedGhostOrderIds();
     await testSingleFillViaBatch();
+    await testSameOrderMultiFillBatchAggregates();
+    await testSameOrderThreeFillBatchPartialRemainder();
     await testSpreadSlotFullFillResolvesBuySide();
     await testSpreadSlotPartialFillResolvesBuySide();
     await testPostBatchReanchorAndInvariantGuard();

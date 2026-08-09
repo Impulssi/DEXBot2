@@ -817,6 +817,13 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                             blockNum: filledOrder?.blockNum,
                             historyId: filledOrder?.historyId
                         })).filter(Boolean));
+                        // Same-order fills are aggregated into one filled order by
+                        // syncFromFillHistoryBatch, so the raw per-fill keys of the
+                        // cycle must be flushed here too — otherwise the aggregated
+                        // order only carries the last fill's key and the earlier
+                        // same-order fills (already credited in Phase 3 accounting)
+                        // would be re-credited on crash recovery.
+                        for (const fillKey of pendingFillKeysForCurrentCycle) batchFillKeys.add(fillKey);
                         await bot._flushProcessedFillPersistenceForKeys(batchFillKeys, 'fill-batch-committed');
                     } else {
                         bot.manager.logger.log(
