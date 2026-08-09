@@ -61,7 +61,7 @@ v1.4.8 closed the duplicate-order and ambiguity classes found in an order-engine
 
 ### Phase 9: Native ESM Runtime & Legacy-Compat Removal (August 2026)
 
-v1.4.12 completed the module transition to native ES modules (root + claw flip to `"type": "module"`, Node >= 22 native WebSocket, dist-first ESM entry shims) and removed all one-time upgrade shims and backward-compat paths (pre-1.4.0 `fs_utils` re-export and `migrate_bot_keys`, legacy `broadcast-operation` daemon protocol and `allowedOpTypes`, pre-1.1.0 wrapper migration, `unlock-start` aliases, and the `debtPolicy.ratio` / `market`/`orderbook` price-source aliases). A dead-code audit pruned unused constants and helpers, and the claw build was aligned with the root build so it never leaves a hybrid `dist`.
+v1.4.12 completed the module transition to native ES modules (root + claw flip to `"type": "module"`, Node >= 22 native WebSocket, dist-first ESM entry shims) and removed all one-time upgrade shims and backward-compat paths (pre-1.4.0 `fs_utils` re-export and `migrate_bot_keys`, legacy `broadcast-operation` daemon protocol and `allowedOpTypes`, pre-1.1.0 wrapper migration, `unlock-start` aliases, and the `debtPolicy.ratio` / `market`/`orderbook` price-source aliases). A dead-code audit pruned unused constants and helpers, and the claw build was aligned with the root build so it never leaves a hybrid `dist`. Post-release hardening: an ESM require-cycle deadlock on Node 22.14 (`Cannot require() ES Module in a cycle`) was broken by converting the remaining createRequire-based top-level imports in the runtime/storage graph to static imports and rewriting the extensionless `scripts/*` wrappers as real ESM; a dropped `createRequire` binding in `dexbot_fill_runtime` (stalling the fill consumer with `require is not defined`) was restored; same-order fill batching was restored to compute one cumulative transition per slot against the pre-batch baseline so multi-fill blocks no longer leave phantom PARTIAL residuals; and leftover chain dust after sub-dust fills is now explicitly cancelled (best-effort, ghost-adoption-safe) instead of stranded once the slot is virtualized.
 
 ---
 
@@ -182,12 +182,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.8 → v1.4.9 | 2 | LP-collateral credit conversion rate via AMM (pool-derived source), flat CLI aliases (dexbot stop/restart/delete) for monolithic unlock controls |
 | v1.4.9 → v1.4.10 | 10 | Empty-slot normalization and spread boundary promotion, LP pool-share supply pricing fix, spread check independent of divergence, boundary-slot reconcile re-derivation, validation/broadcast dedup refactor, credit-unlock background daemon, test-suite runtime cut |
 | v1.4.10 → v1.4.11 | 8 | Minimum-slots guard for grid range scaling, monolithic restart restarts credential daemon, dexbot start→unlock alias + runtime-layout-aware unlock spawn fix, dead COW/diagnostic code prune, GRID_RECONCILE.md exposure, Telegram docs, CLI test retargeting to `dexbot test`, `dexbot status` reporting a surviving credential daemon after `stop` |
-| v1.4.11 → v1.4.12 | 12 | Full ESM migration (root + claw `"type": "module"`, dist-first entry shims, Node >= 22 native WebSocket, `ws` dep removal), legacy-compat removal (fs_utils shim, migrate_bot_keys, `broadcast-operation` daemon protocol, `allowedOpTypes`, pre-1.1.0 wrapper migration, `unlock-start` aliases, `debtPolicy.ratio` + `market`/`orderbook` price-source aliases), dead-code constant/helper prune + re-entrancy guard restore, claw build green + aligned with root build, 80 test typecheck errors fixed |
+| v1.4.11 → v1.4.12 | 17 | Full ESM migration (root + claw `"type": "module"`, dist-first entry shims, Node >= 22 native WebSocket, `ws` dep removal), legacy-compat removal (fs_utils shim, migrate_bot_keys, `broadcast-operation` daemon protocol, `allowedOpTypes`, pre-1.1.0 wrapper migration, `unlock-start` aliases, `debtPolicy.ratio` + `market`/`orderbook` price-source aliases), dead-code constant/helper prune + re-entrancy guard restore, claw build green + aligned with root build, 80 test typecheck errors fixed, ESM-cycle boot fix for Node 22.14 (`Cannot require() ES Module in a cycle`) + ESM entry-shim wrappers, fill-runtime require-binding restore, same-order fill batching restore (phantom-residual elimination), explicit residual-dust cancel after sub-dust fills, stale-daemon test prompt fix |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: August 9, 2026 (v1.4.12)
-**Total Commits**: 1,985
+**Total Commits**: 1,991
 **Date Range**: December 2, 2025 – August 9, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

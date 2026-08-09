@@ -366,6 +366,12 @@ let TIMING = {
     // setups always have a recent-enough baseline.
     MAX_ACCOUNT_TOTALS_AGE_MS: 120000,
 
+    // STALE_TOTALS_WARN_RATE_LIMIT_MS: How often an accountTotals-staleness
+    // warning may be repeated for a given manager. Repeated identical warnings
+    // per fill batch (when the chain is unreachable) flood the logs; one per
+    // interval keeps the signal alive without drowning out other messages.
+    STALE_TOTALS_WARN_RATE_LIMIT_MS: 60000,
+
     // SAFETY_PAUSE_TIMEOUT_MS: Maximum duration a fund recalculation pause may
     // remain active. If pauseFundRecalc is not resumed within this window, a
     // safety watchdog force-resets the counter to prevent permanent fund recalc

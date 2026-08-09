@@ -398,6 +398,7 @@ class OrderManager {
     _orderIdAssignedAt: Map<string, number>;
     _gapSlots: number;
     _gridDirtyAt: number | null;
+    _lastStaleTotalsWarnAt: Record<string, number>;
     _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
     _recentFillKeysSnapshot: Record<string, number> | null;
@@ -512,6 +513,7 @@ class OrderManager {
         this._orphanFillsCreditedAt = null;
         this._pendingRecovery = null;
         this._recentFillKeysSnapshot = null;
+        this._lastStaleTotalsWarnAt = {};
 
         this._metrics = {
             fundRecalcCount: 0,
@@ -850,13 +852,30 @@ class OrderManager {
         }
         const fetchedAfter = this.accountTotals?._lastFetchedAt || 0;
         if (fetchedAfter <= fetchedBefore) {
-            this.logger?.log?.(
-                `[SYNC] refreshAccountTotalsIfStale: accountTotals still stale after refresh (age=${Math.max(0, Date.now() - fetchedAfter)}ms).`,
-                'warn'
-            );
+            if (this._rateLimitStaleTotalsWarn('stale-refresh')) {
+                this.logger?.log?.(
+                    `[SYNC] refreshAccountTotalsIfStale: accountTotals still stale after refresh (age=${Math.max(0, Date.now() - fetchedAfter)}ms).`,
+                    'warn'
+                );
+            }
             return { ok: false, reason: 'refresh-failed' };
         }
         return { ok: true };
+    }
+
+    /**
+     * Rate-limit identical accountTotals-staleness warnings to once per
+     * STALE_TOTALS_WARN_RATE_LIMIT_MS per warning kind per manager, so a
+     * persistently unreachable chain reports each failure mode once without
+     * flooding the log on every fill batch.
+     * @param {string} kind - Warning kind key (e.g. 'stale-refresh', 're-anchor')
+     * @returns {boolean} true when the warning should be emitted now
+     */
+    _rateLimitStaleTotalsWarn(kind: string): boolean {
+        const now = Date.now();
+        if (now - (this._lastStaleTotalsWarnAt[kind] || 0) < TIMING.STALE_TOTALS_WARN_RATE_LIMIT_MS) return false;
+        this._lastStaleTotalsWarnAt[kind] = now;
+        return true;
     }
 
     /**
@@ -876,10 +895,12 @@ class OrderManager {
     async reanchorAccountTotals(label = 'fill-batch') {
         const result = await this.refreshAccountTotalsIfStale({ force: true });
         if (!result.ok) {
-            this.logger?.log?.(
-                `[ACCOUNTING] ${label}: accountTotals re-anchor failed (${result.reason}); marking totals stale.`,
-                'warn'
-            );
+            if (this._rateLimitStaleTotalsWarn('re-anchor')) {
+                this.logger?.log?.(
+                    `[ACCOUNTING] ${label}: accountTotals re-anchor failed (${result.reason}); marking totals stale.`,
+                    'warn'
+                );
+            }
             this.accountTotalsStale = true;
             return false;
         }

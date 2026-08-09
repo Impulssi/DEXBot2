@@ -141,7 +141,9 @@ async function runTests() {
         assert.strictEqual(failure.amount, 100);
         assert.strictEqual(failure.reason, 'stale');
 
-        const staleLog = logs.find(l => l.includes('Stale accountTotals'));
+        // Rate-limited stale warnings: the refresh's "still stale after
+        // refresh" notice or the skip-optimistic-lock notice must appear.
+        const staleLog = logs.find(l => l.includes('Stale accountTotals') || l.includes('still stale after refresh'));
         assert(staleLog, 'should log staleness warning');
         console.log('   ✓ Staleness path does not throw and sets _lastAccountingFailure with STALE code');
     }

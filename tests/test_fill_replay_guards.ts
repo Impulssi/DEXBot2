@@ -36,6 +36,11 @@ async function createBotFixture(botKey, options = {}) {
             for (const [fillKey, timestamp] of entries) {
                 persistedFills.push({ fillKey, timestamp });
             }
+        },
+        // No-op for persistGridSnapshot() — this test spies on processed-fill
+        // persistence only, and a missing method logs persistence-failure noise.
+        storeMasterGrid() {
+            return undefined;
         }
     };
 
@@ -45,6 +50,7 @@ async function createBotFixture(botKey, options = {}) {
         assetB: 'BTS',
         startPrice: 1
     });
+    bot.manager.accountOrders = bot.accountOrders;
     bot.manager.assets = {
         assetA: { id: '1.3.0', symbol: 'TEST', precision: 5 },
         assetB: { id: '1.3.1', symbol: 'BTS', precision: 5 }

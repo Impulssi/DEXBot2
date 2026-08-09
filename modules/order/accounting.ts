@@ -101,6 +101,12 @@ import {
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
+// Warn once per asset instead of once per fill/operation when the fee cache is
+// missing, so a cold/absent fee cache does not flood the logs while the bot
+// keeps running on fallback fees.
+const warnedBtsFeeScheduleFallback = new Set<string>();
+const warnedFillFeeSymbols = new Set<string>();
+
 /**
  * Accountant engine - Specialized handler for fund tracking and calculations
  * @class Accountant
@@ -175,7 +181,10 @@ class Accountant {
                 makerFeeDiscountPercent: Math.max(0, toFiniteNumber(fees?.makerFeeDiscountPercent, this.manager?.config?.feeParams?.MAKER_REFUND_PERCENT ?? FEE_PARAMETERS.MAKER_REFUND_PERCENT))
             };
         } catch (err: any) {
-            this.manager?.logger?.log?.(`[FEE] Failed to load BTS fee schedule: ${err?.message || err}; using fallback defaults`, 'warn');
+            if (!warnedBtsFeeScheduleFallback.has('BTS')) {
+                warnedBtsFeeScheduleFallback.add('BTS');
+                this.manager?.logger?.log?.(`[FEE] Failed to load BTS fee schedule: ${err?.message || err}; using fallback defaults`, 'warn');
+            }
             return {
                 createFee: 0,
                 updateFee: 0,
@@ -1182,7 +1191,7 @@ class Accountant {
                         const refresh = await mgr.refreshAccountTotalsIfStale();
                         if (refresh.ok) {
                             result = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context} (post-refresh retry)`);
-                        } else {
+                        } else if (mgr._rateLimitStaleTotalsWarn?.('refresh-failed') !== false) {
                             mgr.logger?.log?.(
                                 `[ACCOUNTING] accountTotals refresh failed (${refresh.reason}); cannot retry optimistic lock of ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide}.`,
                                 'warn'
@@ -1193,10 +1202,12 @@ class Accountant {
                         // refuse to re-run the blocking RPC under _fundLock. Fall
                         // through to the stale failure/recovery path below; the batch
                         // stays accounted for and recovery is scheduled.
-                        mgr.logger?.log?.(
-                            `[ACCOUNTING] Stale accountTotals during ${context}; pre-lock refresh failed, skipping in-lock refresh to avoid holding _fundLock across a blocking chain RPC.`,
-                            'warn'
-                        );
+                        if (mgr._rateLimitStaleTotalsWarn?.('pre-lock-refresh-failed') !== false) {
+                            mgr.logger?.log?.(
+                                `[ACCOUNTING] Stale accountTotals during ${context}; pre-lock refresh failed, skipping in-lock refresh to avoid holding _fundLock across a blocking chain RPC.`,
+                                'warn'
+                            );
+                        }
                     }
 
                     if (!result.ok) {
@@ -1211,10 +1222,12 @@ class Accountant {
                         mgr._lastAccountingFailure = failure;
 
                         if (result.reason === 'stale') {
-                            mgr.logger?.log?.(
-                                `[ACCOUNTING] Stale accountTotals: skipping optimistic lock of ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Recovery scheduled.`,
-                                'warn'
-                            );
+                            if (mgr._rateLimitStaleTotalsWarn?.('skip-optimistic-lock') !== false) {
+                                mgr.logger?.log?.(
+                                    `[ACCOUNTING] Stale accountTotals: skipping optimistic lock of ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Recovery scheduled.`,
+                                    'warn'
+                                );
+                            }
                             // Schedule recovery but DON'T throw — staleness is transient.
                             // The batch already confirmed on-chain; aborting the commit
                             // would orphan a successful broadcast from the grid state.
@@ -1443,10 +1456,13 @@ class Accountant {
             }
             return netProceeds;
         } catch (err: any) {
-            this.manager?.logger?.log?.(
-                `[FILL-FEE] CRITICAL: Failed to compute fees for ${assetSymbol}: ${getErrorMessage(err)}. Using raw proceeds (${Format.formatAmount8(rawAmount)}) — fund tracking will over-credit by un-deducted fee.`,
-                'error'
-            );
+            if (!warnedFillFeeSymbols.has(assetSymbol)) {
+                warnedFillFeeSymbols.add(assetSymbol);
+                this.manager?.logger?.log?.(
+                    `[FILL-FEE] CRITICAL: Failed to compute fees for ${assetSymbol}: ${getErrorMessage(err)}. Using raw proceeds (${Format.formatAmount8(rawAmount)}) — fund tracking will over-credit by un-deducted fee.`,
+                    'error'
+                );
+            }
             return rawAmount;
         }
     }

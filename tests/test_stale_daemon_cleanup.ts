@@ -98,9 +98,20 @@ function makeMockChild() {
             'isDaemonResponsive should be false for stale files'
         );
 
-        // 3. Stub authenticate to avoid real prompt
-        const originalAuthenticate = chainKeys.authenticate;
-        chainKeys.authenticate = async () => 'test';
+        // 3. Stub the chain_keys module in the require cache BEFORE the
+        // controller is loaded. The controller imports chain_keys via
+        // `import * as`, which resolves a separate namespace object from the
+        // `require()` binding above — mutating chainKeys.authenticate here
+        // would NOT be seen by the controller and would trigger the real
+        // master-password prompt. Cache stubbing is the only reliable hook.
+        const chainKeysPath = require.resolve('../modules/chain_keys');
+        const originalChainKeys = require.cache[chainKeysPath];
+        setCachedModule(chainKeysPath, {
+            isDaemonReady: chainKeys.isDaemonReady,
+            isDaemonResponsive: chainKeys.isDaemonResponsive,
+            waitForDaemon: chainKeys.waitForDaemon,
+            authenticate: async () => 'test',
+        });
 
         // 4. Mock credential_bootstrap BEFORE requiring the controller
         const bootstrapPath = require.resolve('../modules/launcher/credential_bootstrap');
@@ -183,7 +194,7 @@ function makeMockChild() {
                 'ready file should contain new content from mock daemon'
             );
         } finally {
-            chainKeys.authenticate = originalAuthenticate;
+            restoreCachedModule(chainKeysPath, originalChainKeys);
             childProcess.spawn = originalSpawn;
             restoreCachedModule(bootstrapPath, originalBootstrapModule);
         }

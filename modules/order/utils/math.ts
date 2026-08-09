@@ -286,6 +286,10 @@ function normalizeInt(value: any, precision: any) {
  */
 let feeCache: Record<string, any> = {};
 
+// Track markets already warned about a missing fee cache so the "Using fallback
+// fee" notice is logged once per pair instead of once per sizing calculation.
+const warnedMissingFeeCachePairs = new Set<string>();
+
 /**
  * @private Set the fee cache (called by system.js::initializeFeeCache).
  *
@@ -1177,7 +1181,11 @@ function calculateOrderCreationFees(assetA: any, assetB: any, totalOrders: any, 
             return btsFeeData.createFee * totalOrders * feeMultiplier;
         }
     } catch (err: any) {
-        mathLogger.warn(`calculateOrderCreationFees: fee cache unavailable for ${assetA}/${assetB}: ${getErrorMessage(err)}. Using fallback fee.`);
+        const key = `${assetA}/${assetB}`;
+        if (!warnedMissingFeeCachePairs.has(key)) {
+            warnedMissingFeeCachePairs.add(key);
+            mathLogger.warn(`calculateOrderCreationFees: fee cache unavailable for ${key}: ${getErrorMessage(err)}. Using fallback fee.`);
+        }
         return FEE_PARAMETERS.BTS_FALLBACK_FEE;
     }
     return 0;

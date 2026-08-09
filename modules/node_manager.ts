@@ -215,7 +215,10 @@ class NodeManager {
                 this.logger.debug(`Loaded persisted blacklist: ${nodeUrl}`);
             }
         } catch (err: any) {
-            this.logger.warn(`Failed to load blacklist state: ${getErrorMessage(err)}`);
+            // A never-created blacklist file (normal first run) is not an error.
+            if ((err as any)?.code !== 'ENOENT') {
+                this.logger.warn(`Failed to load blacklist state: ${getErrorMessage(err)}`);
+            }
         }
     }
 
