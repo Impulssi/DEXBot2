@@ -208,25 +208,13 @@ function readPolicyConfigDetailed(filePath: string): { status: string; config: a
 
 /**
  * Check that a policy config file has restrictive permissions (0o600).
- * MIGRATION: Auto-remediates legacy 0o644 mode with a warning, matching
- * the behavior of checkKeysFileSecurity in chain_keys.ts.
+ * Fails closed on any violation (world-readable mode, symlink, wrong owner).
  *
  * @param {string} filePath - Path to daemon-policies.json
  */
 function checkPolicyFileSecurity(filePath: string) {
     if (!storage.exists(filePath)) return;
-    try {
-        assertPrivatePathSecurity(filePath, { expectedType: 'file', requiredMode: 0o600 });
-    } catch (err: any) {
-        const stat = storage.lstat(filePath);
-        const mode = stat.mode! & 0o777;
-        if (mode === 0o644 && !stat.isSymbolicLink!()) {
-            storage.chmod(filePath, 0o600);
-            policyLogger.warn(`[security] Auto-fixed ${filePath} permissions from 0o644 to 0o600. Run: chmod 600 profiles/daemon-policies.json`);
-            return;
-        }
-        throw err;
-    }
+    assertPrivatePathSecurity(filePath, { expectedType: 'file', requiredMode: 0o600 });
 }
 
 /**

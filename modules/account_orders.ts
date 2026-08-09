@@ -217,12 +217,6 @@ class AccountOrders {
 
     this._needsBootstrapSave = !storage.exists(this.profilesPath);
     this.data = this._loadData() || emptyData();
-    // One-time upgrade migration: pre-1.1.0 files used a { bots: { [key]: ... } }
-    // wrapper. Strip it and rewrite the file in the flat shape so the bot keeps
-    // its grid across the upgrade.
-    if (this._migrateLegacyWrapper()) {
-      this._needsBootstrapSave = true;
-    }
     if (this._needsBootstrapSave) {
       this._persist();
     }
@@ -236,64 +230,6 @@ class AccountOrders {
   _loadData() {
     // Load the file directly - per-bot files only contain their own bot's data
     return this._readFile(this.profilesPath);
-  }
-
-  /**
-   * Detects the pre-1.1.0 `{ bots: { [key]: ... } }` wrapper in `this.data` and,
-   * if present, extracts the entry matching this.botKey (and warns about any
-   * other keys, which were the doubled-entry bug). Returns true when a rewrite
-   * is required.
-   * @returns {boolean} True when this.data was rewritten and needs persistence.
-   * @private
-   */
-  _migrateLegacyWrapper(): boolean {
-    const data = this.data;
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
-    if (!data.bots || typeof data.bots !== 'object' || Array.isArray(data.bots)) return false;
-
-    const bots = data.bots;
-    const keys = Object.keys(bots);
-    if (keys.length === 0) {
-      this.data = emptyData();
-      accountOrdersLogger.info(`Migrated legacy empty bots wrapper for ${this.botKey}`);
-      return true;
-    }
-
-    const matching = bots[this.botKey];
-    if (matching && typeof matching === 'object' && !Array.isArray(matching)) {
-      this.data = { ...emptyData(), ...matching };
-      const orphans = keys.filter((k: any) => k !== this.botKey);
-      if (orphans.length > 0) {
-        accountOrdersLogger.warn(
-          `Discarded ${orphans.length} orphan bot entr${orphans.length === 1 ? 'y' : 'ies'} ` +
-          `from legacy wrapper in ${this.botKey}.json: ${orphans.join(', ')}`
-        );
-      }
-      accountOrdersLogger.info(`Migrated legacy { bots: { ... } } wrapper for ${this.botKey}`);
-      return true;
-    }
-
-    // No usable entry for this bot. Pick the first object-valued entry, or
-    // start fresh if every value is corrupt (array / primitive / null).
-    const fallbackKey = keys.find((k: any) => {
-      const v = bots[k];
-      return v && typeof v === 'object' && !Array.isArray(v);
-    });
-    if (fallbackKey) {
-      const fallback = bots[fallbackKey];
-      accountOrdersLogger.warn(
-        `Legacy wrapper in ${this.botKey}.json had no entry for this bot; ` +
-        `falling back to ${fallbackKey}`
-      );
-      this.data = { ...emptyData(), ...fallback };
-      return true;
-    }
-
-    accountOrdersLogger.warn(
-      `Legacy wrapper in ${this.botKey}.json had no object entry; starting with empty data`
-    );
-    this.data = emptyData();
-    return true;
   }
 
   /**

@@ -89,7 +89,7 @@ import { path } from './path_api.js';
 import { readInput, readPassword, sleep } from './order/utils/system.js';
 import { TIMING, CREDENTIAL_PROMPTS } from './constants.js';
 import { PATHS } from './paths.js';
-import Logger from './logger.js';
+
 import { getStorage } from './storage/index.js';
 import { sendSocketJsonRequest } from './socket_json_client.js';
 import { resolvePrivateKey as resolveAuthKey } from './authority_resolver.js';
@@ -128,8 +128,6 @@ import { getErrorMessage } from './utils/errors.js';
 import { hasProcess } from './env.js';
 const storage = getStorage();
 const { ensureDir } = storage;
-
-const chainKeysLogger = new Logger('chain-keys');
 
 const VAULT_VERSION = 2;
 const VAULT_SALT_BYTES = 16;
@@ -334,10 +332,6 @@ function verifyModernPassword(password: any, accountsData: any) {
     return timingSafeEqualHex(createVaultVerifier(secret), accountsData.vaultVerifier);
 }
 
-function isVersionedEncryptedPayload(encrypted: any) {
-    return String(encrypted || '').startsWith('v2:');
-}
-
 /**
  * Encrypt text using the v2 AES-256-GCM vault format.
  * @param {string} text - Plain text to encrypt
@@ -369,30 +363,16 @@ function encrypt(text: any, secret: any) {
  */
 function decrypt(encrypted: any, secret: any) {
     const parts = String(encrypted || '').split(':');
-    if (parts.length < 4) {
-        throw new Error('Invalid encrypted payload');
-    }
-
-    const isVersioned = parts.length === 5 && parts[0] === 'v2';
-    if (!isVersioned && parts.length !== 4) {
+    if (parts.length !== 5 || parts[0] !== 'v2') {
         throw new Error('Unsupported encrypted payload version');
     }
 
-    const saltIndex = isVersioned ? 1 : 0;
-    const ivIndex = isVersioned ? 2 : 1;
-    const authTagIndex = isVersioned ? 3 : 2;
-    const payloadIndex = isVersioned ? 4 : 3;
-
-    const salt = toBuffer(parts[saltIndex]);
-    const iv = toBuffer(parts[ivIndex]);
-    const authTag = toBuffer(parts[authTagIndex]);
-    const encryptedText = parts[payloadIndex];
+    const salt = toBuffer(parts[1]);
+    const iv = toBuffer(parts[2]);
+    const authTag = toBuffer(parts[3]);
+    const encryptedText = parts[4];
     if (!salt || !iv || !authTag || typeof encryptedText !== 'string') {
         throw new Error('Invalid encrypted payload');
-    }
-
-    if (!isVersioned) {
-        throw new Error('Legacy encrypted data requires migration before decrypt');
     }
 
     const vaultKey = resolveVaultKey(secret);
@@ -496,29 +476,12 @@ function setupModernVault(accountsData: any, password: any) {
  * the current user.  Returns silently if the file doesn't exist yet (it will be
  * created correctly by saveAccounts).
  *
- * MIGRATION: If the file has the legacy 0o644 mode (from before the atomic-write
- * fix), auto-remediate to 0o600 and log a warning.  This prevents the first run
- * after upgrade from crashing with "Unexpected permissions".
- *
+ * Fails closed on any violation (world-readable mode, symlink, wrong owner).
  * Should be called early in every entry point that may read or write keys.json.
  */
 function checkKeysFileSecurity() {
     if (!storage.exists(PROFILES_KEYS_FILE)) return;
-    try {
-        assertPrivatePathSecurity(PROFILES_KEYS_FILE, { expectedType: 'file', requiredMode: 0o600 });
-    } catch (err: any) {
-        // Auto-remediate legacy 0o644 mode (the state per the security audit)
-        const stat = storage.lstat(PROFILES_KEYS_FILE);
-        const mode = stat.mode! & 0o777;
-        if (mode === 0o644 && !stat.isSymbolicLink!()) {
-            storage.chmod(PROFILES_KEYS_FILE, 0o600);
-            chainKeysLogger.warn(`[security] Auto-fixed ${PROFILES_KEYS_FILE} permissions from 0o644 to 0o600. Run: chmod 600 profiles/keys.json`);
-            return;
-        }
-        // For any other security issue (symlink, wrong owner, unexpected mode),
-        // fail closed — this is a real security violation, not a migration artifact.
-        throw err;
-    }
+    assertPrivatePathSecurity(PROFILES_KEYS_FILE, { expectedType: 'file', requiredMode: 0o600 });
 }
 
 /**
@@ -637,10 +600,6 @@ function getPrivateKey(accountName: any, vaultSecret: any) {
     const account = accountsData.accounts[accountName];
     if (!account) {
         throw new Error(`Account '${accountName}' not found.`);
-    }
-
-    if (!isVersionedEncryptedPayload(account.encryptedKey)) {
-        throw new Error('Legacy encrypted data should have been migrated during unlock');
     }
 
     return decrypt(account.encryptedKey, vaultSecret);

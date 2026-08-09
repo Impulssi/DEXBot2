@@ -565,14 +565,14 @@ const CLAW_TOOL_CATALOG = Object.freeze([
   ),
   createToolDefinition({
     command: 'launcher-run',
-    description: 'Start/run bots with auto-detected deployment mode. Modes: claw-only (daemon only), dexbot-direct (foreground testing), pm2 (production service), unlock (single-prompt, no PM2; legacy alias unlock-start accepted). Auto-detects mode from config or asks user on first call.',
+    description: 'Start/run bots with auto-detected deployment mode. Modes: claw-only (daemon only), dexbot-direct (foreground testing), pm2 (production service), unlock (single-prompt, no PM2). Auto-detects mode from config or asks user on first call.',
     args: {
       payload_json: 'JSON object with botName (optional), deploymentMode (optional), setPreference (optional), profileRoot (optional)'
     },
     extraArgs: ['--payload', '{{payload_json}}'],
     inputSchema: objectSchema({
       botName: stringSchema('Bot name as defined in profiles/bots.json. Omit for default/all.'),
-      deploymentMode: stringSchema('Optional override: claw-only, dexbot-direct, pm2, unlock (legacy alias unlock-start accepted). Omit to auto-detect or use stored preference.'),
+      deploymentMode: stringSchema('Optional override: claw-only, dexbot-direct, pm2, unlock. Omit to auto-detect or use stored preference.'),
       setPreference: booleanSchema('If true, save deploymentMode as user preference for future calls.'),
       profileRoot: stringSchema('Optional DEXBot2 profile root')
     }, []),

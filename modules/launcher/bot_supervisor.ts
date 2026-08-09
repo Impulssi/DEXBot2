@@ -294,13 +294,6 @@ function candidateRuntimeScriptPaths(scriptSegments: any) {
         candidates.add(scriptPathForRoot(PATHS.PROJECT_ROOT, scriptSegments, '.js'));
     }
 
-    // Compatibility for wrappers already running from before the unlock-start -> unlock rename.
-    if (scriptSegments.length === 1 && scriptSegments[0] === 'unlock') {
-        candidates.add(scriptPathForRoot(PATHS.PROJECT_ROOT, ['unlock-start'], '.js'));
-        candidates.add(scriptPathForRoot(PATHS.PROJECT_ROOT, ['unlock-start'], '.ts'));
-        candidates.add(scriptPathForRoot(path.join(PATHS.PROJECT_ROOT, BUILD_DIR), ['unlock-start'], '.js'));
-    }
-
     return candidates;
 }
 

@@ -131,7 +131,7 @@ function testDerivedVaultRoundtrip() {
 function testLegacyPayloadRejected() {
     assert.throws(
         () => chainKeys.decrypt('abcd:abcd:abcd:abcd', { kind: 'dexbot-vault-secret', vaultKeyHex: '00' }),
-        /Legacy encrypted data requires migration before decrypt/,
+        /Unsupported encrypted payload version/,
         'legacy ciphertext format should be rejected'
     );
 }

@@ -9,14 +9,9 @@ import { normalizeProfileDir } from './launcher_paths.js';
 const storage = getStorage();
 const { ensureDir, readJSON, writeJSON } = storage;
 
-const LEGACY_MODE_ALIASES = {
-  'unlock-start': 'unlock',
-};
-
 function normalizeMode(mode: string | null | undefined) {
   const value = typeof mode === 'string' ? mode.trim() : '';
-  if (!value) return value;
-  return LEGACY_MODE_ALIASES[value as keyof typeof LEGACY_MODE_ALIASES] || value;
+  return value;
 }
 
 /**
@@ -188,8 +183,7 @@ function describeModeChoice(mode: string) {
     'claw-only': 'Start credential daemon only (no bots)',
     'dexbot-direct': 'Run bot directly (foreground, testing/debugging)',
     'pm2': 'Deploy via PM2 (production, persistent, monitored)',
-    'unlock': 'Start with single password prompt (no PM2)',
-    'unlock-start': 'Start with single password prompt (legacy alias)'
+    'unlock': 'Start with single password prompt (no PM2)'
   };
   return descriptions[mode] || mode;
 }
