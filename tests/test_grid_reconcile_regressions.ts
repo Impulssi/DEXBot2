@@ -575,6 +575,102 @@ async function testRecalculateGridFundLockSerialization() {
     console.log('  PASS: _fundLock serialization verified');
 }
 
+function makeDuplicateOrphanScenario(overrides: any = {}) {
+    const manager = createManager({
+        orders: new Map([
+            ['sell-1', { id: 'sell-1', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, price: 1.0, size: 10, orderId: '1.7.G' }],
+        ]),
+        accountTotals: { sellFree: 100, buyFree: 0 },
+        _fundLock: { acquire: async (fn: any) => await fn() },
+        ...overrides,
+    });
+
+    const chainOpenOrders = [
+        { id: '1.7.G', sell_price: { base: { amount: 10000000, asset_id: '1.3.1' }, quote: { amount: 10000000, asset_id: '1.3.0' } }, for_sale: 1000000 },
+        { id: '1.7.U', sell_price: { base: { amount: 10000000, asset_id: '1.3.1' }, quote: { amount: 10000000, asset_id: '1.3.0' } }, for_sale: 10000 },
+    ];
+
+    let cancelCalls = 0;
+    const chainOrders = {
+        updateOrder: async () => {},
+        buildUpdateOrderOp: async () => ({ op: { op_name: 'limit_order_update', op_data: { fee: { amount: 0, asset_id: '1.3.0' } } } }),
+        executeBatch: async () => ({ success: true, operation_results: [] }),
+        cancelOrder: async () => { cancelCalls++; },
+        createOrder: async () => [],
+        readOpenOrders: async () => [],
+        wasRecentlyOwnCancelled: () => false,
+        ...overrides.chainOrders,
+    };
+
+    return { manager, chainOpenOrders, chainOrders, cancelCalls: () => cancelCalls };
+}
+
+// Regression 9a: an orphan already queued for cancel-only correction by the sync
+// layer must not be re-detected (no second cancel), but its untracked funds must
+// still be released — the correction path does not perform the release.
+async function testQueuedDuplicateDefersCancelButReleasesFunds() {
+    const { manager, chainOpenOrders, chainOrders, cancelCalls } = makeDuplicateOrphanScenario({
+        ordersNeedingPriceCorrection: [{ chainOrderId: '1.7.U', isSurplus: true, cancelOnly: true }],
+    });
+
+    await reconcileGridOrders({
+        manager,
+        config: { activeOrders: { sell: 1, buy: 0 } },
+        account: 'acct',
+        privateKey: 'pk',
+        chainOrders,
+        chainOpenOrders,
+    });
+
+    assert.strictEqual(cancelCalls(), 0, 'Already-queued duplicate must NOT be re-cancelled by reconcile');
+    assert.strictEqual(manager.accountTotals.sellFree, 100.1,
+        'Already-queued duplicate must still release untracked funds to sellFree');
+    console.log('✅ Regression 9a passed: queued duplicate defers cancel but releases funds');
+}
+
+// Regression 9b: an orphan already cancelled moments ago by the sync-layer
+// correction (own-cancel marker set, stale startup snapshot) must not be
+// re-cancelled, and its untracked funds must still be released.
+async function testOwnCancelledDuplicateDefersCancelButReleasesFunds() {
+    const { manager, chainOpenOrders, chainOrders, cancelCalls } = makeDuplicateOrphanScenario({
+        chainOrders: { wasRecentlyOwnCancelled: (id: string) => id === '1.7.U' },
+    });
+
+    await reconcileGridOrders({
+        manager,
+        config: { activeOrders: { sell: 1, buy: 0 } },
+        account: 'acct',
+        privateKey: 'pk',
+        chainOrders,
+        chainOpenOrders,
+    });
+
+    assert.strictEqual(cancelCalls(), 0, 'Own-cancelled duplicate must NOT be re-cancelled by reconcile');
+    assert.strictEqual(manager.accountTotals.sellFree, 100.1,
+        'Own-cancelled duplicate must still release untracked funds to sellFree');
+    console.log('✅ Regression 9b passed: own-cancelled duplicate defers cancel but releases funds');
+}
+
+// Regression 9c: a genuine duplicate not owned by the sync layer is still
+// detected, cancelled, and its untracked funds released (pre-change behavior).
+async function testUntrackedDuplicateStillCancelledAndReleasesFunds() {
+    const { manager, chainOpenOrders, chainOrders, cancelCalls } = makeDuplicateOrphanScenario();
+
+    await reconcileGridOrders({
+        manager,
+        config: { activeOrders: { sell: 1, buy: 0 } },
+        account: 'acct',
+        privateKey: 'pk',
+        chainOrders,
+        chainOpenOrders,
+    });
+
+    assert.strictEqual(cancelCalls(), 1, 'Untracked duplicate must still be cancelled by reconcile');
+    assert.strictEqual(manager.accountTotals.sellFree, 100.1,
+        'Cancelled untracked duplicate must release funds to sellFree');
+    console.log('✅ Regression 9c passed: untracked duplicate still cancelled with fund release');
+}
+
 (async () => {
     console.log('\n========== STARTUP RECONCILE REGRESSION TESTS ==========\n');
     await testUnmatchedCancelReleasesFundsAndHandlesNullEntries();
@@ -585,6 +681,9 @@ async function testRecalculateGridFundLockSerialization() {
     await testPhase3CancelsStaleSurplusUntrackedByGrid();
     await testPhantomCleanupDefersFreshlyAssignedOrderIds();
     await testRecalculateGridFundLockSerialization();
+    await testQueuedDuplicateDefersCancelButReleasesFunds();
+    await testOwnCancelledDuplicateDefersCancelButReleasesFunds();
+    await testUntrackedDuplicateStillCancelledAndReleasesFunds();
     console.log('\n✅ Startup reconcile regression tests passed!\n');
 })().catch((err) => {
     console.error('\n❌ STARTUP RECONCILE REGRESSION TEST FAILED:');

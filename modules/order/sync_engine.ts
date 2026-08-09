@@ -869,7 +869,7 @@ class SyncEngine {
                     `[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +
                     `size=${chainOrder.size}) — NOT adopted: duplicates price level of active ` +
                     `${duplicatePriceOrder.id} (${duplicatePriceOrder.orderId} at ${duplicatePriceOrder.price})`,
-                    'warn'
+                    'info'
                 );
                 // Gap 2: Queue duplicate chain order for cancellation via the correction
                 // mechanism (called from _performSyncFromOpenOrders). Duplicate price levels

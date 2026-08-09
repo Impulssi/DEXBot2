@@ -278,12 +278,31 @@ export async function reconcileGridOrders({
                 if (!nearest || priceDiff < nearest.priceDiff) nearest = candidate;
             }
             if (nearest && nearest.priceDiff <= nearest.looseTolerance) {
+                // The sync layer already owns this duplicate: PASS 2 queues a
+                // cancel-only correction, and startup runs it (correctAllPriceMismatches)
+                // before reconcile — leaving a stale snapshot where the order is already
+                // cancelled. Defer to the correction so a single orphan is cancelled once,
+                // but restore the untracked-fund accounting its cancel-only path does not
+                // perform (reconcile's Phase-2 cancel used to do it via releaseUntrackedFunds).
+                const alreadyQueued = Array.isArray(manager.ordersNeedingPriceCorrection) &&
+                    manager.ordersNeedingPriceCorrection.some((q: any) => q?.chainOrderId === p.orderId && q?.cancelOnly === true);
+                const alreadyCancelled = typeof chainOrders.wasRecentlyOwnCancelled === 'function' &&
+                    chainOrders.wasRecentlyOwnCancelled(p.orderId);
+                if (alreadyQueued || alreadyCancelled) {
+                    if (manager.accountant && manager._fundLock && p.size != null && p.size > 0) {
+                        await manager._fundLock.acquire(async () => {
+                            await manager.accountant.addToChainFree(p.type, p.size, 'startup-skip-duplicate');
+                        });
+                    }
+                    cancelledDuplicateIds.add(p.orderId);
+                    continue;
+                }
                 logger?.log?.(
                     `SUSPECTED DUPLICATE: ${desc} - nearest active grid ${nearest.gridOrder.id} ` +
                     `(orderId=${nearest.gridOrder.orderId}, price=${Format.formatPrice6(nearest.gridOrder.price)}, ` +
                     `diff=${Format.formatPrice6(nearest.priceDiff)}, tolerance=${Format.formatPrice6(nearest.tolerance)}, ` +
                     `looseTolerance=${Format.formatPrice6(nearest.looseTolerance)})`,
-                    'error'
+                    'info'
                 );
                 // Queue duplicate for Phase 2 cancellation instead of executing under lock
                 cancelledDuplicateIds.add(p.orderId);
@@ -292,10 +311,6 @@ export async function reconcileGridOrders({
                     chainOrderObj: u.chain,
                     releaseUntrackedFunds: true,
                 });
-                logger?.log?.(
-                    `Queued duplicate chain order ${p.orderId} for cancellation (Phase 2)`,
-                    'warn'
-                );
             } else if (nearest) {
                 logger?.log?.(
                     `${desc}; nearest active same-side grid ${nearest.gridOrder.id} ` +
