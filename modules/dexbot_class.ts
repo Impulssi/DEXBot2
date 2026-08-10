@@ -131,6 +131,7 @@ class DEXBot {
     _creditRuntime: any;
     _creditWatchdogInterval: any;
     _batchInFlight: number;
+    _cowBroadcastInFlight: boolean;
     _recoverySyncInFlight: number;
     _lastTargetedDriftSyncAt: number;
     _lightweightSyncCheckAt: number;
@@ -233,6 +234,12 @@ class DEXBot {
 
         // Pipeline state flags (used by maintenance gating)
         this._batchInFlight = 0;
+        // Single-flight COW broadcast guard: set while a COW batch is actually
+        // broadcasting/committing so no second batch can broadcast concurrently
+        // (two overlapping broadcasts would collide on the base grid version at
+        // commit time, forcing a commit refusal + snapshot reload that can drop
+        // placed orders and produce orphan fills).
+        this._cowBroadcastInFlight = false;
         this._recoverySyncInFlight = 0;
         this._lastTargetedDriftSyncAt = 0;
         this._lightweightSyncCheckAt = 0;

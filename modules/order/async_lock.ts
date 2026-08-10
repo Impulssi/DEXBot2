@@ -68,7 +68,12 @@
  * async context chain, preserving outer lock identity across nested
  * acquisitions. If AsyncLocalStorage is unavailable in the current
  * runtime (e.g. a browser bundle shim), the lock falls back to a
- * simpler _holding flag that treats any concurrent call as re-entrant.
+ * _holding + _syncPrologue check that ONLY treats a call made
+ * synchronously inside the holder's own callback prologue as re-entrant;
+ * any other call while the lock is held is queued, so mutual exclusion
+ * is preserved (the previous fallback treated every concurrent caller as
+ * re-entrant and ran it immediately, silently allowing overlapping
+ * critical sections).
  *
  * CRITICAL INVARIANTS:
  * - _locked = true ONLY if callback is currently executing
@@ -84,6 +89,7 @@
 
 
 import { createRequire } from 'node:module';
+import { hasProcess } from '../env.js';
 interface QueueItem<T = unknown> {
     callback: () => Promise<T>;
     cancelToken?: { isCancelled: boolean };
@@ -105,7 +111,11 @@ interface AcquireOptions {
 
 let _AsyncLocalStorage: any;
 const _nodeRequire = createRequire(import.meta.url);
-if (_nodeRequire) {
+// Escape hatch (tests + browser-bundle shim verification): force the no-ALS
+// fallback so the mutual-exclusion path that cannot detect re-entrancy is
+// exercised. Read at module-load time — must be set before the module loads.
+const _forceNoAls = hasProcess() && process.env?.DEXBOT_DISABLE_ASYNC_LOCAL_STORAGE === '1';
+if (_nodeRequire && !_forceNoAls) {
     try {
         _AsyncLocalStorage = _nodeRequire('node:async_hooks')?.AsyncLocalStorage;
     } catch {
@@ -120,6 +130,7 @@ class AsyncLock {
     private _queue: QueueItem<any>[];
     private _locked: boolean;
     private _holding: boolean;
+    private _syncPrologue: boolean;
     private _generation: number;
     private _defaultTimeout: number | null;
     private _onContention: (() => void) | null;
@@ -130,6 +141,7 @@ class AsyncLock {
         this._queue = [];
         this._locked = false;
         this._holding = false;
+        this._syncPrologue = false;
         this._generation = 0;
         this._defaultTimeout = options.timeout || null;
         this._onContention = options.onContention || null;
@@ -149,9 +161,18 @@ class AsyncLock {
         // Re-entrant detection: if we are already inside this lock's execution
         // context, run the callback directly. Uses AsyncLocalStorage (Node.js)
         // to distinguish truly nested calls from separate concurrent callers.
-        // Falls back to _holding flag in environments without AsyncLocalStorage.
+        // Without AsyncLocalStorage the lock falls back to _holding +
+        // _syncPrologue: a call is only treated as nested when it happens
+        // synchronously inside this lock's own callback prologue. A concurrent
+        // caller arriving while the holder is suspended at an await sees
+        // _holding === true but _syncPrologue === false and is QUEUED —
+        // preserving mutual exclusion (the old fallback ran every concurrent
+        // caller immediately, silently allowing overlapping critical sections).
+        // Async-nested calls in the no-ALS fallback are not detected and wait
+        // for the lock they already hold until the timeout — a fail-safe stall
+        // (bounded, logged by the caller), never a concurrent execution.
         const contextSet: Set<symbol> | undefined = _lockCtx ? _lockCtx.getStore() : undefined;
-        if ((contextSet && contextSet.has(this._lockId)) || (!_lockCtx && this._holding)) {
+        if ((contextSet && contextSet.has(this._lockId)) || (!_lockCtx && this._holding && this._syncPrologue)) {
             return callback();
         }
 
@@ -165,7 +186,19 @@ class AsyncLock {
                 newSet.add(this._lockId);
                 return _lockCtx.run(newSet, callback);
               }
-            : callback;
+            : () => {
+                // Mark this lock's callback as inside its synchronous prologue
+                // so a nested acquire() before the first await is recognized as
+                // re-entrant. Cleared as soon as callback() returns its promise
+                // (the first await), so concurrent callers that arrive while
+                // the holder is suspended queue instead of auto-running.
+                this._syncPrologue = true;
+                try {
+                    return callback();
+                } finally {
+                    this._syncPrologue = false;
+                }
+              };
 
         return new Promise((resolve, reject) => {
             let timer: ReturnType<typeof setTimeout> | undefined;
@@ -298,7 +331,11 @@ class AsyncLock {
             const store: Set<symbol> | undefined = _lockCtx.getStore();
             return store ? store.has(this._lockId) : false;
         }
-        return this._holding;
+        // No-ALS fallback: only a call inside this lock's synchronous callback
+        // prologue is re-entrant. Concurrent callers report false, so callers
+        // that skip acquisition based on isReentrant() fall back to a real
+        // (queueing) acquire instead of running unlocked.
+        return this._holding && this._syncPrologue;
     }
 
     /**
@@ -341,6 +378,7 @@ class AsyncLock {
         this._generation++;
         const wasHolding = this._holding;
         this._holding = false;
+        this._syncPrologue = false;
         while (this._queue.length > 0) {
             const { reject, timer } = this._queue.shift()!;
             if (timer) clearTimeout(timer);
@@ -358,6 +396,30 @@ class AsyncLock {
         }
         return count;
     }
+}
+
+/**
+ * Acquire `lock` around `fn` unless the caller already holds it (re-entrant)
+ * or the lock is unavailable.
+ *
+ * Canonical re-entrancy guard for the shared _fillProcessingLock chokepoints:
+ * callers that must never run concurrently with the fill consumer but that are
+ * legitimately re-invoked from inside the lock (e.g. uncertain-broadcast
+ * reconciliation, open-orders sync) delegate through this helper instead of
+ * inlining `if (lock && !lock.isReentrant()) return lock.acquire(fn)`.
+ * Centralizing the check-and-acquire keeps every future call site correct by
+ * construction (no accidental lock bypass when the lock is present).
+ *
+ * @param {any} lock - AsyncLock (or lock-like { acquire, isReentrant }) to guard with
+ * @param {() => Promise<T>} fn - Work to run exclusively; when the lock is held
+ *   by the caller it runs directly (re-entrant)
+ * @returns {Promise<T>}
+ */
+export function acquireIfNotHeld<T>(lock: any, fn: () => Promise<T>): Promise<T> {
+    if (lock && typeof lock.acquire === 'function' && !lock.isReentrant()) {
+        return lock.acquire(fn);
+    }
+    return fn();
 }
 
 export default AsyncLock

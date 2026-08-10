@@ -36,6 +36,7 @@ const {
     ORDER_TYPES,
     REBALANCE_STATES,
 } = constantsModule as any;
+import { acquireIfNotHeld } from './order/async_lock.js';
 import * as FormatModule from './order/format.js';
 const Format = FormatModule as any;
 import * as workingGridModule from './order/working_grid.js';
@@ -50,6 +51,13 @@ const require = createRequire(import.meta.url);
 // pipeline: after one re-plan the batch is shipped regardless, and the
 // commit-time guard + post-refused-commit chain adoption close divergence.
 const STALE_PLAN_REPLAN_LIMIT = 1;
+
+// Maximum wall-clock time (ms) a COW batch waits for an in-flight broadcast to
+// settle before proceeding anyway. The in-flight batch clears the flag in its
+// outer finally, so this only triggers if the flag is left stuck by a crash in
+// a non-finally path — proceed after the cap and let the commit guard + chain
+// adoption close divergence instead of blocking the pipeline forever.
+const SINGLE_FLIGHT_MAX_WAIT_MS = 120000;
 
 /**
  * Group orders into outside-in pairs for atomic create execution.
@@ -528,16 +536,9 @@ function findChainOrderForSlot(bot: any, chainOrders: any, slotId: any, planned:
  * @returns {Promise<Object>}
  */
 async function reconcileAfterUncertainBroadcast(bot: any, err: any, opContexts: any, options: Record<string, any> = {}) {
-    if (
-        bot.manager?._fillProcessingLock &&
-        typeof bot.manager._fillProcessingLock.acquire === 'function' &&
-        !bot.manager._fillProcessingLock.isReentrant()
-    ) {
-        return bot.manager._fillProcessingLock.acquire(() =>
-            reconcileAfterUncertainBroadcast(bot, err, opContexts, options)
-        );
-    }
-    return reconcileAfterUncertainBroadcastImpl(bot, err, opContexts, options);
+    return acquireIfNotHeld(bot.manager?._fillProcessingLock, () =>
+        reconcileAfterUncertainBroadcastImpl(bot, err, opContexts, options)
+    );
 }
 
 /**
@@ -771,7 +772,17 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
     for (const entry of discarded) {
         discardedCount++;
         const plannedOpCtx = opContexts[entry.ctxIndex];
-        if (plannedOpCtx && plannedOpCtx.kind === 'create') {
+        // A pending-broadcast entry is always a CREATE (recordPendingBroadcast
+        // only records creates), so the slot restore below must not depend on
+        // opContexts being present: the PENDING_BROADCASTS reject path invokes
+        // this reconcile with an empty opContexts array, and skipping the
+        // restore would leave the slot a clean hole that the next cycle could
+        // re-CREATE (duplicate) once the original broadcast lands. The inner
+        // entry.order checks still choose between creation-uncertain restore
+        // and plain target-size restore.
+        const isDiscardedCreate = (plannedOpCtx && plannedOpCtx.kind === 'create')
+            || (entry.order?.id && entry.order?.type);
+        if (isDiscardedCreate) {
             try {
                 // Restore target grid sizes for discarded CREATEs so the slots are
                 // immediately available for the next cycle without waiting for a
@@ -1978,6 +1989,37 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
 }
 
 /**
+ * Wait for any in-flight COW broadcast to settle before this batch proceeds.
+ * The in-flight batch sets _cowBroadcastInFlight right before broadcasting and
+ * clears it in its outer finally, so this wait is bounded by the broadcast +
+ * recovery duration. Returns after the flag clears, the cap is exceeded, or
+ * shutdown begins. Callers MUST set bot._cowBroadcastInFlight = true
+ * synchronously (before the next await) once this resolves so the
+ * check-and-set stays atomic and two planning batches cannot both win the
+ * broadcast slot.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {string} label - Stage label for the deferral log (e.g. 'entry', 'pre-broadcast')
+ */
+async function waitForCowBroadcastSingleFlight(bot: any, label: string) {
+    if (!bot._cowBroadcastInFlight) return;
+    bot.manager.logger.log(
+        `[COW] ${label}: a COW broadcast is already in flight; deferring this batch until it settles (prevents overlapping-broadcast commit collision).`,
+        'warn'
+    );
+    const waitDeadline = Date.now() + SINGLE_FLIGHT_MAX_WAIT_MS;
+    while (bot._cowBroadcastInFlight) {
+        if (bot._shuttingDown || Date.now() > waitDeadline) break;
+        await sleep(250);
+    }
+    if (bot._cowBroadcastInFlight) {
+        bot.manager.logger.log(
+            `[COW] ${label}: waited for in-flight broadcast but it did not settle within the cap; proceeding (commit guard + chain adoption will close divergence).`,
+            'warn'
+        );
+    }
+}
+
+/**
  * COW broadcast: Execute blockchain operations and commit working grid on success.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} cowResult
@@ -1999,6 +2041,15 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         popPushedWorkingGrid(bot, cowResult);
         return { executed: true, hadRotation: false };
     }
+
+    // Single-flight COW broadcast guard (entry check): never broadcast two
+    // batches concurrently. Overlapping broadcasts plan from the same base
+    // grid version; when the first commits it bumps _gridVersion, so the
+    // second's commit is refused (base-version mismatch) -> adopt-from-chain
+    // -> snapshot reload that can drop the adopted order and produce an
+    // orphan fill. This entry wait is an optimization; the authoritative
+    // atomic check-and-set happens right before the broadcast below.
+    await waitForCowBroadcastSingleFlight(bot, 'entry');
 
     const chainOrderCandidates = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
         ? bot.manager._lastUnmatchedChainOrders
@@ -2258,6 +2309,15 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     }
 
     bot.manager.lockOrders(idsToLock);
+
+    // Ownership of the single-flight broadcast slot for THIS frame. Only the
+    // frame that claimed the slot (set bot._cowBroadcastInFlight = true below)
+    // may clear it in the finally. A frame that waits at the entry check or
+    // early-returns after planning (fund validation, create-slot abort, op-prep
+    // throw) never owns the slot and MUST NOT clear it — an unconditional clear
+    // would wipe a concurrent batch's in-flight flag and let a third batch
+    // broadcast on top of it (the exact overlap this guard prevents).
+    let heldBroadcastSlot = false;
 
     try {
         bot._batchInFlight++;
@@ -2614,6 +2674,15 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             // Fall through: proceed with the current plan (bounded policy).
         }
 
+        // Single-flight broadcast slot (authoritative, atomic check-and-set):
+        // by this point this batch finished planning; any other batch that
+        // started planning concurrently and beat us here holds the slot. Wait
+        // for it to settle, then claim the slot synchronously (no await
+        // between the check inside waitForCowBroadcastSingleFlight and the
+        // assignment below), so two batches can never broadcast together.
+        await waitForCowBroadcastSingleFlight(bot, 'pre-broadcast');
+        bot._cowBroadcastInFlight = true;
+        heldBroadcastSlot = true;
         await bot._ensureCredentialDaemonWritable('COW batch broadcast');
 
         bot.manager.logger.log(`[COW] Broadcasting batch with ${operations.length} operations...`, 'info');
@@ -2902,6 +2971,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         throw err;
     } finally {
         bot._batchInFlight--;
+        if (heldBroadcastSlot) bot._cowBroadcastInFlight = false;
         bot._markGridActivity('batch end');
         bot.manager.unlockOrders(idsToLock);
 

@@ -13,6 +13,7 @@ import { path } from './path_api.js';
 import * as chainOrders from './chain_orders.js';
 import * as grid from './order/grid.js';
 import { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } from './constants.js';
+import { acquireIfNotHeld } from './order/async_lock.js';
 const { readOpenOrdersGuarded } = chainOrders;
 import { PATHS } from './paths.js';
 import * as Format from './order/format.js';
@@ -2055,11 +2056,15 @@ async function runDustHealthCheck(bot: any) {
                     });
                 }, { timeout: TIMING.DUST_CANCEL_TIMEOUT_MS });
             } else {
-                bot._warn('[DUST] Fill lock unavailable — cancelling dust without lock (potential race)');
-                await bot._cancelDustOrders({
-                    buy: health.buyDustOrders,
-                    sell: health.sellDustOrders,
-                });
+                // Lock-bypass guard: never cancel dust without the fill lock.
+                // _cancelDustOrders rotates slots through the synthetic-fill
+                // pipeline (mutating grid + broadcasting), which races the fill
+                // consumer if run concurrently. When the lock is unavailable
+                // (shutdown/teardown or a partial manager), defer instead — the
+                // dust orders stay on the book and are picked up by the next
+                // periodic maintenance tick or fill batch, both of which run
+                // under the lock.
+                bot._warn('[DUST] Fill lock unavailable — deferring dust cancel to the next locked maintenance cycle (skipped this tick to avoid racing fill processing)');
             }
         }
     } catch (err: any) {
@@ -2255,11 +2260,30 @@ function getMetrics(bot: any) {
 
 /**
  * Read open orders from chain, sync with local state, and process any fills found.
+ * Self-guarding wrapper: every path here mutates grid state and can broadcast a
+ * rebalance (via _processFillsWithBatching), so it must never run concurrently
+ * with the fill consumer. acquireIfNotHeld serializes an unlocked caller through
+ * _fillProcessingLock while letting a caller that already holds the lock (e.g.
+ * the fill pipeline or grid maintenance) run the impl directly — a future caller
+ * that forgets to take the lock is serialized instead of silently bypassing it.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} tag - Context label for logging
  * @returns {Promise<Object>}
  */
 async function syncOpenOrdersAndProcessFills(bot: any, tag: any) {
+    return acquireIfNotHeld(bot.manager?._fillProcessingLock, () =>
+        syncOpenOrdersAndProcessFillsImpl(bot, tag)
+    );
+}
+
+/**
+ * Read open orders from chain, sync with local state, and process any fills found.
+ * Implementation — callers MUST already hold _fillProcessingLock (see wrapper).
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {string} tag - Context label for logging
+ * @returns {Promise<Object>}
+ */
+async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
     if (!bot.accountId || bot.config?.dryRun) {
         return { syncResult: null, aborted: false, hasUnmatched: 0, openOrders: null };
     }
