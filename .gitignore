@@ -43,9 +43,6 @@ tmp/
 # Generated files
 opencode.json
 
-# Rust dashboard build artifacts
-dashboard/target/
-
 # Local helper artifacts
 .dexbot-aliases
 .codex

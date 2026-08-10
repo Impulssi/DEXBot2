@@ -156,7 +156,7 @@ function main() {
         
         const html = generateHTML(meta, candleArrays, [amaResult]);
         fs.writeFileSync(outPath, html);
-        console.log(`\nRisk dashboard generated: ${outPath}`);
+        console.log(`\nRisk report generated: ${outPath}`);
     }
 }
 main();

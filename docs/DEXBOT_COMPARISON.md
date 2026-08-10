@@ -70,7 +70,6 @@ DEXBot2 is a ground-up rewrite in TypeScript that prioritizes production correct
 | **Process Manager** | Systemd service (Linux) | `unlock` (native monolithic launcher, default) — PM2 optional |
 | **External APIs** | CoinGecko, CCXT, Waves | On-chain/pool/Kibana candle inputs; optional CEX synthetic seed generator (`fetch_cex_synthetic_data.ts`) for adapter bootstrap |
 | **Container** | Docker (Ubuntu 18.04) | Docker (multi-stage) |
-| **Dashboard** | PyQt5 GUI | CLI/unlock status; Claw/runtime automation surface |
 | **Testing** | pytest + Docker testnet | Native Node assert (217 `test_*.ts` files; auto-discovered via `globSync`) |
 | **CI/CD** | Travis CI, AppVeyor | GitHub Actions / local deterministic script suite |
 | **Packaging** | PyInstaller (Win/Mac/Linux binaries) | npm / `unlock` + optional PM2 ecosystem |
@@ -681,8 +680,6 @@ Where:
 | `claw/docs/DEXBOT2_TUNING_CHEAT_SHEET.md` | Grid tuning reference |
 | `claw/docs/POSITION_HEALTH.md` | Position health monitoring guide |
 | `claw/docs/RUNTIME_COMPARISON.md` | Claw runtime comparison |
-| ~~`dashboard/README.md`~~ | ~~Moved to `dashboard-draft` branch~~ |
-| ~~`dashboard/tui_dashboard_spec.md`~~ | ~~Moved to `dashboard-draft` branch~~ |
 | ~~`docs/TYPESCRIPT_MIGRATION_ANALYSIS.md`~~ | ~~Removed — migration complete~~ |
 | `docs/crash_report_jan_mar_2026.md` | Production incident analysis |
 | `docs/docker.md` | Docker deployment guide |
@@ -872,7 +869,6 @@ The 500× figure is not theoretical: it materializes in production when higher o
 - No DEXBot-style external CEX price-feed strategy support
 - JSON config requires manual editing (no wizard)
 - Backtesting/research exists under `analysis/`, but it is not a polished end-user backtesting product
-- No polished TUI product
 - No community/plugin ecosystem
 - Heavy documentation suggests significant learning curve for contributors
 - Rapid iteration means new adapter/Claw/credit features require disciplined regression testing before production use

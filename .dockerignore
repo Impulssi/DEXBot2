@@ -10,7 +10,6 @@ coverage
 *.log
 update.log
 profiles
-dashboard
 dist
 claw
 market_adapter/data
