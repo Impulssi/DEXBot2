@@ -182,9 +182,9 @@ git checkout test
 git pull origin test
 ```
 
-## Recommended Runtime: `unlock`
+## Recommended Runtime: `start`
 
-DEXBot2 runs as a **monolithic daemon** (`dexbot unlock`). This is the production-
+DEXBot2 runs as a **monolithic daemon** (`dexbot start`). This is the production-
 recommended mode:
 
 - **Single process** — no PM2, no separate credential daemon management
@@ -197,16 +197,16 @@ Legacy PM2 mode (`npm run pm2:unlock`) is de-emphasized but still available.
 
 ```bash
 # Start as background daemon (default)
-dexbot unlock
+dexbot start
 
 # Start in foreground (interactive)
-dexbot unlock --foreground
+dexbot start --foreground
 
 # Start with claw automation
-dexbot unlock --claw-only
+dexbot start --claw-only
 
 # Start credit-only worker in the background (no grid trading, just credit runtime)
-dexbot unlock credit
+dexbot start credit
 ```
 
 ### Overview of CLI Commands
@@ -217,7 +217,7 @@ the canonical name is preferred in scripts and docs.
 
 | Command (canonical) | Aliases | Purpose |
 |---------|---------|---------|
-| `dexbot test <bot>` | `start` | Test-run a single bot (one-shot, live trading) |
+| `dexbot test <bot>` | — | Test-run a single bot (one-shot, live trading) |
 | `dexbot drystart <bot>` | — | Same as `test` but forces dry-run execution |
 | `dexbot reset <bot>` | — | Trigger a grid reset (applies live or on next start) |
 | `dexbot default` | `defaults` | Reset settings to defaults (deletes generated settings files) |
@@ -230,7 +230,7 @@ the canonical name is preferred in scripts and docs.
 | `dexbot export <bot>` | — | Export bot trades/settings for QTradeX backtesting |
 | `dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds) |
 | `dexbot status` | `stat` | Unified runtime health — daemon, adapter, bots |
-| `dexbot unlock` | — | Run credential daemon + bot (equivalent to `node unlock`) |
+| `dexbot start` | `unlock` | Run credential daemon + bot (equivalent to `node unlock`) |
 | `dexbot stop` / `dexbot start` | `stp`, `stopall` | Stop/start the monolithic runtime (unlock mode) |
 | `dexbot restart` | `restartall` | Restart the monolithic runtime (unlock mode) |
 | `dexbot delete` | — | Shut down and clean up the monolithic runtime (unlock mode) |

@@ -443,7 +443,7 @@ async function launcherUnlockStart(botName: string | null, options: Record<strin
     mode: 'unlock',
     botName: botName || 'default',
     pid: child.pid,
-    command: botName ? `dexbot unlock ${botName}` : 'dexbot unlock',
+    command: botName ? `dexbot start ${botName}` : 'dexbot start',
     message: 'Bots started via unlock (single password prompt, no PM2)'
   };
 }

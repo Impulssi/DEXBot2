@@ -63,7 +63,7 @@ function installStubs() {
     setCachedModule(supervisorControlPath, {
         sendControlCommand: async (cmd) => {
             if (cmd.cmd === 'delete' && state.supervisorDeleteTransient) {
-                throw new Error('No supervisor socket found. Start bots with: dexbot unlock --isolated');
+                throw new Error('No supervisor socket found. Start bots with: dexbot start --isolated');
             }
             state.controlCalls.push(cmd);
             return { ok: true };

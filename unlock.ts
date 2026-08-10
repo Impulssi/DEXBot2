@@ -15,22 +15,23 @@ const __dirname = _esmDirname(__filename);
  * Use --foreground to run in terminal (no auto-restart).
  *
  * Usage:
- *   dexbot unlock                         Background + auto-restart (default)
- *   dexbot unlock --foreground            Terminal mode (no auto-restart)
- *   dexbot unlock claw-only
- *   dexbot unlock --claw-only
- *   dexbot unlock --isolated
- *   dexbot unlock --isolated <botName>
- *   dexbot unlock --dryrun
- *   dexbot unlock --dryrun <botName>
- *   dexbot unlock --headless              Non-interactive (requires env var or --password-file)
- *   dexbot unlock --headless --password-file <path>
+ *   dexbot start                         Background + auto-restart (default)
+ *   dexbot start --foreground            Terminal mode (no auto-restart)
+ *   dexbot start claw-only
+ *   dexbot start --claw-only
+ *   dexbot start --isolated
+ *   dexbot start --isolated <botName>
+ *   dexbot start --dryrun
+ *   dexbot start --dryrun <botName>
+ *   dexbot start --headless              Non-interactive (requires env var or --password-file)
+ *   dexbot start --headless --password-file <path>
  *   dexbot stat, status        Runtime status
  *   dexbot stop                Stop the monolithic runtime
  *   dexbot restart             Restart the monolithic runtime
  *   dexbot delete              Shut down and clean up
  *
  * Repo-root users can run `./unlock` instead.
+ * `dexbot unlock` is kept as a legacy alias for `dexbot start`.
  *
  * Environment:
  *   BOT_NAME                     Fallback bot name when none is given as positional arg
@@ -140,14 +141,14 @@ function printLauncherSuccess({ botName = null, clawOnly = false, isolated = fal
     console.log('='.repeat(50));
     if (clawOnly) {
         console.log(statusSuccess('DEXBot2 credential daemon started successfully!'));
-        console.log('If the daemon stops, rerun `dexbot unlock --claw-only` to unlock it again.');
+        console.log('If the daemon stops, rerun `dexbot start --claw-only` to unlock it again.');
     } else if (botName) {
         console.log(statusSuccess('DEXBot2 started successfully!'));
-        const cmd = isolated ? `dexbot unlock --isolated ${botName}` : `dexbot unlock ${botName}`;
+        const cmd = isolated ? `dexbot start --isolated ${botName}` : `dexbot start ${botName}`;
         console.log(`If the bot stops, rerun \`${cmd}\` to unlock it again.`);
     } else {
         console.log(statusSuccess('DEXBot2 started successfully!'));
-        const cmd = isolated ? 'dexbot unlock --isolated' : 'dexbot unlock';
+        const cmd = isolated ? 'dexbot start --isolated' : 'dexbot start';
         console.log(`If the bot stops, rerun \`${cmd}\` to unlock it again.`);
     }
     console.log('='.repeat(50));
@@ -766,7 +767,7 @@ async function printCredentialDaemonStatusBlock(credPid: number | null, credFore
     if (credForeign) {
         console.log(
             `    ${colorStatus(
-                'Rerun `dexbot unlock` to detach the foreign daemon and unlock with a fresh master password.',
+                'Rerun `dexbot start` to detach the foreign daemon and unlock with a fresh master password.',
                 STATUS_COLORS.warn
             )}`
         );

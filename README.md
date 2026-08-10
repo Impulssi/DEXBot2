@@ -38,13 +38,13 @@ git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install &&
 
 dexbot key                 # Set up master password and import keys
 dexbot bot                 # Create and manage bot configurations
-dexbot unlock              # Start DEXBot2
+dexbot start               # Start DEXBot2
 
 # Option C — Clone + local wrappers (no global install)
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
 ./dexbot key               # or: npx dexbot key
 ./dexbot bot               # or: npx dexbot bot
-./unlock                   # or: npx dexbot unlock
+./unlock                   # or: npx dexbot start
 ```
 
 Detailed setup: [Installation](#installation).
@@ -106,7 +106,7 @@ git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install &&
 # Option C — Clone + local wrappers (no global install)
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
 ./dexbot               # or: npx dexbot
-./unlock               # or: npx dexbot unlock
+./unlock               # or: npx dexbot start
 ```
 
 Then set up your master password, keys and add bots:
@@ -154,7 +154,7 @@ market volatility instead of using an unnecessarily wide range.
    live writes and range scaling. Use `dexbot white --dynamic-weight` for
    newly generated dynamic-weight entries; existing entries are preserved.
 
-6. Start DEXBot2 with `dexbot unlock` (or `dexbot pm2` for PM2).
+6. Start DEXBot2 with `dexbot start` (or `dexbot pm2` for PM2).
 7. Then tune `minPrice` / `maxPrice` for the market's volatility range.
 
 ### Bot Options Reference
@@ -204,17 +204,16 @@ Defaults in [`modules/constants.ts`](modules/constants.ts) are overridable at gl
 
 ## 🎯 Zero-Dependency Process Management
 
-`dexbot unlock` is the recommended production runtime (global install). Repo-root users can run `./unlock` instead. It runs the selected bot set as one monolithic bot process, with the credential daemon and market adapter in separate helper processes. Monolithic start/stop/restart controls apply to the whole runtime, not to individual bots.
+`dexbot start` is the recommended production runtime (global install). Repo-root users can run `./unlock` instead. It runs the selected bot set as one monolithic bot process, with the credential daemon and market adapter in separate helper processes. Monolithic start/stop/restart controls apply to the whole runtime, not to individual bots.
 
 ```bash
-dexbot unlock              # Start all active bots
-dexbot unlock --dryrun     # Dry-run (no transactions broadcast)
-dexbot stop/start          # Stop/start the monolithic runtime
+dexbot start/stop          # Stop/start the monolithic runtime
+dexbot start --dryrun      # Dry-run (no transactions broadcast)
 dexbot restart             # Restart the monolithic runtime
 dexbot delete              # Shut down and clean up
 ```
 
-For independent per-bot process control, start isolated mode with `dexbot unlock --isolated` or use PM2 instead of the default monolithic runtime.
+For independent per-bot process control, start isolated mode with `dexbot start --isolated` or use PM2 instead of the default monolithic runtime.
 
 ## 🛠️ Bot Management
 
@@ -238,7 +237,7 @@ dexbot default             # Reset settings to defaults
 
 ## 🎯 PM2 Process Management
 
-PM2 is optional — `dexbot unlock` is the native solution.
+PM2 is optional — `dexbot start` is the native solution.
 
 ```bash
 dexbot pm2 [<bot-name>]                    # Start with PM2

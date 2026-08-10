@@ -143,7 +143,7 @@ function restartMonolithicRuntime(monolithic: any) {
 }
 
 /**
- * Start the monolithic daemon by invoking `dexbot unlock`.
+ * Start the monolithic daemon by invoking `dexbot start`.
  *
  * Returns true only when the unlock command exited successfully. In
  * non-interactive (non-TTY) mode the function prints a manual-start hint
@@ -161,13 +161,13 @@ function startMonolithicRuntime() {
             '\n⚠️  Monolithic daemon was running before update but cannot be auto-started\n' +
             '   in non-interactive mode (no TTY).\n' +
             '   To start it manually:\n' +
-            '     dexbot unlock\n' +
+            '     dexbot start\n' +
             '   (or with --headless --password-file <path> for automation)\n',
             UPDATE_COLORS.warn,
         ));
         return false;
     }
-    log('Starting monolithic daemon (dexbot unlock)...');
+    log('Starting monolithic daemon (dexbot start)...');
     try {
         execSync(`node "${unlockPath}"`, {
             cwd: PATHS.PROJECT_ROOT,
@@ -176,7 +176,7 @@ function startMonolithicRuntime() {
         logSuccess('Monolithic daemon started.');
         return true;
     } catch (err) {
-        log(`Warning: Could not auto-start monolithic daemon (${getErrorMessage(err)}). Start manually with: dexbot unlock`);
+        log(`Warning: Could not auto-start monolithic daemon (${getErrorMessage(err)}). Start manually with: dexbot start`);
         return false;
     }
 }
@@ -657,10 +657,10 @@ try {
         console.log(colorUpdateOutput(
             '\n⚠️  No active runtime was restarted.\n' +
             '   If the daemon was running before, start it manually from a terminal:\n' +
-            '     dexbot unlock\n' +
+            '     dexbot start\n' +
             '   (will prompt for master password; add --foreground for interactive mode)\n' +
             '   For non-interactive automation:\n' +
-            '     dexbot unlock --headless --password-file <path>\n',
+            '     dexbot start --headless --password-file <path>\n',
             UPDATE_COLORS.warn,
         ));
     }

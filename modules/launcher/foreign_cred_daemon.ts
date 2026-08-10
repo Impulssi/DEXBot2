@@ -11,7 +11,7 @@ const { unlink: safeUnlink } = storage;
  * Foreign credential daemon detection.
  *
  * The launcher can end up reusing a credential daemon that was NOT started
- * by the current `dexbot unlock` invocation. The readiness probe
+ * by the current `dexbot start` invocation. The readiness probe
  * (`isDaemonReady` / `isDaemonResponsive`) only checks that the socket is
  * answering, so a leftover daemon from a previous run, an old PM2 entry, or
  * a manually-spawned daemon can silently satisfy that probe — and the

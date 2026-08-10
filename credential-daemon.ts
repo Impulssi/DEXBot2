@@ -54,7 +54,7 @@
  *
  * Via PM2 (recommended):
  *   npm run unlock
- *   or: dexbot unlock
+ *   or: dexbot start
  *
  * Bot processes then access keys automatically via socket connection.
  *

@@ -220,7 +220,7 @@ function printCLIUsage() {
     console.log('Usage: dexbot [command] [bot-name]');
     console.log('Commands:');
     console.log('  test <bot>        Test-run the named bot (one-shot, live trading).');
-    console.log('  start [bot]       Start the monolithic runtime (alias for unlock). Counterpart to stop.');
+    console.log('  start [bot]       Start the monolithic runtime. Counterpart to stop.');
     console.log('  drystart <bot>    Same as test but forces dry-run execution.');
     console.log('  reset all         Trigger grid resets for all active bots.');
     console.log('  reset <bot>       Trigger a grid reset (auto-reloads if running, or applies on next start).');
@@ -236,10 +236,10 @@ function printCLIUsage() {
     console.log('  update            Update DEXBot2 from the repository and restart active bots.');
     console.log('  order             Analyze persisted order grids in profiles/orders/ (spread, increment, funds). Use --export for HTML.');
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
-    console.log('  unlock            Run credential daemon + bot (repo-root: `./unlock`).');
-    console.log('  stop              Stop the monolithic runtime (alias for `unlock stop`).');
-    console.log('  restart           Restart the monolithic runtime (alias for `unlock restart`).');
-    console.log('  delete            Stop/delete all runtime processes (alias for `unlock delete`).');
+    console.log('  unlock            Legacy alias for start (repo-root: `./unlock`).');
+    console.log('  stop              Stop the monolithic runtime.');
+    console.log('  restart           Restart the monolithic runtime.');
+    console.log('  delete            Stop/delete all runtime processes.');
     console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune) are forwarded.');
     console.log('  clear             Remove all log files from profiles/logs/ (runs scripts/clear-logs.sh).');
     console.log('  clear-orders      Remove all persisted order files from profiles/orders/.');
@@ -383,9 +383,9 @@ function printStartLauncherSuccess({ botName = null, dryRun = false } = {}) {
     console.log('='.repeat(50));
     console.log(startupSuccess('DEXBot2 started successfully!'));
     if (botName) {
-        console.log(`If the bot stops, rerun \`dexbot unlock${dryrunFlag} ${botName}\`.`);
+        console.log(`If the bot stops, rerun \`dexbot start${dryrunFlag} ${botName}\`.`);
     } else {
-        console.log(`If the bots stop, rerun \`dexbot unlock${dryrunFlag}\`.`);
+        console.log(`If the bots stop, rerun \`dexbot start${dryrunFlag}\`.`);
     }
     console.log('='.repeat(50));
     console.log();
@@ -675,7 +675,7 @@ async function startBotByName(botName: string | null | undefined, { dryRun = fal
 /**
  * Mark a bot (or all bots) as active/inactive in profiles/bots.json.
  * Note: This only updates the config file; running processes must be
- * started/stopped separately (e.g. `dexbot unlock <bot>`).
+ * started/stopped separately (e.g. `dexbot start <bot>`).
  * @param {string|null|undefined} botName - Name of the bot, or null/undefined for all
  * @param {boolean} active - Target active state (true = enable, false = disable)
  */
@@ -714,7 +714,7 @@ async function setBotActiveState(botName: string | null | undefined, active: boo
     saveSettingsFile(config, filePath);
     const markedMessage = `Marked '${botName}' ${inWord} in ${path.basename(filePath)}.`;
     if (active) {
-        console.log(markedMessage + ` Start it using 'dexbot unlock ${botName}'.`);
+        console.log(markedMessage + ` Start it using 'dexbot start ${botName}'.`);
     } else {
         console.log(markedMessage);
     }

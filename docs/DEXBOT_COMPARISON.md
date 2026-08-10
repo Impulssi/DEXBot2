@@ -534,7 +534,7 @@ Where:
 - **`unlock` (native monolithic launcher)** — the default and recommended runtime
   - Runs the active bot set as **one monolithic bot process**, with the credential daemon and market adapter in separate helper processes
   - **Background daemonization + auto-restart** built in (no external process manager required)
-  - `dexbot unlock [start|stop|restart|status|delete]` controls the whole monolithic runtime
+  - `dexbot start|stop|restart|status|delete` controls the whole monolithic runtime
   - `--isolated` mode: one process per bot for independent control
   - `--headless` / `--password-file`: non-interactive unlock for service use
   - `--dryrun`: no broadcast

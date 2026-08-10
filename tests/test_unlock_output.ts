@@ -353,7 +353,7 @@ async function runClawOnlyTest() {
     assert.strictEqual(state.stopCount, 1, 'claw-only mode should still clean up owned daemons');
     assert.ok(logs.includes('Starting credential daemon only'), 'launcher should print the claw-only mode');
     assert.ok(logs.includes('DEXBot2 credential daemon started successfully!'), 'launcher should print the claw-only success footer');
-    assert.ok(logs.includes('If the daemon stops, rerun `dexbot unlock --claw-only` to unlock it again.'), 'launcher should print the claw-only restart hint');
+    assert.ok(logs.includes('If the daemon stops, rerun `dexbot start --claw-only` to unlock it again.'), 'launcher should print the claw-only restart hint');
 }
 
 async function runStartupFailureSuppressesSuccessTest() {

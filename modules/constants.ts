@@ -1282,7 +1282,7 @@ let LAUNCHER = {
         controlStopTimeoutMs: 12000,
 
         // SUPERVISOR_POLL_TIMEOUT_MS: Maximum wall-clock duration the
-        // `dexbot unlock <bot>` (or monolithic wrapper) waits for the
+        // `dexbot start <bot>` (or monolithic wrapper) waits for the
         // supervisor to report that all supervised bots have stopped. If a
         // bot is stuck in a PM2 restart loop and reports `restarting`
         // indefinitely, the launcher's setInterval poll would never clear.

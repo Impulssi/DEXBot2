@@ -11,6 +11,6 @@ console.log('');
 console.log('DEXBot2 installed! To get started:');
 console.log('  dexbot key        Set up master password');
 console.log('  dexbot bot        Create and manage bots');
-console.log('  dexbot unlock      Run credential daemon + bot');
+console.log('  dexbot start      Run credential daemon + bot');
 console.log('  dexbot help        Show all commands');
 console.log('');

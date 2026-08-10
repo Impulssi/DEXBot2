@@ -47,7 +47,7 @@ function sendControlCommand(cmd: any) {
         socket.on('error', (err: any) => {
             clearTimeout(timeout);
             if ((err as any).code === 'ENOENT' || (err as any).code === 'ECONNREFUSED') {
-                done(new Error('No supervisor socket found. Start bots with: dexbot unlock --isolated'));
+                done(new Error('No supervisor socket found. Start bots with: dexbot start --isolated'));
             } else {
                 done(err);
             }
