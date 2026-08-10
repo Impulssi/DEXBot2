@@ -11,8 +11,8 @@ const {
 } = require('../modules/short_mpa_strategy');
 const { getErrorMessage } = require('../../modules/utils/errors');
 
-function parseArgs(argv) {
-  const options = {};
+function parseArgs(argv: string[]): Record<string, any> {
+  const options: Record<string, any> = {};
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];

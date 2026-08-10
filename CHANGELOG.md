@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [1.4.12] - 2026-08-09 - Full ESM Migration, Legacy-Compat Removal, Node >= 22
 
+### 2026-08-10
+
+- **Fix**: repair ESM direct-run guards and editor tsconfig coverage for analysis tools — the CJS→ESM migration left analysis CLI entry points using `require.main`, which throws a `ReferenceError` under `"type": "module"`, and added `import.meta` usage to `analysis/` and `claw/examples/` files that no tsconfig project covered (editors inferred CommonJS and flagged `import.meta` as TS1343). `require.main === module` is replaced with the argv-independent `process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href` guard in `analyze_derivatives`, `derivative_chart_generator`, `backtest_ama_sweep`, `generate_unified_comparison_chart`, `optimizer_high_resolution`, and `analyze_lambda_vs_slow`; `analyze_tradingview` (CLI-only, nothing imports it) now calls `main().catch(...)` directly so the tradingview chart exporter no longer crashes on run. Added `analysis/tsconfig.json` and `claw/examples/tsconfig.json` (loose ESM, noEmit) mirroring `tests/tsconfig.json` so those directories resolve as ESM in editors, and un-ignored `analysis/tsconfig.json` for tracking (`analysis/*`, `claw/examples/*`, `.gitignore`).
+
 ### 2026-08-09
 
 - **Fix**: align claw build emit options with the root build to keep `dist` consistent — enable `declaration`/`declarationMap`/`sourceMap` in `claw/tsconfig.json` so a claw build after `npm run build` never leaves a hybrid dist (regenerated `.js` without sourceMappingURL footers while stale `.d.ts`/`.js.map` lingered); export `CredentialDaemonResponse` for claw's declaration emit (`claw/tsconfig.json`, `modules/dexbot_credential_client.ts`).

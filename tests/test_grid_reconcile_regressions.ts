@@ -716,7 +716,7 @@ async function testPersistentDuplicateEscalatesToWarn() {
         },
     });
     const logs = [];
-    manager.logger = { log: (msg, level) => logs.push({ msg: String(msg), level }) };
+    manager.logger = { log: (msg: any, level: any) => { logs.push({ msg: String(msg), level }); } } as any;
     const cfg = { activeOrders: { sell: 1, buy: 0 } };
 
     try {
