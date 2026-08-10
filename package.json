@@ -3,6 +3,11 @@
   "version": "1.4.12",
   "description": "The first open source trading bot with zero runtime dependencies and a fully adaptive market making strategy.",
   "main": "dist/modules/dexbot_class.js",
+  "exports": {
+    ".": "./dist/modules/dexbot_class.js",
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "dexbot": "dist/dexbot.js",
     "bot": "dist/bot.js"
@@ -22,7 +27,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.12.0"
   },
   "os": [
     "linux",
@@ -94,6 +99,13 @@
     "./dist/pm2.js": false,
     "./dist/modules/launcher/credential_daemon.js": false,
     "./dist/modules/launcher/bot_supervisor.js": false,
+    "./dist/modules/launcher/child_env.js": false,
+    "./dist/modules/launcher/credential_secret.js": false,
+    "./dist/modules/launcher/headless_password.js": false,
+    "./dist/modules/launcher/launch_modes.js": false,
+    "./dist/modules/launcher/runtime_entry.js": false,
+    "./dist/modules/launcher/status_reporting.js": false,
+    "./dist/modules/launcher/supervisor_control.js": false,
     "./dist/modules/launcher/monolithic_runtime.js": false,
     "./dist/modules/launcher/market_adapter_runtime.js": false,
     "./dist/modules/launcher/market_adapter_watchdog.js": false,

@@ -68,7 +68,7 @@
  * async context chain, preserving outer lock identity across nested
  * acquisitions. If AsyncLocalStorage is unavailable in the current
  * runtime (e.g. a browser bundle shim), the lock falls back to a
- * _holding + _syncPrologue check that ONLY treats a call made
+ * _syncPrologue check that ONLY treats a call made
  * synchronously inside the holder's own callback prologue as re-entrant;
  * any other call while the lock is held is queued, so mutual exclusion
  * is preserved (the previous fallback treated every concurrent caller as
@@ -161,18 +161,18 @@ class AsyncLock {
         // Re-entrant detection: if we are already inside this lock's execution
         // context, run the callback directly. Uses AsyncLocalStorage (Node.js)
         // to distinguish truly nested calls from separate concurrent callers.
-        // Without AsyncLocalStorage the lock falls back to _holding +
-        // _syncPrologue: a call is only treated as nested when it happens
+        // Without AsyncLocalStorage the lock falls back to a _syncPrologue
+        // check: a call is only treated as nested when it happens
         // synchronously inside this lock's own callback prologue. A concurrent
-        // caller arriving while the holder is suspended at an await sees
-        // _holding === true but _syncPrologue === false and is QUEUED —
-        // preserving mutual exclusion (the old fallback ran every concurrent
+        // caller arriving while the holder is suspended at an await (so
+        // _syncPrologue === false) is QUEUED, preserving mutual exclusion
+        // (the old fallback ran every concurrent
         // caller immediately, silently allowing overlapping critical sections).
         // Async-nested calls in the no-ALS fallback are not detected and wait
         // for the lock they already hold until the timeout — a fail-safe stall
         // (bounded, logged by the caller), never a concurrent execution.
         const contextSet: Set<symbol> | undefined = _lockCtx ? _lockCtx.getStore() : undefined;
-        if ((contextSet && contextSet.has(this._lockId)) || (!_lockCtx && this._holding && this._syncPrologue)) {
+        if ((contextSet && contextSet.has(this._lockId)) || (!_lockCtx && this._syncPrologue)) {
             return callback();
         }
 
@@ -335,7 +335,7 @@ class AsyncLock {
         // prologue is re-entrant. Concurrent callers report false, so callers
         // that skip acquisition based on isReentrant() fall back to a real
         // (queueing) acquire instead of running unlocked.
-        return this._holding && this._syncPrologue;
+        return this._syncPrologue;
     }
 
     /**
@@ -378,7 +378,6 @@ class AsyncLock {
         this._generation++;
         const wasHolding = this._holding;
         this._holding = false;
-        this._syncPrologue = false;
         while (this._queue.length > 0) {
             const { reject, timer } = this._queue.shift()!;
             if (timer) clearTimeout(timer);
