@@ -21,6 +21,7 @@
  */
 
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PATHS } from '../modules/paths.js';
 
 import { createSource } from './price_sources.js';
@@ -40,7 +41,7 @@ const DEFAULT_THRESHOLD = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_THRESHOL
 const DEFAULT_CLAMP = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP;
 const MIN_ATR_PERIOD = 3;
 const MAX_ATR_PERIOD = 30;
-const DEFAULT_CHART_DIR = path.join(__dirname, 'charts');
+const DEFAULT_CHART_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'charts');
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'volatility_chart.html');
 
 function normalizeAtrPeriod(period) {

@@ -277,7 +277,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
         <div id="ama-panel">
             <div class="section-label">AMA SLOPE INPUT</div>
             <div class="legend">
-                <div class="legend-item"><div class="dot" style="background:#f0a000;"></div>Slope%: <span id="l-ama-slope" class="legend-val" style="font-weight:bold;">-</span></div>
+                <div class="legend-item"><div class="dot" style="background:#f0a000;"></div>Slope‰: <span id="l-ama-slope" class="legend-val" style="font-weight:bold;">-</span></div>
             </div>
             <div id="ama-chart"></div>
         </div>
@@ -780,7 +780,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
             const sp = dynamicAmaSlopePct[idx];
             const spEl = document.getElementById('l-ama-slope');
             if (sp == null) { spEl.textContent = '-'; spEl.style.color = '#8b949e'; }
-            else { spEl.textContent = (sp >= 0 ? '+' : '') + sp.toFixed(3) + '%'; spEl.style.color = sp > 0.01 ? '#2ea043' : sp < -0.01 ? '#f85149' : '#8b949e'; }
+            else { spEl.textContent = (sp >= 0 ? '+' : '') + (sp * 10).toFixed(3) + '‰'; spEl.style.color = sp > 0.01 ? '#2ea043' : sp < -0.01 ? '#f85149' : '#8b949e'; }
 
             const vp = currentKalmanVelocityPct[idx];
             const vpEl = document.getElementById('l-kal-vel');
@@ -978,7 +978,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
         function makeTimeAxis(showLabels = false) {
             return {
                 show: true,
-                stroke: '#30363d',
+                stroke: '#ffffff',
                 grid: { stroke: '#1c2128' },
                 ticks: { stroke: '#30363d', width: 1 },
                 size: showLabels ? 24 : 0,
@@ -1032,7 +1032,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
                 ],
                 axes: [
                     makeTimeAxis(false),
-                    { scale: 'y', stroke: '#30363d', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
+                    { scale: 'y', stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
                       values: (u, v) => v.map(x => x != null ? x.toFixed(4) : ''), }
                 ],
                 cursor: cursorCfg,
@@ -1045,12 +1045,12 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
                 scales: { x: { time: true }, p: { auto: true } },
                 series: [
                     { label: 'Time' },
-                    { label: 'Slope%', stroke: '#f0a000', width: 2, scale: 'p', points: { show: false } },
+                    { label: 'Slope‰', stroke: '#f0a000', width: 2, scale: 'p', points: { show: false } },
                 ],
                 axes: [
                     makeTimeAxis(false),
-                    { scale: 'p', stroke: '#30363d', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30303d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
-                      values: (u, v) => v.map(x => x != null ? (x >= 0 ? '+' : '') + x.toFixed(1) + '%' : '') }
+                    { scale: 'p', stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30303d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
+                      values: (u, v) => v.map(x => x != null ? (x >= 0 ? '+' : '') + (x * 10).toFixed(2) + '‰' : '') }
                 ],
                 cursor: cursorCfg,
                 hooks: { draw: [makePctFillHook(dynamicAmaSlopePct, 'p', 'rgba(46,160,67,0.20)', 'rgba(248,81,73,0.20)'), makeSignalBgHook('p')] }
@@ -1067,7 +1067,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
                 ],
                 axes: [
                     makeTimeAxis(false),
-                    { scale: 'v', stroke: '#30363d', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30303d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
+                    { scale: 'v', stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30303d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
                       values: (u, v) => v.map(x => x != null ? (x >= 0 ? '+' : '') + x.toFixed(1) + '%' : '') }
                 ],
                 cursor: cursorCfg,
@@ -1092,7 +1092,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
                 ],
                 axes: [
                     makeTimeAxis(true),
-                    { scale: 'ow', stroke: '#30363d', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30303d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
+                    { scale: 'ow', stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30303d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
                       values: (u, v) => v.map(x => x != null ? (x >= 0 ? '+' : '') + x.toFixed(2) : ''),
                       splits: () => { const m = Math.max(0.5, currentOutputAxisMax || 0.5); return [-m, -m/2, 0, m/2, m]; } }
                 ],

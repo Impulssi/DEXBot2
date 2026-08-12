@@ -153,7 +153,7 @@ function generateRegimeHTML(data, title = 'Regime Analysis') {
         const data = JSON.parse(document.getElementById('payload').textContent);
         const SYNC_KEY = 'regime-v1';
         const Y_AXIS_SIZE = 58;
-        const X_AXIS_CFG = { show: false, stroke: '#545d68', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: 28, font: '11px Segoe UI, sans-serif' };
+        const X_AXIS_CFG = { show: false, stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: 28, font: '11px Segoe UI, sans-serif' };
         const cursorCfg  = { sync: { key: SYNC_KEY, setSeries: false, scales: ['x', null] }, drag: { x: false, y: false, setScale: false }, focus: { prox: -1 }, show: true, x: true, y: true, points: { show: false } };
 
         // ── helpers ──────────────────────────────────────────────────────────
@@ -217,7 +217,7 @@ function generateRegimeHTML(data, title = 'Regime Analysis') {
         }
 
         function yAxis(scaleKey) {
-            return { side: 1, scale: scaleKey, stroke: '#545d68', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif' };
+            return { side: 1, scale: scaleKey, stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif' };
         }
 
         // ── x-range sync (shared across all panels) ─────────────────────────

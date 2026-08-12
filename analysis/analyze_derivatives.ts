@@ -103,7 +103,7 @@ function parseArgs(): CliConfig {
         const arg = args[i];
         if      (arg === '--source')    config.source.type                  = args[++i];
         else if (arg === '--bot-key')   config.source.config.botKey         = args[++i];
-        else if (arg === '--file')      config.source.config.filePath       = args[++i];
+        else if (arg === '--file')      { config.source.config.filePath = args[++i]; config.source.type = 'json'; }
         else if (arg === '--sma')       config.slowSmaPeriod                = parseInt(args[++i]);
         else if (arg === '--fast-sma')  config.fastSmaPeriod                = parseInt(args[++i]);
         else if (arg === '--confirm')   config.minBarsForConfirmation       = parseInt(args[++i]);

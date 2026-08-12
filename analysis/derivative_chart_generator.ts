@@ -452,7 +452,7 @@ const THEME = {
     muted: '#888',
     background: '#0e1117',
     grid: '#1e2330',
-    axis: '#2a2e3e',
+    axis: '#ffffff',
 };
 const SIGNAL_GREEN = 'rgba(38,166,154,0.45)';
 const SIGNAL_GREEN_WEAK = 'rgba(38,166,154,0.22)';
@@ -475,6 +475,9 @@ function initChart(domId, opts, data) {
 function fmtShortDate(sec) {
     const d = new Date(sec * 1000);
     return d.toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' });
+}
+function fixedTo(value, decimals) {
+    return Number(value).toFixed(decimals);
 }
 function padRange(min, max, lower = 0.04, upper = 0.04) {
     if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
@@ -621,7 +624,7 @@ function tooltipPlugin() {
             rows.push('<div class="tt-row"><span class="tt-label">Price</span><span class="tt-val">' + priceVal.toFixed(6) + '</span></div>');
         }
         if (Number.isFinite(smaVal)) {
-            rows.push('<div class="tt-row"><span class="tt-label">SMA(' + smaPeriod + ')</span><span class="tt-val">' + smaVal.toFixed(6) + '</span></div>');
+            rows.push('<div class="tt-row"><span class="tt-label">SMA(' + ${JSON.stringify(smaPeriod)} + ')</span><span class="tt-val">' + smaVal.toFixed(6) + '</span></div>');
         }
         if (hasFastSma && Number.isFinite(fsVal)) {
             rows.push('<div class="tt-row"><span class="tt-label">fastSMA</span><span class="tt-val">' + fsVal.toFixed(6) + '</span></div>');
@@ -699,8 +702,8 @@ let derivChart;
 let interpChart;
 let macdChart;
 let rsiChart;
-let charts: any[] = [];
-let pendingRange: any = null;
+let charts = [];
+let pendingRange = null;
 let pendingRangeRaf = 0;
 const [xMin, xMax] = [dates[0], dates[dates.length - 1]];
 try {

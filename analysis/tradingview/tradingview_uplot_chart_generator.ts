@@ -174,7 +174,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         }
         #brand { display: flex; flex-direction: column; gap: 4px; min-width: 240px; }
         #title { font-size: 15px; font-weight: 700; color: #f5f8fb; }
-        #subtitle { font-size: 11px; color: #8290a2; text-transform: uppercase; letter-spacing: 0.6px; }
+        #subtitle { font-size: 11px; color: #b9c6d4; text-transform: uppercase; letter-spacing: 0.6px; }
         #toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px 12px; align-items: center; }
         .group { display: inline-flex; align-items: center; gap: 8px; padding-left: 12px; border-left: 1px solid #263241; }
         .group:first-child { padding-left: 0; border-left: 0; }
@@ -617,7 +617,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             return {
                 show: true,
                 size: showLabels ? 24 : 14,
-                stroke: '#545d68',
+                stroke: '#ffffff',
                 grid: { stroke: '#1c2128' },
                 ticks: { stroke: '#30363d', width: 1 },
                 font: '11px Segoe UI, sans-serif',
@@ -1368,7 +1368,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ],
                 axes: [
                     makeTimeAxis(false),
-                    { scale: 'y', size: 62, stroke: '#545d68', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, values: (u, vals) => vals.map((v) => (v == null ? '' : fmtPrice(v))) },
+                    { scale: 'y', size: 62, stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, values: (u, vals) => vals.map((v) => (v == null ? '' : fmtPrice(v))) },
                 ],
             };
 
@@ -1403,7 +1403,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ],
                 axes: [
                     makeTimeAxis(true),
-                    { scale: 'y', size: 62, stroke: '#545d68', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, values: (u, vals) => vals.map((v) => (v == null ? '' : fmtVolume(v))) },
+                    { scale: 'y', size: 62, stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, values: (u, vals) => vals.map((v) => (v == null ? '' : fmtVolume(v))) },
                 ],
             };
 

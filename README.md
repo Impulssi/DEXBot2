@@ -19,7 +19,7 @@ DEXBot2 is the first open source trading bot with zero runtime dependencies and 
 - [License](#-license)
 - [Links](#-links)
 
-## 🚀 Features
+## ✨ Features
 
 - **Grid Trading** — geometric order grids that rebalance as price moves
 - **Adaptive Signals** — AMA and trend inputs tune grid placement
@@ -27,7 +27,7 @@ DEXBot2 is the first open source trading bot with zero runtime dependencies and 
 - **Runtime Safety** — replay-safe fills, sync recovery, and cleanup
 - **Secure Ops** — encrypted keys and credential daemon
 
-## 🔥 Quick Start
+## 🌱 Quick Start
 
 ```bash
 # Option A — Global install (`dexbot` works everywhere)
@@ -47,7 +47,7 @@ git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
 ./unlock                   # or: npx dexbot start
 ```
 
-Detailed setup: [Installation](#installation).
+Detailed setup: [Installation](#-installation).
 
 ### First Run
 

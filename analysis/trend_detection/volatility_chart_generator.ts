@@ -217,6 +217,11 @@ function generateHTML(data, title = 'ATR Volatility Research') {
             return Math.max(lo, Math.min(hi, v));
         }
 
+        function roundTo(value, factor) {
+            if (!Number.isFinite(value)) return NaN;
+            return Math.round(value * factor) / factor;
+        }
+
         function fmtNum(v, digits = 4) {
             if (v == null || !Number.isFinite(v)) return '-';
             const abs = Math.abs(v);
@@ -581,8 +586,8 @@ function generateHTML(data, title = 'ATR Volatility Research') {
                     { label: 'AMA3', stroke: '#e3b341', width: 1.5, scale: 'y', points: { show: false } },
                 ],
                 axes: [
-                    { show: false, stroke: '#545d68', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: 28, font: '11px Segoe UI, sans-serif' },
-                    { scale: 'y', stroke: '#545d68', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
+                    { show: false, stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: 28, font: '11px Segoe UI, sans-serif' },
+                    { scale: 'y', stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
                       values: (u, v) => v.map(x => x != null ? fmtNum(x, 6) : '') },
                 ],
                 cursor: cursorCfg,
@@ -603,8 +608,8 @@ function generateHTML(data, title = 'ATR Volatility Research') {
                     { label: 'Weight variance', stroke: '#d2a8ff', width: 1.5, scale: 'v', points: { show: false } },
                 ],
                 axes: [
-                    { show: false, stroke: '#545d68', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: 28, font: '11px Segoe UI, sans-serif' },
-                    { scale: 'v', stroke: '#545d68', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
+                    { show: false, stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: 28, font: '11px Segoe UI, sans-serif' },
+                    { scale: 'v', stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
                       values: (u, v) => v.map(x => x != null ? fmtNum(x, 6) : '') },
                 ],
                 cursor: cursorCfg,
@@ -626,8 +631,8 @@ function generateHTML(data, title = 'ATR Volatility Research') {
                     { label: 'Δ', stroke: '#f85149', width: 1.7, scale: 'd', points: { show: false } },
                 ],
                 axes: [
-                    { show: true, stroke: '#545d68', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: 28, font: '11px Segoe UI, sans-serif' },
-                    { scale: 'd', stroke: '#545d68', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
+                    { show: true, stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, size: 28, font: '11px Segoe UI, sans-serif' },
+                    { scale: 'd', stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
                       values: (u, v) => v.map(x => x != null ? fmtSigned(x, 3) : ''),
                       splits: buildRawDeltaSplits },
                 ],

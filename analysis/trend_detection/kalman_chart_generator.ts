@@ -281,7 +281,7 @@ function generateHTML(data, title = 'Kalman Trajectory Analysis') {
                 axes: [
                     {
                         show: showXAxis,
-                        stroke: '#30363d',
+                        stroke: '#ffffff',
                         grid: { stroke: '#1c2128' },
                         ticks: { stroke: '#30363d', width: 1 },
                         size: 34,
@@ -289,7 +289,7 @@ function generateHTML(data, title = 'Kalman Trajectory Analysis') {
                     },
                     {
                         scale: scaleKey,
-                        stroke: '#30363d',
+                        stroke: '#ffffff',
                         grid: { stroke: '#1c2128', dash: [4, 4] },
                         ticks: { stroke: '#30363d', width: 1 },
                         size: Y_AXIS_SIZE,
@@ -328,7 +328,7 @@ function generateHTML(data, title = 'Kalman Trajectory Analysis') {
                 axes: [
                     {
                         show: false,
-                        stroke: '#30363d',
+                        stroke: '#ffffff',
                         grid: { stroke: '#1c2128' },
                         ticks: { stroke: '#30363d', width: 1 },
                         size: 34,
@@ -336,7 +336,7 @@ function generateHTML(data, title = 'Kalman Trajectory Analysis') {
                     },
                     {
                         scale: 'y',
-                        stroke: '#30363d',
+                        stroke: '#ffffff',
                         grid: { stroke: '#1c2128' },
                         ticks: { stroke: '#30363d', width: 1 },
                         size: Y_AXIS_SIZE,
