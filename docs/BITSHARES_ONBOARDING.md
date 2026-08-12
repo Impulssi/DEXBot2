@@ -12,8 +12,9 @@ trade, assuming you are new to BitShares and the Linux terminal:
 7. Going live
 8. Troubleshooting first-run mistakes
 
-**Prerequisite:** DEXBot2 is installed. See the root [README](../README.md)
-for installation options (`npm i -g dexbot` or clone + `npm install`).
+**Prerequisite:** DEXBot2 is installed. See the "Install" section of the root
+[README](../README.md#install) for installation options (`npm i -g dexbot` or
+clone + `npm install`).
 
 ---
 
@@ -22,11 +23,11 @@ for installation options (`npm i -g dexbot` or clone + `npm install`).
 BitShares is a **decentralized financial blockchain** — its flagship use case is
 a fully on-chain DEX, but the chain itself is a general financial platform
 (accounts with multi-signature authority, user-issued assets, market-pegged
-assets, liquidity pools, prediction markets). Everything on the DEX is
-on-chain: order books, matching, settlement, and balances. There is no
-registration wall, no KYC, and no intermediary holding your funds. See the
-[BitShares whitepaper](https://bitshares.github.io/docs/#/whitepaper) for the
-full vision.
+assets, liquidity pools, prediction markets, and a peer-to-peer credit system).
+Everything on the DEX is on-chain: order books, matching, settlement, and
+balances. There is no registration wall, no KYC, and no intermediary holding
+your funds. See the [BitShares whitepaper](https://bitshares.github.io/docs/#/whitepaper)
+for the full vision.
 
 - The native asset is **BTS**. It pays trading fees and backs most
   market-pegged assets.
@@ -37,6 +38,11 @@ full vision.
 - A **market-pegged asset (MPA)**, like `HONEST.USD`, tracks the value of an
   external asset through on-chain price feeds and is collateralized by BTS.
   Trading it works like any other pair — the price feeds just keep it pegged.
+- A **peer-to-peer (P2P) credit system** — on-chain lending between accounts,
+  with no bank or broker in the middle. Lenders offer assets at interest
+  through **credit offers**; borrowers pledge collateral to borrow and repay
+  (or auto-repay) on expiry. DEXBot2 can borrow MPAs and take credit offers for
+  you — see [MPA and Credit Usage](MPA_CREDIT_USAGE.md#which-section-do-i-need).
 
 DEXBot2 is a **grid trading bot** for these pairs: it places a ladder of buy
 and sell orders around a reference price and profits as price oscillates
@@ -259,7 +265,7 @@ Keep all other defaults — they are sensible. The only things worth tuning late
 `targetSpreadPercent` (profit per cycle), `incrementPercent` (grid density),
 `minPrice` / `maxPrice` (grid bounds), and `gridPrice` — set it to `"ama"` so
 the market adapter centers the grid on the AMA signal. See the "Recommended Bot
-Setup" section of the [README](../README.md).
+Setup" section of the [README](../README.md#recommended-bot-setup).
 
 ### Activate the market adapter
 
@@ -407,9 +413,9 @@ trading fees before going live (see [Fund the account](#22-fund-the-account)).
 
 ## Further reading
 
-- [Root README](../README.md) — install, config, command reference
-- [Market Adapter](../market_adapter/README.md) — AMA pricing and grid tuning
-- [MPA and Credit Usage](MPA_CREDIT_USAGE.md) — borrowing and credit offer workflows
+- [Root README](../README.md#contents) — install, config, command reference
+- [Market Adapter](../market_adapter/README.md#quick-start) — AMA pricing and grid tuning
+- [MPA and Credit Usage](MPA_CREDIT_USAGE.md#which-section-do-i-need) — borrowing and credit offer workflows
 
 ---
 
