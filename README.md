@@ -67,8 +67,8 @@ You'll need **Git** and **Node.js** installed.
 
 #### Windows Users
 
-1. Install **Node.js LTS** from [nodejs.org](https://nodejs.org/) (accept defaults, restart after)
-2. Install **Git** from [git-scm.com](https://git-scm.com/) (accept defaults, restart after)
+1. Install **Node.js LTS** from [nodejs.org](https://nodejs.org/en/download) (accept defaults, restart after)
+2. Install **Git** from [git-scm.com](https://git-scm.com/install/windows) (accept defaults, restart after)
 3. Verify installation in Command Prompt:
    ```bash
    node --version && npm --version && git --version
@@ -88,14 +88,30 @@ brew install node git
 
 #### Linux Users
 
-Use your package manager:
+DEXBot needs Node.js v22.12 or newer. Most distro repos ship an outdated `nodejs` package, so install Node from [nodejs.org](https://nodejs.org/en/download):
+
+```bash
+# e.g. via nvm (from https://nodejs.org/en/download)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
+\. "$HOME/.nvm/nvm.sh"
+nvm install 24
+```
+
+Install Git from your package manager:
+
 ```bash
 # Ubuntu/Debian
 sudo apt-get update
-sudo apt-get install nodejs npm git
+sudo apt-get install git
 
 # Fedora/RHEL
-sudo dnf install nodejs npm git
+sudo dnf install git
+```
+
+Verify both installations:
+
+```bash
+node --version && npm --version && git --version
 ```
 
 ### Install
