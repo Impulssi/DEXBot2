@@ -247,7 +247,7 @@ dexbot disable {all|<bot>} # Disable bot in config
 dexbot enable {all|<bot>}  # Enable bot in config
 
 dexbot stat                # Runtime status (unlock or PM2)
-dexbot order               # Analyze order grids
+dexbot order [<bot>]       # Analyze order grids
 dexbot order --export      # Export as HTML to root folder
 
 dexbot update              # Update DEXBot2
@@ -260,18 +260,18 @@ dexbot default             # Reset settings to defaults
 PM2 is optional — `dexbot start` is the native solution.
 
 ```bash
-dexbot pm2 [<bot-name>]                    # Start with PM2
+dexbot pm2 [<bot>]                         # Start with PM2
 dexbot pm2 restart {all|<bot>|dexbot-cred} # Safe restart
 dexbot pm2 stop {all|<bot>}                # Stop (via wrapper)
 dexbot pm2 delete {all|<bot>}              # Delete (via wrapper)
-pm2 logs [<bot-name>]                      # Real-time logs
+pm2 logs [<bot>]                           # Real-time logs
 ```
 
 Always use `dexbot pm2 restart` instead of raw `pm2 restart all` — the wrapper safely handles the credential daemon. If the credential daemon stops, rerun `dexbot pm2`.
 
 > Repo-root users can use `./pm2` instead of `dexbot pm2`.
 
-Logs are written to `profiles/logs/` in all modes: the monolithic runtime uses `dexbot.log` / `dexbot-error.log`, and per-bot output uses `<bot-name>.log` / `<bot-name>-error.log`.
+Logs are written to `profiles/logs/` in all modes: the monolithic runtime uses `dexbot.log` / `dexbot-error.log`, and per-bot output uses `<bot>.log` / `<bot>-error.log`.
 
 ## 📚 Documentation
 

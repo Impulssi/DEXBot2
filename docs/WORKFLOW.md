@@ -229,6 +229,7 @@ the canonical name is preferred in scripts and docs.
 | `dexbot update` | — | Update DEXBot2 from the repository and restart active bots |
 | `dexbot export <bot>` | — | Export bot trades/settings for QTradeX backtesting |
 | `dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds) |
+| `dexbot order [<bot>]` | — | Analyze only the specified bot's order grid |
 | `dexbot status` | `stat` | Unified runtime health — daemon, adapter, bots |
 | `dexbot start` | `unlock` | Run credential daemon + bot (equivalent to `node unlock`) |
 | `dexbot stop` / `dexbot start` | `stp`, `stopall` | Stop/start the monolithic runtime (unlock mode) |

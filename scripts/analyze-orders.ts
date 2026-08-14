@@ -1581,15 +1581,43 @@ function generateHtmlReport(analyses: any[]) {
 }
 
 function main() {
-  const exportHtml = process.argv.includes('--export');
+  const rawArgs = process.argv.slice(2);
+  const exportHtml = rawArgs.includes('--export');
+  // Positional (non-flag) args are treated as bot key filters. Example:
+  //   tsx scripts/analyze-orders.ts xrp-bts
+  //   tsx scripts/analyze-orders.ts xrp-bts --export
+  const botKeyFilter = rawArgs.find((arg) => !arg.startsWith('-'))?.trim().toLowerCase() || null;
 
   if (!exportHtml) {
-    console.log(`\n${colors.cyan}🔍 Order Analysis${colors.reset}`);
+    const targetNote = botKeyFilter ? ` (filter: ${botKeyFilter})` : '';
+    console.log(`\n${colors.cyan}🔍 Order Analysis${targetNote}${colors.reset}`);
     console.log(`${colors.cyan}${'='.repeat(HEADER_WIDTH)}${colors.reset}`);
   }
 
   // Get all order files sorted by modification time (newest first)
-  const { files, skippedCandidates } = getOrderFiles();
+  let { files, skippedCandidates } = getOrderFiles();
+
+  // Filter to a single bot when a bot key was requested. Also match the
+  // sanitized form of a bot name (e.g. "XRP-BTS" -> "xrp-bts").
+  if (botKeyFilter) {
+    const sanitizedFilter = sanitizeKey(botKeyFilter);
+    const matched = files.filter((file: any) =>
+      String(file.botKey).toLowerCase() === botKeyFilter
+      || String(file.botKey).toLowerCase() === sanitizedFilter
+      || (file.config?.name && sanitizeKey(file.config.name) === sanitizedFilter)
+    );
+    if (matched.length === 0) {
+      if (exportHtml) {
+        generateHtmlReport([]);
+      } else {
+        console.log(`${colors.sell}No order grid found for bot key '${botKeyFilter}'.${colors.reset}`);
+        console.log('Available bots:');
+        files.forEach((file: any) => console.log(`  - ${file.botKey}`));
+      }
+      process.exit(0);
+    }
+    files = matched;
+  }
 
   // Handle fully empty directory case. If files were skipped, report why below.
   if (files.length === 0 && skippedCandidates.length === 0) {
@@ -1655,7 +1683,7 @@ function main() {
     return;
   }
 
-  if (skippedCandidates.length > 0) {
+  if (skippedCandidates.length > 0 && !botKeyFilter) {
     console.log('');
     console.log(`${colors.cyan}${'='.repeat(HEADER_WIDTH)}${colors.reset}`);
     skippedCandidates.forEach((candidate: any) => {

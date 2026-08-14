@@ -41,41 +41,43 @@ const __dirname = _esmDirname(__filename);
  * ===============================================================================
  *
  * TRADING OPERATIONS:
- *   dexbot test <bot-name>      - Test-run single bot (live trading)
- *   dexbot drystart <bot-name>  - Start bot in dry-run mode (no transactions)
+ *   dexbot test <bot>             - Test-run single bot (live trading)
+ *   dexbot drystart <bot>         - Start bot in dry-run mode (no transactions)
  *
  * 🛠️ BOT MANAGEMENT:
- *   dexbot reset all            - Reset all active bot grids (full regeneration)
- *   dexbot reset <bot-name>     - Reset bot grid (full regeneration)
- *   dexbot default              - Reset settings to defaults (deletes general.settings.json, market_profiles.json, market_adapter_settings.json)
- *   dexbot disable all          - Mark all bots inactive in config
- *   dexbot disable <bot-name>   - Mark bot inactive in config
- *   dexbot clear                - Clear all log files in profiles/logs/
+ *   dexbot reset all              - Reset all active bot grids (full regeneration)
+ *   dexbot reset <bot>            - Reset bot grid (full regeneration)
+ *   dexbot default                - Reset settings to defaults (deletes general.settings.json, market_profiles.json, market_adapter_settings.json)
+ *   dexbot disable all            - Mark all bots inactive in config
+ *   dexbot disable <bot>          - Mark bot inactive in config
+ *   dexbot clear                  - Clear all log files in profiles/logs/
  *
  * CONFIGURATION:
- *   dexbot key                 - Set up master password and keyring
- *   dexbot bot                 - Interactive editor for bot definitions
+ *   dexbot key                    - Set up master password and keyring
+ *   dexbot bot                    - Interactive editor for bot definitions
  *
  * PM2 ORCHESTRATION:
- *   dexbot pm2                  - Start all bots via PM2 with daemon
-  *   dexbot pm2 stop all         - Stop all PM2 bot processes
-  *   dexbot pm2 stop <bot-name>  - Stop specific bot
-  *   dexbot pm2 delete all       - Delete all bots from PM2
-  *   dexbot pm2 delete <bot-name>- Delete specific bot from PM2
- *   dexbot pm2 help             - Show PM2 command help
+ *   dexbot pm2                    - Start all bots via PM2 with daemon
+ *   dexbot pm2 stop all           - Stop all PM2 bot processes
+ *   dexbot pm2 stop <bot>         - Stop specific bot
+ *   dexbot pm2 delete all         - Delete all bots from PM2
+ *   dexbot pm2 delete <bot>       - Delete specific bot from PM2
+ *   dexbot pm2 help               - Show PM2 command help
  *
  * STATUS:
- *   dexbot status               - Show bot runtime status (unlock monolithic/isolated or PM2)
+ *   dexbot status                 - Show bot runtime status (unlock monolithic/isolated or PM2)
  *
  * MAINTENANCE:
- *   dexbot update               - Update to latest version (pull + install + restart)
- *   dexbot stop                 - Stop the monolithic runtime
- *   dexbot restart              - Restart the monolithic runtime
- *   dexbot delete               - Stop/delete all runtime processes
- *   dexbot export <bot-name>    - Export trading history to CSV/JSON for QTradeX
- *   dexbot order                - Analyze persisted order grids in profiles/orders/
- *   dexbot order --export       - Export order analysis as standalone HTML report
- *   dexbot help                 - Show this help message
+ *   dexbot update                 - Update to latest version (pull + install + restart)
+ *   dexbot stop                   - Stop the monolithic runtime
+ *   dexbot restart                - Restart the monolithic runtime
+ *   dexbot delete                 - Stop/delete all runtime processes
+ *   dexbot export <bot>           - Export trading history to CSV/JSON for QTradeX
+ *   dexbot order                  - Analyze persisted order grids in profiles/orders/
+ *   dexbot order [<bot>]          - Analyze only the specified bot's order grid
+ *   dexbot order --export         - Export order analysis as standalone HTML report
+ *   dexbot order [<bot>] --export - Export only the specified bot's analysis
+ *   dexbot help                   - Show this help message
  *
  * NPM SCRIPTS (alternative invocation):
  *   npm run pm2:start                - Start bots (requires ecosystem.config.cjs pre-generated)
@@ -172,18 +174,18 @@ const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', 
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
-    { title: 'Test-run a bot from the tracked config', command: 'dexbot test bot-name', notes: 'Targets the named entry in profiles/bots.json.' },
-    { title: 'Dry-run a bot without broadcasting', command: 'dexbot drystart bot-name', notes: 'Forces the run into dry-run mode even if the stored config was live.' },
-    { title: 'Disable a bot in config', command: 'dexbot disable bot-name', notes: 'Marks the bot inactive in config.' },
-    { title: 'Enable a bot in config', command: 'dexbot enable bot-name', notes: 'Marks the bot active in config.' },
+    { title: 'Test-run a bot from the tracked config', command: 'dexbot test <bot>', notes: 'Targets the named entry in profiles/bots.json.' },
+    { title: 'Dry-run a bot without broadcasting', command: 'dexbot drystart <bot>', notes: 'Forces the run into dry-run mode even if the stored config was live.' },
+    { title: 'Disable a bot in config', command: 'dexbot disable <bot>', notes: 'Marks the bot inactive in config.' },
+    { title: 'Enable a bot in config', command: 'dexbot enable <bot>', notes: 'Marks the bot active in config.' },
     { title: 'Reset all active bot grids', command: 'dexbot reset all', notes: 'Triggers full grid regeneration for every active bot.' },
-    { title: 'Reset a bot grid', command: 'dexbot reset bot-name', notes: 'Triggers a full grid regeneration for the named bot.' },
+    { title: 'Reset a bot grid', command: 'dexbot reset <bot>', notes: 'Triggers a full grid regeneration for the named bot.' },
     { title: 'Manage keys', command: 'dexbot key', notes: 'Runs modules/chain_keys.ts to add or update master passwords.' },
     { title: 'Edit bot definitions', command: 'dexbot bot', notes: 'Launches the interactive modules/account_bots.ts helper for the JSON config.' },
     { title: 'Start bots with PM2', command: 'dexbot pm2', notes: 'Generates ecosystem config, authenticates, and starts PM2.' },
     { title: 'Update DEXBot2', command: 'dexbot update', notes: 'Fetches latest code, updates dependencies, and restarts PM2.' },
-    { title: 'Export bot trades for QTradeX', command: 'dexbot export bot-name', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' },
-    { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across profiles/orders/ and prints spread/increment/funds/distribution metrics. Add --export for an HTML report.' },
+    { title: 'Export bot trades for QTradeX', command: 'dexbot export <bot>', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' },
+    { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across profiles/orders/ and prints spread/increment/funds/distribution metrics. Add a bot key to render only that bot, and --export for an HTML report.' },
     { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from profiles/logs/.' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
@@ -217,7 +219,7 @@ const cliArgs = process.argv.slice(2);
  * Show the CLI usage/help text when requested or upon invalid commands.
  */
 function printCLIUsage() {
-    console.log('Usage: dexbot [command] [bot-name]');
+    console.log('Usage: dexbot [command] [bot]');
     console.log('Commands:');
     console.log('  test <bot>        Test-run the named bot (one-shot, live trading).');
     console.log('  start [bot]       Start the monolithic runtime. Counterpart to stop.');
@@ -235,6 +237,7 @@ function printCLIUsage() {
     console.log('  pm2               Start all active bots with PM2 (authenticate + generate config + start).');
     console.log('  update            Update DEXBot2 from the repository and restart active bots.');
     console.log('  order             Analyze persisted order grids in profiles/orders/ (spread, increment, funds). Use --export for HTML.');
+    console.log('  order [<bot>]     Analyze only the specified bot.');
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Legacy alias for start (repo-root: `./unlock`).');
     console.log('  stop              Stop the monolithic runtime.');
@@ -766,7 +769,7 @@ async function resetBotByName(botName: string | null | undefined) {
  */
 async function exportBotTrades(botName: string | undefined) {
     if (!botName) {
-        console.error(startupError('Please specify a bot name: dexbot export <bot-name>'));
+        console.error(startupError('Please specify a bot name: dexbot export <bot>'));
         process.exit(1);
     }
 
