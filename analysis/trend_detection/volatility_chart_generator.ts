@@ -1,7 +1,11 @@
 
 import { MARKET_ADAPTER } from '../../modules/constants.js';
-import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
+import { computeATRSeries } from '../../market_adapter/core/strategies/atr/calculator.js';
+import { computeVolatilityShift } from '../../market_adapter/core/strategies/volatility_shift.js';
+import { embedFunctionSources, escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
 'use strict';
+
+const EMBEDDED_SHARED_FUNCS = embedFunctionSources([computeATRSeries, computeVolatilityShift]);
 
 
 function generateHTML(data, title = 'ATR Volatility Research') {
@@ -156,7 +160,7 @@ function generateHTML(data, title = 'ATR Volatility Research') {
                 <div class="legend-item">Weff: <span id="l-weff" class="legend-val" style="color:#3fb950;">-</span></div>
                 <div class="group-sep"></div>
                 <div class="ctrl thr"><label for="threshold-slider">thr</label><input type="range" id="threshold-slider" min="0" max="500" step="1" value="${Math.round(defaultThreshold * 1000)}"><span class="val" id="threshold-value">${defaultThreshold.toFixed(3)}</span></div>
-                <div class="ctrl atr"><label for="atr-slider">atr</label><input type="range" id="atr-slider" min="3" max="30" step="1" value="${Math.round(defaultAtrPeriod)}"><span class="val" id="atr-value">${Math.round(defaultAtrPeriod)}</span></div>
+                <div class="ctrl atr"><label for="atr-slider">atr</label><input type="range" id="atr-slider" min="${MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_MIN}" max="${MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_MAX}" step="1" value="${Math.round(defaultAtrPeriod)}"><span class="val" id="atr-value">${Math.round(defaultAtrPeriod)}</span></div>
                 <div class="ctrl clamp"><label for="clamp-slider">clamp</label><input type="range" id="clamp-slider" min="100" max="1000" step="1" value="${Math.round(defaultClamp * 1000)}"><span class="val" id="clamp-value">${defaultClamp.toFixed(3)}</span></div>
                 <div class="ctrl exp"><label for="exponent-slider">exp</label><input type="range" id="exponent-slider" min="500" max="1000" step="1" value="${Math.round(defaultExponent * 1000)}"><span class="val" id="exponent-value">${defaultExponent.toFixed(3)}</span></div>
                 <div class="ctrl scale"><label for="scale-slider">scaleX</label><input type="range" id="scale-slider" min="100" max="10000" step="1" value="${Math.round(defaultScaleX * 100)}"><span class="val" id="scale-value">${defaultScaleX.toFixed(2)}x</span></div>
@@ -181,6 +185,9 @@ function generateHTML(data, title = 'ATR Volatility Research') {
     <script>
     (function () {
         const data = JSON.parse(document.getElementById('payload').textContent);
+
+        ${EMBEDDED_SHARED_FUNCS}
+
         const SYNC_KEY = 'volatility-det-v1';
         const Y_AXIS_SIZE = 58;
         const MARKET_ADAPTER = data.marketAdapter || {};
@@ -194,11 +201,7 @@ function generateHTML(data, title = 'ATR Volatility Research') {
         const candleRows = Array.isArray(data.candles) ? data.candles : [];
         const baseVarianceSeries = Array.isArray(data.varianceSeries) ? data.varianceSeries : [];
 
-        function getCandleClose(c) { return Array.isArray(c) ? c[4] : c?.close; }
-        function getCandleHigh(c)  { return Array.isArray(c) ? c[2] : c?.high; }
-        function getCandleLow(c)   { return Array.isArray(c) ? c[3] : c?.low; }
-
-        let currentAtrPeriod = Math.max(3, Math.min(30, Math.round(data.atrPeriod ?? ${JSON.stringify(defaultAtrPeriod)})));
+        let currentAtrPeriod = Math.max(${MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_MIN}, Math.min(${MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_MAX}, Math.round(data.atrPeriod ?? ${JSON.stringify(defaultAtrPeriod)})));
         let currentThreshold = data.volatilityThreshold;
         let currentExponent = data.volatilityExponent;
         let currentScaleX = data.volatilityScaleX;
@@ -212,10 +215,6 @@ function generateHTML(data, title = 'ATR Volatility Research') {
         let charts;
 
         ${UPLOT_SHARED_SCRIPT}
-
-        function clamp(v, lo, hi) {
-            return Math.max(lo, Math.min(hi, v));
-        }
 
         function roundTo(value, factor) {
             if (!Number.isFinite(value)) return NaN;
@@ -270,38 +269,7 @@ function generateHTML(data, title = 'ATR Volatility Research') {
             return Math.max(0.1, Math.min(1.0, pos / 1000));
         }
 
-        /* Sync with analysis/math_utils.ts computeATR() — keep in sync when changing ATR logic */
-        function computeATRSeries(candles, period = 14) {
-            const atrs = [];
-            if (!Array.isArray(candles) || candles.length === 0) return atrs;
-
-            const safePeriod = Math.max(1, Math.round(period));
-            let prevClose = Number(getCandleClose(candles[0]) ?? 0);
-            let atrVal = 0;
-
-            for (let i = 0; i < candles.length; i++) {
-                const c = candles[i];
-                const high = Number(getCandleHigh(c) ?? 0);
-                const low = Number(getCandleLow(c) ?? 0);
-                const close = Number(getCandleClose(c) ?? 0);
-                if (i === 0) {
-                    atrs.push(0);
-                    prevClose = close;
-                    continue;
-                }
-                const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
-                if (i <= safePeriod) {
-                    atrVal = atrVal === 0 ? tr : (atrVal * (i - 1) + tr) / i;
-                } else {
-                    atrVal = (atrVal * (safePeriod - 1) + tr) / safePeriod;
-                }
-                atrs.push(atrVal);
-                prevClose = close;
-            }
-
-            return atrs;
-        }
-
+        /* Sync with market_adapter/core/strategies/atr/calculator.ts computeATRSeries() — injected above */
         function rebuildVarianceSeries() {
             if (!candleRows.length) return baseVarianceSeries.slice();
 
@@ -328,16 +296,16 @@ function generateHTML(data, title = 'ATR Volatility Research') {
         let signalSummary = { below: 0, mid: 0, over: 0, total: 0 };
 
         function calcShift(weightVariance) {
-            const safeVariance = Number.isFinite(weightVariance) && weightVariance > 0 ? weightVariance : 0;
-            const effectiveExponent = Math.max(Math.exp(EXP_LOG_MIN), Math.min(Math.exp(EXP_LOG_MAX), currentExponent));
-            const effectiveScaleX = Math.max(Math.exp(SCALE_LOG_MIN), Math.min(Math.exp(SCALE_LOG_MAX), currentScaleX));
-            const effectiveClamp = Number.isFinite(currentClamp) && currentClamp >= 0.1 ? currentClamp : ${JSON.stringify(defaultClamp)};
-            const raw = -Math.pow(safeVariance, effectiveExponent) * effectiveScaleX;
-            const rawAbs = Math.abs(raw);
-            const clampedRaw = clamp(raw, -effectiveClamp, 0);
-            const delta = Math.abs(clampedRaw) < currentThreshold ? 0 : clampedRaw;
-            const weff = clamp(BASELINE_WEIGHT + delta, MIN_WEIGHT, MAX_WEIGHT);
-            return { raw: clampedRaw, rawAbs, delta, weff, sellW: weff, buyW: weff };
+            const r = computeVolatilityShift(weightVariance, {
+                exponent: currentExponent,
+                scaleX: currentScaleX,
+                threshold: currentThreshold,
+                clampValue: currentClamp,
+                minWeight: MIN_WEIGHT,
+                maxWeight: MAX_WEIGHT,
+                baselineWeight: BASELINE_WEIGHT,
+            });
+            return { raw: r.rawSymmetricDelta, rawAbs: Math.abs(r.rawSymmetricDelta), delta: r.symmetricDelta, weff: r.effectiveWeight, sellW: r.sellW, buyW: r.buyW };
         }
 
         function recalcShift() {
@@ -549,7 +517,7 @@ function generateHTML(data, title = 'ATR Volatility Research') {
         }
 
         function init() {
-            currentAtrPeriod = Math.max(3, Math.min(30, Math.round(currentAtrPeriod)));
+            currentAtrPeriod = Math.max(${MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_MIN}, Math.min(${MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_MAX}, Math.round(currentAtrPeriod)));
             currentExponent = Math.max(Math.exp(EXP_LOG_MIN), Math.min(Math.exp(EXP_LOG_MAX), currentExponent));
             currentScaleX = Math.max(Math.exp(SCALE_LOG_MIN), Math.min(Math.exp(SCALE_LOG_MAX), currentScaleX));
             currentClamp = Math.max(0.1, Math.min(1.0, currentClamp));

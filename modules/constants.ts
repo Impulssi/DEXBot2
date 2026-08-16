@@ -930,6 +930,8 @@ let MARKET_ADAPTER = {
     // Higher values ignore smaller ATR-driven adjustments.
     // Lower values let volatility influence the symmetric shift sooner.
     // (used by the volatility research tool)
+    // ⚠ Mirrored inline in market_adapter/core/strategies/volatility_shift.ts (browser-embedded
+    //   copies stay import-free); update BOTH when changing this value.
     DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_THRESHOLD: 0.1,
 
     // DYNAMIC_WEIGHT_CLIP_PERCENTILE: Outlier filter for unusually large AMA/Kalman moves.
@@ -990,6 +992,8 @@ let MARKET_ADAPTER = {
 
     // DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP: Maximum symmetric downward shift from volatility.
     // Overridable per market pair or per bot via market_adapter_settings.json.
+    // ⚠ Mirrored inline in market_adapter/core/strategies/volatility_shift.ts (browser-embedded
+    //   copies stay import-free); update BOTH when changing this value.
     DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP: 0.5,
 
     // DYNAMIC_WEIGHT_ATR_PERIOD_DEFAULT: ATR lookback used by the live volatility penalty
@@ -997,7 +1001,14 @@ let MARKET_ADAPTER = {
     // Overridable per market pair or per bot via market_adapter_settings.json.
     DYNAMIC_WEIGHT_ATR_PERIOD_DEFAULT: 14,
 
+    // DYNAMIC_WEIGHT_ATR_PERIOD_MIN / MAX: Hard bounds for the ATR lookback, applied by
+    // normalizeAtrPeriod and the volatility research chart slider.
+    DYNAMIC_WEIGHT_ATR_PERIOD_MIN: 3,
+    DYNAMIC_WEIGHT_ATR_PERIOD_MAX: 30,
+
     // DYNAMIC_WEIGHT_MIN_WEIGHT / MAX_WEIGHT: Final weight clamp after all adjustments.
+    // ⚠ Mirrored inline in market_adapter/core/strategies/volatility_shift.ts (browser-embedded
+    //   copies stay import-free); update BOTH when changing these values.
     DYNAMIC_WEIGHT_MIN_WEIGHT: -1,
     DYNAMIC_WEIGHT_MAX_WEIGHT: 2,
 
@@ -1039,6 +1050,8 @@ let MARKET_ADAPTER = {
     // Higher values delay the penalty in calm markets and make it matter more in higher volatility.
     // Lower values make the penalty start affecting weights earlier.
     // Overridable per market pair or per bot via market_adapter_settings.json.
+    // ⚠ Mirrored inline in market_adapter/core/strategies/volatility_shift.ts (browser-embedded
+    //   copies stay import-free); update BOTH when changing this value.
     DYNAMIC_WEIGHT_VOLATILITY_EXPONENT: 1.0,
 
     // DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT: Overall strength multiplier of the ATR-based
@@ -1047,6 +1060,8 @@ let MARKET_ADAPTER = {
     // mild volatility. Increase to 20-30 if you want the bot to pull orders more
     // aggressively during volatile periods.
     // Overridable per market pair or per bot via market_adapter_settings.json.
+    // ⚠ Mirrored inline in market_adapter/core/strategies/volatility_shift.ts (browser-embedded
+    //   copies stay import-free); update BOTH when changing this value.
     DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT: 10.0,
 
     // ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR: Maximum ratio tilt applied to min/max
@@ -1089,11 +1104,15 @@ let MARKET_ADAPTER = {
     // HURST_ZONE_BAND: Width of the neutral Hurst zone between trending and mean-reverting regimes.
     // Higher values classify more markets as "random/unclear".
     // Lower values switch more quickly into trending or mean-reverting states.
+    // ⚠ Mirrored inline in market_adapter/core/strategies/regime_interp.ts (browser-embedded
+    //   copies stay import-free); update BOTH when changing this value.
     HURST_ZONE_BAND: 0.05,
 
     // PE_NODES: Signal-quality bands for permutation entropy.
     // Lower entropy means cleaner, more structured price action.
     // Higher entropy means noisier price action, where the bot should trust signals less.
+    // ⚠ Mirrored inline in market_adapter/core/strategies/regime_interp.ts (browser-embedded
+    //   copies stay import-free); update BOTH when changing these values.
     PE_NODES: [0.60, 0.725, 0.85],
 
     // REGIME_TABLE: Signal-strength table for combinations of market structure and noise.
@@ -1101,6 +1120,8 @@ let MARKET_ADAPTER = {
     // Columns are entropy regimes [structured, mixed, noisy].
     // Higher values preserve more of the dynamic-weight signal.
     // Lower values dampen the signal in unclear or hostile conditions.
+    // ⚠ Mirrored inline in market_adapter/core/strategies/regime_interp.ts (browser-embedded
+    //   copies stay import-free); update BOTH when changing this table.
     REGIME_TABLE: [
         [1.0, 0.7, 0.3],  // Trending (H > 0.5 + HURST_ZONE_BAND)
         [0.6, 0.4, 0.15], // Random

@@ -26,9 +26,12 @@ import { PATHS } from '../modules/paths.js';
 
 import { createSource } from './price_sources.js';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
+import { computeATRSeries } from '../market_adapter/core/strategies/atr/calculator.js';
+import { normalizeAtrPeriod } from '../market_adapter/core/config_normalizers.js';
+import { computeVolatilityShift } from '../market_adapter/core/strategies/volatility_shift.js';
 import { generateHTML } from './trend_detection/volatility_chart_generator.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
-import { computeATR, getCandleClose } from './math_utils.js';
+import { getCandleClose } from './math_utils.js';
 import { writeChartFile } from './chart_utils.js';
 
 'use strict';
@@ -39,19 +42,11 @@ const MIN_WEIGHT = MARKET_ADAPTER.DYNAMIC_WEIGHT_MIN_WEIGHT;
 const MAX_WEIGHT = MARKET_ADAPTER.DYNAMIC_WEIGHT_MAX_WEIGHT;
 const DEFAULT_THRESHOLD = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_THRESHOLD;
 const DEFAULT_CLAMP = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP;
-const MIN_ATR_PERIOD = 3;
-const MAX_ATR_PERIOD = 30;
 const DEFAULT_CHART_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'charts');
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'volatility_chart.html');
 
-function normalizeAtrPeriod(period) {
-    const n = Math.round(Number(period));
-    if (!Number.isFinite(n)) return DEFAULT_ATR_PERIOD;
-    return Math.max(MIN_ATR_PERIOD, Math.min(MAX_ATR_PERIOD, n));
-}
-
-function computeATRSeries(candles, period = DEFAULT_ATR_PERIOD) {
-    return computeATR(candles, normalizeAtrPeriod(period));
+function computeATRSeriesNormalized(candles, period = DEFAULT_ATR_PERIOD) {
+    return computeATRSeries(candles, normalizeAtrPeriod(period));
 }
 
 function parseArgs() {
@@ -100,25 +95,20 @@ function parseArgs() {
 }
 
 function computeShift(weightVariance, exponent, scaleX, threshold, clampValue) {
-    const safeVariance = Number.isFinite(weightVariance) && weightVariance > 0 ? weightVariance : 0;
-    const safeExponent = Number.isFinite(exponent) && exponent >= 0 ? exponent : MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_EXPONENT;
-    const safeScaleX = Number.isFinite(scaleX) && scaleX >= 0 ? scaleX : MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT;
-    const safeThreshold = Number.isFinite(threshold) && threshold >= 0 ? threshold : DEFAULT_THRESHOLD;
-    const safeClamp = Number.isFinite(clampValue) && clampValue >= 0 ? clampValue : DEFAULT_CLAMP;
-    const effectiveExponent = Math.max(0.5, Math.min(1.0, safeExponent));
-    const effectiveScaleX = Math.max(1.0, Math.min(100.0, safeScaleX));
-
-    const rawDelta = -Math.pow(safeVariance, effectiveExponent) * effectiveScaleX;
-    const clampedRawDelta = Math.max(safeClamp * -1, Math.min(0, rawDelta));
-    const symmetricDelta = Math.abs(clampedRawDelta) < safeThreshold ? 0 : clampedRawDelta;
-    const effectiveWeight = Math.max(MIN_WEIGHT, Math.min(MAX_WEIGHT, 0.5 + symmetricDelta));
-
+    const shift = computeVolatilityShift(weightVariance, {
+        exponent,
+        scaleX,
+        threshold,
+        clampValue,
+        minWeight: MIN_WEIGHT,
+        maxWeight: MAX_WEIGHT,
+    });
     return {
-        rawSymmetricDelta: clampedRawDelta,
-        symmetricDelta,
-        effectiveWeight,
-        sellW: effectiveWeight,
-        buyW: effectiveWeight,
+        rawSymmetricDelta: shift.rawSymmetricDelta,
+        symmetricDelta: shift.symmetricDelta,
+        effectiveWeight: shift.effectiveWeight,
+        sellW: shift.sellW,
+        buyW: shift.buyW,
     };
 }
 
@@ -141,7 +131,7 @@ async function main() {
         const closes = candles.map(c => getCandleClose(c) ?? 0);
         const ama3Values = calculateAMA(closes, AMA_CONFIG);
         const atrPeriod = normalizeAtrPeriod(config.atrPeriod);
-        const atrs = computeATRSeries(candles, atrPeriod);
+        const atrs = computeATRSeriesNormalized(candles, atrPeriod);
 
         const allResults: any[] = [];
         for (let i = 0; i < candles.length; i++) {

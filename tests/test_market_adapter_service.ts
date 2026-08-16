@@ -17,6 +17,7 @@ const { MARKET_ADAPTER } = require('../modules/constants');
 const { calculateAMA, getAmaWarmupBars } = require('../market_adapter/core/strategies/ama');
 const { KalmanTrendAnalyzer } = require('../analysis/trend_detection/kalman_trend_analyzer');
 const { buildKalmanVelocitySeries, computeAbsolutePercentileThreshold } = require('../analysis/trend_detection/kalman_velocity_smoothing');
+const { computeDynamicWeightSeries } = require('../market_adapter/core/strategies/dynamic_weight_series');
 const { sleepUntilAlignedBoundary } = require('../market_adapter/test_helpers');
 const { roundToDecimals } = require('../modules/utils/math_utils');
 
@@ -101,54 +102,6 @@ function generateUpThenDownCandles(upCount, downCount, start = 100, upStep = 0.4
 
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
-}
-
-function latchConfirmedSeries(appliedSeries, preGainSeries, confirmBars) {
-    const echoedAppliedSeries = new Array(appliedSeries.length).fill(0);
-    const echoedPreGainSeries = new Array(preGainSeries.length).fill(0);
-
-    if (confirmBars === 0) {
-        for (let i = 0; i < appliedSeries.length; i++) {
-            echoedAppliedSeries[i] = appliedSeries[i];
-            echoedPreGainSeries[i] = preGainSeries[i];
-        }
-        return { echoedAppliedSeries, echoedPreGainSeries };
-    }
-
-    let latchedSign = 0;
-    let pendingSign = 0;
-    let pendingCount = 0;
-    let latchedApplied = 0;
-    let latchedPreGain = 0;
-
-    for (let i = 0; i < appliedSeries.length; i++) {
-        const raw = appliedSeries[i];
-        const sign = raw > 0 ? 1 : raw < 0 ? -1 : 0;
-        if (sign === latchedSign) {
-            pendingSign = 0;
-            pendingCount = 0;
-            latchedApplied = raw;
-            latchedPreGain = preGainSeries[i];
-        } else {
-            if (pendingSign !== sign) {
-                pendingSign = sign;
-                pendingCount = 1;
-            } else {
-                pendingCount++;
-            }
-            if (pendingCount >= confirmBars) {
-                latchedSign = sign;
-                pendingSign = 0;
-                pendingCount = 0;
-                latchedApplied = raw;
-                latchedPreGain = preGainSeries[i];
-            }
-        }
-        echoedAppliedSeries[i] = latchedApplied;
-        echoedPreGainSeries[i] = latchedPreGain;
-    }
-
-    return { echoedAppliedSeries, echoedPreGainSeries };
 }
 
 function buildDynamicWeightParityInputs(candles, cfg, botAma) {
@@ -265,52 +218,31 @@ function buildDynamicWeightParityInputs(candles, cfg, botAma) {
     )));
     const dispScaleMinPct = cfg.dispScaleMinPct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_DISP_SCALE_MIN_PCT;
 
-    const amaOffsets = [];
-    for (let i = 0; i < closes.length; i++) {
-        if (!slopeResult.isReady || i < amaSlopeReadyBars) {
-            amaOffsets.push(0);
-            continue;
-        }
-        const last = amaValues[i];
-        const past = amaValues[i - lookbackBars];
-        if (!Number.isFinite(last) || !Number.isFinite(past) || past === 0) {
-            amaOffsets.push(0);
-            continue;
-        }
-        const slopePct = computeAverageAmaSlopePct(last, past, lookbackBars);
-        if (!Number.isFinite(slopePct)) {
-            amaOffsets.push(0);
-            continue;
-        }
-        const clippedSlopePct = clamp(slopePct, -amaClipThreshold, amaClipThreshold);
-        amaOffsets.push(Math.abs(clippedSlopePct) < nz ? 0 : clamp((clippedSlopePct / amaSlopeMaxPct) * offsetClamp, -offsetClamp, offsetClamp));
-    }
-
-    const kalmanOffsets = [];
-    for (let i = 0; i < kalmanHistory.length; i++) {
-        const point = kalmanHistory[i];
-        const velocityPct = kalmanSmoothedVelocityPct[i];
-        if (!point.isReady || velocityPct == null || point.displacementPct == null) {
-            kalmanOffsets.push(0);
-            continue;
-        }
-
-        const clippedVelocityPct = clamp(velocityPct, -kalClipThreshold, kalClipThreshold);
-        if (Math.abs(clippedVelocityPct) < nz) {
-            kalmanOffsets.push(0);
-            continue;
-        }
-
-        const dispScale = Math.max(1.0, dispScaleMinPct);
-        const dispConf = Math.min(Math.abs(point.displacementPct) / dispScale, 1.0);
-        const momAlign = Math.max(
-            0,
-            (clippedVelocityPct * point.displacementPct) /
-            (Math.abs(clippedVelocityPct) * Math.abs(point.displacementPct) + 1e-10)
-        );
-        const composite = clippedVelocityPct * (1 - dw + dw * dispConf * momAlign);
-        kalmanOffsets.push(clamp((composite / kalmanSlopeMaxPct) * offsetClamp, -offsetClamp, offsetClamp));
-    }
+    // Per-bar series via the canonical shared pipeline (same module the live
+    // service and the research chart use) — exposes the offset channels plus
+    // the raw inputs so callers can re-run with a different clamp mode.
+    const seriesResult = computeDynamicWeightSeries({
+        amaValues,
+        kalmanVelocityPct: kalmanSmoothedVelocityPct,
+        kalmanDisplacementPct: kalmanHistory.map((point) => point.displacementRawPct),
+        kalmanIsReady: kalmanHistory.map((point) => point.isReady),
+        regimeMultipliers,
+        lookbackBars,
+        amaErPeriod,
+        amaClipThreshold,
+        kalClipThreshold,
+        neutralZonePct: nz,
+        amaMaxSlopePct: amaSlopeMaxPct,
+        kalmanMaxSlopePct: kalmanSlopeMaxPct,
+        offsetClamp,
+        dispScaleMinPct,
+        alpha,
+        dw,
+        gain,
+        minOutputThreshold,
+        signalConfirmBars,
+        clampFinalOutput: true,
+    });
 
     return {
         alpha,
@@ -318,54 +250,38 @@ function buildDynamicWeightParityInputs(candles, cfg, botAma) {
         minOutputThreshold,
         signalConfirmBars,
         offsetClamp,
-        amaOffsets,
-        kalmanOffsets,
+        amaValues,
+        kalmanVelocityPct: kalmanSmoothedVelocityPct,
+        kalmanDisplacementPct: kalmanHistory.map((point) => point.displacementRawPct),
+        kalmanIsReady: kalmanHistory.map((point) => point.isReady),
         regimeMultipliers,
+        lookbackBars,
+        amaErPeriod,
+        amaClipThreshold,
+        kalClipThreshold,
+        neutralZonePct: nz,
+        amaMaxSlopePct: amaSlopeMaxPct,
+        kalmanMaxSlopePct: kalmanSlopeMaxPct,
+        dispScaleMinPct,
+        dw,
+        amaOffsets: seriesResult.amaOffsets,
+        kalmanOffsets: seriesResult.kalmanOffsets,
         slopeResult,
     };
 }
 
 function computeDirectionalOffsetSeries(parityInputs, { clampFinalOutput }) {
-    const {
-        alpha,
-        gain,
-        minOutputThreshold,
-        signalConfirmBars,
-        offsetClamp,
-        amaOffsets,
-        kalmanOffsets,
-        regimeMultipliers,
-    } = parityInputs;
-
-    const channelNorm = Math.max(Math.abs(offsetClamp), 1e-9);
-    const combinedOffSeries = new Array(amaOffsets.length).fill(0);
-    const gatedOffSeries = new Array(amaOffsets.length).fill(0);
-
-    for (let i = 0; i < amaOffsets.length; i++) {
-        const blendedOff = (alpha * (amaOffsets[i] / channelNorm) + (1 - alpha) * (kalmanOffsets[i] / channelNorm));
-        const gatedOff = Math.abs(blendedOff * regimeMultipliers[i]) < minOutputThreshold ? 0 : (blendedOff * regimeMultipliers[i]);
-        const appliedOff = clampFinalOutput
-            ? clamp(gatedOff * gain, -offsetClamp, offsetClamp)
-            : (gatedOff * gain);
-        gatedOffSeries[i] = gatedOff;
-        combinedOffSeries[i] = roundToDecimals(appliedOff, 3);
-    }
-
-    const { echoedAppliedSeries, echoedPreGainSeries } = latchConfirmedSeries(
-        combinedOffSeries,
-        gatedOffSeries,
-        signalConfirmBars
-    );
+    const seriesResult = computeDynamicWeightSeries({ ...parityInputs, clampFinalOutput });
 
     return {
-        gatedOffSeries,
-        combinedOffSeries,
-        echoedOffSeries: echoedAppliedSeries,
-        echoedGatedOffSeries: echoedPreGainSeries,
-        rawFinalOff: combinedOffSeries[combinedOffSeries.length - 1] ?? 0,
-        rawFinalPreGainOff: gatedOffSeries[gatedOffSeries.length - 1] ?? 0,
-        finalPreGainOff: echoedPreGainSeries[echoedPreGainSeries.length - 1] ?? 0,
-        finalOff: echoedAppliedSeries[echoedAppliedSeries.length - 1] ?? 0,
+        gatedOffSeries: seriesResult.gatedOffSeries,
+        combinedOffSeries: seriesResult.combinedOffSeries,
+        echoedOffSeries: seriesResult.echoedOffSeries,
+        echoedGatedOffSeries: seriesResult.echoedGatedOffSeries,
+        rawFinalOff: seriesResult.combinedOffSeries[seriesResult.combinedOffSeries.length - 1] ?? 0,
+        rawFinalPreGainOff: seriesResult.gatedOffSeries[seriesResult.gatedOffSeries.length - 1] ?? 0,
+        finalPreGainOff: seriesResult.echoedGatedOffSeries[seriesResult.echoedGatedOffSeries.length - 1] ?? 0,
+        finalOff: seriesResult.echoedOffSeries[seriesResult.echoedOffSeries.length - 1] ?? 0,
     };
 }
 

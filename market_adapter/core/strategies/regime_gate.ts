@@ -1,8 +1,9 @@
 
-import { HurstAnalyzer } from '../../../analysis/trend_detection/hurst_analyzer.js';
-import { PermutationEntropyAnalyzer } from '../../../analysis/trend_detection/permutation_entropy_analyzer.js';
+import { HurstAnalyzer } from '../signals/hurst_analyzer.js';
+import { PermutationEntropyAnalyzer } from '../signals/permutation_entropy_analyzer.js';
 import { MARKET_ADAPTER } from '../../../modules/constants.js';
 import { roundTo } from '../../../modules/utils/math_utils.js';
+import { bilinearInterpolate } from './regime_interp.js';
 'use strict';
 
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
@@ -35,65 +36,11 @@ function classifyPeRegime(pe: any, peNodes: any = null) {
 }
 
 /**
- * Bilinear interpolation over the 3×3 regime table.
- *
- * For a given (h, pe), find the enclosing cell in the node grid, compute the
- * fractional position within that cell, and blend the four corner values.
- * Inputs outside the node range are clamped to the table boundary.
- *
- * @param {number} h  - Hurst exponent [0, 1]
- * @param {number} pe - Normalized permutation entropy [0, 1]
- * @param {Array}  [regimeTable] - Optional override for regime table
- * @param {Object} [opts]        - Optional threshold overrides for interpolation
- * @param {number} [opts.hurstZoneBand] – Override Hurst neutral-zone width
- * @param {Array}  [opts.peNodes]       – Override entropy thresholds
- * @returns {number}  - Interpolated multiplier
- */
-function bilinearInterpolate(h: any, pe: any, regimeTable: any = null, opts: any = {}) {
-    const table = regimeTable ?? MARKET_ADAPTER.REGIME_TABLE;
-    const H_NODES = resolveHNodes(opts.hurstZoneBand);
-    const PE_NODES = resolvePeNodes(opts.peNodes);
-    // --- Hurst axis (H_NODES derived from HURST_ZONE_BAND, decreasing) ---
-    // Find which interval h falls in: row r0, r1 = r0+1, fraction tRow toward r1
-    let r0, tRow;
-    if (h >= H_NODES[0]) {
-        r0 = 0; tRow = 0;                                           // at or above top node
-    } else if (h <= H_NODES[2]) {
-        r0 = 1; tRow = 1;                                           // at or below bottom node
-    } else if (h >= H_NODES[1]) {
-        r0 = 0; tRow = (H_NODES[0] - h) / (H_NODES[0] - H_NODES[1]); // between nodes 0 and 1
-    } else {
-        r0 = 1; tRow = (H_NODES[1] - h) / (H_NODES[1] - H_NODES[2]); // between nodes 1 and 2
-    }
-    const r1 = Math.min(2, r0 + 1);
-
-    // --- PE axis (PE_NODES from constants, increasing) ---
-    // Find which interval pe falls in: col c0, c1 = c0+1, fraction tCol toward c1
-    let c0, tCol;
-    if (pe <= PE_NODES[0]) {
-        c0 = 0; tCol = 0;
-    } else if (pe >= PE_NODES[2]) {
-        c0 = 1; tCol = 1;
-    } else if (pe <= PE_NODES[1]) {
-        c0 = 0; tCol = (pe - PE_NODES[0]) / (PE_NODES[1] - PE_NODES[0]);
-    } else {
-        c0 = 1; tCol = (pe - PE_NODES[1]) / (PE_NODES[2] - PE_NODES[1]);
-    }
-    const c1 = Math.min(2, c0 + 1);
-
-    // --- Bilinear blend ---
-    const v00 = table[r0][c0];
-    const v01 = table[r0][c1];
-    const v10 = table[r1][c0];
-    const v11 = table[r1][c1];
-
-    const top    = v00 * (1 - tCol) + v01 * tCol;
-    const bottom = v10 * (1 - tCol) + v11 * tCol;
-    return top * (1 - tRow) + bottom * tRow;
-}
-
-/**
  * Compute the Hurst+PE regime multiplier from a price series.
+ *
+ * Bilinear interpolation over the 3×3 regime table is delegated to the
+ * canonical pure implementation in strategies/regime_interp.ts (shared with the
+ * browser-embedded chart scripts).
  *
  * Feeds all prices through HurstAnalyzer and PermutationEntropyAnalyzer,
  * then bilinear-interpolates the regime table to produce a multiplier that
@@ -113,9 +60,9 @@ function bilinearInterpolate(h: any, pe: any, regimeTable: any = null, opts: any
  */
 function computeRegimeMultiplier(closes: any, opts: any = {}) {
     const sensitivity = Number.isFinite(opts.regimeSensitivity) ? opts.regimeSensitivity : 1.0;
-    const regimeTable = opts.regimeTable ?? null;
-    const hurstZoneBand = Number.isFinite(opts.hurstZoneBand) ? opts.hurstZoneBand : null;
-    const peNodes = Array.isArray(opts.peNodes) ? opts.peNodes : null;
+    const regimeTable = opts.regimeTable ?? MARKET_ADAPTER.REGIME_TABLE;
+    const hurstZoneBand = Number.isFinite(opts.hurstZoneBand) ? opts.hurstZoneBand : MARKET_ADAPTER.HURST_ZONE_BAND;
+    const peNodes = Array.isArray(opts.peNodes) ? opts.peNodes : MARKET_ADAPTER.PE_NODES;
     const hurstCfg = opts.hurstConfig ?? HURST_CONFIG;
     const peCfg    = opts.peConfig    ?? PE_CONFIG;
 

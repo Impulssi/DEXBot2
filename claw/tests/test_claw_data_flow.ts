@@ -213,7 +213,7 @@ function createDecisionLoopHarness() {
   const discoveryPath = require.resolve('../modules/position_discovery');
   const healthPath = require.resolve('../modules/position_health');
   const feedPath = require.resolve('../modules/feed_price_source');
-  const analyzerPath = require.resolve('../../analysis/trend_detection/kalman_trend_analyzer');
+  const analyzerPath = require.resolve('../../market_adapter/core/signals/kalman_trend_analyzer');
 
   const calls = {
     fetchTrendInput: [],

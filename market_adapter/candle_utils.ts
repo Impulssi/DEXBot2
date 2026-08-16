@@ -1,5 +1,55 @@
 'use strict';
 
+/**
+ * Candle field accessors — canonical implementations shared by production,
+ * analysis tooling, and the browser-embedded chart scripts. The getters are
+ * intentionally self-contained so chart generators can inject their exact
+ * source into generated HTML and every consumer stays on one accessor path.
+ */
+
+function getCandleHigh(candle: any) {
+    if (!candle) return null;
+    return Array.isArray(candle) ? candle[2] : candle.high;
+}
+
+function getCandleLow(candle: any) {
+    if (!candle) return null;
+    return Array.isArray(candle) ? candle[3] : candle.low;
+}
+
+function getCandleClose(candle: any) {
+    if (!candle) return null;
+    return Array.isArray(candle) ? candle[4] : candle.close;
+}
+
+function getCandleTimestamp(candle: any) {
+    if (!candle) return null;
+    return Array.isArray(candle) ? candle[0] : candle.timestamp;
+}
+
+function normalizeCandle(candle: any) {
+    if (!candle) return null;
+    if (Array.isArray(candle)) {
+        const ts = Number(candle[0]);
+        const open = Number(candle[1]);
+        const high = Number(candle[2]);
+        const low = Number(candle[3]);
+        const close = Number(candle[4]);
+        const volume = Number(candle[5] ?? 0);
+        if (![ts, open, high, low, close].every(Number.isFinite)) return null;
+        return { time: Math.floor(ts / 1000), open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 };
+    }
+
+    const ts = Number(candle.timestamp ?? candle.ts ?? candle.time);
+    const open = Number(candle.open);
+    const high = Number(candle.high);
+    const low = Number(candle.low);
+    const close = Number(candle.close);
+    const volume = Number(candle.volume ?? candle.volumeA ?? 0);
+    if (![ts, open, high, low, close].every(Number.isFinite)) return null;
+    return { time: Math.floor(ts / 1000), open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 };
+}
+
 function rawToHuman(rawAmount: any, precision: any) {
     if (precision === undefined || precision === null || !Number.isFinite(Number(precision))) {
         throw new Error(`Invalid precision for rawToHuman: ${precision}`);
@@ -253,5 +303,5 @@ function mergeCandles(a: any, b: any, { onCollision }: any = {}) {
     return [...map.values()].sort((x, y) => x[0] - y[0]);
 }
 
-export { tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles }
+export { getCandleClose, getCandleHigh, getCandleLow, getCandleTimestamp, normalizeCandle, tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles }
 

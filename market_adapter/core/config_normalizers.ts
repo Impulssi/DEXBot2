@@ -8,7 +8,7 @@ function normalizeAtrPeriod(period: any, defaultValue = MARKET_ADAPTER.DYNAMIC_W
     if (!Number.isFinite(value) || value <= 0) return defaultValue;
 
     const rounded = Math.round(value);
-    return Math.max(3, Math.min(30, rounded));
+    return Math.max(MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_MIN, Math.min(MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_MAX, rounded));
 }
 
 function normalizeMaxVolatilityOffset(value: any, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP) {

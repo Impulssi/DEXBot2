@@ -38,6 +38,22 @@ function writeChartFile(filePath: any, html: any) {
 }
 
 /**
+ * Serialize the exact source of the given pure functions for injection into a
+ * generated HTML <script> block. Each function is emitted as a top-level
+ * function declaration (Function.prototype.toString()), so browser-embedded
+ * charts run the same logic as the Node-side modules instead of a hand-copied
+ * copy. Functions must be self-contained (no imports or module-level constants
+ * referenced from their bodies); callers pass all config values explicitly.
+ *
+ * The emitted block is wrapped in marker comments so test harnesses can extract
+ * the embedded sources reliably regardless of the function list or ordering.
+ */
+function embedFunctionSources(fns: Array<Function>): string {
+    const sources = fns.map((fn) => fn.toString()).join('\n\n');
+    return `/* EMBEDDED_FUNCS_START */\n${sources}\n/* EMBEDDED_FUNCS_END */`;
+}
+
+/**
  * Shared uPlot interaction boilerplate for embedded browser scripts.
  * Consumers must define `xMin`, `xMax`, `charts`, `pendingRange`, and `pendingRangeRaf`
  * before embedding this script block.
@@ -141,5 +157,5 @@ function bindPan(chart) {
 }
 `;
 
-export { escapeHtml, serializeJsonForScript, toEpochSeconds, writeChartFile, UPLOT_SHARED_SCRIPT }
+export { escapeHtml, serializeJsonForScript, toEpochSeconds, writeChartFile, embedFunctionSources, UPLOT_SHARED_SCRIPT }
 

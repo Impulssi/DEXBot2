@@ -6,22 +6,15 @@ import {
     normalizeMaxVolatilityOffset,
     normalizeVolatilityThreshold,
 } from '../config_normalizers.js';
-
+import { computeVolatilityShift } from './volatility_shift.js';
+// Canonical AMA slope % lives in dynamic_weight_series.ts (self-contained so the
+// chart generators can embed its exact source); re-exported here for compat.
+import { computeAverageAmaSlopePct } from './dynamic_weight_series.js';
 
 
 
 const _DEFAULT_AMA_KEY = MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS;
 const DEFAULT_ER_PERIOD = MARKET_ADAPTER.AMAS[_DEFAULT_AMA_KEY].erPeriod;
-
-function computeAverageAmaSlopePct(current: any, past: any, lookbackBars: any) {
-    const safeLookbackBars = Number.isFinite(lookbackBars) && lookbackBars > 0
-        ? Math.ceil(lookbackBars)
-        : 1;
-    if (!Number.isFinite(current) || !Number.isFinite(past) || past === 0) {
-        return null;
-    }
-    return ((current - past) / past * 100) / safeLookbackBars;
-}
 
 /**
  * Compute AMA slope and volatility offsets from the AMA series.
@@ -123,22 +116,16 @@ function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any =
         : 0;
 
     // 5. Volatility penalty — symmetric downward shift from ATR/price ratio.
-    //    Formula: symmetricDelta = -weightVariance^exponent * scaleX
+    //    Canonical implementation shared with the volatility research tool and
+    //    the browser-embedded chart scripts (see strategies/volatility_shift.ts).
+    const shift = computeVolatilityShift(safeWeightVariance, {
+        exponent: safeVolatilityExponent,
+        scaleX: safeVolatilityScaleX,
+        threshold: volatilityThreshold,
+        clampValue: maxVolatilityOffset,
+    });
 
-    // Sync clamps with research tools:
-    // Exponent: 0.5 to 1.0 (prevents over-aggressive scaling on low ATR)
-    // ScaleX: 1.0 to 100.0
-    const effectiveExponent = Math.max(0.5, Math.min(1.0, safeVolatilityExponent));
-    const effectiveScaleX = Math.max(1.0, Math.min(100.0, safeVolatilityScaleX));
-
-    let symmetricDelta = 0;
-    if (safeWeightVariance > 0 && maxVolatilityOffset > 0) {
-        const volDelta = -Math.pow(safeWeightVariance, effectiveExponent) * effectiveScaleX;
-        const rawSymmetricDelta = clamp(volDelta, -maxVolatilityOffset, 0);
-        symmetricDelta = Math.abs(rawSymmetricDelta) < volatilityThreshold ? 0 : rawSymmetricDelta;
-    }
-
-    const roundedSymmetricDelta = (roundTo(symmetricDelta, 100)) || 0;
+    const roundedSymmetricDelta = (roundTo(shift.symmetricDelta, 100)) || 0;
 
     return {
         slopeOffset: roundedSlopeOffset,

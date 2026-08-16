@@ -30,7 +30,7 @@ import { getErrorMessage } from '../../modules/utils/errors.js';
 let KalmanTrendAnalyzer: any = null;
 function getTrendAnalyzer() {
   if (!KalmanTrendAnalyzer) {
-    KalmanTrendAnalyzer = require('../../analysis/trend_detection/kalman_trend_analyzer').KalmanTrendAnalyzer;
+    KalmanTrendAnalyzer = require('../../market_adapter/core/signals/kalman_trend_analyzer').KalmanTrendAnalyzer;
   }
   return KalmanTrendAnalyzer;
 }

@@ -13,7 +13,7 @@ All notable changes to this project will be documented in this file.
   - **Regime bilinear**: extracted to pure `strategies/regime_interp.ts`; `regime_gate.ts` delegates; chart embeds it.
   - **AMA slope %**: canonical in `dynamic_weight_series.ts`; `ama_slope_model.ts` re-exports (chart embeds the same source).
   - **Kalman smoothing**: moved to `market_adapter/core/signals/kalman_velocity_smoothing.ts` and made self-contained; chart embeds it.
-  - **Signal latch**: `echoLatchSeries` canonical in `dynamic_weight_series.ts` (`signal_latch.ts` re-exports); service + chart + tests all use it.
+  - **Signal latch**: `echoLatchSeries` canonical in `dynamic_weight_series.ts` (self-contained; service + chart + tests all use it).
   - **Full pipeline**: `computeDynamicWeightSeries` in `dynamic_weight_series.ts` is used by the service's `_computeDynamicWeights`, the research chart (embedded), and the test parity harness.
   - **File locking**: `file_lock.ts` collapsed three variants onto shared `_acquireLockCore`/`_acquireLockCoreAsync` primitives (parameterized by stale/timeout/retry/contention/heartbeat/alive-check).
   - **Production→analysis dependency removed**: Kalman/Hurst/PE analyzers moved to `market_adapter/core/signals/`; `analysis/trend_detection/` keeps re-export shims; `market_adapter_service.ts`, `regime_gate.ts`, and `decision_loop.ts` import the canonical paths (`market_adapter/core/signals/*`, `market_adapter/core/strategies/*`, `market_adapter/candle_utils.ts`, `market_adapter/utils/file_lock.ts`, `analysis/*`, `claw/modules/decision_loop.ts`, `tests/test_market_adapter_service.ts`, `tests/test_market_adapter_signal_gates.ts`).

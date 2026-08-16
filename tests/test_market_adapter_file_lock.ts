@@ -66,9 +66,19 @@ setTimeout(() => {
 
     try {
         await waitForFile(readyPath);
+        const childPid = parseInt(fs.readFileSync(readyPath, 'utf8'), 10);
         assert.throws(
             () => acquireFileLockSync(lockPath, { staleMs: 60000 }),
-            /market adapter already running/,
+            (err) => {
+                assert.match(err.message, /market adapter already running/, 'a live market adapter lock must not be removed by a newer process');
+                // The pid in the message must be read lazily from the lock file at
+                // throw time (the actual holder), never a stale/empty value.
+                assert.ok(
+                    err.message.includes(`pid: ${childPid}`),
+                    `already-running message should report the live holder pid (${childPid}), got: ${err.message}`
+                );
+                return true;
+            },
             'a live market adapter lock must not be removed by a newer process'
         );
     } finally {

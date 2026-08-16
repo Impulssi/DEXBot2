@@ -1,12 +1,30 @@
 
 import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants.js';
 import { getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
-import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
-'use strict';
-
+import { bilinearInterpolate } from '../../market_adapter/core/strategies/regime_interp.js';
+import { computeDynamicWeightSeries, computeAverageAmaSlopePct, echoLatchSeries, roundToN } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
 import {
     buildKalmanVelocitySeries,
-} from './kalman_velocity_smoothing.js';
+    computeAbsolutePercentileThreshold,
+    resolveKalmanVelocitySmoothingConfig,
+    smoothKalmanVelocityPoint,
+} from '../../market_adapter/core/signals/kalman_velocity_smoothing.js';
+import { embedFunctionSources, escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
+'use strict';
+
+// Browser-embedded shared functions — the interactive chart runs the exact same
+// pure logic as the live market adapter service instead of a hand-copied copy.
+const EMBEDDED_SHARED_FUNCS = embedFunctionSources([
+    computeAverageAmaSlopePct,
+    bilinearInterpolate,
+    echoLatchSeries,
+    buildKalmanVelocitySeries,
+    resolveKalmanVelocitySmoothingConfig,
+    smoothKalmanVelocityPoint,
+    computeAbsolutePercentileThreshold,
+    computeDynamicWeightSeries,
+    roundToN,
+]);
 
 function generateHTML(data, title = 'Dynamic Weight Research') {
     const results = data.allResults || [];
@@ -345,6 +363,9 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
 
     <script>
         const data = JSON.parse(document.getElementById('payload').textContent);
+
+        ${EMBEDDED_SHARED_FUNCS}
+
         const SYNC_KEY = "dyn-wt-res-v4";
         const Y_AXIS_SIZE = 58;
         const ma = data.marketAdapter || {};
@@ -400,41 +421,17 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
         const P_NODES = data.pNodes; // PE_NODES
 
         /**
-         * Bilinear interpolation for smooth regime multiplier (mirrors regime_gate.ts)
+         * Regime multiplier for smooth gating — canonical bilinear interpolation
+         * (bilinearInterpolate injected above) plus the dead-band / clamp logic.
          */
         function getRegimeMultiplier(H, PE) {
             if (H == null || PE == null) return 1.0;
-
-            // Clamp inputs to grid range
-            const h = Math.max(H_NODES[2], Math.min(H_NODES[0], H));
-            const p = Math.max(P_NODES[0], Math.min(P_NODES[2], PE));
-
-            // Find H segment (H_NODES decreasing)
-            let i = h > H_NODES[1] ? 0 : 1;
-            let h0 = H_NODES[i], h1 = H_NODES[i+1];
-            let th = (h - h1) / (h0 - h1); // 0 at h1, 1 at h0
-
-            // Find PE segment (P_NODES increasing)
-            let j = p < P_NODES[1] ? 0 : 1;
-            let p0 = P_NODES[j], p1 = P_NODES[j+1];
-            let tp = (p - p0) / (p1 - p0); // 0 at p0, 1 at p1
-
-            // 4-point lookup
-            const v00 = REGIME_TABLE[i][j];     // h0, p0
-            const v01 = REGIME_TABLE[i][j+1];   // h0, p1
-            const v10 = REGIME_TABLE[i+1][j];   // h1, p0
-            const v11 = REGIME_TABLE[i+1][j+1]; // h1, p1
-
-            // Bilinear interpolation
-            const row0 = v00 * (1 - tp) + v01 * tp;
-            const row1 = v10 * (1 - tp) + v11 * tp;
-            return row0 * th + row1 * (1 - th);
+            return bilinearInterpolate(H, PE, REGIME_TABLE, { hNodes: H_NODES, pNodes: P_NODES });
         }
 
         let currentRegimeSensitivity = data.regimeSensitivity ?? ma.regimeSensitivity;
 
         const currentKalmanVelocityPct = new Array(data.dates.length).fill(null);
-        const currentKalmanAdaptivePct = new Array(data.dates.length).fill(null);
         const currentLatchedSignals = new Array(data.dates.length).fill(null);
         const dynamicAmaOff      = new Array(data.dates.length).fill(null);
         const dynamicAmaSlopePct = new Array(data.dates.length).fill(null);
@@ -447,58 +444,35 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
         const echoCombinedBuy  = new Array(data.dates.length).fill(null);
         const currentMults    = new Array(data.dates.length).fill(null);
         let currentOutputAxisMax = 0.5;
+        let dynamicClipThreshold = Infinity;
 
+        // Shared Kalman velocity smoothing (smoothKalmanVelocityPoint /
+        // buildKalmanVelocitySeries / resolveKalmanVelocitySmoothingConfig /
+        // computeAbsolutePercentileThreshold injected above).
         function recalcKalmanVelocity() {
-            const blend = Math.max(0, Math.min(200, currentKalmanSmoothPct)) / 100;
             const rawSeries = data.kalmanVelocityPctRaw || data.kalmanVelocityPct;
             const dispSeries = data.kalmanDisplacementPct;
-            const dispScale = Math.max(1.0, Math.min(3.0, currentKalmanDispScaleMult));
-            const dispThreshold = Math.max(0.25, Math.min(3.0, currentKalmanDispThresholdMult));
-            const smoothingBudget = 0.60;
-            const smoothingFloor = 0;
-            const smoothingSpan = smoothingBudget * Math.max(20, Math.min(200, currentKalmanSmoothSpanPct)) / 100;
-            let prevAdaptive = null;
+            const points = new Array(data.dates.length).fill(null);
             for (let i = 0; i < data.dates.length; i++) {
-                const raw = rawSeries[i];
-                const dp = dispSeries[i];
-                if (raw == null || dp == null) {
-                    currentKalmanVelocityPct[i] = null;
-                    currentKalmanAdaptivePct[i] = null;
-                    prevAdaptive = null;
-                } else {
-                    const trendConfidence = Math.max(0, Math.min(1, Math.abs(dp) / (dispScale * dispThreshold)));
-                    const smoothingAlpha = Math.min(smoothingBudget, smoothingFloor + (smoothingSpan * trendConfidence));
-                    const adaptive = prevAdaptive == null ? raw : (smoothingAlpha * raw) + ((1 - smoothingAlpha) * prevAdaptive);
-                    currentKalmanAdaptivePct[i] = adaptive;
-                    currentKalmanVelocityPct[i] = blend === 0 ? raw : (raw + ((adaptive - raw) * blend));
-                    prevAdaptive = adaptive;
-                }
+                points[i] = { velocityPct: rawSeries[i], displacementPct: dispSeries[i] };
+            }
+            const smoothed = buildKalmanVelocitySeries(points, {
+                kalmanSmoothPct: currentKalmanSmoothPct,
+                kalmanDispScaleMult: currentKalmanDispScaleMult,
+                kalmanDispThresholdMult: currentKalmanDispThresholdMult,
+                kalmanSmoothSpanPct: currentKalmanSmoothSpanPct,
+            });
+            for (let i = 0; i < data.dates.length; i++) {
+                currentKalmanVelocityPct[i] = smoothed[i] ?? null;
             }
         }
 
         function recalcKalmanClipThreshold() {
-            if (currentClipPct === 0) {
-                currentKalClipThreshold = Infinity;
-                return;
-            }
-
-            const magnitudes = [];
-            for (let i = 0; i < data.realBarCount; i++) {
-                const value = currentKalmanVelocityPct[i];
-                if (value != null) magnitudes.push(Math.abs(value));
-            }
-
-            if (magnitudes.length === 0) {
-                currentKalClipThreshold = Infinity;
-                return;
-            }
-
-            magnitudes.sort((a, b) => a - b);
-            const idx = Math.min(
-                Math.floor((100 - currentClipPct) / 100 * magnitudes.length),
-                magnitudes.length - 1
+            currentKalClipThreshold = computeAbsolutePercentileThreshold(
+                currentKalmanVelocityPct,
+                currentClipPct,
+                Infinity
             );
-            currentKalClipThreshold = magnitudes[idx];
         }
 
         function signalDirectionForIndex(i) {
@@ -576,30 +550,21 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
         }
 
         function computeSlopeAtIndex(idx, lb) {
-            if (idx < lb || !data.ama3Prices[idx] || !data.ama3Prices[idx - lb]) return 0;
-            const current = data.ama3Prices[idx];
-            const past = data.ama3Prices[idx - lb];
-            if (past <= 0) return 0;
-            return ((current - past) / past * 100) / Math.max(lb, 1);
+            // Canonical AMA slope % (computeAverageAmaSlopePct injected above).
+            const sp = computeAverageAmaSlopePct(data.ama3Prices[idx], data.ama3Prices[idx - lb], lb);
+            return sp == null ? 0 : sp;
         }
 
         function recalcInputs() {
             recalcKalmanVelocity();
             recalcKalmanClipThreshold();
             recalcLatchedSignals();
-            const nz = currentNz;
-            const amaMs = currentAmaMaxSlopePct;
-            const kalMs = currentKalmanMaxSlopePct;
-            const mo = OUTPUT_CLAMP;
-            const dw = currentDw;
             const lb = currentLookbackBars;
             const amaErWarmup = Math.max(0, Number.isFinite(data.amaErPeriod) ? Math.ceil(data.amaErPeriod) : ${JSON.stringify(MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS].erPeriod)});
             const amaReadyBar = Math.max(lb, amaErWarmup + lb);
-            const acl = currentAmaClipThreshold;
-            const kcl = currentKalClipThreshold;
 
             // Recompute clip threshold based on current lookback
-            let dynamicClipThreshold = Infinity;
+            dynamicClipThreshold = Infinity;
             if (currentClipPct > 0) {
                 const slopes = [];
                 for (let i = amaReadyBar; i < data.realBarCount; i++) {
@@ -614,36 +579,11 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
             }
 
             for (let i = 0; i < data.realBarCount; i++) {
-                // AMA: compute slope dynamically with current lookback, then clip and convert to offset
-                const sp = computeSlopeAtIndex(i, lb);
-                dynamicAmaSlopePct[i] = i < amaReadyBar ? null : sp;
-                const effectiveAcl = currentClipPct > 0 ? dynamicClipThreshold : acl;
-                const clippedA = Math.max(-effectiveAcl, Math.min(effectiveAcl, sp));
-                if (Math.abs(clippedA) < nz || i < amaReadyBar) { dynamicAmaOff[i] = 0; }
-                else { dynamicAmaOff[i] = Math.max(-mo, Math.min(mo, (clippedA / amaMs) * mo)); }
-
-                // Kalman: use pre-computed values from payload
-                const vp = currentKalmanVelocityPct[i];
-                const dp = data.kalmanDisplacementPct[i];
-                const kr = data.kalmanIsReady[i];
-
-                if (!kr || vp === null || dp === null) { dynamicKalOff[i] = null; }
-                else {
-                    const clippedV = Math.max(-kcl, Math.min(kcl, vp));
-                    if (Math.abs(clippedV) < nz) { dynamicKalOff[i] = 0; }
-                    else {
-                        const dispScale = currentDispScaleMinPct;
-                        const dispConf = Math.min(Math.abs(dp) / dispScale, 1.0);
-                        const momAlign = Math.max(0, (clippedV * dp) / (Math.abs(clippedV) * Math.abs(dp) + 1e-10));
-                        const composite = clippedV * (1 - dw + dw * dispConf * momAlign);
-                        dynamicKalOff[i] = Math.max(-mo, Math.min(mo, (composite / kalMs) * mo));
-                    }
-                }
+                // AMA raw slope % for the display panel (offsets computed in recalcWeights)
+                dynamicAmaSlopePct[i] = i < amaReadyBar ? null : computeSlopeAtIndex(i, lb);
             }
             for (let i = data.realBarCount; i < data.dates.length; i++) {
-                dynamicAmaOff[i] = null;
                 dynamicAmaSlopePct[i] = null;
-                dynamicKalOff[i] = null;
             }
         }
 
@@ -653,79 +593,85 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
             currentOutputAxisMax = Math.max(0.5, OUTPUT_CLAMP);
             const channelNorm = Math.max(Math.abs(OUTPUT_CLAMP), 1e-9);
             const outputThreshold = currentMinOutputThreshold;
+            const n = data.realBarCount;
+
+            // Per-bar regime multiplier (display + pipeline input)
+            for (let i = 0; i < data.dates.length; i++) {
+                if (i >= n) { currentMults[i] = null; continue; }
+                const baseMult = getRegimeMultiplier(data.hurstArr[i], data.peArr[i]);
+                // Use power for sensitivity: pushes away from 1.0 in both directions without flipping sign
+                const rawMult = Math.pow(baseMult, currentRegimeSensitivity);
+                // Dead-band: only apply regime multiplier when |mult - 1.0| >= absoluteThreshold
+                // Clamp to 1.0 max: regime only dampens, never amplifies
+                currentMults[i] = Math.abs(rawMult - 1.0) >= ABSOLUTE_THRESHOLD ? Math.min(rawMult, 1.0) : 1.0;
+            }
+
+            // Per-bar offset pipeline — canonical implementation (computeDynamicWeightSeries
+            // injected above), shared with the live market adapter service.
+            const res = computeDynamicWeightSeries({
+                amaValues: data.ama3Prices,
+                kalmanVelocityPct: currentKalmanVelocityPct,
+                kalmanDisplacementPct: data.kalmanDisplacementPct,
+                kalmanIsReady: data.kalmanIsReady,
+                regimeMultipliers: currentMults,
+                lookbackBars: currentLookbackBars,
+                amaErPeriod: data.amaErPeriod,
+                amaClipThreshold: currentClipPct > 0 ? dynamicClipThreshold : currentAmaClipThreshold,
+                kalClipThreshold: currentKalClipThreshold,
+                neutralZonePct: currentNz,
+                amaMaxSlopePct: currentAmaMaxSlopePct,
+                kalmanMaxSlopePct: currentKalmanMaxSlopePct,
+                offsetClamp: OUTPUT_CLAMP,
+                dispScaleMinPct: currentDispScaleMinPct,
+                alpha: currentAlpha,
+                dw: currentDw,
+                gain: currentGain,
+                minOutputThreshold: currentMinOutputThreshold,
+                signalConfirmBars: currentSignalConfirmBars,
+                clampFinalOutput: false,
+            });
 
             for (let i = 0; i < data.dates.length; i++) {
-                const aOff = dynamicAmaOff[i];
-                const kOff = dynamicKalOff[i];
-                if (aOff === null || kOff === null) {
-                    combinedOff[i] = null; combinedSell[i] = null; combinedBuy[i] = null; currentMults[i] = null;
-                } else {
-                    const blendedOff = (currentAlpha * (aOff / channelNorm) + (1 - currentAlpha) * (kOff / channelNorm));
-                    const baseMult = getRegimeMultiplier(data.hurstArr[i], data.peArr[i]);
-                    // Use power for sensitivity: pushes away from 1.0 in both directions without flipping sign
-                    const rawMult = Math.pow(baseMult, currentRegimeSensitivity);
-                    // Dead-band: only apply regime multiplier when |mult - 1.0| >= absoluteThreshold
-                    // Clamp to 1.0 max: regime only dampens, never amplifies
-                    const finalMult = Math.abs(rawMult - 1.0) >= ABSOLUTE_THRESHOLD ? Math.min(rawMult, 1.0) : 1.0;
-                    currentMults[i] = finalMult;
-                    const gatedOff = Math.abs(blendedOff * finalMult) < outputThreshold ? 0 : (blendedOff * finalMult);
-                    const off = gatedOff * currentGain;
-                    combinedOff[i] = Math.round(off * 1000) / 1000;
-                    combinedSell[i] = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, Math.round((STATIC_SELL - off) * 100) / 100));
-                    combinedBuy[i]  = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, Math.round((STATIC_BUY + off) * 100) / 100));
-                    currentOutputAxisMax = Math.max(currentOutputAxisMax, Math.abs(off));
-                }
-            }
-            const confirmBars = Math.max(0, Math.min(5, currentSignalConfirmBars));
-            let latchedSign = 0;
-            let pendingSign = 0;
-            let pendingCount = 0;
-            let latchedOff = 0;
-            for (let i = 0; i < data.dates.length; i++) {
-                const raw = combinedOff[i];
-                if (raw == null) {
+                if (i >= n) {
+                    dynamicAmaOff[i] = null;
+                    dynamicKalOff[i] = null;
+                    combinedOff[i] = null;
+                    combinedSell[i] = null;
+                    combinedBuy[i] = null;
                     echoCombinedOff[i] = null;
                     echoCombinedSell[i] = null;
                     echoCombinedBuy[i] = null;
-                    latchedSign = 0;
-                    pendingSign = 0;
-                    pendingCount = 0;
-                    latchedOff = 0;
                     continue;
                 }
-                if (confirmBars === 0) {
-                    echoCombinedOff[i] = raw;
-                    echoCombinedSell[i] = combinedSell[i];
-                    echoCombinedBuy[i] = combinedBuy[i];
+                const aOff = res.amaOffsets[i];
+                const kOff = res.kalmanOffsets[i];
+                const cOff = res.combinedOffSeries[i];
+                const eOff = res.echoedOffSeries[i];
+                dynamicAmaOff[i] = aOff;
+                // Keep pre-warmup bars as gaps (not flat 0) to match the historical
+                // research-chart rendering: the Kalman channel contributes nothing
+                // until the analyzer reports ready with a measurable velocity.
+                const kalReady = data.kalmanIsReady[i] === true
+                    && currentKalmanVelocityPct[i] != null
+                    && data.kalmanDisplacementPct[i] != null;
+                if (!kalReady) {
+                    dynamicKalOff[i] = null;
+                    combinedOff[i] = null;
+                    combinedSell[i] = null;
+                    combinedBuy[i] = null;
+                    echoCombinedOff[i] = null;
+                    echoCombinedSell[i] = null;
+                    echoCombinedBuy[i] = null;
                     continue;
                 }
-                const sign = raw > 0 ? 1 : raw < 0 ? -1 : 0;
-                if (sign === latchedSign) {
-                    pendingSign = 0;
-                    pendingCount = 0;
-                    latchedOff = raw;
-                } else {
-                    if (pendingSign !== sign) {
-                        pendingSign = sign;
-                        pendingCount = 1;
-                    } else {
-                        pendingCount++;
-                    }
-                    if (pendingCount >= confirmBars) {
-                        latchedSign = sign;
-                        pendingSign = 0;
-                        pendingCount = 0;
-                        latchedOff = raw;
-                    }
-                }
-                echoCombinedOff[i] = latchedOff;
-                echoCombinedSell[i] = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, Math.round((STATIC_SELL - latchedOff) * 100) / 100));
-                echoCombinedBuy[i]  = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, Math.round((STATIC_BUY + latchedOff) * 100) / 100));
-            }
-
-            for (let i = 0; i < data.dates.length; i++) {
-                if (combinedOff[i] !== null) currentOutputAxisMax = Math.max(currentOutputAxisMax, Math.abs(combinedOff[i]));
-                if (echoCombinedOff[i] !== null) currentOutputAxisMax = Math.max(currentOutputAxisMax, Math.abs(echoCombinedOff[i]));
+                dynamicKalOff[i] = kOff;
+                combinedOff[i] = cOff;
+                combinedSell[i] = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, Math.round((STATIC_SELL - cOff) * 100) / 100));
+                combinedBuy[i]  = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, Math.round((STATIC_BUY + cOff) * 100) / 100));
+                echoCombinedOff[i] = eOff;
+                echoCombinedSell[i] = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, Math.round((STATIC_SELL - eOff) * 100) / 100));
+                echoCombinedBuy[i]  = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, Math.round((STATIC_BUY + eOff) * 100) / 100));
+                currentOutputAxisMax = Math.max(currentOutputAxisMax, Math.abs(cOff), Math.abs(eOff));
             }
         }
         recalcInputs();

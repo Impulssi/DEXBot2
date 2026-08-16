@@ -3,7 +3,8 @@ import { calculateATR } from './strategies/atr/calculator.js';
 import { normalizeMarketSource, hasNumericStartPrice, resolveMarketSourceForBot } from '../utils/chain.js';
 import { computeRegimeMultiplier } from './strategies/regime_gate.js';
 import { calculateAMA, getAmaWarmupBars } from './strategies/ama.js';
-import { KalmanTrendAnalyzer } from '../../analysis/trend_detection/kalman_trend_analyzer.js';
+import { computeDynamicWeightSeries } from './strategies/dynamic_weight_series.js';
+import { KalmanTrendAnalyzer } from './signals/kalman_trend_analyzer.js';
 import { adjustCollateralRatio } from './strategies/collateral_manager.js';
 import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants.js';
 import { resolveConfiguredPriceBound } from '../../modules/order/utils/order.js';
@@ -23,7 +24,7 @@ import {
 import {
     buildKalmanVelocitySeries,
     computeAbsolutePercentileThreshold,
-} from '../../analysis/trend_detection/kalman_velocity_smoothing.js';
+} from './signals/kalman_velocity_smoothing.js';
 import {
     resolveMaxAsymmetryFactor,
     computeAsymmetricBoundsMetrics,
@@ -680,14 +681,9 @@ class MarketAdapterService {
         const hasDirectionalOffset = mo > 0;
         const useAmaBlend = hasDirectionalOffset && alpha !== 0;
         const useKalmanBlend = hasDirectionalOffset && alpha !== 1;
-        const useNeutralZone = nz > 0;
         const useClipThreshold = clipPercentile > 0;
-        const zeroOutputThreshold = minOutputThreshold === 0;
 
-        let kalmanSmoothedVelocityPct = new Array(kalmanHistory.length).fill(null);
-        let amaOffsets = new Array(closes.length).fill(0);
-        let kalmanOffsets = new Array(closes.length).fill(0);
-
+        let kalmanSmoothedVelocityPct: (number | null)[] = new Array(kalmanHistory.length).fill(null);
         if (useKalmanBlend) {
             kalmanSmoothedVelocityPct = buildKalmanVelocitySeries(kalmanHistory, {
                 kalmanSmoothPct,
@@ -703,106 +699,43 @@ class MarketAdapterService {
                     Infinity
                 )
                 : Infinity;
-
-            for (let i = 0; i < kalmanHistory.length; i++) {
-                const kr = kalmanHistory[i];
-                const vp = kalmanSmoothedVelocityPct[i];
-                if (!kr.isReady || vp == null || kr.displacementRawPct == null) continue;
-
-                const dp = kr.displacementRawPct;
-                const clippedV = Math.max(-kalClipThreshold, Math.min(kalClipThreshold, vp));
-                if (useNeutralZone && Math.abs(clippedV) < nz) continue;
-
-                const dispScale = Math.max(1e-6, dispScaleMinPct);
-                const dispConf = Math.min(Math.abs(dp) / dispScale, 1.0);
-                const momAlign = Math.max(0, (clippedV * dp) / (Math.abs(clippedV) * Math.abs(dp) + 1e-10));
-                const composite = clippedV * (1 - dw + dw * dispConf * momAlign);
-                kalmanOffsets[i] = Math.max(-mo, Math.min(mo, (composite / kalMaxS) * mo));
-            }
-        }
-
-        if (useAmaBlend) {
-            for (let i = 0; i < closes.length; i++) {
-                if (!slopeResult.isReady || i < amaSlopeReadyBars) continue;
-                const last = amaValues[i];
-                const past = amaValues[i - lookbackBars];
-                if (!Number.isFinite(last) || !Number.isFinite(past) || past === 0) continue;
-                const sp = computeAverageAmaSlopePct(last, past, lookbackBars);
-                if (!Number.isFinite(sp)) continue;
-                const csp = Math.max(-amaClipThreshold, Math.min(amaClipThreshold, sp!));
-                amaOffsets[i] = (!useNeutralZone || Math.abs(csp) >= nz)
-                    ? Math.max(-mo, Math.min(mo, (csp / amaMaxS) * mo))
-                    : 0;
-            }
         }
 
         const offsetClamp = cfg.maxSlopeOffset ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
         const channelNorm = Math.max(Math.abs(offsetClamp), 1e-9);
         const outputThreshold = minOutputThreshold;
-        const outputThresholdIsZero = zeroOutputThreshold;
 
-        const combinedOffSeries = new Array(closes.length).fill(0);
-        const gatedOffSeries = new Array(closes.length).fill(0);
-        for (let i = 0; i < closes.length; i++) {
-            let blendedOff;
-            if (useAmaBlend && useKalmanBlend) {
-                blendedOff = (alpha * (amaOffsets[i] / channelNorm) + (1 - alpha) * (kalmanOffsets[i] / channelNorm));
-            } else if (useAmaBlend) {
-                blendedOff = amaOffsets[i] / channelNorm;
-            } else if (useKalmanBlend) {
-                blendedOff = kalmanOffsets[i] / channelNorm;
-            } else {
-                blendedOff = 0;
-            }
-
-            const regimeAdjusted = blendedOff * regimeMultipliers[i];
-            const gatedOff = outputThresholdIsZero
-                ? regimeAdjusted
-                : (Math.abs(regimeAdjusted) < outputThreshold ? 0 : regimeAdjusted);
-            const off = Math.max(-offsetClamp, Math.min(offsetClamp, gatedOff * gain));
-            gatedOffSeries[i] = gatedOff;
-            combinedOffSeries[i] = roundTo(off, 1000);
-        }
-
-        const confirmBars = Math.max(0, Math.min(5, Math.round(signalConfirmBars)));
-        let echoedOffSeries = new Array(closes.length).fill(0);
-        let echoedGatedOffSeries = new Array(closes.length).fill(0);
-        if (confirmBars === 0) {
-            echoedOffSeries = combinedOffSeries;
-            echoedGatedOffSeries = gatedOffSeries;
-        } else {
-            let latchedSign = 0;
-            let pendingSign = 0;
-            let pendingCount = 0;
-            let latchedOff = 0;
-            let latchedGatedOff = 0;
-            for (let i = 0; i < closes.length; i++) {
-                const raw = combinedOffSeries[i];
-                const sign = raw > 0 ? 1 : raw < 0 ? -1 : 0;
-                if (sign === latchedSign) {
-                    pendingSign = 0;
-                    pendingCount = 0;
-                    latchedOff = raw;
-                    latchedGatedOff = gatedOffSeries[i];
-                } else {
-                    if (pendingSign !== sign) {
-                        pendingSign = sign;
-                        pendingCount = 1;
-                    } else {
-                        pendingCount++;
-                    }
-                    if (pendingCount >= confirmBars) {
-                        latchedSign = sign;
-                        pendingSign = 0;
-                        pendingCount = 0;
-                        latchedOff = raw;
-                        latchedGatedOff = gatedOffSeries[i];
-                    }
-                }
-                echoedOffSeries[i] = latchedOff;
-                echoedGatedOffSeries[i] = latchedGatedOff;
-            }
-        }
+        // Per-bar directional offset series — canonical implementation shared
+        // with the research chart and test harness (see dynamic_weight_series.ts).
+        const seriesResult = computeDynamicWeightSeries({
+            amaValues,
+            kalmanVelocityPct: kalmanSmoothedVelocityPct,
+            kalmanDisplacementPct: kalmanHistory.map((kr: any) => kr.displacementRawPct),
+            kalmanIsReady: kalmanHistory.map((kr: any) => kr.isReady),
+            regimeMultipliers,
+            lookbackBars,
+            amaErPeriod: botAma.erPeriod,
+            amaClipThreshold,
+            kalClipThreshold,
+            neutralZonePct: nz,
+            amaMaxSlopePct: amaMaxS,
+            kalmanMaxSlopePct: kalMaxS,
+            offsetClamp,
+            dispScaleMinPct,
+            alpha,
+            dw,
+            gain,
+            minOutputThreshold,
+            signalConfirmBars,
+            clampFinalOutput: true,
+        });
+        const {
+            amaOffsets,
+            combinedOffSeries,
+            gatedOffSeries,
+            echoedOffSeries,
+            echoedGatedOffSeries,
+        } = seriesResult;
 
         const rawFinalOff = combinedOffSeries[combinedOffSeries.length - 1] ?? 0;
         const rawFinalPreGainOff = gatedOffSeries[gatedOffSeries.length - 1] ?? 0;
