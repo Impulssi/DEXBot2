@@ -413,10 +413,10 @@ Candle Data
 |------|------|
 | `analysis/analyze_dynamic_weight.ts` | Runner: loads data, computes all signals, generates chart |
 | `analysis/trend_detection/dynamic_weight_chart_generator.ts` | HTML generator: 4-panel uPlot chart with interactive knobs |
-| `analysis/trend_detection/kalman_trend_analyzer.ts` | Kalman filter with tactical/modal state tracking |
-| `analysis/trend_detection/kalman_velocity_smoothing.ts` | Adaptive EMA smoothing for Kalman velocity (kf/kfd/kdt/kfs knobs) |
-| `analysis/trend_detection/hurst_analyzer.ts` | Hurst Exponent via R/S analysis (rolling 256-bar window) |
-| `analysis/trend_detection/permutation_entropy_analyzer.ts` | Permutation Entropy via ordinal pattern counting |
+| `market_adapter/core/signals/kalman_trend_analyzer.ts` | Kalman filter with tactical/modal state tracking (re-export shim at `analysis/trend_detection/kalman_trend_analyzer.ts`) |
+| `market_adapter/core/signals/kalman_velocity_smoothing.ts` | Adaptive EMA smoothing for Kalman velocity (kf/kfd/kdt/kfs knobs; shim at `analysis/trend_detection/kalman_velocity_smoothing.ts`) |
+| `market_adapter/core/signals/hurst_analyzer.ts` | Hurst Exponent via R/S analysis (rolling 256-bar window; shim at `analysis/trend_detection/hurst_analyzer.ts`) |
+| `market_adapter/core/signals/permutation_entropy_analyzer.ts` | Permutation Entropy via ordinal pattern counting (shim at `analysis/trend_detection/permutation_entropy_analyzer.ts`) |
 | `market_adapter/core/strategies/regime_gate.ts` | Bilinear regime multiplier (Hurst × PE lookup table) |
 | `modules/constants.ts` (`MARKET_ADAPTER.HURST_CONFIG`, `PE_CONFIG`) | Shared Hurst + PE config (window sizes, scales) |
 | `market_adapter/core/strategies/ama.ts` | Kaufman Adaptive Moving Average |

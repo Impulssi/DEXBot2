@@ -177,7 +177,6 @@ class KalmanTrendAnalyzer {
     tacticalKf: KalmanFilter;
     modalKf: KalmanFilter;
     beams: Beam[];
-    inflections: any[];
     maxBeams: number;
     warmupBars: number;
     updateCount: number;
@@ -209,7 +208,6 @@ class KalmanTrendAnalyzer {
         });
 
         this.beams = [];
-        this.inflections = [];
         this.maxBeams = config.beamCount ?? 100;
         const wb = config.warmupBars;
         this.warmupBars = wb != null && Number.isInteger(wb) && wb >= 0

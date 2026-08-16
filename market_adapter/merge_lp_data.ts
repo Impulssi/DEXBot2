@@ -13,12 +13,12 @@
  *   tsx market_adapter/merge_lp_data.ts <file1> <file2> --out <output>
  *
  * Example (2-year 1h dataset):
- *   tsx market_adapter/inputs/fetch_lp_data.ts --pool <poolId> --precA <precA> --precB <precB> --interval 1h --start 2024-03-06 --end 2025-03-06
- *   tsx market_adapter/inputs/fetch_lp_data.ts --pool <poolId> --precA <precA> --precB <precB> --interval 1h --start 2025-03-06 --end 2026-03-06
+ *   tsx market_adapter/inputs/fetch_lp_data.ts --pool <poolId> --precA <precA> --precB <precB> --interval 1h --start 2024-03-06 --end 2025-03-06 --out market_adapter/data/lp/<pair>/lp_pool_<poolId>_1h_part1.json
+ *   tsx market_adapter/inputs/fetch_lp_data.ts --pool <poolId> --precA <precA> --precB <precB> --interval 1h --start 2025-03-06 --end 2026-03-06 --out market_adapter/data/lp/<pair>/lp_pool_<poolId>_1h_part2.json
  *   tsx market_adapter/merge_lp_data.ts \
- *     market_adapter/data/lp/<pair>/lp_pool_<poolShort>_1h_2024.json \
- *     market_adapter/data/lp/<pair>/lp_pool_<poolShort>_1h_2025.json \
- *     --out market_adapter/data/lp/<pair>/lp_pool_<poolShort>_1h.json
+ *     market_adapter/data/lp/<pair>/lp_pool_<poolId>_1h_part1.json \
+ *     market_adapter/data/lp/<pair>/lp_pool_<poolId>_1h_part2.json \
+ *     --out market_adapter/data/lp/<pair>/lp_pool_<poolId>_1h.json
  */
 
 import { path } from '../modules/path_api.js';

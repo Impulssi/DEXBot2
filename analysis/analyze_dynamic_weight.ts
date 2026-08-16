@@ -162,7 +162,6 @@ async function main() {
 
             const weights = computeAmaSlopeWeights(amaValues.slice(0, i + 1), weightVariance, {
                 erPeriod: AMA_CONFIG.erPeriod,
-                slowPeriod: AMA_CONFIG.slowPeriod,
                 lookbackBars: config.lookbackBars ?? AMA_WEIGHT_CONFIG.lookbackBars,
                 maxSlopePct: AMA_WEIGHT_CONFIG.amaMaxSlopePct,
                 neutralZonePct: AMA_WEIGHT_CONFIG.neutralZonePct,

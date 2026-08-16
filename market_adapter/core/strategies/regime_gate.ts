@@ -124,5 +124,5 @@ function computeRegimeMultiplier(closes: any, opts: any = {}) {
     };
 }
 
-export { computeRegimeMultiplier, bilinearInterpolate, classifyHurstRegime, classifyPeRegime, resolveHNodes, resolvePeNodes }
+export { computeRegimeMultiplier, bilinearInterpolate }
 

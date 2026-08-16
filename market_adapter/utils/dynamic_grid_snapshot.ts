@@ -60,5 +60,5 @@ function updateDynamicGridSnapshotSync(filePath: any, mutator: any, options: any
     }
 }
 
-export { readJsonOrNull, writeJsonAtomicSync, updateDynamicGridSnapshotSync }
+export { updateDynamicGridSnapshotSync }
 

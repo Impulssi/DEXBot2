@@ -16,7 +16,6 @@ import { createReadOnlyClient } from '../../modules/bitshares-native/index.js';
  *   disconnectClient()      — tear down the WebSocket
  *   isConnected()           — check if the WS is open
  *   getNodeUrl()            — currently connected node URL
- *   getConnectionStatus()   — 'open' | 'closed'
  */
 
 
@@ -52,10 +51,6 @@ function getNodeUrl() {
     return _nativeClient ? _nativeClient.getNodeUrl() : null;
 }
 
-function getConnectionStatus() {
-    return isConnected() ? 'open' : 'closed';
-}
-
 function _call(api: any, method: any, args: any) {
     const c = _getClient();
     if (!c.isConnected()) {
@@ -77,12 +72,5 @@ const BitShares = {
     }),
 };
 
-function _resetForTests() {
-    if (_nativeClient) {
-        try { _nativeClient.disconnect(); } catch (_: any) {}
-        _nativeClient = null;
-    }
-}
-
-export { BitShares, connectClient, disconnectClient, isConnected, getNodeUrl, getConnectionStatus, _resetForTests }
+export { BitShares, connectClient, disconnectClient, isConnected, getNodeUrl }
 

@@ -20,7 +20,7 @@ import { roundTo, roundToDecimals } from '../../../modules/utils/math_utils.js';
  */
 
 /**
- * @param {Object}  trendData           - TrendAnalyzer output ({ trend, confidence, isReady })
+ * @param {Object}  trendData           - AMA slope model output ({ trend, confidence, isReady })
  * @param {number}  minRatio            - Floor collateral ratio (e.g. 1.5)
  * @param {number}  maxRatio            - Ceiling collateral ratio (e.g. 2.0)
  * @returns {{ targetRatio: number, action: string, adjustment: number }}

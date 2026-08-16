@@ -16,6 +16,7 @@ import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer.js'
 import { generateHTML } from './trend_detection/kalman_chart_generator.js';
 import { createSource } from './price_sources.js';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
+import { computeAverageAmaSlopePct } from '../market_adapter/core/strategies/dynamic_weight_series.js';
 import { getCandleClose } from './math_utils.js';
 import { writeChartFile } from './chart_utils.js';
 
@@ -104,7 +105,7 @@ async function main() {
             const last = amaValues[i];
             const past = amaValues[i - LOOKBACK_BARS];
             if (!last || !past || past === 0) { allResults[i].amaWeightOffset = null; continue; }
-            const slopePct = (last - past) / past * 100;
+            const slopePct = computeAverageAmaSlopePct(last, past, LOOKBACK_BARS)! * LOOKBACK_BARS;
             if (Math.abs(slopePct) < NEUTRAL_ZONE) {
                 allResults[i].amaWeightOffset = 0;
             } else {

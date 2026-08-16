@@ -496,16 +496,6 @@ function updateLivePanelAtIndex(idx) {
 
 let lastLiveIdx = -1;
 
-function updateLivePanel(u) {
-    const idx = u && u.cursor ? u.cursor.idx : null;
-    if (idx == null) {
-        // cursor left the chart — restore last-candle values
-        if (lastLiveIdx >= 0) updateLivePanelAtIndex(lastLiveIdx);
-        return;
-    }
-    updateLivePanelAtIndex(idx);
-}
-
 function applyChartHeights() {
     const available = Math.max(window.innerHeight - 44, 600);
     const priceH = Math.max(320, Math.floor(available * 0.60));

@@ -628,9 +628,9 @@ function printHelp() {
     logger.raw('Options:\n');
     logger.raw('  --once                 Run one cycle and exit\n');
     logger.raw(`  --pollSeconds <n>      Loop interval seconds (default ${RUNTIME_DEFAULTS.pollSeconds}, wall-clock aligned)\n`);
-    logger.raw('  --deltaPercent <n>     Trigger threshold percent (default: general.settings MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT or 2.5)\n');
+    logger.raw('  --deltaPercent <n>     Trigger threshold percent (default: general.settings MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT or 1.0)\n');
     logger.raw(`  --bootstrapHours <n>   Kibana bootstrap lookback hours (default ${RUNTIME_DEFAULTS.bootstrapLookbackHours})\n`);
-    logger.raw(`  --nativeBackfillHours  Native incremental lookback hours (default ${RUNTIME_DEFAULTS.nativeBackfillHours})\n`);
+    logger.raw(`  --nativeBackfillHours <n>  Native incremental lookback hours (default ${RUNTIME_DEFAULTS.nativeBackfillHours})\n`);
     logger.raw(`  --maxStaleHours <n>    Max accepted candle staleness before trigger suppression (default ${RUNTIME_DEFAULTS.maxStaleHours})\n`);
     logger.raw(`  --sourceRetries <n>    Retries for source fetch calls (default ${RUNTIME_DEFAULTS.sourceRetries})\n`);
     logger.raw(`  --retryDelayMs <n>     Base retry delay in milliseconds (default ${RUNTIME_DEFAULTS.retryDelayMs})\n`);
@@ -1070,6 +1070,7 @@ const adapterService = new MarketAdapterService({
     writeBotDynamicGrid,
     isBotWhitelisted,
     isBotDynamicWeightWhitelisted,
+    isBotAsymmetricBoundsWhitelisted,
     isBotGridRangeScalingWhitelisted,
     logger,
     root: ROOT,

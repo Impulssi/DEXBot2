@@ -86,30 +86,6 @@ function resolveNativeMarketHistoryRatio(entry: any, field: any, assetA: any, as
     return Number.NaN;
 }
 
-function resolveNativeMarketHistoryVolume(entry: any, field: any, assetA: any, assetB: any) {
-    const keyBase = String(entry?.key?.base || '');
-    const keyQuote = String(entry?.key?.quote || '');
-    const orientation = resolvePairOrientation(keyBase, keyQuote, assetA, assetB);
-    if (!orientation) return Number.NaN;
-
-    const { basePrecision } = orientation;
-
-    const direct = Number(entry?.[field]);
-    if (Number.isFinite(direct)) {
-        return blockchainToFloat(direct, basePrecision);
-    }
-
-    const nested = entry?.[field];
-    if (nested && typeof nested === 'object') {
-        const amount = Number(nested.amount ?? nested.value ?? nested.base ?? nested.quote);
-        if (Number.isFinite(amount)) {
-            return blockchainToFloat(amount, basePrecision);
-        }
-    }
-
-    return Number.NaN;
-}
-
 function normalizeNativeMarketHistoryCandles(history: any, assetA: any, assetB: any, _intervalSeconds: any) {
     const source = Array.isArray(history)
         ? history
@@ -177,5 +153,5 @@ function normalizeNativeMarketHistoryCandles(history: any, assetA: any, assetB: 
     return (candles as any[]).sort((a: any, b: any) => a[0] - b[0]);
 }
 
-export { parseNativeMarketHistoryTimestamp, resolvePairOrientation, resolveNativeMarketHistoryRatio, resolveNativeMarketHistoryVolume, normalizeNativeMarketHistoryCandles }
+export { parseNativeMarketHistoryTimestamp, normalizeNativeMarketHistoryCandles }
 

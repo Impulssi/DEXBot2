@@ -1,10 +1,9 @@
 'use strict';
 
 /**
- * Candle field accessors — canonical implementations shared by production,
- * analysis tooling, and the browser-embedded chart scripts. The getters are
- * intentionally self-contained so chart generators can inject their exact
- * source into generated HTML and every consumer stays on one accessor path.
+ * Candle field accessors and transforms — canonical implementations shared by
+ * the production market adapter and the analysis tooling (via
+ * analysis/math_utils.ts). Keeps every consumer on one accessor path.
  */
 
 function getCandleHigh(candle: any) {

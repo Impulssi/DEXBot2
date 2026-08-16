@@ -2,8 +2,8 @@
  * KIBANA ELASTICSEARCH CLIENT
  *
  * Shared HTTP client for querying the BitShares Kibana instance.
- * Extracted from kibana_source.js and kibana_bot_queries.js to
- * eliminate duplication.
+ * Centralizes the request/response handling used by the Kibana candle
+ * sources (inputs/kibana_source.ts, core/kibana_candles.ts).
  *
  * All Kibana-consuming modules should use this client instead of
  * maintaining their own HTTP implementation.

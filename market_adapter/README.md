@@ -212,7 +212,7 @@ Override any `MARKET_ADAPTER` constant by adding a matching key under `MARKET_AD
 {
   "MARKET_ADAPTER": {
     "AMA_DELTA_THRESHOLD_PERCENT": 2.0,
-    "DYNAMIC_WEIGHT_ENABLED": true
+    "DYNAMIC_WEIGHT_CLIP_PERCENTILE": 5
   }
 }
 ```
@@ -560,16 +560,24 @@ market_adapter/
 |   |-- kibana_client.ts           low-level Kibana/ES query client
 |   |-- kibana_candles.ts          LP pool candle fetch engine
 |   |-- kibana_market_candles.ts   book candle fetch and transform
+|   |-- signals/
+|   |   |-- hurst_analyzer.ts               Hurst Exponent analysis
+|   |   |-- kalman_trend_analyzer.ts        Kalman trend state tracking
+|   |   |-- kalman_velocity_smoothing.ts    Adaptive Kalman velocity smoothing
+|   |   `-- permutation_entropy_analyzer.ts Permutation Entropy analysis
 |   `-- strategies/
 |       |-- ama.ts                 Kaufman's Adaptive Moving Average (KAMA)
 |       |-- ama_slope_model.ts     AMA slope and trend weight logic
 |       |-- collateral_manager.ts  advisory collateral-ratio logic
+|       |-- dynamic_weight_series.ts  canonical per-bar AMA/Kalman offset pipeline
 |       |-- regime_gate.ts         regime multiplier gating
+|       |-- regime_interp.ts       regime table bilinear interpolation
+|       |-- volatility_shift.ts    symmetric ATR volatility penalty
 |       `-- atr/calculator.ts      ATR calculation
 |-- inputs/
 |   |-- kibana_source.ts           Elasticsearch LP data source
-|   `-- fetch_lp_data.ts           historical LP candle exporter
-|-- index.ts                       module barrel export
+|   |-- fetch_lp_data.ts           historical LP candle exporter
+|   `-- fetch_cex_synthetic_data.ts  public CEX synthetic-candle seed importer
 |-- utils/
 |   |-- chain.ts                   blockchain query helpers
 |   |-- adapter_client.ts          inter-process credential daemon client
@@ -774,6 +782,12 @@ Main override knobs live in `profiles/market_adapter_settings.json`:
 | `kalmanSlope.maxSlopePct` | Kalman slope saturation |
 | `kalmanSmoothSpanPct` | Adaptive EMA span ratio |
 | `signalConfirmBars` | Signal latch confirmation bars |
+| `hurstZoneBand` | Hurst neutral-zone width for regime classification |
+| `peNodes` | Permutation Entropy thresholds for regime classification |
+| `regimeTable` | Custom 3×3 regime multiplier table |
+| `kibanaRequestTimeoutMs` | Kibana request timeout in milliseconds |
+| `staleTailThreshold` | Stale-tail pruning threshold in candles |
+| `maxNativeGapFillCandles` | Max missing-candle gaps auto-filled without a Kibana query |
 
 </details>
 
@@ -939,17 +953,20 @@ Important fields in `market_adapter/state/market_adapter_state.json`:
 
 | Field | Meaning |
 |-------|---------|
-| `lastRunAt` | Last completed adapter cycle |
-| `botsProcessed` | Number of bots evaluated |
-| `cycleMs` | Cycle wall-clock duration |
+| `meta.updatedAt` | Last completed adapter cycle (ISO timestamp) |
+| `meta.metrics.processedBots` | Number of bots evaluated this cycle |
+| `meta.metrics.durationMs` | Cycle wall-clock duration in milliseconds |
+| `lastCycleAt` | Last cycle timestamp for a bot |
 | `lastAmaPrice` | Latest computed AMA price for a bot |
 | `gridCenterPrice` | Stored center used for delta comparison |
 | `lastDeltaPercent` | Move from stored center to latest AMA |
 | `thresholdPercent` | Active recalc trigger threshold |
-| `triggered` | Whether a trigger was written this cycle |
+| `lastTriggerFile` | Last recalc trigger file written (`triggered` is a transient per-cycle return value, not persisted) |
+| `lastTriggerSuppressedReason` | Why the last trigger write was suppressed |
+| `triggerCount` | Number of triggers written for the bot |
 | `staleData` | Whether stale candles suppressed live writes |
 | `staleAgeHours` | Age of the newest usable candle |
-| `trend` | `UP`, `DOWN`, or `NEUTRAL` |
+| `amaSlope.trend` | `UP`, `DOWN`, or `NEUTRAL` |
 | `atr` | Average True Range value |
 | `weightVariance` | Normalized volatility ratio |
 | `weights` | Current dynamic buy/sell weights |

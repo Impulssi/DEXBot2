@@ -5,8 +5,8 @@ const require = createRequire(import.meta.url);
 'use strict';
 
 /**
- * Probe public CEX APIs for XRP/USDT and XAUT/USDT, then synthesize XRP/XAUT
- * candles from the two USDT legs.
+ * Probe public CEX APIs for a base/quote cross and synthesize candles from
+ * the two legs against a common quote (e.g. XRP/USDT + XAUT/USDT).
  *
  * This is intended as a seed generator for brand-new market_adapter files.
  * It does not rely on TradingView or Kibana.
@@ -27,7 +27,7 @@ const {
     DEFAULTS: MARKET_ADAPTER_DEFAULTS,
     resolveAmaForBot,
     resolveBotCfg,
-} = require('../market_adapter');
+} = require('../market_adapter/market_adapter');
 
 const DEFAULT_INTERVAL = '1h';
 const DEFAULT_LIMIT = 1000;
@@ -712,7 +712,6 @@ function parseArgs() {
         limit: DEFAULT_LIMIT,
         lookbackHours: null,
         botName: null,
-        botIndex: null,
         botsFile: DEFAULT_BOTS_FILE,
         base: DEFAULT_BASE,
         quote: DEFAULT_QUOTE,

@@ -107,7 +107,7 @@ function computeDynamicWeightSeries(inputs: any) {
 
     const n = Array.isArray(amaValues) ? amaValues.length : 0;
     const channelNorm = Math.max(Math.abs(offsetClamp), 1e-9);
-    const amaReadyBar = Math.max(lookbackBars, Math.ceil(amaErPeriod) + lookbackBars);
+    const amaReadyBar = lookbackBars + Math.max(0, Math.ceil(amaErPeriod));
     const amaOffsets = new Array(n).fill(0);
     const kalmanOffsets = new Array(n).fill(0);
 

@@ -27,7 +27,6 @@
  */
 
 
-import { toIntervalLabel } from '../interval_utils.js';
 import { fetchKibanaCandles, fetchKibanaClosePrices } from './kibana_candles.js';
 'use strict';
 
@@ -40,77 +39,6 @@ const FILL_FIELD_MAP = {
   soldAmountField: 'operation_history.op_object.pays.amount',
   receivedAmountField: 'operation_history.op_object.receives.amount',
 };
-
-// ─── Query Builders ──────────────────────────────────────────────────────────
-
-/**
- * Build ES query for fill_order aggregation in one direction.
- *
- * Filters fills where pays.asset_id = soldAssetId, aggregates by time bucket:
- *   sum_sold     = Σ pays.amount
- *   sum_received = Σ receives.amount
- *
- * VWAP per bucket = sum_received / sum_sold (precision-adjusted externally).
- *
- * @param {string}      soldAssetId    – e.g. '1.3.0' (BTS)
- * @param {string}      receivedAssetId – e.g. '1.3.5649' (HONEST.USD)
- * @param {number}      lookbackHours
- * @param {number}      intervalSeconds
- * @param {Object|null} timeRange      – { gte, lte } ISO strings
- * @returns {Object} ES query object
- */
-function buildFillCandleQuery(soldAssetId: any, receivedAssetId: any, lookbackHours: any, intervalSeconds: any, timeRange: any = null) {
-  const rangeValue = timeRange
-    ? { gte: (timeRange as any).gte, lte: (timeRange as any).lte }
-    : { gte: `now-${lookbackHours}h`, lte: 'now' };
-
-  return {
-    size: 0,
-    query: {
-      bool: {
-        filter: [
-          { term:  { operation_type: OP_FILL_ORDER } },
-          { term:  { 'operation_history.op_object.pays.asset_id.keyword': soldAssetId } },
-          { term:  { 'operation_history.op_object.receives.asset_id.keyword': receivedAssetId } },
-          { range: { 'block_data.block_time': rangeValue } },
-        ],
-      },
-    },
-    aggs: {
-      by_time: {
-        date_histogram: {
-          field:          'block_data.block_time',
-          fixed_interval: toIntervalLabel(intervalSeconds),
-          min_doc_count:  1,
-        },
-        aggs: {
-          sum_sold: {
-            sum: { field: 'operation_history.op_object.pays.amount' },
-          },
-          sum_received: {
-            sum: { field: 'operation_history.op_object.receives.amount' },
-          },
-        },
-      },
-    },
-  };
-}
-
-// ─── Bucket → Candle ─────────────────────────────────────────────────────────
-
-function bucketsToCandles(buckets: any, soldPrecision: any, receivedPrecision: any) {
-  const soldScale = Math.pow(10, soldPrecision);
-  const recvScale = Math.pow(10, receivedPrecision);
-
-  return buckets
-    .filter((b: any) => b.sum_sold.value > 0 && b.sum_received.value > 0)
-    .map((b: any) => {
-      const soldAmt = b.sum_sold.value / soldScale;
-      const recvAmt = b.sum_received.value / recvScale;
-      const vwap = recvAmt / soldAmt;
-      return [b.key, vwap, vwap, vwap, vwap, soldAmt];
-    });
-}
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -153,19 +81,5 @@ async function getMarketClosePrices(assetA: any, assetB: any, config: any = {}) 
   });
 }
 
-/**
- * Fetch candles for an MPA/BTS market using symbol strings.
- * Resolves asset objects internally using chain queries if available,
- * or accepts pre-resolved asset objects.
- *
- * @param {Object} baseAsset   – { id, precision, symbol } for BTS
- * @param {Object} quoteAsset  – { id, precision, symbol } for the MPA
- * @param {Object} [config]
- * @returns {Promise<Array>} OHLCV candles (quote-per-base, e.g. HONEST.USD per BTS)
- */
-async function getMpaCandles(baseAsset: any, quoteAsset: any, config: any = {}) {
-  return getMarketCandles(baseAsset, quoteAsset, config);
-}
-
-export { getMarketCandles, getMarketClosePrices, getMpaCandles, buildFillCandleQuery, bucketsToCandles }
+export { getMarketCandles, getMarketClosePrices }
 

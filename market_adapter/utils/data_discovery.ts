@@ -7,7 +7,6 @@ import { PROJECT_ROOT } from './paths.js';
 const storage = getStorage();
 
 function findLatestLpData(options: any = {}) {
-    const includePriceSnapshots = options.includePriceSnapshots === true;
     const dataDir = options.dataDir ? path.resolve(options.dataDir) : path.join(PROJECT_ROOT, 'market_adapter', 'data', 'lp');
     const out: any[] = [];
 
@@ -23,7 +22,7 @@ function findLatestLpData(options: any = {}) {
                 continue;
             }
             if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-            if (!entry.name.startsWith('lp_pool_') && !(includePriceSnapshots && entry.name.startsWith('lp_prices_'))) continue;
+            if (!entry.name.startsWith('lp_pool_')) continue;
             out.push({ path: full, mtime: storage.stat(full).mtimeMs });
         }
     }

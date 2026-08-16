@@ -611,15 +611,12 @@ class MarketAdapterService {
         const slopeCfg = {
             ...(cfg.amaSlope || {}),
             erPeriod:              botAma.erPeriod,
-            slowPeriod:            botAma.slowPeriod,
-            fastPeriod:            botAma.fastPeriod,
             maxSlopeOffset:        cfg.maxSlopeOffset,
             maxVolatilityOffset:   volatilityClamp,
             volatilityExponent,
             volatilityScaleX,
             volatilityThreshold,
             neutralZonePct:        nz,
-            clipPercentile,
             clipThreshold:         amaClipThreshold,
         };
 
@@ -1980,19 +1977,14 @@ class MarketAdapterService {
 
         if (shouldComputeDynamicWeightSignal) {
             const dwResult = this._computeDynamicWeights({
-                analysisCandles,
                 closes,
                 amaValues,
-                amaWarmupBars,
                 lookbackBars,
                 botAma,
                 weightVariance,
-                amaPrice,
                 nowIso,
                 cfg,
                 bot,
-                ctx,
-                deps,
                 atrPeriod,
             });
             slopeResult = dwResult.slopeResult;

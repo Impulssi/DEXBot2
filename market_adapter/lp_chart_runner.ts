@@ -36,7 +36,6 @@ const storage = getStorage();
 const { ensureDir, readJSON } = storage;
 
 
-const LP_DATA_DIR = PATHS.MARKET_ADAPTER.LP_DATA_DIR;
 const ANALYSIS_CHARTS_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 const AMA_PROFILES_FILE = PATHS.PROFILES.MARKET_PROFILES_JSON;
 const DEFAULT_COMPARISON_COLORS = ['#26a69a', '#fb8c00', '#5c9ee6', '#ef5350'];
@@ -126,14 +125,6 @@ interface BundleChartOptions {
     comparisonProfilesFile?: string | null;
     openComparison?: boolean;
     noOpen?: boolean;
-}
-
-interface CliOptions {
-    dataFlags?: string[];
-    logger?: { log: (...args: any[]) => void };
-    profilesFile?: string;
-    comparisonProfilesFile?: string | null;
-    defaultStrategies?: AmaConfig[];
 }
 
 interface ChartHtmlParams {
@@ -438,19 +429,5 @@ function generateLpChartBundle(options: BundleChartOptions = {}): { dataFile: st
     };
 }
 
-function runLpChartCli(argv: string[] = process.argv.slice(2), options: CliOptions = {}): ReturnType<typeof generateLpChartBundle> {
-    const { dataFile, noOpen } = parseLpChartCliArgs(argv, {
-        dataFlags: options.dataFlags ?? ['--data', '--file'],
-    });
-    return generateLpChartBundle({
-        dataFile: dataFile ?? undefined,
-        noOpen,
-        logger: options.logger ?? console,
-        profilesFile: options.profilesFile,
-        comparisonProfilesFile: options.comparisonProfilesFile,
-        defaultStrategies: options.defaultStrategies,
-    });
-}
-
-export { AMA_PROFILES_FILE, DEFAULT_COMPARISON_STRATEGIES, defaultComparisonChartPath, defaultMarketChartPath, findLatestLpData, generateComparisonLpChart, generateLpChartBundle, generateMarketLpChart, ANALYSIS_CHARTS_DIR, LP_DATA_DIR, loadLpDataFile, parseLpChartCliArgs, resolveLpDataFile, runLpChartCli }
+export { DEFAULT_COMPARISON_STRATEGIES, defaultMarketChartPath, findLatestLpData, generateComparisonLpChart, generateLpChartBundle, generateMarketLpChart, loadLpDataFile, parseLpChartCliArgs }
 
