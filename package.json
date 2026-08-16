@@ -14,6 +14,7 @@
   },
   "files": [
     "dist",
+    "ecosystem.config.cjs",
     "scripts/clear-all.sh",
     "scripts/clear-logs.sh",
     "scripts/clear-market-adapter.sh",
@@ -34,6 +35,7 @@
   ],
   "preferGlobal": true,
   "scripts": {
+    "start": "node -e \"console.error('\\nDEXBot2 does not support npm start or raw pm2 start.\\nThe PM2 launcher must unlock your keystore and start the credential daemon first.\\nStart it with: dexbot pm2  (or ./pm2 from the repo root, or npm run pm2:unlock).\\n'); process.exit(1)\"",
     "pm2:unlock": "npm run build && node dist/pm2.js",
     "pm2:claw-only": "npm run build && node dist/pm2.js claw-only",
     "unlock": "npm run build && node dist/unlock.js",
