@@ -2,11 +2,11 @@
 
 const assert = require('assert');
 
-function clearModule(modulePath) {
+function clearModule(modulePath: string) {
   delete require.cache[modulePath];
 }
 
-function registerMock(modulePath, exports) {
+function registerMock(modulePath: string, exports: any) {
   require.cache[modulePath] = {
     id: modulePath,
     filename: modulePath,
@@ -21,29 +21,29 @@ function createStrategyHarness() {
   const chainQueriesPath = require.resolve('../modules/chain_queries');
 
   const calls = {
-    borrowMpa: [],
-    createLimitOrder: [],
-    getAsset: [],
-    getBackingAsset: [],
-    repayMpaDebt: []
+    borrowMpa: [] as any[],
+    createLimitOrder: [] as any[],
+    getAsset: [] as string[],
+    getBackingAsset: [] as string[],
+    repayMpaDebt: [] as any[]
   };
 
   registerMock(chainActionsPath, {
-    borrowMpa: async (options) => {
+    borrowMpa: async (options: any) => {
       calls.borrowMpa.push(options);
       return {
         options,
         source: 'borrowMpa'
       };
     },
-    createLimitOrder: async (options) => {
+    createLimitOrder: async (options: any) => {
       calls.createLimitOrder.push(options);
       return {
         options,
         source: 'createLimitOrder'
       };
     },
-    repayMpaDebt: async (options) => {
+    repayMpaDebt: async (options: any) => {
       calls.repayMpaDebt.push(options);
       return {
         options,
@@ -53,7 +53,7 @@ function createStrategyHarness() {
   });
 
   registerMock(chainQueriesPath, {
-    getAsset: async (symbolOrId) => {
+    getAsset: async (symbolOrId: string) => {
       calls.getAsset.push(symbolOrId);
       return {
         bitasset_data_id: '2.4.100',
@@ -62,7 +62,7 @@ function createStrategyHarness() {
         symbol: 'HONEST.USD'
       };
     },
-    getBackingAsset: async (assetId) => {
+    getBackingAsset: async (assetId: string) => {
       calls.getBackingAsset.push(assetId);
       return {
         id: '1.3.0',

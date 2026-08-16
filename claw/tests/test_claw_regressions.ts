@@ -3,7 +3,7 @@ const Module = require('module');
 const path = require('path');
 const { setCachedModule, restoreCachedModule } = require('../../tests/helpers/module_cache_stub');
 
-function clearModule(modulePath) {
+function clearModule(modulePath: string) {
   delete require.cache[modulePath];
 }
 
@@ -28,11 +28,11 @@ async function testClawBitsharesClientWaitForConnectedTriggersNativeConnect() {
   const clawBitsharesPath = require.resolve('../modules/bitshares_client');
   const nativePath = require.resolve('../../modules/bitshares-native');
   let connectCalls = 0;
-  let nodes = [];
+  let nodes: any[] = [];
   let connected = false;
 
   const originalNativeEntry = setCachedModule(nativePath, {
-    createChainClient: ({ onStatusChange }) => ({
+    createChainClient: ({ onStatusChange }: any) => ({
       connect: async () => {
         connectCalls += 1;
         connected = true;
@@ -43,7 +43,7 @@ async function testClawBitsharesClientWaitForConnectedTriggersNativeConnect() {
         if (typeof onStatusChange === 'function') onStatusChange('closed');
       },
       getStatus: () => connected ? 'connected' : 'closed',
-      setNodes: (nextNodes) => { nodes = Array.isArray(nextNodes) ? nextNodes.slice() : []; },
+      setNodes: (nextNodes: any[]) => { nodes = Array.isArray(nextNodes) ? nextNodes.slice() : []; },
       getNodes: () => nodes.slice(),
       getCoreAsset: () => '1.3.0',
       db: {},
@@ -86,22 +86,22 @@ function testClawRootExportsAvoidSilentCollisions() {
   assert.strictEqual(hermesManifest.compatibility.name, 'Hermes');
   assert.strictEqual(openclawManifest.options.runtimeName, 'openclaw');
   assert.strictEqual(openclawManifest.compatibility.name, 'OpenClaw');
-  assert.strictEqual(openclawManifest.commandExamples.some((example) => example.includes('scripts/claw_bridge.ts')), true);
+  assert.strictEqual(openclawManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.ts')), true);
   assert.strictEqual(openfangManifest.options.runtimeName, 'openfang');
-  assert.strictEqual(openfangManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(openfangManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
   assert.strictEqual(nullManifest.options.runtimeName, 'nullclaw');
-  assert.strictEqual(nullManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(nullManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
   assert.strictEqual(manifest.options.runtimeName, 'zeroclaw');
-  assert.strictEqual(manifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(manifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 }
 
 function testClawCommandInjectsRuntimeNameViaOption() {
   const clawBridgePath = require.resolve('../modules/claw_bridge');
   const clawInfraPath = require.resolve('../modules/claw_infra');
 
-  let capturedOptions = null;
+  let capturedOptions: any = null;
   const originalClawInfra = setCachedModule(clawInfraPath, {
-    createClawInfrastructure: (opts) => {
+    createClawInfrastructure: (opts: any) => {
       capturedOptions = opts;
       return {
         runtime: { name: opts.runtime?.name || 'claw-bridge', accountName: null },
@@ -152,13 +152,13 @@ function testLiquidityPoolWrapperInjectsSharedBitSharesClient() {
   const originalDexbotBridge = setCachedModule(dexbotBridgePath, {
     getDexbot2Root: () => '/tmp',
     loadDexbotOrderSystemUtils: () => ({
-      cloneMap: (value) => value,
-      deepFreeze: (value) => value,
-      derivePoolPrice: (...args) => {
+      cloneMap: (value: any) => value,
+      deepFreeze: (value: any) => value,
+      derivePoolPrice: (...args: any[]) => {
         capturedPoolArgs = args;
         return 'pool-price';
       },
-      derivePrice: (...args) => {
+      derivePrice: (...args: any[]) => {
         capturedPriceArgs = args;
         return 'derived-price';
       },
@@ -200,7 +200,7 @@ async function testDecisionLoopReusesAnalyzerStateForDuplicateMarkets() {
 
   class FakeTrendAnalyzer {
     [key: string]: any;
-    update(marketPrice, feedPrice) {
+    update(marketPrice: number, feedPrice: number) {
       this.analysis = {
         confidence: 77,
         isReady: true,
@@ -232,7 +232,7 @@ async function testDecisionLoopReusesAnalyzerStateForDuplicateMarkets() {
     ])
   } as any);
   const originalHealth = setCachedModule(healthPath, {
-    assessPosition: (position, trendSignal) => ({
+    assessPosition: (position: any, trendSignal: any) => ({
       actions: [],
       positionId: position.id,
       trend: trendSignal
@@ -278,12 +278,12 @@ async function testDecisionLoopReplacesAnalyzerOnConfigChange() {
 
   class ConfigTrackingAnalyzer {
     [key: string]: any;
-    constructor(config) {
+    constructor(config: any) {
       constructionCount += 1;
       this.config = config;
     }
 
-    update(marketPrice, feedPrice) {
+    update(marketPrice: number, feedPrice: number) {
       return { confidence: 50, isReady: true, trend: 'NEUTRAL' };
     }
 
@@ -298,7 +298,7 @@ async function testDecisionLoopReplacesAnalyzerOnConfigChange() {
     ])
   } as any);
   const originalHealth = setCachedModule(healthPath, {
-    assessPosition: (position, trendSignal) => ({ actions: [], positionId: position.id, trend: trendSignal })
+    assessPosition: (position: any, trendSignal: any) => ({ actions: [], positionId: position.id, trend: trendSignal })
   } as any);
   const originalFeedPriceSource = setCachedModule(feedPriceSourcePath, {
     fetchTrendInput: async () => ({ feedPrice: 100, marketPrice: 95, premium: -5 })
@@ -330,7 +330,7 @@ async function testPositionManagerEntryExposesSellPriceInBts() {
   const mpaUtilsPath = require.resolve('../modules/mpa_utils');
 
   const originalMpaUtils = setCachedModule(mpaUtilsPath, {
-    requireBtsBackedMpa: async (sym) => ({
+    requireBtsBackedMpa: async (sym: string) => ({
       backingAsset: { id: '1.3.0', symbol: 'BTS', precision: 5 },
       mpaAsset: { id: `1.3.${sym.length}`, symbol: sym, precision: 5, bitasset_data_id: '2.4.1' }
     })
@@ -342,7 +342,7 @@ async function testPositionManagerEntryExposesSellPriceInBts() {
   const savedState: any = {};
   const pm = new PositionManager({
     loadState: async () => savedState.data || { positions: [] },
-    saveState: async (state) => { savedState.data = state; }
+    saveState: async (state: any) => { savedState.data = state; }
   });
 
   const position = await pm.createShortPosition({
@@ -364,9 +364,9 @@ function testClawBridgeRespectsRuntimeNameOption() {
   const clawBridgePath = require.resolve('../modules/claw_bridge');
   const clawInfraPath = require.resolve('../modules/claw_infra');
 
-  let capturedOptions = null;
+  let capturedOptions: any = null;
   const originalClawInfra = setCachedModule(clawInfraPath, {
-    createClawInfrastructure: (opts) => {
+    createClawInfrastructure: (opts: any) => {
       capturedOptions = opts;
       return {
         runtime: { name: opts.runtime?.name || 'claw-bridge' },
@@ -400,43 +400,43 @@ function testClawBridgeScriptManifestUsesRuntimeSpecificDescriptors() {
 
   const hermesManifest = describeRuntimeManifest('hermes', {});
   assert.strictEqual(hermesManifest.compatibility.name, 'Hermes');
-  assert.strictEqual(hermesManifest.commandExamples.some((example) => example.includes('scripts/claw_bridge.ts')), true);
+  assert.strictEqual(hermesManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.ts')), true);
 
   const openclawManifest = describeRuntimeManifest('openclaw', {});
   assert.strictEqual(openclawManifest.compatibility.name, 'OpenClaw');
-  assert.strictEqual(openclawManifest.commandExamples.some((example) => example.includes('scripts/claw_bridge.ts')), true);
+  assert.strictEqual(openclawManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.ts')), true);
 
   const openfangManifest = describeRuntimeManifest('openfang', {});
   assert.strictEqual(openfangManifest.compatibility.name, 'OpenFang');
-  assert.strictEqual(openfangManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(openfangManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 
   const nanoclawManifest = describeRuntimeManifest('nanoclaw', {});
   assert.strictEqual(nanoclawManifest.compatibility.name, 'NanoClaw');
-  assert.strictEqual(nanoclawManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(nanoclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 
   const nullclawManifest = describeRuntimeManifest('nullclaw', {});
   assert.strictEqual(nullclawManifest.compatibility.name, 'NullClaw');
-  assert.strictEqual(nullclawManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(nullclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 
   const zeroclawManifest = describeRuntimeManifest('zeroclaw', {});
   assert.strictEqual(zeroclawManifest.compatibility.name, 'ZeroClaw');
-  assert.strictEqual(zeroclawManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(zeroclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 
   const genericManifest = describeRuntimeManifest(null, {});
   assert.strictEqual(genericManifest.compatibility.name, 'Claw');
-  assert.strictEqual(genericManifest.commandExamples.some((example) => example.includes('scripts/claw_bridge.ts')), true);
+  assert.strictEqual(genericManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.ts')), true);
 
   const payloadSelectedManifest = describeRuntimeManifest(null, { runtimeName: 'openfang' });
   assert.strictEqual(payloadSelectedManifest.compatibility.name, 'OpenFang');
-  assert.strictEqual(payloadSelectedManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(payloadSelectedManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 
   const normalizedPayloadManifest = describeRuntimeManifest(null, { runtimeName: ' OpenFang ' });
   assert.strictEqual(normalizedPayloadManifest.compatibility.name, 'OpenFang');
-  assert.strictEqual(normalizedPayloadManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(normalizedPayloadManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 
   const hermesPayloadManifest = describeRuntimeManifest(null, { runtimeName: ' Hermes ' });
   assert.strictEqual(hermesPayloadManifest.compatibility.name, 'Hermes');
-  assert.strictEqual(hermesPayloadManifest.commandExamples.some((example) => example.includes('scripts/claw_bridge.ts')), true);
+  assert.strictEqual(hermesPayloadManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.ts')), true);
 
   clearModule(scriptPath);
 }
@@ -451,19 +451,19 @@ async function testRuntimeCommandManifestUsesRuntimeSpecificDescriptors() {
 
   const openfangManifest = await runClawCommand('manifest', { runtimeName: 'openfang' });
   assert.strictEqual(openfangManifest.compatibility.name, 'OpenFang');
-  assert.strictEqual(openfangManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(openfangManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 
   const nanoclawManifest = await runClawCommand('manifest', { runtimeName: 'nanoclaw' });
   assert.strictEqual(nanoclawManifest.compatibility.name, 'NanoClaw');
-  assert.strictEqual(nanoclawManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(nanoclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 
   const nullclawManifest = await runClawCommand('manifest', { runtimeName: 'nullclaw' });
   assert.strictEqual(nullclawManifest.compatibility.name, 'NullClaw');
-  assert.strictEqual(nullclawManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(nullclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 
   const zeroclawManifest = await runClawCommand('manifest', { runtimeName: 'zeroclaw' });
   assert.strictEqual(zeroclawManifest.compatibility.name, 'ZeroClaw');
-  assert.strictEqual(zeroclawManifest.commandExamples.some((example) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(zeroclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
 }
 
 function testAccountOrdersBotKeyFallsBackToAssetIds() {
@@ -508,11 +508,11 @@ function testBuildQueryScopesAnyPoolByReceivedAsset() {
   });
   const poolFilters = poolScoped.query.bool.filter;
   assert.ok(
-    poolFilters.some((f) => f.term?.['operation_history.op_object.pool.keyword'] === '1.19.133'),
+    poolFilters.some((f: any) => f.term?.['operation_history.op_object.pool.keyword'] === '1.19.133'),
     'pool-scoped query should filter by pool'
   );
   assert.ok(
-    !poolFilters.some((f) => f.term?.['operation_history.op_object.min_to_receive.asset_id.keyword']),
+    !poolFilters.some((f: any) => f.term?.['operation_history.op_object.min_to_receive.asset_id.keyword']),
     'pool-scoped query should not add receivedAssetId filter'
   );
 
@@ -528,11 +528,11 @@ function testBuildQueryScopesAnyPoolByReceivedAsset() {
   });
   const pairFilters = pairScoped.query.bool.filter;
   assert.ok(
-    !pairFilters.some((f) => f.term?.['operation_history.op_object.pool.keyword']),
+    !pairFilters.some((f: any) => f.term?.['operation_history.op_object.pool.keyword']),
     'any-pool query should not have pool filter'
   );
   assert.ok(
-    pairFilters.some((f) => f.term?.['operation_history.op_object.min_to_receive.asset_id.keyword'] === '1.3.1'),
+    pairFilters.some((f: any) => f.term?.['operation_history.op_object.min_to_receive.asset_id.keyword'] === '1.3.1'),
     'any-pool query should filter by received asset ID'
   );
 }

@@ -8,7 +8,7 @@ const { spawnSync } = require('child_process');
 const { getStorage } = require('../../modules/storage');
 const { ensureDir } = getStorage();
 
-function writeFakeMemuPackage(tmpRoot) {
+function writeFakeMemuPackage(tmpRoot: string) {
   const memuDir = path.join(tmpRoot, 'memu');
   ensureDir(memuDir);
   fs.writeFileSync(path.join(memuDir, '__init__.py'), `
@@ -94,7 +94,7 @@ class MemoryService:
 `);
 }
 
-function runMemuRunner(args) {
+function runMemuRunner(args: any[]) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot2-memu-test-'));
   const candidatePaths = [
     path.resolve(__dirname, '..', 'scripts', 'memu_runner.py'),
@@ -122,7 +122,7 @@ function runMemuRunner(args) {
   }
 }
 
-function parseRun(run, label) {
+function parseRun(run: any, label: string) {
   assert.strictEqual(run.code, 0, `${label} failed:\nSTDERR:\n${run.stderr}\nSTDOUT:\n${run.stdout}`);
   return JSON.parse(run.stdout.trim());
 }

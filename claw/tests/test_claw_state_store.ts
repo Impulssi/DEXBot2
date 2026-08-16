@@ -15,14 +15,14 @@ async function testConcurrentUpdatesPreserveBothWrites() {
   const secondStore = createStateStore({ filePath, defaultValue: {} });
 
   await Promise.all([
-    firstStore.update(async (state) => {
+    firstStore.update(async (state: any) => {
       await new Promise((resolve) => setTimeout(resolve, 60));
       return {
         ...(state || {}),
         alpha: 1
       };
     }),
-    secondStore.update(async (state) => ({
+    secondStore.update(async (state: any) => ({
       ...(state || {}),
       beta: 1
     }))

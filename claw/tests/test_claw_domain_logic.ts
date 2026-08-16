@@ -5,11 +5,11 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 
-function clearModule(modulePath) {
+function clearModule(modulePath: string) {
   delete require.cache[modulePath];
 }
 
-function registerMock(modulePath, exports) {
+function registerMock(modulePath: string, exports: any) {
   require.cache[modulePath] = {
     id: modulePath,
     filename: modulePath,
@@ -26,12 +26,12 @@ function createHonestHarness(options: any = {}) {
   const poolsPath = require.resolve('../modules/liquidity_pools');
 
   const calls = {
-    derivePoolPrice: [],
-    getAsset: [],
-    getBackingAsset: [],
-    getBitassetData: [],
-    getCallOrders: [],
-    listAssets: []
+    derivePoolPrice: [] as any[],
+    getAsset: [] as string[],
+    getBackingAsset: [] as string[],
+    getBitassetData: [] as string[],
+    getCallOrders: [] as any[],
+    listAssets: [] as any[]
   };
 
   const coreAsset = { id: '1.3.0', precision: 5, symbol: 'BTS' };
@@ -62,7 +62,7 @@ function createHonestHarness(options: any = {}) {
       ];
 
   registerMock(queriesPath, {
-    getAsset: async (symbolOrId) => {
+    getAsset: async (symbolOrId: string) => {
       calls.getAsset.push(symbolOrId);
       if (symbolOrId === 'BTS' || symbolOrId === '1.3.0') {
         return coreAsset;
@@ -78,11 +78,11 @@ function createHonestHarness(options: any = {}) {
       }
       return null;
     },
-    getBackingAsset: async (assetId) => {
+    getBackingAsset: async (assetId: string) => {
       calls.getBackingAsset.push(assetId);
       return coreAsset;
     },
-    getBitassetData: async (assetId) => {
+    getBitassetData: async (assetId: string) => {
       calls.getBitassetData.push(assetId);
       return {
         current_feed_publication_time: `2026-03-31T00:00:0${assetId === '1.3.100' ? '1' : assetId === '1.3.101' ? '2' : '3'}`,
@@ -94,18 +94,18 @@ function createHonestHarness(options: any = {}) {
         }
       };
     },
-    getCallOrders: async (assetId, limit) => {
+    getCallOrders: async (assetId: string, limit: any) => {
       calls.getCallOrders.push({ assetId, limit });
       return [{ id: `${assetId}-call-1` }];
     },
-    listAssets: async (lowerBound, limit) => {
+    listAssets: async (lowerBound: string, limit: any) => {
       calls.listAssets.push({ lowerBound, limit });
       return listAssetPages.shift() || [];
     }
   });
 
   registerMock(poolsPath, {
-    derivePoolPrice: async (assetA, assetB, options) => {
+    derivePoolPrice: async (assetA: any, assetB: any, options: any) => {
       calls.derivePoolPrice.push({ assetA, assetB, options: clone(options) });
       if (typeof options.failPair === 'string' && `${assetA}/${assetB}` === options.failPair) {
         throw new Error('pair unavailable');
@@ -229,7 +229,7 @@ async function testHonestEcosystemPaginationAndUnresolvedPair() {
     });
 
     assert.deepStrictEqual(
-      loaded.assets.map((asset) => asset.symbol),
+      loaded.assets.map((asset: any) => asset.symbol),
       ['HONEST.MONEY', 'HONEST.USD', 'HONEST.EUR']
     );
     assert.deepStrictEqual(calls.listAssets, [
@@ -260,10 +260,10 @@ function createPositionManagerHarness() {
   const shortStrategyPath = require.resolve('../modules/short_mpa_strategy');
 
   const calls = {
-    savedStates: [],
-    syncPosition: [],
-    listenForFills: [],
-    onFill: []
+    savedStates: [] as any[],
+    syncPosition: [] as string[],
+    listenForFills: [] as any[],
+    onFill: [] as any[]
   };
 
   const coreAsset = { id: '1.3.0', precision: 5, symbol: 'BTS' };
@@ -282,12 +282,12 @@ function createPositionManagerHarness() {
 
   registerMock(bridgePath, {
     loadDexbotOrderUtils: () => ({
-      blockchainToFloat: (amount, precision) => Number(amount) / (10 ** precision)
+      blockchainToFloat: (amount: number, precision: number) => Number(amount) / (10 ** precision)
     })
   });
 
   registerMock(profilesPath, {
-    writeJsonFileAtomic: async (filePath, state) => {
+    writeJsonFileAtomic: async (filePath: string, state: any) => {
       calls.savedStates.push({
         filePath,
         state: clone(state)
@@ -296,7 +296,7 @@ function createPositionManagerHarness() {
   });
 
   registerMock(actionsPath, {
-    listenForFills: async (accountName, callback) => {
+    listenForFills: async (accountName: string, callback: any) => {
       calls.listenForFills.push({ accountName, callback });
       return async () => {
         calls.listenForFills.push({ accountName, callback, type: 'unsubscribe' });
@@ -311,7 +311,7 @@ function createPositionManagerHarness() {
   });
 
   registerMock(queriesPath, {
-    getAsset: async (symbolOrId) => {
+    getAsset: async (symbolOrId: string) => {
       if (symbolOrId === 'HONEST.USD' || symbolOrId === '1.3.100') {
         return mpaAsset;
       }
@@ -359,7 +359,7 @@ function createPositionManagerHarness() {
     },
     manager,
     mpaAsset,
-    setAccountSnapshot(nextSnapshot) {
+    setAccountSnapshot(nextSnapshot: any) {
       accountSnapshot = clone(nextSnapshot);
     }
   };
@@ -411,12 +411,12 @@ async function testPositionManager() {
     assert.strictEqual(synced.onChain.trackedOrders.entry.orderId, '1.7.1');
     assert.strictEqual(synced.onChain.trackedOrders.entry.sellAmountRemaining, 5);
 
-    manager.syncPosition = async (positionId) => {
+    manager.syncPosition = async (positionId: string) => {
       calls.syncPosition.push(positionId);
       return manager.getPosition(positionId);
     };
 
-    const unsubscribe = await manager.watchAccount('alice', async (position, fill) => {
+    const unsubscribe = await manager.watchAccount('alice', async (position: any, fill: any) => {
       calls.onFill.push({ fill, position });
     });
 

@@ -3,11 +3,11 @@
 const assert = require('assert');
 const Module = require('module');
 
-function clearModule(modulePath) {
+function clearModule(modulePath: string) {
   delete require.cache[modulePath];
 }
 
-function registerMock(modulePath, exports) {
+function registerMock(modulePath: string, exports: any) {
   require.cache[modulePath] = {
     id: modulePath,
     filename: modulePath,
@@ -25,11 +25,11 @@ function createChainDataHarness() {
   const feedPath = require.resolve('../modules/feed_price_source');
 
   const calls = {
-    dbCall: [],
-    getAsset: [],
-    getBackingAsset: [],
-    getBitassetData: [],
-    getFullAccount: []
+    dbCall: [] as Array<{ method: string; args: unknown }>,
+    getAsset: [] as string[],
+    getBackingAsset: [] as string[],
+    getBitassetData: [] as string[],
+    getFullAccount: [] as string[]
   };
 
   const bts = { id: '1.3.0', precision: 5, symbol: 'BTS' };
@@ -67,15 +67,15 @@ function createChainDataHarness() {
 
   registerMock(bridgePath, {
     loadDexbotOrderUtils: () => ({
-      blockchainToFloat: (amount, precision) => Number(amount) / (10 ** precision)
+      blockchainToFloat: (amount: number, precision: number) => Number(amount) / (10 ** precision)
     }),
     loadDexbotOrderSystemUtils: () => ({
-      blockchainToFloat: (amount, precision) => Number(amount) / (10 ** precision)
+      blockchainToFloat: (amount: number, precision: number) => Number(amount) / (10 ** precision)
     })
   });
 
   registerMock(queriesPath, {
-    getAsset: async (symbolOrId) => {
+    getAsset: async (symbolOrId: string) => {
       calls.getAsset.push(symbolOrId);
       if (symbolOrId === 'BTS' || symbolOrId === bts.id) {
         return bts;
@@ -88,7 +88,7 @@ function createChainDataHarness() {
       }
       return null;
     },
-    getBackingAsset: async (symbolOrId) => {
+    getBackingAsset: async (symbolOrId: string) => {
       calls.getBackingAsset.push(symbolOrId);
       if (symbolOrId === honest.id || symbolOrId === honest.symbol) {
         return bts;
@@ -98,7 +98,7 @@ function createChainDataHarness() {
       }
       return null;
     },
-    getBitassetData: async (symbolOrId) => {
+    getBitassetData: async (symbolOrId: string) => {
       calls.getBitassetData.push(symbolOrId);
       if (symbolOrId === honest.id || symbolOrId === honest.symbol) {
         return {
@@ -124,14 +124,14 @@ function createChainDataHarness() {
       }
       return null;
     },
-    getFullAccount: async (accountName) => {
+    getFullAccount: async (accountName: string) => {
       calls.getFullAccount.push(accountName);
       if (accountName !== 'alice') {
         return null;
       }
       return clone(account);
     },
-    dbCall: async (method, args) => {
+    dbCall: async (method: string, args: unknown) => {
       calls.dbCall.push({ method, args: clone(args) });
       if (method === 'get_order_book') {
         return {
@@ -216,19 +216,19 @@ function createDecisionLoopHarness() {
   const analyzerPath = require.resolve('../../market_adapter/core/signals/kalman_trend_analyzer');
 
   const calls = {
-    fetchTrendInput: [],
-    log: [],
-    updates: []
+    fetchTrendInput: [] as string[],
+    log: [] as string[],
+    updates: [] as Array<{ positionId: string; trendSignal: any }>
   };
 
   class FakeTrendAnalyzer {
     [key: string]: any;
-    constructor(config) {
+    constructor(config: any) {
       this.config = config;
       this.updateCount = 0;
     }
 
-    update(marketPrice, feedPrice) {
+    update(marketPrice: number, feedPrice: number) {
       this.updateCount += 1;
       this.lastResult = {
         confidence: 80,
@@ -255,7 +255,7 @@ function createDecisionLoopHarness() {
     ])
   });
   registerMock(healthPath, {
-    assessPosition: (position, trendSignal) => {
+    assessPosition: (position: any, trendSignal: any) => {
       calls.updates.push({ positionId: position.id, trendSignal: clone(trendSignal) });
       return {
         actions: position.id === 'pos-1'
@@ -267,7 +267,7 @@ function createDecisionLoopHarness() {
     }
   });
   registerMock(feedPath, {
-    fetchTrendInput: async (mpaSymbol) => {
+    fetchTrendInput: async (mpaSymbol: string) => {
       calls.fetchTrendInput.push(mpaSymbol);
       if (mpaSymbol === 'HONEST.EUR') {
         throw new Error('feed unavailable');
@@ -306,7 +306,7 @@ async function testDecisionLoop() {
   try {
     const result = await decisionLoop.evaluate('alice', {
       analyzerConfig: { period: 12 },
-      logger: (message) => calls.log.push(message)
+      logger: (message: string) => calls.log.push(message)
     });
 
     assert.strictEqual(result.positionCount, 3);
@@ -336,19 +336,19 @@ function createKibanaHarness() {
   const kibanaPricePath = require.resolve('../modules/kibana_price_source');
 
   const calls = {
-    getAsset: [],
-    marketCandles: [],
-    marketClosePrices: [],
-    lpCandles: [],
-    lpClosePrices: [],
-    poolAssets: []
+    getAsset: [] as string[],
+    marketCandles: [] as Array<{ assetA: any; assetB: any; config: any }>,
+    marketClosePrices: [] as Array<{ assetA: any; assetB: any; config: any }>,
+    lpCandles: [] as Array<{ poolId: any; assetA: any; assetB: any; config: any }>,
+    lpClosePrices: [] as Array<{ poolId: any; assetA: any; assetB: any; config: any }>,
+    poolAssets: [] as Array<{ poolId: any; config: any }>
   };
 
   const bts = { id: '1.3.0', precision: 5, symbol: 'BTS' };
   const honest = { id: '1.3.100', precision: 5, symbol: 'HONEST.USD' };
 
   registerMock(chainQueriesPath, {
-    getAsset: async (symbolOrId) => {
+    getAsset: async (symbolOrId: string) => {
       calls.getAsset.push(symbolOrId);
       if (symbolOrId === 'BTS') {
         return bts;
@@ -360,25 +360,25 @@ function createKibanaHarness() {
     }
   });
   registerMock(marketCandlesPath, {
-    getMarketCandles: async (assetA, assetB, config) => {
+    getMarketCandles: async (assetA: any, assetB: any, config: any) => {
       calls.marketCandles.push({ assetA, assetB, config: clone(config) });
       return [[1, 2, 2, 2, 2, 10]];
     },
-    getMarketClosePrices: async (assetA, assetB, config) => {
+    getMarketClosePrices: async (assetA: any, assetB: any, config: any) => {
       calls.marketClosePrices.push({ assetA, assetB, config: clone(config) });
       return [2];
     }
   });
   registerMock(lpSourcePath, {
-    discoverPoolAssets: async (poolId, config) => {
+    discoverPoolAssets: async (poolId: any, config: any) => {
       calls.poolAssets.push({ poolId, config: clone(config) });
       return ['1.3.0', '1.3.100'];
     },
-    getLpCandlesForPool: async (poolId, assetA, assetB, config) => {
+    getLpCandlesForPool: async (poolId: any, assetA: any, assetB: any, config: any) => {
       calls.lpCandles.push({ poolId, assetA, assetB, config: clone(config) });
       return [[2, 3, 3, 3, 3, 4]];
     },
-    getLpClosePricesForPool: async (poolId, assetA, assetB, config) => {
+    getLpClosePricesForPool: async (poolId: any, assetA: any, assetB: any, config: any) => {
       calls.lpClosePrices.push({ poolId, assetA, assetB, config: clone(config) });
       return [3];
     }
@@ -440,8 +440,8 @@ function createLiquidityHarness() {
   const poolsPath = require.resolve('../modules/liquidity_pools');
   const sharedBitShares = { name: 'shared-bitshares-client' };
   const calls = {
-    pool: null,
-    price: null
+    pool: null as any,
+    price: null as any
   };
 
   registerMock(bitsharesPath, {
@@ -450,13 +450,13 @@ function createLiquidityHarness() {
   registerMock(bridgePath, {
     getDexbot2Root: () => '/tmp',
     loadDexbotOrderSystemUtils: () => ({
-      cloneMap: (value) => value,
-      deepFreeze: (value) => value,
-      derivePoolPrice: (...args) => {
+      cloneMap: (value: any) => value,
+      deepFreeze: (value: any) => value,
+      derivePoolPrice: (...args: any[]) => {
         calls.pool = args;
         return 'pool-price';
       },
-      derivePrice: (...args) => {
+      derivePrice: (...args: any[]) => {
         calls.price = args;
         return 'derived-price';
       },

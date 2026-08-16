@@ -9,17 +9,17 @@ const path = require('path');
 const { isDistCodeRoot } = require('../../modules/launcher/runtime_entry');
 const mcpServer = require('../scripts/claw_mcp_server');
 
-function encodeNewlineMessage(message) {
+function encodeNewlineMessage(message: any) {
   return `${JSON.stringify(message)}\n`;
 }
 
-function shellQuote(value) {
+function shellQuote(value: any) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
 }
 
 async function testParserAcceptsJsonlAcrossChunksAndSingleBuffer() {
-  const seen = [];
-  const parser = mcpServer.createMessageParser((message) => {
+  const seen: any[] = [];
+  const parser = mcpServer.createMessageParser((message: any) => {
     seen.push(message);
   });
 
@@ -66,8 +66,8 @@ async function testParserAcceptsJsonlAcrossChunksAndSingleBuffer() {
 }
 
 async function testParserIgnoresLegacyContentLengthFrames() {
-  const seen = [];
-  const parser = mcpServer.createMessageParser((message) => {
+  const seen: any[] = [];
+  const parser = mcpServer.createMessageParser((message: any) => {
     seen.push(message);
   });
 
@@ -84,7 +84,7 @@ async function testParserIgnoresLegacyContentLengthFrames() {
 
 async function testHandleRequestEmitsNewlineJson() {
   const repoRoot = path.resolve(__dirname, '..', '..');
-  const captured = [];
+  const captured: any[] = [];
   const originalWrite = process.stdout.write;
 
   process.stdout.write = ((chunk: any, encoding: any, callback: any) => {
@@ -132,17 +132,17 @@ async function testHandleRequestEmitsNewlineJson() {
   assert.strictEqual(responses[1].id, 2);
   assert.ok(Array.isArray(responses[1].result.tools), 'tools/list should return a tool list');
   assert.ok(
-    responses[1].result.tools.some((tool) => tool.name === 'claw_runtime'),
+    responses[1].result.tools.some((tool: any) => tool.name === 'claw_runtime'),
     'tools/list should include claw_runtime'
   );
   assert.strictEqual(
-    responses[1].result.tools.some((tool) => String(tool.name).startsWith('mcp_claw_')),
+    responses[1].result.tools.some((tool: any) => String(tool.name).startsWith('mcp_claw_')),
     false,
     'tools/list should expose the raw claw_* tool ids from the MCP server'
   );
 }
 
-function runServerProcess(input) {
+function runServerProcess(input: any) {
   const repoRoot = path.resolve(__dirname, '..', '..');
   const clawRoot = path.resolve(__dirname, '..');
   const _isDist = isDistCodeRoot(path.dirname(__dirname));
@@ -204,9 +204,9 @@ async function testMainEntrypointHandlesRealProcessInitialize() {
 
   const responses = run.stdout
     .split('\n')
-    .map((line) => line.trim())
+    .map((line: any) => line.trim())
     .filter((x: any) => x)
-    .map((line) => JSON.parse(line));
+    .map((line: any) => JSON.parse(line));
 
   assert.strictEqual(responses.length, 2, 'expected two JSON-RPC responses from the entrypoint');
   assert.strictEqual(responses[0].id, 1);
@@ -214,11 +214,11 @@ async function testMainEntrypointHandlesRealProcessInitialize() {
   assert.strictEqual(responses[1].id, 2);
   assert.ok(Array.isArray(responses[1].result.tools), 'tools/list should return a tool array');
   assert.ok(
-    responses[1].result.tools.some((tool) => tool.name === 'claw_manifest'),
+    responses[1].result.tools.some((tool: any) => tool.name === 'claw_manifest'),
     'tools/list should include claw_manifest'
   );
   assert.strictEqual(
-    responses[1].result.tools.some((tool) => String(tool.name).startsWith('mcp_claw_')),
+    responses[1].result.tools.some((tool: any) => String(tool.name).startsWith('mcp_claw_')),
     false,
     'entrypoint should expose raw claw_* tool ids from the MCP server'
   );

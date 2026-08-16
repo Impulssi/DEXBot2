@@ -5,7 +5,7 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 
-function countOccurrences(text, needle) {
+function countOccurrences(text: string, needle: string) {
   return (text.match(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
 }
 

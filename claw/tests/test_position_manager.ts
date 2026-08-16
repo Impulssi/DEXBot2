@@ -5,11 +5,11 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 
-function clearModule(modulePath) {
+function clearModule(modulePath: string) {
   delete require.cache[modulePath];
 }
 
-function registerMock(modulePath, exports) {
+function registerMock(modulePath: string, exports: any) {
   require.cache[modulePath] = {
     id: modulePath,
     filename: modulePath,
@@ -31,11 +31,11 @@ async function createHarness() {
   const statePath = path.join(tempDir, 'positions.json');
 
   const calls = {
-    closeShortOnBts: [],
-    listenForFills: [],
-    openShortOnBts: [],
-    placeTakeProfitBuyOrderOnBts: [],
-    savedStates: []
+    closeShortOnBts: [] as any[],
+    listenForFills: [] as any[],
+    openShortOnBts: [] as any[],
+    placeTakeProfitBuyOrderOnBts: [] as any[],
+    savedStates: [] as any[]
   };
 
   const coreAsset = { id: '1.3.0', precision: 5, symbol: 'BTS' };
@@ -46,7 +46,7 @@ async function createHarness() {
     symbol: 'HONEST.USD'
   };
 
-  let accountSnapshot = {
+  let accountSnapshot: any = {
     balances: [{ asset_type: '1.3.0', balance: 500000 }],
     call_orders: [],
     limit_orders: []
@@ -54,19 +54,19 @@ async function createHarness() {
 
   registerMock(bridgePath, {
     loadDexbotOrderUtils: () => ({
-      blockchainToFloat: (amount, precision) => Number(amount) / (10 ** precision)
+      blockchainToFloat: (amount: number, precision: number) => Number(amount) / (10 ** precision)
     })
   });
 
   registerMock(profilesPath, {
-    writeJsonFileAtomic: async (filePath, state) => {
+    writeJsonFileAtomic: async (filePath: string, state: any) => {
       calls.savedStates.push({ filePath, state: clone(state) });
       await fs.writeFile(filePath, JSON.stringify(state, null, 2));
     }
   });
 
   registerMock(shortStrategyPath, {
-    closeShortOnBts: async (options) => {
+    closeShortOnBts: async (options: any) => {
       calls.closeShortOnBts.push(options);
       accountSnapshot = {
         ...accountSnapshot,
@@ -79,7 +79,7 @@ async function createHarness() {
         }
       };
     },
-    openShortOnBts: async (options) => {
+    openShortOnBts: async (options: any) => {
       calls.openShortOnBts.push(options);
       accountSnapshot = {
         ...accountSnapshot,
@@ -106,7 +106,7 @@ async function createHarness() {
         }
       };
     },
-    placeTakeProfitBuyOrderOnBts: async (options) => {
+    placeTakeProfitBuyOrderOnBts: async (options: any) => {
       calls.placeTakeProfitBuyOrderOnBts.push(options);
       accountSnapshot = {
         ...accountSnapshot,
@@ -131,7 +131,7 @@ async function createHarness() {
   });
 
   registerMock(actionsPath, {
-    listenForFills: async (accountName, callback) => {
+    listenForFills: async (accountName: string, callback: any) => {
       calls.listenForFills.push({ accountName, callback });
       return async () => {
         calls.listenForFills.push({ accountName, type: 'unsubscribe' });
@@ -140,7 +140,7 @@ async function createHarness() {
   });
 
   registerMock(queriesPath, {
-    getAsset: async (symbolOrId) => {
+    getAsset: async (symbolOrId: string) => {
       if (symbolOrId === 'BTS' || symbolOrId === coreAsset.id) {
         return coreAsset;
       }
@@ -177,7 +177,7 @@ async function createHarness() {
       clearModule(shortStrategyPath);
     },
     manager: new PositionManager({ statePath }),
-    setAccountSnapshot(nextSnapshot) {
+    setAccountSnapshot(nextSnapshot: any) {
       accountSnapshot = clone(nextSnapshot);
     },
     statePath
@@ -224,7 +224,7 @@ async function testPositionManagerLifecycle() {
 
     const watchedPositionId = planned.id;
     const state = await manager.loadState();
-    const watchedPosition = state.positions.find((entry) => entry.id === watchedPositionId);
+    const watchedPosition = state.positions.find((entry: any) => entry.id === watchedPositionId);
     watchedPosition.entry.orderId = '1.7.500';
     watchedPosition.entry.orderOpen = true;
     watchedPosition.status = 'entry_order_open';
@@ -251,7 +251,7 @@ async function testPositionManagerLifecycle() {
     const accountState = await manager.getPosition(watchedPositionId);
     assert.strictEqual(accountState.entry.orderId, '1.7.500');
 
-    const unsubscribe = await manager.watchAccount('alice', async (position, fill) => {
+    const unsubscribe = await manager.watchAccount('alice', async (position: any, fill: any) => {
       calls.listenForFills.push({ accountName: 'alice', fill, type: 'onFill', positionId: position.id });
     });
 

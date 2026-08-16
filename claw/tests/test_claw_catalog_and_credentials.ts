@@ -6,15 +6,15 @@ const net = require('net');
 const { EventEmitter } = require('events');
 const path = require('path');
 
-function clearModule(modulePath) {
+function clearModule(modulePath: string) {
   delete require.cache[modulePath];
 }
 
-function createMockConnection(script) {
-  return (socketPath, onConnect) => {
+function createMockConnection(script: any) {
+  return (socketPath: string, onConnect: any) => {
     const socket = new EventEmitter();
     socket.socketPath = socketPath;
-    socket.write = (payload) => {
+    socket.write = (payload: any) => {
       socket.payload = payload;
     };
     socket.end = () => {
@@ -55,8 +55,8 @@ function testClawCatalog() {
   assert.notStrictEqual(catalog.getClawToolCatalog()[0].command, 'mutated');
 
   const examples = catalog.buildClawCommandExamples('tsx scripts/claw_bridge.ts');
-  assert.ok(examples.some((line) => line.startsWith('tsx scripts/claw_bridge.ts manifest')));
-  assert.ok(examples.some((line) => line.includes('bot-settings-apply')));
+  assert.ok(examples.some((line: any) => line.startsWith('tsx scripts/claw_bridge.ts manifest')));
+  assert.ok(examples.some((line: any) => line.includes('bot-settings-apply')));
 }
 
 async function testCredentialDaemonClient() {
@@ -71,7 +71,7 @@ async function testCredentialDaemonClient() {
   const originalLstatSync = fs.lstatSync;
   const originalCreateConnection = net.createConnection;
 
-  const credStatFor = (filePath) => ({
+  const credStatFor = (filePath: any) => ({
     isSymbolicLink: () => false,
     isFile: () => !String(filePath).endsWith('.sock'),
     isSocket: () => String(filePath).endsWith('.sock'),
@@ -80,7 +80,7 @@ async function testCredentialDaemonClient() {
     mode: 0o100600,
   });
 
-  fs.lstatSync = (filePath) => {
+  fs.lstatSync = (filePath: any) => {
     if (String(filePath).includes('cred')) return credStatFor(filePath);
     return originalLstatSync.call(fs, filePath);
   };
@@ -90,7 +90,7 @@ async function testCredentialDaemonClient() {
     assert.strictEqual(client.DEFAULT_READY_FILE, runtime.getCredentialReadyFilePath());
 
     let readyChecks = 0;
-    fs.existsSync = (filePath) => {
+    fs.existsSync = (filePath: any) => {
       if (String(filePath).includes('cred')) {
         readyChecks += 1;
         return readyChecks >= 2;

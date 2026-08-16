@@ -13,7 +13,7 @@ function testRuntimeMatrix() {
   const all = matrix.listSupportedClawRuntimes();
   assert.ok(all.length >= 9);
 
-  const names = all.map((r) => r.runtime);
+  const names = all.map((r: any) => r.runtime);
   assert.deepStrictEqual(names, ['openclaw', 'hermes', 'openfang', 'nanobot', 'picoclaw', 'nanoclaw', 'zeroclaw', 'nullclaw', 'memu']);
 
   // Each entry is a defensive clone — mutations must not affect the registry

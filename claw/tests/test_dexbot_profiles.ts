@@ -15,11 +15,11 @@ const {
 } = require('../modules/dexbot_profiles');
 
 function createCaptureLogger() {
-  const messages = [];
+  const messages: any[] = [];
   return {
     logger: {
-      log: (msg) => messages.push(String(msg)),
-      warn: (msg) => messages.push(String(msg))
+      log: (msg: any) => messages.push(String(msg)),
+      warn: (msg: any) => messages.push(String(msg))
     },
     messages
   };
@@ -459,7 +459,7 @@ async function testNestedPatchValidationDoesNotDuplicateErrors() {
     forceReload: true
   });
 
-  const sellErrors = preview.errors.filter((entry) => entry === 'weightDistribution.sell must be a finite number');
+  const sellErrors = preview.errors.filter((entry: any) => entry === 'weightDistribution.sell must be a finite number');
   assert.strictEqual(sellErrors.length, 1, 'nested patch validation should not duplicate the same field error');
 }
 

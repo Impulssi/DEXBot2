@@ -85,7 +85,7 @@ function testTrendAlignment() {
 
 // --- assessPosition: two-layer actions ---
 
-function makePosition(cr, debtAmount = 100) {
+function makePosition(cr: any, debtAmount: any = 100) {
   return {
     id: 'test_pos',
     status: 'debt_open',
@@ -160,7 +160,7 @@ function testAssessTrendOpposed() {
   const trend = { trend: 'UP', confidence: 70, premium: 1.5 };
   const result = assessPosition(makePosition(2.2), trend);
   assert.strictEqual(result.trend.alignment, 'opposed');
-  const reviewAction = result.actions.find(a => a.action === 'review_direction');
+  const reviewAction = result.actions.find((a: any) => a.action === 'review_direction');
   assert.ok(reviewAction, 'should have review_direction action');
   assert.strictEqual(reviewAction.priority, 'evaluate');
 

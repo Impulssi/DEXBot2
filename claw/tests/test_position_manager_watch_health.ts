@@ -11,12 +11,12 @@ const watcherModulePath = require.resolve('../modules/position_manager_watch');
 const positionManagerPath = require.resolve('../modules/position_manager');
 const bitsharesClientPath = require.resolve('../modules/bitshares_client');
 
-function loadWatcherModule(mockPositionManager, waitForConnected) {
+function loadWatcherModule(mockPositionManager: any, waitForConnected: any) {
   delete require.cache[watcherModulePath];
   delete require.cache[positionManagerPath];
   delete require.cache[bitsharesClientPath];
 
-  Module._load = function(request, parent, isMain) {
+  Module._load = function(request: any, parent: any, isMain: any) {
     if (['./position_manager', './position_manager.js'].includes(request) && parent?.filename === watcherModulePath) {
       return {
         DEFAULT_STATE_PATH: path.join(os.tmpdir(), 'unused-positions.json'),

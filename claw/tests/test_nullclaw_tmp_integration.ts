@@ -42,7 +42,7 @@ async function main() {
   assert.strictEqual(manifest.options.runtimeName, 'nullclaw');
   assert.strictEqual(manifest.options.profileRoot, dexbotRoot);
   assert.strictEqual(manifest.compatibility.recommendedTransport, 'skill-toml-or-mcp');
-  assert.ok(manifest.commandExamples.some((example) => example.includes('claw_bridge.ts')));
+  assert.ok(manifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')));
   assert.ok(Array.isArray(manifest.tools.catalog));
   assert.strictEqual(runtime.name, 'nullclaw');
   assert.strictEqual(runtime.profileRoot, dexbotRoot);

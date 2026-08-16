@@ -2,11 +2,11 @@
 
 const assert = require('assert');
 
-function clearModule(modulePath) {
+function clearModule(modulePath: string) {
   delete require.cache[modulePath];
 }
 
-function registerMock(modulePath, exports) {
+function registerMock(modulePath: string, exports: any) {
   require.cache[modulePath] = {
     id: modulePath,
     filename: modulePath,
@@ -23,34 +23,34 @@ function createBridgeHarness() {
   const shortStrategyPath = require.resolve('../modules/short_mpa_strategy');
 
   const calls = {
-    createClawInfrastructure: [],
+    createClawInfrastructure: [] as any[],
     chainActions: {
-      adjustMpaCollateral: [],
-      borrowMpa: [],
-      buildUpdateLimitOrderOperation: [],
-      cancelLimitOrder: [],
-      createLimitOrder: [],
-      executeBatch: [],
-      getMpaPosition: [],
-      getOpenOrders: [],
-      repayMpaDebt: [],
-      settleMpa: [],
-      updateLimitOrder: []
+      adjustMpaCollateral: [] as any[],
+      borrowMpa: [] as any[],
+      buildUpdateLimitOrderOperation: [] as any[],
+      cancelLimitOrder: [] as any[],
+      createLimitOrder: [] as any[],
+      executeBatch: [] as any[],
+      getMpaPosition: [] as any[],
+      getOpenOrders: [] as any[],
+      repayMpaDebt: [] as any[],
+      settleMpa: [] as any[],
+      updateLimitOrder: [] as any[]
     },
     shortStrategy: {
-      buildCloseShortPlan: [],
-      buildOpenShortPlan: [],
-      buildTakeProfitPlan: [],
-      closeShortOnBts: [],
-      openShortOnBts: [],
-      placeTakeProfitBuyOrderOnBts: []
+      buildCloseShortPlan: [] as any[],
+      buildOpenShortPlan: [] as any[],
+      buildTakeProfitPlan: [] as any[],
+      closeShortOnBts: [] as any[],
+      openShortOnBts: [] as any[],
+      placeTakeProfitBuyOrderOnBts: [] as any[]
     },
     profiles: {
-      getBotSettings: [],
-      previewBotSettingsUpdate: [],
-      applyBotSettingsPatch: []
+      getBotSettings: [] as any[],
+      previewBotSettingsUpdate: [] as any[],
+      applyBotSettingsPatch: [] as any[]
     },
-    memu: []
+    memu: [] as any[]
   };
 
   const bridgeRuntime = {
@@ -60,21 +60,21 @@ function createBridgeHarness() {
   };
 
   registerMock(infraPath, {
-    createClawInfrastructure: (options) => {
+    createClawInfrastructure: (options: any) => {
       calls.createClawInfrastructure.push(options);
       return {
         honest: {
-          buildContext: async (options) => ({
+          buildContext: async (options: any) => ({
             source: 'honest-context',
             options
           }),
-          resolvePairContext: async (assetA, assetB, options) => ({
+          resolvePairContext: async (assetA: any, assetB: any, options: any) => ({
             assetA,
             assetB,
             options,
             source: 'honest-pair'
           }),
-          resolvePairPrice: async (assetA, assetB, options) => ({
+          resolvePairPrice: async (assetA: any, assetB: any, options: any) => ({
             assetA,
             assetB,
             options,
@@ -82,11 +82,11 @@ function createBridgeHarness() {
           })
         },
         market: {
-          readAccountSnapshot: async (accountName) => ({
+          readAccountSnapshot: async (accountName: any) => ({
             accountName,
             source: 'account-snapshot'
           }),
-          readMarketSnapshot: async (baseSymbol, quoteSymbol, limit) => ({
+          readMarketSnapshot: async (baseSymbol: any, quoteSymbol: any, limit: any) => ({
             baseSymbol,
             limit,
             quoteSymbol,
@@ -94,12 +94,12 @@ function createBridgeHarness() {
           })
         },
         profiles: {
-          getClawProfileContext: async (ref, options) => ({
+          getClawProfileContext: async (ref: any, options: any) => ({
             options,
             ref,
             selectedBot: { botId: ref, source: 'profile-context' }
           }),
-          getBotSettings: async (ref, forceReload) => {
+          getBotSettings: async (ref: any, forceReload: any) => {
             calls.profiles.getBotSettings.push({ forceReload, ref });
             return {
               forceReload,
@@ -107,7 +107,7 @@ function createBridgeHarness() {
               source: 'bot-settings'
             };
           },
-          previewBotSettingsUpdate: async (ref, patch, options) => {
+          previewBotSettingsUpdate: async (ref: any, patch: any, options: any) => {
             calls.profiles.previewBotSettingsUpdate.push({ options, patch, ref });
             return {
               options,
@@ -116,7 +116,7 @@ function createBridgeHarness() {
               source: 'bot-settings-preview'
             };
           },
-          applyBotSettingsPatch: async (ref, patch, options) => {
+          applyBotSettingsPatch: async (ref: any, patch: any, options: any) => {
             calls.profiles.applyBotSettingsPatch.push({ options, patch, ref });
             return {
               options,
@@ -136,8 +136,8 @@ function createBridgeHarness() {
     }
   });
 
-  const stubbedChainAction = (name) => async (options) => {
-    calls.chainActions[name].push(options);
+  const stubbedChainAction = (name: string) => async (options: any) => {
+    calls.chainActions[name as keyof typeof calls.chainActions].push(options);
     return {
       options,
       source: name
@@ -147,7 +147,7 @@ function createBridgeHarness() {
   registerMock(chainActionsPath, {
     adjustMpaCollateral: stubbedChainAction('adjustMpaCollateral'),
     borrowMpa: stubbedChainAction('borrowMpa'),
-    buildUpdateLimitOrderOperation: async (options) => {
+    buildUpdateLimitOrderOperation: async (options: any) => {
       calls.chainActions.buildUpdateLimitOrderOperation.push(options);
       return {
         op: {
@@ -160,7 +160,7 @@ function createBridgeHarness() {
     cancelLimitOrder: stubbedChainAction('cancelLimitOrder'),
     createLimitOrder: stubbedChainAction('createLimitOrder'),
     executeBatch: stubbedChainAction('executeBatch'),
-    getMpaPosition: async (accountNameOrId, mpaAsset) => {
+    getMpaPosition: async (accountNameOrId: any, mpaAsset: any) => {
       calls.chainActions.getMpaPosition.push({ accountNameOrId, mpaAsset });
       return {
         accountNameOrId,
@@ -168,7 +168,7 @@ function createBridgeHarness() {
         source: 'mpa-position'
       };
     },
-    getOpenOrders: async (accountNameOrId) => {
+    getOpenOrders: async (accountNameOrId: any) => {
       calls.chainActions.getOpenOrders.push(accountNameOrId);
       return {
         accountNameOrId,
@@ -181,42 +181,42 @@ function createBridgeHarness() {
   });
 
   registerMock(shortStrategyPath, {
-    buildCloseShortPlan: async (options) => {
+    buildCloseShortPlan: async (options: any) => {
       calls.shortStrategy.buildCloseShortPlan.push(options);
       return {
         options,
         source: 'buildCloseShortPlan'
       };
     },
-    buildOpenShortPlan: async (options) => {
+    buildOpenShortPlan: async (options: any) => {
       calls.shortStrategy.buildOpenShortPlan.push(options);
       return {
         options,
         source: 'buildOpenShortPlan'
       };
     },
-    buildTakeProfitPlan: async (options) => {
+    buildTakeProfitPlan: async (options: any) => {
       calls.shortStrategy.buildTakeProfitPlan.push(options);
       return {
         options,
         source: 'buildTakeProfitPlan'
       };
     },
-    closeShortOnBts: async (options) => {
+    closeShortOnBts: async (options: any) => {
       calls.shortStrategy.closeShortOnBts.push(options);
       return {
         options,
         source: 'closeShortOnBts'
       };
     },
-    openShortOnBts: async (options) => {
+    openShortOnBts: async (options: any) => {
       calls.shortStrategy.openShortOnBts.push(options);
       return {
         options,
         source: 'openShortOnBts'
       };
     },
-    placeTakeProfitBuyOrderOnBts: async (options) => {
+    placeTakeProfitBuyOrderOnBts: async (options: any) => {
       calls.shortStrategy.placeTakeProfitBuyOrderOnBts.push(options);
       return {
         options,
@@ -226,12 +226,12 @@ function createBridgeHarness() {
   });
 
   registerMock(memuBridgePath, {
-    describeMemuBridge: (options) => ({
+    describeMemuBridge: (options: any) => ({
       options,
       runtime: 'memu',
       source: 'describeMemuBridge'
     }),
-    runMemuCommand: async (command, options) => {
+    runMemuCommand: async (command: any, options: any) => {
       calls.memu.push({ command, options });
       return {
         command,

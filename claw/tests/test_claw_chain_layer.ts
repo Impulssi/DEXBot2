@@ -2,11 +2,11 @@
 
 const assert = require('assert');
 
-function clearModule(modulePath) {
+function clearModule(modulePath: string) {
   delete require.cache[modulePath];
 }
 
-function registerMock(modulePath, exports) {
+function registerMock(modulePath: string, exports: any) {
   require.cache[modulePath] = {
     id: modulePath,
     filename: modulePath,
@@ -23,8 +23,8 @@ function createQueriesHarness() {
   const dexbotBridgePath = require.resolve('../modules/dexbot_bridge');
 
   const calls = {
-    dbCall: [],
-    lookupAsset: [],
+    dbCall: [] as Array<{ args: unknown; method: string }>,
+    lookupAsset: [] as string[],
     waitForConnected: 0
   };
 
@@ -77,13 +77,13 @@ function createQueriesHarness() {
         get_dynamic_global_properties: async () => ({
           head_block_number: 100
         }),
-        get_assets: async (ids) => ids.map((id) => assets[id]).filter((x: any) => x),
-        get_objects: async (ids) => ids.map((id) => objects[id] || null),
-        call: async (method, args) => {
+        get_assets: async (ids: any[]) => ids.map((id: any) => assets[id as keyof typeof assets]).filter((x: any) => x),
+        get_objects: async (ids: any[]) => ids.map((id: any) => objects[id as keyof typeof objects] || null),
+        call: async (method: string, args: any) => {
           calls.dbCall.push({ args: clone(args), method });
 
           if (method === 'lookup_asset_symbols') {
-            return args[0].map((symbol) => {
+            return args[0].map((symbol: any) => {
               if (symbol === 'FALLBACK') {
                 return assets['1.3.101'];
               }
@@ -110,7 +110,7 @@ function createQueriesHarness() {
 
   registerMock(dexbotBridgePath, {
     loadDexbotOrderSystemUtils: () => ({
-      lookupAsset: async (_bitshares, symbolOrId) => {
+      lookupAsset: async (_bitshares: any, symbolOrId: string) => {
         calls.lookupAsset.push(symbolOrId);
         if (symbolOrId === 'FALLBACK') {
           throw new Error('lookup failure');
@@ -125,7 +125,7 @@ function createQueriesHarness() {
       }
     }),
     loadDexbotOrderUtils: () => ({
-      blockchainToFloat: (amount, precision) => Number(amount) / (10 ** precision)
+      blockchainToFloat: (amount: number, precision: number) => Number(amount) / (10 ** precision)
     })
   });
 
@@ -197,32 +197,32 @@ function createBroadcastHarness() {
   const credentialClientPath = require.resolve('../modules/dexbot_credential_client');
 
   const calls = {
-    accountClient: [],
-    broadcasts: [],
+    accountClient: [] as Array<{ accountName: any; privateKey: any }>,
+    broadcasts: [] as any[],
     daemon: {
-      broadcast: [],
-      execute: [],
-      wait: []
+      broadcast: [] as Array<{ accountName: any; operation: any; options: any }>,
+      execute: [] as Array<{ accountName: any; operations: any; options: any }>,
+      wait: [] as Array<{ timeoutMs: any; options: any }>
     },
     daemonReady: false,
     newTx: 0,
-    txOps: []
+    txOps: [] as Array<{ opData: any; opName: string }>
   };
 
   const tx = {
-    asset_settle: (opData) => {
+    asset_settle: (opData: any) => {
       calls.txOps.push({ opData, opName: 'asset_settle' });
       return tx;
     },
-    call_order_update: (opData) => {
+    call_order_update: (opData: any) => {
       calls.txOps.push({ opData, opName: 'call_order_update' });
       return tx;
     },
-    limit_order_cancel: (opData) => {
+    limit_order_cancel: (opData: any) => {
       calls.txOps.push({ opData, opName: 'limit_order_cancel' });
       return tx;
     },
-    limit_order_create: (opData) => {
+    limit_order_create: (opData: any) => {
       calls.txOps.push({ opData, opName: 'limit_order_create' });
       return tx;
     },
@@ -235,10 +235,10 @@ function createBroadcastHarness() {
   };
 
   registerMock(bitsharesClientPath, {
-    createAccountClient: (accountName, privateKey) => {
+    createAccountClient: (accountName: any, privateKey: any) => {
       calls.accountClient.push({ accountName, privateKey });
       return {
-        broadcast: async (operation) => {
+        broadcast: async (operation: any) => {
           calls.broadcasts.push(operation);
           return {
             operation,
@@ -256,7 +256,7 @@ function createBroadcastHarness() {
 
   registerMock(credentialClientPath, {
     isCredentialDaemonReady: () => calls.daemonReady,
-    broadcastOperationViaCredentialDaemon: async (accountName, operation, options) => {
+    broadcastOperationViaCredentialDaemon: async (accountName: any, operation: any, options: any) => {
       calls.daemon.broadcast.push({ accountName, operation, options });
       return {
         operation,
@@ -265,7 +265,7 @@ function createBroadcastHarness() {
         source: 'daemon-broadcast'
       };
     },
-    executeOperationsViaCredentialDaemon: async (accountName, operations, options) => {
+    executeOperationsViaCredentialDaemon: async (accountName: any, operations: any, options: any) => {
       calls.daemon.execute.push({ accountName, operations, options });
       return {
         operation_results: [[0, '1.7.77']],
@@ -273,7 +273,7 @@ function createBroadcastHarness() {
         source: 'daemon-execute'
       };
     },
-    waitForCredentialDaemon: async (timeoutMs, options) => {
+    waitForCredentialDaemon: async (timeoutMs: any, options: any) => {
       calls.daemon.wait.push({ options, timeoutMs });
     }
   });
@@ -398,18 +398,18 @@ function createActionsHarness() {
   const dexbotBridgePath = require.resolve('../modules/dexbot_bridge');
 
   const calls = {
-    buildUpdateOrderOp: [],
-    executeOperations: [],
-    resolveAccountId: [],
-    resolveAccountName: [],
-    subscribe: [],
-    unsubscribe: [],
-    getAsset: [],
-    getBackingAsset: [],
-    getFullAccount: [],
-    getOpenOrders: [],
-    getMpaPosition: [],
-    listenCallbacks: []
+    buildUpdateOrderOp: [] as string[],
+    executeOperations: [] as any[],
+    resolveAccountId: [] as string[],
+    resolveAccountName: [] as string[],
+    subscribe: [] as any[],
+    unsubscribe: [] as any[],
+    getAsset: [] as string[],
+    getBackingAsset: [] as string[],
+    getFullAccount: [] as string[],
+    getOpenOrders: [] as string[],
+    getMpaPosition: [] as any[],
+    listenCallbacks: [] as any[]
   };
 
   const assets = {
@@ -443,15 +443,15 @@ function createActionsHarness() {
     ]
   };
 
-  const subscribeHandlers = [];
+  const subscribeHandlers: any[] = [];
 
   registerMock(bitsharesClientPath, {
     BitShares: {
-      subscribe: (topic, callback, accountName) => {
+      subscribe: (topic: any, callback: any, accountName: any) => {
         calls.subscribe.push({ accountName, topic });
         subscribeHandlers.push(callback);
       },
-      unsubscribe: (topic, callback, accountName) => {
+      unsubscribe: (topic: any, callback: any, accountName: any) => {
         calls.unsubscribe.push({ accountName, topic });
         return Promise.resolve();
       }
@@ -459,7 +459,7 @@ function createActionsHarness() {
   });
 
   registerMock(chainBroadcastPath, {
-    executeOperations: async (operations, options) => {
+    executeOperations: async (operations: any, options: any) => {
       calls.executeOperations.push({ options: clone(options), operations: clone(operations) });
       return {
         operation_results: [[0, '1.7.500']],
@@ -469,27 +469,27 @@ function createActionsHarness() {
   });
 
   registerMock(chainQueriesPath, {
-    getAsset: async (symbolOrId) => {
+    getAsset: async (symbolOrId: string) => {
       calls.getAsset.push(symbolOrId);
-      return assets[symbolOrId] || null;
+      return assets[symbolOrId as keyof typeof assets] || null;
     },
-    getBackingAsset: async (symbolOrId) => {
+    getBackingAsset: async (symbolOrId: string) => {
       calls.getBackingAsset.push(symbolOrId);
       return assets.BTS;
     },
-    getFullAccount: async (accountNameOrId) => {
+    getFullAccount: async (accountNameOrId: string) => {
       calls.getFullAccount.push(accountNameOrId);
       return account;
     },
-    readOpenOrders: async (accountNameOrId) => {
+    readOpenOrders: async (accountNameOrId: string) => {
       calls.getOpenOrders.push(accountNameOrId);
       return account.limit_orders;
     },
-    resolveAccountId: async (accountNameOrId) => {
+    resolveAccountId: async (accountNameOrId: string) => {
       calls.resolveAccountId.push(accountNameOrId);
       return accountNameOrId === 'alice' ? '1.2.345' : accountNameOrId;
     },
-    resolveAccountName: async (accountNameOrId) => {
+    resolveAccountName: async (accountNameOrId: string) => {
       calls.resolveAccountName.push(accountNameOrId);
       if (accountNameOrId === '1.2.345') {
         return 'alice';
@@ -503,12 +503,12 @@ function createActionsHarness() {
       FEE_PARAMETERS: { GRAPHENE_COLLATERAL_RATIO_DENOM: 1000 }
     }),
     loadDexbotOrderUtils: () => ({
-      floatToBlockchainInt: (value, precision) => Math.round(Number(value) * (10 ** precision))
+      floatToBlockchainInt: (value: number, precision: number) => Math.round(Number(value) * (10 ** precision))
     }),
-    requireDexbot2Module: (modulePath) => {
+    requireDexbot2Module: (modulePath: string) => {
       calls.buildUpdateOrderOp.push(modulePath);
       return {
-        buildUpdateOrderOp: async (accountName, orderId, newParams, cachedOrder) => ({
+        buildUpdateOrderOp: async (accountName: string, orderId: string, newParams: any, cachedOrder: any) => ({
           op: {
             op_data: {
               accountName,
@@ -645,11 +645,11 @@ async function testChainActions() {
     const mpaPosition = await actions.getMpaPosition('alice', 'HONEST.USD');
     assert.strictEqual(mpaPosition.call_price.quote.asset_id, '1.3.100');
 
-    const received = [];
-    const unsubscribeFirst = await actions.listenForFills('alice', async (fills) => {
+    const received: any[] = [];
+    const unsubscribeFirst = await actions.listenForFills('alice', async (fills: any) => {
       received.push({ fills, source: 'first' });
     });
-    const unsubscribeSecond = await actions.listenForFills('1.2.345', async (fills) => {
+    const unsubscribeSecond = await actions.listenForFills('1.2.345', async (fills: any) => {
       received.push({ fills, source: 'second' });
     });
 
