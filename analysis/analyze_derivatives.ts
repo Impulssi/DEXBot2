@@ -33,9 +33,6 @@ import { writeChartFile } from './chart_utils.js';
 interface SourceConfig {
     botKey: string;
     filePath?: string;
-    poolId?: string;
-    precA?: number;
-    precB?: number;
     stateDir?: string;
 }
 
@@ -179,9 +176,6 @@ Analyzer options:
     --source <type>  Data source (default market_adapter)
     --bot-key KEY    Market adapter bot key (required)
     --file PATH      JSON candle input
-    --pool ID        Kibana LP pool ID
-    --precA N        Kibana asset precision A
-    --precB N        Kibana asset precision B
 
   Output:
     --chart FILE   Chart output path (default: analysis/charts/derivative_chart.html)

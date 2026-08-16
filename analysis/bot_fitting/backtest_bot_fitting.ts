@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
 import { range } from '../math_utils.js';
@@ -112,11 +113,40 @@ function parseArgs() {
     }
 
     if (!out.resultsPath) {
-        const base = path.basename(out.dataPath, '.json');
-        out.resultsPath = path.join(__dirname, '..', 'ama_fitting', `optimization_results_${base}.json`);
+        out.resultsPath = resolveAutoResultsPath(out.dataPath);
     }
 
     return out;
+}
+
+/**
+ * Auto-derive the AMA optimizer results file for a given LP candle data file.
+ *
+ * The optimizer names results `optimization_results_<base>_w<λ1>_<λ2>_<λ3>_<λ4>.json`
+ * (per-AMA distance weights appended as a `_w...` suffix). To stay robust against
+ * weight overrides, pick the most recently written `optimization_results_<base>_w*.json`
+ * in `ama_fitting/`; fall back to the legacy `optimization_results_<base>.json` name
+ * if no suffixed file exists.
+ */
+function resolveAutoResultsPath(dataPath: string): string {
+    const base = path.basename(dataPath, '.json');
+    const dir = path.join(__dirname, '..', 'ama_fitting');
+    const prefix = `optimization_results_${base}_w`;
+    let newest: { file: string; mtimeMs: number } | null = null;
+    try {
+        for (const entry of fs.readdirSync(dir)) {
+            if (!entry.startsWith(prefix) || !entry.endsWith('.json')) continue;
+            const full = path.join(dir, entry);
+            const stat = fs.statSync(full);
+            if (!newest || stat.mtimeMs > newest.mtimeMs) {
+                newest = { file: full, mtimeMs: stat.mtimeMs };
+            }
+        }
+    } catch {
+        // dir unreadable — fall through to legacy name check
+    }
+    if (newest) return newest.file;
+    return path.join(dir, `optimization_results_${base}.json`);
 }
 
 function loadAmaStrategies(resultsPath) {

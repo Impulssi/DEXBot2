@@ -185,7 +185,8 @@ When bumping the version for a release:
 1. Update `version` in `package.json` to the new version.
 2. Run `npm run version:sync` — syncs all manifest files (`package-lock.json`,
    `claw/package.json`, `claw/runtimes/openclaw-plugin/*.json`,
-   `analysis/ama_fitting/package.json`, `claw/tests/test_claw_mcp_transport.ts`,
+   `analysis/ama_fitting/package.json`, `analysis/ama_fitting/package-lock.json`,
+   `analysis/trend_detection/package.json`, `claw/tests/test_claw_mcp_transport.ts`,
    `docs/README.md`, `docs/DEXBOT_COMPARISON.md`,
    `docs/FUND_MOVEMENT_AND_ACCOUNTING.md`, `docs/EVOLUTION.md`).
 3. Add entries to `CHANGELOG.md` covering **all changes since the last

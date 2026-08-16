@@ -37,7 +37,9 @@ tsx analysis/bot_fitting/backtest_ama_sweep.ts \
 ```
 
 > `backtest_bot_fitting.ts` auto-derives `--results` from the `--data` filename
-> (`analysis/ama_fitting/optimization_results_<base>.json`) when omitted.
+> (`analysis/ama_fitting/optimization_results_<base>_w<λ1>_<λ2>_<λ3>_<λ4>.json`,
+> newest `_w*` file matching the base name; falls back to the legacy
+> `optimization_results_<base>.json`) when omitted.
 > `backtest_ama_sweep.ts` requires `--results` explicitly.
 
 Optional tuning (values shown are examples, not defaults):
