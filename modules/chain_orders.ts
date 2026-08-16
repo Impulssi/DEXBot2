@@ -17,72 +17,66 @@
  * converted to blockchain integers internally using asset precision.
  *
  * ===============================================================================
- * EXPORTS (21 functions + 1 constant)
+ * EXPORTS (24 functions + 1 constant + 1 error class)
  * ===============================================================================
  *
  * ACCOUNT MANAGEMENT (4 functions - async)
- *   1. selectAccount(nameOrId) - Select/authenticate account by name or ID
+ *   1. selectAccount() - Interactively select/authenticate an account
  *      Prompts for password if needed, caches selection
  *      Returns { accountName, privateKey, id }
  *
  *   2. setPreferredAccount(accountId, accountName) - Set preferred account
- *      Used by selectAccount() if no account specified
+ *   3. resolveAccountId(accountName) - Resolve account name to ID (async, cached)
+ *   4. resolveAccountName(accountRef) - Resolve account ID/name to name (async, cached)
  *
- *   3. resolveAccountId(nameOrId) - Resolve account name to ID (async, cached)
- *   4. resolveAccountName(id) - Resolve account ID to name (async, cached)
- *
- * ORDER OPERATIONS (7 functions - async)
- *   5. readOpenOrders(accountId) - Read all open orders for account
- *      Returns array of { id, seller, sells, receives, ...blockchain fields }
- *
- *   6. readSingleOrder(orderId) - Fetch a single limit order by id
+ * ORDER OPERATIONS (10 functions - async)
+ *   5. readOpenOrders(accountId, timeoutMs, suppressLog) - Read all open orders
+ *      Returns array of raw BitShares limit order objects (for_sale, sell_price, ...)
+ *   6. readOpenOrdersWithMeta(accountId, timeoutMs, suppressLog) - Read open orders with meta
+ *   7. readOpenOrdersWithMetaSafe(chainOrdersModule, accountId, timeoutMs, suppressLog) - Safe wrapper
+ *   8. readOpenOrdersGuarded(chainOrdersModule, accountId, options) - Guarded read with failover
+ *   9. readSingleOrder(orderId, timeoutMs) - Fetch a single limit order by id
  *      Returns raw order object, null if absent, throws on error
+ *   10. batchReadOrders(orderIds, timeoutMs) - Fetch multiple orders by id
+ *       Returns array of order objects (null for missing ids)
  *
- *   7. batchReadOrders(orderIds) - Fetch multiple orders by id
- *      Returns array of order objects (null for missing ids)
- *
- *   8. createOrder(accountId, orderParams, broadcastFn) - Create limit order
- *      orderParams: { sellSymbol, sellAmount, buySymbol, buyAmount, fillOrKill, ... }
- *      Returns { tx_id, operation_results } or throws
- *
- *   9. updateOrder(accountId, orderId, newAmount, broadcastFn) - Update existing order
- *      Changes order amount, preserves price
- *      Returns transaction result
- *
- *   10. cancelOrder(accountId, orderId, broadcastFn) - Cancel order
- *       Removes order from blockchain
+ *   11. createOrder(accountName, privateKey, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration, dryRun, extraOptions)
+ *       Create a limit order; returns { tx_id, operation_results } or throws
+ *   12. updateOrder(accountName, privateKey, orderId, newParams, extraOptions)
+ *       newParams: { amountToSell?, minToReceive?, newPrice?, orderType?, expiration? }
  *       Returns transaction result
- *
- *   11. executeBatch(operations, broadcastFn) - Execute batch of operations
+ *   13. cancelOrder(accountName, privateKey, orderId, extraOptions) - Cancel order
+ *       Returns transaction result
+ *   14. executeBatch(accountName, privateKey, operations, extraOptions) - Execute batch of operations
  *       Executes multiple operations (create/update/cancel) in one transaction
- *       Returns transaction result
  *
  * FILL EVENT HANDLING (1 function - async)
- *   12. listenForFills(accountId, fillCallback) - Subscribe to fill events
- *       Invokes fillCallback({ id, orderId, side, amount, price, proceeds, ... })
+ *   15. listenForFills(accountRefOrCallback, callback?) - Subscribe to fill events
+ *       Invokes callback with raw fill updates from the native subscription
  *       Returns unsubscribe function
  *
  * FILL DEDUPLICATION (2 functions)
- *   13. wasRecentlyOwnCancelled(orderId) - Check if order was recently self-cancelled
- *   14. recordOwnCancel(orderId) - Record a self-cancelled order
+ *   16. wasRecentlyOwnCancelled(orderId) - Check if order was recently self-cancelled
+ *   17. recordOwnCancel(orderId) - Record a self-cancelled order
  *
  * ACCOUNT STATE (1 function - async)
- *   15. getOnChainAssetBalances(accountId) - Fetch account asset balances
- *       Returns { BTS: amount, USD: amount, ... } (human-readable floats)
+ *   18. getOnChainAssetBalances(accountRef, assets, options) - Fetch account asset balances
+ *       Returns map of assetRef → { assetId, symbol, precision, freeRaw, lockedRaw, free, locked, total }
  *
  * OPERATION BUILDERS (4 functions)
- *   16. buildCreateOrderOp(accountId, orderParams) - Build create order operation
- *   17. buildUpdateOrderOp(accountId, orderId, newAmount) - Build update order operation
- *   18. buildCancelOrderOp(accountId, orderId) - Build cancel order operation
- *   19. buildLiquidityPoolExchangeOp(accountId, params) - Build LP exchange operation
+ *   19. buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration)
+ *   20. buildUpdateOrderOp(accountName, orderId, newParams, cachedOrder)
+ *   21. buildCancelOrderOp(accountName, orderId)
+ *   22. buildLiquidityPoolExchangeOp(accountId, poolId, sellAmountInt, sellAssetId, minReceiveInt, receiveAssetId)
  *
  * CONFIGURATION:
- *   20. getFillProcessingMode() - Get current fill processing mode
+ *   23. getFillProcessingMode() - Get current fill processing mode
  *       Returns 'history' (use fill event data) or 'open' (fetch open orders)
- *   21. FILL_PROCESSING_MODE - Constant: current fill processing mode
+ *   24. FILL_PROCESSING_MODE - Constant: current fill processing mode
+ *   25. broadcastTxWithClassification(tx, accountName, operations) - Broadcast with outcome classification
  *
  * ERROR HANDLING:
- *   22. BroadcastUncertainError - Error class for uncertain broadcast results
+ *   26. BroadcastUncertainError - Error class for uncertain broadcast results
  *
  * ===============================================================================
  *

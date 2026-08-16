@@ -5,7 +5,7 @@
  * Manages multi-bot configuration and metadata.
  *
  * ===============================================================================
- * EXPORTS
+ * EXPORTS (5 functions)
  * ===============================================================================
  *
  * MAIN ENTRY POINT:
@@ -13,41 +13,24 @@
  *     Lists bots, allows add/edit/delete/activate operations
  *     Loads and saves profiles/bots.json
  *
- *   normalizeBotDraft(draft) - Normalize a bot configuration draft
+ *   normalizeBotDraft(base) - Normalize a bot configuration draft
  *     Applies defaults and validation to raw bot config entries
  *
- * INTERACTIVE PROMPTS:
- *   askString(prompt, opts) - Prompt for a string value
- *   askNumber(prompt, opts) - Prompt for a number
- *   askBoolean(prompt) - Prompt for yes/no
- *   askAsset(prompt, opts) - Prompt for asset selection
- *   askAssetB(prompt, opts) - Prompt for quote asset
- *   askStartPrice(prompt) - Prompt for start price
- *   askGridPriceMode(prompt) - Prompt for grid price source
- *   askTargetSpreadPercent(prompt) - Prompt for target spread
- *   askNumberWithBounds(prompt, opts) - Prompt for bounded number
- *   askIntegerInRange(prompt, min, max) - Prompt for integer in range
- *   askNumberOrMultiplier(prompt) - Prompt for number or multiplier (e.g. "2x")
- *   askMaxPrice(prompt) - Prompt for max price
- *   askNumberOrPercentage(prompt) - Prompt for value or percentage
- *   askWeightDistribution(prompt, legend) - Prompt for weight distribution
- *   askWeightDistributionNoLegend(prompt) - Weight distribution without legend
- *   askLogLevel(prompt) - Prompt for log level
- *   askUpdaterBranch(prompt) - Prompt for updater branch
- *   askCronSchedule(prompt) - Prompt for cron schedule
- *
- * UTILITIES:
  *   parseJsonWithComments(raw) - Parse JSON with comment stripping
- *   isMultiplierString(val) - Check if value is a multiplier (e.g. "2x")
- *   isValidCron(cron) - Validate cron expression
- *   loadBotsConfig() - Load bots config from profiles/bots.json
- *   saveBotsConfig(data) - Save bots config
- *   listBots() - List all configured bots
- *   selectBotIndex(prompt) - Select a bot by index
- *   parseCronToDelta(cronString) - Parse cron expression to delta (minutes)
- *   deltaToCron(deltaMinutes) - Convert delta (minutes) to cron expression
- *   loadGeneralSettings() - Load general settings
- *   saveGeneralSettings(data) - Save general settings
+ *     (re-exported from ./order/utils/system.js)
+ *
+ *   parseCronToDelta(cronString) - Parse a cron expression to { days, time }
+ *   deltaToCron(days, time) - Convert { days, time } back to a cron expression
+ *
+ * INTERNAL HELPERS (not exported):
+ *   ask* prompt family (askString, askNumberWithBounds, askIntegerInRange,
+ *   askNumberOrMultiplier, askNumberOrPercentage, askAsset, askAssetB,
+ *   askStartPrice, askGridPriceMode, askPoolRef, askTargetSpreadPercent,
+ *   askMaxPrice, askWeightDistribution, askWeightDistributionNoLegend,
+ *   askLogLevel, askUpdaterBranch, askCronSchedule, askBoolean),
+ *   loadBotsConfig, saveBotsConfig, listBots, selectBotIndex,
+ *   loadGeneralSettings, saveGeneralSettings, isMultiplierString,
+ *   normalizePercentageInput, promptBotData, promptGeneralSettings
  *
  * ===============================================================================
  *
@@ -458,11 +441,6 @@ function isMultiplierString(value: any): boolean {
     return typeof value === 'string' && /^[-￿]*[0-9]+(?:\.[0-9]+)?x[-￿]*$/i.test(value);
 }
 
-/**
- * Validates a cron expression (5 fields).
- * @param {string} cron - The cron string to validate.
- * @returns {boolean} True if valid.
- */
 /**
  * Converts a cron string to a readable format (days delta and time).
  * Only supports simple daily/multi-day patterns like "0 0 * /N * *".

@@ -39,9 +39,9 @@ interface CredentialClientOptions {
     /**
      * Fired with the node the daemon reports as in play when a broadcast ends
      * uncertain (BROADCAST_DEADLINE / outer timeout). The daemon echoes the
-     * node actually used in the typed reply; without a daemon-reported node
-     * (queued deadline, never-started work) nothing is fired. Never fires for
-     * fallback nodes or when no nodeUrl was requested.
+     * node actually used in the typed reply — including the node the daemon
+     * itself chose when the bot did not request one. Without a daemon-reported
+     * node (queued deadline, never-started work) nothing is fired.
      */
     onNodeFailed?: (nodeUrl: string) => void;
 }
@@ -219,9 +219,9 @@ async function executeOperationsViaCredentialDaemon(accountName: string, operati
     // interface compatibility but never cycled — the recovery layers (COW
     // retry verification, startup adoption, broadcast reconciliation)
     // verify chain inclusion before any re-broadcast. onNodeFailed fires for
-    // the node actually used (options.nodeUrl) so callers can blacklist it on
-    // an uncertain outcome; without a nodeUrl the daemon chose the node, so
-    // no single node is reported.
+    // the node the daemon reports as actually in play (the daemon echoes it in
+    // the typed reply even when it chose the node itself), so callers can
+    // blacklist it on an uncertain outcome.
     const nodeUrl = options.nodeUrl || undefined;
 
     const payload: RequestPayload = { type: 'execute-operations', accountName, operations };

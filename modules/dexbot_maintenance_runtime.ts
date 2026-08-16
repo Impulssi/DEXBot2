@@ -1329,7 +1329,9 @@ async function releaseMarketAdapterRuntime(_bot: any, botId: any, context: any =
     };
 }
 
-// Dust is cancelled immediately on detection — no timer infrastructure needed.
+// Dust is detected immediately on fills, and a periodic dust health check
+// (setupDustHealthCheckInterval / runDustHealthCheck) catches partials below
+// the threshold that were missed after crashes/restarts.
 
 /**
  * Check if an error message indicates that an order does not exist on the blockchain.

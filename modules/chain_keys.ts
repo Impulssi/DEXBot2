@@ -22,43 +22,52 @@
  * All newly written private keys use the v2 vault format.
  *
  * ===============================================================================
- * EXPORTS (13 functions + 1 error class)
+ * EXPORTS (23 functions + 1 error class)
  * ===============================================================================
  *
- * AUTHENTICATION (1 function)
+ * AUTHENTICATION (3 functions)
  *   1. authenticate() - Authenticate and return a derived vault secret (async)
  *      Prompts user for password, verifies vault metadata
  *      Throws MasterPasswordError on failure
+ *   2. unlockWithPassword(password, accountsData) - Derive the vault secret from a password
+ *      Throws MasterPasswordError if the password is incorrect
+ *   3. isMasterPasswordFailure(err) - Check if an error is a master-password failure
  *
- * KEY MANAGEMENT (3 functions)
- *   2. getPrivateKey(accountName, vaultSecret) - Get private key for account
+ * KEY MANAGEMENT (4 functions)
+ *   4. getPrivateKey(accountName, vaultSecret) - Get private key for account
  *      Returns decrypted private key string
  *      Throws Error if account not found
- *
- *   3. main() - Interactive CLI for key management (async)
+ *   5. resolvePrivateKey(accountName, vaultSecret, chainClient) - Resolve a signing key,
+ *      following on-chain authority structures when no direct key is stored (async)
+ *   6. main() - Interactive CLI for key management (async)
  *      Add/modify/remove keys from storage
  *      Re-encrypts entire key store
- *
- *   4. validatePrivateKey(key) - Validate private key format
+ *   7. validatePrivateKey(key) - Validate private key format
  *
  * CRYPTO HELPERS (7 functions)
- *   5. encrypt(text, secret) - AES-256-GCM encryption
- *   6. decrypt(encryptedHex, secret) - AES-256-GCM decryption
- *   7. deriveVaultKey(password, vaultSalt) - Derive the session vault key
- *   8. deriveSessionSecret(vaultSecret, sessionSalt) - Derive a session-only signing key
- *   9. loadAccounts() - Load accounts from keys.json
- *  10. saveAccounts(data) - Save accounts to keys.json
- *  11. createVaultSecret(...) - Build a serializable derived secret object
+ *   8. encrypt(text, secret) - AES-256-GCM encryption
+ *   9. decrypt(encryptedHex, secret) - AES-256-GCM decryption
+ *  10. deriveVaultKey(password, vaultSalt) - Derive the vault key (scrypt)
+ *  11. createVaultSecret(vaultKey, extra) - Build a serializable vault-secret object
+ *  12. createSessionSecret(vaultKey, sessionSalt) - Derive a session-only signing key (HKDF)
+ *  13. isVaultSecret(value) - Type guard for vault-secret objects
+ *  14. isDaemonSigningToken(value) - Type guard for daemon signing-token objects
  *
- * DAEMON (5 functions)
- *  10. isDaemonReady() - Check if credential daemon is ready
- *  11. isDaemonResponsive() - Check if daemon is responsive
- *  12. waitForDaemon(timeoutMs) - Wait for daemon to become ready (async)
- *  13. probeAccountInDaemon(accountName) - Probe daemon for account (async)
- *  14. pingDaemon(accountName) - Lightweight daemon health check (async)
+ * STORAGE (3 functions)
+ *  15. loadAccounts() - Load accounts from keys.json
+ *  16. saveAccounts(data) - Save accounts to keys.json
+ *  17. checkKeysFileSecurity() - Verify keys.json permissions and ownership
+ *
+ * DAEMON (6 functions)
+ *  18. createDaemonSigningToken(accountName, options) - Build a credential-daemon signing token
+ *  19. isDaemonReady(options) - Check if credential daemon is ready
+ *  20. isDaemonResponsive(options, timeout) - Check if daemon is responsive
+ *  21. waitForDaemon(maxWaitMs, options) - Wait for daemon to become ready (async)
+ *  22. probeAccountInDaemon(accountName, timeout, options) - Probe daemon for account (async)
+ *  23. pingDaemon(accountName, timeout, options) - Lightweight daemon health check (async)
  *
  * ERROR HANDLING (1 error class)
- *  14. MasterPasswordError - Thrown when authentication fails
+ *  - MasterPasswordError - Thrown when authentication fails
  *
  * ===============================================================================
  *

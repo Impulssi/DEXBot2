@@ -1636,13 +1636,6 @@ function buildCowResultFromPlan(bot: any, plan: any) {
 }
 
 /**
- * Restore skipped update slots in the working grid to master state.
- * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {import('./types.js').WorkingGrid} workingGrid
- * @param {Set<string>} skippedSlotIds
- * @param {number} [skippedCount=0]
- */
-/**
  * Pre-apply rotation state transitions to the working grid before commit.
  * This makes the COW commit truly atomic for structural changes — source slots
  * are cleared to VIRTUAL and destination slots are activated with the inherited
@@ -1825,6 +1818,13 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
     return { allConfirmed: false, confirmed, unconfirmed: remaining };
 }
 
+/**
+ * Restore skipped update slots in the working grid to master state.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {import('./types.js').WorkingGrid} workingGrid
+ * @param {Set<string>} skippedSlotIds
+ * @param {number} [skippedCount=0]
+ */
 function restoreSkippedUpdateSlotsInWorkingGrid(bot: any, workingGrid: any, skippedSlotIds: any, skippedCount: any = 0) {
     if (!workingGrid || !skippedSlotIds || skippedSlotIds.size === 0) {
         return;

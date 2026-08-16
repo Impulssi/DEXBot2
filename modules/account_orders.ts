@@ -13,11 +13,18 @@
  * EXPORTS (1 class + 1 helper)
  * ===============================================================================
  *
- * 1. AccountOrders(botKey) - Class for per-bot order persistence
- *    Methods: readOrders(), writeOrders(meta, grid, state), deleteOrders(), etc.
- *    Constructor requires botKey (throws if missing)
+ * 1. AccountOrders(options) - Class for per-bot order persistence
+ *    Constructor options: { botKey, ordersDir?, profilesPath? } (botKey required, throws if missing)
+ *    Methods:
+ *      syncMeta(botConfig), storeMasterGrid(orders, btsFeesOwed, boundaryIdx, assets, debugInputs, recentFillKeys)
+ *      loadGrid(forceReload), loadRecentFillKeys(forceReload), loadPersistedAssets(forceReload)
+ *      loadBoundaryIdx(forceReload), loadBtsBalance(forceReload), loadBtsFeesOwed(forceReload)
+ *      updateBtsFeesOwed(btsFeesOwed), clearGrid()
+ *      loadProcessedFills(options), updateProcessedFillsBatch(fills), cleanOldProcessedFills(olderThanMs)
+ *      getAssetBalances(forceReload)
  *
- * 2. createBotKey(accountName, assetA, assetB) - Generate unique bot key string
+ * 2. createBotKey(bot, index) - Generate unique bot key string
+ *    Uses sanitized bot.name; unnamed bots fall back to asset pair + index
  *
  * ===============================================================================
  *

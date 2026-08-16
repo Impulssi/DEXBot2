@@ -2548,9 +2548,9 @@ class CreditRuntime {
             if (dealDebt == null || dealDebt <= maxPerOp) continue;
 
             // Check min_deal_amount on the offer to avoid reborrows that would fail.
-            // Note: _getOfferById caches the offer for the runtime lifetime — if the
-            // offer's min_deal_amount changes on-chain mid-split, the guard uses the
-            // stale cached value. Risk is low in practice (offers rarely change this).
+            // Note: _getOfferById caches with a TTL (OFFER_CACHE_TTL_MS, default 10min)
+            // and re-fetches from chain once the cached offer expires, so a mid-split
+            // min_deal_amount change is picked up on the next re-fetch.
             const dealOffer = await this._getOfferById(parseDealSummary(currentDeal)?.offerId);
             const minDealAmount = toFiniteNumber(dealOffer?.min_deal_amount, undefined);
             const numPieces = Math.ceil((dealDebt as number) / maxPerOp);

@@ -244,8 +244,9 @@ function ensurePolicyConfig(filePath: string): PolicyConfig {
 }
 
 /**
- * Load and parse daemon-policies.json. Returns normalized config or throws on
- * error/absence (daemon uses loadRequiredPolicyConfig which throws).
+ * Load and parse daemon-policies.json. Returns the normalized config, or null
+ * (with a warning) on missing/invalid files — never throws. Callers that must
+ * fail closed should use loadRequiredPolicyConfig instead.
  *
  * @param {string} filePath - Path to daemon-policies.json
  * @param {object} [options={}] - Options
@@ -1093,9 +1094,10 @@ function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ 
  * @param {string} accountName - The account name
  * @param {string} policyConfigPath - Path to daemon-policies.json
  * @param {Object} [options] - Optional configuration
- * @returns {string|null} The botHmacSecret, or null if not configured
+ * @returns {string} The botHmacSecret. If none is configured, a new one is
+ * auto-provisioned, persisted to disk, and signalled to the daemon via SIGHUP.
  */
-function loadBotHmacSecret(accountName: string, policyConfigPath: string, options: { quiet?: boolean; silent?: boolean } = {}): string | null {
+function loadBotHmacSecret(accountName: string, policyConfigPath: string, options: { quiet?: boolean; silent?: boolean } = {}): string {
     const quiet = options.quiet === true || options.silent === true;
     // Route through the module-scope policyLogger so output honours the
     // process-wide log level, file rotation, and PM2 auto-quiet rules.
@@ -1130,7 +1132,7 @@ function loadBotHmacSecret(accountName: string, policyConfigPath: string, option
 
         // Best-effort SIGHUP to the credential daemon so the new secret is
         // picked up immediately, without waiting for the fs.watch debounce
-        // (500ms) or a SIGHUP from the operator.  Three distinct failure
+        // (500ms) or a SIGHUP from the operator.  Four distinct failure
         // modes are handled separately:
         //   - ready file missing: daemon is not running, nothing to do
         //   - ready file empty: daemon is mid-startup; fs.watch will catch it

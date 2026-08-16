@@ -1,13 +1,15 @@
 /**
  * modules/bots_file_lock.ts - File Synchronization Lock
  *
- * Thread-safe reading of bots.json with in-memory locking.
- * Prevents race conditions when multiple processes access file simultaneously.
+ * Thread-safe reading and writing of bots.json with in-memory locking.
+ * Prevents race conditions between concurrent access within the same process.
  *
  * Locking Strategy:
  * - Re-entrant lock via AsyncLock (AsyncLocalStorage-based re-entrancy detection)
- * - Only one operation (read or write) at a time
+ * - Only one operation (read or write) at a time within the process
  * - Nested acquire from the same async context does not deadlock
+ * - Cross-process safety relies on the atomic tmp-file + rename write
+ *   (writeJsonFileAtomic); the in-memory lock alone does not span processes
  *
  * ===============================================================================
  * EXPORTS (4 functions)
@@ -103,8 +105,9 @@ async function writeBotsFileWithLock(botsJsonPath: any, config: any) {
 }
 
 /**
- * Synchronously read bots.json with lock protection
- * WARNING: This blocks the event loop. Use async version when possible.
+ * Synchronously read bots.json (startup only, no lock — the in-memory
+ * AsyncLock is inherently async and cannot be used here).
+ * WARNING: This blocks the event loop. Use the async version when possible.
  * Only use this for startup initialization before event loop is active.
  * @param {string} botsJsonPath - Path to bots.json file
  * @param {Function} parseFunction - JSON parser function

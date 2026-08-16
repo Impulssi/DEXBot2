@@ -2,7 +2,7 @@
  * modules/constants.ts - Configuration and Constants
  *
  * Global configuration, constants, and defaults for DEXBot2.
- * All constants are frozen to prevent accidental runtime modifications.
+ * Most exported objects are frozen at module load to prevent accidental runtime modifications.
  * Local overrides can be loaded from profiles/general.settings.json
  *
  * ===============================================================================
@@ -42,27 +42,29 @@
  *
  * GRID & ORDER LIMITS:
  *   5. GRID_LIMITS - Grid sizing and scaling constraints
- *      MIN_SPREAD_FACTOR, MIN_SPREAD_ORDERS, MIN_ORDER_COUNT
- *      FUND_INVARIANT_PERCENT_TOLERANCE
+ *      MIN_SPREAD_FACTOR, MIN_ORDER_SIZE_FACTOR, MIN_SPREAD_ORDERS
+ *      FUND_INVARIANT_PERCENT_TOLERANCE, GRID_REGENERATION_PERCENTAGE
+ *      PARTIAL_DUST_THRESHOLD_PERCENTAGE, PRICE_TOLERANCE_MAX_PERCENT
  *      Includes GRID_COMPARISON sub-object for grid divergence metrics
  *
  *   6. INCREMENT_BOUNDS - Price increment percentage validation
- *      MIN_INCREMENT_PERCENT, MAX_INCREMENT_PERCENT
+ *      MIN_PERCENT, MAX_PERCENT, MIN_FACTOR, MAX_FACTOR
  *
  * FEE CONFIGURATION:
  *   7. FEE_PARAMETERS - Fee calculation and reservation parameters
- *      BTS_RESERVATION_MULTIPLIER, MARKET_FEE_PERCENT, TAKER_FEE_PERCENT
- *      TAKER_PERCENT_OVERRIDE, BTS_TAKER_OVERRIDE
+ *      BTS_RESERVATION_MULTIPLIER, BTS_FALLBACK_FEE
+ *      MAKER_FEE_PERCENT, MAKER_REFUND_PERCENT, TAKER_FEE_PERCENT
+ *      GRAPHENE_FEE_RATE_DENOM, GRAPHENE_COLLATERAL_RATIO_DENOM
+ *      BTS_ACQUIRE_THRESHOLD, BTS_ACQUIRE_TARGET_MULTIPLIER, POOL_SLIPPAGE_TOLERANCE
  *
  * API & BLOCKCHAIN:
  *   8. API_LIMITS - Blockchain API call constraints
- *      MAX_ORDERS_PER_CALL, API_TIMEOUT_MS, API_RETRY_DELAY_MS
- *      MAX_API_RETRIES, HISTORICAL_SYNC_BATCH_SIZE
+ *      POOL_BATCH_SIZE, MAX_POOL_SCAN_BATCHES, ORDERBOOK_DEPTH, LP_API_MAX_PAGE
  *
  * FILL PROCESSING:
  *   9. FILL_PROCESSING - Fill event handling configuration
- *      FILL_ACK_WAIT_MS, FILL_TIMEOUT_MS, FILL_RETRY_ATTEMPTS
- *      Includes BATCH_LIMITS sub-object
+ *      MODE, OPERATION_TYPE, MAX_FILL_BATCH_SIZE
+ *      MAX_CONSECUTIVE_CONSUMER_FAILURES, CONSUMER_BACKOFF_INITIAL_MS, CONSUMER_BACKOFF_MAX_MS
  *
  * MARKET ADAPTER CONFIGURATION:
  *   10. MARKET_ADAPTER - Price tracking and grid recalculation trigger settings
@@ -74,8 +76,8 @@
  *
  * MAINTENANCE & MONITORING:
  *   11. MAINTENANCE - Background maintenance task configuration
- *       HEALTH_CHECK_INTERVAL_MS, PERSISTENCE_CHECK_INTERVAL_MS
- *       LOCK_CLEANUP_INTERVAL_MS
+ *       CLEANUP_PROBABILITY (currently unused, reserved for future cleanup scheduling)
+ *       Note: HEALTH_CHECK_INTERVAL_MS lives under NODE_MANAGEMENT (12)
  *
  *   12. NODE_MANAGEMENT - Multi-node health checking and failover configuration
  *       DEFAULT_NODES: List of BitShares nodes for redundancy
@@ -85,7 +87,7 @@
  *       SELECTION_STRATEGY: Node selection algorithm (latency-based)
  *
  *   13. UPDATER - Version checking and update notification
- *       CHECK_INTERVAL_MS, REPO_URL, NOTIFICATION_MIN_LEVEL
+ *       ACTIVE, REPOSITORY_URL, BRANCH, SCHEDULE
  *
  * LOGGING CONFIGURATION:
  *   14. LOGGING_CONFIG - Structured logging configuration
@@ -432,7 +434,7 @@ let GRID_LIMITS = {
     //   - But target is 2%, so final spread = max(1.05%, 2%) = 2% (target wins)
     //   - This ensures spread is at least (0.5% × 2.1) but respects user's targetSpread
     //
-    // Default: 2.1 ensures 3-slot minimum gap even with tight increment (see grid.ts::SPREAD_GAP_FORMULA)
+    // Default: 2.1 ensures 3-slot minimum gap even with tight increment (see modules/order/utils/math.ts::calculateGapSlots)
     MIN_SPREAD_FACTOR: 2.1,
 
     // MIN_ORDER_SIZE_FACTOR: Minimum order size = blockchain_minimum × this factor.
@@ -569,7 +571,7 @@ let FEE_PARAMETERS = {
     
     // Fallback BTS fee (satoshis) when dynamic fee calculation fails.
     // Rationale: During startup or when fee API is unavailable, use this conservative estimate.
-    //   - 100 satoshis = 0.00000100 BTS (typical limit order fee is 1-2 BTS on mainnet)
+    //   - 100 satoshis = 0.001 BTS (BTS_PRECISION = 5)
     //   - Using satoshi precision prevents integer division errors
     //   - Actual fees are calculated and deducted once fee API responds
     BTS_FALLBACK_FEE: 100,
@@ -1482,10 +1484,11 @@ let NATIVE_CLIENT = {
 
         // Outer bound on a full _nativeClient.connect() operation (ms).
         // The native transport sweeps all configured nodes sequentially, each
-        // bounded by CONNECT_TIMEOUT_MS, before giving up. With 8 default
-        // nodes × 10s handshake = 80s worst case; this gives a 10s buffer
-        // so the outer wrapper rejects cleanly without a hard tail-latency
-        // cliff. The native's connect() cannot be cancelled, so this is a
+        // bounded by CONNECT_TIMEOUT_MS, before giving up. With 10 default
+        // nodes × 10s handshake = 100s worst case, which exceeds this outer
+        // bound; the wrapper therefore rejects cleanly at 90s without a hard
+        // tail-latency cliff, and fast-responding nodes connect well before
+        // then. The native's connect() cannot be cancelled, so this is a
         // "stop waiting" signal only — the underlying sweep continues in
         // the background even after the outer bound fires.
         CONNECT_TOTAL_TIMEOUT_MS: 90000,

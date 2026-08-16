@@ -18,18 +18,29 @@
  * ===============================================================================
  *
  * LIFECYCLE METHODS:
- *   - constructor(config) - Initialize bot with configuration
- *   - run() - Start bot operation loop
+ *   - constructor(config, options) - Initialize bot with configuration
+ *   - start(vaultSecret) / startWithPrivateKey(privateKey) - Start bot operation loop
+ *   - initialize(vaultSecret) - Shared startup initialization
  *   - shutdown() - Graceful shutdown
  *
+ * ORDER & GRID OPERATIONS:
+ *   - placeInitialOrders() - Place initial grid orders
+ *   - updateOrdersOnChainBatch(rebalanceResult) / updateOrdersOnChainPlan(plan) - Apply rebalance plans
+ *   - requestGridReset(reason, options) - Request a grid reset
+ *   - getMetrics() - Expose runtime metrics
+ *
  * FILL PROCESSING:
- *   - processFills() - Handle fill events
+ *   - _processFillsWithBootstrapMode(chainOrders) - Fill queue drain + bootstrap-mode fills
+ *     (core fill pipeline lives in dexbot_fill_runtime.ts)
  *
- * SYNCHRONIZATION:
- *   - reconcileGrid() - Reconcile grid state with blockchain
+ * SYNCHRONIZATION & MAINTENANCE:
+ *   - _executeMaintenanceLogic(context) / _runGridMaintenance(context) - Periodic
+ *     maintenance and grid checks (implemented in dexbot_maintenance_runtime.ts)
+ *   - _runDustHealthCheck() / _setupDustHealthCheckInterval() - Dust health monitoring
  *
- * MONITORING:
- *   - monitorHealth() - Check bot health status
+ * STATE RECOVERY:
+ *   - _recoverFromPersistedGrid() - Reload grid from on-disk snapshot
+ *     (implementation in dexbot_state_recovery.ts)
  *
  * ===============================================================================
  *
@@ -251,7 +262,8 @@ class DEXBot {
         this._autoCancelOrphanCycleMarker = null;
         this._autoCancelOrphanSubCount = 0;
 
-        // Dust cancellation uses immediate on-chain cancel — no maps or timers needed.
+        // Dust cancellation is driven by the periodic dust health-check timer
+        // (setupDustHealthCheckInterval) rather than per-dust state maps.
         this._dustHealthCheckTimer = null;
 
         // Fill consumer watchdog: consecutive failure tracking.
@@ -458,8 +470,9 @@ class DEXBot {
      * with current chain state. Mirrors the startup recovery path.
      *
      * LOCK SAFETY: Does NOT acquire _fillProcessingLock. Caller must either
-     * hold it already or accept concurrent fill-processing risk — matches
-     * the startup pattern at line ~1340.
+     * hold it already or accept concurrent fill-processing risk — the sole
+     * call site is the structural resync path in
+     * dexbot_maintenance_runtime.ts.
      *
      * @returns {Promise<{success: boolean, reason?: string}>}
      */
@@ -762,15 +775,18 @@ class DEXBot {
      * Process fills during bootstrap phase using the standard fill pipeline.
      *
      * BOOTSTRAP MODE STRATEGY:
-     * - Delegate to the same fill pipeline as the post-reset path
-     * - Same-side replacement at the filled slot (handled by processFillsOnly)
-     * - Symmetric grid regen via COW rebalance (calculateTargetGrid + reconcileGrid)
-     * - Dust orders are cancelled by the rebalance's isCreateHealthy / cancelSurpluses
+     * - Drain _incomingFillQueue and classify fills against the master grid
+     * - Orphan fills (no matching grid order) are swept via processSweepOrphanFill
+     * - Tracked fills go through replay-safe accounting (_applyReplaySafeTrackedFillAccounting)
+     * - Fills missing replay-safe history identifiers trigger a guarded open-orders
+     *   sync fallback instead of a potentially truncated get_full_accounts read
+     * - Valid fills are handed to the standard batching/COW rebalance pipeline
+     *   (_processFillsWithBatching), which restores grid symmetry and cancels dust
      *
      * This ensures:
      * - Identical behavior between bootstrap and post-reset
      * - Grid symmetry maintained by the rebalance, not by manual rotation
-     * - Budget safety enforced by validateWorkingGridFunds in the COW engine
+     * - Budget safety enforced by the COW engine's validateWorkingGridFunds
      *
      * @param {Object} chainOrders - Chain orders instance for broadcasting
      * @returns {Promise<void>}
@@ -836,7 +852,7 @@ class DEXBot {
                     throw err;
                 }
                 this._warn(`Auto-selection of preferredAccount failed: ${getErrorMessage(err)}`);
-                // dexbot.ts has fallback to selectAccount, bot.ts throws
+                // Fallback: interactive selectAccount (shared by dexbot.ts and bot.ts entry points)
                 if (typeof chainOrders.selectAccount === 'function') {
                     const accountData = await chainOrders.selectAccount();
                     this.privateKey = accountData.privateKey;
@@ -1960,16 +1976,16 @@ class DEXBot {
      * Consolidates maintenance checks used during startup, periodic updates, and post-fill.
      *
      * ENTRY POINTS:
-     * 1. Startup (line ~681): After grid initialization, ensures grid is healthy
-     * 2. Periodic (line ~2682): Every BLOCKCHAIN_FETCH_INTERVAL_MIN (default 240 min)
-     * 3. Post-Fill (line ~1059): After order fills are rotated
+     * 1. Startup (dexbot_startup_runtime.ts): After grid initialization, ensures grid is healthy
+     * 2. Periodic (dexbot_maintenance_runtime.ts): Every BLOCKCHAIN_FETCH_INTERVAL_MIN (default 240 min)
+     * 3. Post-Fill (dexbot_fill_runtime.ts): After order fills are rotated
      *
      * PIPELINE PROTECTION:
      * All maintenance operations inside _executeMaintenanceLogic respect isPipelineEmpty().
      * This prevents grid modifications while fills/rotations/corrections are pending.
      * See _executeMaintenanceLogic documentation for detailed rationale.
      *
-     * LOCK ORDERING (see manager.ts:389 for full hierarchy):
+     * LOCK ORDERING (see modules/order/grid_reconcile.ts for full hierarchy):
      * - Canonical: _fillProcessingLock(0) → _divergenceLock(1)
      * - When called from post-fill context, Level 0 is already held
      * - When called from periodic context, both levels 0→1 must be acquired

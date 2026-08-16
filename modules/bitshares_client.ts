@@ -10,7 +10,7 @@
  * - Subscription and event handling
  *
  * ===============================================================================
- * EXPORTS (17 items)
+ * EXPORTS (16 items)
  * ===============================================================================
  *
  * 1. BitShares - Shared BitShares class for database operations
@@ -30,9 +30,8 @@
  * 12. onReconnect(callback) - Register reconnect callback
  * 13. removeOnReconnect(callback) - Remove reconnect callback
  * 14. withTimeout(promise, timeoutMs) - Wrap promise with timeout
- * 15. getClient() - Get the shared client instance
- * 16. _assessFailover() - Internal failover assessment
- * 17. _internal - @internal Internal state (connected flag) — test-only, do not rely on in production
+ * 15. _assessFailover() - Internal failover assessment
+ * 16. _internal - @internal Internal state (connected flag) — test-only, do not rely on in production
  * ===============================================================================
  */
 
