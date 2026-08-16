@@ -4,7 +4,7 @@ import { getStorage } from '../../modules/storage/index.js';
 import { DEFAULT_CONFIG, GRID_LIMITS, INCREMENT_BOUNDS } from '../../modules/constants.js';
 import { resolveRelativePrice } from '../../modules/order/utils/math.js';
 import { Config } from '../../modules/config.js';
-import { PATHS, getRecalculateTriggerFile } from '../../modules/paths.js';
+import { PATHS } from '../../modules/paths.js';
 import { writeJsonFileAtomic as baseWriteJsonFileAtomic } from '../../modules/bots_file_lock.js';
 import { acquireFileLock } from '../../market_adapter/utils/file_lock.js';
 import { assertNoDuplicateBotKeys } from '../../modules/bot_settings.js';
@@ -1235,34 +1235,6 @@ function createDexbotProfileAdapter(profileRoot: string | null, options: Partial
     });
   }
 
-  async function listOrderArtifacts(forceReload = false) {
-    const bundle = await loadBundle(forceReload);
-    return Promise.all(bundle.orderFiles.map(async (fileName: any) => {
-      const fullPath = path.join(bundle.ordersDir, fileName);
-      if (fileName.endsWith('.json')) {
-        return { fileName, fullPath, json: await readJsonFile(fullPath) };
-      }
-      return { fileName, fullPath, json: null };
-    }));
-  }
-
-  function consumeTrigger(botKey: any) {
-    const triggerPath = path.join(getProfilesDir(), `recalculate.${botKey}.trigger`);
-    const trigger = readTriggerFile(triggerPath);
-    if (!trigger.exists) {
-      return { consumed: false, payload: null };
-    }
-    storage.unlink(triggerPath);
-    return { consumed: true, payload: trigger.payload };
-  }
-
-  function writeTrigger(botKey: any, payload: any = null) {
-    const triggerPath = path.join(getProfilesDir(), `recalculate.${botKey}.trigger`);
-    const content = payload ? JSON.stringify(payload, null, 2) : '';
-    storage.ensureDir(path.dirname(triggerPath));
-    writeTextPayload(triggerPath, content);
-  }
-
   async function updateBotSettings(identifier: any, patch: any) {
     if (!isPlainObject(patch)) {
       throw new Error('patch must be a non-null object');
@@ -1320,19 +1292,16 @@ function createDexbotProfileAdapter(profileRoot: string | null, options: Partial
   return {
     buildClawProfileContext: (bundle: any, contextOptions = {}) => buildClawProfileContext(bundle, contextOptions),
     applyBotSettingsPatch,
-    consumeTrigger,
     findBot,
     getBotBundle,
     getBotSettings,
     getClawProfileContext,
     getProfilesDir,
     listBots,
-    listOrderArtifacts,
     loadBundle,
     previewBotSettingsUpdate,
     resolveProfilesDir: () => resolveProfilesDir(profileRoot || options.profileRoot),
-    updateBotSettings,
-    writeTrigger
+    updateBotSettings
   };
 }
 

@@ -1,6 +1,4 @@
-function shellQuote(value: any) {
-  return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
-}
+import { shellQuote } from './skill_utils.js';
 
 const SUPPORTED_RUNTIMES = ['openclaw', 'hermes', 'openfang', 'nanobot', 'picoclaw', 'nanoclaw', 'zeroclaw', 'nullclaw', 'memu'];
 

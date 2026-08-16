@@ -2,7 +2,7 @@ import { hasProcess } from '../../modules/env.js';
 import { Config } from '../../modules/config.js';
 import { runtime } from '../../modules/runtime.js';
 
-export function writeMessage(message: any) {
+function writeMessage(message: any) {
   if (!hasProcess()) {
     return Promise.reject(new Error('MCP stdio transport not available in this environment'));
   }

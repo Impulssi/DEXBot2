@@ -10,45 +10,16 @@
 
 
 import { getAsset, getBackingAsset, getBitassetData, dbCall } from './chain_queries.js';
-import { loadDexbotOrderUtils } from './dexbot_bridge.js';
+import { computeBtsPerMpa } from './mpa_utils.js';
 import { roundTo } from '../../modules/utils/math_utils.js';
 'use strict';
 
 
-function getBlockchainToFloat() {
-  return loadDexbotOrderUtils().blockchainToFloat;
-}
-
 /**
  * Extract BTS-per-MPA from the settlement price object.
- * Replicates the logic in position_manager (computeBtsPerMpaFromSettlement)
- * but as a standalone utility.
+ * Re-exported alias of the canonical computeBtsPerMpa in mpa_utils.
  */
-function parseBtsPerMpa(settlementPrice: any, mpaAsset: any, backingAsset: any) {
-  const base = settlementPrice?.base;
-  const quote = settlementPrice?.quote;
-  if (!base || !quote) return null;
-
-  const blockchainToFloat = getBlockchainToFloat();
-  const baseAmount = blockchainToFloat(
-    base.amount,
-    base.asset_id === mpaAsset.id ? mpaAsset.precision : backingAsset.precision
-  );
-  const quoteAmount = blockchainToFloat(
-    quote.amount,
-    quote.asset_id === mpaAsset.id ? mpaAsset.precision : backingAsset.precision
-  );
-  if (!baseAmount || !quoteAmount) return null;
-
-  // BTS per MPA
-  if (base.asset_id === backingAsset.id && quote.asset_id === mpaAsset.id) {
-    return baseAmount / quoteAmount;
-  }
-  if (base.asset_id === mpaAsset.id && quote.asset_id === backingAsset.id) {
-    return quoteAmount / baseAmount;
-  }
-  return null;
-}
+const parseBtsPerMpa = computeBtsPerMpa;
 
 /**
  * Fetch the current feed price for an MPA.

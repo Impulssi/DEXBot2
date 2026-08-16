@@ -161,59 +161,6 @@ export interface PositionManagerOptions {
     statePath?: string;
 }
 
-export interface VariantBridgeOptions {
-    runtime?: { name?: string };
-    runtimeName?: string;
-}
-
-export interface AssetData {
-    id: string;
-    symbol: string;
-    precision: number;
-}
-
-export interface PriceData {
-    base: { amount: number; asset_id: string };
-    quote: { amount: number; asset_id: string };
-}
-
-export interface ChainOrder {
-    id: string;
-    for_sale: number;
-    sell_price: PriceData;
-    filled_amount?: number;
-}
-
-export interface ChainPosition {
-    id: string;
-    borrower: string;
-    collateral: number;
-    debt: number;
-    call_price: PriceData;
-    target_collateral_ratio?: number;
-}
-
-export interface FillEvent {
-    order_id: string;
-    pays: { amount: number; asset_id: string };
-    receives: { amount: number; asset_id: string };
-    is_maker: boolean;
-}
-
-export interface PositionData {
-    id: string;
-    market: string;
-    mpaSymbol: string;
-    onChain: {
-        debtAmount: number;
-        collateralAmount: number;
-        sellPriceInBts?: number;
-        targetCollateralRatio?: number | null;
-    };
-    accountName?: string;
-    privateKey?: string;
-}
-
 export interface ClawProfileBundle {
     profileRoot?: string;
     botsFile?: string;

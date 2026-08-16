@@ -5,7 +5,7 @@ import { path } from '../../modules/path_api.js';
 import { PATHS } from '../../modules/paths.js';
 const { version: DEXBOT_VERSION } = require(path.join(PATHS.PROJECT_ROOT, 'package.json'));
 
-export function normalizeRepoRoot(variableName: string, repoRoot?: string) {
+export function normalizeRepoRoot(repoRoot?: string) {
   return path.resolve(repoRoot || PATHS.CLAW.DIR);
 }
 

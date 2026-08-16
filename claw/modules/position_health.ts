@@ -124,17 +124,6 @@ function assessPosition(position: any, trendSignal: Record<string, any> | null =
 }
 
 /**
- * Assess all positions from a PositionManager state.
- *
- * @param {Array}  positions     – Array of position objects
- * @param {Object} [trendSignal] – Optional trend signal to apply to all
- * @returns {Array} Array of health assessments
- */
-function assessAllPositions(positions: any[], trendSignal: Record<string, any> | null = null) {
-  return (positions || []).map((p) => assessPosition(p, trendSignal));
-}
-
-/**
  * Parse a ratio value from a string (e.g. "3x") or numeric price ratio.
  * Returns null if the value cannot be parsed.
  */
@@ -153,14 +142,6 @@ function parseRatioValue(value: any, referencePrice: any, mode: string) {
     return null;
   }
   return mode === 'min' ? reference / numeric : numeric / reference;
-}
-
-/**
- * Format a numeric ratio as a human-readable multiplier string (e.g. 3.00x).
- */
-function formatRatioAsMultiplier(ratio: any) {
-  const rounded = roundToDecimals(ratio, 2);
-  return `${rounded}x`;
 }
 
 /**
@@ -356,5 +337,5 @@ function computeOrderWeightBias(trend = 'NEUTRAL', confidence = 0) {
   };
 }
 
-export { CR_ZONES, assessAllPositions, assessPosition, checkTrendAlignment, classifyCrZone, classifyPriceRangeRatio, computePriceRangeRatioPlan, computeOrderWeightBias, crWeight, trendWeight }
+export { CR_ZONES, assessPosition, checkTrendAlignment, classifyCrZone, classifyPriceRangeRatio, computePriceRangeRatioPlan, computeOrderWeightBias, crWeight, trendWeight }
 

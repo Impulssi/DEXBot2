@@ -188,5 +188,5 @@ function describeModeChoice(mode: string) {
   return descriptions[mode] || mode;
 }
 
-export { normalizeMode, detectMode, setPreferredMode, loadConfig, saveConfig, hasActiveBots, describeModeChoice }
+export { normalizeMode, detectMode, setPreferredMode, describeModeChoice }
 

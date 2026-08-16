@@ -7,7 +7,7 @@ import { buildBridgeCommand, buildSkillTomlLines, createTool, normalizeRepoRoot,
 const storage = getStorage();
 
 function normalizeClawRepoRoot(repoRoot: string) {
-  return normalizeRepoRoot('claw-skill-md', repoRoot);
+  return normalizeRepoRoot(repoRoot);
 }
 
 function buildToolSummary(runtimeName: string) {

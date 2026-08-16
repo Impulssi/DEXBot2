@@ -241,8 +241,7 @@ async function launcherPm2Start(botName: string | null, options: Record<string, 
   }
 
   // Generate ecosystem config and get apps array
-  getPM2Module().generateEcosystemConfig({ clawOnly: false, exitOnError: false });
-  const apps = getPM2Module().buildEcosystemApps({ clawOnly: false });
+  const apps = getPM2Module().generateEcosystemConfig({ clawOnly: false, exitOnError: false });
 
   // Filter apps if specific bot requested
   let appsToStart = apps;
@@ -448,5 +447,5 @@ async function launcherUnlockStart(botName: string | null, options: Record<strin
   };
 }
 
-export { launcherRun, launcherStart, launcherDrystart, launcherReset, launcherDisable, launcherPm2Start, launcherPm2Stop, launcherPm2Delete, launcherPm2Restart, launcherClawOnly, launcherUnlockStart }
+export { launcherRun, launcherStart, launcherDrystart, launcherReset, launcherDisable, launcherPm2Start, launcherPm2Stop, launcherPm2Delete, launcherPm2Restart }
 

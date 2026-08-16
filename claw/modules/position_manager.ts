@@ -3,7 +3,7 @@ import { getStorage } from '../../modules/storage/index.js';
 import { path } from '../../modules/path_api.js';
 import { PATHS } from '../../modules/paths.js';
 import { Config } from '../../modules/config.js';
-import { requireBtsBackedMpa } from './mpa_utils.js';
+import { requireBtsBackedMpa, computeBtsPerMpa } from './mpa_utils.js';
 import { listenForFills } from './chain_actions.js';
 import { writeJsonFileAtomic } from './dexbot_profiles.js';
 import { loadDexbotOrderUtils } from './dexbot_bridge.js';
@@ -12,7 +12,7 @@ const storage = getStorage();
 import { closeShortOnBts, openShortOnBts, placeTakeProfitBuyOrderOnBts } from './short_mpa_strategy.js';
 import { getAsset, getBackingAsset, getBalances, getBitassetData, getFullAccount } from './chain_queries.js';
 
-import type { ShortPositionOptions, PositionManagerOptions, PositionData, AssetData, ChainPosition } from './types.js';
+import type { ShortPositionOptions, PositionManagerOptions } from './types.js';
 
 function getBlockchainToFloat() {
   return loadDexbotOrderUtils().blockchainToFloat;
@@ -263,31 +263,6 @@ function refreshPositionPnl(position: any) {
   position.pnl.updatedAt = nowIso();
 }
 
-function computeBtsPerMpaFromSettlement(settlementPrice: any, mpaAsset: any, backingAsset: any) {
-  const base = settlementPrice?.base;
-  const quote = settlementPrice?.quote;
-  if (!base || !quote) {
-    return null;
-  }
-
-  const blockchainToFloat = getBlockchainToFloat();
-  const baseAmount = blockchainToFloat(base.amount, base.asset_id === mpaAsset.id ? mpaAsset.precision : backingAsset.precision);
-  const quoteAmount = blockchainToFloat(quote.amount, quote.asset_id === mpaAsset.id ? mpaAsset.precision : backingAsset.precision);
-  if (!baseAmount || !quoteAmount) {
-    return null;
-  }
-
-  if (base.asset_id === backingAsset.id && quote.asset_id === mpaAsset.id) {
-    return baseAmount / quoteAmount;
-  }
-
-  if (base.asset_id === mpaAsset.id && quote.asset_id === backingAsset.id) {
-    return quoteAmount / baseAmount;
-  }
-
-  return null;
-}
-
 function normalizeCallPosition(callOrder: any, mpaAsset: any, backingAsset: any, bitassetData: any) {
   if (!callOrder) {
     return {
@@ -303,7 +278,7 @@ function normalizeCallPosition(callOrder: any, mpaAsset: any, backingAsset: any,
   const blockchainToFloat = getBlockchainToFloat();
   const debtAmount = blockchainToFloat(callOrder.debt, mpaAsset.precision);
   const collateralAmount = blockchainToFloat(callOrder.collateral, backingAsset.precision);
-  const btsPerMpa = computeBtsPerMpaFromSettlement(bitassetData?.current_feed?.settlement_price, mpaAsset, backingAsset);
+  const btsPerMpa = computeBtsPerMpa(bitassetData?.current_feed?.settlement_price, mpaAsset, backingAsset);
   const debtValueInBts = debtAmount && btsPerMpa ? debtAmount * btsPerMpa : 0;
   const collateralRatio = debtValueInBts > 0 ? collateralAmount / debtValueInBts : null;
 

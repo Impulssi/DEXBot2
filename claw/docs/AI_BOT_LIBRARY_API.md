@@ -317,7 +317,7 @@ type ConstraintSet = {
 
 ## Public API
 
-All functions below are implemented and exported from the modules cited under "Core Types" or their headers. Signatures reflect the runtime types; see [../modules/types.ts](../modules/types.ts) for the authoritative TypeScript interfaces.
+All functions below are implemented in the modules cited under "Core Types" or their headers and are reachable through the adapters/factories they document. Standalone names are exported from the cited modules; methods like `getBotSettings`, `previewBotSettingsUpdate`, `applyBotSettingsPatch`, and `getClawProfileContext` are closures returned by `createDexbotProfileAdapter` (not module-level exports). Signatures reflect the runtime types; see [../modules/types.ts](../modules/types.ts) for the authoritative TypeScript interfaces.
 
 ### 1. `createRuntimeContext(options)`
 

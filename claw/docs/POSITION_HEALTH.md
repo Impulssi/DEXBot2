@@ -108,7 +108,7 @@ npm run service:position-watch -- --account your-account
 
 The executable behavior lives in the modules. This document should be kept aligned with:
 
-- `../cr_planner.ts` (root level)
+- `../../modules/cr_planner.ts` (root level)
 - `modules/position_health.ts`
 - `modules/position_discovery.ts`
 - `modules/decision_loop.ts`

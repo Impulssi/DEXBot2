@@ -188,12 +188,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.10 → v1.4.11 | 8 | Minimum-slots guard for grid range scaling, monolithic restart restarts credential daemon, dexbot start→unlock alias + runtime-layout-aware unlock spawn fix, dead COW/diagnostic code prune, GRID_RECONCILE.md exposure, Telegram docs, CLI test retargeting to `dexbot test`, `dexbot status` reporting a surviving credential daemon after `stop` |
 | v1.4.11 → v1.4.12 | 21 | Full ESM migration (root + claw `"type": "module"`, dist-first entry shims, Node >= 22 native WebSocket, `ws` dep removal), legacy-compat removal (fs_utils shim, migrate_bot_keys, legacy daemon protocol, pre-1.1.0 wrapper migration, price-source/debtPolicy aliases), dead-code prune + re-entrancy guard restore, claw build aligned with root, 80 test typecheck errors fixed, ESM-cycle boot fix for Node 22.14, fill-runtime require-binding restore, same-order fill batching restore, residual-dust cancel, duplicate-orphan self-heal dedup + ORDER_GONE fund release, ESM direct-run guards + editor tsconfig coverage |
 | v1.4.12 → v1.4.13 | 4 | COW broadcast serialization, fill-lock bypass guards, no-ALS AsyncLock hardening, ESM packaging gaps, `dexbot start` canonicalization, TUI-dashboard reference removal, BitShares onboarding tutorial, npm claw coverage |
-| v1.4.13 → v1.4.14 | 5 | BitShares onboarding P2P-credit clarification, HTML chart export readability, nvm Linux install, `dexbot order <bot>` filter, modules doc refresh |
+| v1.4.13 → v1.4.14 | 13 | BitShares onboarding P2P-credit clarification, market-adapter math canonicalization (ATR/volatility/regime/Kalman embedded into chart sources), dead-code purge (market-adapter barrel + claw stale code, launcher PM2 crash fix), raw `npm start`/`pm2 start` launcher guard, `dexbot order <bot>` filter, HTML chart export readability, nvm Linux install, docs refresh (Telegram plan rename), claw strict-mode test annotations, AMA optimizer `_w` naming, CES power-law curve proposal |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: August 16, 2026 (v1.4.14)
-**Total Commits**: 2,005
+**Total Commits**: 2,013
 **Date Range**: December 2, 2025 – August 16, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
