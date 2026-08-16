@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.13 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.14 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 1,950 commits over ~8 active months
+- **Growth Phase**: 2,005 commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 247 automated test files
-- **Releases**: 94 release entries (v0.1.0 to v1.4.13)
+- **Releases**: 91 release entries (v0.1.0 to v1.4.14)
 
 ---
 
@@ -71,7 +71,7 @@ v1.4.13 added a single-flight guard that serializes overlapping COW broadcasts (
 
 ## Development Statistics
 
-The project has accumulated 247 automated test files across 94 release entries. See the **Version History** below for a per-release commit breakdown.
+The project has accumulated 247 automated test files across 91 release entries. See the **Version History** below for a per-release commit breakdown.
 
 ---
 
@@ -90,7 +90,7 @@ The project has accumulated 247 automated test files across 94 release entries. 
 
 ## Documentation & Testing
 
-Evolved from a basic README to a comprehensive framework (50+ docs entries, 80%+ JSDoc coverage, AGENTS.md). Testing matured from manual blockchain trials → Jest → lightweight Node.js assert across a 234-file suite covering unit, integration, simulation, and COW architectural guard tests.
+Evolved from a basic README to a comprehensive framework (50+ docs entries, 80%+ JSDoc coverage, AGENTS.md). Testing matured from manual blockchain trials → Jest → lightweight Node.js assert across a 247-file suite covering unit, integration, simulation, and COW architectural guard tests.
 
 ---
 
@@ -188,11 +188,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.10 → v1.4.11 | 8 | Minimum-slots guard for grid range scaling, monolithic restart restarts credential daemon, dexbot start→unlock alias + runtime-layout-aware unlock spawn fix, dead COW/diagnostic code prune, GRID_RECONCILE.md exposure, Telegram docs, CLI test retargeting to `dexbot test`, `dexbot status` reporting a surviving credential daemon after `stop` |
 | v1.4.11 → v1.4.12 | 21 | Full ESM migration (root + claw `"type": "module"`, dist-first entry shims, Node >= 22 native WebSocket, `ws` dep removal), legacy-compat removal (fs_utils shim, migrate_bot_keys, legacy daemon protocol, pre-1.1.0 wrapper migration, price-source/debtPolicy aliases), dead-code prune + re-entrancy guard restore, claw build aligned with root, 80 test typecheck errors fixed, ESM-cycle boot fix for Node 22.14, fill-runtime require-binding restore, same-order fill batching restore, residual-dust cancel, duplicate-orphan self-heal dedup + ORDER_GONE fund release, ESM direct-run guards + editor tsconfig coverage |
 | v1.4.12 → v1.4.13 | 4 | COW broadcast serialization, fill-lock bypass guards, no-ALS AsyncLock hardening, ESM packaging gaps, `dexbot start` canonicalization, TUI-dashboard reference removal, BitShares onboarding tutorial, npm claw coverage |
+| v1.4.13 → v1.4.14 | 5 | BitShares onboarding P2P-credit clarification, HTML chart export readability, nvm Linux install, `dexbot order <bot>` filter, modules doc refresh |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 12, 2026 (v1.4.13)
-**Total Commits**: 1,999
-**Date Range**: December 2, 2025 – August 12, 2026
+**Last Updated**: August 16, 2026 (v1.4.14)
+**Total Commits**: 2,005
+**Date Range**: December 2, 2025 – August 16, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

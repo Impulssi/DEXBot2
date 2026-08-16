@@ -1640,7 +1640,7 @@ Tests use a consistent pattern for fund validation. They use native `assert` wit
 
 ```javascript
 const assert = require('assert');
-const async function runTests() {
+async function runTests() {
     console.log(' - Testing virtual funds from VIRTUAL orders...');
 
     // Setup manager with known initial state
@@ -1901,11 +1901,11 @@ Control bot behavior via environment variables (useful for advanced setups):
 |----------|-------------|
 | `BOT_NAME` / `LIVE_BOT_NAME` | Select a specific bot from `profiles/bots.json` by name |
 | `PREFERRED_ACCOUNT` | Override the preferred account for the selected bot |
-| `RUN_LOOP_MS` | Polling interval in ms (default: `5000`) |
-| `CALC_CYCLES` | Calculation passes for standalone grid calculator (default: `1`) |
-| `CALC_DELAY_MS` | Delay between calculator cycles in ms (default: `0`) |
+| `OPEN_ORDERS_SYNC_LOOP_MS` | Open-orders sync polling interval in ms (default: `300000` / 5 minutes) |
+| `CALC_CYCLES` | Calculation passes for standalone grid calculator (default: `3`) |
+| `CALC_DELAY_MS` | Delay between calculator cycles in ms (default: `500`) |
 
-Example — run a specific bot with custom polling interval:
+Example — run a specific bot with a custom sync interval:
 ```bash
-BOT_NAME=my-bot RUN_LOOP_MS=3000 tsx dexbot.ts
+BOT_NAME=my-bot OPEN_ORDERS_SYNC_LOOP_MS=30000 dexbot start
 ```

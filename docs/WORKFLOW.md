@@ -21,6 +21,27 @@ feature branches
 - **main**: Stable, production-ready branch
 - **feature/\***: Feature branches for specific features/fixes
 
+## Agent Git Action Gate (User-Directed Writes)
+
+Agents (AI coding assistants) must **not** proactively ask for or execute git
+write actions — they only run them when the user clearly requests them. Git write
+actions include: `git add`, `git commit`, `git commit --amend`, `git reset` (any
+mode), `git rebase`, `git merge`, `git push`, `git tag`, and branch switching
+(`git checkout` / `git switch`). Read-only git commands (`git status`, `git diff`,
+`git log`, `git show`) are always allowed.
+
+Interpretation rules:
+1. If a user clearly asks for a git write action, execute it.
+2. Short approvals like "yes", "ok", "do it", or "go ahead" are valid confirmation
+   when they clearly refer to the immediately previous proposed action.
+3. If wording is ambiguous, ask one clarifying question before running destructive
+   actions.
+4. `git commit --amend` is allowed when explicitly requested by the user.
+5. Before a git write action, restate the user authorization in one short line.
+
+The branch-promotion scripts (`npm run ptest` / `pdev` / `pmain`) count as git
+write actions too — use them only when the user explicitly asks.
+
 ## Workflow
 
 ### 1. Creating a Feature
@@ -231,7 +252,7 @@ the canonical name is preferred in scripts and docs.
 | `dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds) |
 | `dexbot order [<bot>]` | — | Analyze only the specified bot's order grid |
 | `dexbot status` | `stat` | Unified runtime health — daemon, adapter, bots |
-| `dexbot start` | `unlock` | Run credential daemon + bot (equivalent to `node unlock`) |
+| `dexbot start` | `unlock` | Run credential daemon + bot (equivalent to running the `unlock` runtime, `dist/unlock.js`) |
 | `dexbot stop` / `dexbot start` | `stp`, `stopall` | Stop/start the monolithic runtime (unlock mode) |
 | `dexbot restart` | `restartall` | Restart the monolithic runtime (unlock mode) |
 | `dexbot delete` | — | Shut down and clean up the monolithic runtime (unlock mode) |

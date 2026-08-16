@@ -4,6 +4,18 @@
 **Audit date:** 2026-06-19  
 **Goal:** Make the browser-safe surface truly safe — no Node built-in reaches a browser bundle.
 
+> **Current status (v1.4.13):** This is a historical audit plan. The Phase 1/2 fixes it
+> proposes were largely implemented through the **ESM migration** (commit `9200e377`,
+> 2026-08-09) using ESM patterns (`import.meta.url`, `createRequire`, `getStorage()`
+> adapter selection) rather than the plain-`require()` snippets shown below. The
+> `require()`-based fix examples and the CJS validation commands (`node -e
+> "require('./dist/...')"`) are **no longer the codebase convention** — the codebase is
+> ESM (`"type": "module"`, Node >= 22.12). Only **§3.3** (lazy storage adapters) remains
+> **not applied**: `modules/storage/index.ts` still statically imports both
+> `browser_adapter` and `node_adapter` at the top (only `node_adapter` is
+> `browser:false`-mapped). Treat the numbered sections below as a record of what was
+> audited/fixed, not as current work to be re-run.
+
 ---
 
 ## Phase 1 — Critical (HIGH) — Blocks any browser build
@@ -215,11 +227,11 @@ function getLogger(): any {
 
 ---
 
-### 3.3 Make `modules/storage/index.ts` adapters lazy
+### 3.3 Make `modules/storage/index.ts` adapters lazy — **NOT APPLIED (still open)**
 
-**Problem:** Lines 22-23 do top-level `require('./node_adapter')` and `require('./browser_adapter')`. Bundlers may trace both paths.
+**Problem:** Lines 23-24 do top-level static `import` of `./node_adapter` and `./browser_adapter`. Bundlers may trace both paths.
 
-**Fix:** Move `require()` calls inside the `getStorage()` branches:
+**Fix:** Move the imports inside the `getStorage()` branches:
 
 ```typescript
 function getStorage() {

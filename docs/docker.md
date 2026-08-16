@@ -24,7 +24,7 @@ docker run --rm -it dexbot2:local node dist/dexbot.js --help
 For production and best secret hygiene without PM2, use the bundled unlock launcher:
 
 ```bash
-tsx unlock.ts
+dexbot start
 ```
 
 - Enter the master password once interactively.
@@ -35,7 +35,7 @@ tsx unlock.ts
 To start only one bot:
 
 ```bash
-tsx unlock.ts <bot-name>
+dexbot start <bot-name>
 ```
 
 ### Headless (non-interactive) startup
@@ -45,10 +45,10 @@ For environments without an interactive TTY (Docker containers, PaaS platforms),
 
 ```bash
 # Via environment variable (less secure — see security note)
-DEXBOT_MASTER_PASSWORD=<password> tsx unlock.ts --headless
+DEXBOT_MASTER_PASSWORD=<password> dexbot start --headless
 
 # Via secret file (recommended — works with Docker secrets)
-tsx unlock.ts --headless --password-file /run/secrets/bot-password
+dexbot start --headless --password-file /run/secrets/bot-password
 ```
 
 The same flags work with PM2:
@@ -68,7 +68,7 @@ dexbot pm2 --headless --password-file /run/secrets/bot-password
 For claw-only workflows that only need credentials, use:
 
 ```bash
-tsx unlock.ts --claw-only
+dexbot start --claw-only
 ```
 
 For PM2-managed credential-daemon-only startup:
@@ -103,7 +103,7 @@ mkdir -p profiles market_adapter/data market_adapter/state
 docker compose up
 ```
 
-This compose mode runs `unlock.ts`, which starts the credential daemon and may prompt for the master password. If `BOT_NAME` is empty, it starts all active bots from `profiles/bots.json`.
+This compose mode runs the image's default command (`node dist/unlock.js`), which starts the credential daemon and may prompt for the master password. If `BOT_NAME` is empty, it starts all active bots from `profiles/bots.json`.
 
 For non-interactive environments (CI, headless servers), pass the master password
 via an env var or secret file override:

@@ -221,21 +221,21 @@ Prefix tags used in log messages to help operators identify event types. To find
 
 | Tag | Module | Example |
 |-----|--------|---------|
-| `[COW]` | `dexbot_class.ts`, `order/manager.ts` | Copy-on-write grid rebalance planning and broadcast |
-| `[SYNC]` | `order/sync_engine.ts` | Blockchain order synchronization |
-| `[RECOVERY]` | `order/accounting.ts`, `dexbot_class.ts` | Fund invariant recovery attempts and resets |
-| `[ORPHAN-FILL]` | `dexbot_class.ts` | Double-credit prevention for stale-cleaned orders |
-| `[HARD-ABORT]` | `dexbot_class.ts` | Illegal state during batch processing |
-| `[FILL-QUEUE]` | `dexbot_class.ts` | Fill consumer health, backoff, and escalation |
+| `[COW]` | `dexbot_cow_runtime.ts`, `order/manager.ts`, `dexbot_state_recovery.ts` | Copy-on-write grid rebalance planning and broadcast |
+| `[SYNC]` | `order/sync_engine.ts`, `order/manager.ts` | Blockchain order synchronization |
+| `[RECOVERY]` | `dexbot_state_recovery.ts`, `order/accounting.ts` | Fund invariant recovery attempts and resets |
+| `[ORPHAN-FILL]` | `dexbot_fill_runtime.ts` | Double-credit prevention for stale-cleaned orders |
+| `[HARD-ABORT]` | `dexbot_state_recovery.ts`, `dexbot_class.ts` | Illegal state during batch processing |
+| `[FILL-QUEUE]` | `dexbot_fill_runtime.ts` | Fill consumer health, backoff, and escalation |
 | `[CREDENTIAL]` | `dexbot_class.ts` | Credential daemon errors, key unlock failures |
-| `[BOOTSTRAP]` | `dexbot_class.ts` | Startup fill/order reconciliation |
-| `[VALIDATION]` | `dexbot_class.ts` | Order/config validation errors |
-| `[POST-RESET]` | `dexbot_class.ts` | Post-AMA-reset fill queue processing |
-| `[STALE-CLEANUP]` | `dexbot_class.ts` | Pruning expired stale-cleaned order IDs |
-| `[SELF-CANCEL]` | `dexbot_class.ts` | Skipping non-economic fill artifacts |
-| `[FILL-DEDUP]` | `dexbot_class.ts` | Fill deduplication events |
+| `[BOOTSTRAP]` | `dexbot_fill_runtime.ts` | Startup fill/order reconciliation |
+| `[VALIDATION]` | `dexbot_cow_runtime.ts` | Order/config validation errors |
+| `[POST-RESET]` | `dexbot_startup_runtime.ts` | Post-AMA-reset fill queue processing |
+| `[STALE-CLEANUP]` | `dexbot_fill_runtime.ts` | Pruning expired stale-cleaned order IDs |
+| `[SELF-CANCEL]` | `dexbot_fill_runtime.ts` | Skipping non-economic fill artifacts |
+| `[FILL-DEDUP]` | `dexbot_fill_runtime.ts` | Fill deduplication events |
 | `[MAINT-COOLDOWN]` | `dexbot_maintenance_runtime.ts` | Maintenance cooldown after hard-abort recovery |
-| `[DUST-CANCEL]` | `dexbot_maintenance_runtime.ts` | Dust partial order cancellation deferral |
+| `[DUST]` | `dexbot_maintenance_runtime.ts` | Dust order cancellation, health check, and truncation fallback |
 | `[BTS-ACQ]` | `dexbot_maintenance_runtime.ts` | BTS acquisition for non-BTS pairs |
 | `[TARGETED-SYNC]` | `dexbot_maintenance_runtime.ts` | Targeted drift synchronization deferral |
 | `[MULTI-BOT]` | `chain_orders.ts` | Multi-bot shared-account coordination |
@@ -266,7 +266,7 @@ New/updated operator-visible messages added by the uncertain-broadcast and COW h
 
 ## Fill History Scan Profiling
 
-The `Subscriptions` logger emits `fetchFillHistoryEntries: maxPages (X) reached` at `info` level when the fill-history scan reaches its configured page cap. On a busy account this is **normal** — the scan simply catches up over multiple polling cycles rather than in a single pass.
+The `Subscriptions` logger emits `fetchFillHistoryEntries: maxPages (X) reached` at `debug` level when the fill-history scan reaches its configured page cap. On a busy account this is **normal** — the scan simply catches up over multiple polling cycles rather than in a single pass.
 
 If the message recurs across many cycles **without any new fills being detected** (i.e. `maxPages` is hit but `highestReceived` never advances), the connected witness node is likely running with `--partial-operations` pruning enabled. This removes old `operation_history_objects` from the `by_op` index, so the scan can never re-fill the gap because the entries no longer exist on-chain.
 

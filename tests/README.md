@@ -119,7 +119,7 @@ Shared utility functions, precision handling, chain helpers.
 ## Documentation References
 
 - **Documentation Index:** [docs/README.md](../docs/README.md)
-- **Module Architecture:** [root README](../README.md#-modules)
+- **Module Architecture:** [modules/README.md](../modules/README.md)
 - **Copy-on-Write:** [COPY_ON_WRITE_MASTER_PLAN.md](../docs/COPY_ON_WRITE_MASTER_PLAN.md)
 - **Fund Accounting:** [FUND_MOVEMENT_AND_ACCOUNTING.md](../docs/FUND_MOVEMENT_AND_ACCOUNTING.md)
 - **Logging:** [LOGGING.md](../docs/LOGGING.md)

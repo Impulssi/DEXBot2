@@ -1,7 +1,7 @@
 # DEXBot vs DEXBot2 — Detailed Comparison Report
 
-> **Date:** 2026-07-28 *(metrics refreshed against local source trees)*
-> **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.4.13).
+> **Date:** 2026-08-16 *(metrics refreshed against local source trees)*
+> **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.4.14).
 > **Audience:** Developers, contributors, and operators evaluating or migrating between the two projects.
 
 ---
@@ -36,23 +36,23 @@
 
 | Attribute | DEXBot (original) | DEXBot2 |
 |---|---|---|
-| **Release Track** | 1.0.0 | v1.4.13 |
+| **Release Track** | 1.0.0 | v1.4.14 |
 | **Language** | Python 3.6+ | TypeScript 5.x |
 | **Status** | Released 1.0.0, unmaintained | Active development |
-| **Last Repo Activity** | May 23, 2020 | 2026-07-28 |
+| **Last Repo Activity** | May 23, 2020 | 2026-08-16 |
 | **License** | MIT | MIT |
 | **Origin** | BitShares worker-proposal funded, Codaone Oy | Private rewrite by froooze |
 | **Primary Goal** | Multi-strategy, extensible trading framework | Hardened adaptive grid runtime with operator/AI tooling |
 | **Target Exchange** | BitShares DEX | BitShares DEX |
 | **Lines of Code** | ~10,846 Python LOC in `dexbot/` | Large TypeScript codebase; core runtime, adapter, analysis, Claw, and test modules |
 | **Source Files** | 72 Python files in `dexbot/` | ~490 TS files across the repo |
-| **Test Files** | 16 Python test files | 231 `test_*.ts` files (231 auto-discovered via `globSync`) |
+| **Test Files** | 16 Python test files | 247 `test_*.ts` files (247 auto-discovered via `globSync`) |
 
 ### Summary
 
 DEXBot (original) is a community-governed, multi-strategy trading framework built in Python with a full GUI and plugin system. It was designed to be user-friendly and extensible, supporting multiple strategies and external price feeds out of the box.
 
-DEXBot2 is a ground-up rewrite in TypeScript that prioritizes production correctness over the original project's GUI/plugin breadth. The core trading runtime is still centered on one deeply engineered boundary-crawl grid strategy, but the surrounding system has expanded significantly: Copy-on-Write order state, replay-safe fill accounting, two-pass startup and runtime reconciliation, dynamic AMA/Kalman market adaptation, credential-daemon key handling, a native `unlock` monolithic launcher (with optional PM2 fallback), Claw automation APIs, credit/MPA support, and a broad regression suite.
+DEXBot2 is a ground-up rewrite in TypeScript that prioritizes production correctness over the original project's GUI/plugin breadth. The core trading runtime is still centered on one deeply engineered boundary-crawl grid strategy, but the surrounding system has expanded significantly: Copy-on-Write order state, replay-safe fill accounting, two-pass startup and runtime reconciliation, dynamic AMA/Kalman market adaptation, credential-daemon key handling, a native monolithic launcher (`dexbot start`, backed by the `unlock` runtime; with optional PM2 fallback), Claw automation APIs, credit/MPA support, and a broad regression suite.
 
 ---
 
@@ -67,10 +67,10 @@ DEXBot2 is a ground-up rewrite in TypeScript that prioritizes production correct
 | **Key Management** | `uptick` (BitShares wallet) | AES-256-GCM encrypted store + credential daemon (RAM-only, Unix-socket signing) |
 | **Database / State** | SQLite via SQLAlchemy ORM | JSON flat files (no DB) |
 | **DB Migrations** | Alembic | N/A |
-| **Process Manager** | Systemd service (Linux) | `unlock` (native monolithic launcher, default) — PM2 optional |
+| **Process Manager** | Systemd service (Linux) | `dexbot start` (native monolithic launcher, default; `unlock` runtime) — PM2 optional |
 | **External APIs** | CoinGecko, CCXT, Waves | On-chain/pool/Kibana candle inputs; optional CEX synthetic seed generator (`fetch_cex_synthetic_data.ts`) for adapter bootstrap |
 | **Container** | Docker (Ubuntu 18.04) | Docker (multi-stage) |
-| **Testing** | pytest + Docker testnet | Native Node assert (217 `test_*.ts` files; auto-discovered via `globSync`) |
+| **Testing** | pytest + Docker testnet | Native Node assert (247 `test_*.ts` files; auto-discovered via `globSync`) |
 | **CI/CD** | Travis CI, AppVeyor | GitHub Actions / local deterministic script suite |
 | **Packaging** | PyInstaller (Win/Mac/Linux binaries) | npm / `unlock` + optional PM2 ecosystem |
 
@@ -145,7 +145,7 @@ DEXBot brings a full Python desktop GUI and a strategy plugin model. DEXBot2 is 
 - **`fund_registry.ts`**: shared-account fund registry — tracks per-account, per-bot fund and collateral allocations; pre-registered atomically at startup so all bots sharing an account see a consistent proportional split before any bot starts; cross-bot invariant enforcement
 - **Bot keys**: deterministic name-derived key (`sanitizeKey(name)`) with uniqueness enforced at all write paths — eliminates name-collision risk across restarts and config reorders
 - State in **JSON flat files** (no database dependency)
-- The default `unlock` launcher runs the active bot set as **one monolithic bot process** (credential daemon + market adapter in separate helper processes); isolated per-bot mode and PM2 are available alternatives; multiple bots can share an account via fund_registry
+- The default `dexbot start` launcher (the `unlock` runtime) runs the active bot set as **one monolithic bot process** (credential daemon + market adapter in separate helper processes); isolated per-bot mode and PM2 are available alternatives; multiple bots can share an account via fund_registry
 
 **Pattern:** Layered engines, targeted fill subscription + fixed-cap batch processing + periodic reconciliation, immutable/COW state management.
 
@@ -498,7 +498,7 @@ Where:
 - **CLI-only** (no GUI)
 - `dexbot.ts`: multi-bot management, config viewing, log tailing
 - `bot.ts`: single bot launcher
-- `unlock.ts`: **default launcher** — single-prompt startup, background daemonization, auto-restart, monolithic runtime (start, stop, restart, status, delete)
+- `unlock.ts`: **default launcher** (invoked as `dexbot start`) — single-prompt startup, background daemonization, auto-restart, monolithic runtime (start, stop, restart, status, delete)
 - `pm2.ts`: PM2 orchestration (start, stop, restart, status, logs) — optional alternative
 - Claw scripts and modules expose automation-friendly operations for profiles, chain actions, position health, and launcher workflows
 - Designed for operators comfortable with terminal, JSON config, and service logs
@@ -530,7 +530,7 @@ Where:
 
 ### DEXBot2
 
-- **`unlock` (native monolithic launcher)** — the default and recommended runtime
+- **`unlock` (native monolithic launcher, run via `dexbot start`)** — the default and recommended runtime
   - Runs the active bot set as **one monolithic bot process**, with the credential daemon and market adapter in separate helper processes
   - **Background daemonization + auto-restart** built in (no external process manager required)
   - `dexbot start|stop|restart|status|delete` controls the whole monolithic runtime
@@ -550,7 +550,7 @@ Where:
 
 | Feature | DEXBot | DEXBot2 |
 |---|---|---|
-| **Process Manager** | Systemd | `unlock` (native, default) — PM2 optional |
+| **Process Manager** | Systemd | `dexbot start`/`unlock` (native, default) — PM2 optional |
 | **Multi-bot Scaling** | One process (multi-thread) | One monolithic process (default) or one process per bot (`--isolated` / PM2) |
 | **Auto-restart** | Systemd restart policy | Built-in (unlock) or PM2 auto-restart |
 | **Binary Distribution** | Yes (PyInstaller) | No (requires Node.js) |
@@ -616,7 +616,7 @@ Where:
 ### DEXBot2
 
 - **Framework:** Native Node `assert` module (no external test framework)
-- **231 `test_*.ts` files** auto-discovered via `globSync` (`tests/test_*.ts` + `claw/tests/test_*.ts`; 233 repo-wide including analysis), covering:
+- **247 `test_*.ts` files** auto-discovered via `globSync` (`tests/test_*.ts` + `claw/tests/test_*.ts`), covering:
   - Unit tests: accounting, strategy, grid, manager logic
   - Copy-on-Write semantics: COW commits, guards, concurrent fills
   - Edge cases: authoritative full-fill resolution, partial fills, BTS fee accounting, precision
@@ -780,13 +780,13 @@ Where:
 
 | Metric | DEXBot | DEXBot2 |
 |---|---|---|
-| **Release Track** | 1.0.0 | v1.4.13 |
+| **Release Track** | 1.0.0 | v1.4.14 |
 | **Active Since** | ~2018 | December 2025 |
-| **Last Commit** | May 23, 2020 | 2026-07-28 |
-| **Total Commits** | 2281 | 1,887 at current HEAD |
+| **Last Commit** | May 23, 2020 | 2026-08-16 |
+| **Total Commits** | 2281 | 2,005 at current HEAD |
 | **Lines of Code** | ~10,846 Python LOC in `dexbot/` | Large TypeScript runtime + adapter + Claw + analysis + tests |
 | **Source Files** | 72 Python files in `dexbot/` | ~490 TS files across the repo |
-| **Test Files** | 16 Python test files | 231 `test_*.ts` files (231 auto-discovered via `globSync`) |
+| **Test Files** | 16 Python test files | 247 `test_*.ts` files (247 auto-discovered via `globSync`) |
 | **Documentation** | Sphinx docs + README | 50+ Markdown docs plus Claw skills/references |
 | **Strategies** | 3 + plugins | 1 |
 | **Max Concurrent Bots** | Many (one process) | Many (one monolithic process by default; per-bot via `--isolated`/PM2) |
@@ -886,14 +886,14 @@ The 500× figure is not theoretical: it materializes in production when higher o
 | **Security** | ★★★☆☆ | ★★★★★ (AES-256-GCM, credential daemon, authority resolution) | DEXBot2 |
 | **Ease of Setup** | ★★☆☆☆ (PyQt5/PyInstaller/Systemd dependency hell) | ★★★★★ (`npm i -g dexbot`, zero deps) | DEXBot2 |
 | **Accessibility** | ★★★★★ (GUI) | ★★☆☆☆ (CLI only) | DEXBot |
-| **Testing Depth** | ★★★☆☆ | ★★★★★ (220 test files; focused regressions) | DEXBot2 |
+| **Testing Depth** | ★★★☆☆ | ★★★★★ (247 test files; focused regressions) | DEXBot2 |
 | **Documentation** | ★★★☆☆ | ★★★★★ (architecture/accounting/security/adapter docs) | DEXBot2 |
 | **Dependency Footprint** | ★★☆☆☆ (heavy) | ★★★★★ (0 runtime deps) | DEXBot2 |
 | **Extensibility** | ★★★★★ (plugins) | ★☆☆☆☆ | DEXBot |
 | **Active Maintenance** | ★☆☆☆☆ (unmaintained) | ★★★★★ (active) | DEXBot2 |
 | **Grid Strategy Depth** | ★★★☆☆ (Staggered) | ★★★★★ (engineered) | DEXBot2 |
 | **Adaptive Market Signals** | ★★☆☆☆ (external feeds only for Relative Orders) | ★★★★★ (AMA/Kalman/ATR/regime/dynamic weights) | DEXBot2 |
-| **Process Management** | ★★★☆☆ (Systemd) | ★★★★☆ (native `unlock` launcher + optional PM2 + daemon modes) | DEXBot2 |
+| **Process Management** | ★★★☆☆ (Systemd) | ★★★★☆ (native `dexbot start`/`unlock` launcher + optional PM2 + daemon modes) | DEXBot2 |
 | **Automation/API Surface** | ★★☆☆☆ (strategy hooks) | ★★★★☆ (Claw modules/scripts/skills) | DEXBot2 |
 | **Credit/MPA Tooling** | ★☆☆☆☆ | ★★★★☆ | DEXBot2 |
 | **Community/Ecosystem** | ★★★☆☆ | ★★☆☆☆ | DEXBot |
@@ -910,7 +910,7 @@ DEXBot2 is not a drop-in upgrade for DEXBot. The projects optimize for different
 | Desktop GUI, wizard setup, and non-technical operation | DEXBot |
 | Multiple runtime-swappable strategies or community strategy plugins | DEXBot |
 | Hardened grid accounting, COW state transitions, and replay-safe fill handling | DEXBot2 |
-| Headless `unlock` (monolithic) or PM2 operation across many bot processes | DEXBot2 |
+| Headless `dexbot start` (monolithic) or PM2 operation across many bot processes | DEXBot2 |
 | AMA/Kalman/ATR adaptive grid weighting and recalculation triggers | DEXBot2 |
 | Credential-daemon key separation and launcher-mode testing | DEXBot2 |
 | Claw automation, position health, MPA/credit tooling, and AI-consumable runtime surfaces | DEXBot2 |
@@ -919,4 +919,4 @@ The practical migration path is to treat DEXBot2 as a new runtime: recreate bot 
 
 ---
 
-*Report generated 2026-07-28. Metrics refreshed 2026-07-28 from local DEXBot-master and DEXBot2 source trees.*
+*Report generated 2026-08-16. Metrics refreshed 2026-08-16 from local DEXBot-master and DEXBot2 source trees.*

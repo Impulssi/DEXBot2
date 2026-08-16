@@ -100,11 +100,11 @@ dexbot white --prune
 **File:** `divergence-calc.ts`
 **Purpose:** Measure the "drift" between in-memory grid and disk state using RMS divergence metric.
 ```bash
-# Calculates RMS Error (Default threshold is 14.3%)
-# RMS quadratically penalizes large errors - see docs/README.md for threshold interpretation
+# Calculates RMS Error (hardcoded threshold: 1 promille ≈ 3.2% avg error)
+# RMS quadratically penalizes large errors - see docs/GRID_RECALCULATION.md
 tsx scripts/divergence-calc.ts
 ```
-**Reference:** RMS threshold explanation in [root README GRID RECALCULATION section](../README.md#-automatic-grid-recalculation-via-threshold-detection)
+**Reference:** RMS threshold interpretation in [Grid Recalculation docs](../docs/GRID_RECALCULATION.md)
 
 ### Grid Trading Analysis
 **File:** `analyze-orders.ts`
@@ -290,7 +290,7 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 |:---|:---|:---|
 | `npm test` | `scripts/run-tests.ts` | Run full test suite (excludes live-chain tests) |
 | `npm run test:live` | `scripts/run-tests.ts` | Run full test suite including live-chain tests |
-| `npm run typecheck` | — | TypeScript type checking (`tsc --noEmit || true`) |
+| `npm run typecheck` | — | TypeScript type checking (`tsc --noEmit`) |
 | `npm run build` | — | Clean + compile TypeScript |
 | `npm run clean` | `scripts/clean-dist.js` | Remove compiled `dist/` output |
 | `npm run ptest` | `scripts/ptest.sh` | Sync local test → origin/test |

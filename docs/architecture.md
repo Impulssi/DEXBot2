@@ -230,7 +230,7 @@ DEXBot2 ships both a **Node CLI runtime** and the building blocks for an in-brow
 | `modules/dexbot_maintenance_runtime.ts` | Direct `fs` / `child_process` / `os` use |
 | `modules/dexbot_class.ts` | Imports `dexbot_maintenance_runtime` |
 | `unlock.ts`, `bot.ts`, `dexbot.ts`, `pm2.ts`, `credential-daemon.ts` | CLI entry points |
-| `market_adapter/lp_chart_runner.ts` | `require('child_process')` for chart rendering |
+| `market_adapter/lp_chart_runner.ts` | `import { exec } from 'node:child_process'` for chart rendering |
 
 **Environment detection** must go through `modules/env.ts` rather than inline `typeof window` / `typeof process` checks:
 
@@ -1182,7 +1182,7 @@ manager.getMetrics()
 
 ### Zero-Dependency Policy
 
-DEXBot2 operates under a **zero mandatory production dependency** policy. The dependency tree is empty — every production capability (blockchain client, WebSocket transport via Node's native `globalThis.WebSocket`, crypto/signing, serialization, testing, price feeds, credential vault) is implemented natively within the codebase. Requires **Node.js >= 22** for the built-in WebSocket.
+DEXBot2 operates under a **zero mandatory production dependency** policy. The dependency tree is empty — every production capability (blockchain client, WebSocket transport via Node's native `globalThis.WebSocket`, crypto/signing, serialization, testing, price feeds, credential vault) is implemented natively within the codebase. Requires **Node.js >= 22.12** for the built-in WebSocket.
 
 **Why:** Trading bots handle real money. Every external dependency is a supply-chain risk surface. Keeping the dependency tree empty means no `npm audit` surprises, no supply-chain attacks on upstream packages, and no version-migration overhead for the core runtime.
 

@@ -112,7 +112,7 @@ Add `debtPolicy` to a bot entry in `profiles/bots.json`:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `maxFeeRatePerDay` | `number` | No | Maximum acceptable daily fee rate. Defaults to `1/3000` (~0.033%/day). |
+| `maxFeeRatePerDay` | `number` | No | Maximum acceptable daily fee rate. Defaults to `1/2900` (~0.034%/day). |
 | `autoReborrow` | `boolean` | No | If `true`, the bot reborrows from the same offer after repayment. |
 | `autoRepay` | `number` | No | On-chain auto-repay mode: `0` (off), `1` (full only), `2` (partial allowed). |
 | `allowedOfferIds` | `string[]` | No | Whitelist of credit offer object IDs (1.21.x) the bot may accept. |

@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 
@@ -16,5 +16,5 @@ USER node
 
 # Default command starts credential daemon and all active bots interactively.
 # Run with: docker run -it -v ./profiles:/app/profiles -v ./market_adapter/data:/app/market_adapter/data -v ./market_adapter/state:/app/market_adapter/state <image>
-# For a specific bot: docker run -it ... <image> node dist/unlock.js <bot-name>
+# For a specific bot: docker run -it ... <image> dexbot start <bot-name>
 CMD ["node", "dist/unlock.js"]

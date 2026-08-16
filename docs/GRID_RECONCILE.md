@@ -115,13 +115,13 @@ Each sub-phase releases `_gridLock` before starting and re-acquires it per opera
 
 ### Phase 3 — Fresh Re-read, Adoption, Stale Surplus Cleanup
 
-**`grid_reconcile.ts:482-611`** (guarded by `if (!dryRun)` at line 484)
+**`grid_reconcile.ts:502-631`** (guarded by `if (!dryRun)` at line 504)
 
-1. **Guarded fresh re-read** (lines 492-496): `readOpenOrdersGuarded` re-fetches all open orders. On a truncated/empty read it returns early (defers), keeping the pre-Phase-2 counts for the summary log — a capped window omits exactly the freshest Phase-2 creates.
+1. **Guarded fresh re-read** (lines 512-516): `readOpenOrdersGuarded` re-fetches all open orders. On a truncated/empty read it returns early (defers), keeping the pre-Phase-2 counts for the summary log — a capped window omits exactly the freshest Phase-2 creates.
 
-2. **Adopt uncertain-landed creates** (lines 513-558): For any fresh chain order not matching a grid `orderId` and not created by a slot, it attempts targeted slot adoption — matching a VIRTUAL slot by type+price+size (within tolerance) and registering it via `_applySync(..., 'createOrder')` with the create-fee deduction. Full `syncFromOpenOrders` is deliberately **not** used here (its pass-1 virtualizes ACTIVE slots missing from the snapshot, and a lagging read right after the Phase-2 broadcast would destroy the confirmed grid). If adoption fails, the ID is still protected from surplus-cancel; the next sync loop's orphan adoption registers it.
+2. **Adopt uncertain-landed creates** (lines 533-578): For any fresh chain order not matching a grid `orderId` and not created by a slot, it attempts targeted slot adoption — matching a VIRTUAL slot by type+price+size (within tolerance) and registering it via `_applySync(..., 'createOrder')` with the create-fee deduction. Full `syncFromOpenOrders` is deliberately **not** used here (its pass-1 virtualizes ACTIVE slots missing from the snapshot, and a lagging read right after the Phase-2 broadcast would destroy the confirmed grid). If adoption fails, the ID is still protected from surplus-cancel; the next sync loop's orphan adoption registers it.
 
-3. **Stale surplus cancellation** (lines 559-603): Per side, count orders exceeding `targetCount` that no grid slot holds via `orderId` (including the phase-2 created IDs). Cancel only these untracked surplus orders, sorted by chain ID for determinism. This catches orphans lost during grid reinitialization — on-chain orders with no corresponding grid slot.
+3. **Stale surplus cancellation** (lines 579-599): Per side, count orders exceeding `targetCount` that no grid slot holds via `orderId` (including the phase-2 created IDs). Cancel only these untracked surplus orders, sorted by chain ID for determinism. This catches orphans lost during grid reinitialization — on-chain orders with no corresponding grid slot.
 
 ### Partial Failure State
 
@@ -130,8 +130,8 @@ If Phase 2 partially succeeds (some cancels, some creates fail), there is no rol
 ### Timeouts and Read Coverage
 
 - **No per-attempt race** around the reconcile itself — the 1.4.8 change removed it to avoid orphaning mid-batch broadcasts (see the [`recalculateGrid`](../modules/order/grid.ts) call site in `modules/order/grid.ts`).
-- The whole resync is bounded by a **10-minute total timeout** (`PIPELINE_TIMING.TIMEOUT_MS * 2` at `grid.ts:1025`), applied via `Promise.race` at `grid.ts:1120-1131`.
-- Every internal chain read goes through `readOpenOrdersGuarded` (`chain_orders.ts:628`) with the 30s / 3-retry / node-failover standard, and empty/truncated reads are treated as **ambiguous** — never as authoritative absence.
+- The whole resync is bounded by a **10-minute total timeout** (`PIPELINE_TIMING.TIMEOUT_MS * 2` at `grid.ts:1122`), applied via `Promise.race` at `grid.ts:1217`.
+- Every internal chain read goes through `readOpenOrdersGuarded` (`chain_orders.ts:625`) with the 30s / 3-retry / node-failover standard, and empty/truncated reads are treated as **ambiguous** — never as authoritative absence.
 
 ---
 
@@ -139,7 +139,7 @@ If Phase 2 partially succeeds (some cancels, some creates fail), there is no rol
 
 ### Fresh Grid Guard (`matchedOnGrid > 0`)
 
-**`grid_reconcile_internal.ts:1467-1480`**
+**`grid_reconcile_internal.ts:1604-1616`**
 
 When a brand-new grid is generated, every slot is VIRTUAL — `matchedOnGrid = 0`. Without a guard, every on-chain order appears "unmatched" and would be cancelled as excess:
 
@@ -155,9 +155,9 @@ When `matchedOnGrid === 0` AND scaling up (`neededSlots > 0`), excess cancellati
 
 **`grid_reconcile_internal.ts:1367-1390`**
 
-When all outermost orders of a side are ACTIVE with `orderId`, all balance is committed to the edges. Cancel the **largest** order among the update candidates (`_cancelLargestOrder`, line 209) to free maximum funds with minimum operations, since the DEX does not expose partial-reduce in one operation. The cancelled slot gets a replacement create.
+When all outermost orders of a side are ACTIVE with `orderId`, all balance is committed to the edges. Cancel the **largest** order among the update candidates (`_cancelLargestOrder`, line 329) to free maximum funds with minimum operations, since the DEX does not expose partial-reduce in one operation. The cancelled slot gets a replacement create.
 
-Detection (`_isGridEdgeFullyActive`, line 139): sort orders by price (BUY descending, SELL ascending), and check the outermost ones are all `isOrderPlaced()`.
+Detection (`_isGridEdgeFullyActive`, line 259): sort orders by price (BUY descending, SELL ascending), and check the outermost ones are all `isOrderPlaced()`.
 
 ### Duplicate Tolerance (5× Multiplier)
 
@@ -181,11 +181,11 @@ Reconcile Phase 1 runs under `_gridLock` with no side effects on the frozen mast
 
 ### Truncated-Read Ambiguity (since 1.4.8)
 
-Every chain read feeding an absence/surplus decision goes through `readOpenOrdersGuarded` (`chain_orders.ts:628`) and treats an empty or truncated snapshot as **unreadable** — never as "nothing landed" or "nothing to cancel":
+Every chain read feeding an absence/surplus decision goes through `readOpenOrdersGuarded` (`chain_orders.ts:625`) and treats an empty or truncated snapshot as **unreadable** — never as "nothing landed" or "nothing to cancel":
 
-- `_recoverSyncFromChain` (`grid_reconcile_internal.ts:464`) — plus its three recovery sites in `_createOrderFromGrid` / `_cancelChainOrder` — defers on empty/truncated reads (`deferEmpty: true`). A pass-1 phantom cleanup would otherwise virtualize live slots from a partial window.
-- `_adoptPossiblyLandedCreate` (`grid_reconcile_internal.ts:804`) defers to an uncertain outcome on truncated reads, and the startup group batch uncertain verification follows the same rule.
-- Phase 3 final refresh (`grid_reconcile.ts:492`) skips adoption/surplus-cancel on a truncated read, keeping the pre-phase-2 counts for the summary log.
+- `_recoverSyncFromChain` (`grid_reconcile_internal.ts:607`) — plus its three recovery sites in `_createOrderFromGrid` / `_cancelChainOrder` — defers on empty/truncated reads (`deferEmpty: true`). A pass-1 phantom cleanup would otherwise virtualize live slots from a partial window.
+- `_adoptPossiblyLandedCreate` (`grid_reconcile_internal.ts:947`) defers to an uncertain outcome on truncated reads, and the startup group batch uncertain verification follows the same rule.
+- Phase 3 final refresh (`grid_reconcile.ts:512`) skips adoption/surplus-cancel on a truncated read, keeping the pre-phase-2 counts for the summary log.
 - Adoption paths (`_adoptPossiblyLandedCreate`, grouping path, reconcile adoption loop) apply the create-fee deduction via `_applySync` for accounting parity.
 
 The underlying rule is `INV-BROADCAST-004`: a capped `get_full_accounts` window omits the freshest orders (fresh creates sort last), so absence can never be authoritative on a truncated read.
@@ -220,11 +220,11 @@ Commit `e64db685` replaced 6 single-value boolean state fields with refcounts/st
 
 | Constant | Value | File | Role |
 |----------|-------|------|------|
-| `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` | `5` | `grid_reconcile.ts:16` | Amplifies base tolerance for duplicate detection |
-| `maxBatchAttempts` | `3` | `grid_reconcile.ts:395` | Update-batch retry limit |
-| `PRICE_TOLERANCE_MAX_PERCENT` | `0.01` (1%) | `constants.ts:444` | Cap on price tolerance |
-| `PRICE_TOLERANCE_MIN_ABSOLUTE` | `0.0001` | `constants.ts:448` | Floor for price tolerance |
-| `PIPELINE_TIMING.TIMEOUT_MS` | `300000` (5min) | `constants.ts:809` | Base pipeline timing; resync uses 2× (10 min) |
+| `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` | `5` | `grid_reconcile.ts:20` | Amplifies base tolerance for duplicate detection |
+| `maxBatchAttempts` | `3` | `grid_reconcile.ts:415` | Update-batch retry limit |
+| `PRICE_TOLERANCE_MAX_PERCENT` | `0.01` (1%) | `constants.ts:452` | Cap on price tolerance |
+| `PRICE_TOLERANCE_MIN_ABSOLUTE` | `0.0001` | `constants.ts:456` | Floor for price tolerance |
+| `PIPELINE_TIMING.TIMEOUT_MS` | `300000` (5min) | `constants.ts:807` | Base pipeline timing; resync uses 2× (10 min) |
 
 ---
 
@@ -249,10 +249,10 @@ Commit `e64db685` replaced 6 single-value boolean state fields with refcounts/st
 
 | File | Role |
 |------|------|
-| `modules/order/grid_reconcile.ts` | Public API + 3-phase orchestrator (622 lines) |
-| `modules/order/grid_reconcile_internal.ts` | Internal helpers — `_reconcileStartupSide`, grid detection, recovery, uncertainty (1553 lines) |
+| `modules/order/grid_reconcile.ts` | Public API + 3-phase orchestrator (642 lines) |
+| `modules/order/grid_reconcile_internal.ts` | Internal helpers — `_reconcileStartupSide`, grid detection, recovery, uncertainty (1690 lines) |
 | `modules/order/manager.ts` | Lock hierarchy definition, `_applyOrderUpdate`, phantom guard, `reconcileGrid` entry, COW integration |
-| `modules/order/async_lock.ts` | AsyncLock engine with ALS re-entrancy (385 lines) |
+| `modules/order/async_lock.ts` | AsyncLock engine with ALS re-entrancy (424 lines) |
 | `modules/order/sync_engine.ts` | Blockchain sync pipeline |
 | `modules/order/grid.ts` | Grid creation, `recalculateGrid` (full resync) calls reconcile |
 | `modules/chain_orders.ts` | `readOpenOrdersGuarded` / guarded read infrastructure |

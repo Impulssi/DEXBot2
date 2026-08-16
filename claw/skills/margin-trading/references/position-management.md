@@ -43,7 +43,7 @@ A position profits when the market moves in the direction the position is expose
 - **Short** profits when the MPA price (in BTS) decreases — the MPA bought back cheaper than it was sold
 - **Long** profits when the MPA price (in BTS) increases — the MPA sold higher than it was bought
 
-The shared trend-detection service provides signals based on AMA deviation from the feed price and the instantaneous premium/discount. These signals indicate which direction the smoothed market is moving relative to the feed anchor.
+The shared trend-detection service provides signals based on a Kalman-filter trend state (velocity/displacement from the order-book mid price relative to the feed anchor) plus the instantaneous premium/discount. These signals indicate which direction the smoothed market is moving relative to the feed anchor.
 
 Combining position direction with the trend signal:
 
@@ -182,7 +182,7 @@ Total BTS
 ├── Pending (proceeds from fills, not yet redeployed)
 │   └── Target: minimize time in this state
 └── Reserve (fee budget for operations)
-    └── ~0.1 BTS per order operation
+    └── BTS fees per order op (dynamic — see `profiles/fee_cache.json`; e.g. create 0.48, update 0.38, cancel 0.005 BTS)
 ```
 
 MPA holdings follow the same logic — MPA sitting in wallet balance is idle. MPA placed as a sell order or used to repay debt is working.

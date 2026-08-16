@@ -11,12 +11,12 @@ Focus on the practical module split:
 
 Keep the implementation reference explicit:
 
-- DEXBot2 shows a real Node.js/CommonJS bot runtime with shared reads, per-account signing, persistence, and reconciliation
+- DEXBot2 shows a real Node.js/ES Modules bot runtime with shared reads, per-account signing, persistence, and reconciliation
 - AI-Bot should reuse that pattern rather than duplicating it
 
 Preferred baseline:
 
-- `Node.js` / CommonJS first
+- `Node.js` / ES Modules first (the DEXBot2 codebase is ESM, `"type": "module"`, Node >= 22.12)
 - DEXBot2 native BitShares client for chain connectivity
 - shared read connection for market and account state
 - dedicated account client for signing and broadcast

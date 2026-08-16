@@ -52,7 +52,7 @@ funds.allocated → _getSizingContext()       (budget for spread correction)
 **Key points:**
 - `botFunds` percentage applies to **total** capital (free + locked in orders), not just free. A bot at `"50%"` gets half of everything, not half of what's currently idle.
 - `funds.allocated` is the ceiling for each side. Existing orders already consume part of it; the remaining free portion is available for new placements.
-- The downstream `applyBotFundsAllocation()` (`manager.ts:654`) also caps `funds.available` to `<= allocated` as a safety net, but the primary budget chokepoint is `getSideBudget` / `_getSizingContext` reading `allocated` directly (v1.2.6).
+- The downstream `applyBotFundsAllocation()` (`manager.ts:953`) also caps `funds.available` to `<= allocated` as a safety net, but the primary budget chokepoint is `getSideBudget` / `_getSizingContext` reading `allocated` directly (v1.2.6).
 
 ---
 
@@ -69,7 +69,7 @@ funds.allocated → _getSizingContext()       (budget for spread correction)
 
 #### Implementation Location
 
-File: `modules/dexbot_class.ts` — `_validateOperationFunds()` (line 3093), called from the COW batch broadcast path at line 4163.
+File: `modules/dexbot_cow_runtime.ts` — `validateOperationFunds()` (line 1309), called from the COW batch broadcast path at line 2648. `modules/dexbot_class.ts` exposes a thin wrapper `_validateOperationFunds()` (line 1165).
 
 ```javascript
 // Per-asset peak requirement vs. quantized chain-free snapshot.
@@ -124,7 +124,7 @@ Previously, fills were processed one-at-a-time (~3s per broadcast). A burst of 2
 
 #### Solution: Fixed-Cap Batch Fill Processing
 
-**Mechanism**: Fill events arrive via `modules/dexbot_fill_runtime.ts` (the fill-runtime module), which pushes them into `bot._incomingFillQueue` (declared in `modules/dexbot_class.ts`). The drain loop in `dexbot_class.ts` then chunks the queue into capped batches and calls `modules/order/manager.ts::processFilledOrders` (line 1149) once per chunk to run the full rebalance pipeline.
+**Mechanism**: Fill events arrive via `modules/dexbot_fill_runtime.ts` (the fill-runtime module), which pushes them into `bot._incomingFillQueue` (declared in `modules/dexbot_class.ts`). The drain loop in `dexbot_fill_runtime.ts` then chunks the queue into capped batches and calls `modules/order/manager.ts::processFilledOrders` (line 1442) once per chunk to run the full rebalance pipeline.
 
 **Batch Sizing Algorithm**: A single cap-based batch size (`FILL_PROCESSING.MAX_FILL_BATCH_SIZE`): a queue depth of 4 or fewer is processed as one unified batch; deeper queues are chunked into repeated batches of 4 (the last chunk may be smaller).
 
@@ -140,8 +140,9 @@ FILL_PROCESSING: {
 **Per-Batch Execution**:
 
 1. **Peek & Pop**: Check `_incomingFillQueue`, pop up to N fills (batch size)
-2. **Single Accounting Pass**: Call `processFillAccounting()` once for all N fills
-   - All proceeds credited directly to `chainFree` (via `adjustTotalBalance`)
+2. **Replay-safe Accounting Pass**: Each fill is accounted individually via `processFillAccounting(fillOp, fillKey)` with replay-safe dedup (`applyReplaySafeFillAccounting`, `dexbot_fill_runtime.ts:227`)
+   - Proceeds credited directly to `chainFree` (via `adjustTotalBalance`)
+   - Same-order fill batching (sync_engine Phase 6 cumulative transition) aggregates multiple fill transitions on one order before a single rebalance
    - All proceeds immediately available to next rebalance cycle (not split across cycles)
 3. **Single Target Calculation**: Call `calculateTargetGrid()` once
    - Sizes replacement orders using combined proceeds
@@ -152,6 +153,8 @@ FILL_PROCESSING: {
 6. **Loop**: Continue with next batch (or idle if queue empty)
 
 **Result**: 29 fills now processed in ~8 broadcasts (~24s) instead of 29 broadcasts (~90s).
+
+**Residual Dust Cancellation** (post-1.4.12): After a sub-dust fill leaves a residual order on chain (e.g. the quote-side value truncates to 0 on `bitshares-core` `maybe_cull_small_order`), the fill runtime explicitly cancels those residuals via `cancelResidualOrders()` (`dexbot_fill_runtime.ts:74`, `[RESIDUAL]` tag) so a leftover of ≥1 base unit cannot be re-adopted into a grid slot by maintenance.
 
 #### Grid Regeneration Trigger (Available Funds Ratio)
 
@@ -412,7 +415,7 @@ targetSlot.orderId = newOrderId;
 
 ### 3.6 Orphan-Fill Deduplication & Double-Credit Prevention
 
-**Location**: `modules/dexbot_class.ts` — constructor, `_recoverExplicitStaleOrders()` (line 530), orphan-fill guard in the fill drain loop (line ~1633), and pruning pass after each cycle (line ~1919).
+**Location**: `modules/dexbot_class.ts` — constructor, `_recoverExplicitStaleOrders()` (line 445), orphan-fill guard in the fill drain loop (line ~1633), and pruning pass after each cycle (line ~1919).
 
 #### Problem Solved
 
@@ -585,7 +588,7 @@ These are deducted from the *proceeds* of a fill.
 
 For BTS fees, the system returns a structured object (not a simple number) with multiple fields for accounting precision.
 
-**Location**: `modules/order/utils/math.ts::getAssetFees()` (line 303). The fee cache itself is populated by `modules/order/utils/system.ts::initializeFeeCache()` (line 568).
+**Location**: `modules/order/utils/math.ts::getAssetFees()` (line 312). The fee cache itself is populated by `modules/order/utils/system.ts::initializeFeeCache()` (line 631).
 
 #### BTS Fee Object (Always Object)
 
@@ -815,7 +818,7 @@ This prevents the bug where `available = chainFree + required` created a tautolo
 
 ## 6. Safety & Invariants
 
-The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference. Invariants are checked by `_verifyFundInvariants()` (`modules/order/accounting.ts` line 471) after every blockchain sync cycle. The verification reads from a snapshot captured under `_fundLock` — `actualBuy`/`actualSell` are captured at snapshot time, not read live outside the lock, closing a TOCTOU window. When a violation is detected, the system logs a `CRITICAL` error and attempts automatic recovery via `manager.accountant.recalculateFunds()` (`modules/order/accounting.ts` line 352, delegated from `modules/order/manager.ts` line 802) — resetting internal state to match on-chain reality. If the grid lock is held (mid-rebalance), recovery is deferred until the lock is released. The bot continues operating throughout; it does **not** halt on invariant violations.
+The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference. Invariants are checked by `_verifyFundInvariants()` (`modules/order/accounting.ts` line 502) after every blockchain sync cycle. The verification reads from a snapshot captured under `_fundLock` — `actualBuy`/`actualSell` are captured at snapshot time, not read live outside the lock, closing a TOCTOU window. When a violation is detected, the system logs a `CRITICAL` error and attempts automatic recovery via `manager.accountant.recalculateFunds()` (`modules/order/accounting.ts` line 347, delegated from `modules/order/manager.ts` lines 981–990) — resetting internal state to match on-chain reality. If the grid lock is held (mid-rebalance), recovery is deferred until the lock is released. The bot continues operating throughout; it does **not** halt on invariant violations.
 
 ### 6.1 The Equality Invariant
 Total funds on chain must equal free plus committed.
@@ -845,4 +848,4 @@ Two additional accounting hardening measures added in v1.2.1:
 **TOCTOU in `processFillAccounting`.** `_buildBtsDeferredRefundAdjustment` reads `btsFeeState` from `mgr.orders`, but the order lock was acquired after accounting ran. Fixed by acquiring the lock first, then running `processFillAccounting` under the lock. This fix was also ported to POST-RESET and BOOTSTRAP tracked-fill accounting paths.
 
 ---
-*Technical Reference for DEXBot2 v1.4.13 release*
+*Technical Reference for DEXBot2 v1.4.14 release*

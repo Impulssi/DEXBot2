@@ -11,7 +11,7 @@ HONEST.Assets are Market Pegged Assets (MPAs) on the BitShares DEX backed by BTS
 
 All HONEST.Assets share the same parameters except HONEST.USD which has a higher taker fee.
 
-Order operation fees (create, update, cancel) are approximately 0.1 BTS each.
+Order operation fees (create, update, cancel) are charged in BTS and are dynamic — the bot caches them at startup in `profiles/fee_cache.json` (e.g. create 0.4826, update 0.375, cancel 0.00482 BTS).
 
 ## Collateral
 

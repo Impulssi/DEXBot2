@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.14] - 2026-08-16 - Market-Adapter Math Canonicalization, Docs Refresh, dexbot order Bot Filter
+
+### 2026-08-16
+
+- **Refactor**: consolidate market-adapter math so canonical logic lives in `market_adapter/` and `analysis/` only imports it — browser chart scripts are generated from the same function sources via a new `embedFunctionSources` helper (`fn.toString()`), eliminating hand-copied JS to keep in sync:
+  - **ATR**: `computeATRSeries` (chain-breaking, per-position) is the single canonical series impl in `atr/calculator.ts`; `calculateATR` delegates to it; `analysis/math_utils.ts` re-exports it; `analyze_volatility.ts` dropped its local copies; the chart embeds it.
+  - **Volatility shift**: new `strategies/volatility_shift.ts`, used by `ama_slope_model.ts`, `analyze_volatility.ts`, and embedded in the volatility chart.
+  - **Candle accessors**: `getCandle*`/`normalizeCandle` moved to `market_adapter/candle_utils.ts`, re-exported via `math_utils.ts`.
+  - **Regime bilinear**: extracted to pure `strategies/regime_interp.ts`; `regime_gate.ts` delegates; chart embeds it.
+  - **AMA slope %**: canonical in `dynamic_weight_series.ts`; `ama_slope_model.ts` re-exports (chart embeds the same source).
+  - **Kalman smoothing**: moved to `market_adapter/core/signals/kalman_velocity_smoothing.ts` and made self-contained; chart embeds it.
+  - **Signal latch**: `echoLatchSeries` canonical in `dynamic_weight_series.ts` (`signal_latch.ts` re-exports); service + chart + tests all use it.
+  - **Full pipeline**: `computeDynamicWeightSeries` in `dynamic_weight_series.ts` is used by the service's `_computeDynamicWeights`, the research chart (embedded), and the test parity harness.
+  - **File locking**: `file_lock.ts` collapsed three variants onto shared `_acquireLockCore`/`_acquireLockCoreAsync` primitives (parameterized by stale/timeout/retry/contention/heartbeat/alive-check).
+  - **Production→analysis dependency removed**: Kalman/Hurst/PE analyzers moved to `market_adapter/core/signals/`; `analysis/trend_detection/` keeps re-export shims; `market_adapter_service.ts`, `regime_gate.ts`, and `decision_loop.ts` import the canonical paths (`market_adapter/core/signals/*`, `market_adapter/core/strategies/*`, `market_adapter/candle_utils.ts`, `market_adapter/utils/file_lock.ts`, `analysis/*`, `claw/modules/decision_loop.ts`, `tests/test_market_adapter_service.ts`, `tests/test_market_adapter_signal_gates.ts`).
+- **Docs**: refresh stale inline documentation in `modules/` — modernized file-header and doc-comment blocks across 14 core modules (account bots/orders, bitshares_client, bots_file_lock, chain_keys, chain_orders, constants, credential_policy, credit_runtime, dexbot_class, dexbot_cow_runtime, dexbot_credential_client, dexbot_maintenance_runtime, graceful_shutdown) to match current behavior after the ESM/COW/start-canonicalization work (`modules/*.ts`).
+
+### 2026-08-14
+
+- **Feat**: add an optional bot filter to `dexbot order` — pass a bot key as a positional argument (e.g. `dexbot order xrp-bts`) to render only that bot's persisted grid, optionally combined with `--export` for a single-bot HTML report; matching accepts the raw key, its sanitized form, or the configured name; a missing key lists available bots and suppresses skipped-candidate noise (`scripts/analyze-orders.ts`, `dexbot.ts`, `README.md`, `docs/WORKFLOW.md`).
+
+### 2026-08-13
+
+- **Fix(analysis)**: make HTML chart exports readable and render correctly — white axis-label strokes across all chart generators (readable on dark background), lightened header subtitles, and render fixes for three generators that previously aborted: missing `roundTo` helper (volatility), raw TS type annotations + missing `fixedTo` + Node-side `smaPeriod` interpolation (derivatives), and `__dirname` undefined in ESM scope (`fileURLToPath(import.meta.url)`) breaking the volatility runner (`analysis/trend_detection/*_chart_generator.ts`, `analysis/analyze_volatility.ts`, `analysis/analyze_derivatives.ts`, `analysis/tradingview/tradingview_uplot_chart_generator.ts`).
+- **Docs**: fix Linux install instructions — Ubuntu/Debian (incl. Linux Mint) ship Node 18 (< the `>=22.12.0` engines requirement), so README Linux setup now uses official nvm + Node 24 instead of the apt-installed nodejs (`README.md`).
+
+### 2026-08-12
+
+- **Docs**: clarify the BitShares onboarding — adds the peer-to-peer (P2P) credit system as a core BitShares feature ("What is BitShares?" section: on-chain lender credit offers with interest/collateral, credit deals for borrowers, (auto-)repay on expiry), verified against bitshares-core-7.0.2; replaces generic root README links with section anchors (`#install`, `#recommended-bot-setup`, `#contents`) and anchors doc links to exact entry points (`docs/BITSHARES_ONBOARDING.md`, `docs/MPA_CREDIT_USAGE.md#which-section-do-i-need`, `market_adapter/README.md#quick-start`).
+
 ## [1.4.13] - 2026-08-12 - COW Broadcast Serialization, Start Canonicalization, BitShares Onboarding
 
 ### 2026-08-12
@@ -58,7 +88,7 @@ All notable changes to this project will be documented in this file.
 - **Fix**: `dexbot start` (and `status`/`stop`/`restart`/`delete`) no longer spawn a hard-coded `dist/unlock.js` — they use `buildRuntimeScriptArgs`, which resolves the unlock entry point per runtime layout (`dist/unlock.js` compiled, `unlock.ts` via tsx in source mode). Previously the source-mode path resolved `modules/dist/unlock.js` (ENOENT → silent `process.exit(0)`), so `dexbot start` was a silent no-op; removed the now-unused `BUILD_DIR` constant (`dexbot.ts`).
 - **Test**: retarget the CLI tests that validated the in-process one-shot flow to `dexbot test` — after the `start` alias change that flow is covered by the `test` command. `test_dexbot_start_master_password_failure_output.ts`, `test_dexbot_startup_output.ts`, and `test_dexbot_daemon_ready_output.ts` now invoke `test` (previously 282-second suite stall + spurious failures from spawning the real `dist/unlock.js` unlocked password prompts); add `test_dexbot_start_alias_unlock.ts` guarding the `start`→unlock delegation (entry point + exit-status forwarding).
 - **Fix**: `dexbot status`/`stat` after `dexbot stop` no longer reports "No DEXBot2 processes running" while the credential daemon still runs — `stop` stops bots + market adapter by design but keeps the daemon up for fast re-unlock. `dexbot.ts` now treats a live daemon (via `monolithic-cred.pid`) as a running runtime and delegates to `unlock status`, which gained a branch rendering the daemon (PID/memory/alive/ready/socket) alongside a note that the monolithic runtime (bots + adapter) is stopped; shared `resolveCredentialDaemonForStatus`, `printCredentialDaemonStatusBlock`, and `printMarketAdapterStatusBlock` helpers (`dexbot.ts`, `unlock.ts`, `tests/test_unlock_status_cred_daemon_only.ts`).
-- **Docs**: Telegram module implementation and aligned EVOLUTION entry (`docs/TELEGRAM_IMPLEMENTATION.md`, `docs/EVOLUTION.md`).
+- **Docs**: Telegram module implementation plan and aligned EVOLUTION entry (`docs/TELEGRAM_IMPLEMENTATION_PLAN.md`, `docs/EVOLUTION.md`).
 
 ### 2026-08-06
 

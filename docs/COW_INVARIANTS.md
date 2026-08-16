@@ -62,11 +62,11 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-PROJ-002` Preserve on-chain PARTIAL size in projection
   - If identity is retained (`keepOrderId=true`) and current state is `PARTIAL`, projected size must preserve current on-chain remaining size.
   - It must not be overwritten by ideal geometric `targetSize`.
-  - Exception: a `PARTIAL` with a rotation/size-update action targeting its `orderId` does use `targetSize` (the explicit-UPDATE path at `modules/order/utils/validate.ts:827`).
+  - Exception: a `PARTIAL` with a rotation/size-update action targeting its `orderId` does use `targetSize` (the explicit-UPDATE path at `modules/order/utils/validate.ts:959`).
   - Preserve-path size must be normalized to finite, non-negative value.
 
 - `INV-PROJ-003` ACTIVE on-chain projection preserves current size (same as PARTIAL)
-  - If identity is retained and state is `ACTIVE`, projection preserves current on-chain size via the same `shouldPreserveSize` path as `PARTIAL` (`validate.ts:818-832`).
+  - If identity is retained and state is `ACTIVE`, projection preserves current on-chain size via the same `shouldPreserveSize` path as `PARTIAL` (`validate.ts:958-972`).
   - An explicit UPDATE action targeting the `orderId` is required to apply `targetSize`.
 
 - `INV-ID-001` Order identity retention rule
@@ -211,7 +211,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 - `INV-BATCH-001` Illegal state batch abort
   - `executeBatch` throws `ILLEGAL_SPREAD_STATE` on an illegal grid layout (emitted at `modules/order/utils/validate.ts`, propagated via `modules/order/manager.ts` `_throwOnIllegalState`).
-  - The `_handleBatchHardAbort` catch for `ILLEGAL_ORDER_STATE` (`dexbot_class.ts:469`) is a test-only dead branch — production never emits that code; only the test stub at `tests/test_patch17_invariants.ts:387` uses it.
+  - The `_handleBatchHardAbort` catch for `ILLEGAL_ORDER_STATE` (`dexbot_state_recovery.ts:126`) is a test-only dead branch — production never emits that code; only the test stub at `tests/test_patch17_invariants.ts:396` uses it.
   - In production, recovery + cooldown are armed on the next maintenance tick via `_abortFlowIfIllegalState` (the `INV-MAINT-002` path), returning `abortedForIllegalState: true` to the caller. The caller does not need to return immediately; the maintenance tick handles recovery.
   - Hard abort triggers one immediate recovery sync (`_triggerStateRecoverySync`) plus arms one maintenance cooldown cycle (`_maintenanceCooldownCycles = Math.max(current, 1)`).
 
@@ -230,7 +230,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
     - NOT virtualize the slot.
     - Preserve `orderId` until sync reconciles it.
     - NOT mark the order as stale-cleaned.
-  - Fast path: if the batch result indicates `ORDER_SIZE_DRIFT_TARGETED` (`dexbot_class.ts:593-599`), a targeted repair applies the correction directly and skips `_triggerStateRecoverySync`.
+  - Fast path: if the batch result indicates `ORDER_SIZE_DRIFT_TARGETED` (`dexbot_state_recovery.ts:247`), a targeted repair applies the correction directly and skips `_triggerStateRecoverySync`.
 
 ---
 

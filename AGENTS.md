@@ -169,7 +169,7 @@ See `analysis/README.md` for full doc and usage examples.
 - `analyze_risk_profile.ts` - Inventory risk divergence quantile measurement
 - `analyze_trade_heatmap.ts` - 2D trade volume heatmap
 - `trade_profitability.ts` - Trade PnL from Kibana fill data (LIFO/FIFO)
-- `amafitting/` - AMA parameter fitting (optimizer, LP fetch, convergence calibration)
+- `amafitting/` under `analysis/` (`analysis/ama_fitting/`) - AMA parameter fitting (optimizer, LP fetch, convergence calibration)
 - `bot_fitting/` - Grid parameter sweep backtests for AMA winners
 - `tradingview/` - Standalone TradingView-style HTML chart exporter
 - `bot_usage/` - On-chain bot discovery and Kibana query helpers
@@ -210,7 +210,7 @@ npm run version:sync
 adding or removing a classification.
 
 **Node-only** (must not be reached from a browser bundle):
-`modules/launcher/*`, `modules/dexbot_class.ts`, `modules/dexbot_maintenance_runtime.ts`, `modules/dexbot_fill_runtime.ts`, `modules/dexbot_cow_runtime.ts`, `modules/dexbot_state_recovery.ts`, `modules/dexbot_startup_runtime.ts`, `modules/credential_runtime.ts`, `modules/dexbot_credential_client.ts`, `modules/node_health_cache.ts`, `modules/process_discovery.ts`, `modules/graceful_shutdown.ts`, `modules/order/logger.ts`, `modules/order/export.ts`, `modules/order/utils/system.ts`, `modules/storage/node_adapter.ts`, `modules/paths.ts`, `modules/logger.ts`, `modules/key_store.ts`, `unlock.ts`, `bot.ts`, `dexbot.ts`, `pm2.ts`, `credential-daemon.ts`, `market_adapter/market_adapter.ts`, `market_adapter/lp_chart_runner.ts`, `market_adapter/ama_signal_runner.ts`
+`modules/launcher/*`, `modules/dexbot_class.ts`, `modules/dexbot_maintenance_runtime.ts`, `modules/dexbot_fill_runtime.ts`, `modules/dexbot_cow_runtime.ts`, `modules/dexbot_state_recovery.ts`, `modules/dexbot_startup_runtime.ts`, `modules/credential_runtime.ts`, `modules/dexbot_credential_client.ts`, `modules/node_health_cache.ts`, `modules/daemon_node_health.ts`, `modules/process_discovery.ts`, `modules/graceful_shutdown.ts`, `modules/order/logger.ts`, `modules/order/export.ts`, `modules/order/utils/system.ts`, `modules/order/utils/withPoolRef.ts`, `modules/storage/node_adapter.ts`, `modules/paths.ts`, `modules/logger.ts`, `modules/key_store.ts`, `unlock.ts`, `bot.ts`, `dexbot.ts`, `pm2.ts`, `credential-daemon.ts`, `market_adapter/market_adapter.ts`, `market_adapter/lp_chart_runner.ts`, `market_adapter/ama_signal_runner.ts`
 
 **Environment detection** — always go through `modules/env.ts`:
 ```ts

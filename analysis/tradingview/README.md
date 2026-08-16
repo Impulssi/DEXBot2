@@ -15,10 +15,20 @@ This exporter generates a standalone HTML chart in the `analysis/charts/` folder
 
 ## Quick Start
 
-Generate the default chart from the bundled LP 1h JSON file:
+A chart requires candle data. Either pass an explicit candle file or let the exporter resolve a bot's candles and AMA settings:
 
 ```bash
-npm run analysis:tradingview
+# From an explicit candle JSON file (json source is the default)
+npm run analysis:tradingview -- \
+  --file market_adapter/data/market_adapter_<bot-key>_1h.json
+```
+
+Or with a bot key (see [Bot-Key Usage](#bot-key-usage-recommended) below):
+
+```bash
+npm run analysis:tradingview -- \
+  --source market_adapter \
+  --bot-key <bot-key>
 ```
 
 This writes:
@@ -26,6 +36,9 @@ This writes:
 ```text
 analysis/charts/tradingview_chart.html
 ```
+
+> The bare `npm run analysis:tradingview` (no args) errors out — the default `json`
+> source requires `--file`, and the `market_adapter` source requires `--bot-key`.
 
 ## Bot-Key Usage (Recommended)
 

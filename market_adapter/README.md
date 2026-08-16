@@ -896,10 +896,10 @@ the built-in presets is:
 
 | Preset | Candles | Days |
 |--------|---------|------|
-| `AMA1` | `1,822` | `75.9` |
-| `AMA2` | `1,874` | `78.1` |
-| `AMA3` | `1,925` | `80.2` |
-| `AMA4` | `2,023` | `84.3` |
+| `AMA1` | `1,602` | `66.8` |
+| `AMA2` | `1,677` | `69.9` |
+| `AMA3` | `1,758` | `73.3` |
+| `AMA4` | `1,839` | `76.6` |
 
 These totals include the ER buffer, the convergence window, and the default
 9-bar lookback used by the dynamic-weight logic. If the candle timeframe is

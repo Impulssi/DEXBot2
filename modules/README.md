@@ -1,6 +1,6 @@
 # Modules
 
-This is the core runtime of DEXBot2 — the part that actually places orders, tracks fills, and manages the grid on the BitShares blockchain. Entrypoint files (`dexbot.ts`, `unlock.ts`, `pm2.ts` in the repo root) launch and orchestrate what lives here.
+This is the core runtime of DEXBot2 — the part that actually places orders, tracks fills, and manages the grid on the BitShares blockchain. Entrypoint files (`dexbot.ts`, `bot.ts`, `pm2.ts`, `unlock.ts`, `credential-daemon.ts` in the repo root) launch and orchestrate what lives here.
 
 Everything below covers bot lifecycle, order management, blockchain connectivity, fill processing, grid maintenance, credential security, and MPA/credit workflows — all the code that isn't an entrypoint, adapter, analysis tool, or bridge.
 
@@ -54,8 +54,12 @@ modules/
 ├── graceful_shutdown.ts           signal handling and cleanup
 ├── bots_file_lock.ts              profile write serialization
 ├── account_bots.ts                bots.json read/write
+├── broadcast_failure.ts           broadcast failure classification
 ├── chain_keys.ts                  blockchain key helpers
+├── daemon_node_health.ts          daemon-side node health checks
+├── node_failure_ledger.ts         node failure tracking
 ├── node_health_cache.ts           node health tracking
+├── socket_json_client.ts          JSON-RPC socket client
 ├── market_adapter_whitelist.ts    adapter whitelist I/O
 ├── types.ts                       shared type definitions
 │

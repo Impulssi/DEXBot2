@@ -186,21 +186,25 @@ The pool is fetched directly by ID, bypassing pool discovery. Useful when the tr
 **AMA Parameters:**
 - `enabled`: Whether to track AMA and trigger grid resets (true/false)
 - `erPeriod`: How many candles to look back for trend detection
-  - Higher values: More stable, slower response (e.g. `erPeriod=107` very stable)
-  - Lower values: More responsive, catches quick moves (e.g. `erPeriod=15` very responsive)
-  - Default: `10` (balanced)
+  - Higher values: More stable, slower response (e.g. `erPeriod=781` very stable)
+  - Lower values: More responsive, catches quick moves
+  - Built-in presets use `erPeriod=781` (fitted); per-pair `profiles/market_profiles.json` presets may override it
 - `fastPeriod`: Smoothing constant for trending markets
   - Lower = faster response
-  - Default: `2` (most responsive)
+  - Built-in presets use `fastPeriod=5.2` (fitted)
 - `slowPeriod`: Smoothing constant for choppy/sideways markets
   - Higher = more lag, filters noise
-  - Default: `30` (conservative)
+  - Built-in presets range `slowPeriod=62.1` (AMA1) to `slowPeriod=95.5` (AMA4)
 - `erSmoothPeriod`: Optional DEXBot2 extension that smooths Kaufman's raw Efficiency Ratio before the AMA smoothing constant is calculated
   - `0`: Disabled, raw Kaufman ER is used directly
   - `1`: Effectively no extra smoothing
   - `3` to `5`: Light to moderate damping for faster AMAs that re-center too abruptly
   - Higher values: More stable ER, but delayed trend/chop recognition
   - Values between `0` and `1` are invalid and fall back to the configured default
+
+AMA parameters are resolved exclusively from **presets** (`AMA1`–`AMA4`): a matched
+pair profile in `profiles/market_profiles.json` wins, otherwise the built-in defaults
+(`MARKET_ADAPTER.AMAS` in `modules/constants.ts`, default key `AMA3`) are used.
 
 `erSmoothPeriod` is not part of canonical Kaufman AMA/KAMA. It is a bot-level
 stabilizer for cases where a faster AMA is useful but raw ER spikes cause false
