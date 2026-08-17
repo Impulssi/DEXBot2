@@ -40,13 +40,6 @@ git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install &&
 dexbot key                 # Set up master password and import keys
 dexbot bot                 # Create and manage bot configurations
 dexbot start               # Start DEXBot2
-
-# Option C — Clone + local (no global install, works on all platforms)
-git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
-
-npx dexbot key                 # Set up master password and import keys
-npx dexbot bot                 # Create and manage bot configurations
-npx dexbot start               # Start DEXBot2
 ```
 
 Detailed setup: [Installation](#-installation).
@@ -124,49 +117,44 @@ npm i -g dexbot
 
 # Option B — Clone + npm link
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install && npm link
-
-# Option C — Clone + local (no global install, works on all platforms)
-git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
-npx dexbot
-npx dexbot start
-```
-
-Then set up your master password, keys and add bots:
-
-```bash
-dexbot key
-dexbot bot
 ```
 
 ## 🔧 Configuration
 
+### Create Your Bot
+
+1. Set up your master password and import your BitShares **active** key (WIF):
+
+   ```bash
+   dexbot key
+   ```
+
+2. Create a bot through the interactive prompts:
+
+   ```bash
+   dexbot bot
+   ```
+
+   This stores your configuration in `profiles/bots.json`. The generated
+   defaults are a good starting point — the next step walks through the few
+   options worth tuning.
+
 ### Recommended Bot Setup
 
-Keep the generated defaults and tune only these first:
+Keep the default settings first, and tune these:
 
-1. `targetSpreadPercent`
-2. `incrementPercent`
-3. `gridPrice: "ama"`
-4. `minPrice` / `maxPrice`
+1. **Tune `targetSpreadPercent`** — controls profit room per completed cycle. A
+   wider spread targets more profit per cycle but trades less often.
 
-`targetSpreadPercent` controls profit room per completed cycle. A wider spread
-targets more profit per cycle but trades less often.
+2. **Tune `incrementPercent`** — controls grid density and order size. Smaller
+   increments create more grid levels and smaller orders; larger increments
+   create fewer levels and larger orders.
 
-`incrementPercent` controls grid density and order size. Smaller increments
-create more grid levels and smaller orders; larger increments create fewer
-levels and larger orders.
+3. **Set `gridPrice` to `"ama"`** — so the market adapter can center the grid
+   on AMA. Pick a specific preset if desired: `"ama1"` is the fastest,
+   `"ama4"` the slowest, and `"ama"` uses the pair's default preset.
 
-Use `gridPrice: "ama"` so the market adapter can center the grid on AMA. Once
-AMA is active, tighten `minPrice` / `maxPrice` around the maximum expected
-market volatility instead of using an unnecessarily wide range.
-
-### Simple AMA Workflow
-
-1. Create the bot with `dexbot bot`.
-2. Leave defaults unchanged.
-3. Tune `targetSpreadPercent` and `incrementPercent`.
-4. Set `gridPrice` to `ama`.
-5. Generate the market-adapter whitelist:
+4. **Generate the market-adapter whitelist:**
 
    ```bash
    dexbot white
@@ -176,8 +164,11 @@ market volatility instead of using an unnecessarily wide range.
    live writes and range scaling. Use `dexbot white --dynamic-weight` for
    newly generated dynamic-weight entries; existing entries are preserved.
 
-6. Start DEXBot2 with `dexbot start` (or `dexbot pm2` for PM2).
-7. Then tune `minPrice` / `maxPrice` for the market's volatility range.
+5. **Start DEXBot2** with `dexbot start`.
+
+6. **Tune `minPrice` / `maxPrice`** around the market's volatility range. Once
+   AMA is active, tighten them around the maximum expected market volatility
+   instead of using an unnecessarily wide range.
 
 ### Bot Options Reference
 
