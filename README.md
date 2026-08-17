@@ -65,11 +65,9 @@ New to BitShares? Work through the [BitShares Onboarding Tutorial](docs/BITSHARE
 
 ### Prerequisites
 
-You'll need **Git** and **Node.js** installed.
+You'll need **Git** and **Node.js** v22.12 or newer installed.
 
 #### Linux Users
-
-DEXBot needs Node.js v22.12 or newer. Most distro repos ship an outdated `nodejs` package, so install Node from [nodejs.org](https://nodejs.org/en/download).
 
 Install Git:
 
@@ -82,7 +80,7 @@ sudo apt-get install git
 sudo dnf install git
 ```
 
-Then install Node.js via nvm:
+Most distro repos ship an outdated `nodejs` package, so install Node from [nodejs.org](https://nodejs.org/en/download).
 
 ```bash
 # e.g. via nvm (from https://nodejs.org/en/download)
@@ -99,8 +97,6 @@ node --version && npm --version && git --version
 
 #### macOS Users
 
-DEXBot needs Node.js v22.12 or newer.
-
 Use Homebrew to install Node.js and Git:
 ```bash
 # Install Homebrew if not already installed
@@ -111,8 +107,6 @@ brew install node git
 ```
 
 #### Windows Users
-
-DEXBot needs Node.js v22.12 or newer.
 
 1. Install **Git** from [git-scm.com](https://git-scm.com/install/windows) (accept defaults, restart after)
 2. Install **Node.js LTS** from [nodejs.org](https://nodejs.org/en/download) (accept defaults, restart after)
