@@ -1152,5 +1152,5 @@ function evaluateCommit(workingGrid: any, options: any = {}) {
 // EXPORTS
 // ===============================================================================
 
-export { validateOrder, validateGridForPersistence, calculateRequiredFunds, validateWorkingGridFunds, checkFundDrift, VALID_ORDER_STATES, VALID_ORDER_TYPES, reconcileGrid, optimizeRebalanceActions, summarizeActions, hasExecutableActions, validateCreateTargetSlots, hasActionForOrder, removeActionsForOrder, projectTargetToWorkingGrid, buildStateUpdates, buildAbortedResult, buildSuccessResult, evaluateCommit }
+export { validateOrder, validateGridForPersistence, validateWorkingGridFunds, checkFundDrift, reconcileGrid, optimizeRebalanceActions, hasExecutableActions, validateCreateTargetSlots, hasActionForOrder, removeActionsForOrder, projectTargetToWorkingGrid, buildStateUpdates, buildAbortedResult, buildSuccessResult, evaluateCommit }
 

@@ -43,7 +43,7 @@ export interface BotRuntimeSettings {
 
 export const RUNTIME_SETTINGS_KEYS: readonly string[] = [
     'gridLimits', 'feeParams', 'incrementBounds', 'timing',
-    'fillProcessing', 'pipelineTiming', 'logging',
+    'fillProcessing', 'pipelineTiming', 'apiLimits', 'logging',
 ];
 
 export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRuntimeSettings {

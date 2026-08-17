@@ -359,5 +359,5 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
     }
 }
 
-export { exportBotTrades, parseLogFile, writeTradesCSV, writeSettingsJSON }
+export { exportBotTrades }
 

@@ -18,7 +18,7 @@
  * - If rebalance succeeds, delta is applied atomically to master
  *
  * ===============================================================================
- * TABLE OF CONTENTS - WorkingGrid Class (21 methods/properties)
+ * TABLE OF CONTENTS - WorkingGrid Class (20 methods/properties)
  * ===============================================================================
  *
  * INITIALIZATION (3 methods)
@@ -46,9 +46,8 @@
  *       Returns: Array of {type, id, order} actions (create/update/delete)
  *   14. getIndexes() - Get lazy-computed price/type/state indexes
  *
- * MODIFICATION TRACKING (3 methods)
- *   15. getModifiedIds() - Get array of modified order IDs
- *   16. isModified() - Check if any modifications made
+ * MODIFICATION TRACKING (1 method)
+ *   14. isModified() - Check if any modifications made
  *
  * SYNCHRONIZATION (1 method)
  *   17. syncFromMaster(masterGrid, orderId, masterVersion) - Sync specific order from master
@@ -204,14 +203,6 @@ class WorkingGrid {
      */
     buildDelta(masterGrid: Map<string, any>, options: any = {}): any[] {
         return buildDelta(masterGrid, this.grid, options);
-    }
-
-    /**
-     * Get list of modified order IDs
-     * @returns {Array} - Array of modified IDs
-     */
-    getModifiedIds(): string[] {
-        return Array.from(this.modified);
     }
 
     /**

@@ -124,15 +124,6 @@ async function flushProcessedFillPersistenceForKeys(bot: any, fillKeys: any, rea
 }
 
 /**
- * Discard pending processed fill writes for specific fill keys from the queue.
- * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {string[]|Set<string>} fillKeys - Fill keys to discard
- */
-function discardPendingProcessedFillPersistence(bot: any, fillKeys: any) {
-    bot._processedFillStore.discardKeys(fillKeys);
-}
-
-/**
  * Build a degraded orphan fill replay key when the standard fill history id is missing.
  * The fallback key is derived from order_id, block_num, pays/receives amounts and asset IDs.
  * @param {import('./dexbot_class.js').DEXBot} bot
@@ -1008,5 +999,5 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
     }
 }
 
-export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, discardPendingProcessedFillPersistence, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, processSweepOrphanFill, createFillCallback, maxConsecutiveFillConsumerFailures, computeFillConsumerBackoffMs, scheduleFillConsumerRestart, consumeFillQueue, processFillsWithBootstrapMode }
+export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, processSweepOrphanFill, createFillCallback, maxConsecutiveFillConsumerFailures, computeFillConsumerBackoffMs, scheduleFillConsumerRestart, consumeFillQueue, processFillsWithBootstrapMode }
 

@@ -76,7 +76,7 @@
  *
  * MAINTENANCE & MONITORING:
  *   11. MAINTENANCE - Background maintenance task configuration
- *       CLEANUP_PROBABILITY (currently unused, reserved for future cleanup scheduling)
+ *       CLEANUP_PROBABILITY: Probability of running cleanup on each fill cycle
  *       Note: HEALTH_CHECK_INTERVAL_MS lives under NODE_MANAGEMENT (12)
  *
  *   12. NODE_MANAGEMENT - Multi-node health checking and failover configuration
@@ -742,8 +742,6 @@ let FILL_PROCESSING = {
 };
 
 // Cleanup and maintenance parameters
-// NOTE: CLEANUP_PROBABILITY is defined here but currently unused.
-// Reserved for future cleanup-scheduling feature.
 let MAINTENANCE = {
     // Probability of running cleanup operation on any cycle (0.1 = 10%)
     CLEANUP_PROBABILITY: 0.1

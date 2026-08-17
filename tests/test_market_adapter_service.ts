@@ -1682,7 +1682,7 @@ async function testAmaCenterPersistFailureBlocksSlopeTriggerFallback() {
             return false;
         },
         isBotDynamicWeightWhitelisted: () => true,
-        isBotGridRangeScalingWhitelisted: () => true,
+        isBotAsymmetricBoundsWhitelisted: () => true,
         root: process.cwd(),
         path,
     });
@@ -2202,7 +2202,7 @@ async function testCenterStableButSlopeDeltaTriggersReset() {
             return true;
         },
         isBotDynamicWeightWhitelisted: () => false,
-        isBotGridRangeScalingWhitelisted: () => true,
+        isBotAsymmetricBoundsWhitelisted: () => true,
         root: process.cwd(),
         path,
     });
@@ -2334,7 +2334,7 @@ async function testSlopeTriggerRecoversBaselineFromDynamicGridAfterStateClear() 
             return true;
         },
         isBotDynamicWeightWhitelisted: () => false,
-        isBotGridRangeScalingWhitelisted: () => true,
+        isBotAsymmetricBoundsWhitelisted: () => true,
         root: process.cwd(),
         path,
     });
@@ -2461,7 +2461,7 @@ async function testLegacyDynamicGridSlopeBaselineIsNormalizedBeforeComparison() 
         writeGridResetTrigger: () => '/tmp/recalculate.xrp-bts-legacy-slope-baseline.trigger',
         writeBotDynamicGrid: () => true,
         isBotDynamicWeightWhitelisted: () => false,
-        isBotGridRangeScalingWhitelisted: () => true,
+        isBotAsymmetricBoundsWhitelisted: () => true,
         root: process.cwd(),
         path,
     };
@@ -2511,7 +2511,7 @@ async function testLegacyDynamicGridSlopeBaselineIsNormalizedBeforeComparison() 
             triggerWrites += 1;
             return '/tmp/recalculate.xrp-bts-legacy-slope-baseline.trigger';
         },
-        isBotGridRangeScalingWhitelisted: () => true,
+        isBotAsymmetricBoundsWhitelisted: () => true,
     });
 
     const state = { bots: {} };
@@ -2574,7 +2574,7 @@ async function testSlopePersistFailurePreservesRetryBaseline() {
             return dynamicGridWrites > 1;
         },
         isBotDynamicWeightWhitelisted: () => true,
-        isBotGridRangeScalingWhitelisted: () => true,
+        isBotAsymmetricBoundsWhitelisted: () => true,
         root: process.cwd(),
         path,
     });
@@ -5367,7 +5367,6 @@ async function testPlainAmaSnapshotRefreshFailureDoesNotConsumeClosedCandle() {
             return writeCount > 1;
         },
         isBotDynamicWeightWhitelisted: () => false,
-        isBotGridRangeScalingWhitelisted: () => false,
         isBotAsymmetricBoundsWhitelisted: () => false,
         root: process.cwd(),
         path,

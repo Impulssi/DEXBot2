@@ -43,7 +43,7 @@
  *   - getDustThresholdFactor() - Get dust threshold multiplier
  *   - getSingleDustThreshold(idealSize, dustThresholdPercent) - Get single dust threshold
  *   - getDoubleDustThreshold(idealSize, dustThresholdPercent) - Get double dust threshold
- *   - getMinAbsoluteOrderSize(orderType, assets, minFactor) - Get minimum absolute order size
+ *   - getMinOrderSize(orderType, assets, factor) - Get minimum order size
  *   - validateOrderSize(manager, size, type, context) - Validate order size against minimums
  *
  * SECTION 6: FEE CALCULATIONS (2 functions + 2 internal)
@@ -923,18 +923,6 @@ function getDoubleDustThreshold(idealSize: any, dustThresholdPercent: any = GRID
 }
 
 /**
- * Calculate minimum absolute order size (wrapper for getMinOrderSize with default factor).
- * 
- * @param {string} orderType - Order type (BUY or SELL)
- * @param {Object} assets - Asset metadata
- * @param {number} [minFactor=50] - Minimum size factor (default 50)
- * @returns {number} Minimum order size in asset units
- */
-function getMinAbsoluteOrderSize(orderType: any, assets: any, minFactor: any = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR) {
-    return getMinOrderSize(orderType, assets, minFactor);
-}
-
-/**
  * Validate an order size against minimum absolute and dust thresholds.
  * Returns detailed validation result with reasons if invalid.
  * 
@@ -948,7 +936,7 @@ function getMinAbsoluteOrderSize(orderType: any, assets: any, minFactor: any = G
  */
 function validateOrderSize(orderSize: any, orderType: any, assets: any, minFactor: any = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR, idealSize: any = null, dustThresholdPercent: any = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
      const orderSizeFloat = toFiniteNumber(orderSize);
-     const minAbsoluteSize = getMinAbsoluteOrderSize(orderType, assets, minFactor);
+     const minAbsoluteSize = getMinOrderSize(orderType, assets, minFactor);
      
      let precision: any = null;
      if (assets) {
@@ -1314,7 +1302,7 @@ function countGapBandSpread(manager: any, orders: Iterable<any>, resolveIndex: (
     return count;
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, getMinAbsoluteOrderSize, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.

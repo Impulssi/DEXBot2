@@ -6,6 +6,7 @@ const DEXBot = require('../modules/dexbot_class').default;
 const { OrderManager } = require('../modules/order').default;
 const { ORDER_STATES, ORDER_TYPES, TIMING, DAEMON_CODES } = require('../modules/constants');
 const { buildFillKey } = require('../modules/order/utils/order');
+const { applyReplaySafeFillAccounting } = require('../modules/dexbot_fill_runtime');
 const {
     ProcessedFillStore,
     PROCESSED_FILL_PERSISTENCE_MODES
@@ -245,10 +246,10 @@ async function runTests() {
         const fillA = buildFill('1.11.790');
         const fillB = buildFill('1.11.791');
 
-        const resultA = await bot._applyReplaySafeFillAccounting(fillA, fillA.op[1], {
+        const resultA = await applyReplaySafeFillAccounting(bot, fillA, fillA.op[1], {
             persistenceMode: PROCESSED_FILL_PERSISTENCE_MODES.BATCHED
         });
-        const resultB = await bot._applyReplaySafeFillAccounting(fillB, fillB.op[1], {
+        const resultB = await applyReplaySafeFillAccounting(bot, fillB, fillB.op[1], {
             persistenceMode: PROCESSED_FILL_PERSISTENCE_MODES.BATCHED
         });
 
@@ -599,8 +600,8 @@ async function runTests() {
         const fillOp = malformedFill.op[1];
         const sellBefore = bot.manager.accountTotals.sell;
 
-        // Test _applyReplaySafeFillAccounting returns missing_key for fills without history id
-        const result = await bot._applyReplaySafeFillAccounting(malformedFill, fillOp, {
+        // Test applyReplaySafeFillAccounting returns missing_key for fills without history id
+        const result = await applyReplaySafeFillAccounting(bot, malformedFill, fillOp, {
             missingKeyMessage: (op) => `Missing fill history id for ${op.order_id}; deferring`,
         });
 

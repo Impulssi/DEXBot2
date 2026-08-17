@@ -1954,8 +1954,6 @@ class MarketAdapterService {
             && deps.isBotDynamicWeightWhitelisted(bot.botKey));
         const isDynamicWeightWhitelisted = isAmaWhitelisted && isDynamicWeightFlagWhitelisted;
         const isGridRangeScalingWhitelisted = forceWhitelistAll
-            || (typeof deps.isBotGridRangeScalingWhitelisted === 'function'
-                && deps.isBotGridRangeScalingWhitelisted(bot.botKey))
             || (typeof deps.isBotAsymmetricBoundsWhitelisted === 'function'
                 && deps.isBotAsymmetricBoundsWhitelisted(bot.botKey));
         const isAsymmetricBoundsWhitelisted = isGridRangeScalingWhitelisted;

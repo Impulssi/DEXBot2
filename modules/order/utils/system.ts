@@ -4,7 +4,7 @@
  * Price derivation, persistence, grid correction, and UI/interactive utilities.
  *
  * ===============================================================================
- * TABLE OF CONTENTS (23 exported functions)
+ * TABLE OF CONTENTS (21 exported functions)
  * ===============================================================================
  *
  * SECTION 1: PRICE DERIVATION (8 functions)
@@ -590,7 +590,7 @@ export function loadAmaCenterPrice(botKey: string): number | null {
  * Load previously persisted fee cache from disk.
  * @returns {Record<string, any>} Cached fee data or empty object
  */
-export function _loadFeeCacheFromDisk(): Record<string, any> {
+function _loadFeeCacheFromDisk(): Record<string, any> {
     try {
         const filePath = PATHS.PROFILES.FEE_CACHE_JSON;
         if ((storage as any).exists(filePath)) {
@@ -610,7 +610,7 @@ export function _loadFeeCacheFromDisk(): Record<string, any> {
  * Persist fee cache to disk for recovery across restarts.
  * @param {Record<string, any>} cache - Fee cache to persist
  */
-export function _saveFeeCacheToDisk(cache: Record<string, any>): void {
+function _saveFeeCacheToDisk(cache: Record<string, any>): void {
     try {
         (storage as any).writeJSON(PATHS.PROFILES.FEE_CACHE_JSON, cache);
     } catch (e: any) {

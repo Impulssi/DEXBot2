@@ -99,6 +99,7 @@ import { waitForConnected } from './modules/bitshares_client.js';
 import * as readline from 'node:readline';
 import { getErrorMessage } from './modules/utils/errors.js';
 import { getStorage } from './modules/storage/index.js';
+import { usesAmaGridPrice } from './modules/dexbot_maintenance_runtime.js';
 setUmask(0o077);
 
 const {
@@ -143,11 +144,6 @@ const CREDENTIAL_READY_FILE = getCredentialReadyFilePath({ root: PATHS.PROJECT_R
 
 function runtimeScript(...segments: string[]) {
     return path.join(CODE_ROOT, ...segments);
-}
-
-function usesAmaGridPrice(bot: any) {
-    const gridPrice = typeof bot?.gridPrice === 'string' ? bot.gridPrice.trim().toLowerCase() : '';
-    return /^ama(?:[1-4])?$/.test(gridPrice);
 }
 
 function needsMarketAdapter(bots: any) {

@@ -41,7 +41,7 @@ import {
     COW_ACTIONS
 } from '../constants.js';
 import {
-    getMinAbsoluteOrderSize,
+    getMinOrderSize,
     computeChainFundTotals,
     hasValidAccountTotals,
     resolveConfigValueWithRegistry,
@@ -619,13 +619,6 @@ class OrderManager {
      */
     isRebalancing() {
         return this._rebalanceState === REBALANCE_STATES.REBALANCING;
-    }
-
-    /**
-     * @returns {boolean}
-     */
-    isBroadcasting() {
-        return this._rebalanceState === REBALANCE_STATES.BROADCASTING;
     }
 
     /**
@@ -1479,8 +1472,8 @@ class OrderManager {
 
         // Get minimum sizes for validation
         const minOrderSizeFactor = this.config?.gridLimits?.MIN_ORDER_SIZE_FACTOR;
-        const minSellSize = getMinAbsoluteOrderSize(ORDER_TYPES.SELL, this.assets, minOrderSizeFactor);
-        const minBuySize = getMinAbsoluteOrderSize(ORDER_TYPES.BUY, this.assets, minOrderSizeFactor);
+        const minSellSize = getMinOrderSize(ORDER_TYPES.SELL, this.assets, minOrderSizeFactor);
+        const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, this.assets, minOrderSizeFactor);
 
         // Use integer arithmetic for size comparisons to match blockchain behavior
         const sellPrecision = this.assets?.assetA?.precision;

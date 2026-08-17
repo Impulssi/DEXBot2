@@ -28,7 +28,7 @@
  * 10. getNodeSummary() - Get node summary
  * 11. getConnectionError() - Get last connection error
  * 12. onReconnect(callback) - Register reconnect callback
- * 13. removeOnReconnect(callback) - Remove reconnect callback
+ * 13. onReconnect(callback) - Register reconnect callback
  * 14. withTimeout(promise, timeoutMs) - Wrap promise with timeout
  * 15. _assessFailover() - Internal failover assessment
  * 16. _internal - @internal Internal state (connected flag) — test-only, do not rely on in production
@@ -75,9 +75,6 @@ function onReconnect(callback: any) {
     }
     _reconnectCallbacks.add(callback);
     return () => { _reconnectCallbacks.delete(callback); };
-}
-function removeOnReconnect(callback: any) {
-    _reconnectCallbacks.delete(callback);
 }
 
 async function notifyReconnectCallbacks() {
@@ -639,6 +636,6 @@ const _internal = {
     get connected() { return connected; },
 };
 
-const _default = { BitShares: _lazyBitShares, createAccountClient, waitForConnected, getConnectionStatus, disconnectClient, reconnectForCycle, setSuppressConnectionLog, onReconnect, removeOnReconnect, withTimeout, _assessFailover: assessFailover, getNodeManager, getNodeStats, getNodeSummary, getConnectionError, _internal }
+const _default = { BitShares: _lazyBitShares, createAccountClient, waitForConnected, getConnectionStatus, disconnectClient, reconnectForCycle, setSuppressConnectionLog, onReconnect, withTimeout, _assessFailover: assessFailover, getNodeManager, getNodeStats, getNodeSummary, getConnectionError, _internal }
 export default _default;
-export { _lazyBitShares as BitShares, createAccountClient, waitForConnected, getConnectionStatus, disconnectClient, reconnectForCycle, setSuppressConnectionLog, onReconnect, removeOnReconnect, withTimeout, assessFailover as _assessFailover, getNodeManager, getNodeStats, getNodeSummary, getConnectionError, _internal }
+export { _lazyBitShares as BitShares, createAccountClient, waitForConnected, getConnectionStatus, disconnectClient, reconnectForCycle, setSuppressConnectionLog, onReconnect, withTimeout, assessFailover as _assessFailover, getNodeManager, getNodeStats, getNodeSummary, getConnectionError, _internal }

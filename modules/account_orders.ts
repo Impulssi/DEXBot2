@@ -19,7 +19,7 @@
  *      syncMeta(botConfig), storeMasterGrid(orders, btsFeesOwed, boundaryIdx, assets, debugInputs, recentFillKeys)
  *      loadGrid(forceReload), loadRecentFillKeys(forceReload), loadPersistedAssets(forceReload)
  *      loadBoundaryIdx(forceReload), loadBtsBalance(forceReload), loadBtsFeesOwed(forceReload)
- *      updateBtsFeesOwed(btsFeesOwed), clearGrid()
+ *      clearGrid()
  *      loadProcessedFills(options), updateProcessedFillsBatch(fills), cleanOldProcessedFills(olderThanMs)
  *      getAssetBalances(forceReload)
  *
@@ -490,21 +490,6 @@ class AccountOrders {
       }
     }
     return 0;
-  }
-
-  /**
-   * Update (persist) BTS blockchain fees for this bot.
-   * BTS fees are deducted during fill processing and must be tracked across
-   * restarts to prevent fund loss if the bot crashes before rotation.
-   * @param {number} btsFeesOwed - BTS blockchain fees owed
-   */
-  async updateBtsFeesOwed(btsFeesOwed: any) {
-    await this._persistenceLock.acquire(async () => {
-      this.data = this._loadData() || emptyData();
-      this.data.btsFeesOwed = btsFeesOwed || 0;
-      this.data.lastUpdated = nowIso();
-      this._persist();
-    });
   }
 
   /**

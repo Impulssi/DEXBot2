@@ -72,7 +72,7 @@
  * CONFIGURATION:
  *   23. getFillProcessingMode() - Get current fill processing mode
  *       Returns 'history' (use fill event data) or 'open' (fetch open orders)
- *   24. FILL_PROCESSING_MODE - Constant: current fill processing mode
+ *   24. getFillProcessingMode() - Get current fill processing mode
  *   25. broadcastTxWithClassification(tx, accountName, operations) - Broadcast with outcome classification
  *
  * ERROR HANDLING:
@@ -678,9 +678,6 @@ async function readOpenOrdersWithMeta(accountId: string | null = null, timeoutMs
                 `[MULTI-BOT] readOpenOrders called without explicit accountId — using preferred '${pref.name || accId}'. ` +
                 `Pass accountId explicitly in multi-bot mode.`
             );
-        }
-        if (!accId) {
-            throw new Error('No account selected. Please call selectAccount() first or pass an account id');
         }
         const fullAccount = await BitShares.db.get_full_accounts([accId], false);
         const accountObj = fullAccount[0][1];
@@ -1573,4 +1570,4 @@ function buildLiquidityPoolExchangeOp(accountId: any, poolId: any, sellAmountInt
 function getFillProcessingMode() {
     return FILL_PROCESSING_MODE;
 }
-export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, findOverReducingUpdateOpError, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
+export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, findOverReducingUpdateOpError, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }

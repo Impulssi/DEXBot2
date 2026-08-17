@@ -543,15 +543,6 @@ class DEXBot {
     }
 
     /**
-     * Discard pending persistence for specific fill keys.
-     * @param {string[]|Set<string>} fillKeys - Fill keys to discard
-     * @returns {void}
-     */
-    _discardPendingProcessedFillPersistence(fillKeys: any) {
-        return DexbotFillRuntime.discardPendingProcessedFillPersistence(this, fillKeys);
-    }
-
-    /**
      * Build a fallback deduplication key for an orphan fill (when standard keys are unavailable).
      * @param {Object} fill - Fill event object
      * @returns {string|null} Fallback key or null
@@ -577,60 +568,6 @@ class DEXBot {
         processedFillKeys.add(fillKey);
         this._recentlyQueuedFills.set(fillKey, now);
         return true;
-    }
-
-    /**
-     * Apply replay-safe fill accounting using a provided fill key.
-     * @param {Object} fill - Fill event object
-     * @param {import('./types.js').FillOperationData} fillOp - Fill operation data
-     * @param {Object} [options={}] - Options
-     * @param {string} [options.missingKeyMessage]
-     * @param {string} [options.fallbackKeyMessage]
-     * @param {string} [options.replayMessage]
-     * @param {string} [options.errorMessage]
-     * @param {Object} [options.logger]
-     * @param {string} [options.missingKeyLevel='warn']
-     * @param {string} [options.fallbackKeyLevel='warn']
-     * @param {string} [options.replayLevel='debug']
-     * @param {string} [options.persistenceMode='immediate']
-     * @param {boolean} [options.allowOrphanFallbackKey=false]
-     * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
-     */
-    async _applyReplaySafeFillAccounting(fill: any, fillOp: any, {
-        missingKeyMessage,
-        fallbackKeyMessage,
-        replayMessage,
-        errorMessage,
-        logger = this.manager?.logger,
-        missingKeyLevel = 'warn',
-        fallbackKeyLevel = 'warn',
-        replayLevel = 'debug',
-        persistenceMode = PROCESSED_FILL_PERSISTENCE_MODES.IMMEDIATE,
-        allowOrphanFallbackKey = false
-    }: {
-        missingKeyMessage?: any;
-        fallbackKeyMessage?: any;
-        replayMessage?: any;
-        errorMessage?: any;
-        logger?: any;
-        missingKeyLevel?: string;
-        fallbackKeyLevel?: string;
-        replayLevel?: string;
-        persistenceMode?: any;
-        allowOrphanFallbackKey?: boolean;
-    } = {}) {
-        return DexbotFillRuntime.applyReplaySafeFillAccounting(this, fill, fillOp, {
-            missingKeyMessage,
-            fallbackKeyMessage,
-            replayMessage,
-            errorMessage,
-            logger,
-            missingKeyLevel,
-            fallbackKeyLevel,
-            replayLevel,
-            persistenceMode,
-            allowOrphanFallbackKey
-        });
     }
 
     /**
@@ -733,10 +670,6 @@ class DEXBot {
         return DexbotMaintenanceRuntime.syncOpenOrdersAndProcessFills(this, tag);
     }
 
-    _maxConsecutiveFillConsumerFailures() {
-        return DexbotFillRuntime.maxConsecutiveFillConsumerFailures(this);
-    }
-
     /**
      * Compute the backoff delay for fill-consumer retries after the failure
      * budget (MAX_CONSECUTIVE_CONSUMER_FAILURES) is exhausted. Each retry
@@ -746,10 +679,6 @@ class DEXBot {
      * @returns {number} Delay in milliseconds before the next retry.
      * @private
      */
-    _computeFillConsumerBackoffMs(failures: any) {
-        return DexbotFillRuntime.computeFillConsumerBackoffMs(this, failures);
-    }
-
     _scheduleFillConsumerRestart(chainOrders: any) {
         DexbotFillRuntime.scheduleFillConsumerRestart(this, chainOrders);
     }
@@ -1084,9 +1013,6 @@ class DEXBot {
         return cowRuntime.reconcileAfterUncertainBroadcast(this, err, opContexts, options);
     }
 
-    async _reconcileAfterUncertainBroadcastImpl(err: any, opContexts: any, options: any) {
-        return cowRuntime.reconcileAfterUncertainBroadcastImpl(this, err, opContexts, options);
-    }
     /**
      * Auto-cancel a price-drift orphan from the unmatched-order snapshot.
      *

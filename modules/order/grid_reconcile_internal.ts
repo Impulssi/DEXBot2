@@ -9,7 +9,7 @@
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
-import { getMinAbsoluteOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, resolveGapBand } from './utils/math.js';
+import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, resolveGapBand } from './utils/math.js';
 import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
@@ -178,7 +178,7 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
 
     let effectiveMin = 0;
     try {
-        effectiveMin = getMinAbsoluteOrderSize(type, manager.assets);
+        effectiveMin = getMinOrderSize(type, manager.assets);
     } catch (e: any) { effectiveMin = 0; }
 
     const valid: any[] = [];

@@ -129,7 +129,7 @@ import {
     calculateAvailableFundsValue,
     calculateGridSideDivergenceMetric,
     getPrecisionSlack,
-    getMinAbsoluteOrderSize,
+    getMinOrderSize,
     getSingleDustThreshold,
     getGridBestPrices,
     calculateSpreadFromOrders,
@@ -167,9 +167,8 @@ import { getWhitelistFlags } from '../market_adapter_whitelist.js';
 import type { Order } from '../types.js';
 import { getErrorMessage } from '../utils/errors.js';
 
-export function calculateGapSlots(incrementPercent: any, targetSpreadPercent: any, gridLimitsOverride?: Record<string, any>): any {
-    return _mathGapSlots(incrementPercent, targetSpreadPercent, gridLimitsOverride ?? GRID_LIMITS);
-}
+const calculateGapSlots = _mathGapSlots;
+export { calculateGapSlots };
 
 export function isGridBloated(manager: any, orders: any): any {
         const gridSize = Array.isArray(orders) ? orders.length : orders.size;
@@ -1028,8 +1027,8 @@ export async function initializeGrid(manager: any): Promise<void> {
             }
         }
 
-        const minSellSize = getMinAbsoluteOrderSize(ORDER_TYPES.SELL, manager.assets);
-        const minBuySize = getMinAbsoluteOrderSize(ORDER_TYPES.BUY, manager.assets);
+        const minSellSize = getMinOrderSize(ORDER_TYPES.SELL, manager.assets);
+        const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, manager.assets);
 
         const { A: precA, B: precB } = getPrecisionsForManager(manager.assets);
 
@@ -1061,8 +1060,8 @@ export async function initializeGrid(manager: any): Promise<void> {
         }
 
         // Check for warning if orders are near minimal size (regression fix)
-        const warningSellSize = minSellSize > 0 ? getMinAbsoluteOrderSize(ORDER_TYPES.SELL, manager.assets, 100) : 0;
-        const warningBuySize = minBuySize > 0 ? getMinAbsoluteOrderSize(ORDER_TYPES.BUY, manager.assets, 100) : 0;
+        const warningSellSize = minSellSize > 0 ? getMinOrderSize(ORDER_TYPES.SELL, manager.assets, 100) : 0;
+        const warningBuySize = minBuySize > 0 ? getMinOrderSize(ORDER_TYPES.BUY, manager.assets, 100) : 0;
         if (checkSizeThreshold(sells, warningSellSize, precA, false) || checkSizeThreshold(buys, warningBuySize, precB, false)) {
             manager.logger?.log?.("WARNING: Order grid contains orders near minimum size. To ensure the bot runs properly, consider increasing the funds of your bot.", "warn");
         }
@@ -2568,7 +2567,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
                 if (c.price == null) return false;
                 // Resolve candidate size: if zero/missing, use minimum so tolerance
                 // doesn't collapse to zero (calculatePriceTolerance returns null for size <= 0).
-                const cs = (c.size && c.size > 0) ? c.size : getMinAbsoluteOrderSize(railType, manager.assets);
+                const cs = (c.size && c.size > 0) ? c.size : getMinOrderSize(railType, manager.assets);
                 return !findPriceCollision(
                     allOrders,
                     c.id,
@@ -2629,7 +2628,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             Number(sideName === 'buy' ? manager.accountTotals?.buyFree : manager.accountTotals?.sellFree) || 0
         ));
 
-        const minAbsoluteSize = getMinAbsoluteOrderSize(railType, manager.assets);
+        const minAbsoluteSize = getMinOrderSize(railType, manager.assets);
         const prioritizedTargets: any[] = [];
 
         if (edgePartial && edgePartial.id) {

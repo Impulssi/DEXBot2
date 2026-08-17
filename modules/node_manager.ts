@@ -47,6 +47,7 @@ const require = createRequire(import.meta.url);
 import Logger from './logger.js';
 import { NODE_MANAGEMENT } from './constants.js';
 import { PATHS, getNodeBlacklistFile } from './paths.js';
+import { compareNodeHealth } from './node_health_cache.js';
 import { writeJsonFileAtomic } from './bots_file_lock.js';
 import { getStorage } from './storage/index.js';
 const storage = getStorage();
@@ -586,15 +587,11 @@ class NodeManager {
                     const bPreferred = b.url === preferredNode && b.status === 'healthy';
                     if (aPreferred !== bPreferred) return aPreferred ? -1 : 1;
                 }
-                // Healthy nodes first, then by latency
-                if (a.status !== b.status) {
-                    return a.status === 'healthy' ? -1 : 1;
-                }
-                return (a.latencyMs || Infinity) - (b.latencyMs || Infinity);
+                return compareNodeHealth(a, b);
             })
             .map((stat: any) => stat.url);
 
-        return healthy.length > 0 ? healthy : [];
+        return healthy;
     }
 
     /**

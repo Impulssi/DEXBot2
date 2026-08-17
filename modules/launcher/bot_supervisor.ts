@@ -22,6 +22,7 @@ const storage = getStorage();
 const { ensureDir, readJSON, unlink: safeUnlink } = storage;
 import { buildRuntimeScriptPath, isDistCodeRoot, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
 import { getErrorMessage } from '../utils/errors.js';
+import { usesAmaGridPrice } from '../dexbot_maintenance_runtime.js';
 
 const BOT_SCRIPT = buildRuntimeScriptPath(CODE_ROOT, ['bot']);
 const SOCKET_PATH = Config.DEXBOT_SUPERVISOR_SOCKET || PATHS.PROFILES.SUPERVISOR_SOCK;
@@ -40,11 +41,6 @@ const {
 const MAX_MEMORY_BYTES = MAX_MEMORY_MB * 1024 * 1024;
 
 const SUPERVISOR_PREFIX = '[supervisor]';
-
-function usesAmaGridPrice(bot: any) {
-    const gridPrice = typeof bot?.gridPrice === 'string' ? bot.gridPrice.trim().toLowerCase() : '';
-    return /^ama(?:[1-4])?$/.test(gridPrice);
-}
 
 function needsMarketAdapter(bots: any) {
     return (bots || []).some((bot: any) => usesAmaGridPrice(bot));

@@ -488,8 +488,6 @@ class SyncEngine {
      * @param {Array<Object>|null} chainOrders - Array of raw blockchain order objects
      *   Each object contains sell_price, for_sale, id, etc. from blockchain
      * @param {Object} options - Sync options
-     *   - validateOnly {boolean}: If true, only validate without applying changes
-     *   - skipFundRecalc {boolean}: If true, skip fund recalculation after sync
      * @returns {Promise<Object>} Sync result:
      *   - filledOrders {Array}: Orders that were detected as filled
      *   - updatedOrders {Array}: Orders that were updated during sync
@@ -773,8 +771,7 @@ class SyncEngine {
                 // causing correctly-placed orders to appear missing. _committedOrderIds
                 // is atomically rebuilt from every successful COW commit
                 // (manager.ts:_commitWorkingGrid) and is always active for all sync
-                // paths — previously gated on options.protectCommittedOrders.
-                // Always-on is safe because committed IDs are self-cleaning:
+                // paths.
                 // filled/virtualized orders are absent from the next commit's
                 // finalMap, so their IDs drop out on the next atomic rebuild.
                 //

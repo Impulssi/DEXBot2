@@ -21,6 +21,7 @@ import { updateDynamicGridSnapshotSync } from './utils/dynamic_grid_snapshot.js'
 import { PATHS, getRecalculateTriggerFile } from '../modules/paths.js';
 import Logger from '../modules/logger.js';
 import { fixedTo, roundTo } from '../modules/utils/math_utils.js';
+import { usesAmaGridPrice } from '../modules/dexbot_maintenance_runtime.js';
 import {
     normalizeAtrPeriod,
     normalizeMaxVolatilityOffset,
@@ -31,7 +32,6 @@ import {
     isBotWhitelisted,
     isBotDynamicWeightWhitelisted,
     isBotAsymmetricBoundsWhitelisted,
-    isBotGridRangeScalingWhitelisted,
 } from '../modules/market_adapter_whitelist.js';
 import {
     normalizeAssetSymbol,
@@ -337,10 +337,6 @@ function normalizeAmaKey(raw: any) {
 function isAmaKeyword(raw: any) {
     const s = String(raw || '').trim().toLowerCase();
     return AMA_KEYWORDS.has(s);
-}
-
-function usesAmaGridPrice(bot: any) {
-    return isAmaKeyword(bot?.gridPrice);
 }
 
 function usesBookMarketSource(bot: any) {
@@ -1071,7 +1067,6 @@ const adapterService = new MarketAdapterService({
     isBotWhitelisted,
     isBotDynamicWeightWhitelisted,
     isBotAsymmetricBoundsWhitelisted,
-    isBotGridRangeScalingWhitelisted,
     logger,
     root: ROOT,
     path,
@@ -1436,5 +1431,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         });
 }
 
-export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, calcAmaComparison, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, usesBookMarketSource, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, isBotGridRangeScalingWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
+export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, calcAmaComparison, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, usesBookMarketSource, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
 

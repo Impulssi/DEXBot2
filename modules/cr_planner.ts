@@ -365,5 +365,5 @@ function planCrAdjustment(currentCollateral: unknown, debtAmount: unknown, feedP
     };
 }
 
-export { buildCollateralFallbackPlan, buildDebtFirstCrPlan, calculateCollateralRatio, collateralDeltaForTargetCr, collateralForTargetCr, debtDeltaForTargetCr, debtForTargetCr, planCrAdjustment, resolveMinCollateralIncreaseThreshold, resolveTargetCollateralRatio }
+export { buildCollateralFallbackPlan, buildDebtFirstCrPlan, calculateCollateralRatio, collateralDeltaForTargetCr, collateralForTargetCr, debtDeltaForTargetCr, debtForTargetCr, planCrAdjustment, positiveOrNull, resolveMinCollateralIncreaseThreshold, resolveTargetCollateralRatio }
 

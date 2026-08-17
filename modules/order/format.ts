@@ -15,7 +15,7 @@
  * Time/Performance (ms, %):     1-2 decimals - readable metrics
  *
  * ===============================================================================
- * TABLE OF CONTENTS (17 exported functions)
+ * TABLE OF CONTENTS (14 exported functions)
  * ===============================================================================
  *
  * SECTION 1: ASSET FORMATTING (4 functions)
@@ -34,15 +34,12 @@
  *   10. formatPercent(value, decimals) - Format with custom decimal places
  *
  * SECTION 4: RATIO/METRIC FORMATTING (3 functions)
- *   11. formatRatio(value, decimals) - Format ratios with custom decimals (default 5)
- *   13. formatMetric2(value) - Format to 2 decimals (timing, performance)
- *   14. formatMetric5(value) - Format to 5 decimals (detailed metrics)
+ *   11. formatMetric2(value) - Format to 2 decimals (timing, performance)
  *
  * SECTION 5: HELPER UTILITIES (4 functions)
- *   15. isValidNumber(value) - Check if value is defined and finite
- *   16. isNumeric(val) - Check if value is a number or parseable numeric string
- *   17. toFiniteNumber(value, defaultValue) - Convert to finite number with fallback
- *   18. safeFormat(value, decimals, fallback) - Safely format with fallback
+ *   12. isValidNumber(value) - Check if value is defined and finite
+ *   13. toFiniteNumber(value, defaultValue) - Convert to finite number with fallback
+ *   14. safeFormat(value, decimals, fallback) - Safely format with fallback
  *
  * ===============================================================================
  */
@@ -126,7 +123,7 @@ function formatSizeByOrderType(value: number, orderType: string, assets: { asset
  * @returns {string} Formatted price to 8 decimals
  */
 function formatPrice(value: number): string {
-	return safeFormat(value, 8);
+	return formatAmount8(value);
 }
 
 function formatPrice6(value: number): string {
@@ -161,14 +158,13 @@ function formatPercent(value: number, decimals: number = 2): string {
 // ===============================================================================
 
 /**
- * Format ratios with custom decimal places
+ * Format metric to 2 decimal places
  *
- * @param {number} value - The ratio value
- * @param {number} [decimals=5] - Number of decimal places (default 5)
- * @returns {string} Formatted ratio
+ * @param {number} value - The metric value
+ * @returns {string} Formatted metric
  */
 function formatMetric2(value: number): string {
-	return safeFormat(value, 2);
+	return formatPercent2(value);
 }
 
 // ===============================================================================
@@ -182,10 +178,6 @@ function formatMetric2(value: number): string {
  */
 function isValidNumber(value: any): boolean {
 	return value !== null && value !== undefined && Number.isFinite(Number(value));
-}
-
-function isNumeric(val: any): boolean {
-	return typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !Number.isNaN(Number(val)));
 }
 
 /**
@@ -222,5 +214,5 @@ function safeFormat(value: any, decimals: number, fallback: string = 'N/A'): str
 // EXPORTS
 // ===============================================================================
 
-export { formatAmount8, formatAmount, formatAmountByPrecision, formatSizeByOrderType, formatPrice, formatPrice6, formatPrice4, formatPercent2, formatPercent, formatMetric2, isValidNumber, isNumeric, toFiniteNumber, safeFormat }
+export { formatAmount8, formatAmount, formatAmountByPrecision, formatSizeByOrderType, formatPrice, formatPrice6, formatPrice4, formatPercent2, formatPercent, formatMetric2, isValidNumber, toFiniteNumber, safeFormat }
 

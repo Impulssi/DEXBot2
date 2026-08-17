@@ -86,9 +86,5 @@ function isBotAsymmetricBoundsWhitelisted(botKey: string): boolean {
     return getWhitelistFlags(botKey).asymmetricBounds === true;
 }
 
-function isBotGridRangeScalingWhitelisted(botKey: string): boolean {
-    return isBotAsymmetricBoundsWhitelisted(botKey);
-}
-
-export { WHITELIST_FILE, resetMarketAdapterWhitelistCache, getWhitelistFlags, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, isBotGridRangeScalingWhitelisted }
+export { WHITELIST_FILE, resetMarketAdapterWhitelistCache, getWhitelistFlags, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted }
 

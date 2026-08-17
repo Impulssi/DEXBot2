@@ -1423,25 +1423,6 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
 }
 
 /**
- * Shared BTS fee adjustment math used by both getSideBudget and Grid._getSizingContext.
- *
- * Deducts BTS creation fees from allocated budget when the holding side has BTS,
- * or proportionally shares BTS fee deficits across both sides for non-BTS pairs.
- *
- * @param {number} allocated - Raw allocated budget for this side
- * @param {boolean} isBtsSide - Whether this side holds BTS
- * @param {number} formulaBudget - Pre-calculated BTS fee estimate
- * @param {number} minBtsValue - Configured minimum BTS reserve (or 0)
- * @param {number} btsFree - Available free BTS balance
- * @param {number} sideFree - Free balance of this side's asset
- * @param {number} totalFree - Total free balance across both sides
- * @returns {number} Budget adjusted for BTS fee reservation
- */
-function adjustBudgetForBtsFees(allocated: any, isBtsSide: any, formulaBudget: any, minBtsValue: any, btsFree: any, sideFree: any, totalFree: any) {
-    return MathUtils.adjustBudgetForBtsFees(allocated, isBtsSide, formulaBudget, minBtsValue, btsFree, sideFree, totalFree);
-}
-
-/**
  * Total target order count across both sides (used for BTS fee calculation).
  * Single source of truth so every budget derivation sizes identically.
  *
@@ -1480,10 +1461,10 @@ function getSideBudget(side: any, funds: any, config: any, totalTarget: any) {
     );
 
     if (isBtsSide) {
-        return adjustBudgetForBtsFees(allocated, true, formulaBudget, 0, 0, 0, 0);
+        return MathUtils.adjustBudgetForBtsFees(allocated, true, formulaBudget, 0, 0, 0, 0);
     }
 
-    return adjustBudgetForBtsFees(
+    return MathUtils.adjustBudgetForBtsFees(
         allocated,
         false,
         formulaBudget,
@@ -1531,5 +1512,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
     );
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, adjustBudgetForBtsFees, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
 

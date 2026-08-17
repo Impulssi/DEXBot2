@@ -21,28 +21,19 @@ import { GRID_LIMITS } from '../constants.js';
  * - Maintain audit trail for debugging
  *
  * ===============================================================================
- * TABLE OF CONTENTS - LoggerState Class (7 methods)
+ * TABLE OF CONTENTS - LoggerState Class (3 methods)
  * ===============================================================================
  *
  * INITIALIZATION (1 method)
  *   1. constructor() - Create new LoggerState with empty previousState and changeHistory
  *      Initializes tracking for: funds, orders, fills, boundary, errors
  *
- * CHANGE DETECTION (2 methods)
+ * CHANGE DETECTION (1 method)
  *   2. detectChanges(category, current) - Detect changes between previous and current state
  *      Returns { isNew: boolean, changes: Object } with detailed change information
- *   3. isSignificantChange(oldVal, newVal, threshold) - Check if numeric change exceeds threshold
- *      Returns true if change is significant or values are non-finite
- *
- * HISTORY MANAGEMENT (3 methods)
- *   4. recordChange(timestamp, category, type, data) - Record change for audit trail
- *      Maintains circular buffer (max 100 entries) of all state changes
- *   5. getRecentChanges(category, count) - Get recent changes for a category
- *      Returns last N changes for specified category (default: 10)
- *   6. reset(category) - Clear state for category (reset previous state)
  *
  * INTERNAL UTILITIES (1 method)
- *   7. _deepDiff(prev, current) - Deep diff between two objects
+ *   3. _deepDiff(prev, current) - Deep diff between two objects
  *      Recursively compares objects, detects all changes and deletions
  *      Returns Object with format: { key: { from: oldVal, to: newVal } }
  *
@@ -104,52 +95,6 @@ class LoggerState {
         const changes = this._deepDiff(prev, current);
         this.previousState[category] = { ...current };
         return { isNew: false, changes };
-    }
-
-    /**
-     * Check if change exceeds significance threshold
-     * @param {number} oldVal - Previous value
-     * @param {number} newVal - Current value
-     * @param {number} threshold - Threshold for significance
-     * @returns {boolean} True if change is significant
-     */
-    isSignificantChange(oldVal: any, newVal: any, threshold: any = 0) {
-        if (!Number.isFinite(oldVal) || !Number.isFinite(newVal)) return true;
-        return Math.abs(oldVal - newVal) > threshold;
-    }
-
-    /**
-     * Record change for history (auditing)
-     * @param {number} timestamp - Unix timestamp
-     * @param {string} category - Log category
-     * @param {string} type - Event type
-     * @param {Object} data - Change data
-     */
-    recordChange(timestamp: any, category: any, type: any, data: any) {
-        this.changeHistory.push({ timestamp, category, type, data });
-        if (this.changeHistory.length > this.maxHistory) {
-            this.changeHistory.shift();
-        }
-    }
-
-    /**
-     * Get recent changes for a category
-     * @param {string} category - Category to query
-     * @param {number} count - Number of recent changes to return
-     * @returns {Array} Recent changes
-     */
-    getRecentChanges(category: any, count: any = 10) {
-        return this.changeHistory
-            .filter((c: any) => c.category === category)
-            .slice(-count);
-    }
-
-    /**
-     * Clear state for a category (reset previous state)
-     * @param {string} category - Category to reset
-     */
-    reset(category: any) {
-        this.previousState[category] = null;
     }
 
     /**

@@ -25,6 +25,7 @@ const storage = getStorage();
 import {
     buildCollateralFallbackPlan,
     buildDebtFirstCrPlan,
+    positiveOrNull,
     resolveMinCollateralIncreaseThreshold,
     resolveTargetCollateralRatio,
 } from './cr_planner.js';
@@ -38,11 +39,6 @@ const GRAPHENE_COLLATERAL_RATIO_DENOM = FEE_PARAMETERS.GRAPHENE_COLLATERAL_RATIO
 
 function deepClone(value: any): any {
     return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
-}
-
-function positiveOrNull(value: any): number | null {
-    const num = toFiniteNumber(value, undefined);
-    return Number.isFinite(num) && num > 0 ? num : null;
 }
 
 function normalizeResolvedPriceResult(value: any, liveSource: any, missingSource: any): any {

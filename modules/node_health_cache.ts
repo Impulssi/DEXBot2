@@ -1,12 +1,11 @@
 
 
 import { NODE_MANAGEMENT } from './constants.js';
-import { PATHS, getNodeHealthCacheFile } from './paths.js';
+import { getNodeHealthCacheFile } from './paths.js';
 import { writeJsonFileAtomic } from './bots_file_lock.js';
 import { getStorage } from './storage/index.js';
 const storage = getStorage();
 const { readJSON } = storage;
-const DEFAULT_HEALTH_CACHE_FILE = PATHS.PROFILES.NODE_HEALTH_CACHE_JSON;
 
 interface HealthCacheOptions {
     healthCacheFile?: string;
@@ -63,6 +62,15 @@ function normalizeNodeList(nodes: unknown): string[] {
         : [];
 }
 
+/**
+ * Comparator for healthy/slow nodes: healthy first, then by ascending latency.
+ * Shared by node_health_cache and node_manager.
+ */
+function compareNodeHealth(a: { status: string; latencyMs?: number | null }, b: { status: string; latencyMs?: number | null }): number {
+    if (a.status !== b.status) return a.status === 'healthy' ? -1 : 1;
+    return (a.latencyMs ?? Infinity) - (b.latencyMs ?? Infinity);
+}
+
 function buildHealthCachePayload(stats: Iterable<NodeHealthStat> | ArrayLike<NodeHealthStat> | null | undefined, now: number = Date.now()): NodeHealthCachePayload {
     const nodes: NodeHealthCacheEntry[] = Array.from(stats || [])
         .filter((stat): stat is NodeHealthStat & { status: 'healthy' | 'slow'; url: string } =>
@@ -75,10 +83,7 @@ function buildHealthCachePayload(stats: Iterable<NodeHealthStat> | ArrayLike<Nod
             lastCheckTime: stat.lastCheckTime || null,
         }));
 
-    nodes.sort((a, b) => {
-        if (a.status !== b.status) return a.status === 'healthy' ? -1 : 1;
-        return (a.latencyMs ?? Infinity) - (b.latencyMs ?? Infinity);
-    });
+    nodes.sort(compareNodeHealth);
 
     return {
         version: 1,
@@ -115,10 +120,7 @@ function readHealthCache(options: HealthCacheOptions = {}): NodeHealthCachePaylo
             .filter((node): node is NodeHealthCacheEntry & { status: 'healthy' | 'slow' } =>
                 !!node && (node.status === 'healthy' || node.status === 'slow') && typeof node.url === 'string' && node.url.trim() !== ''
             )
-            .sort((a, b) => {
-                if (a.status !== b.status) return a.status === 'healthy' ? -1 : 1;
-                return (a.latencyMs ?? Infinity) - (b.latencyMs ?? Infinity);
-            });
+            .sort(compareNodeHealth);
 
         return {
             ...payload,
@@ -195,5 +197,5 @@ function orderNodesForSettings(settings: NodeSettings, options: HealthCacheOptio
     });
 }
 
-export { DEFAULT_HEALTH_CACHE_FILE, buildHealthCachePayload, orderNodesFromHealthCache, orderNodesForSettings, readHealthCache, removeNodesFromHealthCache, resolveConfiguredNodes, resolveHealthCacheFile, resolveHealthCacheMaxAgeMs, writeHealthCache }
+export { compareNodeHealth, orderNodesFromHealthCache, orderNodesForSettings, readHealthCache, removeNodesFromHealthCache, resolveConfiguredNodes, resolveHealthCacheFile, writeHealthCache }
 

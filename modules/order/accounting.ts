@@ -6,7 +6,7 @@
  * Exports a single Accountant class that manages all fund accounting operations.
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Accountant Class (19 methods)
+ * TABLE OF CONTENTS - Accountant Class (18 methods)
  * ===============================================================================
  *
  * CORE INITIALIZATION & RECALCULATION (2 methods)
@@ -43,9 +43,8 @@
  * FILL PROCESSING (1 method)
  *   17. processFillAccounting(fillOp, fillKey, persistenceMode) - Process fund impact of order fill (atomically updates accountTotals)
  *
- * RECOVERY & VALIDATION (2 methods)
+ * RECOVERY & VALIDATION (1 method)
  *   18. resetRecoveryState() - Reset recovery backoff and state
- *   19. validateTargetGrid(targetGrid, mgr) - Validate target grid fund requirements
  *
  * ===============================================================================
  * FUND STRUCTURE (managed by Accountant)
@@ -1355,76 +1354,6 @@ class Accountant {
             await mgr.recalculateFunds();
         }
     }
-
-    /**
-     * Validate that a proposed Target Grid fits within the account's total available funds.
-     * Prevents over-commitment before orders are broadcast.
-     * 
-     * @param {Map} targetGrid - Proposed grid (price -> {size, type})
-     * @returns {Object} { isValid, shortfall, details }
-     */
-    validateTargetGrid(targetGrid: any) {
-        if (!targetGrid || typeof targetGrid.values !== 'function') {
-            return { isValid: false, shortfall: { buy: 0, sell: 0 }, details: { error: 'Invalid targetGrid' } };
-        }
-        const mgr = this.manager;
-        let requiredBuy = 0;
-        let requiredSell = 0;
-
-        // 1. Sum up requirements for the new grid
-        for (const order of targetGrid.values()) {
-            const size = toFiniteNumber(order.size);
-            if (size <= 0) continue;
-
-            if (order.type === ORDER_TYPES.BUY) {
-                // Buy order uses Asset B (Quote)
-                requiredBuy += size;
-            } else if (order.type === ORDER_TYPES.SELL) {
-                // Sell order uses Asset A (Base)
-                requiredSell += size;
-            }
-        }
-
-        // 2. Add Estimated BTS Fees (if BTS is one of the pairs)
-        // Fees reduce the "Free" balance, so they compete with Order Capital
-        const btsSide = getBtsSide(mgr.config?.assetA, mgr.config?.assetB);
-        if (btsSide && mgr.funds.btsFeesOwed > 0) {
-            if (btsSide === 'buy') requiredBuy += mgr.funds.btsFeesOwed;
-            else requiredSell += mgr.funds.btsFeesOwed;
-        }
-
-        // 3. Compare against Total Account Balance (Free + Committed)
-        // Note: We use the *current* totals from the manager, which includes
-        // money locked in current orders. Since the new grid *replaces* the old one,
-        // we can essentially "re-spend" the money from old orders.
-        const totalBuy = (mgr.accountTotals?.buy || 0);
-        const totalSell = (mgr.accountTotals?.sell || 0);
-
-        // Add slack for precision rounding errors
-        if (mgr.assets?.assetB?.precision === undefined || mgr.assets?.assetA?.precision === undefined) {
-            throw new Error(`CRITICAL: Asset precision unavailable for slack calculation`);
-        }
-        const slackBuy = getPrecisionSlack(mgr.assets?.assetB?.precision);
-        const slackSell = getPrecisionSlack(mgr.assets?.assetA?.precision);
-
-        const buyShortfall = Math.max(0, requiredBuy - (totalBuy + slackBuy));
-        const sellShortfall = Math.max(0, requiredSell - (totalSell + slackSell));
-
-        const isValid = buyShortfall === 0 && sellShortfall === 0;
-
-        if (!isValid) {
-            mgr.logger.log(
-                `[ACCOUNTING] Target Grid validation failed. Shortfall: Buy=${Format.formatAmount8(buyShortfall)}, Sell=${Format.formatAmount8(sellShortfall)}`,
-                'warn'
-            );
-        }
-
-        return {
-            isValid,
-            shortfall: { buy: buyShortfall, sell: sellShortfall },
-            details: { requiredBuy, requiredSell, totalBuy, totalSell }
-        };
-     }
 
 
     /**
