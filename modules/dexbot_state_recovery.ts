@@ -4,11 +4,12 @@ import * as client from './bitshares_client.js';
 const { BitShares } = client;
 import * as chainOrders from './chain_orders.js';
 import { readOpenOrdersGuarded } from './chain_orders.js';
-import { ORDER_TYPES } from './constants.js';
+import { ORDER_TYPES, TIMING } from './constants.js';
 import * as Format from './order/format.js';
 import * as grid from './order/grid.js';
 import { convertToSpreadPlaceholder, parseChainOrder } from './order/utils/order.js';
 import { blockchainToFloat } from './order/utils/math.js';
+import { hasExecutableActions } from './order/utils/validate.js';
 import { getErrorMessage } from './utils/errors.js';
 const { isGridBloated } = grid;
 
@@ -85,6 +86,12 @@ async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery 
         if (typeof bot.manager.persistGrid === 'function') {
             await bot.manager.persistGrid();
         }
+        // Re-derive the target grid so a reconcile-only sync re-places rails
+        // that were consumed while recovery was pending. Deferred: this sync is
+        // often invoked from a batch-abort catch (handleBatchHardAbort /
+        // recoverBatchSizeDrift) where broadcasting a fresh COW batch would race
+        // the batch's own finally cleanup, and from flows holding the fill lock.
+        _schedulePostRecoveryRebalance(bot, `state recovery sync (${reason})`);
     } finally {
         bot._recoverySyncInFlight--;
     }
@@ -240,6 +247,14 @@ async function recoverBatchSizeDrift(bot: any, err: any, opContexts: any = []) {
         );
         const repaired = await bot._targetedOrderRepair(affectedOrderIds);
         if (repaired) {
+            // The batch that carried the rotation (boundary crawl + opposite-side
+            // CREATE for the consumed order) was discarded, so re-derive the
+            // target grid after the repair to re-place it. Targeted repair only
+            // re-sizes/re-types the affected slots — it never completes the
+            // rotation. Without this, a fully-consumed order would sit unplaced
+            // until the next fill or maintenance divergence check. Deferred so it
+            // runs after the failed batch's teardown completes.
+            _schedulePostRecoveryRebalance(bot, `targeted size-drift repair (${affectedOrderIds.join(', ')})`);
             return {
                 executed: false,
                 hadRotation: false,
@@ -377,6 +392,15 @@ async function recoverFromPersistedGrid(bot: any) {
             return { success: false, reason: 'grid still bloated after reload' };
         }
 
+        // Re-derive the target grid so a boundary crawl that aborted mid-batch
+        // re-places missing rails. syncFromOpenOrders is reconcile-only — it
+        // virtualizes consumed orders but never re-derives the target, so a
+        // hole (e.g. a sell fully consumed while the snapshot still listed it)
+        // would otherwise persist indefinitely. Best-effort: if the rebalance
+        // cannot run or its broadcast fails, the next maintenance divergence
+        // check closes the gap — recovery itself must not fail on it.
+        await _rebalanceAfterRecovery(bot, 'persisted grid reload');
+
         return { success: true };
     } catch (err: any) {
         bot.manager.logger.log(
@@ -385,6 +409,93 @@ async function recoverFromPersistedGrid(bot: any) {
         );
         return { success: false, reason: getErrorMessage(err) };
     }
+}
+
+/**
+ * Best-effort target-grid rebalance after a snapshot reload.
+ *
+ * Runs a no-fill COW rebalance so slots the reconcile-only sync could not
+ * re-derive are re-placed. syncFromOpenOrders only reconciles existing slots;
+ * an order that was fully consumed on chain while the persisted snapshot still
+ * listed it leaves a permanent rail hole unless the target grid is re-derived
+ * and the missing orders re-created. The COW machinery's own guards (fund
+ * validation, create-slot validation, pending-broadcast protection, single
+ * flight) keep this safe to run here.
+ *
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {string} context - Label for logging
+ */
+async function _rebalanceAfterRecovery(bot: any, context: any) {
+    if (!bot.manager || typeof bot.manager.performSafeRebalance !== 'function' || typeof bot.updateOrdersOnChainBatch !== 'function') {
+        return;
+    }
+    try {
+        const rebalanceResult = await bot.manager.performSafeRebalance([], new Set());
+        if (!rebalanceResult || rebalanceResult.aborted) {
+            bot.manager.logger?.log?.(
+                `[RECOVERY] Target-grid rebalance skipped after ${context} ` +
+                `(${rebalanceResult?.reason || 'aborted'})`,
+                'debug'
+            );
+            return;
+        }
+        if (!hasExecutableActions(rebalanceResult)) {
+            bot.manager.logger?.log?.(
+                `[RECOVERY] Target-grid rebalance after ${context}: grid already consistent`,
+                'debug'
+            );
+            // performSafeRebalance pushes a working grid for every non-aborted
+            // result — including this empty-action one. Release it so the
+            // rebalance stack stays balanced and _rebalanceState returns to
+            // NORMAL (mirrors _executeBatchIfNeeded's no-action pop). Aborted
+            // results are never pushed, so only this branch needs the pop.
+            bot.manager?._popWorkingGridRef?.(rebalanceResult);
+            return;
+        }
+        bot.manager.logger?.log?.(
+            `[RECOVERY] Re-placing ${rebalanceResult.actions.length} missing rail(s) after ${context}`,
+            'info'
+        );
+        await bot.updateOrdersOnChainBatch(rebalanceResult);
+    } catch (err: any) {
+        bot.manager.logger?.log?.(
+            `[RECOVERY] Target-grid rebalance after ${context} failed ` +
+            `(will be handled by maintenance divergence check): ${getErrorMessage(err)}`,
+            'warn'
+        );
+    }
+}
+
+/**
+ * Schedule a best-effort target-grid rebalance after a recovery sync.
+ *
+ * The sync is often called from a batch-abort catch (handleBatchHardAbort /
+ * recoverBatchSizeDrift) where a COW batch is still mid-teardown, or from flows
+ * holding the fill lock — broadcasting a fresh batch there would race the batch's
+ * own finally cleanup. Defer via a zero-delay timer and re-defer until both
+ * `_batchInFlight` and `_recoverySyncInFlight` settle, so the rebalance always
+ * runs in a clean context. At most one deferred rebalance is scheduled at a time.
+ *
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {string} context - Label for logging
+ */
+function _schedulePostRecoveryRebalance(bot: any, context: any) {
+    if (!bot.manager || typeof bot.manager.performSafeRebalance !== 'function' || typeof bot.updateOrdersOnChainBatch !== 'function') {
+        return;
+    }
+    if (bot._postRecoveryRebalanceTimer) {
+        return;
+    }
+    const run = () => {
+        bot._postRecoveryRebalanceTimer = null;
+        if (bot._shuttingDown) return;
+        if (bot._batchInFlight > 0 || bot._recoverySyncInFlight > 0) {
+            bot._postRecoveryRebalanceTimer = setTimeout(run, TIMING.LOCK_REFRESH_MIN_MS);
+            return;
+        }
+        _rebalanceAfterRecovery(bot, context);
+    };
+    bot._postRecoveryRebalanceTimer = setTimeout(run, 0);
 }
 
 /**

@@ -800,13 +800,28 @@ async function buildUpdateOrderOp(accountName: any, orderId: any, newParams: any
     const accId = await resolveAccountId(accountName);
     if (!accId) throw new Error(`Account ${accountName} not found`);
 
-    // Use cached order if provided, otherwise fetch fresh from blockchain
-    let order: any = cachedOrder;
-    if (!order) {
-        const orders = await readOpenOrders(accId);
-        order = orders.find((o: any) => o.id === orderId);
+    // A size-update's delta_amount_to_sell must be built from the AUTHORITATIVE
+    // current for_sale, not the caller's cached rawOnChain snapshot. A cached
+    // snapshot can be stale — the order may have been partially filled since it
+    // was captured — and a delta computed from it over-reduces the order, which
+    // the chain rejects ("Cannot deduct all or more from order than order
+    // contains"). That rejection kills the whole COW batch and cascades into
+    // uncertain-broadcast recovery. Re-read the exact for_sale right before
+    // building so the delta matches chain reality. Price-only updates (no size
+    // change) carry no delta_amount_to_sell, so staleness cannot over-deduct and
+    // the cached order remains safe to use.
+    const wantsSizeChange = newParams?.amountToSell !== undefined && newParams?.amountToSell !== null;
+    let order: any = null;
+    if (cachedOrder && !wantsSizeChange) {
+        order = cachedOrder;
+    } else {
+        order = await readSingleOrder(orderId);
+        if (!order) {
+            const orders = await readOpenOrders(accId);
+            order = orders.find((o: any) => o.id === orderId);
+        }
     }
-    
+
     if (!order) throw new Error(`Order ${orderId} not found`);
 
     const sellAssetId = order.sell_price.base.asset_id;
@@ -1268,6 +1283,60 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
 }
 
 /**
+ * Detect limit_order_update ops whose negative delta would over-reduce the
+ * order's current on-chain for_sale (new size < 0). Returns an Error whose
+ * message matches the chain's "Cannot deduct all or more from order than order
+ * contains" rejection so callers route it through the size-drift repair path.
+ * Returns null when no update op over-reduces. Throws only on read failure.
+ *
+ * A negative-delta op targeting an order that is no longer on chain ("gone")
+ * is reported with the chain's stale-order message ("object <id> does not
+ * exist") instead, so callers route it to stale-order cleanup — a gone order
+ * has no for_sale to re-size, so the size-drift repair path would be a no-op.
+ *
+ * @param {Array} operations - Ops to verify (limit_order_update only).
+ * @returns {Promise<Error|null>}
+ */
+async function findOverReducingUpdateOpError(operations: any): Promise<Error | null> {
+    // Aggregate negative deltas per order: the chain applies a batch's update
+    // ops sequentially, so a second reduction of the same order is validated
+    // against the already-decremented for_sale, not the pre-batch value.
+    // Checking each op independently against the original for_sale would miss
+    // a cumulative over-reduction that the chain still rejects.
+    const orderDeltas = new Map();
+    for (const op of operations || []) {
+        if (op?.op_name === 'limit_order_update' && op?.op_data?.delta_amount_to_sell) {
+            const delta = toFiniteNumber(op.op_data.delta_amount_to_sell.amount);
+            if (delta < 0) {
+                orderDeltas.set(op.op_data.order, (orderDeltas.get(op.op_data.order) || 0) + delta);
+            }
+        }
+    }
+    if (orderDeltas.size === 0) return null;
+
+    const orderMap = await batchReadOrders([...orderDeltas.keys()], TIMING.CONNECTION_TIMEOUT_MS);
+    for (const [orderId, totalDelta] of orderDeltas) {
+        const chainOrder = orderMap.get(orderId);
+        if (!chainOrder) {
+            return new Error(
+                `object ${orderId} does not exist: ` +
+                `limit_order_update delta=${totalDelta} targets an order missing on chain ` +
+                `(detected pre-broadcast size-drift)`
+            );
+        }
+        const currentForSale = toFiniteNumber(chainOrder.for_sale);
+        if (currentForSale + totalDelta <= 0) {
+            return new Error(
+                `Cannot deduct all or more from order than order contains: ` +
+                `order ${orderId} current for_sale=${currentForSale} ` +
+                `delta=${totalDelta} (detected pre-broadcast size-drift)`
+            );
+        }
+    }
+    return null;
+}
+
+/**
  * Execute a batch of operations in a single transaction.
  * @param {string} accountName - Account paying fees (usually the bot account)
  * @param {string|Object} privateKey - Private key for signing (or daemon signing token)
@@ -1277,6 +1346,26 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
  */
 async function executeBatch(accountName: any, privateKey: any, operations: any, extraOptions: any = {}) {
     if (!operations || operations.length === 0) return { success: true, operations: 0 };
+
+    // Pre-broadcast size-drift guard: a limit_order_update's negative delta is
+    // built from the order's for_sale read during planning. If the order was
+    // partially consumed between that read and this broadcast, the delta
+    // over-reduces and the chain rejects the ENTIRE batch ("Cannot deduct all
+    // or more from order than order contains"), which cascades into
+    // uncertain-broadcast recovery. Re-read the affected orders right before
+    // broadcasting and abort pre-broadcast with a size-drift error so the
+    // caller's repair path (recoverBatchSizeDrift) re-reads the chain and
+    // resizes the affected slots. Best-effort: a failed pre-read proceeds with
+    // the broadcast — the chain's own rejection then routes to the same repair.
+    let driftError: any = null;
+    try {
+        driftError = await findOverReducingUpdateOpError(operations);
+    } catch (preReadErr: any) {
+        chainOrdersLogger.debug(
+            `executeBatch: pre-broadcast size-drift read failed (proceeding with broadcast): ${getErrorMessage(preReadErr)}`
+        );
+    }
+    if (driftError) throw driftError;
 
     try {
         if (isDaemonSigningToken(privateKey)) {
@@ -1484,4 +1573,4 @@ function buildLiquidityPoolExchangeOp(accountId: any, poolId: any, sellAmountInt
 function getFillProcessingMode() {
     return FILL_PROCESSING_MODE;
 }
-export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
+export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, FILL_PROCESSING_MODE, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, findOverReducingUpdateOpError, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }

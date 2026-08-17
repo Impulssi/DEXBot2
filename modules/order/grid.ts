@@ -2063,10 +2063,14 @@ export async function checkGridHealth(manager: any, _updateOrdersOnChainBatch: a
      * The top-of-window partial (closest to market) is always eligible for dust
      * detection since cancelling it is just the grid edge moving inward.
      *
-     * Interior partials (further from market) are only eligible if they have a
-     * duplicate price level — another active order at essentially the same price.
-     * Cancelling such an interior partial won't leave a gap in the grid because
-     * the sibling active order already covers that price level.
+     * Interior partials (further from market) are eligible when they have a
+     * duplicate price level — another active order at essentially the same price —
+     * or when their size is already below the per-slot dust threshold. In the
+     * duplicate-price case cancelling won't leave a gap because the sibling
+     * active order already covers that price level; in the below-threshold case
+     * the residual is economically negligible and otherwise strands forever (the
+     * residual path only cancels zero-value residuals, and interior dust rarely
+     * has a duplicate price level) — cancelling lets rotation re-derive the slot.
      *
      * Returns boolean flags plus the actual dust order objects so callers can act
      * on individual orders (dust is cancelled immediately on detection).
@@ -2113,17 +2117,44 @@ export async function checkWindowDust(manager: any): Promise<any> {
         const isTopBuy = (o: any) => topBuyOrder && o.id === topBuyOrder.id;
         const isTopSell = (o: any) => topSellOrder && o.id === topSellOrder.id;
 
+        // Compute per-slot dust thresholds once per side so the eligibility
+        // filter below and _getDustOrders share the same sizing context
+        // (avoids a duplicate recalculateFunds round per side). Each side's map
+        // is only computed when that side actually has a partial candidate —
+        // _computeDustThresholdMap runs a fund recalculation, so an empty side
+        // must not pay for it.
+        if (allPartials.length === 0) {
+            return { buyDust: false, sellDust: false, buyDustOrders: [], sellDustOrders: [] };
+        }
+        const buyPartials = allPartials.filter((o: any) => o.type === ORDER_TYPES.BUY);
+        const sellPartials = allPartials.filter((o: any) => o.type === ORDER_TYPES.SELL);
+        const [buyThresholds, sellThresholds] = await Promise.all([
+            buyPartials.length > 0 ? _computeDustThresholdMap(manager, ORDER_TYPES.BUY) : Promise.resolve(new Map<string, number>()),
+            sellPartials.length > 0 ? _computeDustThresholdMap(manager, ORDER_TYPES.SELL) : Promise.resolve(new Map<string, number>()),
+        ]);
+
+        // A partial is below its per-slot dust threshold (economically negligible).
+        const isDustSized = (o: any, thresholds: Map<string, number>): boolean => {
+            const threshold = thresholds.get(o.id);
+            return !!threshold && threshold > 0 && o.size < threshold;
+        };
+
         // Safety filter: top-of-window partials always qualify; interior partials
-        // only qualify if they have a duplicate price level (no gap risk).
+        // qualify if they have a duplicate price level (no gap risk) OR their
+        // size is already below the dust threshold. A sub-threshold interior
+        // partial would otherwise strand on the book forever: the residual path
+        // only cancels zero-value residuals, and an interior dust rarely has a
+        // duplicate price level. Cancelling it frees the slot for rotation to
+        // re-derive, so the tiny gap is closed by normal grid rebalancing.
         const eligibleBuyPartials = allPartials.filter((o: any) =>
-            o.type === ORDER_TYPES.BUY && (isTopBuy(o) || hasDuplicatePriceLevel(o, assets))
+            o.type === ORDER_TYPES.BUY && (isTopBuy(o) || hasDuplicatePriceLevel(o, assets) || isDustSized(o, buyThresholds))
         );
         const eligibleSellPartials = allPartials.filter((o: any) =>
-            o.type === ORDER_TYPES.SELL && (isTopSell(o) || hasDuplicatePriceLevel(o, assets))
+            o.type === ORDER_TYPES.SELL && (isTopSell(o) || hasDuplicatePriceLevel(o, assets) || isDustSized(o, sellThresholds))
         );
 
-        const buyDustOrders = await _getDustOrders(manager, eligibleBuyPartials, ORDER_TYPES.BUY);
-        const sellDustOrders = await _getDustOrders(manager, eligibleSellPartials, ORDER_TYPES.SELL);
+        const buyDustOrders = await _getDustOrders(manager, eligibleBuyPartials, ORDER_TYPES.BUY, buyThresholds);
+        const sellDustOrders = await _getDustOrders(manager, eligibleSellPartials, ORDER_TYPES.SELL, sellThresholds);
 
         return {
             buyDust: buyDustOrders.length > 0,
@@ -2134,18 +2165,15 @@ export async function checkWindowDust(manager: any): Promise<any> {
     }
 
     /**
-     * Return the subset of partial orders that qualify as dust on a given side.
-     * Shares the same sizing context as _hasAnyDust but returns the actual order
-     * objects so callers can act on them (e.g. auto-cancel).
+     * Compute the per-slot dust threshold for every order of a given type.
+     * Returns a Map<orderId, threshold> using the same sizing context as
+     * _getDustOrders so eligibility and dust classification stay consistent.
      * @private
      * @param {import('./types').OrderManager} manager
-     * @param {Array<import('./types').GridOrderSlot>} partials - Candidate partial orders to test.
      * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
-     * @returns {Promise<Array<import('./types').GridOrderSlot>>} Orders whose size is below the dust threshold.
+     * @returns {Promise<Map<string, number>>}
      */
-async function _getDustOrders(manager: any, partials: any, type: any): Promise<any[]> {
-        if (!partials || partials.length === 0) return [];
-
+async function _computeDustThresholdMap(manager: any, type: any): Promise<Map<string, number>> {
         const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const ctx = await _getSizingContext(manager, side);
         const dustThresholdPercent = manager.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE;
@@ -2153,8 +2181,6 @@ async function _getDustOrders(manager: any, partials: any, type: any): Promise<a
         const sideSlots = (Array.from(manager.orders.values()) as Order[])
             .filter((o: any) => o.type === type)
             .sort((a: any, b: any) => a.price - b.price);
-
-        if (sideSlots.length === 0) return [];
 
         const idealSizes = ctx && ctx.budget > 0
             ? allocateFundsByWeights(
@@ -2168,18 +2194,36 @@ async function _getDustOrders(manager: any, partials: any, type: any): Promise<a
             )
             : [];
 
-        // When no budget is available, idealSizes becomes [] so every
-        // partial's threshold collapses to 0 — no order qualifies as dust.
-        // We still run the filter for uniformity so the threshold logic
-        // stays consistent regardless of budget state.
-        return partials.filter((p: any) => {
-            const idx = sideSlots.findIndex((s: any) => s.id === p.id);
-            if (idx === -1) return false;
-
+        const map = new Map<string, number>();
+        sideSlots.forEach((s: any, idx: number) => {
             const threshold = idealSizes.length > idx && idealSizes[idx] > 0
                 ? getSingleDustThreshold(idealSizes[idx], dustThresholdPercent)
                 : 0;
+            map.set(s.id, threshold);
+        });
+        return map;
+    }
 
+    /**
+     * Return the subset of partial orders that qualify as dust on a given side.
+     * Shares the same sizing context as _hasAnyDust but returns the actual order
+     * objects so callers can act on them (e.g. auto-cancel).
+     * @private
+     * @param {import('./types').OrderManager} manager
+     * @param {Array<import('./types').GridOrderSlot>} partials - Candidate partial orders to test.
+     * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+     * @param {Map<string, number>} [thresholdMap=null] - Optional precomputed per-slot dust thresholds.
+     * @returns {Promise<Array<import('./types').GridOrderSlot>>} Orders whose size is below the dust threshold.
+     */
+async function _getDustOrders(manager: any, partials: any, type: any, thresholdMap: any = null): Promise<any[]> {
+        if (!partials || partials.length === 0) return [];
+
+        const thresholds = thresholdMap || await _computeDustThresholdMap(manager, type);
+        if (thresholds.size === 0) return [];
+
+        return partials.filter((p: any) => {
+            const threshold = thresholds.get(p.id);
+            if (!threshold || threshold <= 0) return false;
             return p.size < threshold;
         });
     }

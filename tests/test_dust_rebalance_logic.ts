@@ -576,8 +576,8 @@ async function testDustThresholdUsesConfiguredPercentage() {
     }
 }
 
-async function testDustTrackingOnlyUsesTopLiveOrder() {
-    console.log('Testing Dust Tracking Only Uses Top Live Order...');
+async function testDustTrackingEligibleSetIncludesBelowThresholdInterior() {
+    console.log('Testing Dust Tracking Detects Top And Below-Threshold Interior...');
 
     _setFeeCache({
         BTS: {
@@ -653,9 +653,17 @@ async function testDustTrackingOnlyUsesTopLiveOrder() {
     bot.manager = manager;
 
     try {
+        // inner-dust-sell is an interior partial (below the top) with no
+        // duplicate price level — but its size is below the dust threshold,
+        // so it must be eligible. Without the below-threshold rule it would
+        // strand on the book forever (the residual path only cancels
+        // zero-value residuals, and interior dust rarely has a dup price).
         const initialHealth = await checkWindowDust(manager);
-        assert.strictEqual(initialHealth.sellDustOrders.length, 0, 'Interior dust should not be selected when top order is healthy');
+        assert.strictEqual(initialHealth.sellDustOrders.length, 1, 'Below-threshold interior partial should be selected');
+        assert.strictEqual(initialHealth.sellDustOrders[0].orderId, '1.7.931', 'Below-threshold interior sell should be detected');
 
+        // Once the top-of-window order also drops below the threshold, both
+        // the top partial and the below-threshold interior qualify.
         await manager._updateOrder({
             id: 'top-sell',
             type: ORDER_TYPES.SELL,
@@ -666,10 +674,11 @@ async function testDustTrackingOnlyUsesTopLiveOrder() {
         });
 
         const topHealth = await checkWindowDust(manager);
-        assert.strictEqual(topHealth.sellDustOrders.length, 1, 'Top dust should be selected for tracking');
-        assert.strictEqual(topHealth.sellDustOrders[0].orderId, '1.7.930', 'Top live sell should be the only tracked dust order');
+        assert.strictEqual(topHealth.sellDustOrders.length, 2, 'Top dust plus below-threshold interior should be selected');
+        const trackedIds = topHealth.sellDustOrders.map((o: any) => o.orderId).sort();
+        assert.deepStrictEqual(trackedIds, ['1.7.930', '1.7.931'], 'Top and below-threshold interior sells should both be tracked');
 
-        console.log('  ✓ Only the top live order is eligible for dust tracking');
+        console.log('  ✓ Top-of-window and below-threshold interior partials are eligible for dust tracking');
     } finally {
     }
 }
@@ -761,8 +770,8 @@ async function testInteriorDustWithDuplicatePriceLevel() {
     console.log('  ✓ Interior partial with active sibling at same price is eligible for dust');
 }
 
-async function testInteriorDustAdjacentGridLevelNotEligible() {
-    console.log('Testing Interior Dust At Adjacent Grid Level Is Not Eligible...');
+async function testInteriorDustAboveThresholdNotEligible() {
+    console.log('Testing Interior Dust Above Threshold Is Not Eligible...');
 
     _setFeeCache({
         BTS: {
@@ -789,16 +798,18 @@ async function testInteriorDustAdjacentGridLevelNotEligible() {
     await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
     manager.logger = { log: () => {}, logFundsStatus: () => {} };
 
-    // Setup: two active sells at 1.01 and 1.03, a tiny partial at 1.02 (adjacent, no duplicate)
+    // Setup: two active sells at 1.01 and 1.03, a LARGE partial at 1.02
+    // (adjacent, no duplicate price, and above the dust threshold ~16.7).
     await manager._updateOrder({ id: 's1', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, size: 10, price: 1.01, orderId: '1.7.950' });
-    await manager._updateOrder({ id: 's2', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, size: 0.00001, price: 1.02, orderId: '1.7.951' });
+    await manager._updateOrder({ id: 's2', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, size: 100, price: 1.02, orderId: '1.7.951' });
     await manager._updateOrder({ id: 's3', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, size: 10, price: 1.03, orderId: '1.7.952' });
 
     const health = await checkWindowDust(manager);
-    // s2 at 1.02 is between 1.01 and 1.03 — adjacent but NOT same price level.
-    // The tolerance uses Math.max(0.00001, 10)=10 → tight tolerance (~2e-6) → 0.01 >> 2e-6 → no match.
-    assert.strictEqual(health.sellDustOrders.length, 0, 'Interior partial at adjacent price level should not be eligible for dust');
-    console.log('  ✓ Interior partial at adjacent grid level (within tolerance) is not eligible');
+    // s2 at 1.02 is between 1.01 and 1.03 — adjacent but NOT same price level,
+    // and its size is above the dust threshold. Interior partials only qualify
+    // with a duplicate price level OR a sub-threshold size.
+    assert.strictEqual(health.sellDustOrders.length, 0, 'Above-threshold interior partial at adjacent price level should not be eligible for dust');
+    console.log('  ✓ Above-threshold interior partial at adjacent grid level (within tolerance) is not eligible');
 }
 
 async function testNoBudgetReturnsEmptyDust() {
@@ -881,9 +892,9 @@ Promise.resolve()
     .then(() => testDustCancelNodeFallback())
     .then(() => testDustCancelOrderMissingClassifier())
     .then(() => testDustThresholdUsesConfiguredPercentage())
-    .then(() => testDustTrackingOnlyUsesTopLiveOrder())
+    .then(() => testDustTrackingEligibleSetIncludesBelowThresholdInterior())
     .then(() => testInteriorDustWithDuplicatePriceLevel())
-    .then(() => testInteriorDustAdjacentGridLevelNotEligible())
+    .then(() => testInteriorDustAboveThresholdNotEligible())
     .then(() => testGridMaintenanceWaitsForQuietPeriod())
     .then(() => testNoBudgetReturnsEmptyDust())
     .finally(() => {
