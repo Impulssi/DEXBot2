@@ -30,21 +30,23 @@ DEXBot2 is the first open source trading bot with zero runtime dependencies and 
 ## 🌱 Quick Start
 
 ```bash
-# Option A — Global install (`dexbot` works everywhere)
+# Requires Node.js v22.12 or newer
+# Option A — Global install
 npm i -g dexbot
 
-# Option B — Clone + npm link (`dexbot` works everywhere)
+# Option B — Clone + npm link
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install && npm link
 
 dexbot key                 # Set up master password and import keys
 dexbot bot                 # Create and manage bot configurations
 dexbot start               # Start DEXBot2
 
-# Option C — Clone + local wrappers (no global install)
+# Option C — Clone + local (no global install, works on all platforms)
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
-./dexbot key               # or: npx dexbot key
-./dexbot bot               # or: npx dexbot bot
-./unlock                   # or: npx dexbot start
+
+npx dexbot key                 # Set up master password and import keys
+npx dexbot bot                 # Create and manage bot configurations
+npx dexbot start               # Start DEXBot2
 ```
 
 Detailed setup: [Installation](#-installation).
@@ -65,39 +67,11 @@ New to BitShares? Work through the [BitShares Onboarding Tutorial](docs/BITSHARE
 
 You'll need **Git** and **Node.js** installed.
 
-#### Windows Users
-
-1. Install **Node.js LTS** from [nodejs.org](https://nodejs.org/en/download) (accept defaults, restart after)
-2. Install **Git** from [git-scm.com](https://git-scm.com/install/windows) (accept defaults, restart after)
-3. Verify installation in Command Prompt:
-   ```bash
-   node --version && npm --version && git --version
-   ```
-   All three should display version numbers.
-
-#### macOS Users
-
-Use Homebrew to install Node.js and Git:
-```bash
-# Install Homebrew if not already installed
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install Node.js and Git
-brew install node git
-```
-
 #### Linux Users
 
-DEXBot needs Node.js v22.12 or newer. Most distro repos ship an outdated `nodejs` package, so install Node from [nodejs.org](https://nodejs.org/en/download):
+DEXBot needs Node.js v22.12 or newer. Most distro repos ship an outdated `nodejs` package, so install Node from [nodejs.org](https://nodejs.org/en/download).
 
-```bash
-# e.g. via nvm (from https://nodejs.org/en/download)
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
-\. "$HOME/.nvm/nvm.sh"
-nvm install 24
-```
-
-Install Git from your package manager:
+Install Git:
 
 ```bash
 # Ubuntu/Debian
@@ -108,11 +82,45 @@ sudo apt-get install git
 sudo dnf install git
 ```
 
+Then install Node.js via nvm:
+
+```bash
+# e.g. via nvm (from https://nodejs.org/en/download)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
+\. "$HOME/.nvm/nvm.sh"
+nvm install 24
+```
+
 Verify both installations:
 
 ```bash
 node --version && npm --version && git --version
 ```
+
+#### macOS Users
+
+DEXBot needs Node.js v22.12 or newer.
+
+Use Homebrew to install Node.js and Git:
+```bash
+# Install Homebrew if not already installed
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install Node.js and Git
+brew install node git
+```
+
+#### Windows Users
+
+DEXBot needs Node.js v22.12 or newer.
+
+1. Install **Git** from [git-scm.com](https://git-scm.com/install/windows) (accept defaults, restart after)
+2. Install **Node.js LTS** from [nodejs.org](https://nodejs.org/en/download) (accept defaults, restart after)
+3. Verify installation in Command Prompt:
+   ```cmd
+   node --version && npm --version && git --version
+   ```
+   All three should display version numbers.
 
 ### Install
 
@@ -120,13 +128,13 @@ node --version && npm --version && git --version
 # Option A — Install globally via npm
 npm i -g dexbot
 
-# Option B — Clone + npm link (`dexbot` works everywhere)
+# Option B — Clone + npm link
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install && npm link
 
-# Option C — Clone + local wrappers (no global install)
+# Option C — Clone + local (no global install, works on all platforms)
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
-./dexbot               # or: npx dexbot
-./unlock               # or: npx dexbot start
+npx dexbot
+npx dexbot start
 ```
 
 Then set up your master password, keys and add bots:
