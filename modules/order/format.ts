@@ -134,6 +134,59 @@ function formatPrice4(value: number): string {
 	return safeFormat(value, 4);
 }
 
+/**
+ * Format a number to N significant digits (not fixed decimals).
+ * Examples with digits=4: 1234.5678 -> "1235", 12.3456 -> "12.35", 0.12345 -> "0.1235"
+ *
+ * @param {number} value - The value to format
+ * @param {number} digits - Number of significant digits (default 4)
+ * @returns {string} Formatted value
+ */
+function formatSignificant(value: number, digits: number = 4): string {
+	if (!isValidNumber(value)) return 'N/A';
+	const num = Number(value);
+	if (num === 0) return '0';
+	const abs = Math.abs(num);
+	const intDigits = Math.floor(Math.log10(abs)) + 1;
+	const formatted = intDigits >= digits
+		? String(Math.round(num))
+		: num.toFixed(digits - intDigits);
+	return formatted;
+}
+
+/**
+ * Format a number with SI micro-value suffixes for very small values,
+ * otherwise formats with significant digits and comma grouping.
+ * Examples: 1234.56 -> "1,235", 0.00567 -> "5.67m", 0.00000123 -> "1.23µ"
+ *
+ * @param {number} value - The value to format
+ * @param {number} digits - Number of significant digits (default 4)
+ * @returns {string} Formatted value with suffix if small
+ */
+function formatCurrency(value: number, digits: number = 4): string {
+	if (!isValidNumber(value)) return 'N/A';
+	const num = Number(value);
+	if (num === 0) return '0';
+	const abs = Math.abs(num);
+	if (abs < 0.1) {
+		if (abs >= 0.001) return formatCurrency(num * 1000, digits) + 'm';
+		if (abs >= 0.000001) return formatCurrency(num * 1000000, digits) + 'µ';
+		if (abs >= 1e-9) return formatCurrency(num * 1e9, digits) + 'n';
+		if (abs >= 1e-12) return formatCurrency(num * 1e12, digits) + 'p';
+		if (abs >= 1e-15) return formatCurrency(num * 1e15, digits) + 'f';
+		if (abs >= 1e-18) return formatCurrency(num * 1e18, digits) + 'a';
+		return safeFormat(num, 6);
+	}
+	let intDigits = Math.floor(Math.log10(abs)) + 1;
+	if (abs < 1) intDigits = 1;
+	const formatted: string = intDigits >= digits
+		? String(Math.round(num))
+		: num.toFixed(digits - intDigits);
+	return intDigits >= 4
+		? formatted.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+		: formatted;
+}
+
 // ===============================================================================
 // SECTION 3: PERCENTAGE FORMATTING
 // ===============================================================================
@@ -214,5 +267,5 @@ function safeFormat(value: any, decimals: number, fallback: string = 'N/A'): str
 // EXPORTS
 // ===============================================================================
 
-export { formatAmount8, formatAmount, formatAmountByPrecision, formatSizeByOrderType, formatPrice, formatPrice6, formatPrice4, formatPercent2, formatPercent, formatMetric2, isValidNumber, toFiniteNumber, safeFormat }
+export { formatAmount8, formatAmount, formatAmountByPrecision, formatSizeByOrderType, formatPrice, formatPrice6, formatPrice4, formatSignificant, formatCurrency, formatPercent2, formatPercent, formatMetric2, isValidNumber, toFiniteNumber, safeFormat }
 

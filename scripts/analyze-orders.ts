@@ -19,7 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { formatPrice6 } from '../modules/order/format.js';
+import { formatCurrency } from '../modules/order/format.js';
 import { resolveConfiguredPriceBound } from '../modules/order/utils/order.js';
 import { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } from '../modules/constants.js';
 import { PATHS } from '../modules/paths.js';
@@ -279,42 +279,14 @@ function formatPercent(value: number): string {
 }
 
 /**
- * formatCurrency: Format a number to 5 significant digits without K/M abbreviation.
- * Very small values (< 0.01) use 6 decimal places via formatPrice6.
- * @param {number} value - Numeric value to format
- * @returns {string} Formatted currency/quantity string
- */
-function formatCurrency(value: number): string {
-  if (value === 0) return '0';
-  const abs = Math.abs(value);
-  if (abs < 0.1) {
-    if (abs >= 0.001) return formatCurrency(value * 1000) + 'm';
-    if (abs >= 0.000001) return formatCurrency(value * 1000000) + 'μ';
-    if (abs >= 1e-9) return formatCurrency(value * 1e9) + 'n';
-    if (abs >= 1e-12) return formatCurrency(value * 1e12) + 'p';
-    if (abs >= 1e-15) return formatCurrency(value * 1e15) + 'f';
-    if (abs >= 1e-18) return formatCurrency(value * 1e18) + 'a';
-    return formatPrice6(value);
-  }
-  let intDigits = Math.floor(Math.log10(abs)) + 1;
-  if (abs < 1) intDigits = 1;
-  const formatted: string = intDigits >= 5
-    ? String(Math.round(value))
-    : value.toFixed(5 - intDigits);
-  return intDigits >= 4
-    ? formatted.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
-    : formatted;
-}
-
-/**
  * formatFundsValue: Format a fund amount with compact notation (K/M for ≥1000)
- * and up to 5 significant figures, trimming uninformative trailing zeros.
+ * and up to 4 significant figures, trimming uninformative trailing zeros.
  * Examples:
  *   194395   -> "194.4K"
  *   10000    -> "10K"
  *   1000     -> "1K"
- *   332.33   -> "332.33"
- *   10.389   -> "10.389"
+ *   332.33   -> "332.3"
+ *   10.389   -> "10.39"
  *   1500000  -> "1.5M"
  * @param {number} value
  * @returns {string}
@@ -338,10 +310,10 @@ function formatFundsValue(value: number): string {
   const absQ = Math.abs(quotient);
   const intDigits = Math.floor(Math.log10(Math.max(absQ, 1e-10))) + 1;
   let formatted;
-  if (intDigits >= 5) {
+  if (intDigits >= 4) {
     formatted = String(Math.round(quotient));
   } else {
-    const decimalPlaces = Math.max(0, 5 - intDigits);
+    const decimalPlaces = Math.max(0, 4 - intDigits);
     formatted = quotient.toFixed(decimalPlaces);
     formatted = formatted.replace(/(\.[0-9]*?)0+$/, '$1').replace(/\.$/, '');
   }
