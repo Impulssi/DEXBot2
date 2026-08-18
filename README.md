@@ -36,8 +36,6 @@ npm i -g dexbot
 dexbot key                 # Set up master password and import keys
 dexbot bot                 # Create and manage bot configurations
 dexbot start               # Start DEXBot2
-
-# Developing on DEXBot2? See Install from source below — same commands, same data.
 ```
 
 Detailed setup: [Installation](#-installation).
@@ -110,7 +108,7 @@ brew install node git
 ### Install from npm
 
 ```bash
-npm i -g dexbot   # stable release from the npm registry
+npm i -g dexbot
 ```
 
 ### Install from source (developers)
@@ -118,7 +116,7 @@ npm i -g dexbot   # stable release from the npm registry
 ```bash
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2
 npm install
-npm link          # optional: exposes `dexbot` from your checkout
+npm link
 ```
 
 ### Where your data lives
