@@ -130,9 +130,9 @@ const { classifyBroadcastFailure } = require('./modules/broadcast_failure');
 
 // Unix sockets are required; only Unix-like systems are supported
 
-const RUNTIME_DIR = getCredentialRuntimeDir({ root: PATHS.PROJECT_ROOT });
-const SOCKET_PATH = getCredentialSocketPath({ root: PATHS.PROJECT_ROOT, runtimeDir: RUNTIME_DIR });
-const READY_FILE = getCredentialReadyFilePath({ root: PATHS.PROJECT_ROOT, runtimeDir: RUNTIME_DIR });
+const RUNTIME_DIR = getCredentialRuntimeDir();
+const SOCKET_PATH = getCredentialSocketPath({ runtimeDir: RUNTIME_DIR });
+const READY_FILE = getCredentialReadyFilePath({ runtimeDir: RUNTIME_DIR });
 
 let vaultSecret: any = null;
 let sessionSecret: any = null;
@@ -842,10 +842,10 @@ function getCredentialDaemonNodeRefreshIntervalMs(settings: any) {
  */
 async function initialize() {
     try {
-        // Check if profiles/keys.json exists
-        const keysPath = path.join(PATHS.PROJECT_ROOT, 'profiles', 'keys.json');
+        // Check that the key vault exists at the resolved profiles dir
+        const keysPath = PATHS.PROFILES.KEYS_JSON();
         if (!storage.exists(keysPath)) {
-            throw new Error('profiles/keys.json not found. Please run: tsx dexbot.ts keys');
+            throw new Error('profiles/keys.json not found. Please run: dexbot key');
         }
 
         // Accept a one-shot bootstrap secret when launched by a wrapper,
@@ -966,7 +966,7 @@ async function initialize() {
             daemonLogger.warn?.(`[credential-daemon] Could not watch policy config file ${policyConfigPath}: ${getErrorMessage(watchErr)}. SIGHUP from bot process is now the only reload path.`);
         }
 
-        ensureCredentialRuntimeDirSync({ root: PATHS.PROJECT_ROOT, runtimeDir: RUNTIME_DIR, socketPath: SOCKET_PATH, readyFilePath: READY_FILE });
+        ensureCredentialRuntimeDirSync({ runtimeDir: RUNTIME_DIR });
         daemonLogger.log?.(`[credential-daemon] Runtime socket path: ${SOCKET_PATH}`);
         daemonLogger.log?.(`[credential-daemon] Ready file path: ${READY_FILE}`);
 

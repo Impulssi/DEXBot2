@@ -1,10 +1,10 @@
 
 import * as client from './bitshares_client.js';
 const { createAccountClient } = client;
-import { path } from '../../modules/path_api.js';
 import { getStorage } from '../../modules/storage/index.js';
-import { getDexbot2Root, requireDexbot2Module } from './dexbot_bridge.js';
+import { requireDexbot2Module } from './dexbot_bridge.js';
 import { Config } from '../../modules/config.js';
+import { PATHS } from '../../modules/paths.js';
 import { DAEMON_ERRORS } from '../../modules/constants.js';
 import { getCredentialReadyFilePath } from '../../modules/credential_runtime.js';
 import { runtime } from '../../modules/runtime.js';
@@ -72,8 +72,7 @@ function classifyClawBroadcastError(err: any, ops: any[], accountName: string | 
 
 function _sendSighupToDaemon() {
   try {
-    const root = getDexbot2Root();
-    const readyFile = getCredentialReadyFilePath({ root });
+    const readyFile = getCredentialReadyFilePath();
     if (storage.exists(readyFile)) {
       const daemonInfo = readJSON(readyFile);
       if (daemonInfo && typeof daemonInfo.pid === 'number') {
@@ -113,7 +112,7 @@ async function resolveSessionCredentials(accountName: any, options: Record<strin
 
     // If no secret, try to load it from DEXBot2 profile
     if (!botHmacSecret) {
-      const policyPath = path.join(getDexbot2Root(), 'profiles', 'daemon-policies.json');
+      const policyPath = PATHS.PROFILES.DAEMON_POLICIES_JSON;
       botHmacSecret = policyMod.loadBotHmacSecret(accountName, policyPath);
     }
   } catch (err: any) {

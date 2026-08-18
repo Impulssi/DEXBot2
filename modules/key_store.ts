@@ -109,7 +109,7 @@ export class DaemonKeyStore implements KeyStore {
                     const isSourceAuthError = getErrorMessage(err).includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED);
                     if (isSourceAuthError) {
                         try {
-                            const readyFile = credentialRuntime.getCredentialReadyFilePath({ root: PATHS.PROJECT_ROOT });
+                            const readyFile = credentialRuntime.getCredentialReadyFilePath();
                             if (storage.exists(readyFile)) {
                                 const daemonInfo = storage.readJSON(readyFile);
                                 if (daemonInfo && typeof daemonInfo.pid === 'number') {

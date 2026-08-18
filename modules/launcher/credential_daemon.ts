@@ -36,8 +36,8 @@ function waitForExit(child: any): Promise<any> {
 function createCredentialDaemonController({
     root = PATHS.PROJECT_ROOT,
     codeRoot = DEFAULT_CODE_ROOT,
-    socketPath = getCredentialSocketPath({ root }),
-    readyFilePath = getCredentialReadyFilePath({ root }),
+    socketPath = getCredentialSocketPath(),
+    readyFilePath = getCredentialReadyFilePath(),
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
 } = {}) {
     let daemonProcess: any = null;
@@ -88,8 +88,8 @@ function createCredentialDaemonController({
         }
 
         await removeStaleDaemonFiles();
-        ensureCredentialRuntimeDirSync({ socketPath, readyFilePath, root } as any);
-        credentialPolicy.ensurePolicyConfig(path.join(root, 'profiles', 'daemon-policies.json'));
+        ensureCredentialRuntimeDirSync();
+        credentialPolicy.ensurePolicyConfig(PATHS.PROFILES.DAEMON_POLICIES_JSON);
 
         let vaultSecret;
 

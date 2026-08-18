@@ -29,19 +29,39 @@ function stripAnsi(s: string): string {
     return s.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
-interface RunOpts { env?: Record<string, string | undefined>; cwd?: string; input?: string; }
+interface RunOpts { env?: Record<string, string | undefined>; cwd?: string; input?: string; noHome?: boolean; }
 
-function runScript(scriptPath: string, opts: RunOpts = {}): string {
-    const env = { ...process.env, ...opts.env };
-    if (opts.env?.HOME === undefined) delete env.HOME;
+// Child env: scrub the host's DEXBOT_* overrides and HOME so tests are hermetic
+// regardless of the developer's shell rc / migration state. When the caller
+// does not provide HOME, default it to an empty temp dir (NOT the real passwd
+// home, which would make resolution machine-dependent). Pass noHome to exercise
+// the HOME-unset passwd fallback via a PATH-shimmed getent.
+const HOME_DEFAULT = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-shell-home-'));
+const SCRUBBED_ENV_KEYS = ['HOME', 'DEXBOT_PROFILE_ROOT', 'DEXBOT2_ROOT', 'DEXBOT_MARKET_ADAPTER_DATA_DIR', 'DEXBOT_MARKET_ADAPTER_STATE_DIR', 'DEXBOT_CLAW_DATA_DIR'];
+
+function childEnv(extra: Record<string, string | undefined> = {}, noHome = false): Record<string, string | undefined> {
+    const env: Record<string, string | undefined> = { ...process.env };
+    for (const k of SCRUBBED_ENV_KEYS) delete env[k];
+    Object.assign(env, extra);
+    if (noHome) delete env.HOME;
+    else if (env.HOME === undefined) env.HOME = HOME_DEFAULT;
+    return env;
+}
+
+function runScriptCaptured(scriptPath: string, opts: RunOpts = {}): { stdout: string; stderr: string; status: number } {
     const res = spawnSync('bash', [scriptPath], {
-        env,
+        env: childEnv(opts.env, opts.noHome),
         cwd: opts.cwd || NEUTRAL_CWD,
         input: opts.input,
         encoding: 'utf8',
     });
-    assert.strictEqual(res.status, 0, `script exited ${res.status}: ${res.stderr || res.stdout}`);
-    return stripAnsi(res.stdout);
+    return { stdout: stripAnsi(res.stdout || ''), stderr: stripAnsi(res.stderr || ''), status: res.status ?? -1 };
+}
+
+function runScript(scriptPath: string, opts: RunOpts = {}): string {
+    const r = runScriptCaptured(scriptPath, opts);
+    assert.strictEqual(r.status, 0, `script exited ${r.status}: ${r.stderr || r.stdout}`);
+    return r.stdout;
 }
 
 function grab(lines: string[], label: string): string {
@@ -60,11 +80,15 @@ function copyScripts(destScriptsDir: string): void {
     fs.copyFileSync(path.join(SCRIPTS_DIR, 'lib', 'dexbot-paths.sh'), path.join(destScriptsDir, 'lib', 'dexbot-paths.sh'));
 }
 
-// ── 1) Source checkout layout (fake root with market_adapter/, no files) ─
+// ── 1) Source checkout layout (fake root with market_adapter/, profiles) ─
 {
     const sourceRoot = path.join(tmpRoot, 'source-root');
     copyScripts(path.join(sourceRoot, 'scripts'));
     fs.mkdirSync(path.join(sourceRoot, 'market_adapter'), { recursive: true });
+    // Populated profiles dir → legacy source checkout keeps the repo layout
+    // (even with HOME unset, matching the TS passwd-home resolution).
+    fs.mkdirSync(path.join(sourceRoot, 'profiles'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, 'profiles', 'bots.json'), '{}');
 
     const out = runScript(path.join(sourceRoot, 'scripts', 'clear-logs.sh'));
     check('source clear-logs → <root>/profiles/logs',
@@ -165,16 +189,51 @@ function copyScripts(destScriptsDir: string): void {
 }
 
 // ── 4) cwd fallback mirrors paths.ts:43-50 ─────────────────────────────
+// HOME is defaulted to HOME_DEFAULT, so the cwd fallback warns (stderr) with
+// the same text/condition as modules/paths.ts:109 — parity is asserted, not
+// just the resolved directory.
 {
-    const fakeHome = fs.mkdtempSync(path.join(tmpRoot, 'cwdfb-home-'));
+    const fakeHome = fs.realpathSync(fs.mkdtempSync(path.join(tmpRoot, 'cwdfb-home-')));
     const sourceRoot = path.join(fakeHome, 'clone');
     copyScripts(path.join(sourceRoot, 'scripts'));
     const runCwd = path.join(fakeHome, 'workdir');
     fs.mkdirSync(path.join(runCwd, 'profiles'), { recursive: true });
     fs.writeFileSync(path.join(runCwd, 'profiles', 'bots.json'), '{}');
-    const out = runScript(path.join(sourceRoot, 'scripts', 'clear-orders.sh'), { cwd: runCwd });
+    const r = runScriptCaptured(path.join(sourceRoot, 'scripts', 'clear-orders.sh'), { cwd: runCwd });
     check('cwd fallback → <cwd>/profiles/orders when default has no bots.json',
-        grab(out.split('\n'), 'Orders Directory') === path.join(runCwd, 'profiles', 'orders'));
+        grab(r.stdout.split('\n'), 'Orders Directory') === path.join(runCwd, 'profiles', 'orders'));
+    const wantWarning = `[paths] No home config at ${path.join(HOME_DEFAULT, '.config', 'dexbot2', 'profiles')}; falling back to profiles in the current directory: ${runCwd}/profiles (set DEXBOT_PROFILE_ROOT to override)`;
+    check('cwd fallback warns with TS-parity text (paths.ts:109)',
+        r.stderr.trim() === wantWarning, `got: ${r.stderr.trim()}`);
+}
+
+// ── 4a) No cwd-fallback warning in source or npm layouts ──────────────
+// The warning must only fire for a genuine cwd fallback — never for the
+// expected repo (silent) or home/npm layouts.
+{
+    const fakeHome = fs.realpathSync(fs.mkdtempSync(path.join(tmpRoot, 'quiet-home-')));
+    const sourceRoot = path.join(fakeHome, 'clone');
+    copyScripts(path.join(sourceRoot, 'scripts'));
+    fs.mkdirSync(path.join(sourceRoot, 'profiles'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, 'profiles', 'bots.json'), '{}');
+    const r = runScriptCaptured(path.join(sourceRoot, 'scripts', 'clear-orders.sh'), { cwd: sourceRoot });
+    check('source layout resolves repo profiles silently',
+        grab(r.stdout.split('\n'), 'Orders Directory') === path.join(sourceRoot, 'profiles', 'orders'));
+    check('no cwd-fallback warning for source layout',
+        !r.stderr.includes('falling back to profiles'), `stderr: ${r.stderr}`);
+}
+
+// ── 4b) Keys-only legacy checkout kept (not treated as "fresh") ────────
+{
+    const fakeHome = fs.mkdtempSync(path.join(tmpRoot, 'keysonly-home-'));
+    const sourceRoot = path.join(fakeHome, 'clone');
+    copyScripts(path.join(sourceRoot, 'scripts'));
+    fs.mkdirSync(path.join(sourceRoot, 'profiles'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, 'profiles', 'keys.json'), '{}');
+    const env = { HOME: fakeHome };
+    const out = runScript(path.join(sourceRoot, 'scripts', 'clear-orders.sh'), { env });
+    check('keys-only legacy checkout keeps repo profiles/orders',
+        grab(out.split('\n'), 'Orders Directory') === path.join(sourceRoot, 'profiles', 'orders'));
 }
 
 // ── 5) Functional: clear-all deletes claw + orders + logs + MA files ──
@@ -232,7 +291,7 @@ function copyScripts(destScriptsDir: string): void {
 
     const env = { HOME: fakeHome };
     const res = spawnSync('bash', [path.join(npmRoot, 'scripts', 'create-bot-symlinks.sh')], {
-        env: { ...process.env, ...env },
+        env: childEnv(env),
         cwd: NEUTRAL_CWD,
         encoding: 'utf8',
     });
@@ -244,7 +303,60 @@ function copyScripts(destScriptsDir: string): void {
         !fs.existsSync(path.join(npmRoot, 'profiles')));
 }
 
+// ── 7) Fresh source checkout (no bots.json) → all state under home ─────
+// A source checkout that has not configured bots yet must not split state:
+// profiles AND market-adapter/claw all follow ~/.config/dexbot2/profiles,
+// even though the repo ships a market_adapter/ dir.
+{
+    const fakeHome = fs.mkdtempSync(path.join(tmpRoot, 'fresh-src-home-'));
+    const sourceRoot = path.join(fakeHome, 'clone');
+    copyScripts(path.join(sourceRoot, 'scripts'));
+    fs.mkdirSync(path.join(sourceRoot, 'market_adapter'), { recursive: true });
+    const homeProfiles = path.join(fakeHome, '.config', 'dexbot2', 'profiles');
+    const env = { HOME: fakeHome };
+
+    const out = runScript(path.join(sourceRoot, 'scripts', 'clear-all.sh'), { env });
+    const lines = out.split('\n');
+    check('fresh source → <home>/profiles/orders',
+        grab(lines, 'Orders directory') === path.join(homeProfiles, 'orders'));
+    check('fresh source → <home>/profiles/logs',
+        grab(lines, 'Logs directory') === path.join(homeProfiles, 'logs'));
+    check('fresh source → <home>/profiles/market_adapter/data',
+        grab(lines, 'Market adapter data directory') === path.join(homeProfiles, 'market_adapter', 'data'));
+    check('fresh source → <home>/profiles/market_adapter/state',
+        grab(lines, 'Market adapter state directory') === path.join(homeProfiles, 'market_adapter', 'state'));
+    check('fresh source → <home>/profiles/claw/data',
+        grab(lines, 'Claw data directory') === path.join(homeProfiles, 'claw', 'data'));
+    check('fresh source does not write into the repo',
+        !fs.existsSync(path.join(sourceRoot, 'profiles')) && !fs.existsSync(path.join(sourceRoot, 'market_adapter', 'data')));
+}
+
+// ── 8) HOME unset → passwd home via getent (hermetic) ─────────────────
+// Fix #3 makes a missing HOME consult the passwd entry (getent on Linux).
+// Exercised hermetically by shimming PATH with a fake getent that reports a
+// temp passwd home.
+{
+    const fakePasswdHome = fs.mkdtempSync(path.join(tmpRoot, 'passwd-home-'));
+    const shimDir = path.join(tmpRoot, 'bin-shim');
+    fs.mkdirSync(shimDir, { recursive: true });
+    const uid = (typeof process.getuid === 'function') ? process.getuid() : 1000;
+    fs.writeFileSync(path.join(shimDir, 'getent'),
+        `#!/bin/sh\ncase "$1" in\n  passwd) echo "${uid}:x:1000:1000:fake:${fakePasswdHome}:/bin/sh" ;;\nesac\nexit 0\n`);
+    fs.chmodSync(path.join(shimDir, 'getent'), 0o755);
+
+    const sourceRoot = path.join(tmpRoot, 'passwd-src');
+    copyScripts(path.join(sourceRoot, 'scripts'));
+
+    const out = runScript(path.join(sourceRoot, 'scripts', 'clear-all.sh'), {
+        noHome: true,
+        env: { PATH: `${shimDir}:${process.env.PATH}` },
+    });
+    check('HOME unset → getent passwd home used for profiles',
+        grab(out.split('\n'), 'Orders directory') === path.join(fakePasswdHome, '.config', 'dexbot2', 'profiles', 'orders'));
+}
+
 // ── Cleanup ────────────────────────────────────────────────────────────
+fs.rmSync(HOME_DEFAULT, { recursive: true, force: true });
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 fs.rmSync(NEUTRAL_CWD, { recursive: true, force: true });
 

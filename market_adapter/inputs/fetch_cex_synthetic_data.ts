@@ -19,7 +19,6 @@ const { writeJsonAtomic } = require('../utils/atomic_write');
 const { parseJsonWithComments } = require('../../modules/order/utils/system');
 const { createBotKey } = require('../../modules/account_orders');
 const { PATHS } = require('../../modules/paths');
-const PROJECT_ROOT = PATHS.PROJECT_ROOT;
 const { MARKET_ADAPTER } = require('../../modules/constants');
 const { getAmaWarmupBars } = require('../core/strategies/ama');
 const { getErrorMessage } = require('../../modules/utils/errors');
@@ -892,7 +891,7 @@ function chooseOutputPath(config: any, intervalLabel: any) {
         }
         throw new Error('Provide --bot-key or --out when generating candles');
     }
-    return path.join(PROJECT_ROOT, 'market_adapter', 'data', `market_adapter_${botKey}_${intervalLabel}.json`);
+    return path.join(PATHS.MARKET_ADAPTER.DATA_DIR, `market_adapter_${botKey}_${intervalLabel}.json`);
 }
 
 function dedupeCandles(candles: any) {

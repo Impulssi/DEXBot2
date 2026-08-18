@@ -1,31 +1,22 @@
 
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
-import { dirname as _esmDirname } from 'node:path';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = _esmDirname(__filename);
-const require = createRequire(import.meta.url);
-
 import { path } from './path_api.js';
 import { getStorage } from './storage/index.js';
 import { Config } from './config.js';
 import { runtime } from './runtime.js';
+import { PATHS } from './paths.js';
 const storage = getStorage();
 const { ensureDir } = storage;
 
 interface RuntimeDirOptions {
     runtimeDir?: string;
-    root?: string;
 }
 interface SocketPathOptions {
     socketPath?: string;
     runtimeDir?: string;
-    root?: string;
 }
 interface ReadyFilePathOptions {
     readyFilePath?: string;
     runtimeDir?: string;
-    root?: string;
 }
 interface PrivatePathOptions {
     expectedType?: 'file' | 'dir' | 'socket';
@@ -36,26 +27,6 @@ interface PrivatePathOptions {
 const DEFAULT_RUNTIME_DIR_NAME = 'dexbot2';
 const DEFAULT_SOCKET_BASENAME = 'dexbot-cred-daemon.sock';
 const DEFAULT_READY_BASENAME = 'dexbot-cred-daemon.ready';
-
-let _resolveProjectRoot: any;
-function getResolveProjectRoot() {
-    if (_resolveProjectRoot === undefined) {
-        try {
-            _resolveProjectRoot = require('./launcher/runtime_entry').resolveProjectRoot;
-        } catch {
-            _resolveProjectRoot = null;
-        }
-    }
-    if (!_resolveProjectRoot) {
-        throw new Error('runtime_entry module not available in this environment');
-    }
-    return _resolveProjectRoot;
-}
-
-function getDexbotRoot() {
-    const MODULE_DIR = path.dirname(__dirname);
-    return getResolveProjectRoot()(MODULE_DIR);
-}
 
 function isUsableRuntimeBaseDir(dirPath: any) {
     try {
@@ -80,8 +51,10 @@ function getCredentialRuntimeDir(options: RuntimeDirOptions = {}) {
         }
     }
 
-    const root = options.root ? path.resolve(options.root) : getDexbotRoot();
-    return path.join(root, 'profiles', 'run');
+    // Default: the resolver-derived run dir (PATHS.CREDENTIAL_RUN_DIR lives
+    // under the resolved profiles dir, so it survives re-clones and npm
+    // reinstalls instead of landing inside the package dir).
+    return PATHS.CREDENTIAL_RUN_DIR;
 }
 
 function getCredentialSocketPath(options: SocketPathOptions = {}) {

@@ -34,8 +34,8 @@ const MONOLITHIC_CRED_PID_FILE = PATHS.PROFILES.MONOLITHIC_CRED_PID;
 const MONOLITHIC_OUT_LOG = path.join(PATHS.LOGS_DIR, 'dexbot.log');
 const MONOLITHIC_ERROR_LOG = path.join(PATHS.LOGS_DIR, 'dexbot-error.log');
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
-const CREDENTIAL_SOCKET_FILE = getCredentialSocketPath({ root: PATHS.PROJECT_ROOT });
-const CREDENTIAL_READY_FILE = getCredentialReadyFilePath({ root: PATHS.PROJECT_ROOT });
+const CREDENTIAL_SOCKET_FILE = getCredentialSocketPath();
+const CREDENTIAL_READY_FILE = getCredentialReadyFilePath();
 
 function formatBotCount(count: any) {
     return `${count} ${count === 1 ? 'bot' : 'bots'}`;

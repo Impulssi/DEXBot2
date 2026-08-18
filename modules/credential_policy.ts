@@ -1140,7 +1140,7 @@ function loadBotHmacSecret(accountName: string, policyConfigPath: string, option
         //   - process.kill error (ESRCH=process gone, EPERM=not allowed):
         //     warn — the fs.watch safety net will still pick up the change
         try {
-            const readyFile = getCredentialReadyFilePath({ root: PATHS.PROJECT_ROOT });
+            const readyFile = getCredentialReadyFilePath();
             if (!storage.exists(readyFile)) {
                 info(`[policy] Ready file ${readyFile} not present; daemon not running, SIGHUP skipped`);
                 secret = newSecret;

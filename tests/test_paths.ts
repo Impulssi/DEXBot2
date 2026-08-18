@@ -75,14 +75,105 @@ try {
     restoreEnv({ DEXBOT2_ROOT: ORIG_ENV.DEXBOT2_ROOT });
 }
 
-// ── 3) Neither env var → PROJECT_ROOT/profiles ─────────────────────────
+// ── 3) Neither env var → ~/.config/dexbot2/profiles (fresh install) ────
 // At this point both env vars are cleared (line 1) and never restored.
-const p3 = freshPaths();
-check('Default resolves to PROJECT_ROOT/profiles',
-    p3.PATHS.PROFILES_DIR.endsWith(path.join('profiles')),
-    p3.PATHS.PROFILES_DIR);
+{
+    const fakeHome = fs.mkdtempSync(path.join(tmpRoot, 'fresh-home-'));
+    const fakeRoot = fs.mkdtempSync(path.join(tmpRoot, 'fresh-root-'));
+    const emptyCwd = fs.mkdtempSync(path.join(tmpRoot, 'fresh-cwd-'));
+    const savedHome = process.env.HOME;
+    const savedCwd = process.cwd();
+    process.env.HOME = fakeHome;
+    try {
+        process.chdir(emptyCwd);
+        const p3 = freshPaths();
+        const want = path.join(fakeHome, '.config', 'dexbot2', 'profiles');
+        check('fresh install defaults to ~/.config/dexbot2/profiles',
+            p3.resolveProfilesDir(fakeRoot) === want,
+            `expected ${want}, got ${p3.resolveProfilesDir(fakeRoot)}`);
+    } finally {
+        process.chdir(savedCwd);
+        if (savedHome === undefined) delete process.env.HOME;
+        else process.env.HOME = savedHome;
+    }
+}
+
+// ── 3b) Legacy source checkout: repo profiles kept until home config ───
+{
+    const fakeHome = fs.mkdtempSync(path.join(tmpRoot, 'legacy-home-'));
+    const fakeRoot = fs.mkdtempSync(path.join(tmpRoot, 'legacy-root-'));
+    const repoProfiles = path.join(fakeRoot, 'profiles');
+    fs.mkdirSync(repoProfiles, { recursive: true });
+    fs.writeFileSync(path.join(repoProfiles, 'bots.json'), '{}');
+    const emptyCwd = fs.mkdtempSync(path.join(tmpRoot, 'legacy-cwd-'));
+    const savedHome = process.env.HOME;
+    const savedCwd = process.cwd();
+    process.env.HOME = fakeHome;
+    try {
+        process.chdir(emptyCwd);
+        const p3b = freshPaths();
+        check('legacy repo profiles kept until home config exists',
+            p3b.resolveProfilesDir(fakeRoot) === repoProfiles,
+            `expected ${repoProfiles}, got ${p3b.resolveProfilesDir(fakeRoot)}`);
+    } finally {
+        process.chdir(savedCwd);
+        if (savedHome === undefined) delete process.env.HOME;
+        else process.env.HOME = savedHome;
+    }
+}
+
+// ── 3c) Home config wins once it exists (migration complete) ──────────
+{
+    const fakeHome = fs.mkdtempSync(path.join(tmpRoot, 'migrated-home-'));
+    const homeProfiles = path.join(fakeHome, '.config', 'dexbot2', 'profiles');
+    fs.mkdirSync(homeProfiles, { recursive: true });
+    fs.writeFileSync(path.join(homeProfiles, 'bots.json'), '{}');
+    const fakeRoot = fs.mkdtempSync(path.join(tmpRoot, 'migrated-root-'));
+    const repoProfiles = path.join(fakeRoot, 'profiles');
+    fs.mkdirSync(repoProfiles, { recursive: true });
+    fs.writeFileSync(path.join(repoProfiles, 'bots.json'), '{}');
+    const savedHome = process.env.HOME;
+    const savedWarn = console.warn;
+    process.env.HOME = fakeHome;
+    console.warn = () => { };
+    try {
+        const p3c = freshPaths();
+        check('home config wins once it exists',
+            p3c.resolveProfilesDir(fakeRoot) === homeProfiles,
+            `expected ${homeProfiles}, got ${p3c.resolveProfilesDir(fakeRoot)}`);
+    } finally {
+        console.warn = savedWarn;
+        if (savedHome === undefined) delete process.env.HOME;
+        else process.env.HOME = savedHome;
+    }
+}
+
+// ── 3d) Legacy keys-only checkout kept (not treated as "fresh") ────────
+{
+    const fakeHome = fs.mkdtempSync(path.join(tmpRoot, 'keysonly-home-'));
+    const fakeRoot = fs.mkdtempSync(path.join(tmpRoot, 'keysonly-root-'));
+    const repoProfiles = path.join(fakeRoot, 'profiles');
+    fs.mkdirSync(repoProfiles, { recursive: true });
+    fs.writeFileSync(path.join(repoProfiles, 'keys.json'), '{}');
+    const emptyCwd = fs.mkdtempSync(path.join(tmpRoot, 'keysonly-cwd-'));
+    const savedHome = process.env.HOME;
+    const savedCwd = process.cwd();
+    process.env.HOME = fakeHome;
+    try {
+        process.chdir(emptyCwd);
+        const p3d = freshPaths();
+        check('keys-only legacy checkout keeps repo profiles',
+            p3d.resolveProfilesDir(fakeRoot) === repoProfiles,
+            `expected ${repoProfiles}, got ${p3d.resolveProfilesDir(fakeRoot)}`);
+    } finally {
+        process.chdir(savedCwd);
+        if (savedHome === undefined) delete process.env.HOME;
+        else process.env.HOME = savedHome;
+    }
+}
 
 // ── 4) resolveProfilesDir is exported ──────────────────────────────────
+const p3 = freshPaths();
 check('resolveProfilesDir is exported',
     typeof p3.resolveProfilesDir === 'function');
 
@@ -111,28 +202,70 @@ check('resolveProfilesDir returns a string',
     const fakeNpmRoot = path.join(fakeHome, 'node_modules', 'dexbot');
 
     const savedHome = process.env.HOME;
+    const savedWarn = console.warn;
     process.env.HOME = fakeHome;
+    console.warn = () => { };
     try {
         const p7 = freshPaths();
         check('npm install defaults to ~/.config/dexbot2/profiles',
             p7.resolveProfilesDir(fakeNpmRoot) === homeProfiles,
             `expected ${homeProfiles}, got ${p7.resolveProfilesDir(fakeNpmRoot)}`);
     } finally {
+        console.warn = savedWarn;
         if (savedHome === undefined) delete process.env.HOME;
         else process.env.HOME = savedHome;
     }
 }
 
-// ── 8) Market adapter dirs: source layout when market_adapter exists ──
+// ── 7b) npm install with cwd legacy profiles → cwd fallback ───────────
+{
+    const fakeHome = fs.mkdtempSync(path.join(tmpRoot, 'npm-cwd-home-'));
+    const cwdRoot = fs.mkdtempSync(path.join(tmpRoot, 'npm-cwd-root-'));
+    const cwdProfiles = path.join(cwdRoot, 'profiles');
+    fs.mkdirSync(cwdProfiles, { recursive: true });
+    fs.writeFileSync(path.join(cwdProfiles, 'bots.json'), '{}');
+    const fakeNpmRoot = path.join(fakeHome, 'node_modules', 'dexbot');
+    const savedHome = process.env.HOME;
+    const savedCwd = process.cwd();
+    process.env.HOME = fakeHome;
+    try {
+        process.chdir(cwdRoot);
+        const p7b = freshPaths();
+        check('npm install falls back to cwd profiles when no home config',
+            p7b.resolveProfilesDir(fakeNpmRoot) === cwdProfiles,
+            `expected ${cwdProfiles}, got ${p7b.resolveProfilesDir(fakeNpmRoot)}`);
+    } finally {
+        process.chdir(savedCwd);
+        if (savedHome === undefined) delete process.env.HOME;
+        else process.env.HOME = savedHome;
+    }
+}
+
+// ── 8) Market adapter dirs: source layout when profiles resolve to repo ──
 {
     const p8 = freshPaths();
     const repoRoot = path.resolve(__dirname, '..');
-    const ma = p8.resolveMarketAdapterDirs(tmpRoot, repoRoot);
+    const repoProfiles = path.join(repoRoot, 'profiles');
+    const ma = p8.resolveMarketAdapterDirs(repoProfiles, repoRoot);
     check('source checkout keeps PROJECT_ROOT/market_adapter data',
         ma.DATA_DIR === path.join(repoRoot, 'market_adapter', 'data'),
         ma.DATA_DIR);
     check('source checkout keeps PROJECT_ROOT/market_adapter state',
         ma.STATE_DIR === path.join(repoRoot, 'market_adapter', 'state'),
+        ma.STATE_DIR);
+}
+
+// ── 8b) Fresh source checkout (home profiles) → MA follows profiles ─────
+{
+    const p8b = freshPaths();
+    const repoRoot = path.resolve(__dirname, '..');
+    const homeProfiles = path.join(tmpRoot, 'fresh-ma-home', '.config', 'dexbot2', 'profiles');
+    const ma = p8b.resolveMarketAdapterDirs(homeProfiles, repoRoot);
+    check('fresh source checkout relocates MA data under profiles',
+        ma.DATA_DIR === path.join(homeProfiles, 'market_adapter', 'data'),
+        ma.DATA_DIR);
+    check('fresh source checkout relocates MA state under profiles',
+        ma.STATE_DIR === path.join(homeProfiles, 'market_adapter', 'state'),
         ma.STATE_DIR);
 }
 
@@ -177,16 +310,31 @@ check('resolveProfilesDir returns a string',
     }
 }
 
-// ── 11) Claw data dirs: source checkout keeps PROJECT_ROOT/claw/data ──
+// ── 11) Claw data dirs: source layout when profiles resolve to repo ────
 {
     const p11 = freshPaths();
     const repoRoot = path.resolve(__dirname, '..');
-    const claw = p11.resolveClawDirs(tmpRoot, repoRoot);
+    const repoProfiles = path.join(repoRoot, 'profiles');
+    const claw = p11.resolveClawDirs(repoProfiles, repoRoot);
     check('source checkout keeps PROJECT_ROOT/claw data',
         claw.DATA_DIR === path.join(repoRoot, 'claw', 'data'),
         claw.DATA_DIR);
     check('source checkout keeps positions under claw data',
         claw.POSITIONS_FILE === path.join(repoRoot, 'claw', 'data', 'positions.json'),
+        claw.POSITIONS_FILE);
+}
+
+// ── 11b) Fresh source checkout (home profiles) → claw follows profiles ──
+{
+    const p11b = freshPaths();
+    const repoRoot = path.resolve(__dirname, '..');
+    const homeProfiles = path.join(tmpRoot, 'fresh-claw-home', '.config', 'dexbot2', 'profiles');
+    const claw = p11b.resolveClawDirs(homeProfiles, repoRoot);
+    check('fresh source checkout relocates claw data under profiles',
+        claw.DATA_DIR === path.join(homeProfiles, 'claw', 'data'),
+        claw.DATA_DIR);
+    check('fresh source checkout relocates positions under profiles',
+        claw.POSITIONS_FILE === path.join(homeProfiles, 'claw', 'data', 'positions.json'),
         claw.POSITIONS_FILE);
 }
 
@@ -224,6 +372,41 @@ check('resolveProfilesDir returns a string',
     } finally {
         cfg.DEXBOT_CLAW_DATA_DIR = saved;
     }
+}
+
+// ── 14) Relocation notice when MA/claw state would be orphaned ─────────
+// A home config that relocates MA/claw away from the repo, while the repo
+// still holds old state, must yield a warning so the user knows their claw
+// positions / adapter state are no longer being read. Tested hermetically via
+// the exported computeRelocationNotices() with fake fixtures (the module-load
+// warning itself only fires when the real repo holds state, which is gitignored
+// and absent on fresh clones/CI).
+{
+    const repoRoot = path.join(tmpRoot, 'reloc-repo');
+    fs.mkdirSync(path.join(repoRoot, 'market_adapter', 'data'), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, 'market_adapter', 'data', 'candles.json'), '{}');
+    fs.mkdirSync(path.join(repoRoot, 'claw', 'data'), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, 'claw', 'data', 'positions.json'), '{}');
+    const homeProfiles = path.join(tmpRoot, 'reloc-home', '.config', 'dexbot2', 'profiles');
+    // Old claw credit-runtime adapter double-joined the profiles segment
+    // (profileRoot + '/profiles/credit_runtime'); simulate that orphan state.
+    fs.mkdirSync(path.join(homeProfiles, 'profiles', 'credit_runtime'), { recursive: true });
+    fs.writeFileSync(path.join(homeProfiles, 'profiles', 'credit_runtime', 'state.json'), '{}');
+
+    const p14 = freshPaths();
+    const notices = p14.computeRelocationNotices(homeProfiles, repoRoot);
+    check('warns when MA/claw state would be orphaned by relocation',
+        notices.some((n) => n.includes('Claw state exists') || n.includes('Market adapter state exists')),
+        notices.join(' | '));
+    check('warns when double-joined credit_runtime state would be orphaned',
+        notices.some((n) => n.includes('Credit runtime state exists') && n.includes('profiles/credit_runtime')),
+        notices.join(' | '));
+    check('relocation notice names the new location and migration env vars',
+        notices.every((n) => n.includes('set DEXBOT_')),
+        notices.join(' | '));
+    const quiet = p14.computeRelocationNotices(path.join(repoRoot, 'profiles'), repoRoot);
+    check('no relocation notice when profiles stay at the repo layout',
+        quiet.length === 0, quiet.join(' | '));
 }
 
 // ── Summary ────────────────────────────────────────────────────────────

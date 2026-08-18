@@ -206,13 +206,16 @@ Market-adapter settings resolve in this order:
 
 ### Data and State Location
 
-The adapter keeps candle data and runtime state in a layout that depends on the
-install type:
+The adapter keeps candle data and runtime state in a layout that follows where
+the profiles dir resolves (`~/.config/dexbot2/profiles` by default for all
+installs; a source checkout keeps `<install-root>/profiles` while a populated
+profiles dir exists there — `bots.json`, `keys.json`, settings, or launcher
+config):
 
 | Install | Data / state dir |
 |---------|------------------|
-| Source checkout | `<install-root>/market_adapter/data` and `<install-root>/market_adapter/state` |
-| Global npm install (`npm i -g dexbot`) | `<profiles>/market_adapter/data` and `<profiles>/market_adapter/state`, where `<profiles>` defaults to `~/.config/dexbot2/profiles` |
+| Source checkout with repo profiles | `<install-root>/market_adapter/data` and `<install-root>/market_adapter/state` |
+| Global npm install / fresh source checkout | `<profiles>/market_adapter/data` and `<profiles>/market_adapter/state`, where `<profiles>` defaults to `~/.config/dexbot2/profiles` |
 
 npm packages ship only compiled `dist/market_adapter/`, so state is relocated
 under the profiles dir instead of being written into the package dir (which npm

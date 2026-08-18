@@ -1,18 +1,17 @@
 
-import { path } from '../../modules/path_api.js';
-import { Config } from '../../modules/config.js';
+import { PATHS } from '../../modules/paths.js';
 import CreditRuntime from '../../modules/credit_runtime.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
 'use strict';
 
 
-const DEFAULT_CREDIT_RUNTIME_DIR = 'profiles/credit_runtime';
-
 function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {}) {
   const _runtimes = new Map<string, any>();
-  const _stateDir: string =
-    options.stateDir ||
-    path.join(infra.runtime?.profileRoot || Config.CWD, DEFAULT_CREDIT_RUNTIME_DIR);
+  // Mirror the bot-side credit runtime state dir (PATHS.CREDIT_RUNTIME_DIR),
+  // so claw status/maintenance/watchdog see the same persisted state. The old
+  // `profileRoot/profiles/credit_runtime` join double-counted the profiles
+  // segment and ignored the resolver.
+  const _stateDir: string = options.stateDir || PATHS.CREDIT_RUNTIME_DIR;
 
   function _buildBotShim(botEntry: Record<string, any>): any {
     return {

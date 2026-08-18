@@ -31,15 +31,13 @@ DEXBot2 is the first open source trading bot with zero runtime dependencies and 
 
 ```bash
 # Requires Node.js v22.12 or newer
-# Option A — Global install
 npm i -g dexbot
-
-# Option B — Clone + npm link
-git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install && npm link
 
 dexbot key                 # Set up master password and import keys
 dexbot bot                 # Create and manage bot configurations
 dexbot start               # Start DEXBot2
+
+# Developing on DEXBot2? See Install from source below — same commands, same data.
 ```
 
 Detailed setup: [Installation](#-installation).
@@ -109,15 +107,23 @@ brew install node git
    ```
    All three should display version numbers.
 
-### Install
+### Install from npm
 
 ```bash
-# Option A — Install globally via npm
-npm i -g dexbot
-
-# Option B — Clone + npm link
-git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install && npm link
+npm i -g dexbot   # stable release from the npm registry
 ```
+
+### Install from source (developers)
+
+```bash
+git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2
+npm install
+npm link          # optional: exposes `dexbot` from your checkout
+```
+
+### Where your data lives
+
+Both installs use the same CLI and store all user state — keys, `bots.json`, logs — in `~/.config/dexbot2/profiles` (Windows: `%USERPROFILE%\.config\dexbot2\profiles`). State lives outside the repo/package tree, so it survives reinstalls and `npm update -g`. A source checkout that already contains a populated `profiles/` directory keeps using it. Override the location with `DEXBOT_PROFILE_ROOT` (see the [developer guide](docs/developer_guide.md)).
 
 ## 🔧 Configuration
 
@@ -135,7 +141,7 @@ git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install &&
    dexbot bot
    ```
 
-   This stores your configuration in `profiles/bots.json`. The generated
+   This stores your configuration in `bots.json` in the [profiles directory](#where-your-data-lives). The generated
    defaults are a good starting point — the next step walks through the few
    options worth tuning.
 
@@ -160,7 +166,7 @@ Keep the default settings first, and tune these:
    dexbot white
    ```
 
-   This writes `profiles/market_adapter_whitelist.json`. New AMA bots get AMA
+   This writes `market_adapter_whitelist.json` in the profiles directory. New AMA bots get AMA
    live writes and range scaling. Use `dexbot white --dynamic-weight` for
    newly generated dynamic-weight entries; existing entries are preserved.
 
@@ -172,7 +178,7 @@ Keep the default settings first, and tune these:
 
 ### Bot Options Reference
 
-Configuration options from `dexbot bot`, stored in `profiles/bots.json`:
+Configuration options from `dexbot bot`, stored in `bots.json` in the profiles directory:
 
 <details><summary><mark>Full parameter reference (click to expand)</mark></summary>
 
@@ -199,7 +205,7 @@ Configuration options from `dexbot bot`, stored in `profiles/bots.json`:
 
 ### General Options (Global)
 
-Global settings via `dexbot bot`, stored in `profiles/general.settings.json`:
+Global settings via `dexbot bot`, stored in `general.settings.json` in the profiles directory:
 
 <details><summary><mark>Global settings reference (click to expand)</mark></summary>
 
@@ -213,7 +219,7 @@ Global settings via `dexbot bot`, stored in `profiles/general.settings.json`:
 
 ### Constants and Overrides
 
-Defaults in [`modules/constants.ts`](modules/constants.ts) are overridable at global, pair, and bot level via `profiles/general.settings.json`, `profiles/market_profiles.json`, and `profiles/market_adapter_settings.json`. See [market_adapter/README.md](market_adapter/README.md#settings-and-overrides) for examples.
+Defaults in [`modules/constants.ts`](modules/constants.ts) are overridable at global, pair, and bot level via `general.settings.json`, `market_profiles.json`, and `market_adapter_settings.json` in the profiles directory. See [market_adapter/README.md](market_adapter/README.md#settings-and-overrides) for examples.
 
 ## 🎯 Zero-Dependency Process Management
 
@@ -264,7 +270,7 @@ Always use `dexbot pm2 restart` instead of raw `pm2 restart all` — the wrapper
 
 > Repo-root users can use `./pm2` instead of `dexbot pm2`.
 
-Logs are written to `profiles/logs/` in all modes: the monolithic runtime uses `dexbot.log` / `dexbot-error.log`, and per-bot output uses `<bot>.log` / `<bot>-error.log`.
+Logs are written to `logs/` in the profiles directory in all modes: the monolithic runtime uses `dexbot.log` / `dexbot-error.log`, and per-bot output uses `<bot>.log` / `<bot>-error.log`.
 
 ## 📚 Documentation
 

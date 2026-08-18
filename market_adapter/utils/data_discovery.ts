@@ -1,13 +1,13 @@
 
 import { path } from '../../modules/path_api.js';
 import { getStorage } from '../../modules/storage/index.js';
-import { PROJECT_ROOT } from './paths.js';
+import { PATHS } from '../../modules/paths.js';
 'use strict';
 
 const storage = getStorage();
 
 function findLatestLpData(options: any = {}) {
-    const dataDir = options.dataDir ? path.resolve(options.dataDir) : path.join(PROJECT_ROOT, 'market_adapter', 'data', 'lp');
+    const dataDir = options.dataDir ? path.resolve(options.dataDir) : PATHS.MARKET_ADAPTER.LP_DATA_DIR;
     const out: any[] = [];
 
     if (!storage.exists(dataDir)) return null;

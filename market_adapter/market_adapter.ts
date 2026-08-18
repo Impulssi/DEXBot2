@@ -1069,6 +1069,7 @@ const adapterService = new MarketAdapterService({
     isBotAsymmetricBoundsWhitelisted,
     logger,
     root: ROOT,
+    ordersDir: ORDERS_DIR,
     path,
 });
 

@@ -1904,17 +1904,24 @@ Control bot behavior via environment variables (useful for advanced setups):
 | `OPEN_ORDERS_SYNC_LOOP_MS` | Open-orders sync polling interval in ms (default: `300000` / 5 minutes) |
 | `CALC_CYCLES` | Calculation passes for standalone grid calculator (default: `3`) |
 | `CALC_DELAY_MS` | Delay between calculator cycles in ms (default: `500`) |
-| `DEXBOT_PROFILE_ROOT` | Override the profiles directory (default: `<install-root>/profiles`, or `~/.config/dexbot2/profiles` for global npm installs) |
+| `DEXBOT_PROFILE_ROOT` | Override the profiles directory (default: `~/.config/dexbot2/profiles` for all installs; a source checkout keeps `<install-root>/profiles` while a populated profiles dir exists there — `bots.json`, `keys.json`, settings, or launcher config) |
 | `DEXBOT2_ROOT` | Base directory whose `profiles/` subdirectory is used (legacy; overridden by `DEXBOT_PROFILE_ROOT`) |
-| `DEXBOT_MARKET_ADAPTER_DATA_DIR` | Override the market adapter candle/data directory (default: `<install-root>/market_adapter/data`, or `<profiles>/market_adapter/data` for npm installs) |
-| `DEXBOT_MARKET_ADAPTER_STATE_DIR` | Override the market adapter state directory (default: `<install-root>/market_adapter/state`, or `<profiles>/market_adapter/state` for npm installs) |
-| `DEXBOT_CLAW_DATA_DIR` | Override the claw data directory — positions, watcher health, memu (default: `<install-root>/claw/data`, or `<profiles>/claw/data` for npm installs) |
+| `DEXBOT_MARKET_ADAPTER_DATA_DIR` | Override the market adapter candle/data directory (default: `<install-root>/market_adapter/data` when profiles resolve to the install root, else `<profiles>/market_adapter/data`) |
+| `DEXBOT_MARKET_ADAPTER_STATE_DIR` | Override the market adapter state directory (default: `<install-root>/market_adapter/state` when profiles resolve to the install root, else `<profiles>/market_adapter/state`) |
+| `DEXBOT_CLAW_DATA_DIR` | Override the claw data directory — positions, watcher health, memu (default: `<install-root>/claw/data` when profiles resolve to the install root, else `<profiles>/claw/data`) |
 
-Global npm installs (`npm i -g dexbot`) never write user state into the package
-dir: profiles, market-adapter data/state, and claw data relocate under
-`~/.config/dexbot2/profiles` (or a `DEXBOT_PROFILE_ROOT` override). The
-`dexbot clear*` / `dexbot default` CLI commands and the shipped `scripts/clear-*.sh`
-resolve the same directories via `scripts/lib/dexbot-paths.sh`.
+User state (profiles, market-adapter data/state, and claw data) defaults to
+`~/.config/dexbot2/profiles` for all installs, so it lives outside the
+repo/package tree, survives re-clones and `npm update -g`, and is never wiped
+by package reinstalls. A source checkout with an existing populated `profiles/`
+dir (any well-known profile file: `bots.json`, `keys.json`, settings, or launcher
+config — not just bots) keeps its current `<install-root>/profiles` layout until
+a home config exists (or a `DEXBOT_PROFILE_ROOT` override is set). The
+`dexbot clear*` / `dexbot default` CLI commands and the shipped
+`scripts/clear-*.sh` resolve the same directories via
+`scripts/lib/dexbot-paths.sh`. If market-adapter/claw state is relocated away
+from a repo that still holds old files, a startup notice points at the new
+location and the env overrides to migrate.
 
 Example — run a specific bot with a custom sync interval:
 ```bash

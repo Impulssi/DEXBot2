@@ -4,11 +4,23 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 
+// Point the resolver at a throwaway profile root BEFORE any module load, so
+// PATHS.PROFILES_DIR / PATHS.CREDENTIAL_RUN_DIR resolve under tmp and the
+// fallback assertions never touch the repo's real profiles dir.
+//
+// MUST be unconditional: if a developer/CI exported DEXBOT_PROFILE_ROOT, we
+// must NOT adopt it here (the finally block would rmSync it). Save the
+// original, always use a pid-scoped tmp root, and only ever delete that tmp.
+const ORIGINAL_DEXBOT_PROFILE_ROOT = process.env.DEXBOT_PROFILE_ROOT;
+const TEST_PROFILE_ROOT = path.join(os.tmpdir(), `dexbot-cred-runtime-tests-${process.pid}`);
+process.env.DEXBOT_PROFILE_ROOT = TEST_PROFILE_ROOT;
+
 console.log('Running credential runtime path tests');
 
 const runtime = require('../modules/credential_runtime');
 const { Config } = require('../modules/config');
 const { ensureDir } = require('../modules/storage').getStorage();
+const { PATHS } = require('../modules/paths');
 
 function withConfigSnapshot(fn) {
     const snapshot = {
@@ -37,16 +49,15 @@ function testDefaultPathsUseProfilesRun() {
         Config.DEXBOT_CRED_DAEMON_SOCKET = undefined;
         Config.DEXBOT_CRED_DAEMON_READY_FILE = undefined;
 
-        const root = path.resolve(__dirname, '..');
-        const runtimeDir = runtime.getCredentialRuntimeDir({ root });
-        assert.strictEqual(runtimeDir, path.join(root, 'profiles', 'run'));
+        const expectedRuntimeDir = PATHS.CREDENTIAL_RUN_DIR;
+        assert.strictEqual(runtime.getCredentialRuntimeDir(), expectedRuntimeDir);
         assert.strictEqual(
-            runtime.getCredentialSocketPath({ root }),
-            path.join(root, 'profiles', 'run', 'dexbot-cred-daemon.sock')
+            runtime.getCredentialSocketPath(),
+            path.join(expectedRuntimeDir, 'dexbot-cred-daemon.sock')
         );
         assert.strictEqual(
-            runtime.getCredentialReadyFilePath({ root }),
-            path.join(root, 'profiles', 'run', 'dexbot-cred-daemon.ready')
+            runtime.getCredentialReadyFilePath(),
+            path.join(expectedRuntimeDir, 'dexbot-cred-daemon.ready')
         );
     });
 }
@@ -142,7 +153,6 @@ async function testSecurePathChecksRecognizePrivateFilesAndSockets() {
 function testInvalidXdgRuntimeFallsBackToProfilesRun() {
     withConfigSnapshot((restore) => {
         const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-runtime-fallback-'));
-        const root = path.join(baseDir, 'project-root');
         const invalidXdg = path.join(baseDir, 'missing', 'runtime');
 
         Config.DEXBOT_CRED_RUNTIME_DIR = undefined;
@@ -151,14 +161,14 @@ function testInvalidXdgRuntimeFallsBackToProfilesRun() {
         Config.XDG_RUNTIME_DIR = invalidXdg;
 
         try {
-            const expectedRuntimeDir = path.join(root, 'profiles', 'run');
+            const expectedRuntimeDir = PATHS.CREDENTIAL_RUN_DIR;
             assert.strictEqual(
-                runtime.getCredentialRuntimeDir({ root }),
+                runtime.getCredentialRuntimeDir(),
                 expectedRuntimeDir,
                 'invalid XDG runtime directories should fall back to profiles/run'
             );
             assert.strictEqual(
-                runtime.ensureCredentialRuntimeDirSync({ root }),
+                runtime.ensureCredentialRuntimeDirSync(),
                 expectedRuntimeDir,
                 'runtime directory creation should also use the fallback path'
             );
@@ -207,15 +217,27 @@ function testRootBypassesOwnerCheck() {
 }
 
 (async () => {
-    testDefaultPathsUseProfilesRun();
-    testXdgRuntimeOverride();
-    testEnsureRuntimeDirUsesPrivatePermissions();
-    await testSecurePathChecksRecognizePrivateFilesAndSockets();
-    testInvalidXdgRuntimeFallsBackToProfilesRun();
-    testRootBypassesOwnerCheck();
-
-    console.log('credential runtime path tests passed');
-    process.exit(0);
+    // NOTE: process.exit() does not unwind the stack, so cleanup MUST happen
+    // in this finally BEFORE the exit call below.
+    let passed = false;
+    try {
+        testDefaultPathsUseProfilesRun();
+        testXdgRuntimeOverride();
+        testEnsureRuntimeDirUsesPrivatePermissions();
+        await testSecurePathChecksRecognizePrivateFilesAndSockets();
+        testInvalidXdgRuntimeFallsBackToProfilesRun();
+        testRootBypassesOwnerCheck();
+        passed = true;
+    } finally {
+        try { fs.rmSync(TEST_PROFILE_ROOT, { recursive: true, force: true }); } catch (err) { }
+        if (ORIGINAL_DEXBOT_PROFILE_ROOT === undefined) delete process.env.DEXBOT_PROFILE_ROOT;
+        else process.env.DEXBOT_PROFILE_ROOT = ORIGINAL_DEXBOT_PROFILE_ROOT;
+    }
+    if (passed) {
+        console.log('credential runtime path tests passed');
+        process.exit(0);
+    }
+    process.exit(1);
 })().catch((err) => {
     console.error(err);
     process.exit(1);

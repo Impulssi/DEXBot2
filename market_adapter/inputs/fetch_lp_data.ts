@@ -64,7 +64,6 @@ const FETCH_TIMEOUT_MS = MARKET_ADAPTER.KIBANA_REQUEST_TIMEOUT_MS;
 const FETCH_MAX_ATTEMPTS = MARKET_ADAPTER.RUNTIME_DEFAULTS.sourceRetries;
 const FETCH_MANIFEST_VERSION = 1;
 
-const PROJECT_ROOT = PATHS.PROJECT_ROOT;
 const BOTS_JSON = PATHS.PROFILES.BOTS_JSON;
 
 // ─── CLI ──────────────────────────────────────────────────────────────────────
@@ -119,7 +118,7 @@ function outputPath(poolId: any, intervalSeconds: any, assetA: any, assetB: any)
     const label = toIntervalLabel(intervalSeconds);
     const id  = String(poolId).replace('1.19.', '');
     const pairFolder = pairFolderName(assetA, assetB);
-    return path.join(PROJECT_ROOT, 'market_adapter', 'data', 'lp', pairFolder, `lp_pool_${id}_${label}.json`);
+    return path.join(PATHS.MARKET_ADAPTER.LP_DATA_DIR, pairFolder, `lp_pool_${id}_${label}.json`);
 }
 
 function applyPrecisionOverrides(assetA: any, assetB: any, precA: any, precB: any) {
@@ -130,7 +129,7 @@ function applyPrecisionOverrides(assetA: any, assetB: any, precA: any, precB: an
 }
 
 function pairFolderPath(assetASymbol: any, assetBSymbol: any) {
-    return path.join(PROJECT_ROOT, 'market_adapter', 'data', 'lp', pairFolderName(
+    return path.join(PATHS.MARKET_ADAPTER.LP_DATA_DIR, pairFolderName(
         { symbol: assetASymbol },
         { symbol: assetBSymbol }
     ));

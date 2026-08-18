@@ -139,8 +139,8 @@ const ECOSYSTEM_FILE = PATHS.PROFILES.ECOSYSTEM_CONFIG_JS;
 const POLICY_CONFIG_FILE = PATHS.PROFILES.DAEMON_POLICIES_JSON;
 const LOGS_DIR = PATHS.LOGS_DIR;
 const CREDENTIAL_DAEMON_APP_NAME = 'dexbot-cred';
-const CREDENTIAL_SOCKET_PATH = getCredentialSocketPath({ root: PATHS.PROJECT_ROOT });
-const CREDENTIAL_READY_FILE = getCredentialReadyFilePath({ root: PATHS.PROJECT_ROOT });
+const CREDENTIAL_SOCKET_PATH = getCredentialSocketPath();
+const CREDENTIAL_READY_FILE = getCredentialReadyFilePath();
 
 function runtimeScript(...segments: string[]) {
     return path.join(CODE_ROOT, ...segments);
@@ -380,7 +380,7 @@ async function ensureCredentialDaemonPM2({ forceRefresh = false, headless = fals
     headless?: boolean;
     passwordFile?: string | null;
 } = {}) {
-    ensureCredentialRuntimeDirSync({ root: PATHS.PROJECT_ROOT, socketPath: CREDENTIAL_SOCKET_PATH, readyFilePath: CREDENTIAL_READY_FILE });
+    ensureCredentialRuntimeDirSync();
     credentialPolicy.ensurePolicyConfig(POLICY_CONFIG_FILE);
     const daemonReady = await chainKeys.isDaemonResponsive({
         socketPath: CREDENTIAL_SOCKET_PATH,

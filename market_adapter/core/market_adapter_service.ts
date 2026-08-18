@@ -121,6 +121,12 @@ function computeGridPriceOffsetPlan(bot: any, amaSlope: any){
 class MarketAdapterService {
     deps: any;
     constructor(deps: any = {}) {
+        // ordersDir is resolver-derived when injected by market_adapter.ts;
+        // fall back to the legacy root/profiles/orders layout for direct
+        // construction (tests, embedders) so it never stays undefined.
+        if (!deps.ordersDir && deps.root) {
+            deps.ordersDir = deps.path.join(deps.root, 'profiles', 'orders');
+        }
         this.deps = deps;
     }
 
@@ -1762,7 +1768,7 @@ class MarketAdapterService {
             botState.centerPrice = stateGridCenterPrice;
         }
         const dynGridPath = deps.path.join(
-            deps.root, 'profiles', 'orders', `${bot.botKey}.dynamicgrid.json`,
+            deps.ordersDir, `${bot.botKey}.dynamicgrid.json`,
         );
         const persistedDynamicGridState = typeof deps.loadJson === 'function'
             ? this.extractPersistedDynamicGridState(deps.loadJson(dynGridPath, null), lookbackBars)

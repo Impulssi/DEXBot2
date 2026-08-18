@@ -54,7 +54,10 @@ function normalizeProfileDir(options: Record<string, any> = {}) {
   if (options.profileRoot) {
     return path.resolve(options.profileRoot);
   }
-  return path.join(DEFAULT_ROOT, 'profiles');
+  // Follow the runtime-resolved profiles dir so the launcher config
+  // (launcher.config.json) lives with the rest of user state — including the
+  // home default for fresh checkouts / global npm installs.
+  return PATHS.PROFILES_DIR;
 }
 
 function resolveRuntimeScript(root: string, ...segments: string[]) {

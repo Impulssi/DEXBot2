@@ -759,7 +759,10 @@ function resolveProfilesDir(profileRoot: any) {
     return root;
   }
 
-  return Config.CWD ? path.resolve(Config.CWD, 'profiles') : PATHS.PROFILES_DIR;
+  // Fresh default: the central resolver (home for fresh/npm installs, with
+  // legacy repo/cwd migration and DEXBOT_PROFILE_ROOT override). Do not fall
+  // back to a bare CWD/profiles — that ignored a migrated home config.
+  return PATHS.PROFILES_DIR;
 }
 
 function readJsonFile(filePath: any) {
