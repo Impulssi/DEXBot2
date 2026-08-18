@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.15 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.16 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 2,005 commits over ~8 active months
+- **Growth Phase**: 2,024 commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 247 automated test files
-- **Releases**: 92 release entries (v0.1.0 to v1.4.15)
+- **Releases**: 93 release entries (v0.1.0 to v1.4.16)
 
 ---
 
@@ -67,11 +67,15 @@ v1.4.12 completed the module transition to native ES modules (root + claw flip t
 
 v1.4.13 added a single-flight guard that serializes overlapping COW broadcasts (preventing orphan fills), closed fill-lock bypasses, hardened the no-ALS AsyncLock fallback, fixed ESM packaging gaps (engines `>=22.12.0`, `exports` map, browser classification), promoted `dexbot start` to the canonical launch command, stripped residual TUI-dashboard references, and added a BitShares onboarding tutorial for new users.
 
+### Phase 11: Unified Profile-State Resolution, In-Place Order Rotations & npm Auto-Update (August 2026)
+
+v1.4.16 centralized all user/runtime state onto a single resolver-derived profiles dir (`~/.config/dexbot2/profiles` for every install) so state survives re-clones and npm updates and never lands in a read-only package dir, with the credential runtime and shell-path mirror following the same resolution. Divergence corrections turn same-side surplus-cancel + hole-create pairs into single in-place `limit_order_update` rotations (fewer ops, order ids preserved), auto-update gained an npm-registry flow for global installs, and `chainKeys.authenticate()` no longer prompts for a master password when no vault exists.
+
 ---
 
 ## Development Statistics
 
-The project has accumulated 247 automated test files across 92 release entries. See the **Version History** below for a per-release commit breakdown.
+The project has accumulated 247 automated test files across 93 release entries. See the **Version History** below for a per-release commit breakdown.
 
 ---
 
@@ -190,11 +194,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.12 → v1.4.13 | 4 | COW broadcast serialization, fill-lock bypass guards, no-ALS AsyncLock hardening, ESM packaging gaps, `dexbot start` canonicalization, TUI-dashboard reference removal, BitShares onboarding tutorial, npm claw coverage |
 | v1.4.13 → v1.4.14 | 13 | BitShares onboarding P2P-credit clarification, market-adapter math canonicalization (ATR/volatility/regime/Kalman embedded into chart sources), dead-code purge (market-adapter barrel + claw stale code, launcher PM2 crash fix), raw `npm start`/`pm2 start` launcher guard, `dexbot order <bot>` filter, HTML chart export readability, nvm Linux install, docs refresh (Telegram plan rename), claw strict-mode test annotations, AMA optimizer `_w` naming, CES power-law curve proposal |
 | v1.4.14 → v1.4.15 | 2 | Global npm install path handling (profiles, market-adapter, and claw data/state relocation under `~/.config/dexbot2/profiles`, `DEXBOT_MARKET_ADAPTER_DATA_DIR`/`STATE_DIR` and `DEXBOT_CLAW_DATA_DIR` env overrides, shared `scripts/lib/dexbot-paths.sh` for the clear/reset shell scripts, `clear-all` now wipes claw data), test alignment with sig-digit formatting |
+| v1.4.15 → v1.4.16 | 4 | Unified profile-state resolution (single resolver-derived profiles dir for all installs, credential-runtime `root` removal, shell-path mirror), divergence surplus/hole pairs → in-place rotations, npm auto-update flow for global installs, no master-password prompt when no vault exists |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 18, 2026 (v1.4.15)
-**Total Commits**: 2,019
-**Date Range**: December 2, 2025 – August 16, 2026
+**Last Updated**: August 18, 2026 (v1.4.16)
+**Total Commits**: 2,024
+**Date Range**: December 2, 2025 – August 18, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
