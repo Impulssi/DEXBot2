@@ -507,7 +507,7 @@ function unlockWithPassword(password: any, accountsData: any = loadAccounts()) {
         if (Object.keys(accountsData.accounts || {}).length > 0) {
             throw new Error('Unsupported key vault format. Recreate profiles/keys.json with the current key manager.');
         }
-        throw new Error('No master password set. Please run modules/chain_keys.ts first.');
+        throw new Error('No master password set, run `dexbot key`.');
     }
 
     if (!verifyModernPassword(password, accountsData)) {
@@ -566,6 +566,12 @@ async function _promptPassword() {
  */
 async function authenticate() {
     const accountsData = loadAccounts();
+    if (!hasModernVault(accountsData)) {
+        if (Object.keys(accountsData.accounts || {}).length > 0) {
+            throw new Error('Unsupported key vault format. Recreate profiles/keys.json with the current key manager.');
+        }
+        throw new Error('No master password set, run `dexbot key`.');
+    }
     try {
         while (true) {
             // Enforce the attempt limit at the top of the loop as well as inside
