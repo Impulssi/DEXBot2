@@ -204,6 +204,29 @@ Market-adapter settings resolve in this order:
 3. Pair-specific overrides in `profiles/market_profiles.json`
 4. Bot-specific overrides in `profiles/market_adapter_settings.json`
 
+### Data and State Location
+
+The adapter keeps candle data and runtime state in a layout that depends on the
+install type:
+
+| Install | Data / state dir |
+|---------|------------------|
+| Source checkout | `<install-root>/market_adapter/data` and `<install-root>/market_adapter/state` |
+| Global npm install (`npm i -g dexbot`) | `<profiles>/market_adapter/data` and `<profiles>/market_adapter/state`, where `<profiles>` defaults to `~/.config/dexbot2/profiles` |
+
+npm packages ship only compiled `dist/market_adapter/`, so state is relocated
+under the profiles dir instead of being written into the package dir (which npm
+updates wipe and which may be read-only). Both can be overridden:
+
+```bash
+export DEXBOT_MARKET_ADAPTER_DATA_DIR=/custom/candle-data
+export DEXBOT_MARKET_ADAPTER_STATE_DIR=/custom/adapter-state
+```
+
+The `dexbot clear-market-adapter` / `dexbot clear-all` commands and the
+`scripts/clear-*.sh` helpers resolve the same dirs (see
+[scripts/README.md](../scripts/README.md)).
+
 ### Global Overrides
 
 Override any `MARKET_ADAPTER` constant by adding a matching key under `MARKET_ADAPTER` in `profiles/general.settings.json`:

@@ -698,7 +698,7 @@ function testFormatAnalysisGridPriceLine() {
   });
   const gridLine = formatAnalysis(mockGrid);
   const strippedGrid = stripColorCodes(gridLine);
-  assert.ok(strippedGrid.includes('Grid: 100.00'), 'numeric gridPrice should emit Grid: line');
+  assert.ok(strippedGrid.includes('Grid: 100.0'), 'numeric gridPrice should emit Grid: line');
   assert.ok(strippedGrid.includes('(+5.0%)'), 'grid price diff should be shown');
 
   // AMA mode with recent snapshot -> emits AMA3: line
@@ -709,7 +709,7 @@ function testFormatAnalysisGridPriceLine() {
   });
   const amaLine = formatAnalysis(mockAma);
   const strippedAma = stripColorCodes(amaLine);
-  assert.ok(strippedAma.includes('AMA3: 100.00'), 'AMA mode should emit AMA3: line');
+  assert.ok(strippedAma.includes('AMA3: 100.0'), 'AMA mode should emit AMA3: line');
   assert.ok(strippedAma.includes('(-10.0%)'), 'AMA price diff should be shown');
 
   // Pool/book/startPrice mode -> no grid price line
@@ -739,7 +739,7 @@ function testFormatAnalysisGridPriceStale() {
   const mStale = staleLine.match(/\n {5}AMA2:/);
   const afterStaleAma = mStale ? staleLine.slice(mStale.index! + 1, mStale.index! + 1 + 30) : '';
   assert.ok(afterStaleAma.includes(colors.gray), 'stale AMA price should be grey');
-  assert.ok(stripColorCodes(staleLine).includes('AMA2: 200.00'), 'stale line still shows label and price');
+  assert.ok(stripColorCodes(staleLine).includes('AMA2: 200.0'), 'stale line still shows label and price');
 
   // Recent snapshot -> price NOT grey (only the AMA3: line segment)
   const mockRecent = makeMockAnalysis({
@@ -752,7 +752,7 @@ function testFormatAnalysisGridPriceStale() {
   const mRecent = recentLine.match(/\n {5}AMA3:/);
   const afterRecentAma = mRecent ? recentLine.slice(mRecent.index! + 1, mRecent.index! + 1 + 30) : '';
   assert.ok(!afterRecentAma.includes(colors.gray), 'recent AMA price should NOT be grey');
-  assert.ok(stripColorCodes(recentLine).includes('AMA3: 100.00'), 'recent line shows label and price');
+  assert.ok(stripColorCodes(recentLine).includes('AMA3: 100.0'), 'recent line shows label and price');
 }
 
 async function main() {

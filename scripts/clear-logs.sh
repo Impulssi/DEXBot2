@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-PROFILE_ROOT="${DEXBOT_PROFILE_ROOT:-${PROJECT_ROOT}/profiles}"
+source "$SCRIPT_DIR/lib/dexbot-paths.sh"
 LOGS_DIR="${PROFILE_ROOT}/logs"
 
 # Functions

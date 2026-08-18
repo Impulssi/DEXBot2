@@ -20,9 +20,9 @@ NC='\033[0m' # No Color
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-PROFILE_ROOT="${DEXBOT_PROFILE_ROOT:-${PROJECT_ROOT}/profiles}"
-DATA_DIR="${PROJECT_ROOT}/market_adapter/data"
-STATE_DIR="${PROJECT_ROOT}/market_adapter/state"
+source "$SCRIPT_DIR/lib/dexbot-paths.sh"
+DATA_DIR="$MA_DATA_DIR"
+STATE_DIR="$MA_STATE_DIR"
 MARKET_ADAPTER_LOG="${PROFILE_ROOT}/logs/market_adapter.log"
 ADAPTER_OUT_LOG="${PROFILE_ROOT}/logs/dexbot-adapter.log"
 ADAPTER_ERR_LOG="${PROFILE_ROOT}/logs/dexbot-adapter-error.log"

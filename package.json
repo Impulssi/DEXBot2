@@ -1,6 +1,6 @@
 {
   "name": "dexbot",
-  "version": "1.4.14",
+  "version": "1.4.15",
   "description": "The first open source trading bot with zero runtime dependencies and a fully adaptive market making strategy.",
   "main": "dist/modules/dexbot_class.js",
   "exports": {
@@ -20,6 +20,7 @@
     "scripts/clear-market-adapter.sh",
     "scripts/clear-orders.sh",
     "scripts/create-bot-symlinks.sh",
+    "scripts/lib/dexbot-paths.sh",
     "scripts/postinstall.js",
     "scripts/reset-settings.sh",
     "claw",

@@ -19,6 +19,19 @@ dexbot update
 
 ## 🧹 CLEANING & RESET (DANGER ZONE)
 
+All clear/reset scripts resolve their directories via `scripts/lib/dexbot-paths.sh`,
+which mirrors `modules/paths.ts`. Defaults depend on the install type:
+
+| Install | Profile root | Market adapter data/state | Claw data |
+|---------|--------------|---------------------------|-----------|
+| Source checkout | `<repo>/profiles` | `<repo>/market_adapter/{data,state}` | `<repo>/claw/data` |
+| Global npm (`npm i -g dexbot`) | `~/.config/dexbot2/profiles` | `<profiles>/market_adapter/{data,state}` | `<profiles>/claw/data` |
+
+Env overrides: `DEXBOT_PROFILE_ROOT`, `DEXBOT_MARKET_ADAPTER_DATA_DIR`,
+`DEXBOT_MARKET_ADAPTER_STATE_DIR`, `DEXBOT_CLAW_DATA_DIR`. When run through the
+`dexbot` CLI, the resolved runtime dirs are passed automatically, so the CLI
+always clears the same dirs the runtime uses.
+
 ### Wipe Logs
 **File:** `clear-logs.sh`
 **Purpose:** Delete all bot `.log` and `.jsonl` files, including `profiles/logs/market_adapter.log`.
@@ -41,16 +54,19 @@ bash scripts/clear-orders.sh
 **File:** `clear-market-adapter.sh`
 **Purpose:** Delete all market adapter candle data, state files, and runtime logs.
 ```bash
-# IRREVERSIBLE: Removes market_adapter/data/, market_adapter/state/, and profiles/logs/{market_adapter,dexbot-adapter,dexbot-adapter-error}.log
+# IRREVERSIBLE: Removes market_adapter/{data,state}/ and profiles/logs/{market_adapter,dexbot-adapter,dexbot-adapter-error}.log
+# (paths relocate under the profiles dir for global npm installs)
 # Prompts for confirmation before deleting.
 bash scripts/clear-market-adapter.sh
 ```
 
-### Wipe Orders + Logs + Market Adapter
+### Wipe Orders + Logs + Market Adapter + Claw
 **File:** `clear-all.sh`
-**Purpose:** Delete order state files, log files, and market adapter data/state in one confirmed operation.
+**Purpose:** Delete order state files, log files, market adapter data/state, and claw data in one confirmed operation.
 ```bash
-# IRREVERSIBLE: Deletes profiles/orders/*, profiles/logs/*.{log,jsonl}, market_adapter/data/*, and market_adapter/state/*
+# IRREVERSIBLE: Deletes profiles/orders/*, profiles/logs/*.{log,jsonl},
+# market_adapter/{data,state}/*, and claw data (positions.json, watcher-health.json, memu/) under
+# <profiles>/claw/data (or <repo>/claw/data for source checkouts).
 # Prompts for confirmation before deleting.
 bash scripts/clear-all.sh
 ```

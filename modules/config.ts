@@ -73,6 +73,9 @@ const Config: {
     DEXBOT_CRED_BOOTSTRAP_PATH_FILE: string | undefined;
     DEXBOT2_ROOT: string | undefined;
     DEXBOT_PROFILE_ROOT: string | undefined;
+    DEXBOT_MARKET_ADAPTER_DATA_DIR: string | undefined;
+    DEXBOT_MARKET_ADAPTER_STATE_DIR: string | undefined;
+    DEXBOT_CLAW_DATA_DIR: string | undefined;
 
     // ── Credentials / secrets ───────────────────────────────────────
     DEXBOT_MASTER_PASSWORD: string | undefined;
@@ -138,6 +141,9 @@ const Config: {
     DEXBOT_CRED_BOOTSTRAP_PATH_FILE: str('DEXBOT_CRED_BOOTSTRAP_PATH_FILE'),
     DEXBOT2_ROOT: str('DEXBOT2_ROOT'),
     DEXBOT_PROFILE_ROOT: str('DEXBOT_PROFILE_ROOT'),
+    DEXBOT_MARKET_ADAPTER_DATA_DIR: str('DEXBOT_MARKET_ADAPTER_DATA_DIR'),
+    DEXBOT_MARKET_ADAPTER_STATE_DIR: str('DEXBOT_MARKET_ADAPTER_STATE_DIR'),
+    DEXBOT_CLAW_DATA_DIR: str('DEXBOT_CLAW_DATA_DIR'),
 
     // ── Credentials / secrets ───────────────────────────────────────
     DEXBOT_MASTER_PASSWORD: str('DEXBOT_MASTER_PASSWORD'),

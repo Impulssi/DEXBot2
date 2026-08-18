@@ -5,8 +5,10 @@
 #
 # Usage: ./scripts/create-bot-symlinks.sh
 
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-PROFILE_ROOT="${DEXBOT_PROFILE_ROOT:-${REPO_ROOT}/profiles}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+source "$SCRIPT_DIR/lib/dexbot-paths.sh"
+REPO_ROOT="$PROJECT_ROOT"
 BOTS_CONFIG="${PROFILE_ROOT}/bots.json"
 ECOSYSTEM_CONFIG="${PROFILE_ROOT}/ecosystem.config.cjs"
 PROFILES_DIR="${PROFILE_ROOT}"

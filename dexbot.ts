@@ -848,9 +848,17 @@ async function handleCLICommands() {
         case 'default': {
             const { spawnSync } = require('child_process') as any as any;
             const resetScript = path.join(PATHS.PROJECT_ROOT, 'scripts', 'reset-settings.sh');
+            const scriptEnv = {
+                ...process.env,
+                DEXBOT_PROFILE_ROOT: PATHS.PROFILES_DIR,
+                DEXBOT_MARKET_ADAPTER_DATA_DIR: PATHS.MARKET_ADAPTER.DATA_DIR,
+                DEXBOT_MARKET_ADAPTER_STATE_DIR: PATHS.MARKET_ADAPTER.STATE_DIR,
+                DEXBOT_CLAW_DATA_DIR: PATHS.CLAW.DATA_DIR,
+            };
             const result = spawnSync('bash', [resetScript], {
                 cwd: PATHS.PROJECT_ROOT,
                 stdio: 'inherit',
+                env: scriptEnv,
             });
             if (result.error) {
                 console.error(`default: ${result.error.message}`);
@@ -994,9 +1002,17 @@ async function handleCLICommands() {
             };
             const scriptName = scriptMap[command];
             const scriptPath = path.join(PATHS.PROJECT_ROOT, 'scripts', scriptName);
+            const scriptEnv = {
+                ...process.env,
+                DEXBOT_PROFILE_ROOT: PATHS.PROFILES_DIR,
+                DEXBOT_MARKET_ADAPTER_DATA_DIR: PATHS.MARKET_ADAPTER.DATA_DIR,
+                DEXBOT_MARKET_ADAPTER_STATE_DIR: PATHS.MARKET_ADAPTER.STATE_DIR,
+                DEXBOT_CLAW_DATA_DIR: PATHS.CLAW.DATA_DIR,
+            };
             const result = spawnSync('bash', [scriptPath], {
                 cwd: PATHS.PROJECT_ROOT,
                 stdio: 'inherit',
+                env: scriptEnv,
             });
             if (result.error) {
                 console.error(`${command}: ${result.error.message}`);
@@ -1214,7 +1230,7 @@ async function bootstrap() {
         if (err && (err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'EROFS')) {
             const { homedir } = require('os');
             const { spawnSync: respawn } = require('child_process') as any as any;
-            const fallbackDir = path.join(homedir(), '.config', 'dexbot2');
+            const fallbackDir = path.join(homedir(), '.config', 'dexbot2', 'profiles');
             console.log(`Config directory not writable at: ${PROFILES_DIR}`);
             console.log(`Auto-using ${fallbackDir} instead. Set DEXBOT_PROFILE_ROOT to override.\n`);
             const newEnv = { ...process.env, DEXBOT_PROFILE_ROOT: fallbackDir };
