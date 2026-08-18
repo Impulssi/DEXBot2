@@ -3,11 +3,20 @@
 /**
  * DEXBot2 Auto-Update Script
  *
- * Manages pulling latest code from git repository with smart logic:
- * - Fetches from configured remote repository
- * - Detects if updates are available
- * - Handles branch switching if needed
- * - Reinstalls npm dependencies
+ * Supports two installation layouts:
+ *
+ * 1. Git checkout:
+ *    - Fetches from configured remote repository
+ *    - Detects if updates are available
+ *    - Handles branch switching if needed
+ *    - Reinstalls npm dependencies and rebuilds TypeScript sources
+ *
+ * 2. npm package install (e.g. `npm install -g dexbot`):
+ *    - Compares the installed version against the npm registry
+ *    - Runs `npm install -g <pkg>@<latest>` to fetch the newest release
+ *    - Skips the git and local build steps (published packages are pre-built)
+ *
+ * Shared tail for both layouts:
  * - Selectively restarts active runtime processes
  * - Gracefully handles missing files or PM2
  *
@@ -25,12 +34,13 @@
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import { homedir } from 'node:os';
 import { sendControlCommand } from '../modules/launcher/supervisor_control.js';
 
 // Import update configuration from constants
 // Contains: REPOSITORY_URL, BRANCH, BUILD_DIR settings
 import { UPDATER, BUILD_DIR } from '../modules/constants.js';
-import { PATHS } from '../modules/paths.js';
+import { PATHS, isGlobalNpmPackageDir } from '../modules/paths.js';
 import { Config } from '../modules/config.js';
 import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
@@ -70,7 +80,27 @@ function updateError(msg: string): string {
 }
 
 /**
- * run: Execute shell command with error handling
+ * runIn: Execute shell command in a given working directory with error handling
+ *
+ * Runs command with inherited stdio so user sees full output.
+ * Throws error if command fails, breaking update process.
+ *
+ * @param {string} cwd - Working directory for the command
+ * @param {string} cmd - Shell command to execute
+ * @throws {Error} If command exits with non-zero status
+ */
+function runIn(cwd: string, cmd: string) {
+    log(`Executing: ${cmd}`);
+    try {
+        execSync(cmd, { stdio: 'inherit', cwd });
+    } catch (err: any) {
+        console.error(updateError(`[ERROR] Command failed: ${cmd}`));
+        throw err;
+    }
+}
+
+/**
+ * run: Execute shell command in the project root with error handling
  *
  * Runs command with inherited stdio so user sees full output.
  * Throws error if command fails, breaking update process.
@@ -79,12 +109,72 @@ function updateError(msg: string): string {
  * @throws {Error} If command exits with non-zero status
  */
 function run(cmd: string) {
-    log(`Executing: ${cmd}`);
+    runIn(PATHS.PROJECT_ROOT, cmd);
+}
+
+// ── npm-install helpers ──────────────────────────────────────────────
+
+function readPackageJson(root: string): Record<string, any> | null {
     try {
-        execSync(cmd, { stdio: 'inherit', cwd: PATHS.PROJECT_ROOT });
+        return readJSON(path.join(root, 'package.json')) as Record<string, any>;
+    } catch (_) {
+        return null;
+    }
+}
+
+function readPackageVersion(root: string): string {
+    const pkg = readPackageJson(root);
+    return typeof pkg?.version === 'string' ? pkg.version : '';
+}
+
+function readPackageName(root: string): string {
+    const pkg = readPackageJson(root);
+    return typeof pkg?.name === 'string' && pkg.name ? pkg.name : 'dexbot';
+}
+
+/**
+ * compareVersions: Minimal semver comparison for major.minor.patch strings.
+ *
+ * Returns a negative number when a < b, zero when equal, positive when a > b.
+ * Prerelease/build suffixes are ignored (sufficient for update detection).
+ */
+function compareVersions(a: string, b: string): number {
+    const na = a.split('.').map((n) => parseInt(n, 10) || 0);
+    const nb = b.split('.').map((n) => parseInt(n, 10) || 0);
+    const len = Math.max(na.length, nb.length);
+    for (let i = 0; i < len; i++) {
+        const va = na[i] ?? 0;
+        const vb = nb[i] ?? 0;
+        if (va !== vb) return va < vb ? -1 : 1;
+    }
+    return 0;
+}
+
+/**
+ * getNpmLatestVersion: Query the npm registry for the latest published version.
+ *
+ * Throws when the registry is unreachable so the update is treated as failed
+ * (exit 1) and the scheduler does not restart the daemon for a no-op.
+ */
+function getNpmLatestVersion(pkgName: string): string {
+    try {
+        const version = execSync(`npm view ${pkgName} version`, { stdio: 'pipe' }).toString().trim();
+        if (!version) throw new Error('npm returned an empty version.');
+        return version;
     } catch (err: any) {
-        console.error(updateError(`[ERROR] Command failed: ${cmd}`));
-        throw err;
+        throw new Error(`Could not reach the npm registry to check for updates (${getErrorMessage(err)}).`);
+    }
+}
+
+/**
+ * getGlobalNpmRoot: Resolve the npm global install root (e.g. <prefix>/lib/node_modules).
+ * Returns an empty string when npm is unavailable.
+ */
+function getGlobalNpmRoot(): string {
+    try {
+        return execSync('npm root -g', { stdio: 'pipe' }).toString().trim();
+    } catch (_) {
+        return '';
     }
 }
 
@@ -246,23 +336,264 @@ async function restartActiveIsolatedProcesses() {
     return true;
 }
 
+// ── Shared update tail (both git and npm layouts) ────────────────────
+
+/**
+ * Snapshot pre-update runtime state BEFORE touching code (git pull or
+ * `npm install -g`). The daemon may shut down during the operation (e.g.
+ * a prepare hook or build), erasing its PID file. By capturing state up
+ * front, we can still restart it after the update completes.
+ */
+function snapshotMonolithicState() {
+    const monolithicWasRunning = !!detectMonolithicRuntime();
+    const hadMonolithicFiles = detectAnyMonolithicFiles();
+    if (monolithicWasRunning) {
+        log('Monolithic daemon detected running before update. Will restart after update.');
+    } else if (hadMonolithicFiles) {
+        log('Monolithic PID/file artifacts found but daemon is not alive. Will attempt restart after update.');
+    }
+    return { monolithicWasRunning, hadMonolithicFiles };
+}
+
+/**
+ * Regenerate the PM2 ecosystem config so profiles/ecosystem.config.cjs
+ * reflects the current bots.json state (including dexbot-adapter and
+ * dexbot-update service apps). Uses the freshly compiled dist/pm2.js.
+ */
+async function regenerateEcosystemConfig() {
+    log('Regenerating PM2 ecosystem config...');
+    try {
+        // Try loading from compiled dist/ first, then fall back to source dir
+        const distPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
+        const pm2Module = fs.existsSync(distPath)
+            ? await import(distPath)
+            : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
+        pm2Module.generateEcosystemConfig({ clawOnly: false, exitOnError: false });
+        log('Ecosystem config regenerated successfully.');
+    } catch (err: any) {
+        log(`Warning: Ecosystem config regeneration failed (${getErrorMessage(err)}). Continuing with existing config.`);
+    }
+}
+
+/**
+ * Restart active runtime processes after an update so the new code is picked
+ * up. Handles, in order of preference:
+ * - Monolithic daemon (SIGUSR2 restart)
+ * - Isolated supervisor (control-command restart)
+ * - PM2 selective restart from bots.json
+ * - Fallback auto-start of a monolithic daemon that died during the update
+ * Never touches dexbot-cred through bulk PM2 actions.
+ */
+async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles }: { monolithicWasRunning: boolean; hadMonolithicFiles: boolean }) {
+    let restarted = false;
+    log('Restarting active runtime processes...');
+    try {
+        if (Config.DEXBOT_UPDATE_SKIP_RELOAD) {
+            log('Restart skipped (managed by launcher).');
+            restarted = true;
+        } else {
+            const monolithic = detectMonolithicRuntime();
+            if (monolithic) {
+                restartMonolithicRuntime(monolithic);
+                restarted = true;
+            } else if (await restartActiveIsolatedProcesses()) {
+                log('Isolated supervisor runtime restarted.');
+                restarted = true;
+            } else {
+                const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
+                if (fs.existsSync(BOTS_FILE)) {
+                    const raw = fs.readFileSync(BOTS_FILE, 'utf8');
+                    const stripped = raw.replace(/\/\*(?:.|[\r\n])*?\*\//g, '').replace(/(^|\s*)\/\/.*$/gm, '');
+                    const config = JSON.parse(stripped);
+
+                    const activeInConfig = (config.bots || [])
+                        .filter((b: any) => b.active !== false)
+                        .map((b: any) => b.name)
+                        .filter((name: string) => !!name);
+
+                    if (activeInConfig.length > 0) {
+                        let runningProcesses: string[] = [];
+                        try {
+                            const output = execSync('pm2 jlist').toString().trim();
+                            const jsonStart = output.indexOf('[');
+                            if (jsonStart !== -1) {
+                                const jsonPart = output.substring(jsonStart);
+                                const parsed = JSON.parse(jsonPart);
+                                runningProcesses = parsed.map((p: any) => p.name);
+                            } else {
+                                log('Warning: PM2 jlist output did not contain JSON array.');
+                            }
+                        } catch (e: any) {
+                            log('Warning: Could not fetch PM2 process list. Falling back to config-only detection.');
+                            runningProcesses = activeInConfig;
+                        }
+
+                        const botsToRestart = activeInConfig.filter((name: string) => (runningProcesses as string[]).includes(name));
+                        const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
+                        const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
+                        const maPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
+                        const pm2Module = fs.existsSync(maPath)
+                            ? await import(maPath)
+                            : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
+                        const marketAdapterRequired = pm2Module.needsMarketAdapter(runningActiveBots);
+
+                        const serviceAppsToRestart: string[] = marketAdapterRequired ? ['dexbot-adapter'] : [];
+                        const servicesToRestart: string[] = serviceAppsToRestart.filter((name: string) => (runningProcesses as string[]).includes(name));
+                        const allToRestart: string[] = [...botsToRestart, ...servicesToRestart];
+
+                        if (allToRestart.length > 0) {
+                            log(`Active processes detected: ${allToRestart.join(', ')}`);
+                            for (const name of allToRestart) {
+                                try {
+                                    run(`pm2 restart "${name}"`);
+                                } catch (e) {
+                                    log(`Warning: Failed to restart process "${name}" (it might not be running).`);
+                                }
+                            }
+                            restarted = true;
+                        } else {
+                            log('No active processes currently running in PM2. Skipping restart.');
+                        }
+
+                        if (marketAdapterRequired && !runningProcesses.includes('dexbot-adapter')) {
+                            log('dexbot-adapter is required by an AMA-grid bot but not running. Starting from ecosystem...');
+                            try {
+                                run(`pm2 start "${PATHS.PROFILES.ECOSYSTEM_CONFIG_JS}" --only dexbot-adapter`);
+                            } catch (e) {
+                                log('Warning: Failed to start dexbot-adapter from ecosystem config.');
+                            }
+                        }
+                    } else {
+                        log('No active bots found in config.');
+                    }
+                } else {
+                    log('Warning: profiles/bots.json not found, skipping selective restart.');
+                }
+            }
+        }
+    } catch (err: any) {
+        log(`Warning: runtime restart logic failed (${getErrorMessage(err)}). Skipping bulk restart to avoid touching dexbot-cred.`);
+    }
+
+    // Fallback restart for monolithic daemon that died during the update
+    if (!restarted && !Config.DEXBOT_UPDATE_SKIP_RELOAD) {
+        if (monolithicWasRunning || hadMonolithicFiles) {
+            log('Monolithic daemon was detected before update but is no longer running. Auto-starting...');
+            if (startMonolithicRuntime()) {
+                restarted = true;
+            } else {
+                log('Auto-start did not succeed; the manual-start instructions below apply.');
+            }
+        }
+    }
+
+    if (!restarted) {
+        console.log(colorUpdateOutput(
+            '\n⚠️  No active runtime was restarted.\n' +
+            '   If the daemon was running before, start it manually from a terminal:\n' +
+            '     dexbot start\n' +
+            '   (will prompt for master password; add --foreground for interactive mode)\n' +
+            '   For non-interactive automation:\n' +
+            '     dexbot start --headless --password-file <path>\n',
+            UPDATE_COLORS.warn,
+        ));
+    }
+}
+
+// ── npm-install update flow ──────────────────────────────────────────
+
+/**
+ * Update a globally installed npm package to the latest published version.
+ *
+ * Steps:
+ * 1. Compare installed package.json version against the npm registry.
+ * 2. Exit cleanly (0) when already up to date — no restart needed.
+ * 3. Verify this is a global install (only that layout can be replaced in place).
+ * 4. Snapshot runtime state, then run `npm install -g <pkg>@<latest>` from a
+ *    neutral cwd (home dir) so npm can freely swap the package directory the
+ *    currently running process executes from.
+ * 5. Regenerate the ecosystem config and restart active runtimes using the
+ *    new code — the published package ships a pre-built dist/, so there is
+ *    no local TypeScript build step.
+ */
+async function runNpmUpdateFlow() {
+    log('Detected npm package installation. Checking npm registry for updates...');
+
+    const pkgName = readPackageName(PATHS.PROJECT_ROOT);
+    const currentVersion = readPackageVersion(PATHS.PROJECT_ROOT);
+    if (!currentVersion) {
+        throw new Error(`Could not read a version from package.json at ${PATHS.PROJECT_ROOT}.`);
+    }
+    log(`Current installed version: ${currentVersion}`);
+
+    const latestVersion = getNpmLatestVersion(pkgName);
+    log(`Latest published version: ${latestVersion}`);
+
+    if (compareVersions(currentVersion, latestVersion) >= 0) {
+        log('DEXBot2 is already up to date (installed version matches or exceeds the latest published version).');
+        process.exit(0);
+    }
+
+    const globalRoot = getGlobalNpmRoot();
+    if (!globalRoot || !PATHS.PROJECT_ROOT.startsWith(globalRoot)) {
+        throw new Error(
+            'DEXBot2 is installed as a local (non-global) npm dependency; auto-update cannot replace the ' +
+            'package in place. Run `npm update ' + pkgName + '` in the parent project directory and restart manually.'
+        );
+    }
+
+    log(`${currentVersion} -> ${latestVersion} update available. Proceeding with npm update...`);
+
+    // Snapshot pre-update runtime state BEFORE npm replaces the package files.
+    const snapshot = snapshotMonolithicState();
+
+    // Run from a neutral cwd: npm's reify swaps the package directory this
+    // process is executing from, so the working directory may briefly not exist.
+    runIn(homedir(), `npm install -g ${pkgName}@${latestVersion}`);
+
+    const installedAfter = readPackageVersion(PATHS.PROJECT_ROOT);
+    log(`Installed version after update: ${installedAfter || 'unknown'}`);
+
+    await regenerateEcosystemConfig();
+    await restartActiveRuntimes(snapshot);
+}
+
 (async () => {
 try {
     // Change to project root for all git operations
     process.chdir(PATHS.PROJECT_ROOT);
     log('Starting DEXBot2 update process...');
 
+    /**
+     * STEP 0: Detect Installation Layout
+     *
+     * Two supported layouts:
+     * 1. Git checkout (has a .git dir) -> git pull + npm install + build
+     * 2. Global npm package install (path under a node_modules tree) ->
+     *    `npm install -g <pkg>@<latest>` (pre-built dist, no local build)
+     *
+     * A git checkout wins over the npm path so a repo that was npm-linked is
+     * still updated through git. Neither layout -> fail with a clear message.
+     */
+    const isGitRepo = fs.existsSync(path.join(PATHS.PROJECT_ROOT, '.git'));
+    const isNpmInstall = isGlobalNpmPackageDir(PATHS.PROJECT_ROOT);
+
+    if (!isGitRepo && isNpmInstall) {
+        await runNpmUpdateFlow();
+        logSuccess('DEXBot2 update completed successfully.');
+        process.exit(0);
+    }
+
+    if (!isGitRepo) {
+        throw new Error(
+            'DEXBot2 is neither a git checkout nor an npm package install. ' +
+            'Auto-update is not available for this installation.'
+        );
+    }
+
     // Get configured repository URL and target branch
     const repoUrl = UPDATER.REPOSITORY_URL;
     let branch = UPDATER.BRANCH;
-
-    /**
-     * STEP 1: Validate Git Repository
-     * Ensures .git directory exists so we can perform git operations
-     */
-    if (!fs.existsSync(path.join(PATHS.PROJECT_ROOT, '.git'))) {
-        throw new Error('Not a git repository. If installed from npm, run: npm update -g dexbot');
-    }
 
     /**
      * STEP 2: Detect Current Branch
@@ -369,13 +700,9 @@ try {
      * hook or build), erasing its PID file. By capturing state up front,
      * we can still restart it after the build completes.
      */
-    const monolithicWasRunning = !!detectMonolithicRuntime();
-    const hadMonolithicFiles = detectAnyMonolithicFiles();
-    if (monolithicWasRunning) {
-        log('Monolithic daemon detected running before update. Will restart after build.');
-    } else if (hadMonolithicFiles) {
-        log('Monolithic PID/file artifacts found but daemon is not alive. Will attempt restart after build.');
-    }
+    const snapshot = snapshotMonolithicState();
+    const monolithicWasRunning = snapshot.monolithicWasRunning;
+    const hadMonolithicFiles = snapshot.hadMonolithicFiles;
 
     /**
      * STEP 6b: Prepare Working Directory
@@ -514,156 +841,16 @@ try {
      * state, including service apps like dexbot-adapter and dexbot-update.
      * Uses the compiled dist/pm2.js (after TS build) for correct dist/ paths.
      */
-    log('Regenerating PM2 ecosystem config...');
-    try {
-        // Try loading from compiled dist/ first, then fall back to source dir
-        const distPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
-        const pm2Module = fs.existsSync(distPath)
-            ? await import(distPath)
-            : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
-        pm2Module.generateEcosystemConfig({ clawOnly: false, exitOnError: false });
-        log('Ecosystem config regenerated successfully.');
-    } catch (err: any) {
-        log(`Warning: Ecosystem config regeneration failed (${getErrorMessage(err)}). Continuing with existing config.`);
-    }
+    await regenerateEcosystemConfig();
 
     /**
-     * STEP 9: Restart Active Runtime Processes
+     * STEP 9/9b: Restart Active Runtime Processes
      * Intelligently restarts only the bots that were active before update
-     * This approach:
-     * - Preserves PM2 state if not running
-     * - Restarts active bots to pick up code changes
-     * - Handles missing bots.json gracefully
-     * - Never restarts dexbot-cred through bulk PM2 actions
-     *
-     * Uses the pre-update snapshot (monolithicWasRunning) as a fallback:
-     * if the daemon shut down during git/npm ops and its PID file is gone,
-     * we still attempt to restart it.
+     * (monolithic, isolated supervisor, or PM2 selective restart), with a
+     * fallback auto-start for a monolithic daemon that died during the update.
+     * Never restarts dexbot-cred through bulk PM2 actions.
      */
-    let restarted = false;
-    log('Restarting active runtime processes...');
-    try {
-        if (Config.DEXBOT_UPDATE_SKIP_RELOAD) {
-            log('Restart skipped (managed by launcher).');
-            restarted = true;
-        } else {
-            const monolithic = detectMonolithicRuntime();
-            if (monolithic) {
-                restartMonolithicRuntime(monolithic);
-                restarted = true;
-            } else if (await restartActiveIsolatedProcesses()) {
-                log('Isolated supervisor runtime restarted.');
-                restarted = true;
-            } else {
-                const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
-                if (fs.existsSync(BOTS_FILE)) {
-                    const raw = fs.readFileSync(BOTS_FILE, 'utf8');
-                    const stripped = raw.replace(/\/\*(?:.|[\r\n])*?\*\//g, '').replace(/(^|\s*)\/\/.*$/gm, '');
-                    const config = JSON.parse(stripped);
-
-                    const activeInConfig = (config.bots || [])
-                        .filter((b: any) => b.active !== false)
-                        .map((b: any) => b.name)
-                        .filter((name: string) => !!name);
-
-                    if (activeInConfig.length > 0) {
-                        let runningProcesses: string[] = [];
-                        try {
-                            const output = execSync('pm2 jlist').toString().trim();
-                            const jsonStart = output.indexOf('[');
-                            if (jsonStart !== -1) {
-                                const jsonPart = output.substring(jsonStart);
-                                const parsed = JSON.parse(jsonPart);
-                                runningProcesses = parsed.map((p: any) => p.name);
-                            } else {
-                                log('Warning: PM2 jlist output did not contain JSON array.');
-                            }
-                        } catch (e: any) {
-                            log('Warning: Could not fetch PM2 process list. Falling back to config-only detection.');
-                            runningProcesses = activeInConfig;
-                        }
-
-                        const botsToRestart = activeInConfig.filter((name: string) => (runningProcesses as string[]).includes(name));
-                        const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
-                        const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
-                        const maPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
-                        const pm2Module = fs.existsSync(maPath)
-                            ? await import(maPath)
-                            : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
-                        const marketAdapterRequired = pm2Module.needsMarketAdapter(runningActiveBots);
-
-                        const serviceAppsToRestart: string[] = marketAdapterRequired ? ['dexbot-adapter'] : [];
-                        const servicesToRestart: string[] = serviceAppsToRestart.filter((name: string) => (runningProcesses as string[]).includes(name));
-                        const allToRestart: string[] = [...botsToRestart, ...servicesToRestart];
-
-                        if (allToRestart.length > 0) {
-                            log(`Active processes detected: ${allToRestart.join(', ')}`);
-                            for (const name of allToRestart) {
-                                try {
-                                    run(`pm2 restart "${name}"`);
-                                } catch (e) {
-                                    log(`Warning: Failed to restart process "${name}" (it might not be running).`);
-                                }
-                            }
-                            restarted = true;
-                        } else {
-                            log('No active processes currently running in PM2. Skipping restart.');
-                        }
-
-                        if (marketAdapterRequired && !runningProcesses.includes('dexbot-adapter')) {
-                            log('dexbot-adapter is required by an AMA-grid bot but not running. Starting from ecosystem...');
-                            try {
-                                run('pm2 start profiles/ecosystem.config.cjs --only dexbot-adapter');
-                            } catch (e) {
-                                log('Warning: Failed to start dexbot-adapter from ecosystem config.');
-                            }
-                        }
-                    } else {
-                        log('No active bots found in config.');
-                    }
-                } else {
-                    log('Warning: profiles/bots.json not found, skipping selective restart.');
-                }
-            }
-        }
-    } catch (err: any) {
-        log(`Warning: runtime restart logic failed (${getErrorMessage(err)}). Skipping bulk restart to avoid touching dexbot-cred.`);
-    }
-
-    /**
-     * STEP 9b: Fallback restart for monolithic daemon
-     *
-     * If the monolithic daemon was running (or had state files) before the
-     * update but is no longer alive (common when the daemon is killed during
-     * git/npm operations like the prepare hook), try to auto-start it.
-     * This prevents the "bot updated but is not running" failure mode.
-     *
-     * Only mark `restarted` true when startMonolithicRuntime reports
-     * success — otherwise fall through to the manual-start instructions
-     * below so the operator knows the daemon did not actually come back.
-     */
-    if (!restarted && !Config.DEXBOT_UPDATE_SKIP_RELOAD) {
-        if (monolithicWasRunning || hadMonolithicFiles) {
-            log('Monolithic daemon was detected before update but is no longer running. Auto-starting...');
-            if (startMonolithicRuntime()) {
-                restarted = true;
-            } else {
-                log('Auto-start did not succeed; the manual-start instructions below apply.');
-            }
-        }
-    }
-
-    if (!restarted) {
-        console.log(colorUpdateOutput(
-            '\n⚠️  No active runtime was restarted.\n' +
-            '   If the daemon was running before, start it manually from a terminal:\n' +
-            '     dexbot start\n' +
-            '   (will prompt for master password; add --foreground for interactive mode)\n' +
-            '   For non-interactive automation:\n' +
-            '     dexbot start --headless --password-file <path>\n',
-            UPDATE_COLORS.warn,
-        ));
-    }
+    await restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles });
 
     logSuccess('DEXBot2 update completed successfully.');
     process.exit(0);
