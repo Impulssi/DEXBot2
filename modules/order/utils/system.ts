@@ -817,7 +817,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         return undefined;
     }
     const { WorkingGrid } = require('../working_grid');
-    const { hasActionForOrder, removeActionsForOrder } = require('./validate');
+    const { hasActionForOrder, removeActionsForOrder, optimizeRebalanceActions } = require('./validate');
 
     // Phase 1: Pre-lock grid resizing using COW
     // This calculates new sizes from blockchain state but DOES NOT modify master.
@@ -983,6 +983,17 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                     });
                 }
             }
+        }
+
+        // Convert same-side surplus-CANCEL + hole-CREATE pairs into in-place
+        // rotation UPDATEs (reprice the existing order to the hole slot) instead
+        // of cancel+recreate. Mirrors the reconcile path (manager.ts:210) and
+        // removes churn when a fund-driven boundary shift re-types slots. The COW
+        // executor already handles rotation UPDATEs (newGridId + newPrice remap).
+        const optimizedActions = optimizeRebalanceActions(actions, manager.orders);
+        if (optimizedActions !== actions) {
+            actions.length = 0;
+            actions.push(...optimizedActions);
         }
 
         // Build COW result with all actions

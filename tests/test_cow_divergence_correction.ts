@@ -54,8 +54,8 @@ async function testCOWDivergenceCorrection() {
     });
     await manager.recalculateFunds();
 
-    // Test 1: Surplus orders are CANCELLED (not UPDATE size=0)
-    console.log('Test 1: Surplus orders should be CANCELLED, not UPDATE to size=0');
+    // Test 1: Surplus orders never become size-to-zero updates
+    console.log('Test 1: Surplus orders are cancelled or rotated, never updated to size=0');
     {
         // Create 5 active BUY orders (but target is 3)
         for (let i = 0; i < 5; i++) {
@@ -266,6 +266,89 @@ async function testCOWDivergenceCorrection() {
 
         assert(overlapCount === 0, 'No order should be both UPDATE and CANCEL in same batch');
         console.log('  ✓ No duplicate UPDATE+CANCEL actions\n');
+    }
+
+    // Test 5: Surplus orders pair with hole slots into rotation UPDATEs (reprice
+    // in place) instead of cancel+recreate. Mirrors a fund-driven boundary shift
+    // where slots are re-typed: orders sit outside the desired window while
+    // desired slots hold no orders.
+    console.log('Test 5: Surplus + holes become rotation UPDATEs instead of cancel+create');
+    {
+        for (let i = 0; i < 10; i++) {
+            await manager._updateOrder({
+                id: `slot-${i}`,
+                price: 90 + i,
+                type: ORDER_TYPES.BUY,
+                state: ORDER_STATES.VIRTUAL,
+                size: 0
+            });
+        }
+
+        // 3 BUY orders outside the desired window (prices 90-92), target is 3,
+        // desired window is top-3 = slots 7/8/9 (prices 97-99) with no orders.
+        for (let i = 0; i < 3; i++) {
+            await manager._updateOrder({
+                id: `slot-${i}`,
+                price: 90 + i,
+                type: ORDER_TYPES.BUY,
+                state: ORDER_STATES.ACTIVE,
+                size: 100,
+                orderId: `chain-rot-${i}`
+            });
+        }
+
+        manager._gridSidesUpdated = new Set([ORDER_TYPES.BUY]);
+
+        let capturedCowResult = null;
+        const mockUpdateFn = async (cowResult) => {
+            capturedCowResult = cowResult;
+            return { executed: true };
+        };
+
+        await applyGridDivergenceCorrections(manager, { storeMasterGrid: async () => {} }, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot);
+
+        assert(capturedCowResult && Array.isArray(capturedCowResult.actions), 'Should have actions');
+
+        const updates = capturedCowResult.actions.filter(a => a.type === COW_ACTIONS.UPDATE);
+        const cancels = capturedCowResult.actions.filter(a => a.type === COW_ACTIONS.CANCEL);
+        const creates = capturedCowResult.actions.filter(a => a.type === COW_ACTIONS.CREATE);
+
+        const rotations = updates.filter(a => a.newGridId && a.newGridId !== a.id);
+
+        console.log(`  - CANCEL actions: ${cancels.length}`);
+        console.log(`  - CREATE actions: ${creates.length}`);
+        console.log(`  - Rotation UPDATEs: ${rotations.length}`);
+
+        assert.strictEqual(cancels.length, 0,
+            'All surplus orders should pair into rotations, leaving no CANCEL');
+        assert.strictEqual(creates.length, 0,
+            'All holes should be filled by rotations, leaving no CREATE');
+        assert.strictEqual(rotations.length, 3,
+            'Expected 3 rotation UPDATEs (one per surplus/hole pair)');
+
+        // Each rotation reprices the surplus order (id) onto a hole slot (newGridId)
+        const sourceIds = new Set(rotations.map(r => r.id));
+        const targetIds = new Set(rotations.map(r => r.newGridId));
+        for (let i = 0; i < 3; i++) {
+            assert(sourceIds.has(`slot-${i}`), `Rotation source should include slot-${i}`);
+            assert(targetIds.has(`slot-${7 + i}`), `Rotation target should include slot-${7 + i}`);
+            const rotation = rotations.find(r => r.id === `slot-${i}`);
+            assert.strictEqual(rotation.orderId, `chain-rot-${i}`,
+                `Rotation should carry the source order's chain id`);
+            assert.strictEqual(rotation.newGridId, `slot-${7 + i}`,
+                `Rotation should target the hole slot slot-${7 + i}`);
+            assert(rotation.newPrice === (90 + 7 + i),
+                `Rotation should adopt the hole slot price ${90 + 7 + i}`);
+        }
+
+        // Source slots are virtualized in the working grid (orderId cleared)
+        for (let i = 0; i < 3; i++) {
+            const workingOrder = capturedCowResult.workingGrid.get(`slot-${i}`);
+            assert(workingOrder && workingOrder.orderId === null,
+                `Rotation source slot-${i} should be cleared in working grid`);
+        }
+
+        console.log('  ✓ Surplus orders repriced in place onto hole slots\n');
     }
 
     console.log('✓ All COW Divergence Correction tests PASSED!\n');
