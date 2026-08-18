@@ -10,6 +10,8 @@ import {
     smoothKalmanVelocityPoint,
 } from '../../market_adapter/core/signals/kalman_velocity_smoothing.js';
 import { embedFunctionSources, escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
+import { sharedChartCSS } from '../chart_css.js';
+import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
 'use strict';
 
 // Browser-embedded shared functions — the interactive chart runs the exact same
@@ -187,17 +189,13 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
     <link rel="stylesheet" href="../uplot/uPlot.min.css">
     <script src="../uplot/uPlot.iife.min.js"></script>
     <style>
-        * { box-sizing: border-box; }
-        body { background: #0b0e14; color: #d1d5db; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 0; overflow: hidden; }
-        #header { padding: 10px 20px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; justify-content: space-between; height: 45px; z-index: 100; }
-        #panels { display: flex; flex-direction: column; height: calc(100vh - 45px); width: 100vw; }
+        ${sharedChartCSS()}
         #price-panel  { flex: 0 0 34%; min-height: 0; position: relative; border-bottom: 1px solid #30363d; }
         #ama-panel    { flex: 0 0 14%; min-height: 0; position: relative; border-bottom: 1px solid #30363d; }
         #kalman-panel { flex: 0 0 21%; min-height: 0; position: relative; border-bottom: 1px solid #30363d; }
         #output-panel { flex: 1 1 0;   min-height: 0; position: relative; }
-        .uplot { background: #0b0e14; }
-        .legend { position: absolute; top: 8px; left: 70px; font-size: 11px; pointer-events: none; z-index: 10; display: flex; flex-wrap: wrap; gap: 4px 8px; color: #8b949e; white-space: nowrap; align-items: center; max-width: calc(100% - 86px); }
-        .legend-item { display: flex; align-items: center; gap: 3px; }
+        .legend { left: 70px; flex-wrap: wrap; gap: 4px 8px; color: #8b949e; max-width: calc(100% - 86px); }
+        .legend-item { gap: 3px; }
         .legend-val { font-family: monospace; display: inline-block; text-align: right; min-width: 45px; }
         #l-price, #l-ama3 { min-width: 62px; }
         #l-ama-slope, #l-kal-vel, #l-kal-disp { min-width: 54px; }
@@ -205,10 +203,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         #l-combined-raw, #l-combined-echo { min-width: 42px; }
         #l-mult { min-width: 38px; }
         #l-sell, #l-buy { min-width: 30px; }
-        .dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
-        .u-cursor-x { border-left: 1px dashed rgba(255,255,255,0.3) !important; }
-        .u-cursor-y { border-top:  1px dashed rgba(255,255,255,0.3) !important; display: none; }
-        .is-hovered .u-cursor-y { display: block; }
         .ctrl { pointer-events: auto; display: inline-flex; align-items: center; gap: 2px; margin-left: 4px; }
         .ctrl label { color: #8b949e; font-size: 10px; min-width: 24px; text-align: right; margin-right: 2px; }
         .ctrl.alpha label { min-width: 8px; }
@@ -272,8 +266,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         .ctrl.regime input[type="range"] { accent-color: #d2a8ff; }
         .ctrl.regime .val { color: #d2a8ff; }
         .row-break { flex-basis: 100%; height: 0; }
-
-.section-label { position: absolute; top: 8px; right: 12px; font-size: 9px; color: #30363d; text-transform: uppercase; letter-spacing: 1px; z-index: 10; pointer-events: none; }
     </style>
 </head>
 <body>
@@ -367,7 +359,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         ${EMBEDDED_SHARED_FUNCS}
 
         const SYNC_KEY = "dyn-wt-res-v4";
-        const Y_AXIS_SIZE = 58;
+        const Y_AXIS_SIZE = ${Y_AXIS_SIZE};
         const ma = data.marketAdapter || {};
         const amaWeightConfig = data.amaWeightConfig || {};
 
@@ -892,12 +884,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             ];
         }
 
-        const cursorCfg = {
-            show: true, x: true, y: true, points: { show: false },
-            drag: { x: false, y: false, setScale: false },
-            sync: { key: SYNC_KEY, setSeries: false, scales: ['x', null] },
-            focus: { prox: -1 },
-        };
+        const cursorCfg = ${makeCursorConfig()};
 
         const TIME_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -1051,21 +1038,8 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             }, [data.dates, combinedOff, echoCombinedOff], document.getElementById('output-chart'));
 
             charts = [priceChart, amaChart, kalmanChart, outputChart];
-            let leavePending = null;
-            charts.forEach(chart => {
-                chart.over.addEventListener('mousemove', () => {
-                    if (leavePending !== null) { clearTimeout(leavePending); leavePending = null; }
-                    const idx = chart.cursor.idx;
-                    if (idx != null) updateLegend(idx);
-                });
-                chart.over.addEventListener('mouseleave', () => {
-                    leavePending = setTimeout(() => { leavePending = null; updateLegend(lastLiveIdx); }, 60);
-                });
-                chart.root.addEventListener('mouseenter', () => chart.root.classList.add('is-hovered'));
-                chart.root.addEventListener('mouseleave', () => chart.root.classList.remove('is-hovered'));
-                bindWheelZoom(chart);
-                bindPan(chart);
-            });
+            ${bindHoverStateFn()}
+            ${wireChartEvents('charts', 'updateLegend', 'lastLiveIdx')}
 
         function onSliderChange() {
             recalcInputs();
@@ -1386,16 +1360,10 @@ function applyParams(p, btn) {
             });
         }
 
-        function sizeCharts() {
-            if (!priceChart || !amaChart || !kalmanChart || !outputChart) return;
-            [[priceChart, 'price-panel'], [amaChart, 'ama-panel'], [kalmanChart, 'kalman-panel'], [outputChart, 'output-panel']].forEach(([chart, id]) => {
-                const el = document.getElementById(id);
-                chart.setSize({ width: el.offsetWidth, height: el.offsetHeight });
-            });
-        }
+        ${sizeChartsFn([['priceChart', 'price-panel'], ['amaChart', 'ama-panel'], ['kalmanChart', 'kalman-panel'], ['outputChart', 'output-panel']])}
 
         window.addEventListener('resize', sizeCharts);
-        window.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === '0') syncXRange(xMin, xMax); });
+        ${zoomResetScript()}
 
         init();
         requestAnimationFrame(() => { sizeCharts(); updateLegend(lastLiveIdx); });

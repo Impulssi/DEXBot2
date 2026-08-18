@@ -297,7 +297,7 @@ async function main(): Promise<void> {
             return;
         }
 
-        const { source } = resolveSource(config.source.config, { quiet: config.quiet });
+        const { source } = resolveSource({ ...config.source.config, type: config.source.type }, { quiet: config.quiet });
         const report = await analyze(source, config);
 
         const html = generateHTML(report, 'Derivative Trend Analysis');

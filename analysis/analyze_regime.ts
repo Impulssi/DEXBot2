@@ -80,7 +80,7 @@ async function main() {
             return;
         }
 
-        const { source, amaConfig } = resolveSource(config.source.config, { quiet: config.quiet });
+        const { source, amaConfig } = resolveSource({ ...config.source.config, type: config.source.type }, { quiet: config.quiet });
         if (!config.quiet) console.log(`[Regime] Loading candles from ${source.name}...`);
 
         const candles = await source.fetchCandles();

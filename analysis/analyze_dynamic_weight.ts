@@ -103,7 +103,7 @@ async function main() {
             return;
         }
 
-        const { source, amaConfig, amaKey } = resolveSource(config.source.config, { quiet: config.quiet });
+        const { source, amaConfig, amaKey } = resolveSource({ ...config.source.config, type: config.source.type }, { quiet: config.quiet });
 
         const AMA_CONFIG = amaConfig;
         if (!config.quiet) console.log(`[DynamicWeight] Loading candles from ${source.name}...`);

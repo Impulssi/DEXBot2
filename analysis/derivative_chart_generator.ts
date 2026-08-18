@@ -7,6 +7,7 @@ import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT
 import { getStorage } from '../modules/storage/index.js';
 const { ensureDir, readJSON } = getStorage();
 import { fixedTo } from '../modules/utils/math_utils.js';
+import { bindHoverStateFn, zoomResetScript } from './chart_ui.js';
 'use strict';
 function parseArgs(argv = process.argv.slice(2)) {
     const cfg: { inputFile: string | null; outputFile: string; title: string; quiet: boolean } = {
@@ -692,11 +693,6 @@ function applyChartHeights() {
         document.getElementById(id).style.height = (minHeight + extra) + 'px';
     });
 }
-function syncHoverState(chart) {
-    const root = chart.root;
-    root.addEventListener('mouseenter', () => root.classList.add('is-hovered'));
-    root.addEventListener('mouseleave', () => root.classList.remove('is-hovered'));
-}
 let priceChart;
 let derivChart;
 let interpChart;
@@ -836,11 +832,7 @@ rsiChart = initChart('rsi-chart', {
 }
 charts = [priceChart, derivChart, interpChart, macdChart, rsiChart];
 ${UPLOT_SHARED_SCRIPT}
-function bindHoverState(chart) {
-    const root = chart.root;
-    root.addEventListener('mouseenter', () => root.classList.add('is-hovered'));
-    root.addEventListener('mouseleave', () => root.classList.remove('is-hovered'));
-}
+        ${bindHoverStateFn()}
 function resetZoom() {
     syncXRange(xMin, xMax);
 }
@@ -852,9 +844,7 @@ function sizeCharts() {
     }
 }
 window.addEventListener('resize', sizeCharts);
-window.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === '0') resetZoom();
-});
+        ${zoomResetScript()}
 charts.forEach((chart) => {
     bindWheelZoom(chart);
     bindPan(chart);

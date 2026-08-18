@@ -1,5 +1,7 @@
 
 import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
+import { sharedChartCSS } from '../chart_css.js';
+import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
 'use strict';
 
 
@@ -67,20 +69,10 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
     <link rel="stylesheet" href="../uplot/uPlot.min.css">
     <script src="../uplot/uPlot.iife.min.js"></script>
     <style>
-        * { box-sizing: border-box; }
-        body { background: #0b0e14; color: #d1d5db; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 0; overflow: hidden; }
-        #header { padding: 10px 20px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; justify-content: space-between; height: 45px; z-index: 100; }
-        #panels { display: flex; flex-direction: column; height: calc(100vh - 45px); width: 100vw; }
+        ${sharedChartCSS()}
         #price-panel  { flex: 0 0 55%; min-height: 0; position: relative; border-bottom: 1px solid #30363d; }
         #kalman-panel { flex: 0 0 23%; min-height: 0; position: relative; border-bottom: 1px solid #30363d; }
         #ama-panel    { flex: 1 1 0;   min-height: 0; position: relative; }
-        .uplot { background: #0b0e14; }
-        .legend { position: absolute; top: 8px; left: 70px; font-size: 11px; pointer-events: none; z-index: 10; display: flex; gap: 18px; color: #8b949e; white-space: nowrap; }
-        .legend-item { display: flex; align-items: center; gap: 5px; }
-        .dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
-        .u-cursor-x { border-left: 1px dashed rgba(255,255,255,0.3) !important; }
-        .u-cursor-y { border-top:  1px dashed rgba(255,255,255,0.3) !important; display: none; }
-        .is-hovered .u-cursor-y { display: block; }
     </style>
 </head>
 <body>
@@ -120,8 +112,6 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
     <script>
         const data = JSON.parse(document.getElementById('payload').textContent);
         const SYNC_KEY = "kalman";
-        // Fixed y-axis size so all plot areas share the same left edge → cursor lines align
-        const Y_AXIS_SIZE = 58;
 
         // ── Zoom / Pan ────────────────────────────────────────────────────────
         const xMin = data.dates[0];
@@ -252,15 +242,7 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
         }
 
         // ── Shared cursor config ──────────────────────────────────────────────
-        const cursorCfg = {
-            show: true,
-            x: true,
-            y: true,
-            points: { show: false },
-            drag: { x: false, y: false, setScale: false },
-            sync: { key: SYNC_KEY, setSeries: false, scales: ['x', null] },
-            focus: { prox: -1 },
-        };
+        const cursorCfg = ${makeCursorConfig()};
 
         // ── Shared weight chart opts ──────────────────────────────────────────
         function makeWeightOpts(el, scaleKey, values, posColor, negColor, showXAxis) {
@@ -292,7 +274,7 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
                         stroke: '#ffffff',
                         grid: { stroke: '#1c2128', dash: [4, 4] },
                         ticks: { stroke: '#30363d', width: 1 },
-                        size: Y_AXIS_SIZE,
+                        size: ${Y_AXIS_SIZE},
                         font: '11px Segoe UI, sans-serif',
                         values: (u, v) => v.map(x => x != null ? (x >= 0 ? '+' : '') + x.toFixed(2) : ''),
                         splits: () => [-0.5, -0.25, 0, 0.25, 0.5],
@@ -339,7 +321,7 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
                         stroke: '#ffffff',
                         grid: { stroke: '#1c2128' },
                         ticks: { stroke: '#30363d', width: 1 },
-                        size: Y_AXIS_SIZE,
+                        size: ${Y_AXIS_SIZE},
                         font: '11px Segoe UI, sans-serif',
                         values: (u, v) => v.map(x => x != null ? x.toFixed(4) : ''),
                     }
@@ -364,44 +346,14 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
 
             charts = [priceChart, kalmanChart, amaChart];
 
-            // Wire mousemove on all chart plot areas to update legend
-            let leavePending = null;
-            charts.forEach(chart => {
-                chart.over.addEventListener('mousemove', () => {
-                    if (leavePending !== null) { clearTimeout(leavePending); leavePending = null; }
-                    const idx = chart.cursor.idx;
-                    if (idx != null) updateLegend(idx);
-                });
-                chart.over.addEventListener('mouseleave', () => {
-                    leavePending = setTimeout(() => {
-                        leavePending = null;
-                        updateLegend(lastLiveIdx);
-                    }, 60);
-                });
-                // Show horizontal cursor line only on the actively hovered chart
-                chart.root.addEventListener('mouseenter', () => chart.root.classList.add('is-hovered'));
-                chart.root.addEventListener('mouseleave', () => chart.root.classList.remove('is-hovered'));
-                bindWheelZoom(chart);
-                bindPan(chart);
-            });
+            ${bindHoverStateFn()}
+            ${wireChartEvents('charts', 'updateLegend', 'lastLiveIdx')}
         }
 
-        function sizeCharts() {
-            if (!priceChart || !kalmanChart || !amaChart) return;
-            [
-                [priceChart,  'price-panel'],
-                [kalmanChart, 'kalman-panel'],
-                [amaChart,    'ama-panel'],
-            ].forEach(([chart, id]) => {
-                const el = document.getElementById(id);
-                chart.setSize({ width: el.offsetWidth, height: el.offsetHeight });
-            });
-        }
+        ${sizeChartsFn([['priceChart', 'price-panel'], ['kalmanChart', 'kalman-panel'], ['amaChart', 'ama-panel']])}
 
         window.addEventListener('resize', sizeCharts);
-        window.addEventListener('keydown', (e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === '0') syncXRange(xMin, xMax);
-        });
+        ${zoomResetScript()}
 
         init();
 

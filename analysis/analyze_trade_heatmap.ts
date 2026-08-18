@@ -85,7 +85,7 @@ async function main() {
             return;
         }
 
-        const { source } = resolveSource(cfg.source.config, { quiet: cfg.quiet });
+        const { source } = resolveSource({ ...cfg.source.config, type: cfg.source.type }, { quiet: cfg.quiet });
         if (!cfg.quiet) console.log(`[TradeHeatmap] Loading candles from ${source.name}...`);
 
         const candles = await source.fetchCandles();

@@ -3,6 +3,8 @@ import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { computeATRSeries } from '../../market_adapter/core/strategies/atr/calculator.js';
 import { computeVolatilityShift } from '../../market_adapter/core/strategies/volatility_shift.js';
 import { embedFunctionSources, escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
+import { sharedChartCSS } from '../chart_css.js';
+import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
 'use strict';
 
 const EMBEDDED_SHARED_FUNCS = embedFunctionSources([computeATRSeries, computeVolatilityShift]);
@@ -67,13 +69,10 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
     <link rel="stylesheet" href="../uplot/uPlot.min.css">
     <script src="../uplot/uPlot.iife.min.js"></script>
     <style>
-        * { box-sizing: border-box; }
+        ${sharedChartCSS()}
         :root { color-scheme: dark; }
-        body { background: #0b0e14; color: #d1d5db; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 0; overflow: hidden; }
-        #header { padding: 10px 18px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 48px; }
         #header-left { font-weight: bold; color: #fff; }
         #hint { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
-        #panels { display: flex; flex-direction: column; height: calc(100vh - 48px); width: 100vw; }
         #price-panel { flex: 0 0 33%; min-height: 0; position: relative; border-bottom: 1px solid #30363d; }
         #variance-panel { flex: 0 0 27%; min-height: 0; position: relative; border-bottom: 1px solid #30363d; }
         #variance-panel .legend { top: 10px; }
@@ -81,15 +80,8 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
         #shift-panel { flex: 0 0 40%; min-height: 0; position: relative; }
         #shift-panel .legend { top: 18px; }
         #shift-chart { margin-top: 0; height: calc(100% - 30px); }
-        .uplot { background: #0b0e14; }
         .legend { position: absolute; top: 8px; left: 12px; right: 12px; font-size: 11px; pointer-events: none; z-index: 10; display: flex; gap: 12px; color: #adbac7; white-space: nowrap; align-items: center; flex-wrap: wrap; }
-        .legend-item { display: flex; align-items: center; gap: 5px; }
         .legend-val { font-family: monospace; font-weight: bold; }
-        .dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
-        .u-cursor-x { border-left: 1px dashed rgba(255,255,255,0.3) !important; }
-        .u-cursor-y { border-top: 1px dashed rgba(255,255,255,0.3) !important; display: none; }
-        .is-hovered .u-cursor-y { display: block; }
-        .section-label { position: absolute; top: 8px; right: 12px; font-size: 9px; color: #30363d; text-transform: uppercase; letter-spacing: 1px; z-index: 10; pointer-events: none; }
         .ctrl { pointer-events: auto; display: inline-flex; align-items: center; gap: 3px; margin-left: 0; }
         .ctrl label { color: #8b949e; font-size: 11px; min-width: 34px; text-align: right; }
         .ctrl input[type="range"] { width: 138px; height: 3px; margin-right: 0; }
@@ -189,7 +181,7 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
         ${EMBEDDED_SHARED_FUNCS}
 
         const SYNC_KEY = 'volatility-det-v1';
-        const Y_AXIS_SIZE = 58;
+        const Y_AXIS_SIZE = ${Y_AXIS_SIZE};
         const MARKET_ADAPTER = data.marketAdapter || {};
         const MIN_WEIGHT = data.minWeight ?? ${JSON.stringify(defaultMinWeight)};
         const MAX_WEIGHT = data.maxWeight ?? ${JSON.stringify(defaultMaxWeight)};
@@ -216,11 +208,6 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
 
         ${UPLOT_SHARED_SCRIPT}
 
-        function roundTo(value, factor) {
-            if (!Number.isFinite(value)) return NaN;
-            return Math.round(value * factor) / factor;
-        }
-
         function fmtNum(v, digits = 4) {
             if (v == null || !Number.isFinite(v)) return '-';
             const abs = Math.abs(v);
@@ -233,13 +220,6 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
             if (v == null || !Number.isFinite(v)) return '-';
             const s = v >= 0 ? '+' : '';
             return s + v.toFixed(digits);
-        }
-
-        function fmtDate(ts) {
-            if (ts == null) return '-';
-            const d = new Date(ts * 1000);
-            return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })
-                 + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
         }
 
         function expSliderToVal(pos) {
@@ -390,7 +370,7 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
             const end = Math.ceil(hi / step) * step;
             const splits = [];
             for (let v = start; v <= end + 1e-9; v += step) {
-                const rounded = roundTo(v, 100);
+                const rounded = Math.round(v * 100) / 100;
                 if (!splits.includes(rounded)) splits.push(rounded);
             }
             if (!splits.includes(0)) splits.push(0);
@@ -496,15 +476,7 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
             };
         }
 
-        const cursorCfg = {
-            show: true,
-            x: true,
-            y: true,
-            points: { show: false },
-            drag: { x: false, y: false, setScale: false },
-            sync: { key: SYNC_KEY, setSeries: false, scales: ['x', null] },
-            focus: { prox: -1 },
-        };
+        const cursorCfg = ${makeCursorConfig()};
 
         function updateLegend(idx) {
             if (idx == null || idx >= data.realBarCount) return;
@@ -610,27 +582,10 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
                 },
             }, [data.dates, rawDeltaArr, deltaArr], document.getElementById('shift-chart'));
 
+            ${bindHoverStateFn()}
+
             charts = [priceChart, varianceChart, shiftChart];
-            let leavePending = null;
-            charts.forEach(chart => {
-                chart.over.addEventListener('mousemove', () => {
-                    if (leavePending !== null) {
-                        clearTimeout(leavePending);
-                        leavePending = null;
-                    }
-                    updateLegend(chart.cursor.idx);
-                });
-                chart.over.addEventListener('mouseleave', () => {
-                    leavePending = setTimeout(() => {
-                        leavePending = null;
-                        updateLegend(shiftChart.cursor.idx ?? data.realBarCount - 1);
-                    }, 60);
-                });
-                chart.root.addEventListener('mouseenter', () => chart.root.classList.add('is-hovered'));
-                chart.root.addEventListener('mouseleave', () => chart.root.classList.remove('is-hovered'));
-                bindWheelZoom(chart);
-                bindPan(chart);
-            });
+            ${wireChartEvents('charts', 'updateLegend', 'shiftChart.cursor.idx ?? data.realBarCount - 1')}
 
             function refreshChartsPreservingZoom() {
                 const xs = shiftChart.scales.x;
@@ -680,22 +635,10 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
             });
         }
 
-        function sizeCharts() {
-            if (!priceChart || !varianceChart || !shiftChart) return;
-            [
-                [priceChart, 'price-panel'],
-                [varianceChart, 'variance-panel'],
-                [shiftChart, 'shift-panel'],
-            ].forEach(([chart, id]) => {
-                const el = document.getElementById(id);
-                chart.setSize({ width: el.offsetWidth, height: el.offsetHeight });
-            });
-        }
+        ${sizeChartsFn([['priceChart', 'price-panel'], ['varianceChart', 'variance-panel'], ['shiftChart', 'shift-panel']])}
 
         window.addEventListener('resize', sizeCharts);
-        window.addEventListener('keydown', (e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === '0') syncXRange(xMin, xMax);
-        });
+        ${zoomResetScript()}
 
         init();
         requestAnimationFrame(() => requestAnimationFrame(() => {
