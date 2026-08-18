@@ -22,33 +22,33 @@ function loadBotSettings(filePath = PATHS.PROFILES.BOTS_JSON) {
     }
 }
 
-function sanitizeKey(source) {
+function sanitizeKey(source: any) {
     if (!source) return 'bot';
     return String(source).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'bot';
 }
 
-function computeBotKey(bot, index) {
+function computeBotKey(bot: any, index: number) {
     if (bot && bot.name) {
         return sanitizeKey(bot.name);
     }
     return `${sanitizeKey(bot?.name || `bot-${index}`)}-${index}`;
 }
 
-function resolveBotKey(botName, filePath = PATHS.PROFILES.BOTS_JSON) {
+function resolveBotKey(botName: any, filePath = PATHS.PROFILES.BOTS_JSON) {
     if (!botName) return null;
     const settings = loadBotSettings(filePath);
     const entries = Array.isArray(settings?.bots) ? settings.bots : [];
     const sanitized = sanitizeKey(botName);
-    const entry = entries.find((b) => sanitizeKey(b.name) === sanitized);
+    const entry = entries.find((b: any) => sanitizeKey(b.name) === sanitized);
     if (!entry) return null;
     return computeBotKey(entry, entries.indexOf(entry));
 }
 
-function candleFileForBot(botKey, intervalLabel, dataDir = PATHS.MARKET_ADAPTER.DATA_DIR) {
+function candleFileForBot(botKey: string, intervalLabel: string, dataDir = PATHS.MARKET_ADAPTER.DATA_DIR) {
     return path.join(dataDir, `market_adapter_${botKey}_${intervalLabel}.json`);
 }
 
-function resolveCandleFile(botKey, intervalLabel, dataDir = PATHS.MARKET_ADAPTER.DATA_DIR, botsFile = PATHS.PROFILES.BOTS_JSON) {
+function resolveCandleFile(botKey: string, intervalLabel: string, dataDir = PATHS.MARKET_ADAPTER.DATA_DIR, botsFile = PATHS.PROFILES.BOTS_JSON) {
     const directPath = candleFileForBot(botKey, intervalLabel, dataDir);
     if (fs.existsSync(directPath)) return directPath;
     const resolved = resolveBotKey(botKey, botsFile);
@@ -59,18 +59,18 @@ function resolveCandleFile(botKey, intervalLabel, dataDir = PATHS.MARKET_ADAPTER
     return null;
 }
 
-function loadBotMeta(botKey, filePath = PATHS.PROFILES.BOTS_JSON) {
+function loadBotMeta(botKey: any, filePath = PATHS.PROFILES.BOTS_JSON) {
     const settings = loadBotSettings(filePath);
     const entries = Array.isArray(settings?.bots) ? settings.bots : [];
     if (!botKey) return null;
     const normalizedKey = String(botKey).toLowerCase();
-    const exact = entries.find((bot, index) => computeBotKey(bot, index) === normalizedKey);
+    const exact = entries.find((bot: any, index: number) => computeBotKey(bot, index) === normalizedKey);
     if (exact) return exact;
-    const loose = entries.find((bot) => sanitizeKey(bot?.name) === normalizedKey.replace(/-\d+$/, ''));
+    const loose = entries.find((bot: any) => sanitizeKey(bot?.name) === normalizedKey.replace(/-\d+$/, ''));
     return loose || null;
 }
 
-function resolveAmaConfig(botKey) {
+function resolveAmaConfig(botKey: any) {
     const botMeta = loadBotMeta(botKey);
     if (!botMeta) return { ...MARKET_ADAPTER.AMAS.AMA3, erSmoothPeriod: 0 };
 
@@ -114,7 +114,7 @@ function resolveAmaConfig(botKey) {
 
     const marketProfiles = loadMarketProfiles();
     const selectedProfile = marketProfiles?.profiles
-        ? marketProfiles.profiles.find((entry) =>
+        ? marketProfiles.profiles.find((entry: any) =>
             String(entry.assetA) === String(botMeta.assetA) &&
             String(entry.assetB) === String(botMeta.assetB) &&
             Number(entry.intervalSeconds) === 3600)
@@ -140,7 +140,7 @@ function resolveAmaConfig(botKey) {
     return { erPeriod: builtin.erPeriod, fastPeriod: builtin.fastPeriod, slowPeriod: builtin.slowPeriod, erSmoothPeriod };
 }
 
-function resolveAmaKey(botKey) {
+function resolveAmaKey(botKey: any) {
     const botMeta = loadBotMeta(botKey);
     if (!botMeta) return 'AMA3';
     const rawGridPrice = String(botMeta?.gridPrice || '').trim().toLowerCase();

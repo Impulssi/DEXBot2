@@ -42,7 +42,7 @@ function parseArgs() {
  * Compute per-bar SC values and return { scAvg, erValues, avgER }.
  * scAvg = mean of (ER × deltaSC + slowSC)² across all bars.
  */
-function computeSCstats(closes, erPeriod, fastPeriod, slowPeriod) {
+function computeSCstats(closes: any, erPeriod: any, fastPeriod: any, slowPeriod: any) {
     const fastSC = 2 / (fastPeriod + 1);
     const slowSC = 2 / (slowPeriod + 1);
     const deltaSC = fastSC - slowSC;
@@ -66,8 +66,8 @@ function computeSCstats(closes, erPeriod, fastPeriod, slowPeriod) {
 /**
  * Format a column-aligned markdown table row.
  */
-function row(cells, widths) {
-    const parts = cells.map((c, i) => {
+function row(cells: any, widths: any) {
+    const parts = cells.map((c: any, i: any) => {
         const s = String(c);
         return i < widths.length ? s.padEnd(widths[i]) : s;
     });
@@ -93,8 +93,8 @@ function main() {
         }
         process.exit(1);
     }
-    const closes = (data.candles || []).map(c => Number(c[4]))
-        .filter(v => Number.isFinite(v) && v > 0);
+    const closes = (data.candles || []).map((c: any) => Number(c[4]))
+        .filter((v: any) => Number.isFinite(v) && v > 0);
     if (closes.length < 100) {
         console.error(`Not enough candles (need > 100, got ${closes.length})`);
         process.exit(1);

@@ -26,7 +26,7 @@ const EMBEDDED_SHARED_FUNCS = embedFunctionSources([
     roundToN,
 ]);
 
-function generateHTML(data, title = 'Dynamic Weight Research') {
+function generateHTML(data: any, title = 'Dynamic Weight Research') {
     const results = data.allResults || [];
     if (results.length === 0) throw new Error('No analysis results in input');
 
@@ -89,25 +89,25 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
     const interval = results.length > 1 ?
         (new Date(results[1].timestamp).getTime() - new Date(results[0].timestamp).getTime()) / 1000 : 3600;
 
-    const dates              = results.map((r, idx) => toEpochSeconds(r.timestamp || Date.now(), idx));
-    const prices             = results.map((r) => r.price);
-    const hurstArr           = results.map((r) => r.hurst ?? null);
-    const peArr             = results.map((r) => r.pe ?? null);
-    const hurstSegments     = results.map((r) => r.hurstSegment ?? null);
-    const peSegments        = results.map((r) => r.peSegment ?? null);
-    const amaSlopePct       = results.map((r) => r.amaSlopePct ?? null);
-    const kalmanVelocityPctRaw = results.map((r) => r.velocityRawPct ?? r.velocityPct ?? null);
-    const kalmanDisplacementPct = results.map((r) => r.displacementRawPct ?? r.displacementPct ?? null);
+    const dates              = results.map((r: any, idx: number) => toEpochSeconds(r.timestamp || Date.now(), idx));
+    const prices             = results.map((r: any) => r.price);
+    const hurstArr           = results.map((r: any) => r.hurst ?? null);
+    const peArr             = results.map((r: any) => r.pe ?? null);
+    const hurstSegments     = results.map((r: any) => r.hurstSegment ?? null);
+    const peSegments        = results.map((r: any) => r.peSegment ?? null);
+    const amaSlopePct       = results.map((r: any) => r.amaSlopePct ?? null);
+    const kalmanVelocityPctRaw = results.map((r: any) => r.velocityRawPct ?? r.velocityPct ?? null);
+    const kalmanDisplacementPct = results.map((r: any) => r.displacementRawPct ?? r.displacementPct ?? null);
     const kalmanVelocityPct = buildKalmanVelocitySeries(results, {
         kalmanSmoothPct: defaultKalmanSmoothPct,
         kalmanDispScaleMult: defaultKalmanDispScaleMult,
         kalmanDispThresholdMult: defaultKalmanDispThresholdMult,
         kalmanSmoothSpanPct: defaultKalmanSmoothSpanPct,
     });
-    const kalmanIsReady      = results.map((r) => r.isReady ?? false);
-    const signals            = results.map((r) => r.signal);
+    const kalmanIsReady      = results.map((r: any) => r.isReady ?? false);
+    const signals            = results.map((r: any) => r.signal);
     const amaLabel           = data.amaKey || 'AMA3';
-    const ama3Prices         = results.map((r) => r.ama3Price ?? null);
+    const ama3Prices         = results.map((r: any) => r.ama3Price ?? null);
     const defaultAmaKey = MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS;
     const amaErPeriod        = data.amaConfig?.erPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].erPeriod;
     const amaSlowPeriod      = data.amaConfig?.slowPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].slowPeriod;
@@ -154,7 +154,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
 
     const realBarCount = results.length;
 
-    function maxAbsPct(arr) {
+    function maxAbsPct(arr: any[]) {
         let m = 0;
         for (let i = 0; i < realBarCount; i++) {
             if (arr[i] != null && Math.abs(arr[i]) > m) m = Math.abs(arr[i]);
@@ -164,7 +164,7 @@ function generateHTML(data, title = 'Dynamic Weight Research') {
     const amaPctMax = Math.ceil(maxAbsPct(amaSlopePct) * 1.15) || 5;
     const kalPctMax = Math.ceil(Math.max(maxAbsPct(kalmanVelocityPct), maxAbsPct(kalmanDisplacementPct)) * 1.15) || 5;
 
-    function buildPercentiles(arr, startIndex = 0) {
+    function buildPercentiles(arr: any[], startIndex = 0) {
         const safeStartIndex = Math.max(0, Math.min(realBarCount, Math.ceil(startIndex)));
         const sorted: number[] = [];
         for (let i = safeStartIndex; i < realBarCount; i++) { if (arr[i] != null) sorted.push(Math.abs(arr[i])); }

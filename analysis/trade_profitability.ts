@@ -2,7 +2,7 @@
 'use strict';
 
 import fs from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import * as KC from '../market_adapter/core/kibana_client.js';
 import * as C from '../modules/constants.js';
 

@@ -12,22 +12,18 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
-import path from 'node:path';
 import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer.js';
 import { HurstAnalyzer } from './trend_detection/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer.js';
 import { generateHTML } from './trend_detection/dynamic_weight_chart_generator.js';
-import { createSource } from './price_sources.js';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { computeAmaSlopeWeights } from '../market_adapter/core/strategies/ama_slope_model.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { writeChartFile } from './chart_utils.js';
 import { getCandleClose } from './math_utils.js';
-import { resolveCandleFile, resolveAmaConfig, resolveAmaKey } from './bot_key_utils.js';
+import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
 'use strict';
-
-const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 
 // AMA Slope weight calculation config — use DEFAULTS from market adapter
 const AMA_WEIGHT_CONFIG = {
@@ -56,13 +52,14 @@ const { HURST_CONFIG, PE_CONFIG } = MARKET_ADAPTER;
 function parseArgs() {
     const args = process.argv.slice(2);
     const config: {
-        source: { type: string; config: { botKey: string; filePath?: string } };
+        source: { type: string; config: SourceConfig };
         chartFile: string;
         alpha: any;
         gain: any;
         dispWeight: any;
         clipPct: any;
         quiet: boolean;
+        listBots: boolean;
         lookbackBars?: number;
         dispScaleMinPct?: number;
     } = {
@@ -73,6 +70,7 @@ function parseArgs() {
         dispWeight: MARKET_ADAPTER.DYNAMIC_WEIGHT_DW,
         clipPct: MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE,
         quiet: false,
+        listBots: false,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -89,6 +87,7 @@ function parseArgs() {
         else if (arg === '--dw') config.dispWeight = parseFloat(args[++i]);
         else if (arg === '--lb') config.lookbackBars = parseInt(args[++i], 10);
         else if (arg === '--clip') config.clipPct = parseFloat(args[++i]);
+        else if (arg === '--list-bots') config.listBots = true;
         else if (arg === '--quiet') config.quiet = true;
     }
 
@@ -98,21 +97,15 @@ function parseArgs() {
 async function main() {
     try {
         const config = parseArgs();
-        const srcConfig = config.source.config;
 
-        if (config.source.type === 'market_adapter') {
-            const candleFile = resolveCandleFile(srcConfig.botKey, INTERVAL_LABEL);
-            if (!candleFile) {
-                throw new Error(`No candle cache file found for bot '${srcConfig.botKey}'. Use --file to specify a data file directly.`);
-            }
-            srcConfig.filePath = candleFile;
-            config.source.type = 'json';
-            if (!config.quiet) console.log(`[DynamicWeight] Resolved bot '${srcConfig.botKey}' → ${path.basename(candleFile)}`);
+        if (config.listBots) {
+            listAvailableBots();
+            return;
         }
 
-        const AMA_CONFIG = resolveAmaConfig(srcConfig.botKey);
+        const { source, amaConfig, amaKey } = resolveSource(config.source.config, { quiet: config.quiet });
 
-        const source = createSource(config.source.type, srcConfig);
+        const AMA_CONFIG = amaConfig;
         if (!config.quiet) console.log(`[DynamicWeight] Loading candles from ${source.name}...`);
 
         const candles = await source.fetchCandles();
@@ -182,8 +175,6 @@ async function main() {
         }
 
         // ── Generate chart ───────────────────────────────────────────────────
-        const amaKey = resolveAmaKey(srcConfig.botKey);
-
         const html = generateHTML({
             allResults,
             amaConfig: AMA_CONFIG,

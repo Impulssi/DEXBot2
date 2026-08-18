@@ -18,30 +18,30 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
-import { PATHS } from '../modules/paths.js';
-
 import { MARKET_ADAPTER }              from '../modules/constants.js';
-const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
-const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
 import { HurstAnalyzer }               from './trend_detection/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer }  from './trend_detection/permutation_entropy_analyzer.js';
 import { generateRegimeHTML }          from './trend_detection/regime_chart_generator.js';
-import { createSource }                from './price_sources.js';
 import { calculateAMA }                from '../market_adapter/core/strategies/ama.js';
 import { writeChartFile }              from './chart_utils.js';
 import { getCandleClose }              from './math_utils.js';
+import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
+
+const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
+const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
 
 'use strict';
 
 function parseArgs() {
     const args = process.argv.slice(2);
     const config: {
-        source:      { type: string; config: { botKey: string; filePath?: string; stateDir?: string } };
+        source:      { type: string; config: SourceConfig };
         chartFile:   string;
         hurstWindow: number;
         peWindow:    number;
         peM:         number;
         quiet:       boolean;
+        listBots:    boolean;
     } = {
         source:      { type: 'market_adapter', config: { botKey: '' } },
         chartFile:   'analysis/charts/regime_chart.html',
@@ -49,6 +49,7 @@ function parseArgs() {
         peWindow:    PE_CONFIG.window,
         peM:         PE_CONFIG.m,
         quiet:       false,
+        listBots:    false,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -63,6 +64,7 @@ function parseArgs() {
         else if (arg === '--hurst-window') config.hurstWindow              = parseInt(args[++i], 10);
         else if (arg === '--pe-window')    config.peWindow                 = parseInt(args[++i], 10);
         else if (arg === '--pe-m')         config.peM                      = parseInt(args[++i], 10);
+        else if (arg === '--list-bots')    config.listBots                 = true;
         else if (arg === '--quiet')        config.quiet                    = true;
     }
 
@@ -73,12 +75,12 @@ async function main() {
     const config = parseArgs();
 
     try {
-        const srcConfig = config.source.config;
-        if (config.source.type === 'market_adapter' && !srcConfig.stateDir) {
-            srcConfig.stateDir = PATHS.MARKET_ADAPTER.STATE_DIR;
+        if (config.listBots) {
+            listAvailableBots();
+            return;
         }
 
-        const source = createSource(config.source.type, srcConfig);
+        const { source, amaConfig } = resolveSource(config.source.config, { quiet: config.quiet });
         if (!config.quiet) console.log(`[Regime] Loading candles from ${source.name}...`);
 
         const candles = await source.fetchCandles();
@@ -120,7 +122,7 @@ async function main() {
 
         // ── AMA3 overlay for price panel ─────────────────────────────────────
         const closes    = candles.map(c => getCandleClose(c) ?? 0);
-        const ama3Values = calculateAMA(closes, MARKET_ADAPTER.AMAS.AMA3);
+        const ama3Values = calculateAMA(closes, amaConfig);
         for (let i = 0; i < allResults.length; i++) {
             (allResults[i] as any).ama3Price = ama3Values[i] ?? null;
         }

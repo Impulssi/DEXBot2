@@ -7,250 +7,249 @@
  * a summed volume histogram with threshold annotations.
  *
  * Usage:
- *   tsx analysis/analyze_trade_heatmap.ts --data <path> [options]
- *
- * Data:
- *   Expects LP candle JSON with { candles: [[ts, o, h, l, c, v], ...] }
- *
- * Requires:
- *   - calculateAMA from market_adapter/core/strategies/ama
- *   - MARKET_ADAPTER.AMAS presets from ../modules/constants
+ *   tsx analysis/analyze_trade_heatmap.ts --source market_adapter --bot-key <key> [options]
+ *   tsx analysis/analyze_trade_heatmap.ts --file <path> [options]
  *
  * Output:
  *   Self-contained HTML file with inline CSS (no JS dependencies).
- *
- * Options — see --help for full list.
  */
-import fs from 'node:fs';
 import path from 'node:path';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
+import { calcStdDev, getCandleClose } from './math_utils.js';
+import { writeChartFile } from './chart_utils.js';
+import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
 'use strict';
-/**
- * Parse CLI arguments. Unknown flags are silently ignored.
- * Supports --flag value and --flag (boolean) conventions.
- */
+
 function parseArgs() {
     const args = process.argv.slice(2);
-    const idx = (f) => { const i = args.indexOf(`--${f}`); return i !== -1 ? args[i + 1] : null; };
-    const has = (f) => args.includes(`--${f}`);
-    const rawBuckets = idx('buckets');
-    const rawWarmup = idx('warmup');
-    const rawBinSize = idx('bin-size');
-    const rawSliceMonths = idx('slice-months');
-    const rawThresholds = idx('thresholds');
-    const rawMaxNeg = idx('max-neg');
-    const rawMaxPos = idx('max-pos');
-    return {
-        data: idx('data') || (args.length > 0 && !args[0].startsWith('--') ? args[0] : null),
-        ama: idx('ama') || 'AMA3',
-        output: idx('output') || 'analysis/charts/trade_heatmap.html',
-        buckets: rawBuckets !== null ? parseInt(rawBuckets, 10) : null,
-        maxNeg: rawMaxNeg !== null ? parseFloat(rawMaxNeg) : null,
-        maxPos: rawMaxPos !== null ? parseFloat(rawMaxPos) : null,
-        warmup: rawWarmup !== null ? parseInt(rawWarmup, 10) : null,
-        binSize: rawBinSize !== null ? parseFloat(rawBinSize) : 5,
-        sliceMonths: rawSliceMonths !== null ? parseInt(rawSliceMonths, 10) : 12,
-        thresholds: rawThresholds !== null ? rawThresholds.split(',').map(Number) : [1, 2, 3, 5, 10, 20],
-        verbose: has('verbose'),
+    const config: {
+        source: { type: string; config: SourceConfig };
+        ama: string;
+        output: string;
+        buckets: number | null;
+        maxNeg: number | null;
+        maxPos: number | null;
+        warmup: number | null;
+        binSize: number;
+        sliceMonths: number;
+        thresholds: number[];
+        quiet: boolean;
+        listBots: boolean;
+    } = {
+        source: { type: 'market_adapter', config: { botKey: '' } },
+        ama: 'AMA3',
+        output: 'analysis/charts/trade_heatmap.html',
+        buckets: null,
+        maxNeg: null,
+        maxPos: null,
+        warmup: null,
+        binSize: 5,
+        sliceMonths: 12,
+        thresholds: [1, 2, 3, 5, 10, 20],
+        quiet: false,
+        listBots: false,
     };
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--source') config.source.type = args[++i];
+        else if (arg === '--bot-key') config.source.config.botKey = args[++i];
+        else if (arg === '--file') {
+            config.source.config.filePath = args[++i];
+            config.source.type = 'json';
+        }
+        else if (arg === '--ama') config.ama = args[++i];
+        else if (arg === '--output') config.output = args[++i];
+        else if (arg === '--buckets') config.buckets = parseInt(args[++i], 10);
+        else if (arg === '--max-neg') config.maxNeg = parseFloat(args[++i]);
+        else if (arg === '--max-pos') config.maxPos = parseFloat(args[++i]);
+        else if (arg === '--warmup') config.warmup = parseInt(args[++i], 10);
+        else if (arg === '--bin-size') config.binSize = parseFloat(args[++i]);
+        else if (arg === '--slice-months') config.sliceMonths = parseInt(args[++i], 10);
+        else if (arg === '--thresholds') config.thresholds = args[++i].split(',').map(Number);
+        else if (arg === '--list-bots') config.listBots = true;
+        else if (arg === '--quiet') config.quiet = true;
+    }
+
+    return config;
 }
-import { calcStdDev } from './math_utils.js';
-import { getStorage } from '../modules/storage/index.js';
-const { ensureDir, readJSON } = getStorage();
-/**
- * Main entry point.
- * 1. Parse config, load candles, compute AMA
- * 2. Build deviation records with volume
- * 3. Compute distribution stats, bucket into bins
- * 4. Build time-slice heatmap grid + summed histogram
- * 5. Write self-contained HTML output
- */
-function main() {
-    const cfg = parseArgs();
-    if (!cfg.data) {
-        console.error('Usage: tsx analysis/analyze_trade_heatmap.ts --data <path> [options]');
-        console.error('');
-        console.error('Options:');
-        console.error('  --data <path>          Path to LP candle JSON file (required)');
-        console.error('  --ama <preset>         AMA preset (AMA1-AMA4, default: AMA3)');
-        console.error('  --output <path>        Output HTML path (default: analysis/charts/trade_heatmap.html)');
-        console.error('  --bin-size <n>         Percentage points per bin (default: 5)');
-        console.error('  --max-neg <n>          Max negative deviation % (default: derived from --buckets, or --bin-size*10)');
-        console.error('  --max-pos <n>          Max positive deviation % (default: derived from --buckets, or --bin-size*10)');
-        console.error('  --buckets <n>          Total bins (used with --bin-size for symmetric range, overrides --max-neg/--max-pos)');
-        console.error('  --warmup <n>           Bars to skip for AMA warmup (default: erPeriod of selected AMA)');
-        console.error('  --slice-months <n>     Months per time slice (default: 12)');
-        console.error('  --thresholds <list>    Comma-separated deviation thresholds for volume concentration table (default: 1,2,3,5,10,20)');
-        console.error('  --verbose              Print detailed processing info');
-        process.exit(1);
-    }
-    if (!fs.existsSync(cfg.data)) {
-        console.error(`Data file not found: ${cfg.data}`);
-        process.exit(1);
-    }
-    const raw = readJSON(cfg.data);
-    if (!raw.candles || !Array.isArray(raw.candles)) {
-        console.error('Invalid data: expected "candles" array');
-        process.exit(1);
-    }
-    const amaCfg = MARKET_ADAPTER.AMAS[cfg.ama as keyof typeof MARKET_ADAPTER.AMAS];
-    if (!amaCfg) {
-        console.error(`Unknown AMA preset: ${cfg.ama}. Choose: ${Object.keys(MARKET_ADAPTER.AMAS).join(', ')}`);
-        process.exit(1);
-    }
-    const candles = raw.candles;
-    const closes = candles.map(c => Number(c[4]));
-    const volumes = candles.map(c => Number(c[5]) || 0);
-    const timestamps = candles.map(c => Number(c[0]));
-    if (cfg.warmup === null) {
-        cfg.warmup = Math.ceil(amaCfg.erPeriod);
-    }
-    if (cfg.verbose) console.log(`Computing ${cfg.ama} on ${closes.length} candles (warmup=${cfg.warmup})...`);
-    const amaValues = calculateAMA(closes, amaCfg);
-    const records: any[] = [];
-    for (let i = cfg.warmup; i < closes.length; i++) {
-        const ama = amaValues[i];
-        if (!Number.isFinite(ama) || ama === 0) continue;
-        const devPct = ((closes[i] - ama) / ama) * 100;
-        const vol = volumes[i];
-        if (vol <= 0) continue;
-        records.push({ devPct, vol, ts: timestamps[i] });
-    }
-    if (records.length === 0) {
-        console.error('No valid records after filtering');
-        process.exit(1);
-    }
-    if (cfg.verbose) console.log(`${records.length} volume-bearing candles after warmup`);
-    const devs = records.map(r => r.devPct);
-    const vols = records.map(r => r.vol);
-    const totalVol = vols.reduce((a, b) => a + b, 0);
-    const meanDev = devs.reduce((a, b) => a + b, 0) / devs.length;
-    const stdDev = calcStdDev(devs);
-    const sortedDevs = devs.slice().sort((a, b) => a - b);
-    const medianDev = sortedDevs[Math.floor(sortedDevs.length / 2)];
-    let weightedSum = 0;
-    for (let i = 0; i < devs.length; i++) weightedSum += devs[i] * vols[i];
-    const volWeightedMeanDev = weightedSum / totalVol;
-    const binSize = cfg.binSize;
-    let leftBins, rightBins;
-    if (cfg.buckets !== null) {
-        const half = Math.floor(cfg.buckets / 2);
-        leftBins = half;
-        rightBins = half;
-    } else {
-        leftBins = Math.ceil((cfg.maxNeg !== null ? cfg.maxNeg : binSize * 10) / binSize);
-        rightBins = Math.ceil((cfg.maxPos !== null ? cfg.maxPos : binSize * 10) / binSize);
-    }
-    const maxNegDev = leftBins * binSize;
-    const maxPosDev = rightBins * binSize;
-    const binLabels: string[] = [];
-    for (let i = -leftBins; i <= rightBins; i++) {
-        binLabels.push((i * binSize).toFixed(1));
-    }
-    const nBins = binLabels.length;
-    const binKey = (dev) => {
-        const idx = Math.round(dev / binSize) + leftBins;
-        return Math.max(0, Math.min(nBins - 1, idx));
-    };
-    const minTs = timestamps[cfg.warmup];
-    const maxTs = timestamps[timestamps.length - 1];
-    const minDate = new Date(minTs);
-    const maxDate = new Date(maxTs);
-    const sliceMonths = cfg.sliceMonths;
-    const slices: any[] = [];
-    let sliceStart = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
-    while (sliceStart <= maxDate) {
-        const sliceEnd = new Date(sliceStart);
-        sliceEnd.setMonth(sliceEnd.getMonth() + sliceMonths);
-        slices.push({
-            label: `${sliceStart.getFullYear()}-${String(sliceStart.getMonth() + 1).padStart(2, '0')}`,
-            start: sliceStart.getTime(),
-            end: sliceEnd.getTime(),
+
+async function main() {
+    try {
+        const cfg = parseArgs();
+
+        if (cfg.listBots) {
+            listAvailableBots();
+            return;
+        }
+
+        const { source } = resolveSource(cfg.source.config, { quiet: cfg.quiet });
+        if (!cfg.quiet) console.log(`[TradeHeatmap] Loading candles from ${source.name}...`);
+
+        const candles = await source.fetchCandles();
+        if (!Array.isArray(candles) || candles.length === 0) {
+            throw new Error('No candles returned from source');
+        }
+
+        const amaCfg = MARKET_ADAPTER.AMAS[cfg.ama as keyof typeof MARKET_ADAPTER.AMAS];
+        if (!amaCfg) {
+            throw new Error(`Unknown AMA preset: ${cfg.ama}. Choose: ${Object.keys(MARKET_ADAPTER.AMAS).join(', ')}`);
+        }
+
+        const closes = candles.map(c => getCandleClose(c) ?? Number(c?.close ?? c?.[4] ?? 0));
+        const volumes = candles.map(c => Number(c?.volume ?? c?.[5] ?? 0) || 0);
+        const timestamps = candles.map(c => Number(c?.timestamp ?? c?.[0] ?? 0));
+
+        if (cfg.warmup === null) {
+            cfg.warmup = Math.ceil(amaCfg.erPeriod);
+        }
+        if (!cfg.quiet) console.log(`[TradeHeatmap] Computing ${cfg.ama} on ${closes.length} candles (warmup=${cfg.warmup})...`);
+
+        const amaValues = calculateAMA(closes, amaCfg);
+        const records: any[] = [];
+        for (let i = cfg.warmup; i < closes.length; i++) {
+            const ama = amaValues[i];
+            if (!Number.isFinite(ama) || ama === 0) continue;
+            const devPct = ((closes[i] - ama) / ama) * 100;
+            const vol = volumes[i];
+            if (vol <= 0) continue;
+            records.push({ devPct, vol, ts: timestamps[i] });
+        }
+        if (records.length === 0) {
+            throw new Error('No valid records after filtering');
+        }
+        if (!cfg.quiet) console.log(`[TradeHeatmap] ${records.length} volume-bearing candles after warmup`);
+
+        const devs = records.map(r => r.devPct);
+        const vols = records.map(r => r.vol);
+        const totalVol = vols.reduce((a, b) => a + b, 0);
+        const meanDev = devs.reduce((a, b) => a + b, 0) / devs.length;
+        const stdDev = calcStdDev(devs);
+        const sortedDevs = devs.slice().sort((a, b) => a - b);
+        const medianDev = sortedDevs[Math.floor(sortedDevs.length / 2)];
+        let weightedSum = 0;
+        for (let i = 0; i < devs.length; i++) weightedSum += devs[i] * vols[i];
+        const volWeightedMeanDev = weightedSum / totalVol;
+        const binSize = cfg.binSize;
+        let leftBins, rightBins;
+        if (cfg.buckets !== null) {
+            const half = Math.floor(cfg.buckets / 2);
+            leftBins = half;
+            rightBins = half;
+        } else {
+            leftBins = Math.ceil((cfg.maxNeg !== null ? cfg.maxNeg : binSize * 10) / binSize);
+            rightBins = Math.ceil((cfg.maxPos !== null ? cfg.maxPos : binSize * 10) / binSize);
+        }
+        const maxNegDev = leftBins * binSize;
+        const maxPosDev = rightBins * binSize;
+        const binLabels: string[] = [];
+        for (let i = -leftBins; i <= rightBins; i++) {
+            binLabels.push((i * binSize).toFixed(1));
+        }
+        const nBins = binLabels.length;
+        const binKey = (dev: number) => {
+            const idx = Math.round(dev / binSize) + leftBins;
+            return Math.max(0, Math.min(nBins - 1, idx));
+        };
+        const minTs = timestamps[cfg.warmup];
+        const maxTs = timestamps[timestamps.length - 1];
+        const minDate = new Date(minTs);
+        const maxDate = new Date(maxTs);
+        const sliceMonths = cfg.sliceMonths;
+        const slices: any[] = [];
+        let sliceStart = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
+        while (sliceStart <= maxDate) {
+            const sliceEnd = new Date(sliceStart);
+            sliceEnd.setMonth(sliceEnd.getMonth() + sliceMonths);
+            slices.push({
+                label: `${sliceStart.getFullYear()}-${String(sliceStart.getMonth() + 1).padStart(2, '0')}`,
+                start: sliceStart.getTime(),
+                end: sliceEnd.getTime(),
+            });
+            sliceStart = sliceEnd;
+        }
+        const sliceBuckets = slices.map(() => new Array(nBins).fill(0));
+        const sliceTotals = new Array(slices.length).fill(0);
+        for (const r of records) {
+            const si = slices.findIndex(s => r.ts >= s.start && r.ts < s.end);
+            if (si === -1) continue;
+            const bi = binKey(r.devPct);
+            sliceBuckets[si][bi] += r.vol;
+            sliceTotals[si] += r.vol;
+        }
+        while (slices.length > 0 && sliceTotals[sliceTotals.length - 1] === 0) {
+            slices.pop();
+            sliceBuckets.pop();
+            sliceTotals.pop();
+        }
+        const totalBins = new Array(nBins).fill(0);
+        for (const r of records) {
+            totalBins[binKey(r.devPct)] += r.vol;
+        }
+        const maxBinVol = Math.max(...totalBins);
+        const pctWithin = cfg.thresholds.map(t => {
+            const volIn = records.filter(r => Math.abs(r.devPct) <= t).reduce((s, r) => s + r.vol, 0);
+            return (volIn / totalVol * 100).toFixed(2);
         });
-        sliceStart = sliceEnd;
-    }
-    const sliceBuckets = slices.map(() => new Array(nBins).fill(0));
-    const sliceTotals = new Array(slices.length).fill(0);
-    for (const r of records) {
-        const si = slices.findIndex(s => r.ts >= s.start && r.ts < s.end);
-        if (si === -1) continue;
-        const bi = binKey(r.devPct);
-        sliceBuckets[si][bi] += r.vol;
-        sliceTotals[si] += r.vol;
-    }
-    while (slices.length > 0 && sliceTotals[sliceTotals.length - 1] === 0) {
-        slices.pop();
-        sliceBuckets.pop();
-        sliceTotals.pop();
-    }
-    const totalBins = new Array(nBins).fill(0);
-    for (const r of records) {
-        totalBins[binKey(r.devPct)] += r.vol;
-    }
-    const maxBinVol = Math.max(...totalBins);
-    const pctWithin = cfg.thresholds.map(t => {
-        const volIn = records.filter(r => Math.abs(r.devPct) <= t).reduce((s, r) => s + r.vol, 0);
-        return (volIn / totalVol * 100).toFixed(2);
-    });
-    const peakBinIdx = totalBins.indexOf(maxBinVol);
-    const peakDev = binLabels[peakBinIdx];
-    // Compute color cap from data: 95th percentile of slice-cell percentages
-    const allCellPcts: number[] = [];
-    for (let si = 0; si < slices.length; si++) {
-        for (let bi = 0; bi < nBins; bi++) {
-            if (sliceTotals[si] > 0) {
-                allCellPcts.push((sliceBuckets[si][bi] / sliceTotals[si]) * 100);
+        const peakBinIdx = totalBins.indexOf(maxBinVol);
+        const peakDev = binLabels[peakBinIdx];
+        const allCellPcts: number[] = [];
+        for (let si = 0; si < slices.length; si++) {
+            for (let bi = 0; bi < nBins; bi++) {
+                if (sliceTotals[si] > 0) {
+                    allCellPcts.push((sliceBuckets[si][bi] / sliceTotals[si]) * 100);
+                }
             }
         }
-    }
-    allCellPcts.sort((a, b) => a - b);
-    const colorCap = allCellPcts.length > 0
-        ? allCellPcts[Math.floor(allCellPcts.length * 0.95)]
-        : 30;
-    function heatColor(pct) {
-        if (pct <= 0) return '#0d1117';
-        const n = Math.min(pct / colorCap, 1);
-        const r = Math.round(13 + n * (255 - 13));
-        const g = Math.round(17 + n * (160 - 17));
-        const b = Math.round(23 + n * (70 - 23));
-        return `rgb(${r},${g},${b})`;
-    }
-    function histColor(pct, maxPct) {
-        const n = maxPct > 0 ? pct / maxPct : 0;
-        const r = Math.round(56 + n * (255 - 56));
-        const g = Math.round(178 + n * (160 - 178));
-        const b = Math.round(73 + n * (70 - 73));
-        return `rgb(${r},${g},${b})`;
-    }
-    const heatRows = slices.map((sl, si) => {
-        const rowPcts = sliceBuckets[si].map(v => sliceTotals[si] > 0 ? (v / sliceTotals[si]) * 100 : 0);
-        const cells = rowPcts.map((p, bi) => {
-            const pctStr = p > 0 ? p.toFixed(1) : '';
-            return `<td class="hm-cell" style="background:${heatColor(p)}" title="dev=${binLabels[bi]}%  vol=${(sliceBuckets[si][bi]).toFixed(2)}  (${p.toFixed(1)}% of ${sl.label})">${pctStr}</td>`;
-        }).join('');
-        return `<tr><td class="yl">${sl.label}</td>${cells}</tr>`;
-    }).join('\n');
-    const maxBarPct = Math.max(...totalBins);
-    const barRows = totalBins.map((v, i) => {
-        const barPct = maxBarPct > 0 ? (v / maxBarPct) * 100 : 0;
-        const color = histColor(v, maxBarPct);
-        const barH = Math.max(barPct * 0.7, 0.5);
-        return `<div class="bar" style="height:${barH}px;background:${color}" title="Deviation: ${binLabels[i]}%  Volume: ${v.toFixed(2)}"></div>`;
-    }).join('');
-    const xLabelInterval = Math.max(1, Math.floor(nBins / 11));
-    const xLabelsHtml = binLabels.map((l, i) => {
-        if (i === 0 || i === nBins - 1 || i % xLabelInterval === 0) {
-            return `<span>${l}%</span>`;
+        allCellPcts.sort((a, b) => a - b);
+        const colorCap = allCellPcts.length > 0
+            ? allCellPcts[Math.floor(allCellPcts.length * 0.95)]
+            : 30;
+        function heatColor(pct: number) {
+            if (pct <= 0) return '#0d1117';
+            const n = Math.min(pct / colorCap, 1);
+            const r = Math.round(13 + n * (255 - 13));
+            const g = Math.round(17 + n * (160 - 17));
+            const b = Math.round(23 + n * (70 - 23));
+            return `rgb(${r},${g},${b})`;
         }
-        return '<span></span>';
-    }).join('');
-    const threshHtml = cfg.thresholds.map(t => {
-        const pct = ((leftBins + t / binSize) / nBins) * 100;
-        return `<div class="thresh-line" style="left:${Math.min(Math.max(pct, 0), 100)}%"><span class="thresh-label">±${t}%</span></div>`;
-    }).join('');
-    const html = `<!DOCTYPE html>
+        function histColor(pct: number, maxPct: number) {
+            const n = maxPct > 0 ? pct / maxPct : 0;
+            const r = Math.round(56 + n * (255 - 56));
+            const g = Math.round(178 + n * (160 - 178));
+            const b = Math.round(73 + n * (70 - 73));
+            return `rgb(${r},${g},${b})`;
+        }
+        const heatRows = slices.map((sl, si) => {
+            const rowPcts = sliceBuckets[si].map(v => sliceTotals[si] > 0 ? (v / sliceTotals[si]) * 100 : 0);
+            const cells = rowPcts.map((p, bi) => {
+                const pctStr = p > 0 ? p.toFixed(1) : '';
+                return `<td class="hm-cell" style="background:${heatColor(p)}" title="dev=${binLabels[bi]}%  vol=${(sliceBuckets[si][bi]).toFixed(2)}  (${p.toFixed(1)}% of ${sl.label})">${pctStr}</td>`;
+            }).join('');
+            return `<tr><td class="yl">${sl.label}</td>${cells}</tr>`;
+        }).join('\n');
+        const maxBarPct = Math.max(...totalBins);
+        const barRows = totalBins.map((v, i) => {
+            const barPct = maxBarPct > 0 ? (v / maxBarPct) * 100 : 0;
+            const color = histColor(v, maxBarPct);
+            const barH = Math.max(barPct * 0.7, 0.5);
+            return `<div class="bar" style="height:${barH}px;background:${color}" title="Deviation: ${binLabels[i]}%  Volume: ${v.toFixed(2)}"></div>`;
+        }).join('');
+        const xLabelInterval = Math.max(1, Math.floor(nBins / 11));
+        const xLabelsHtml = binLabels.map((l, i) => {
+            if (i === 0 || i === nBins - 1 || i % xLabelInterval === 0) {
+                return `<span>${l}%</span>`;
+            }
+            return '<span></span>';
+        }).join('');
+        const threshHtml = cfg.thresholds.map(t => {
+            const pct = ((leftBins + t / binSize) / nBins) * 100;
+            return `<div class="thresh-line" style="left:${Math.min(Math.max(pct, 0), 100)}%"><span class="thresh-label">±${t}%</span></div>`;
+        }).join('');
+        const sourceLabel = cfg.source.config.botKey || path.basename(cfg.source.config.filePath || 'data');
+        const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -301,7 +300,7 @@ table.heatmap td.yl { color: #8b949e; font-size: 10px; text-align: right; paddin
     ${(totalVol).toFixed(1)} total volume units &middot;
     ${binSize}% bins &middot;
     ${slices.length} time slices &middot;
-    ${raw.meta && raw.meta.pool ? raw.meta.pool : path.basename(path.dirname(cfg.data))}
+    ${sourceLabel}
 </p>
 <div class="stats-grid">
     <div class="stat-card"><div class="lbl">Mean Deviation</div><div class="val">${meanDev.toFixed(2)}%</div></div>
@@ -352,9 +351,12 @@ table.heatmap td.yl { color: #8b949e; font-size: 10px; text-align: right; paddin
 </div>
 </body>
 </html>`;
-    const outDir = path.dirname(cfg.output);
-    if (!fs.existsSync(outDir)) ensureDir(outDir);
-    fs.writeFileSync(cfg.output, html, 'utf8');
-    console.log(`✓ Heatmap saved to ${cfg.output}`);
+        writeChartFile(cfg.output, html);
+        if (!cfg.quiet) console.log(`[TradeHeatmap] ✓ Heatmap saved to ${cfg.output}`);
+    } catch (err: any) {
+        console.error(`[TradeHeatmap] Error: ${err?.message ?? err}`);
+        process.exit(1);
+    }
 }
-main();
+
+main().catch((err: unknown) => { console.error(err); process.exit(1); });

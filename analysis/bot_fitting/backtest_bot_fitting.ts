@@ -149,7 +149,7 @@ function resolveAutoResultsPath(dataPath: string): string {
     return path.join(dir, `optimization_results_${base}.json`);
 }
 
-function loadAmaStrategies(resultsPath) {
+function loadAmaStrategies(resultsPath: string) {
     const json = readJSON(resultsPath);
     const amas = (json.meta?.amas ?? {}) as any;
     const labels = { AMA1: 'AMA1', AMA2: 'AMA2', AMA3: 'AMA3', AMA4: 'AMA4' as string };
@@ -173,11 +173,11 @@ function loadAmaStrategies(resultsPath) {
     return out;
 }
 
-function levelGrossSpreadPct(levelRatio) {
+function levelGrossSpreadPct(levelRatio: number) {
     return (((1 + levelRatio) / (1 - levelRatio)) - 1) * 100;
 }
 
-function simulateForParams(candles, amaValues, params) {
+function simulateForParams(candles: any, amaValues: any, params: any) {
     const { spreadPct, incrementPct, maxMinRatio, activeOrders, feeRoundtripPct, risk } = params;
     const skip = Math.max(20, Math.floor(candles.length * 0.1));
     const levels = Array.from({ length: activeOrders }, (_, i) => incrementPct * (i + 1));
@@ -316,7 +316,7 @@ function run() {
     }
     const loaded = loadLpData(cfg.dataPath!);
     const candles = loaded.candles;
-    const closes = candles.map((c) => c.close);
+    const closes = candles.map((c: any) => c.close);
     const strategies = loadAmaStrategies(cfg.resultsPath!);
 
     const totalCombos = cfg.spreadValues.length * cfg.incrementValues.length * cfg.ratioValues.length;

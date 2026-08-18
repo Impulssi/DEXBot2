@@ -414,10 +414,10 @@ async function run() {
                 const r    = slice[j];
                 const hits = priceResults[j]?.hits?.hits ?? [];
 
-                const buyHits  = hits.filter(h =>
+                const buyHits  = hits.filter((h: any) =>
                     h._source?.operation_history?.op_object?.amount_to_sell?.asset_id === '1.3.0'
                 );
-                const sellHits = hits.filter(h =>
+                const sellHits = hits.filter((h: any) =>
                     h._source?.operation_history?.op_object?.amount_to_sell?.asset_id !== '1.3.0'
                 );
 
@@ -435,7 +435,7 @@ async function run() {
                 const grid  = analyzeGrid(primaryHits, pSell, pRecv, opts.cvThreshold);
                 const batch = analyzeBatching(hits);
 
-                const pairAssets = new Set(hits.flatMap(h => {
+                const pairAssets = new Set(hits.flatMap((h: any) => {
                     const op = h._source?.operation_history?.op_object;
                     return [op?.amount_to_sell?.asset_id, op?.min_to_receive?.asset_id].filter(Boolean);
                 }) as string[]);

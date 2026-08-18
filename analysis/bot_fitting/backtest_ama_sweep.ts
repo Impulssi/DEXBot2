@@ -147,7 +147,7 @@ function printHelp() {
     console.log('  --top <n>               Show top N results (default: 15)');
 }
 
-function loadAmaStrategies(resultsPath) {
+function loadAmaStrategies(resultsPath: string) {
     const json = readJSON(resultsPath);
     const amas = (json.meta as any)?.amas;
     if (!amas) throw new Error('No meta.amas found in results file.');
@@ -603,7 +603,7 @@ async function run() {
 
     const loaded = loadLpData(cfg.dataPath!);
     const candles = loaded.candles;
-    const closes = candles.map((c) => c.close);
+    const closes = candles.map((c: any) => c.close);
     const strategies = loadAmaStrategies(cfg.resultsPath!);
 
     const weightEntries = Object.entries(WEIGHT_PROFILES);
@@ -677,7 +677,7 @@ async function run() {
         console.log(`\n  ${row.strategy.id} — Top 5:`);
         console.log('  # | wt    | spr%  | inc%  | ratio | nOrd |  pairs | net/cap | drift | gAge | fee/d | score');
         console.log('  --+-------+-------+-------+-------+------+--------+---------+-------+------+-------+------');
-        row.top5.forEach((b, idx) => {
+        row.top5.forEach((b: any, idx: number) => {
             console.log(
                 `  ${idx + 1} | ` +
                 `${b.weightName.padEnd(5)} | ` +

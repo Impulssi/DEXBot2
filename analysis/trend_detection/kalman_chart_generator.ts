@@ -7,30 +7,30 @@ const NEUTRAL_ZONE_PCT = 0.15;
 const MAX_SLOPE_PCT    = 3.0;
 const MAX_SLOPE_OFFSET = 0.5;
 
-function computeKalmanWeightOffset(velocityPct, isReady) {
+function computeKalmanWeightOffset(velocityPct: any, isReady: any) {
     if (!isReady || velocityPct == null) return 0;
     if (Math.abs(velocityPct) < NEUTRAL_ZONE_PCT) return 0;
     return Math.max(-MAX_SLOPE_OFFSET, Math.min(MAX_SLOPE_OFFSET,
         (velocityPct / MAX_SLOPE_PCT) * MAX_SLOPE_OFFSET));
 }
 
-function generateHTML(data, title = 'Kalman Trajectory Analysis') {
+function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
     const results = data.allResults || [];
     if (results.length === 0) throw new Error('No analysis results in input');
 
     const interval = results.length > 1 ?
         (new Date(results[1].timestamp).getTime() - new Date(results[0].timestamp).getTime()) / 1000 : 3600;
 
-    const dates          = results.map((r, idx) => toEpochSeconds(r.timestamp || Date.now(), idx));
-    const prices         = results.map((r) => r.price);
-    const tacticalPrices = results.map((r) => r.kalmanPrice);
-    const modalPrices    = results.map((r) => r.modalPrice);
-    const signals        = results.map((r) => r.signal);
-    const trendUp        = results.map((r) =>
+    const dates          = results.map((r: any, idx: number) => toEpochSeconds(r.timestamp || Date.now(), idx));
+    const prices         = results.map((r: any) => r.price);
+    const tacticalPrices = results.map((r: any) => r.kalmanPrice);
+    const modalPrices    = results.map((r: any) => r.modalPrice);
+    const signals        = results.map((r: any) => r.signal);
+    const trendUp        = results.map((r: any) =>
         r.kalmanPrice != null && r.modalPrice != null ? r.kalmanPrice > r.modalPrice : null
     );
-    const kalmanWeights  = results.map((r) => computeKalmanWeightOffset(r.velocityFilteredPct ?? r.velocityPct, r.isReady));
-    const amaWeights     = results.map((r) => r.amaWeightOffset ?? null);
+    const kalmanWeights  = results.map((r: any) => computeKalmanWeightOffset(r.velocityFilteredPct ?? r.velocityPct, r.isReady));
+    const amaWeights     = results.map((r: any) => r.amaWeightOffset ?? null);
 
     // Future Projection (150 bars)
     const lastDate = dates[dates.length - 1];
@@ -47,7 +47,7 @@ function generateHTML(data, title = 'Kalman Trajectory Analysis') {
 
     // Extract dense Beams
     const allBeams: any[] = [];
-    results.forEach((r, idx) => {
+    results.forEach((r: any, idx: number) => {
         if (idx % 15 === 0 || (r.beams && r.beams.length > 0 && r.beams[r.beams.length-1].originX === idx)) {
             allBeams.push({
                 x: dates[idx],

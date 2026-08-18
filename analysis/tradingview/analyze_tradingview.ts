@@ -3,20 +3,18 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { createSource } from '../price_sources.js';
 import { generateHTML } from './tradingview_uplot_chart_generator.js';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { loadCandleFile } from '../math_utils.js';
-import { getStorage } from '../../modules/storage/index.js';
-const { ensureDir } = getStorage();
 import { getErrorMessage } from '../../modules/utils/errors.js';
 import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
-import { loadBotSettings, resolveCandleFile, candleFileForBot, loadBotMeta, resolveAmaConfig } from '../bot_key_utils.js';
+import { loadBotMeta } from '../bot_key_utils.js';
+import { resolveSource, listAvailableBots } from '../resolve_source.js';
+import { writeChartFile } from '../chart_utils.js';
 import { PATHS } from '../../modules/paths.js';
 'use strict';
 
 
-const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 const DEFAULT_CHART_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'tradingview_chart.html');
 const DEFAULT_AMA = MARKET_ADAPTER.AMAS.AMA3;
@@ -25,7 +23,7 @@ const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
 function parseArgs() {
     const args = process.argv.slice(2);
     const config: {
-        source: { type: string; config: { filePath: any; botKey?: any; assetA?: any; assetB?: any } };
+        source: { type: string; config: { filePath: any; botKey?: any } };
         chartFile: string;
         title: string | null;
         priceScale: string;
@@ -38,8 +36,9 @@ function parseArgs() {
         vwapEnabled: boolean;
         vwapBars: number;
         quiet: boolean;
+        listBots: boolean;
     } = {
-        source: { type: 'json', config: { filePath: null as any } },
+        source: { type: 'market_adapter', config: { botKey: '', filePath: undefined as any } },
         chartFile: DEFAULT_CHART_FILE,
         title: null,
         priceScale: 'log',
@@ -52,6 +51,7 @@ function parseArgs() {
         vwapEnabled: false,
         vwapBars: 500,
         quiet: false,
+        listBots: false,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -73,18 +73,19 @@ function parseArgs() {
         else if (arg === '--no-ama') config.amaEnabled = false;
         else if (arg === '--no-vwap') config.vwapEnabled = false;
         else if (arg === '--vwap-bars') config.vwapBars = Math.max(24, parseInt(args[++i], 10) || 500);
+        else if (arg === '--list-bots') config.listBots = true;
         else if (arg === '--quiet') config.quiet = true;
     }
 
     return config;
 }
 
-function loadJsonMeta(filePath) {
+function loadJsonMeta(filePath: any) {
     if (!filePath || !fs.existsSync(filePath)) return { meta: null, candles: null };
     return loadCandleFile(filePath);
 }
 
-function inferTitle(meta, fallback) {
+function inferTitle(meta: any, fallback: string) {
     const pool = meta?.pool ? `Pool ${String(meta.pool).replace(/^1\.19\./, '')}` : null;
     const a = meta?.assetA?.symbol || meta?.assetA?.id || null;
     const b = meta?.assetB?.symbol || meta?.assetB?.id || null;
@@ -94,33 +95,16 @@ function inferTitle(meta, fallback) {
     return `${label} · ${interval} · TradingView`;
 }
 
-function resolveMarketAdapterCandleFile(botKey) {
-    if (!botKey) throw new Error('--bot-key is required when using --source market_adapter');
-    const cached = resolveCandleFile(botKey, INTERVAL_LABEL);
-    if (cached) return cached;
-    throw new Error(`Market adapter candle file not found for bot '${botKey}': ${candleFileForBot(botKey, INTERVAL_LABEL)}`);
-}
-
 async function main() {
     try {
         const config = parseArgs();
-        if (config.source.type === 'json' && !config.source.config.filePath) {
-            throw new Error('--file <path-to-candles.json> is required (or use --source market_adapter)');
-        }
-        const srcConfig = config.source.config;
-        const isMarketAdapterSource = config.source.type === 'market_adapter';
-        if (isMarketAdapterSource) {
-            const candleFile = resolveMarketAdapterCandleFile(srcConfig.botKey);
-            srcConfig.filePath = candleFile;
-            const botMeta = loadBotMeta(srcConfig.botKey);
-            if (botMeta && !srcConfig.assetA && !srcConfig.assetB) {
-                srcConfig.assetA = botMeta.assetA;
-                srcConfig.assetB = botMeta.assetB;
-            }
-            config.source.type = 'json';
+
+        if (config.listBots) {
+            listAvailableBots();
+            return;
         }
 
-        const source = createSource(config.source.type, srcConfig);
+        const { source, botKey, amaConfig } = resolveSource(config.source.config, { quiet: config.quiet });
         if (!config.quiet) console.log(`[TradingView] Loading candles from ${source.name}...`);
 
         const candles = await source.fetchCandles();
@@ -128,17 +112,18 @@ async function main() {
             throw new Error('No candles returned from source');
         }
 
-        const rawJson = config.source.type === 'json' ? loadJsonMeta(srcConfig.filePath) : { meta: null, candles: null };
-        const botMeta = isMarketAdapterSource ? loadBotMeta(srcConfig.botKey) : null;
+        const isJsonSource = config.source.type === 'json';
+        const filePath = config.source.config.filePath;
+        const rawJson = isJsonSource ? loadJsonMeta(filePath) : { meta: null, candles: null };
+        const botMeta = botKey ? loadBotMeta(botKey) : null;
         const jsonMeta = rawJson.meta || (botMeta ? {
             assetA: { symbol: botMeta.assetA },
             assetB: { symbol: botMeta.assetB },
             intervalSeconds: 3600,
         } : null);
-        const title = config.title || inferTitle(jsonMeta, path.basename(srcConfig.filePath || 'tradingview'));
+        const title = config.title || inferTitle(jsonMeta, path.basename(filePath || 'tradingview'));
         const hasAmaGridPrice = AMA_KEYWORDS.has(String(botMeta?.gridPrice || '').trim().toLowerCase());
         const amaEnabled = hasAmaGridPrice ? config.amaEnabled : false;
-        const selectedAma = resolveAmaConfig(srcConfig.botKey);
 
         const html = generateHTML({
             candles,
@@ -148,9 +133,9 @@ async function main() {
             },
             smaPeriod: config.smaPeriod,
             amaDefaults: {
-                erPeriod: config.amaErPeriod ?? selectedAma.erPeriod,
-                fastPeriod: config.amaFastPeriod ?? selectedAma.fastPeriod,
-                slowPeriod: config.amaSlowPeriod ?? selectedAma.slowPeriod,
+                erPeriod: config.amaErPeriod ?? amaConfig.erPeriod,
+                fastPeriod: config.amaFastPeriod ?? amaConfig.fastPeriod,
+                slowPeriod: config.amaSlowPeriod ?? amaConfig.slowPeriod,
             },
             smaEnabled: config.smaEnabled,
             amaEnabled,
@@ -161,9 +146,7 @@ async function main() {
             marketAdapter: MARKET_ADAPTER,
         }, title);
 
-        const chartDir = path.dirname(config.chartFile);
-        if (!fs.existsSync(chartDir)) ensureDir(chartDir);
-        fs.writeFileSync(config.chartFile, html, 'utf8');
+        writeChartFile(config.chartFile, html);
 
         if (!config.quiet) console.log(`[TradingView] ✓ Chart saved to ${config.chartFile}`);
     } catch (err: any) {
@@ -174,5 +157,4 @@ async function main() {
 
 main().catch((err: unknown) => { console.error(err); process.exit(1); });
 
-export { main, parseArgs, loadJsonMeta, loadBotSettings, inferTitle }
-
+export { main, parseArgs, loadJsonMeta, inferTitle }

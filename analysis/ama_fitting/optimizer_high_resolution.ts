@@ -528,7 +528,7 @@ async function run() {
     const m   = loaded.meta;
     dataMeta = m;
     dataLabel = m ? `LP Pool ${m.pool} (${m.assetA?.symbol}/${m.assetB?.symbol})` : path.basename(dataFile);
-    const closes = candles.map(c => c.close);
+    const closes = candles.map((c: any) => c.close);
     console.log(`  Data:       ${dataLabel}  (${candles.length} candles)\n`);
 
     // ── Run: core-parallel full-grid scan split by ER shards ──────────────────
@@ -685,7 +685,7 @@ async function run() {
     const lambdaSuffix = `_w${objectives.map((o) => ws(String(o.distanceWeight))).join('_')}`;
     const COLOR_CYCLE = ['#26a69a', '#fb8c00', '#5c9ee6', '#ef5350'];
     const DASH_CYCLE = ['dot', 'solid', 'dash', 'dashdot'];
-    const candleArrays = candles.map(c => [c.timestamp, c.open, c.high, c.low, c.close, c.volume]);
+    const candleArrays = candles.map((c: any) => [c.timestamp, c.open, c.high, c.low, c.close, c.volume]);
     const chartMeta = {
         ...(dataMeta || {}),
         assetA: dataMeta?.assetA || { symbol: '?' },

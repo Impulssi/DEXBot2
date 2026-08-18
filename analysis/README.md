@@ -21,8 +21,8 @@ Tools that inspect DEXBot trading behavior and the market data it operates on. O
 | Tool | Ask this when… | One-line command |
 |------|----------------|------------------|
 | [`trade_profitability.ts`](#trade-profitability-analyzer-trade_profitabilityts) | "Is my bot making money?" — PnL, R-multiples, drawdown | `npm run analysis:trade-pnl -- <account-id>` |
-| [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `tsx analysis/analyze_risk_profile.ts --data <lp-file> --ama AMA3` |
-| [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `tsx analysis/analyze_trade_heatmap.ts --data <lp-file> --ama AMA3` |
+| [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `tsx analysis/analyze_risk_profile.ts --bot-key <bot-key>` |
+| [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `tsx analysis/analyze_trade_heatmap.ts --bot-key <bot-key>` |
 | [`tradingview/analyze_tradingview.ts`](#tradingview-chart-tradingviewanalyze_tradingviewts) | "Just give me a candle chart" | `npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>` |
 | [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `tsx analysis/analyze_dynamic_weight.ts --bot-key <bot-key>` |
 | [`analyze_volatility.ts`](#volatility-analyze_volatilityts) | "Both weights clipped too hard / not enough?" | `tsx analysis/analyze_volatility.ts --bot-key <bot-key>` |
@@ -113,8 +113,11 @@ See [ama_fitting/README.md](ama_fitting/README.md) for full fetch options and da
 Measures inventory risk by calculating empirical divergence quantiles (based on price-to-AMA deviation). Use this to calibrate 'Safe Range' clamping tiers for your liquidity strategy.
 
 ```bash
+tsx analysis/analyze_risk_profile.ts --bot-key <bot-key>
+
+# From explicit LP candle file
 tsx analysis/analyze_risk_profile.ts \
-  --data market_adapter/data/lp/<pair>/lp_pool_<id>_1h.json \
+  --file market_adapter/data/lp/<pair>/lp_pool_<id>_1h.json \
   --ama AMA3 \
   --output analysis/charts/risk_report.html
 ```
@@ -223,8 +226,11 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 Generates a 2D heatmap + summed histogram showing where trade volume concentrates relative to AMA deviation. Time-slice rows show how the distribution evolved; the bottom histogram shows the aggregate bell-curve shape with threshold annotations.
 
 ```bash
+tsx analysis/analyze_trade_heatmap.ts --bot-key <bot-key>
+
+# From explicit LP candle file
 tsx analysis/analyze_trade_heatmap.ts \
-  --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
+  --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --ama AMA3 \
   --output analysis/charts/trade_heatmap.html \
   --bin-size 5 \
@@ -237,7 +243,9 @@ tsx analysis/analyze_trade_heatmap.ts \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--data` | — | Path to LP candle JSON (required) |
+| `--source` | `market_adapter` | Data source: `market_adapter` or `json` |
+| `--bot-key` | — | Bot key from `profiles/bots.json` (required for `market_adapter` source) |
+| `--file` | — | Path to LP candle JSON (for `json` source) |
 | `--ama` | `AMA3` | AMA preset (AMA1–AMA4) |
 | `--output` | `analysis/charts/trade_heatmap.html` | Output path |
 | `--bin-size` | `5` | Percentage points per bin |
@@ -247,7 +255,8 @@ tsx analysis/analyze_trade_heatmap.ts \
 | `--warmup` | AMA erPeriod | Bars to skip for AMA warmup |
 | `--slice-months` | `12` | Months per time-slice row |
 | `--thresholds` | `1,2,3,5,10,20` | Deviation % thresholds for volume concentration table |
-| `--verbose` | off | Print processing info |
+| `--list-bots` | off | List available bot keys and exit |
+| `--quiet` | off | Suppress log output |
 
 </details>
 
@@ -422,6 +431,7 @@ Details: [bot_fitting/README.md](bot_fitting/README.md)
 
 | File | Purpose |
 |------|---------|
+| `resolve_source.ts` | Shared source resolution: bot-key → candle file, AMA config, `--list-bots` |
 | `price_sources.ts` | Unified candle source abstraction (`json`, `market_adapter`) |
 | `chart_utils.ts` | Shared chart rendering utilities |
 | `math_utils.ts` | Shared math utilities |

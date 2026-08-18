@@ -8,8 +8,8 @@ const { readJSON } = getStorage();
  */
 
 
-function toCandles(arr) {
-    return arr.map((c) => ({
+function toCandles(arr: any[]) {
+    return arr.map((c: any) => ({
         timestamp: c[0],
         open: c[1],
         high: c[2],
@@ -19,7 +19,7 @@ function toCandles(arr) {
     }));
 }
 
-function parseListOrRange(spec, fallback) {
+function parseListOrRange(spec: any, fallback: any) {
     if (!spec) return fallback;
     if (spec.includes(':')) {
         const [a, b, s] = spec.split(':').map(Number);
@@ -28,16 +28,16 @@ function parseListOrRange(spec, fallback) {
         for (let v = a; v <= b + 1e-9; v += s) out.push(Number(v.toFixed(4)));
         return out;
     }
-    const vals = spec.split(',').map((x) => Number(x.trim())).filter(Number.isFinite);
+    const vals = spec.split(',').map((x: any) => Number(x.trim())).filter(Number.isFinite);
     return vals.length ? vals : fallback;
 }
 
-function loadLpData(filePath) {
+function loadLpData(filePath: string) {
     const json = readJSON(filePath);
     return { candles: toCandles(json.candles ?? json), meta: json.meta ?? null };
 }
 
-function fmt(x, d = 2) {
+function fmt(x: number, d = 2) {
     if (!Number.isFinite(x)) return '  n/a';
     return Number(x).toFixed(d);
 }

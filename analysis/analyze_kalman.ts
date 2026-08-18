@@ -11,21 +11,16 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
-import { PATHS } from '../modules/paths.js';
 import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer.js';
 import { generateHTML } from './trend_detection/kalman_chart_generator.js';
-import { createSource } from './price_sources.js';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { computeAverageAmaSlopePct } from '../market_adapter/core/strategies/dynamic_weight_series.js';
 import { getCandleClose } from './math_utils.js';
 import { writeChartFile } from './chart_utils.js';
+import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
 'use strict';
 
-// Standalone analysis defaults (reuses calculateAMA from production but constants are independent)
-const AMA_ER_PERIOD   = 10;
-const AMA_FAST        = 2;
-const AMA_SLOW        = 30;
 const LOOKBACK_BARS   = 72;
 const NEUTRAL_ZONE    = 0.15;
 const MAX_SLOPE_PCT   = 3.0;
@@ -34,17 +29,19 @@ const MAX_SLOPE_OFFSET = 0.5;
 function parseArgs() {
     const args = process.argv.slice(2);
     const config: {
-        source: { type: string; config: { botKey: string; filePath?: string; stateDir?: string } };
+        source: { type: string; config: SourceConfig };
         rNoise: number;
         qNoise: number;
         chartFile: string;
         quiet: boolean;
+        listBots: boolean;
     } = {
         source: { type: 'market_adapter', config: { botKey: '' } },
         rNoise: 0.05,
         qNoise: 0.005,
         chartFile: 'analysis/charts/kalman_chart.html',
         quiet: false,
+        listBots: false,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -58,6 +55,7 @@ function parseArgs() {
         else if (arg === '--r') config.rNoise = parseFloat(args[++i]);
         else if (arg === '--q') config.qNoise = parseFloat(args[++i]);
         else if (arg === '--chart') config.chartFile = args[++i];
+        else if (arg === '--list-bots') config.listBots = true;
         else if (arg === '--quiet') config.quiet = true;
     }
 
@@ -68,12 +66,12 @@ async function main() {
     const config = parseArgs();
 
     try {
-        const srcConfig = config.source.config;
-        if (config.source.type === 'market_adapter' && !srcConfig.stateDir) {
-            srcConfig.stateDir = PATHS.MARKET_ADAPTER.STATE_DIR;
+        if (config.listBots) {
+            listAvailableBots();
+            return;
         }
 
-        const source = createSource(config.source.type, srcConfig);
+        const { source, amaConfig } = resolveSource(config.source.config, { quiet: config.quiet });
         if (!config.quiet) console.log(`[Kalman] Loading candles from ${source.name}...`);
 
         const candles = await source.fetchCandles();
@@ -97,8 +95,8 @@ async function main() {
 
         // ── AMA weight offset (for comparison panel) ─────────────────────────
         const closes    = candles.map(c => getCandleClose(c) ?? 0);
-        const amaValues = calculateAMA(closes, { erPeriod: AMA_ER_PERIOD, fastPeriod: AMA_FAST, slowPeriod: AMA_SLOW });
-        const warmup    = AMA_ER_PERIOD + LOOKBACK_BARS + 1;
+        const amaValues = calculateAMA(closes, amaConfig);
+        const warmup    = amaConfig.erPeriod + LOOKBACK_BARS + 1;
 
         for (let i = 0; i < allResults.length; i++) {
             if (i < warmup) { allResults[i].amaWeightOffset = null; continue; }

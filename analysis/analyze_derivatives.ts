@@ -21,20 +21,12 @@
 
 
 import { pathToFileURL } from 'node:url';
-import { PATHS } from '../modules/paths.js';
 import { DerivativeAnalyzer } from './trend_detection/derivative_analyzer.js';
 import { generateHTML } from './derivative_chart_generator.js';
-import { createSource } from './price_sources.js';
-import { findLatestLpData } from '../market_adapter/utils/data_discovery.js';
 import { writeChartFile } from './chart_utils.js';
+import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 'use strict';
 
-
-interface SourceConfig {
-    botKey: string;
-    filePath?: string;
-    stateDir?: string;
-}
 
 interface CliConfig {
     source: { type: string; config: SourceConfig };
@@ -60,6 +52,7 @@ interface CliConfig {
     rsiExtreme: number;
     chartFile: string;
     quiet: boolean;
+    listBots: boolean;
 }
 
 interface PriceSource {
@@ -94,6 +87,7 @@ function parseArgs(): CliConfig {
         rsiExtreme: 90,
         chartFile: 'analysis/charts/derivative_chart.html',
         quiet: false,
+        listBots: false,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -122,6 +116,7 @@ function parseArgs(): CliConfig {
         else if (arg === '--no-price-regime-gate')  config.priceRegimeGate      = false;
         else if (arg === '--price-regime-buffer-pct') config.priceRegimeMinDistancePct = parseFloat(args[++i]);
         else if (arg === '--chart')       config.chartFile                  = args[++i];
+        else if (arg === '--list-bots')  config.listBots                   = true;
         else if (arg === '--quiet')     config.quiet                        = true;
         else if (arg === '--help' || arg === '-h') { showHelp(); process.exit(0); }
     }
@@ -179,6 +174,7 @@ Analyzer options:
 
   Output:
     --chart FILE   Chart output path (default: analysis/charts/derivative_chart.html)
+    --list-bots    List available bot keys from bots.json
     --quiet        Suppress log output
     `);
 }
@@ -210,13 +206,13 @@ async function analyze(source: PriceSource, config: CliConfig): Promise<{
     allResults: any[];
     lastAnalysis: any;
 }> {
-    if (!config.quiet) console.log(`[Analyzer] Loading candles from ${source.name}...`);
+    if (!config.quiet) console.log(`[Derivatives] Loading candles from ${source.name}...`);
 
     const candles = await source.fetchCandles();
     if (!Array.isArray(candles) || candles.length === 0) {
         throw new Error('No candles returned from source');
     }
-    if (!config.quiet) console.log(`[Analyzer] Loaded ${candles.length} candles`);
+    if (!config.quiet) console.log(`[Derivatives] Loaded ${candles.length} candles`);
 
     const analyzer = new DerivativeAnalyzer({
         slowSmaPeriod:          config.slowSmaPeriod,
@@ -260,7 +256,7 @@ async function analyze(source: PriceSource, config: CliConfig): Promise<{
         if (config.fastSmaPeriod)    parts.push(`fastSMA(${config.fastSmaPeriod}): ${last.fastSmaRawTrend} (${last.fastSmaBarsInTrend} bars)`);
         parts.push(`MACD: ${last.macdTrend} hist=${last.macdHistogram}`);
         parts.push(`RSI(${config.rsiPeriod}): ${last.rsi !== null ? last.rsi.toFixed(1) : 'n/a'} [${last.rsiZone}]`);
-        console.log(`[Analyzer] Done — ${last.isReady ? '' : '(warming up) '}${parts.join('  ')}`);
+        console.log(`[Derivatives] Done — ${last.isReady ? '' : '(warming up) '}${parts.join('  ')}`);
     }
 
     return {
@@ -296,29 +292,20 @@ async function main(): Promise<void> {
     const config = parseArgs();
 
     try {
-        const srcConfig = config.source.config;
-        if (config.source.type === 'market_adapter' && !srcConfig.stateDir) {
-            srcConfig.stateDir = PATHS.MARKET_ADAPTER.STATE_DIR;
-        }
-        if (config.source.type === 'json' && !srcConfig.filePath) {
-            const autoFile = findLatestLpData();
-            if (autoFile) {
-                srcConfig.filePath = autoFile;
-                if (!config.quiet) console.log(`[Analyzer] Auto-discovered LP data: ${autoFile}`);
-            } else {
-                throw new Error('No --file provided and no LP data auto-discovered in market_adapter/data/lp');
-            }
+        if (config.listBots) {
+            listAvailableBots();
+            return;
         }
 
-        const source = createSource(config.source.type, srcConfig);
+        const { source } = resolveSource(config.source.config, { quiet: config.quiet });
         const report = await analyze(source, config);
 
         const html = generateHTML(report, 'Derivative Trend Analysis');
         writeChartFile(config.chartFile, html);
 
-        if (!config.quiet) console.log(`[Analyzer] ✓ Chart saved to ${config.chartFile}`);
+        if (!config.quiet) console.log(`[Derivatives] ✓ Chart saved to ${config.chartFile}`);
     } catch (err: unknown) {
-        console.error(`[Analyzer] Error: ${(err as any)?.message ?? err}`);
+        console.error(`[Derivatives] Error: ${(err as any)?.message ?? err}`);
         process.exit(1);
     }
 }

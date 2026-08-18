@@ -22,9 +22,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PATHS } from '../modules/paths.js';
 
-import { createSource } from './price_sources.js';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { computeATRSeries } from '../market_adapter/core/strategies/atr/calculator.js';
 import { normalizeAtrPeriod } from '../market_adapter/core/config_normalizers.js';
@@ -33,10 +31,10 @@ import { generateHTML } from './trend_detection/volatility_chart_generator.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { getCandleClose } from './math_utils.js';
 import { writeChartFile } from './chart_utils.js';
+import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
 'use strict';
 
-const AMA_CONFIG = MARKET_ADAPTER.AMAS.AMA3;
 const DEFAULT_ATR_PERIOD = MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_DEFAULT;
 const MIN_WEIGHT = MARKET_ADAPTER.DYNAMIC_WEIGHT_MIN_WEIGHT;
 const MAX_WEIGHT = MARKET_ADAPTER.DYNAMIC_WEIGHT_MAX_WEIGHT;
@@ -45,14 +43,14 @@ const DEFAULT_CLAMP = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP;
 const DEFAULT_CHART_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'charts');
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'volatility_chart.html');
 
-function computeATRSeriesNormalized(candles, period = DEFAULT_ATR_PERIOD) {
+function computeATRSeriesNormalized(candles: any[], period = DEFAULT_ATR_PERIOD) {
     return computeATRSeries(candles, normalizeAtrPeriod(period));
 }
 
 function parseArgs() {
     const args = process.argv.slice(2);
     const config: {
-        source:    { type: string; config: { botKey: string; filePath?: string; stateDir?: string } };
+        source:    { type: string; config: SourceConfig };
         chartFile: string;
         threshold: number;
         atrPeriod: number;
@@ -60,6 +58,7 @@ function parseArgs() {
         scaleX:    number;
         clamp:     number;
         quiet:     boolean;
+        listBots:  boolean;
     } = {
         source: { type: 'market_adapter', config: { botKey: '' } },
         chartFile: DEFAULT_CHART_FILE,
@@ -69,6 +68,7 @@ function parseArgs() {
         scaleX: MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT,
         clamp: DEFAULT_CLAMP,
         quiet: false,
+        listBots: false,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -88,13 +88,14 @@ function parseArgs() {
         else if (arg === '--exp') config.exponent = parseFloat(args[++i]);
         else if (arg === '--scale-x') config.scaleX = parseFloat(args[++i]);
         else if (arg === '--clamp') config.clamp = parseFloat(args[++i]);
+        else if (arg === '--list-bots') config.listBots = true;
         else if (arg === '--quiet') config.quiet = true;
     }
 
     return config;
 }
 
-function computeShift(weightVariance, exponent, scaleX, threshold, clampValue) {
+function computeShift(weightVariance: number, exponent: number, scaleX: number, threshold: number, clampValue: number) {
     const shift = computeVolatilityShift(weightVariance, {
         exponent,
         scaleX,
@@ -115,12 +116,13 @@ function computeShift(weightVariance, exponent, scaleX, threshold, clampValue) {
 async function main() {
     try {
         const config = parseArgs();
-        const srcConfig = config.source.config;
-        if (config.source.type === 'market_adapter' && !srcConfig.stateDir) {
-            srcConfig.stateDir = PATHS.MARKET_ADAPTER.STATE_DIR;
+
+        if (config.listBots) {
+            listAvailableBots();
+            return;
         }
 
-        const source = createSource(config.source.type, srcConfig);
+        const { source, amaConfig } = resolveSource(config.source.config, { quiet: config.quiet });
         if (!config.quiet) console.log(`[Volatility] Loading candles from ${source.name}...`);
 
         const candles = await source.fetchCandles();
@@ -129,7 +131,7 @@ async function main() {
         }
 
         const closes = candles.map(c => getCandleClose(c) ?? 0);
-        const ama3Values = calculateAMA(closes, AMA_CONFIG);
+        const ama3Values = calculateAMA(closes, amaConfig);
         const atrPeriod = normalizeAtrPeriod(config.atrPeriod);
         const atrs = computeATRSeriesNormalized(candles, atrPeriod);
 

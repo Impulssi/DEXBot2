@@ -97,7 +97,7 @@ Options:
 
 // ── Metrics ─────────────────────────────────────────────────────────────────────
 
-function calcTotalAmaMovement(amaValues, erPeriod) {
+function calcTotalAmaMovement(amaValues: any, erPeriod: any) {
     const skip = erPeriod + 1;
     let total = 0;
     for (let i = skip + 1; i < amaValues.length; i++) {
@@ -106,7 +106,7 @@ function calcTotalAmaMovement(amaValues, erPeriod) {
     return total;
 }
 
-function calcTotalRelativeDistance(amaValues, candles, erPeriod) {
+function calcTotalRelativeDistance(amaValues: any, candles: any, erPeriod: any) {
     const skip = erPeriod + 1;
     let total = 0;
     for (let i = skip; i < candles.length; i++) {
@@ -118,7 +118,7 @@ function calcTotalRelativeDistance(amaValues, candles, erPeriod) {
 
 // ── Geometric range ─────────────────────────────────────────────────────────────
 
-function geometricRange(min, max, count) {
+function geometricRange(min: any, max: any, count: any) {
     const ratio = Math.pow(max / min, 1 / (count - 1));
     const out: number[] = [];
     for (let i = 0; i < count; i++) {
@@ -132,7 +132,7 @@ function geometricRange(min, max, count) {
 
 // ── Precompute (movement, distance) per slow ───────────────────────────────────
 
-function precomputeMetrics(closes, candles, erPeriod, fastPeriod, slowValues) {
+function precomputeMetrics(closes: any, candles: any, erPeriod: any, fastPeriod: any, slowValues: any) {
     const cache: any[] = [];
     for (const slow of slowValues) {
         if (fastPeriod >= slow) continue;
@@ -144,7 +144,7 @@ function precomputeMetrics(closes, candles, erPeriod, fastPeriod, slowValues) {
     return cache;
 }
 
-function findBestForLambda(lambda, metricCache) {
+function findBestForLambda(lambda: any, metricCache: any) {
     let best: any = null;
     for (const m of metricCache) {
         const score = m.movement + lambda * m.distance;
@@ -158,7 +158,7 @@ function findBestForLambda(lambda, metricCache) {
 // ── Derive start lambda from maxSlow ───────────────────────────────────────────
 // Binary search: find the smallest lambda where optimal slow < maxSlow.
 
-function findStartLambda(metricCache, maxSlow, lambdaEnd) {
+function findStartLambda(metricCache: any, maxSlow: any, lambdaEnd: any) {
     let lo = 0;
     let hi = 1;
     // Expand hi until the best slow drops below maxSlow
@@ -178,13 +178,13 @@ function findStartLambda(metricCache, maxSlow, lambdaEnd) {
 
 // ── HTML Chart (λ → Slow) ──────────────────────────────────────────────────────
 
-function generateChartHtml(results, metricCache, fixEr, fixFast, dataLabel, _chartOutPath) {
-    const xs = results.map(r => r.lambda);
-    const ys = results.map(r => r.slow);
-    const dist = results.map(r => r.distance);
-    const move = results.map(r => r.movement);
-    const cacheSlow = metricCache.map(m => m.slow);
-    const cacheMove = metricCache.map(m => m.movement);
+function generateChartHtml(results: any, metricCache: any, fixEr: any, fixFast: any, dataLabel: any, _chartOutPath: any) {
+    const xs = results.map((r: any) => r.lambda);
+    const ys = results.map((r: any) => r.slow);
+    const dist = results.map((r: any) => r.distance);
+    const move = results.map((r: any) => r.movement);
+    const cacheSlow = metricCache.map((m: any) => m.slow);
+    const cacheMove = metricCache.map((m: any) => m.movement);
 
     const uplotCode = fs.readFileSync(path.resolve(__dirname, '..', 'uplot', 'uPlot.iife.min.js'), 'utf8');
     const uplotCSS = fs.readFileSync(path.resolve(__dirname, '..', 'uplot', 'uPlot.min.css'), 'utf8');

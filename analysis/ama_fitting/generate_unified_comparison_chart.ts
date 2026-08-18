@@ -71,7 +71,7 @@ function findLatestLpDataFile() {
     return matches.length > 0 ? matches[0].path : null;
 }
 
-function normalizeCandle(c, index) {
+function normalizeCandle(c: any, index: any) {
     if (Array.isArray(c)) {
         if (c.length < 5) throw new Error(`Invalid candle at index ${index}: need at least 5 entries`);
         return { timestamp: c[0], open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5] ?? 0 };
@@ -86,7 +86,7 @@ function normalizeCandle(c, index) {
     throw new Error(`Unsupported candle format at index ${index}`);
 }
 
-function loadCandles(dataFile) {
+function loadCandles(dataFile: any) {
     const resolved = path.resolve(dataFile);
     if (!fs.existsSync(resolved)) throw new Error(`File not found: ${resolved}`);
 
@@ -104,7 +104,7 @@ function loadCandles(dataFile) {
 
 // ── Metrics ────────────────────────────────────────────────────────────────────
 
-function calculateMetrics(amaValues, candles) {
+function calculateMetrics(amaValues: any, candles: any) {
     let maxDriftUp = 0, maxDriftDown = 0, areaAbove = 0, areaBelow = 0;
     const skip = Math.max(20, Math.floor(candles.length * 0.1));
     for (let i = skip; i < candles.length; i++) {
@@ -125,7 +125,7 @@ function calculateMetrics(amaValues, candles) {
 
 // ── Output path ────────────────────────────────────────────────────────────────
 
-function defaultChartPath(meta) {
+function defaultChartPath(meta: any) {
     const intervalLabel = meta?.intervalSeconds
         ? toIntervalLabel(meta.intervalSeconds)
         : '1h';

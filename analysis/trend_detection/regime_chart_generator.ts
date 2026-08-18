@@ -8,7 +8,7 @@ import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT
  * greenFn/redFn return true when the value falls in that zone.
  * Returns an array of { from, to, color } objects (null-color segments omitted).
  */
-function buildSegments(values, greenFn, redFn) {
+function buildSegments(values: any[], greenFn: any, redFn: any) {
     const segments: { from: number; to: number; color: string }[] = [];
     let start = 0, color: string | null = null;
 
@@ -29,7 +29,7 @@ function buildSegments(values, greenFn, redFn) {
     return segments;
 }
 
-function generateRegimeHTML(data, title = 'Regime Analysis') {
+function generateRegimeHTML(data: any, title = 'Regime Analysis') {
     const results = data.allResults || [];
     if (results.length === 0) throw new Error('No analysis results in input');
 
@@ -40,11 +40,11 @@ function generateRegimeHTML(data, title = 'Regime Analysis') {
         ? (new Date(results[1].timestamp).getTime() - new Date(results[0].timestamp).getTime()) / 1000
         : 3600;
 
-    const dates      = results.map((r, i) => toEpochSeconds(r.timestamp, i));
-    const prices     = results.map((r)    => r.price);
-    const ama3Prices = results.map((r)    => r.ama3Price ?? null);
-    const hurstArr   = results.map((r)    => r.hurstReady  ? r.hurst             : null);
-    const peArr      = results.map((r)    => r.peReady     ? r.normalizedEntropy : null);
+    const dates      = results.map((r: any, i: number) => toEpochSeconds(r.timestamp, i));
+    const prices     = results.map((r: any)    => r.price);
+    const ama3Prices = results.map((r: any)    => r.ama3Price ?? null);
+    const hurstArr   = results.map((r: any)    => r.hurstReady  ? r.hurst             : null);
+    const peArr      = results.map((r: any)    => r.peReady     ? r.normalizedEntropy : null);
 
     const realBarCount = results.length;
 
@@ -59,8 +59,8 @@ function generateRegimeHTML(data, title = 'Regime Analysis') {
     }
 
     // Background shading segments (server-side, passed to browser via JSON payload)
-    const hurstSegments = buildSegments(hurstArr.slice(0, realBarCount), v => v > 0.55, v => v < 0.45);
-    const peSegments    = buildSegments(peArr.slice(0, realBarCount),    v => v < 0.60, v => v > 0.85);
+    const hurstSegments = buildSegments(hurstArr.slice(0, realBarCount), (v: any) => v > 0.55, (v: any) => v < 0.45);
+    const peSegments    = buildSegments(peArr.slice(0, realBarCount),    (v: any) => v < 0.60, (v: any) => v > 0.85);
 
     const payload = {
         dates, prices, ama3Prices, hurstArr, peArr,

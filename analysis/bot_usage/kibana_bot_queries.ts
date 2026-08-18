@@ -55,7 +55,7 @@ const DEFAULT_CONFIG = {
  * Time-bucketed count of limit_order_create ops for an account.
  * Optionally filtered to orders selling a specific asset.
  */
-function buildOrderCreateQuery(accountId, lookbackHours, intervalSeconds = 3600, sellAssetId = null) {
+function buildOrderCreateQuery(accountId: string, lookbackHours: number, intervalSeconds: number = 3600, sellAssetId: string | null = null) {
     const filters = [
         { term:  { operation_type: OP_LIMIT_ORDER_CREATE } },
         { term:  { 'operation_history.op_object.seller.keyword': accountId } },
@@ -84,7 +84,7 @@ function buildOrderCreateQuery(accountId, lookbackHours, intervalSeconds = 3600,
  * Time-bucketed count of fill_order ops for an account.
  * Optionally filtered to fills where account pays a specific asset.
  */
-function buildFillOrderQuery(accountId, lookbackHours, intervalSeconds = 3600, paysAssetId = null) {
+function buildFillOrderQuery(accountId: string, lookbackHours: number, intervalSeconds: number = 3600, paysAssetId: string | null = null) {
     const filters = [
         { term:  { operation_type: OP_FILL_ORDER } },
         { term:  { 'operation_history.op_object.account_id.keyword': accountId } },
@@ -112,7 +112,7 @@ function buildFillOrderQuery(accountId, lookbackHours, intervalSeconds = 3600, p
 /**
  * Time-bucketed count of limit_order_cancel ops for an account.
  */
-function buildOrderCancelQuery(accountId, lookbackHours, intervalSeconds = 3600) {
+function buildOrderCancelQuery(accountId: string, lookbackHours: number, intervalSeconds: number = 3600) {
     return {
         size: 0,
         query: {
@@ -142,7 +142,7 @@ function buildOrderCancelQuery(accountId, lookbackHours, intervalSeconds = 3600)
  * Merges creates (by seller), fills (by account_id), cancels (by fee_paying_account)
  * into one aggregation using a filter per op type.
  */
-function buildDailyActivityQuery(accountId, lookbackHours) {
+function buildDailyActivityQuery(accountId: string, lookbackHours: number) {
     return {
         size: 0,
         query: {
@@ -214,7 +214,7 @@ function buildDailyActivityQuery(accountId, lookbackHours) {
  * @param {number}  [maxResults]
  * @returns {Object} Elasticsearch query object
  */
-function buildOrderPriceQuery(accountId, lookbackHours, sellAssetId = null, maxResults = 1000) {
+function buildOrderPriceQuery(accountId: string, lookbackHours: number, sellAssetId: string | null = null, maxResults: number = 1000) {
     const filters = [
         { term:  { operation_type: OP_LIMIT_ORDER_CREATE } },
         { term:  { 'operation_history.op_object.seller.keyword': accountId } },
@@ -245,7 +245,7 @@ function buildOrderPriceQuery(accountId, lookbackHours, sellAssetId = null, maxR
  * @param {number}  [maxResults]
  * @returns {Object} Elasticsearch query object
  */
-function buildFillPriceQuery(accountId, lookbackHours, paysAssetId = null, maxResults = 500) {
+function buildFillPriceQuery(accountId: string, lookbackHours: number, paysAssetId: string | null = null, maxResults: number = 500) {
     const filters = [
         { term:  { operation_type: OP_FILL_ORDER } },
         { term:  { 'operation_history.op_object.account_id.keyword': accountId } },
@@ -271,7 +271,7 @@ function buildFillPriceQuery(accountId, lookbackHours, paysAssetId = null, maxRe
  * Discover which asset pairs an account trades by aggregating the sell asset IDs.
  * Returns top asset IDs by order count.
  */
-function buildAssetDiscoveryQuery(accountId, lookbackHours) {
+function buildAssetDiscoveryQuery(accountId: string, lookbackHours: number) {
     return {
         size: 0,
         query: {
@@ -302,37 +302,37 @@ function buildAssetDiscoveryQuery(accountId, lookbackHours) {
 
 // ─── Fetch helpers ────────────────────────────────────────────────────────────
 
-async function fetchOrderCreate(accountId, lookbackHours, config = {}, sellAssetId = null, intervalSeconds = 3600) {
+async function fetchOrderCreate(accountId: string, lookbackHours: number, config: any = {}, sellAssetId: string | null = null, intervalSeconds: number = 3600) {
     const cfg = { ...DEFAULT_CONFIG, ...config };
     return kibanaSearch(cfg, buildOrderCreateQuery(accountId, lookbackHours, intervalSeconds, sellAssetId));
 }
 
-async function fetchFillOrder(accountId, lookbackHours, config = {}, paysAssetId = null, intervalSeconds = 3600) {
+async function fetchFillOrder(accountId: string, lookbackHours: number, config: any = {}, paysAssetId: string | null = null, intervalSeconds: number = 3600) {
     const cfg = { ...DEFAULT_CONFIG, ...config };
     return kibanaSearch(cfg, buildFillOrderQuery(accountId, lookbackHours, intervalSeconds, paysAssetId));
 }
 
-async function fetchOrderCancel(accountId, lookbackHours, config = {}, intervalSeconds = 3600) {
+async function fetchOrderCancel(accountId: string, lookbackHours: number, config: any = {}, intervalSeconds: number = 3600) {
     const cfg = { ...DEFAULT_CONFIG, ...config };
     return kibanaSearch(cfg, buildOrderCancelQuery(accountId, lookbackHours, intervalSeconds));
 }
 
-async function fetchOrderPrices(accountId, lookbackHours, config = {}, sellAssetId = null, maxResults = 1000) {
+async function fetchOrderPrices(accountId: string, lookbackHours: number, config: any = {}, sellAssetId: string | null = null, maxResults: number = 1000) {
     const cfg = { ...DEFAULT_CONFIG, ...config };
     return kibanaSearch(cfg, buildOrderPriceQuery(accountId, lookbackHours, sellAssetId, maxResults));
 }
 
-async function fetchFillPrices(accountId, lookbackHours, config = {}, paysAssetId = null, maxResults = 500) {
+async function fetchFillPrices(accountId: string, lookbackHours: number, config: any = {}, paysAssetId: string | null = null, maxResults: number = 500) {
     const cfg = { ...DEFAULT_CONFIG, ...config };
     return kibanaSearch(cfg, buildFillPriceQuery(accountId, lookbackHours, paysAssetId, maxResults));
 }
 
-async function fetchDailyActivity(accountId, lookbackHours, config = {}) {
+async function fetchDailyActivity(accountId: string, lookbackHours: number, config: any = {}) {
     const cfg = { ...DEFAULT_CONFIG, ...config };
     return kibanaSearch(cfg, buildDailyActivityQuery(accountId, lookbackHours));
 }
 
-async function fetchAssetDiscovery(accountId, lookbackHours, config = {}) {
+async function fetchAssetDiscovery(accountId: string, lookbackHours: number, config: any = {}) {
     const cfg = { ...DEFAULT_CONFIG, ...config };
     return kibanaSearch(cfg, buildAssetDiscoveryQuery(accountId, lookbackHours));
 }
@@ -343,7 +343,7 @@ async function fetchAssetDiscovery(accountId, lookbackHours, config = {}) {
  * Top N accounts by limit_order_create count (seller field).
  * Use this to discover the most active order-placing accounts.
  */
-function buildTopSellerAccountsQuery(lookbackHours, topN = 100, minCreates = 10) {
+function buildTopSellerAccountsQuery(lookbackHours: number, topN: number = 100, minCreates: number = 10) {
     return {
         size: 0,
         query: {
@@ -370,7 +370,7 @@ function buildTopSellerAccountsQuery(lookbackHours, topN = 100, minCreates = 10)
 /**
  * Top N accounts by limit_order_cancel count (fee_paying_account field).
  */
-function buildTopCancellerAccountsQuery(lookbackHours, topN = 100, minCancels = 5) {
+function buildTopCancellerAccountsQuery(lookbackHours: number, topN: number = 100, minCancels: number = 5) {
     return {
         size: 0,
         query: {
@@ -397,7 +397,7 @@ function buildTopCancellerAccountsQuery(lookbackHours, topN = 100, minCancels = 
 /**
  * Top N accounts by fill_order count (account_id field).
  */
-function buildTopFilledAccountsQuery(lookbackHours, topN = 100, minFills = 3) {
+function buildTopFilledAccountsQuery(lookbackHours: number, topN: number = 100, minFills: number = 3) {
     return {
         size: 0,
         query: {
