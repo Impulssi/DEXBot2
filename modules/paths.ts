@@ -15,13 +15,15 @@ const PROJECT_ROOT = isDistRuntime(MODULE_DIR)
     : MODULE_DIR;
 
 /**
- * True when running from a globally-installed npm package dir
- * (e.g. <prefix>/lib/node_modules/dexbot). User state must never be
+ * True when running from an npm package dir (e.g. <prefix>/lib/node_modules/
+ * dexbot). The package dir must be a DIRECT child of a `node_modules` dir —
+ * a substring match would also flag nested paths (e.g. a package living
+ * inside another package's tree) as npm installs. User state must never be
  * written inside the package dir — npm reinstalls/updates wipe it and
  * system prefixes may be read-only.
  */
 function isGlobalNpmPackageDir(root: string): boolean {
-    return root.split(path.sep).includes('node_modules');
+    return path.basename(path.dirname(root)) === 'node_modules';
 }
 
 /**

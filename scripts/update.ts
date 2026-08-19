@@ -15,6 +15,9 @@
  *    - Compares the installed version against the npm registry
  *    - Runs `npm install -g <pkg>@<latest>` to fetch the newest release
  *    - Skips the git and local build steps (published packages are pre-built)
+ *    - Requires the npm CLI and registry access; only global installs can be
+ *      updated in place (local `node_modules` deps must be updated from the
+ *      parent project with `npm update`)
  *
  * Shared tail for both layouts:
  * - Selectively restarts active runtime processes
@@ -172,10 +175,48 @@ function getNpmLatestVersion(pkgName: string): string {
  */
 function getGlobalNpmRoot(): string {
     try {
-        return execSync('npm root -g', { stdio: 'pipe' }).toString().trim();
+        // npm prints only the root to stdout, but notifications can land there
+        // in some setups — take the LAST non-empty line so a stray leading
+        // notice cannot produce a garbage path.
+        const lines = execSync('npm root -g', { stdio: 'pipe' }).toString().split('\n').filter((l) => l.trim());
+        return lines.length > 0 ? lines[lines.length - 1].trim() : '';
     } catch (_) {
         return '';
     }
+}
+
+/**
+ * Resolve a path to its real filesystem location, falling back to the
+ * lexical path when realpath fails (e.g. a missing intermediate component).
+ */
+function realpathSafe(p: string): string {
+    try {
+        return fs.realpathSync.native(p);
+    } catch {
+        try {
+            return fs.realpathSync(p);
+        } catch {
+            return p;
+        }
+    }
+}
+
+/**
+ * True when the project root is a DIRECT child of the npm global install root
+ * (e.g. <prefix>/lib/node_modules/dexbot). Comparing the immediate parent —
+ * rather than a string prefix — rejects nested packages, custom `--prefix`
+ * layouts where the package lives deeper in the tree, and relative/absolute
+ * path mismatches. Both sides are realpath'd so a symlinked global prefix
+ * (e.g. a nvm/system prefix with a symlink component) is not falsely
+ * rejected: import.meta.url already realpaths PROJECT_ROOT, while `npm
+ * root -g` returns the un-resolved prefix. Symlinked layouts (e.g. `npm
+ * link`) resolve to the real package location, which is intentionally not a
+ * global-root child, so they fall through to the manual-update error below.
+ */
+function isDirectGlobalInstall(projectRoot: string, globalRoot: string): boolean {
+    const resolvedRoot = realpathSafe(path.resolve(globalRoot));
+    const resolvedProject = realpathSafe(path.resolve(projectRoot));
+    return path.dirname(resolvedProject) === resolvedRoot;
 }
 
 function readLivePidFile(filePath: string): number {
@@ -526,20 +567,37 @@ async function runNpmUpdateFlow() {
     }
     log(`Current installed version: ${currentVersion}`);
 
+    // Verify the npm CLI is available and this is a genuine global install
+    // BEFORE querying the registry. Only a global layout can be replaced in
+    // place by `npm install -g`; a local (project) dependency must be updated
+    // from its own package tree instead.
+    const globalRoot = getGlobalNpmRoot();
+    if (!globalRoot) {
+        throw new Error(
+            'DEXBot2 auto-update requires the npm CLI with registry access (it runs `npm view` and ' +
+            '`npm install -g`). npm could not be found on PATH or returned no global root. ' +
+            'Install Node.js/npm or update the package manually.'
+        );
+    }
+    if (!isDirectGlobalInstall(PATHS.PROJECT_ROOT, globalRoot)) {
+        // A genuine local (non-global) dependency resolves to a different real
+        // parent; a symlinked prefix or version-manager/pnpm store lands the
+        // package somewhere `npm root -g` does not point at. Either way the
+        // package cannot be swapped in place.
+        throw new Error(
+            'DEXBot2 is installed at ' + PATHS.PROJECT_ROOT + ' but `npm root -g` reports ' + globalRoot + '. ' +
+            'Auto-update cannot replace the package in place; the install root differs from `npm root -g` ' +
+            '(a symlinked prefix, pnpm/yarn global store, or a different Node version manager prefix). ' +
+            'Run `npm update ' + pkgName + '` in the parent project directory, or fix the mismatch and re-run `dexbot update`.'
+        );
+    }
+
     const latestVersion = getNpmLatestVersion(pkgName);
     log(`Latest published version: ${latestVersion}`);
 
     if (compareVersions(currentVersion, latestVersion) >= 0) {
         log('DEXBot2 is already up to date (installed version matches or exceeds the latest published version).');
         process.exit(0);
-    }
-
-    const globalRoot = getGlobalNpmRoot();
-    if (!globalRoot || !PATHS.PROJECT_ROOT.startsWith(globalRoot)) {
-        throw new Error(
-            'DEXBot2 is installed as a local (non-global) npm dependency; auto-update cannot replace the ' +
-            'package in place. Run `npm update ' + pkgName + '` in the parent project directory and restart manually.'
-        );
     }
 
     log(`${currentVersion} -> ${latestVersion} update available. Proceeding with npm update...`);
@@ -551,8 +609,44 @@ async function runNpmUpdateFlow() {
     // process is executing from, so the working directory may briefly not exist.
     runIn(homedir(), `npm install -g ${pkgName}@${latestVersion}`);
 
+    // Post-install sanity checks: the published package is pre-built, so a
+    // successful `npm install -g` MUST leave the requested version and a
+    // usable dist/ bundle behind. Refuse to restart runtimes against a broken
+    // install (mirrors the git flow's staleness guard).
     const installedAfter = readPackageVersion(PATHS.PROJECT_ROOT);
     log(`Installed version after update: ${installedAfter || 'unknown'}`);
+    if (!installedAfter) {
+        throw new Error(
+            `Update completed but the package version could not be read at ${PATHS.PROJECT_ROOT}. ` +
+            `The global install may be broken; inspect it with \`npm ls -g ${pkgName}\`.`
+        );
+    }
+    if (compareVersions(installedAfter, latestVersion) < 0) {
+        throw new Error(
+            `Update completed but the installed version (${installedAfter}) is older than the requested ` +
+            `${latestVersion}. Run \`npm install -g ${pkgName}@${latestVersion}\` manually and inspect the npm output.`
+        );
+    }
+
+    // Verify the pre-built bundle is complete: the `dexbot` bin entry plus the
+    // runtime files this script and the launcher depend on. Published packages
+    // ship a pre-built dist/, so a missing file here means the publish is
+    // broken and restarting runtimes against it would strand them on a dead
+    // install.
+    const distEntries = [
+        path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'dexbot.js'),
+        path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'scripts', 'update.js'),
+        path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js'),
+    ];
+    const missingDist = distEntries.filter((entry) => !fs.existsSync(entry));
+    if (missingDist.length > 0) {
+        throw new Error(
+            `Update completed but ${BUILD_DIR}/ is missing required files (${missingDist.join(', ')}). ` +
+            `The published package appears to ship no pre-built bundle; refusing to restart runtimes against ` +
+            `a broken install.`
+        );
+    }
+    log(`${BUILD_DIR}/ verified after update.`);
 
     await regenerateEcosystemConfig();
     await restartActiveRuntimes(snapshot);
