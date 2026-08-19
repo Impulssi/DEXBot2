@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
+// MCP stdio reserves stdout for JSON-RPC frames. The manifest tool now builds
+// the full claw catalog (via claw_manifest), so suppress incidental console
+// logs the same way claw_mcp_server does.
 
-
-import { createMemuBridge, describeMemuBridge } from '../modules/memu_bridge.js';
+import { describeMemuBridge } from '../modules/memu_bridge.js';
 import { success, failure, runMcpServer, createMessageParser } from '../modules/mcp_utils.js';
 import { runMemuCommand } from '../modules/memu_bridge.js';
 import { pathToFileURL } from 'node:url';
+
+console.log = () => {};
+console.warn = () => {};
 function parseArgs(argv: any) {
   const options: Record<string, any> = {};
 
@@ -36,7 +41,11 @@ function parseArgs(argv: any) {
     }
 
     if (arg === '--db-config' && next) {
-      options.databaseConfig = JSON.parse(next);
+      try {
+        options.databaseConfig = JSON.parse(next);
+      } catch (e) {
+        throw new Error(`Invalid JSON for --db-config: ${next}`);
+      }
       i += 1;
       continue;
     }
@@ -283,7 +292,9 @@ async function handleRequest(message: any, defaults: any) {
   switch (method) {
     case 'initialize':
       return success(id, {
-        protocolVersion: '2024-11-05',
+        // Echo the client's requested protocol version when provided (JSONL
+        // transport; see claw_runtime_matrix.ts).
+        protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: {
           tools: {
             listChanged: false

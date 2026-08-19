@@ -27,7 +27,7 @@ async function main() {
   assert.ok(skillText.includes('name = "bitshares-claw"'));
   assert.ok(skillText.includes('NullClaw bridge to the AI-Bot / DEXBot2 BitShares layer'));
   assert.ok(skillText.includes('nullclaw'));
-  assert.ok(skillText.includes('claw_bridge.js'));
+  assert.ok(skillText.includes('claw_bridge.ts'));
 
   const bridge = createClawBridge({
     runtime: {

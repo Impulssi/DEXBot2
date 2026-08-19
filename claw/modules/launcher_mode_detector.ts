@@ -1,7 +1,6 @@
 
 import { path } from '../../modules/path_api.js';
 import { getStorage } from '../../modules/storage/index.js';
-import { PATHS } from '../../modules/paths.js';
 import { loadSettingsFile, resolveRawBotEntries } from '../../modules/bot_settings.js';
 import { normalizeProfileDir } from './launcher_paths.js';
 'use strict';
@@ -10,7 +9,7 @@ const storage = getStorage();
 const { ensureDir, readJSON, writeJSON } = storage;
 
 function normalizeMode(mode: string | null | undefined) {
-  const value = typeof mode === 'string' ? mode.trim() : '';
+  const value = typeof mode === 'string' ? mode.trim().toLowerCase() : '';
   return value;
 }
 
@@ -75,20 +74,18 @@ function saveConfig(config: Record<string, any>, options: Record<string, any> = 
  * @returns {boolean} True if at least one active bot exists
  */
 function hasActiveBots(options: Record<string, any> = {}) {
-  const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
+  const BOTS_FILE = path.join(normalizeProfileDir(options), 'bots.json');
 
-  try {
-    if (!storage.exists(BOTS_FILE)) {
-      // No bots.json file yet — user hasn't configured any bots
-      return false;
-    }
-
-    const { config } = loadSettingsFile(BOTS_FILE);
-    const entries = resolveRawBotEntries(config);
-    return entries.some((b: any) => b.active !== false);
-  } catch (err: any) {
+  if (!storage.exists(BOTS_FILE)) {
+    // No bots.json file yet — user hasn't configured any bots
     return false;
   }
+
+  // Parse errors are NOT treated as "no bots": a corrupt config should surface
+  // as a launcher/detection failure instead of silently picking claw-only mode.
+  const { config } = loadSettingsFile(BOTS_FILE);
+  const entries = resolveRawBotEntries(config);
+  return entries.some((b: any) => b.active !== false);
 }
 
 /**

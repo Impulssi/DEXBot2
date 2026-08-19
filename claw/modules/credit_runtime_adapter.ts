@@ -37,6 +37,19 @@ function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {
     };
   }
 
+  // Config fingerprint so debtPolicy / asset / account edits are picked up
+  // instead of being masked by a permanently cached runtime instance.
+  function _botFingerprint(botEntry: Record<string, any>): string {
+    return JSON.stringify({
+      assetA: botEntry.assetA,
+      assetB: botEntry.assetB,
+      botKey: botEntry.botKey,
+      debtPolicy: botEntry.debtPolicy,
+      name: botEntry.name,
+      preferredAccount: botEntry.preferredAccount,
+    });
+  }
+
   async function _resolveBotEntry(botRef: string | null): Promise<Record<string, any> | null> {
     if (!botRef) return null;
     try {
@@ -53,16 +66,22 @@ function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {
   async function _getRuntime(botRef: string | null): Promise<any> {
     if (!botRef) return null;
     const cacheKey = botRef;
-    let runtime = _runtimes.get(cacheKey);
-    if (runtime) return runtime;
-
     const botEntry = await _resolveBotEntry(botRef);
     if (!botEntry) return null;
-    if (!botEntry.debtPolicy) return null;
+    if (!botEntry.debtPolicy) {
+      // Config now has no debtPolicy; drop any stale cached runtime.
+      _runtimes.delete(cacheKey);
+      return null;
+    }
+
+    const fingerprint = _botFingerprint(botEntry);
+    const cached = _runtimes.get(cacheKey);
+    if (cached && cached._fingerprint === fingerprint) return cached;
 
     const botShim = _buildBotShim(botEntry);
-    runtime = new CreditRuntime(botShim, { stateDir: _stateDir });
+    const runtime = new CreditRuntime(botShim, { stateDir: _stateDir });
     await runtime.loadState();
+    (runtime as any)._fingerprint = fingerprint;
     _runtimes.set(cacheKey, runtime);
     return runtime;
   }

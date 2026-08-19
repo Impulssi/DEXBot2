@@ -24,6 +24,11 @@ const HARDCODED_HONEST_MONEY_BTS_POOL = {
   withdrawalFeePercent: 0
 };
 
+// Live pool reserves are cached briefly so repeated snapshot calls do not
+// hammer the node; failures are never cached so the fallback retries.
+const POOL_RESERVES_CACHE_TTL_MS = 60_000;
+let _poolReservesCache: { poolId: string; ts: number; value: any } | null = null;
+
 
 function isMpa(asset: any) {
   return Boolean(asset && asset.bitasset_data_id);
@@ -34,22 +39,38 @@ function isHonestAsset(asset: any) {
 }
 
 async function fetchLivePoolReserves(poolId: string = HARDCODED_POOL_ID) {
+  if (_poolReservesCache && _poolReservesCache.poolId === poolId &&
+      Date.now() - _poolReservesCache.ts < POOL_RESERVES_CACHE_TTL_MS) {
+    // Clone on read so consumers mutating the returned object cannot poison
+    // the shared cache for the remaining TTL window.
+    return clone(_poolReservesCache.value);
+  }
+
   try {
     const objects = await getObjects([poolId]);
     const pool = objects && objects[0];
     if (!pool || pool.asset_a == null || pool.asset_b == null) return null;
 
-    const [assetAObj, assetBObj] = await Promise.all([
+    const [assetAObj, assetBObj, shareAssetObj] = await Promise.all([
       getAsset(pool.asset_a),
-      getAsset(pool.asset_b)
+      getAsset(pool.asset_b),
+      getAsset(pool.share_asset).catch(() => null),
     ]);
+
+    // Only report pools that actually trade HONEST.MONEY against BTS as the
+    // reference bridge; a relisted/remapped pool must fall back, not leak
+    // mismatched symbols into the context.
+    const poolSymbols = [assetAObj?.symbol, assetBObj?.symbol];
+    if (!poolSymbols.includes(REFERENCE_SYMBOL) || !poolSymbols.includes(CORE_SYMBOL)) {
+      return null;
+    }
 
     const precisionA = assetAObj?.precision ?? 0;
     const precisionB = assetBObj?.precision ?? 0;
     const balanceA = Number(pool.balance_a) || 0;
     const balanceB = Number(pool.balance_b) || 0;
 
-    return {
+    const result = {
       assetA: {
         amount: precisionA > 0 ? balanceA / Math.pow(10, precisionA) : balanceA,
         symbol: assetAObj?.symbol || CORE_SYMBOL
@@ -59,11 +80,14 @@ async function fetchLivePoolReserves(poolId: string = HARDCODED_POOL_ID) {
         symbol: assetBObj?.symbol || REFERENCE_SYMBOL
       },
       id: poolId,
-      poolSymbol: pool.share_asset || HARDCODED_HONEST_MONEY_BTS_POOL.poolSymbol,
+      // share_asset is an asset ID; prefer its human-readable symbol when resolvable.
+      poolSymbol: shareAssetObj?.symbol || pool.share_asset || HARDCODED_HONEST_MONEY_BTS_POOL.poolSymbol,
       takerFeePercent: pool.taker_fee_percent ?? HARDCODED_HONEST_MONEY_BTS_POOL.takerFeePercent,
       withdrawalFeePercent: pool.withdrawal_fee_percent ?? HARDCODED_HONEST_MONEY_BTS_POOL.withdrawalFeePercent,
       source: 'live-liquidity-pool'
     };
+    _poolReservesCache = { poolId, ts: Date.now(), value: result };
+    return result;
   } catch {
     return null;
   }
@@ -168,8 +192,8 @@ async function resolveHonestPairContext(assetA: any, assetB: any, options: Recor
   }
 
   const bridge = await getHonestMoneyBridge();
-  const assetAEntry = bridge.liquidityPool.reserves.find((entry) => entry.symbol === assetASymbol) || null;
-  const assetBEntry = bridge.liquidityPool.reserves.find((entry) => entry.symbol === assetBSymbol) || null;
+  const assetAEntry = bridge.liquidityPool.reserves.find((entry: any) => entry.symbol === assetASymbol) || null;
+  const assetBEntry = bridge.liquidityPool.reserves.find((entry: any) => entry.symbol === assetBSymbol) || null;
 
   return {
     assetA: {
@@ -184,12 +208,12 @@ async function resolveHonestPairContext(assetA: any, assetB: any, options: Recor
     },
     pool: {
       ...bridge.liquidityPool,
-      source: 'hardcoded-liquidity-pool'
+      source: bridge.source,
     },
     priceBPerA: pairPrice,
     reserveA: assetAEntry ? assetAEntry.amount : null,
     reserveB: assetBEntry ? assetBEntry.amount : null,
-    source: 'hardcoded-liquidity-pool'
+    source: bridge.source
   };
 }
 

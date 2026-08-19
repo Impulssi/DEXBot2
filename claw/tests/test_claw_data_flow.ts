@@ -406,8 +406,10 @@ async function testKibanaPriceSource() {
   try {
     const marketCandles = await kibanaPriceSource.fetchMarketCandles('HONEST.USD', { lookbackHours: 12 });
     assert.deepStrictEqual(marketCandles, [[1, 2, 2, 2, 2, 10]]);
-    assert.strictEqual(calls.marketCandles[0].assetA.symbol, 'BTS');
-    assert.strictEqual(calls.marketCandles[0].assetB.symbol, 'HONEST.USD');
+    // fetchMarketCandles requests (mpa, bts) so the returned candles are
+    // BTS-per-MPA (the live feed convention).
+    assert.strictEqual(calls.marketCandles[0].assetA.symbol, 'HONEST.USD');
+    assert.strictEqual(calls.marketCandles[0].assetB.symbol, 'BTS');
 
     const marketClose = await kibanaPriceSource.fetchMarketClosePrices('HONEST.USD', {});
     assert.deepStrictEqual(marketClose, [2]);

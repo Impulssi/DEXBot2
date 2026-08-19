@@ -4,8 +4,8 @@
 import { TIMING, NODE_MANAGEMENT } from '../../modules/constants.js';
 import { sleep } from '../../modules/order/utils/system.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
-import * as native from '../../modules/bitshares-native/index.js';
-import { createSigningClient } from '../../modules/bitshares-native/index.js';
+import { readGeneralSettings } from '../../modules/general_settings.js';
+import { createChainClient, createSigningClient, createSubscriptionManager } from '../../modules/bitshares-native/index.js';
 const DEFAULT_TIMEOUT_MS = TIMING.CONNECTION_TIMEOUT_MS;
 const DEFAULT_CHECK_INTERVAL_MS = TIMING.CHECK_INTERVAL_MS;
 
@@ -13,13 +13,28 @@ let connected = false;
 let suppressConnectionLog = false;
 let _nativeClient: any = null;
 let _connectPromise: any = null;
+let _subscriptionManager: any = null;
 
-_nativeClient = native.createChainClient({
+_nativeClient = createChainClient({
     onStatusChange: handleConnectionStatus,
     rpcTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
     connectTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
 });
-_nativeClient.setNodes(NODE_MANAGEMENT.DEFAULT_NODES);
+_nativeClient.setNodes(resolveConfiguredNodes());
+_subscriptionManager = createSubscriptionManager(_nativeClient);
+_nativeClient.onReconnect = async () => {
+    if (_subscriptionManager && typeof _subscriptionManager.onReconnect === 'function') {
+        await _subscriptionManager.onReconnect();
+    }
+};
+
+function resolveConfiguredNodes(): string[] {
+    const settings = readGeneralSettings({ fallback: null });
+    const configuredNodes = Array.isArray(settings?.NODES?.list)
+        ? settings.NODES.list.filter((node: any) => typeof node === 'string' && node.trim())
+        : [];
+    return configuredNodes.length > 0 ? configuredNodes : NODE_MANAGEMENT.DEFAULT_NODES;
+}
 
 function handleConnectionStatus(status: any) {
     const effectiveStatus = status === 'connected' ? 'open' : status;
@@ -58,6 +73,7 @@ async function ensureConnected() {
 
 async function waitForConnected(timeoutMs = DEFAULT_TIMEOUT_MS) {
     const start = Date.now();
+    let attemptDelayMs = DEFAULT_CHECK_INTERVAL_MS;
 
     while (!connected) {
         if (!_connectPromise && _nativeClient.getStatus() !== 'connecting') {
@@ -68,7 +84,10 @@ async function waitForConnected(timeoutMs = DEFAULT_TIMEOUT_MS) {
         if (Date.now() - start > timeoutMs) {
             throw new Error(`Timed out waiting for BitShares connection after ${timeoutMs}ms`);
         }
-        await sleep(DEFAULT_CHECK_INTERVAL_MS);
+        // Exponential backoff between retry sweeps so a fast-failing node list
+        // does not hammer the network in a tight loop.
+        await sleep(attemptDelayMs);
+        attemptDelayMs = Math.min(attemptDelayMs * 2, Math.max(DEFAULT_CHECK_INTERVAL_MS, 15000));
     }
 }
 
@@ -90,8 +109,29 @@ export { createAccountClient, setSuppressConnectionLog, waitForConnected, isConn
 const BitShares = new Proxy(_nativeClient, {
     get(target: any, prop: string) {
         if (prop === 'node') return target.getNodes();
+        if (prop === 'subscribe') {
+            return (eventType: any, callback: any, accountName: any) => {
+                if (eventType === 'account' && _subscriptionManager) {
+                    return _subscriptionManager.subscribe(accountName, callback);
+                }
+                if (target.subscribe) {
+                    return target.subscribe(eventType, callback, accountName);
+                }
+                throw new Error(`Unsupported subscription event type: ${eventType}`);
+            };
+        }
+        if (prop === 'unsubscribe') {
+            return (eventType: any, callback: any, accountName: any) => {
+                if (eventType === 'account' && _subscriptionManager) {
+                    return _subscriptionManager.unsubscribe(accountName, callback);
+                }
+                if (target.unsubscribe) {
+                    return target.unsubscribe(eventType, callback, accountName);
+                }
+                throw new Error(`Unsupported subscription event type: ${eventType}`);
+            };
+        }
         return target[prop];
     }
 });
 export { BitShares }
-

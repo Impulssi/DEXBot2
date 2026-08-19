@@ -311,8 +311,17 @@ async function listenForFills(accountNameOrId: any, callback: any) {
       }
 
       for (const fn of Array.from(callbacks)) {
+        // The callback may be async. Run it synchronously so sync throws are
+        // caught here, and attach a catch for async rejections so a rejected
+        // handler cannot become an unhandled promise rejection (crash on
+        // Node >= 15).
         try {
-          fn(fills);
+          const result = fn(fills);
+          if (result && typeof result.then === 'function') {
+            result.catch((err: any) => {
+              console.error('listenForFills callback error:', getErrorMessage(err));
+            });
+          }
         } catch (err: any) {
           console.error('listenForFills callback error:', getErrorMessage(err));
         }

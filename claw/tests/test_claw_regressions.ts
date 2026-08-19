@@ -50,6 +50,11 @@ async function testClawBitsharesClientWaitForConnectedTriggersNativeConnect() {
       history: {},
     }),
     createSigningClient: () => ({ client: { initPromise: Promise.resolve(), newTx() {} } }),
+    createSubscriptionManager: () => ({
+      onReconnect: async () => {},
+      subscribe: async () => () => {},
+      unsubscribe: async () => {},
+    }),
   } as any);
 
   try {

@@ -4,14 +4,27 @@ const require = createRequire(import.meta.url);
 
 import { getStorage } from '../../modules/storage/index.js';
 import { path } from '../../modules/path_api.js';
-import { PATHS, getRecalculateTriggerFile } from '../../modules/paths.js';
 import { loadSettingsFile, resolveRawBotEntries, saveSettingsFile, normalizeBotEntries } from '../../modules/bot_settings.js';
 import { normalizeMode, detectMode, setPreferredMode, describeModeChoice } from './launcher_mode_detector.js';
-import { normalizeRoot, resolveRuntimeScript } from './launcher_paths.js';
+import { normalizeRoot, resolveRuntimeScript, normalizeProfileDir } from './launcher_paths.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
 'use strict';
 
 const storage = getStorage();
+
+// Catalog documents bot targets as "Omit or 'all'". Normalize the literal
+// string 'all' to null so launcher functions never treat it as a bot name.
+function resolveBotTarget(botName: string | null): string | null {
+  return botName === 'all' ? null : botName;
+}
+
+function getBotsFile(options: Record<string, any> = {}): string {
+  return path.join(normalizeProfileDir(options), 'bots.json');
+}
+
+function getTriggerFile(options: Record<string, any>, botKey: string): string {
+  return path.join(normalizeProfileDir(options), `recalculate.${botKey}.trigger`);
+}
 
 let _chainKeys: any;
 function getChainKeys(): any {
@@ -66,6 +79,7 @@ function getPM2Module(): any {
  * @returns {Promise<Object>} { started: true, botName, pid, command }
  */
 async function launcherStart(botName: string | null, options: Record<string, any> = {}) {
+  botName = resolveBotTarget(botName);
   const ROOT = normalizeRoot(options);
   const dexbotPath = resolveRuntimeScript(ROOT, 'dexbot.js');
 
@@ -78,6 +92,10 @@ async function launcherStart(botName: string | null, options: Record<string, any
     detached: true,
     stdio: 'ignore',
     cwd: ROOT
+  });
+
+  child.on('error', (err: any) => {
+    console.error(`[LAUNCHER] Failed to spawn ${dexbotPath}: ${getErrorMessage(err)}`);
   });
 
   child.unref();
@@ -97,6 +115,7 @@ async function launcherStart(botName: string | null, options: Record<string, any
  * @returns {Promise<Object>} { started: true, botName, pid, command, dryRun: true }
  */
 async function launcherDrystart(botName: string | null, options: Record<string, any> = {}) {
+  botName = resolveBotTarget(botName);
   const ROOT = normalizeRoot(options);
   const dexbotPath = resolveRuntimeScript(ROOT, 'dexbot.js');
 
@@ -109,6 +128,10 @@ async function launcherDrystart(botName: string | null, options: Record<string, 
     detached: true,
     stdio: 'ignore',
     cwd: ROOT
+  });
+
+  child.on('error', (err: any) => {
+    console.error(`[LAUNCHER] Failed to spawn ${dexbotPath}: ${getErrorMessage(err)}`);
   });
 
   child.unref();
@@ -129,7 +152,8 @@ async function launcherDrystart(botName: string | null, options: Record<string, 
  * @returns {Promise<Object>} { reset: true, targets: [...] }
  */
 async function launcherReset(botName: string | null, options: Record<string, any> = {}) {
-  const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
+  botName = resolveBotTarget(botName);
+  const PROFILES_BOTS_FILE = getBotsFile(options);
 
   const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
   const entries = normalizeBotEntries(resolveRawBotEntries(config));
@@ -144,7 +168,7 @@ async function launcherReset(botName: string | null, options: Record<string, any
 
   for (const bot of targets) {
     try {
-      const triggerFile = getRecalculateTriggerFile(bot.botKey);
+      const triggerFile = getTriggerFile(options, bot.botKey);
       storage.writeFile(triggerFile, new Date().toISOString());
       triggered.push({
         botName: bot.name,
@@ -168,7 +192,8 @@ async function launcherReset(botName: string | null, options: Record<string, any
  * @returns {Promise<Object>} { disabled: true, targets: [...] } or { disabled: false, reason: '...' }
  */
 async function launcherDisable(botName: string | null, options: Record<string, any> = {}) {
-  const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
+  botName = resolveBotTarget(botName);
+  const PROFILES_BOTS_FILE = getBotsFile(options);
 
   const { config, filePath } = loadSettingsFile(PROFILES_BOTS_FILE);
   const entries = resolveRawBotEntries(config);
@@ -220,8 +245,8 @@ async function launcherDisable(botName: string | null, options: Record<string, a
  * @returns {Promise<Object>} { started: true, targets: [{ botName, pm2: true }] }
  */
 async function launcherPm2Start(botName: string | null, options: Record<string, any> = {}) {
-  const ROOT = normalizeRoot(options);
-  const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
+  botName = resolveBotTarget(botName);
+  const PROFILES_BOTS_FILE = getBotsFile(options);
 
   // Validate bot configuration first (better error message)
   const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
@@ -403,6 +428,10 @@ async function launcherClawOnly(options: Record<string, any> = {}) {
     cwd: ROOT
   });
 
+  child.on('error', (err: any) => {
+    console.error(`[LAUNCHER] Failed to spawn ${pm2ScriptPath}: ${getErrorMessage(err)}`);
+  });
+
   child.unref();
 
   return {
@@ -421,6 +450,7 @@ async function launcherClawOnly(options: Record<string, any> = {}) {
  * @returns {Promise<Object>}
  */
 async function launcherUnlockStart(botName: string | null, options: Record<string, any> = {}) {
+  botName = resolveBotTarget(botName);
   const ROOT = normalizeRoot(options);
   const unlockPath = resolveRuntimeScript(ROOT, 'unlock.js');
 
@@ -433,6 +463,10 @@ async function launcherUnlockStart(botName: string | null, options: Record<strin
     detached: true,
     stdio: 'ignore',
     cwd: ROOT
+  });
+
+  child.on('error', (err: any) => {
+    console.error(`[LAUNCHER] Failed to spawn ${unlockPath}: ${getErrorMessage(err)}`);
   });
 
   child.unref();

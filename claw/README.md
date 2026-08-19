@@ -415,6 +415,10 @@ npm run memu:mcp
 tsx scripts/memu_mcp_server.ts --memu-dir /path/to/claw/data/memu
 ```
 
+`--memu-dir` is optional; it defaults to the resolved memU data directory
+(`claw/data/memu` for a source checkout, otherwise under the active profiles
+dir) and can be overridden with `DEXBOT_CLAW_DATA_DIR`.
+
 Check memU status:
 
 ```bash

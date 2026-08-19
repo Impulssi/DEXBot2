@@ -16,7 +16,15 @@ function groupCommandsByRisk(tools: any[]) {
 
 function describeClawBridge(options: Record<string, any> = {}) {
   const tools = getClawToolCatalog();
-  const focusedRuntime = getSupportedClawRuntime(options.runtimeName || options.runtime);
+  // options.runtime may be a string (runtime name) or an object
+  // (e.g. { name: 'openfang', ... } from createClawInfrastructure). Normalize
+  // both so an object never stringifies to "[object Object]".
+  const runtimeName =
+    options.runtimeName ||
+    (typeof options.runtime === 'object' && options.runtime !== null
+      ? options.runtime.name
+      : options.runtime);
+  const focusedRuntime = getSupportedClawRuntime(runtimeName);
 
   return {
     compatibility: {

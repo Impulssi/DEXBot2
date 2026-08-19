@@ -31,7 +31,7 @@ async function main() {
     },
     summary: context.summary,
     settings: {
-      activeBotCount: context.settings && context.settings.bots ? context.settings.bots.filter((bot) => bot.active !== false).length : 0,
+      activeBotCount: context.settings && context.settings.bots ? context.settings.bots.filter((bot: any) => bot.active !== false).length : 0,
       generalSettingsKeys: context.settings && context.settings.general ? Object.keys(context.settings.general) : []
     }
   }, null, 2));

@@ -39,7 +39,7 @@ async function testClawSkillMarkdown() {
   assert.ok(hermesMarkdown.includes('The shared Claw MCP server registers raw tool ids such as `claw_manifest`'));
   assert.strictEqual(hermesMarkdown.includes('mcp_claw_claw_manifest'), false);
   assert.ok(openfangMarkdown.includes('## OpenFang Setup'));
-  assert.ok(openfangMarkdown.includes('claw_bridge.js'));
+  assert.ok(openfangMarkdown.includes('scripts/claw_bridge'));
   assert.ok(openfangMarkdown.includes('bitshares-claw'));
   assert.ok(nanoMarkdown.includes('## NanoBot Setup'));
   assert.ok(nanoMarkdown.includes('The stdio transport uses newline-delimited JSON-RPC messages on `stdin` and `stdout`.'));
@@ -47,7 +47,7 @@ async function testClawSkillMarkdown() {
   assert.ok(picoMarkdown.includes('The stdio transport uses newline-delimited JSON-RPC messages on `stdin` and `stdout`.'));
   assert.ok(nanoclawMarkdown.includes('## NanoClaw Setup'));
   assert.ok(nanoclawMarkdown.includes('bitshares-claw'));
-  assert.ok(nanoclawMarkdown.includes('claw_bridge.js'));
+  assert.ok(nanoclawMarkdown.includes('scripts/claw_bridge'));
 }
 
 async function testRuntimeSkillToml() {
@@ -66,7 +66,7 @@ async function testRuntimeSkillToml() {
     assert.ok(toml.includes('name = "bitshares-claw"'));
     const displayName = runtimeName.charAt(0).toUpperCase() + runtimeName.slice(1);
     assert.ok(toml.includes(`${displayName} bridge to the AI-Bot / DEXBot2 BitShares layer`));
-    assert.ok(toml.includes('claw_bridge.js'));
+    assert.ok(toml.includes('claw_bridge.ts'));
     assert.ok(toml.includes('--profile-root'));
     assert.ok(toml.includes('[[tools]]'));
 

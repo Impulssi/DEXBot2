@@ -1,13 +1,31 @@
 
 import { getStorage } from '../../modules/storage/index.js';
 import { path } from '../../modules/path_api.js';
+import { PATHS } from '../../modules/paths.js';
 import { getClawToolCatalog } from './claw_catalog.js';
 import { getSupportedClawRuntime } from './claw_runtime_matrix.js';
-import { buildBridgeCommand, buildSkillTomlLines, createTool, normalizeRepoRoot, normalizeProfileRoot } from './skill_utils.js';
+import { buildSkillTomlLines, createTool, normalizeRepoRoot, normalizeProfileRoot, shellQuote } from './skill_utils.js';
 const storage = getStorage();
 
 function normalizeClawRepoRoot(repoRoot: string) {
   return normalizeRepoRoot(repoRoot);
+}
+
+// Generated docs must reference scripts that actually exist. Prefer the built
+// .js (dist layout); fall back to the .ts source run through tsx.
+function resolveScriptInvocation(repoRoot: string, name: string) {
+  const jsPath = path.join(repoRoot, 'scripts', `${name}.js`);
+  if (storage.exists(jsPath)) {
+    return { command: 'node', script: jsPath };
+  }
+  return { command: 'npx tsx', script: path.join(repoRoot, 'scripts', `${name}.ts`) };
+}
+
+function buildBridgeInvocation(repoRoot: string, profileRoot: string, command: string, extraArgs: any[] = []) {
+  const { command: runner, script } = resolveScriptInvocation(repoRoot, 'claw_bridge');
+  return [runner, script, command, '--profile-root', profileRoot, ...extraArgs]
+    .map((part, index) => (index === 0 ? String(part) : shellQuote(part)))
+    .join(' ');
 }
 
 function buildToolSummary(runtimeName: string) {
@@ -29,9 +47,12 @@ function buildToolSummary(runtimeName: string) {
 }
 
 function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) {
-  const mcpScriptPath = path.join(repoRoot, 'scripts', 'claw_mcp_server.js').replace(/\\/g, '/');
-  const mcpCommand = `node ${mcpScriptPath}`;
-  const mcpArgs = `["${mcpScriptPath}", "--profile-root", "${profileRoot}"]`;
+  const { command, script: mcpScriptPath } = resolveScriptInvocation(repoRoot, 'claw_mcp_server');
+  // command is 'node' or 'npx tsx'; split so the config blocks can set the
+  // executable and args correctly for both the built and source layouts.
+  const runnerParts = command.split(' ');
+  const mcpExec = runnerParts[0];
+  const mcpArgs = `[${[...runnerParts.slice(1), mcpScriptPath, '--profile-root', profileRoot].map((part: any) => JSON.stringify(part)).join(', ')}]`;
 
   switch (runtime.runtime) {
     case 'hermes':
@@ -45,7 +66,7 @@ function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) 
         '```yaml',
         'mcp_servers:',
         '  claw:',
-        '    command: "node"',
+        `    command: "${mcpExec}"`,
         `    args: ${mcpArgs}`,
         '```',
         '',
@@ -72,7 +93,7 @@ function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) 
         '  "tools": {',
         '    "mcpServers": {',
         '      "claw": {',
-        `        "command": "node",`,
+        `        "command": "${mcpExec}",`,
         `        "args": ${mcpArgs}`,
         '      }',
         '    }',
@@ -100,7 +121,7 @@ function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) 
         '        "claw": {',
         '          "enabled": true,',
         '          "type": "stdio",',
-        '          "command": "node",',
+        `          "command": "${mcpExec}",`,
         `          "args": ${mcpArgs}`,
         '        }',
         '      }',
@@ -129,7 +150,7 @@ function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) 
         '.claude/skills/bitshares-claw/SKILL.md',
         '```',
         '',
-        'Use the local JSON bridge in `scripts/claw_bridge.js --runtime nanoclaw` when you want the NanoClaw runtime to talk to DEXBot2.',
+        'Use the local JSON bridge in `scripts/claw_bridge --runtime nanoclaw` when you want the NanoClaw runtime to talk to DEXBot2.',
         '',
         `Set \`DEXBOT_PROFILE_ROOT=${profileRoot}\` if you want a default profile root outside tool args.`
       ].join('\n');
@@ -146,7 +167,7 @@ function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) 
         '~/.openfang/skills/bitshares-claw/SKILL.md',
         '```',
         '',
-        'Use the local JSON bridge in `scripts/claw_bridge.js --runtime openfang` when you want the OpenFang runtime to talk to DEXBot2.',
+        'Use the local JSON bridge in `scripts/claw_bridge --runtime openfang` when you want the OpenFang runtime to talk to DEXBot2.',
         '',
         `Set \`DEXBOT_PROFILE_ROOT=${profileRoot}\` if you want a default profile root outside tool args.`
       ].join('\n');
@@ -187,7 +208,7 @@ function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) 
         'Start the memU MCP server:',
         '',
         '```bash',
-        `tsx ${path.join(repoRoot, 'scripts', 'memu_mcp_server.ts').replace(/\\/g, '/')} --memu-dir ${path.join(repoRoot, 'data', 'memu').replace(/\\/g, '/')}`,
+        `tsx ${path.join(repoRoot, 'scripts', 'memu_mcp_server.ts').replace(/\\/g, '/')} --memu-dir ${PATHS.CLAW.MEMU_DIR.replace(/\\/g, '/')}`,
         '```',
         '',
         'Or use the npm script:',
@@ -209,7 +230,7 @@ function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) 
         '',
         `Use the native ${runtime.nativeIntegration} path for ${runtime.runtime}.`,
         '',
-        `Preferred bridge command: \`${mcpCommand} --profile-root ${profileRoot}\``
+        `Preferred bridge command: \`${command} ${mcpScriptPath} --profile-root ${profileRoot}\``
       ].join('\n');
   }
 }
@@ -237,8 +258,8 @@ function buildRuntimeSkillToml(runtime: any, repoRoot: string, profileRoot: stri
     .map((tool: any) => createTool(
       tool.toolName,
       tool.description,
-      buildBridgeCommand(
-        path.join(repoRoot, 'scripts', 'claw_bridge.js').replace(/\\/g, '/'),
+      buildBridgeInvocation(
+        repoRoot,
         profileRoot,
         tool.command,
         tool.extraArgs

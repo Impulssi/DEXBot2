@@ -43,7 +43,10 @@ async function resolveAsset(symbolOrId: string) {
 async function fetchMarketCandles(mpaSymbol: string, config: Record<string, any> = {}) {
   const btsAsset = await resolveAsset('BTS');
   const mpaAsset = await resolveAsset(mpaSymbol);
-  return getMarketCandles(btsAsset, mpaAsset, config);
+  // getMarketCandles(assetA, assetB) prices in B-per-A, so requesting
+  // (mpa, bts) yields BTS-per-MPA to match the live feed_price_source
+  // convention (price = how many BTS for 1 MPA).
+  return getMarketCandles(mpaAsset, btsAsset, config);
 }
 
 /**
@@ -56,7 +59,8 @@ async function fetchMarketCandles(mpaSymbol: string, config: Record<string, any>
 async function fetchMarketClosePrices(mpaSymbol: string, config: Record<string, any> = {}) {
   const btsAsset = await resolveAsset('BTS');
   const mpaAsset = await resolveAsset(mpaSymbol);
-  return getMarketClosePrices(btsAsset, mpaAsset, config);
+  // See fetchMarketCandles: (mpa, bts) yields BTS-per-MPA.
+  return getMarketClosePrices(mpaAsset, btsAsset, config);
 }
 
 // ─── LP Pool Candles (liquidity_pool_exchange) ───────────────────────────────

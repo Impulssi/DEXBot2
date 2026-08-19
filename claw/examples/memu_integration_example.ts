@@ -79,7 +79,7 @@ async function main() {
     console.log();
 
     console.log('=== Example completed successfully ===');
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error:', error.message);
     console.error('\nNote: memU requires Python 3.13+ and the memu-py package.');
     console.error('Install with: pip install memu-py');

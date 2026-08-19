@@ -23,7 +23,9 @@ function parseArgs(argv: any) {
       options.json = true;
     } else if (arg === '--all-mpas') {
       options.allMpas = true;
-      options.startSymbol = 'A';
+      // list_assets lowerBound '' starts from the very beginning; starting at
+      // 'A' would silently skip every symbol that sorts before it (e.g. 1.x).
+      options.startSymbol = '';
     } else if (arg === '--batch-size' && argv[i + 1]) {
       options.batchSize = Number(argv[i + 1]);
       i += 1;

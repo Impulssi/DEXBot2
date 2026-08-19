@@ -150,11 +150,21 @@ function createStateStore(options: StateStoreOptions = {}) {
     return serializeWrite(() => writeUnsafe(clone(defaultValue)));
   }
 
+  // Read goes through the same write queue + file lock so it never observes a
+  // half-written file while a writer is mid-flight.
+  async function read(): Promise<any> {
+    return serializeWrite(async () => {
+      return withFileLock(async () => {
+        return readFromDisk();
+      });
+    });
+  }
+
   return {
     clear,
     filePath,
     patch,
-    read: readFromDisk,
+    read,
     update,
     write
   };
@@ -219,7 +229,7 @@ function createBitsharesClient(options: BitsharesClientOptions = {}) {
  * Create a market adapter with readAccountSnapshot and readMarketSnapshot helpers,
  * delegating to chain_queries for individual data points.
  */
-function createMarketAdapter(options: Record<string, any> = {}) {
+function createMarketAdapter() {
   const readAccountSnapshot = async (accountRef: string) => {
     const [account, balances, openOrders] = await Promise.all([
       chainQueries.getFullAccount(accountRef),
@@ -297,7 +307,7 @@ function createClawInfrastructure(options: ClawInfrastructureOptions = {}) {
     readyFilePath: (options.bitshares && options.bitshares.readyFilePath) || credential.readyFilePath,
     socketPath: (options.bitshares && options.bitshares.socketPath) || credential.socketPath
   });
-  const market = createMarketAdapter(options.market || options);
+  const market = createMarketAdapter();
   const order = createOrderTools();
   const honest = createHonestEcosystemAdapter({
     logger: runtime.logger

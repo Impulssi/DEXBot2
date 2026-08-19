@@ -41,6 +41,9 @@ function getTrendAnalyzer() {
  */
 const analyzers = new Map();
 const analyzerConfigs = new Map();
+// Cached premium per market so the same-market reuse path reports the same
+// premium that the fresh path computed instead of a null placeholder.
+const marketPremiums = new Map();
 
 function configChanged(mpaSymbol: string, config: Record<string, any>) {
   const prev = analyzerConfigs.get(mpaSymbol);
@@ -80,6 +83,7 @@ async function evaluate(accountName: string, options: Record<string, any> = {}) 
       evaluatedAt: new Date().toISOString(),
       positionCount: 0,
       positions: [],
+      summary: buildSummary([]),
     };
   }
 
@@ -98,7 +102,10 @@ async function evaluate(accountName: string, options: Record<string, any> = {}) 
         const trendInput = await fetchTrendInput(mpa);
         if (trendInput.marketPrice != null && trendInput.feedPrice != null) {
           const analyzer = getOrCreateAnalyzer(mpa, analyzerConfig);
-          const result = analyzer.update(trendInput.marketPrice, trendInput.feedPrice);
+          // KalmanTrendAnalyzer.update accepts a single price series; the feed
+          // price is tracked separately (and surfaced via premium below).
+          const result = analyzer.update(trendInput.marketPrice);
+          marketPremiums.set(mpa, trendInput.premium);
           trendSignal = {
             trend: result.trend,
             confidence: result.confidence,
@@ -116,7 +123,8 @@ async function evaluate(accountName: string, options: Record<string, any> = {}) 
         trendSignal = {
           trend: snapshot.trend,
           confidence: snapshot.confidence,
-          premium: snapshot.premium?.percent || null,
+          // TrendAnalysis has no premium field; reuse the cached market premium.
+          premium: marketPremiums.get(mpa) ?? null,
         };
       }
     }

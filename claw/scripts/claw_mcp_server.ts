@@ -1,14 +1,20 @@
 #!/usr/bin/env node
 
 // MCP stdio reserves stdout for JSON-RPC frames. Some shared DEXBot2 modules
-// log during require-time initialization, so suppress incidental console logs.
+// (notably modules/paths.ts) log relocation notices during require-time
+// initialization, so the heavy claw modules are loaded lazily below — AFTER the
+// console shim has been installed. Static imports here are limited to the
+// lightweight transport helpers (mcp_utils) which never write to stdout.
 
-import { getClawToolByName, getClawToolCatalog } from '../modules/claw_catalog.js';
-import { runClawCommand } from '../modules/claw_bridge.js';
 import { success, failure, runMcpServer, createMessageParser } from '../modules/mcp_utils.js';
 import { pathToFileURL } from 'node:url';
+
 console.log = () => {};
 console.warn = () => {};
+
+// NOTE: this is a custom newline-delimited JSON transport (not the official
+// MCP Content-Length framing); protocolVersion is echoed from the client and
+// is informational only. See claw_runtime_matrix.ts.
 
 
 function parseArgs(argv: any) {
@@ -40,7 +46,8 @@ function parseArgs(argv: any) {
   return options;
 }
 
-function listMcpTools() {
+async function listMcpTools() {
+  const { getClawToolCatalog } = await import('../modules/claw_catalog.js');
   return getClawToolCatalog().map((tool: any) => ({
     name: tool.toolName,
     description: tool.description,
@@ -58,7 +65,9 @@ async function handleRequest(message: any, defaults: any) {
   switch (method) {
     case 'initialize':
       return success(id, {
-        protocolVersion: '2024-11-05',
+        // Echo the client's requested protocol version when provided, so a
+        // JSONL-speaking client can negotiate its own version.
+        protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: {
           tools: {
             listChanged: false
@@ -77,17 +86,23 @@ async function handleRequest(message: any, defaults: any) {
       return success(id, {});
 
     case 'tools/list':
-      return success(id, {
-        tools: listMcpTools()
-      });
-
-    case 'tools/call': {
-      const tool = getClawToolByName(params?.name);
-      if (!tool) {
-        return failure(id, -32602, `Unknown tool: ${params?.name || '(missing)'}`);
+      try {
+        return success(id, {
+          tools: await listMcpTools()
+        });
+      } catch (error: any) {
+        return failure(id, -32602, `Failed to load tool catalog: ${error && error.message ? error.message : String(error)}`);
       }
 
+    case 'tools/call': {
       try {
+        const { getClawToolByName } = await import('../modules/claw_catalog.js');
+        const tool = getClawToolByName(params?.name);
+        if (!tool) {
+          return failure(id, -32602, `Unknown tool: ${params?.name || '(missing)'}`);
+        }
+
+        const { runClawCommand } = await import('../modules/claw_bridge.js');
         const result = await runClawCommand(tool.command, {
           ...defaults,
           ...(params?.arguments || {})

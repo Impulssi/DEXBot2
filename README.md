@@ -105,13 +105,13 @@ brew install node git
    ```
    All three should display version numbers.
 
-### Install from npm
+### Install DEXBot2 from npm (recommended)
 
 ```bash
 npm i -g dexbot
 ```
 
-### Install from source (developers)
+### Install DEXBot2 from source (developers)
 
 ```bash
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2

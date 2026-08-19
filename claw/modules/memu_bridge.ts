@@ -8,6 +8,7 @@ import { PATHS } from '../../modules/paths.js';
 import { runtime } from '../../modules/runtime.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
 import { Config } from '../../modules/config.js';
+import { describeClawBridge } from './claw_manifest.js';
 const storage = getStorage();
 const { ensureDir, unlink: safeUnlink } = storage;
 
@@ -28,6 +29,16 @@ function getSpawn(): any {
 
 const DEFAULT_MEMU_DIR = PATHS.CLAW.MEMU_DIR;
 const DEFAULT_PYTHON = Config.MEMU_PYTHON;
+
+// Mirror the repo version instead of hardcoding; falls back to a literal only
+// if package.json is somehow unavailable.
+const DEXBOT_VERSION = (() => {
+  try {
+    return require(path.join(PATHS.PROJECT_ROOT, 'package.json')).version;
+  } catch {
+    return '0.1.0';
+  }
+})();
 
 function resolveMemuScript() {
   const candidates = [
@@ -386,9 +397,14 @@ function createMemuBridge(options: Record<string, any> = {}) {
 }
 
 function describeMemuBridge(options: Record<string, any> = {}) {
+  // Merge the standard claw manifest fields so consumers get the same
+  // commands/options/surfaces/tools shape as the other runtimes instead of
+  // special-casing memu.
+  const clawManifest = describeClawBridge(options);
   return {
+    ...clawManifest,
     runtime: 'memu',
-    version: '0.1.0',
+    version: DEXBOT_VERSION,
     description: 'memU proactive memory integration for DEXBot2',
     nativeIntegration: 'subprocess-bridge',
     preferredTransport: 'local-cli-json-or-mcp',

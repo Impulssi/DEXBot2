@@ -11,7 +11,7 @@ function derivePoolPrice(assetA: any, assetB: any, poolRef?: string | null | Rec
   const resolvedPoolRef = typeof poolRef === 'string' ? poolRef : (poolRef && typeof poolRef.poolRef === 'string' ? poolRef.poolRef : null);
   if (resolvedPoolRef) {
     try {
-      const { withPoolRef: wrapWithPoolRef } = requireDexbot2Module('order/utils/withPoolRef') as any;
+      const { withPoolRef: wrapWithPoolRef } = requireDexbot2Module('modules/order/utils/withPoolRef') as any;
       const override = wrapWithPoolRef(client.BitShares, resolvedPoolRef);
       if (override) return override.derivePoolPrice(assetA, assetB);
     } catch (e: any) {
@@ -25,7 +25,7 @@ function derivePrice(assetA: any, assetB: any, mode: any, poolRef?: string | nul
   const system = getDexbotSystem();
   if (poolRef) {
     try {
-      const { derivePriceWithPoolRef: wrapPriceWithPoolRef } = requireDexbot2Module('order/utils/withPoolRef') as any;
+      const { derivePriceWithPoolRef: wrapPriceWithPoolRef } = requireDexbot2Module('modules/order/utils/withPoolRef') as any;
       return wrapPriceWithPoolRef(client.BitShares, assetA, assetB, mode, poolRef);
     } catch (e: any) {
       console.warn(`[liquidity-pools] derivePrice with poolRef failed: ${e?.message || e}`);

@@ -9,7 +9,7 @@ export function normalizeRepoRoot(repoRoot?: string) {
   return path.resolve(repoRoot || PATHS.CLAW.DIR);
 }
 
-export function normalizeProfileRoot(options: Record<string, any> = {}, repoRoot: string) {
+export function normalizeProfileRoot(options: Record<string, any> = {}, _repoRoot: string) {
   if (options.profileRoot) {
     return path.resolve(options.profileRoot);
   }
@@ -18,17 +18,13 @@ export function normalizeProfileRoot(options: Record<string, any> = {}, repoRoot
     return path.resolve(options.dexbotRoot);
   }
 
-  return path.resolve(repoRoot, '..');
+  // Profiles were relocated out of the repo (see docs/WORKFLOW.md); default to
+  // the runtime-resolved profiles dir so skills read/write user state.
+  return PATHS.PROFILES_DIR;
 }
 
 export function shellQuote(value: any) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
-}
-
-export function buildBridgeCommand(bridgeScript: string, profileRoot: string, command: string, extraArgs: any[] = []) {
-  return ['node', bridgeScript, command, '--profile-root', profileRoot, ...extraArgs]
-    .map((part, index) => (index === 0 ? String(part) : shellQuote(part)))
-    .join(' ');
 }
 
 export function createTool(name: string, description: string, command: string, args: any = null) {

@@ -11,6 +11,7 @@ import { clone } from './utils.js';
 const storage = getStorage();
 import { closeShortOnBts, openShortOnBts, placeTakeProfitBuyOrderOnBts } from './short_mpa_strategy.js';
 import { getAsset, getBackingAsset, getBalances, getBitassetData, getFullAccount } from './chain_queries.js';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 
 import type { ShortPositionOptions, PositionManagerOptions } from './types.js';
 
@@ -434,17 +435,37 @@ class PositionManager {
       throw new Error(`Position ${positionId} is not in planned status`);
     }
 
-    const result = await openShortOnBts({
-      accountName: position.accountName,
-      collateralAmount: position.collateral.amount,
-      debtAmount: position.debt.amount,
-      expiration: options.expiration,
-      fillOrKill: options.fillOrKill,
-      mpaAsset: position.debt.asset,
-      privateKey: options.privateKey,
-      sellPriceInBts: position.entry.sellPriceInBts,
-      targetCollateralRatio: position.collateral.targetCollateralRatio
-    });
+    let result: any;
+    try {
+      result = await openShortOnBts({
+        accountName: position.accountName,
+        collateralAmount: position.collateral.amount,
+        debtAmount: position.debt.amount,
+        expiration: options.expiration,
+        fillOrKill: options.fillOrKill,
+        mpaAsset: position.debt.asset,
+        privateKey: options.privateKey,
+        sellPriceInBts: position.entry.sellPriceInBts,
+        targetCollateralRatio: position.collateral.targetCollateralRatio
+      });
+    } catch (err: any) {
+      // The borrow may already have succeeded even though this call threw
+      // (non-atomic broadcast). Persist the failure and reconcile against the
+      // chain so a stuck 'planned' position never hides a live debt.
+      position.updatedAt = nowIso();
+      position.events.push({
+        at: position.updatedAt,
+        details: {
+          error: getErrorMessage(err)
+        },
+        type: 'entry-open-failed'
+      });
+      await this.saveState();
+      await this.syncPosition(positionId).catch((syncErr: any) => {
+        console.warn(`[POSITION] Post-entry-open sync failed for ${positionId}: ${getErrorMessage(syncErr)}`);
+      });
+      throw err;
+    }
 
     const orderIds = extractOrderIds(result?.sellOrderResult?.operation_results);
     position.entry.orderId = orderIds[0] || null;
@@ -547,7 +568,10 @@ class PositionManager {
     const state = await this.loadState();
     const position = this.#findMutablePosition(state, positionId);
     const fullAccount = await getFullAccount(position.accountName);
-    const balances = await getBalances(position.accountName).catch(() => ({}));
+    const balances = await getBalances(position.accountName).catch((err: any) => {
+      console.warn(`[POSITION] Balance fetch failed for ${position.accountName}: ${getErrorMessage(err)}`);
+      return {};
+    });
     const openOrders = Array.isArray(fullAccount?.limit_orders) ? fullAccount.limit_orders : [];
     const callOrders = Array.isArray(fullAccount?.call_orders) ? fullAccount.call_orders : [];
     const mpaAsset = await getAsset(position.debt.asset);
@@ -678,7 +702,9 @@ class PositionManager {
         await this.saveState();
 
         for (const positionId of Array.from(matchedPositionIds)) {
-          await this.syncPosition(positionId).catch(() => null);
+          await this.syncPosition(positionId).catch((err: any) => {
+            console.warn(`[POSITION] Post-fill sync failed for ${positionId}: ${getErrorMessage(err)}`);
+          });
         }
       }
     });

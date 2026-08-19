@@ -29,8 +29,25 @@ function parseArgs(argv: any) {
   };
 
   const args = [...argv];
-  if (args.length > 0 && !args[0].startsWith('--')) {
-    options.command = args.shift();
+  // The command may appear before or after flags (e.g. `manifest --runtime openfang`
+  // or `--runtime openfang manifest`). Pick the first non-flag token that is not a
+  // flag value as the command.
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--payload' || arg === '--profile-root' || arg === '--account' || arg === '--bot-ref' || arg === '--pair' || arg === '--base' || arg === '--quote' || arg === '--runtime') {
+      i += 1;
+      continue;
+    }
+    if (arg === '--help' || arg === '-h') {
+      options.help = true;
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      continue;
+    }
+    if (!options.command) {
+      options.command = arg;
+    }
   }
 
   for (let i = 0; i < args.length; i += 1) {
@@ -120,7 +137,9 @@ async function main(runtimeName = null, scriptPath = 'tsx scripts/claw_bridge.ts
 
   const mergedPayload = runtimeName ? { ...payload, runtimeName } : payload;
   if (command === 'manifest') {
-    process.stdout.write(`${JSON.stringify(describeScriptRuntimeManifest(runtimeName, mergedPayload), null, 2)}\n`);
+    // main already folded runtimeName into mergedPayload; pass it straight
+    // through to avoid the wrapper's redundant re-injection.
+    process.stdout.write(`${JSON.stringify(describeRuntimeManifest(mergedPayload), null, 2)}\n`);
     return;
   }
 

@@ -89,7 +89,7 @@ export interface ClawBridgeOptions {
     itemId?: string;
     updates?: Record<string, any>;
     messages?: any[];
-    context?: Record<string, any>;
+    context?: string | Record<string, any>;
     query?: string;
     privateKey?: string;
     patch?: Record<string, any>;
@@ -163,10 +163,29 @@ export interface PositionManagerOptions {
 
 export interface ClawProfileBundle {
     profileRoot?: string;
+    profilesDir?: string;
     botsFile?: string;
     generalSettingsFile?: string;
     marketProfilesFile?: string;
     manifestFile?: string;
+    bots?: BotSettings[];
     activeBots?: BotSettings[];
+    botsByKey?: Record<string, BotSettings>;
+    botsByName?: Record<string, BotSettings>;
+    botsConfig?: any;
+    marketProfiles?: any;
+    amaProfiles?: any;
+    generalSettings?: any;
+    manifest?: any;
+    orderFiles?: string[];
+    ordersDir?: string;
+    files?: {
+        marketProfiles?: string;
+        amaProfiles?: string;
+        bots?: string;
+        generalSettings?: string;
+        manifest?: string;
+        ordersDir?: string;
+    };
     needsMarketAdapter?: boolean;
 }

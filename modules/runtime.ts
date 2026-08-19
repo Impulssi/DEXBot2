@@ -15,7 +15,7 @@ export interface Runtime {
   readonly platform: string;
   readonly stdout: { isTTY?: boolean; write(data: string): boolean };
   readonly stderr: { isTTY?: boolean; write(data: string): boolean };
-  readonly stdin: { isTTY?: boolean; on(event: string, handler: (...args: any[]) => void): void; resume(): void; destroy(): void } | null;
+  readonly stdin: { isTTY?: boolean; on(event: string, handler: (...args: any[]) => void): void; resume(): void; pause(): void; destroy(): void } | null;
   readonly argv: string[];
   cwd(): string;
   env: Record<string, string | undefined>;
