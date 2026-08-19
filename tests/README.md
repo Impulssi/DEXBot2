@@ -24,6 +24,11 @@ tests/
 
 `helpers/` contains reusable test support:
 - `bitshares_client_stub.ts` — mock blockchain client
+- `bitshares_native_stub.ts` — mock native chain client
+- `chain_keys_stub.ts` — key derivation test doubles
+- `chain_orders_stub.ts` — order lifecycle test doubles
+- `fee_cache_init.ts` — fee cache seeding for tests
+- `order_test_helpers.ts` — order construction utilities
 - `silent_logger.ts` — suppresses log output during tests
 - `module_cache_stub.ts` — isolates module state per test
 - `unlock_test_helpers.ts`, `foreign_cred_stub.js`, `dynamic_weight_files.ts` — domain-specific helpers
@@ -78,7 +83,7 @@ PM2 lifecycle, startup ordering, bot supervision.
 
 ### Diagnostics & Benchmarks
 Interactive tools and performance benchmarks (not part of CI).
-*Examples:* `connection_test.ts`, `diag_adapter_client.ts`, `diag_ws_nodes.ts`, `benchmark_cow.ts`, `sim_batching.ts`, `repro_phantom_orders.ts`
+*Examples:* `connection_test.ts`, `diag_adapter_client.ts`, `diag_ws_nodes.ts`, `diag_ws_lifecycle.ts`, `benchmark_cow.ts`, `sim_batching.ts`, `repro_phantom_orders.ts`
 
 ### Edge Cases & Regression
 Tests targeting specific bugs, race conditions, and failure modes.

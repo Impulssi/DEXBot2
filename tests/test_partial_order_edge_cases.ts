@@ -1,7 +1,6 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
-const { Grid } = require('../modules/order/grid');
 const Format = require('../modules/order/format');
 const { getErrorMessage } = require('../modules/utils/errors');
 

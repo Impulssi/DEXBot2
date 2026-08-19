@@ -5,7 +5,6 @@
 
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
-const Grid = require('../modules/order/grid');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 const { createTestLogger } = require('./helpers/silent_logger');
 const { getErrorMessage } = require('../modules/utils/errors');
