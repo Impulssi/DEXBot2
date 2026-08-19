@@ -109,6 +109,14 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Market Adapter Signal Pipeline**: AMA center, dynamic weights, regime detection, and collateral advisories
 - **Credit/Debt Runtime**: Native MPA and credit offer workflows with CR planning and grid reset coupling; `creditOnly` mode for runtime-only operation without grid trading
 
+### 🔁 [Lifecycle](LIFECYCLE.md)
+*The end-to-end walkthrough (start here for the big picture).*
+- **System Context**: What DEXBot2 talks to (chain, market data, storage, operator).
+- **Startup / Bootstrap**: Decrypt keys → load metadata → rebuild master grid → sync → runtime loops.
+- **Lifecycle A (Fill-Driven)**: Reactive path from an on-chain fill to a single atomic rebalance + broadcast.
+- **Lifecycle B (Maintenance / AMA-Driven)**: Periodic path from `_performPeriodicGridChecks` → `executeMaintenanceLogic`.
+- **Cross-Cutting Invariants**: COW boundary, fund SSOT, replay-safe fills, lock ordering.
+
 ### 📖 [Developer Guide](developer_guide.md)
 *Your daily companion for coding.*
 - **Quick Start**: How to get the development environment running.

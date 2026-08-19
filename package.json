@@ -52,6 +52,7 @@
     "docs/WORKFLOW.md",
     "docs/architecture.md",
     "docs/developer_guide.md",
+    "docs/LIFECYCLE.md",
     "docs/docker.md",
     "market_adapter/README.md",
     "modules/README.md",

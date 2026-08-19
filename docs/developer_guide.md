@@ -11,8 +11,9 @@ Welcome to DEXBot2! This guide will help you understand the codebase, navigate k
 ### 1. **Start Here** (5 minutes)
 Read these files in order to get oriented:
 1. [README](../README.md) - User documentation and setup
-2. [architecture.md](architecture.md) - System architecture and module relationships
-3. [FUND_MOVEMENT_AND_ACCOUNTING.md](FUND_MOVEMENT_AND_ACCOUNTING.md) - Core algorithms and formulas
+2. [LIFECYCLE.md](LIFECYCLE.md) - **End-to-end walkthrough** (startup, fill-driven, and AMA-driven flows with diagrams) — read this first for the big picture
+3. [architecture.md](architecture.md) - System architecture and module relationships
+4. [FUND_MOVEMENT_AND_ACCOUNTING.md](FUND_MOVEMENT_AND_ACCOUNTING.md) - Core algorithms and formulas
 
 ### 2. **Core Concepts** (15 minutes)
 Understand these fundamental concepts before diving into code:
