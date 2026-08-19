@@ -386,7 +386,7 @@ npm run analysis:derivatives -- --source json --file <file.json>
 ## 📚 DOCUMENTATION REFERENCES
 
 For understanding the systems these scripts interact with:
-- **Module Architecture**: See [root README 📦 Modules section](../README.md#-modules)
+- **Module Architecture**: See [modules/README.md](../modules/README.md)
 - **Copy-on-Write Pattern**: See [docs/COPY_ON_WRITE_MASTER_PLAN.md](../docs/COPY_ON_WRITE_MASTER_PLAN.md) for rebalancing architecture
 - **Fund Accounting**: See [docs/FUND_MOVEMENT_AND_ACCOUNTING.md](../docs/FUND_MOVEMENT_AND_ACCOUNTING.md)
 - **Grid Divergence**: See [docs](../docs/README.md) for RMS threshold explanations

@@ -1,6 +1,6 @@
 # DEXBot vs DEXBot2 — Detailed Comparison Report
 
-> **Date:** 2026-08-16 *(metrics refreshed against local source trees)*
+> **Date:** 2026-08-19 *(metrics refreshed against local source trees)*
 > **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.4.17).
 > **Audience:** Developers, contributors, and operators evaluating or migrating between the two projects.
 
@@ -39,14 +39,14 @@
 | **Release Track** | 1.0.0 | v1.4.17 |
 | **Language** | Python 3.6+ | TypeScript 5.x |
 | **Status** | Released 1.0.0, unmaintained | Active development |
-| **Last Repo Activity** | May 23, 2020 | 2026-08-16 |
+| **Last Repo Activity** | May 23, 2020 | 2026-08-19 |
 | **License** | MIT | MIT |
 | **Origin** | BitShares worker-proposal funded, Codaone Oy | Private rewrite by froooze |
 | **Primary Goal** | Multi-strategy, extensible trading framework | Hardened adaptive grid runtime with operator/AI tooling |
 | **Target Exchange** | BitShares DEX | BitShares DEX |
 | **Lines of Code** | ~10,846 Python LOC in `dexbot/` | Large TypeScript codebase; core runtime, adapter, analysis, Claw, and test modules |
-| **Source Files** | 72 Python files in `dexbot/` | ~490 TS files across the repo |
-| **Test Files** | 16 Python test files | 247 `test_*.ts` files (247 auto-discovered via `globSync`) |
+| **Source Files** | 72 Python files in `dexbot/` | ~527 TS files across the repo |
+| **Test Files** | 16 Python test files | 249 `test_*.ts` files (249 auto-discovered via `globSync`) |
 
 ### Summary
 
@@ -70,7 +70,7 @@ DEXBot2 is a ground-up rewrite in TypeScript that prioritizes production correct
 | **Process Manager** | Systemd service (Linux) | `dexbot start` (native monolithic launcher, default; `unlock` runtime) — PM2 optional |
 | **External APIs** | CoinGecko, CCXT, Waves | On-chain/pool/Kibana candle inputs; optional CEX synthetic seed generator (`fetch_cex_synthetic_data.ts`) for adapter bootstrap |
 | **Container** | Docker (Ubuntu 18.04) | Docker (multi-stage) |
-| **Testing** | pytest + Docker testnet | Native Node assert (247 `test_*.ts` files; auto-discovered via `globSync`) |
+| **Testing** | pytest + Docker testnet | Native Node assert (249 `test_*.ts` files; auto-discovered via `globSync`) |
 | **CI/CD** | Travis CI, AppVeyor | GitHub Actions / local deterministic script suite |
 | **Packaging** | PyInstaller (Win/Mac/Linux binaries) | npm / `unlock` + optional PM2 ecosystem |
 
@@ -616,7 +616,7 @@ Where:
 ### DEXBot2
 
 - **Framework:** Native Node `assert` module (no external test framework)
-- **247 `test_*.ts` files** auto-discovered via `globSync` (`tests/test_*.ts` + `claw/tests/test_*.ts`), covering:
+- **249 `test_*.ts` files** auto-discovered via `globSync` (`tests/test_*.ts` + `claw/tests/test_*.ts`), covering:
   - Unit tests: accounting, strategy, grid, manager logic
   - Copy-on-Write semantics: COW commits, guards, concurrent fills
   - Edge cases: authoritative full-fill resolution, partial fills, BTS fee accounting, precision
@@ -634,7 +634,7 @@ Where:
 | Feature | DEXBot | DEXBot2 |
 |---|---|---|
 | **Framework** | pytest | Native Node assert |
-| **Test Count** | 16 Python test files | 231 `test_*.ts` files; auto-discovered via `globSync` |
+| **Test Count** | 16 Python test files | 249 `test_*.ts` files; auto-discovered via `globSync` |
 | **Test Types** | Unit + integration | Unit + integration + edge-case + runtime regression |
 | **Testnet Integration** | Yes (Docker) | No (mocks) |
 | **External Dependency** | pytest, Docker | None |
@@ -782,11 +782,11 @@ Where:
 |---|---|---|
 | **Release Track** | 1.0.0 | v1.4.17 |
 | **Active Since** | ~2018 | December 2025 |
-| **Last Commit** | May 23, 2020 | 2026-08-16 |
-| **Total Commits** | 2281 | 2,005 at current HEAD |
+| **Last Commit** | May 23, 2020 | 2026-08-19 |
+| **Total Commits** | 2281 | 2,034 (v1.4.17) |
 | **Lines of Code** | ~10,846 Python LOC in `dexbot/` | Large TypeScript runtime + adapter + Claw + analysis + tests |
-| **Source Files** | 72 Python files in `dexbot/` | ~490 TS files across the repo |
-| **Test Files** | 16 Python test files | 247 `test_*.ts` files (247 auto-discovered via `globSync`) |
+| **Source Files** | 72 Python files in `dexbot/` | ~527 TS files across the repo |
+| **Test Files** | 16 Python test files | 249 `test_*.ts` files (249 auto-discovered via `globSync`) |
 | **Documentation** | Sphinx docs + README | 50+ Markdown docs plus Claw skills/references |
 | **Strategies** | 3 + plugins | 1 |
 | **Max Concurrent Bots** | Many (one process) | Many (one monolithic process by default; per-bot via `--isolated`/PM2) |
@@ -886,7 +886,7 @@ The 500× figure is not theoretical: it materializes in production when higher o
 | **Security** | ★★★☆☆ | ★★★★★ (AES-256-GCM, credential daemon, authority resolution) | DEXBot2 |
 | **Ease of Setup** | ★★☆☆☆ (PyQt5/PyInstaller/Systemd dependency hell) | ★★★★★ (`npm i -g dexbot`, zero deps) | DEXBot2 |
 | **Accessibility** | ★★★★★ (GUI) | ★★☆☆☆ (CLI only) | DEXBot |
-| **Testing Depth** | ★★★☆☆ | ★★★★★ (247 test files; focused regressions) | DEXBot2 |
+| **Testing Depth** | ★★★☆☆ | ★★★★★ (249 test files; focused regressions) | DEXBot2 |
 | **Documentation** | ★★★☆☆ | ★★★★★ (architecture/accounting/security/adapter docs) | DEXBot2 |
 | **Dependency Footprint** | ★★☆☆☆ (heavy) | ★★★★★ (0 runtime deps) | DEXBot2 |
 | **Extensibility** | ★★★★★ (plugins) | ★☆☆☆☆ | DEXBot |
@@ -919,4 +919,4 @@ The practical migration path is to treat DEXBot2 as a new runtime: recreate bot 
 
 ---
 
-*Report generated 2026-08-16. Metrics refreshed 2026-08-16 from local DEXBot-master and DEXBot2 source trees.*
+*Report generated 2026-08-19. Metrics refreshed 2026-08-19 from local DEXBot-master and DEXBot2 source trees.*

@@ -131,7 +131,7 @@ If Phase 2 partially succeeds (some cancels, some creates fail), there is no rol
 
 - **No per-attempt race** around the reconcile itself — the 1.4.8 change removed it to avoid orphaning mid-batch broadcasts (see the [`recalculateGrid`](../modules/order/grid.ts) call site in `modules/order/grid.ts`).
 - The whole resync is bounded by a **10-minute total timeout** (`PIPELINE_TIMING.TIMEOUT_MS * 2` at `grid.ts:1122`), applied via `Promise.race` at `grid.ts:1217`.
-- Every internal chain read goes through `readOpenOrdersGuarded` (`chain_orders.ts:625`) with the 30s / 3-retry / node-failover standard, and empty/truncated reads are treated as **ambiguous** — never as authoritative absence.
+- Every internal chain read goes through `readOpenOrdersGuarded` (`chain_orders.ts:611`) with the 30s / 3-retry / node-failover standard, and empty/truncated reads are treated as **ambiguous** — never as authoritative absence.
 
 ---
 
@@ -153,7 +153,7 @@ When `matchedOnGrid === 0` AND scaling up (`neededSlots > 0`), excess cancellati
 
 ### Grid-Edge Lock
 
-**`grid_reconcile_internal.ts:1367-1390`**
+**`grid_reconcile_internal.ts:259`** — `_isGridEdgeFullyActive` detects when the grid boundary is fully active (all slots on-chain) before cancelling excess orders.
 
 When all outermost orders of a side are ACTIVE with `orderId`, all balance is committed to the edges. Cancel the **largest** order among the update candidates (`_cancelLargestOrder`, line 329) to free maximum funds with minimum operations, since the DEX does not expose partial-reduce in one operation. The cancelled slot gets a replacement create.
 
@@ -181,7 +181,7 @@ Reconcile Phase 1 runs under `_gridLock` with no side effects on the frozen mast
 
 ### Truncated-Read Ambiguity (since 1.4.8)
 
-Every chain read feeding an absence/surplus decision goes through `readOpenOrdersGuarded` (`chain_orders.ts:625`) and treats an empty or truncated snapshot as **unreadable** — never as "nothing landed" or "nothing to cancel":
+Every chain read feeding an absence/surplus decision goes through `readOpenOrdersGuarded` (`chain_orders.ts:611`) and treats an empty or truncated snapshot as **unreadable** — never as "nothing landed" or "nothing to cancel":
 
 - `_recoverSyncFromChain` (`grid_reconcile_internal.ts:607`) — plus its three recovery sites in `_createOrderFromGrid` / `_cancelChainOrder` — defers on empty/truncated reads (`deferEmpty: true`). A pass-1 phantom cleanup would otherwise virtualize live slots from a partial window.
 - `_adoptPossiblyLandedCreate` (`grid_reconcile_internal.ts:947`) defers to an uncertain outcome on truncated reads, and the startup group batch uncertain verification follows the same rule.
@@ -194,7 +194,7 @@ The underlying rule is `INV-BROADCAST-004`: a capped `get_full_accounts` window 
 
 ## Lock Hierarchy
 
-**`manager.ts:491-504`** — canonical reference in [`developer_guide.md`](developer_guide.md#lock-ordering-for-deadlock-prevention).
+**`manager.ts:471-486`** — canonical reference in [`developer_guide.md`](developer_guide.md#lock-ordering-for-deadlock-prevention).
 
 ```
 Level 0: _fillProcessingLock    Level 1: _divergenceLock

@@ -140,8 +140,8 @@ The default `LOG_LEVEL` is `"info"`. For production or minimal output, set to `"
   "LOGGING_CONFIG": {
     "rotation": {
       "enabled": true,
-      "maxSize": 1073741824,
-      "maxFiles": 5
+      "maxSize": 1181116007,
+      "maxFiles": 10
     }
   }
 }

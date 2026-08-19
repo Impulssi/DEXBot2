@@ -46,7 +46,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 - `INV-COW-003` Pre-broadcast staleness guard + bounded re-plan
   - A plan whose working grid went stale before broadcast (master mutated mid-planning: fills, syncs) must never be broadcast as-is.
-  - Re-plan ONCE from fresh master with the same fills (`replanStaleBatch`, bounded by `STALE_PLAN_REPLAN_LIMIT`); restore the boundary-shift budget consumed by the abandoned plan; clear only the abandoned batch's OWN pending-broadcast entries (earlier unresolved batches' entries are kept — the recursion guard then aborts + reconciles instead of re-creating possibly-landed slots).
+  - Re-plan ONCE from fresh master with the same fills (`replanStaleBatch`, bounded by `STALE_PLAN_REPLAN_LIMIT` in `dexbot_cow_runtime.ts`); restore the boundary-shift budget consumed by the abandoned plan; clear only the abandoned batch's OWN pending-broadcast entries (earlier unresolved batches' entries are kept — the recursion guard then aborts + reconciles instead of re-creating possibly-landed slots).
   - Still stale or no fill context → proceed + structural resync (never a silent abort that drops the fill set); commit-time guard + chain adoption close residual divergence.
 
 - `INV-COW-004` Working-grid stack exactly-once push/pop

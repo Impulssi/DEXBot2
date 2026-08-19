@@ -1,5 +1,9 @@
 # Telegram Module Implementation
 
+> **Status: NOT IMPLEMENTED — design document only.** No `modules/telegram/` directory
+> exists. The TELEGRAM config block is not present in `modules/constants.ts`. This plan
+> has not been built.
+
 A built-in Telegram control surface for DEXBot2. The bot is a **private, owner-gated remote** — not a public chatbot. DEXBot is the trust boundary and the only writer. The Telegram module is a thin surface that relays intents; it never touches keys or state directly.
 
 ## Trust Model

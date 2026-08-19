@@ -192,7 +192,7 @@ The unified comparison chart (`*_UNIFIED_COMPARISON.html`) is produced by
 When the optimizer is run with `--write-profiles`, `profiles/market_profiles.json`
 is updated with the new AMA1–AMA4 parameters for the pair. The market adapter
 reads this file at startup and on each cycle via `_resetCycleCache()` /
-`findAmaProfileForBot()` in `market_adapter/market_adapter.ts:167`. No restart
+`findAmaProfileForBot()` in `market_adapter/market_adapter.ts` (lines 127 and 346 respectively). No restart
 required — takes effect on the next market adapter cycle.
 
 ---

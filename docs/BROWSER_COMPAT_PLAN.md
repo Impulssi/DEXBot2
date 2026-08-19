@@ -165,15 +165,7 @@ Or, for browser builds, make `PATHS` accept a configurable root or return empty 
 
 ---
 
-### 2.4 `modules/logger.ts` — Document existing split
-
-**Problem:** Correctly branches via `isBrowser()` but missing from AGENTS.md browser-safe list.
-
-**Fix:** Add `modules/logger.ts` to the browser-safe list in AGENTS.md.
-
----
-
-### 2.5 `modules/order/logger.ts` — `process.env` fallback
+### 2.4 `modules/order/logger.ts` — `process.env` fallback
 
 **Problem:** Lines 12-18 fall through to `process.env.pm_exec_path` instead of `Config` only.
 
@@ -181,13 +173,13 @@ Or, for browser builds, make `PATHS` accept a configurable root or return empty 
 
 ---
 
-### 2.6 `modules/process_discovery.ts` — Unclassified, reads `/proc/*`
+### 2.5 `modules/process_discovery.ts` — Unclassified, reads `/proc/*`
 
 **Fix:** Add to AGENTS.md as node-only. Add `browser: false` mapping in package.json.
 
 ---
 
-### 2.7 `modules/graceful_shutdown.ts` — Unclassified, uses `process.on`
+### 2.6 `modules/graceful_shutdown.ts` — Unclassified, uses `process.on`
 
 **Fix:** Add to AGENTS.md as node-only. Add `browser: false` mapping in package.json.
 
@@ -273,7 +265,7 @@ From the audit, ~25 modules lack a browser-safe/node-only label. Add explicit cl
 | `modules/order/utils/order.ts` | browser-safe |
 | `modules/order/utils/system.ts` | ambiguous — review |
 | `modules/order/utils/validate.ts` | browser-safe |
-| `modules/utils/math_utils.ts` | browser-safe |
+
 | `modules/utils/base58check.ts` | browser-safe (uses sync.ts) |
 | `modules/dexbot_credential_client.ts` | node-only |
 

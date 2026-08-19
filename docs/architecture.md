@@ -148,7 +148,6 @@ graph TB
         GRID_RECONCILE[GridReconcile<br/>grid_reconcile.ts]
         UTILS[Utils<br/>utils/]
         LOGGER[Logger<br/>logger.ts]
-        RUNNER[Runner<br/>runner.ts]
         FILL_STORE[ProcessedFillStore<br/>processed_fill_store.ts]
     end
 

@@ -50,7 +50,6 @@ modules/
 ├── validate_profiles.ts           profile validation
 ├── general_settings.ts            global settings loader
 ├── bot_settings.ts                per-bot settings loader
-├── logger.ts                      structured logging
 ├── graceful_shutdown.ts           signal handling and cleanup
 ├── bots_file_lock.ts              profile write serialization
 ├── account_bots.ts                bots.json read/write
@@ -123,14 +122,12 @@ modules/
 │   ├── resolvers.ts               operation/object resolvers
 │   ├── tx/                        transaction building
 │   ├── serial/                    serialization
-│   ├── crypto/                    cryptographic primitives
-│   └── interfaces.d.ts            type declarations
+│   └── crypto/                    cryptographic primitives
 │
 └── utils/
     ├── base58check.ts             Base58Check encoding
     ├── build_dir.ts               BUILD_DIR constant helper
-    ├── errors.ts                  getErrorMessage helper
-    └── math_utils.ts              re-exports roundTo, fixedTo, roundToDecimals from order/utils/math
+    └── errors.ts                  getErrorMessage helper
 ```
 
 ## Key Relationships

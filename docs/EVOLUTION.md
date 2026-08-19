@@ -8,8 +8,8 @@ DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares 
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 2,024 commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
-- **Stability**: Progression from manual testing to a suite of 247 automated test files
-- **Releases**: 93 release entries (v0.1.0 to v1.4.16)
+- **Stability**: Progression from manual testing to a suite of 249 automated test files
+- **Releases**: 94 release entries (v0.1.0 to v1.4.17)
 
 ---
 
@@ -79,7 +79,7 @@ v1.4.17 completed an audit-driven cleanup of `modules/`: the two EC math impleme
 
 ## Development Statistics
 
-The project has accumulated 247 automated test files across 94 release entries. See the **Version History** below for a per-release commit breakdown.
+The project has accumulated 249 automated test files across 94 release entries. See the **Version History** below for a per-release commit breakdown.
 
 ---
 
@@ -98,7 +98,7 @@ The project has accumulated 247 automated test files across 94 release entries. 
 
 ## Documentation & Testing
 
-Evolved from a basic README to a comprehensive framework (50+ docs entries, 80%+ JSDoc coverage, AGENTS.md). Testing matured from manual blockchain trials → Jest → lightweight Node.js assert across a 247-file suite covering unit, integration, simulation, and COW architectural guard tests.
+Evolved from a basic README to a comprehensive framework (50+ docs entries, 80%+ JSDoc coverage, AGENTS.md). Testing matured from manual blockchain trials → Jest → lightweight Node.js assert across a 249-file suite covering unit, integration, simulation, and COW architectural guard tests.
 
 ---
 
@@ -128,7 +128,7 @@ DEXBot2 has matured from a basic grid bot into a signal-intelligent, production-
 - **Backtesting Engine**: Historical candle replay through the trading engine via exchange abstraction
 - **Injectable Interfaces**: Dependency inversion at call boundaries for improved testability
 - **Database + Validation**: SQLite persistence with Zod schema validation at the blockchain boundary
-- **Telegram Bot**: built-in, owner-gated Telegram control surface bundled into DEXBot2 — a thin relay module that forwards intents into DEXBot2's hardened paths. Monitoring (`/status`, `/orders`, `/grid`, `/balance`, alerts) is owner-gated; control (`/start`, `/stop`, `/pause`, `/set`) requires an explicit opt-in plus a confirm step; DEXBot is the only writer and private keys never reach the module. Config via `TELEGRAM` block + `DEXBOT_TELEGRAM_TOKEN` env.
+- **Telegram Bot**: planned but **not yet implemented** — owner-gated Telegram control surface (design doc only). Monitoring (`/status`, `/orders`, `/grid`, `/balance`, alerts) is owner-gated; control (`/start`, `/stop`, `/pause`, `/set`) requires an explicit opt-in plus a confirm step; DEXBot is the only writer and private keys never reach the module. Config via `TELEGRAM` block + `DEXBOT_TELEGRAM_TOKEN` env.
 
 ## Version History
 
@@ -199,12 +199,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.13 → v1.4.14 | 13 | BitShares onboarding P2P-credit clarification, market-adapter math canonicalization (ATR/volatility/regime/Kalman embedded into chart sources), dead-code purge (market-adapter barrel + claw stale code, launcher PM2 crash fix), raw `npm start`/`pm2 start` launcher guard, `dexbot order <bot>` filter, HTML chart export readability, nvm Linux install, docs refresh (Telegram plan rename), claw strict-mode test annotations, AMA optimizer `_w` naming, CES power-law curve proposal |
 | v1.4.14 → v1.4.15 | 2 | Global npm install path handling (profiles, market-adapter, and claw data/state relocation under `~/.config/dexbot2/profiles`, `DEXBOT_MARKET_ADAPTER_DATA_DIR`/`STATE_DIR` and `DEXBOT_CLAW_DATA_DIR` env overrides, shared `scripts/lib/dexbot-paths.sh` for the clear/reset shell scripts, `clear-all` now wipes claw data), test alignment with sig-digit formatting |
 | v1.4.15 → v1.4.16 | 4 | Unified profile-state resolution (single resolver-derived profiles dir for all installs, credential-runtime `root` removal, shell-path mirror), divergence surplus/hole pairs → in-place rotations, npm auto-update flow for global installs, no master-password prompt when no vault exists |
-| v1.4.16 → v1.4.17 | 5 | Analysis source resolution centralization (`resolve_source.ts`) + strict TypeScript, shared chart CSS/browser-JS helpers, audit-driven duplicate-code consolidation (EC math, Base58Check, settings merge, asset resolution, nowIso/clamp/quantum helpers), dead export purge (`types.ts` trim, serial/launcher/formats, shim deletions), claw `createBotKey` dedup, test/daemon regression fixes |
+| v1.4.16 → v1.4.17 | 10 | Analysis source resolution centralization (`resolve_source.ts`) + strict TypeScript, shared chart CSS/browser-JS helpers, audit-driven duplicate-code consolidation (EC math, Base58Check, settings merge, asset resolution, nowIso/clamp/quantum helpers), dead export purge (`types.ts` trim, serial/launcher/formats, shim deletions), claw `createBotKey` dedup + runtime edge-case hardening, test/daemon regression fixes, full analysis toolset shipped in npm package, scripts README refresh |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: August 19, 2026 (v1.4.17)
-**Total Commits**: 2,030
+**Total Commits**: 2,034
 **Date Range**: December 2, 2025 – August 19, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

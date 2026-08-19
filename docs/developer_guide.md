@@ -1201,7 +1201,7 @@ runTests();
 ## Testing Strategy
 
 ### Test Files
-Located in `tests/` (flat directory, no subdirectories):
+Located in `tests/` (with `helpers/` subdirectory):
 - `test_accounting_logic.ts` - Fund calculation and accounting tests
 - `test_grid_logic.ts` - Grid creation, sizing, and divergence tests
 - `test_manager.ts` / `test_manager_logic.ts` - State management and COW tests
