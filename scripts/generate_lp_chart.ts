@@ -20,7 +20,7 @@ function showHelp() {
 LP Chart Generator (uPlot)
 
 Usage:
-  tsx scripts/generate_lp_chart.ts [options]
+  node dist/scripts/generate_lp_chart.js [options]
 
 Options:
   --data FILE   LP export JSON file

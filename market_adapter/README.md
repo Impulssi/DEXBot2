@@ -26,7 +26,7 @@ The live signal layer for AMA-priced bots. It reads candles, computes the AMA ce
 | Tune buy/sell weight bias | [Asymmetric Weight Shift](#asymmetric-weight-shift) | whitelist `dynamicWeight: true` |
 | Widen/tighten grid bounds by trend | [Grid Range Scaling](#grid-range-scaling) | whitelist `asymmetricBounds: true` |
 | Override settings for one pair or bot | [Settings and Overrides](#settings-and-overrides) | edit `profiles/market_adapter_settings.json` |
-| Run the adapter standalone or test dry-run | [Live Writes and Dry-Run](#live-writes-and-dry-run) | `tsx market_adapter/market_adapter.ts --dryRun` |
+| Run the adapter standalone or test dry-run | [Live Writes and Dry-Run](#live-writes-and-dry-run) | `node dist/market_adapter/market_adapter.js --dryRun` |
 | Debug a bot not being processed | [Troubleshooting](#troubleshooting) | `dexbot white` |
 | Understand the signal pipeline or module layout | [Technical Reference](#technical-reference) | — |
 
@@ -51,7 +51,7 @@ applies the symmetric penalty.
 ### 1. Enable AMA
 
 Set `gridPrice` to `ama`, `ama1`, `ama2`, `ama3`, or `ama4` in
-`profiles/bots.json` or through `tsx dexbot.ts bot`. Use `ama` for the pair's
+`profiles/bots.json` or through `dexbot bot`. Use `ama` for the pair's
 default preset.
 
 `startPrice` selects the candle source:
@@ -120,7 +120,7 @@ cause abrupt grid-center changes.
 The adapter uses tiered clamping thresholds to manage inventory risk during extreme price divergence from the AMA trend center. These thresholds are derived from historical pool volatility and replace static 'fit cap' multipliers. The specific clamping limits and exit parameters are calculated per pair and preset using the AMA fitting toolchain:
 
 ```bash
-tsx analysis/ama_fitting/optimizer_high_resolution.ts --data <lp-file.json>
+node dist/analysis/ama_fitting/optimizer_high_resolution.js --data <lp-file.json>
 ```
 
 Source: example LP pool, 1h candles, representative historical window.
@@ -185,7 +185,7 @@ The adapter writes a recalc trigger when both conditions are true:
 - candle data is not stale
 
 Configure the default in `profiles/general.settings.json` or from the
-`tsx dexbot.ts bot` general settings menu:
+`dexbot bot` general settings menu:
 
 ```json
 {
@@ -200,7 +200,7 @@ Configure the default in `profiles/general.settings.json` or from the
 Market-adapter settings resolve in this order:
 
 1. Built-in defaults in `modules/constants.ts`
-2. Global overrides in `profiles/general.settings.json` or `tsx dexbot.ts bot`
+2. Global overrides in `profiles/general.settings.json` or `dexbot bot`
 3. Pair-specific overrides in `profiles/market_profiles.json`
 4. Bot-specific overrides in `profiles/market_adapter_settings.json`
 
@@ -312,9 +312,9 @@ still processed, but live grid files and recalc triggers are suppressed.
 
 | Invocation | Behavior |
 |---|---|
-| `tsx market_adapter/market_adapter.ts` | Whitelisted bots write live files; others dry-run |
-| `tsx market_adapter/market_adapter.ts --dryRun` | All bots dry-run |
-| `tsx market_adapter/market_adapter.ts --whitelist-all` | All AMA bots write live files |
+| `node dist/market_adapter/market_adapter.js` | Whitelisted bots write live files; others dry-run |
+| `node dist/market_adapter/market_adapter.js --dryRun` | All bots dry-run |
+| `node dist/market_adapter/market_adapter.js --whitelist-all` | All AMA bots write live files |
 
 Dry-run log lines include `[DRY RUN]` or `[suppressed, dry-run]`.
 
@@ -326,13 +326,13 @@ Dry-run log lines include `[DRY RUN]` or `[suppressed, dry-run]`.
 | Opt new whitelist entries into dynamic weights | `dexbot white --dynamic-weight` |
 | Generate AMA-only entries without range scaling | `dexbot white --no-asymmetric-bounds` |
 | Prune stale whitelist entries (bots removed from bots.json) | `dexbot white --prune` |
-| Probe public CEX availability | `tsx market_adapter/inputs/fetch_cex_synthetic_data.ts --exchange auto --check-only` |
-| Seed synthetic cross candles | `tsx market_adapter/inputs/fetch_cex_synthetic_data.ts --exchange auto --bot-key <bot-key>` |
-| Run one adapter cycle | `tsx market_adapter/market_adapter.ts --once` |
-| Run one cycle with threshold override | `tsx market_adapter/market_adapter.ts --once --deltaPercent 1.5` |
-| Run continuously | `tsx market_adapter/market_adapter.ts` |
-| Print one-cycle JSON signals | `tsx market_adapter/ama_signal_runner.ts` |
-| Print one bot's compact signal output | `tsx market_adapter/ama_signal_runner.ts --bot <botKey> --compact` |
+| Probe public CEX availability | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --check-only` |
+| Seed synthetic cross candles | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --bot-key <bot-key>` |
+| Run one adapter cycle | `node dist/market_adapter/market_adapter.js --once` |
+| Run one cycle with threshold override | `node dist/market_adapter/market_adapter.js --once --deltaPercent 1.5` |
+| Run continuously | `node dist/market_adapter/market_adapter.js` |
+| Print one-cycle JSON signals | `node dist/market_adapter/ama_signal_runner.js` |
+| Print one bot's compact signal output | `node dist/market_adapter/ama_signal_runner.js --bot <botKey> --compact` |
 
 `--deltaPercent` changes the threshold only for that run.
 
@@ -365,7 +365,7 @@ match the bot's eventual `botKey`.
 - Check `staleData` and `staleAgeHours`.
 - **Confirm the bot is whitelisted.** Non-whitelisted bots only log and do not write triggers.
 - Confirm the bot's whitelist entry has `"ama": true`.
-- Run `tsx market_adapter/market_adapter.ts --once --deltaPercent <lower-value>` for a one-cycle threshold test.
+- Run `node dist/market_adapter/market_adapter.js --once --deltaPercent <lower-value>` for a one-cycle threshold test.
 
 ### Trigger fires too often
 
@@ -387,17 +387,17 @@ match the bot's eventual `botKey`.
 Export candles and charts:
 
 ```bash
-tsx market_adapter/inputs/fetch_lp_data.ts --pool <poolId> --precA <precA> --precB <precB> --interval 1h --lookback 8760h
-tsx market_adapter/inputs/fetch_lp_data.ts --pool <poolId> --precA <precA> --precB <precB> --interval 1h --start <start-date> --end <end-date>
+node dist/market_adapter/inputs/fetch_lp_data.js --pool <poolId> --precA <precA> --precB <precB> --interval 1h --lookback 8760h
+node dist/market_adapter/inputs/fetch_lp_data.js --pool <poolId> --precA <precA> --precB <precB> --interval 1h --start <start-date> --end <end-date>
 npm run lp:chart -- --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 ```
 
 Research and calibration:
 
 ```bash
-tsx analysis/analyze_dynamic_weight.ts --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
-tsx analysis/analyze_volatility.ts --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
-tsx analysis/ama_fitting/calibrate_convergence_er.ts --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
+node dist/analysis/analyze_dynamic_weight.js --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
+node dist/analysis/analyze_volatility.js --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
+node dist/analysis/ama_fitting/calibrate_convergence_er.js --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 ```
 
 More tools:
@@ -428,7 +428,7 @@ Standalone daemon mode is still available for direct inspection or manual
 operation:
 
 ```bash
-tsx market_adapter/market_adapter.ts
+node dist/market_adapter/market_adapter.js
 ```
 
 The adapter acts only on closed 1h candles. It can poll more often, but live
@@ -925,7 +925,7 @@ The two **calibration constants** live in `modules/constants.ts` under
 To recalibrate `AMA_CONVERGENCE_ER_AVG` against new market data, use the
 research script:
 ```bash
-tsx analysis/ama_fitting/calibrate_convergence_er.ts [--data <lp-file.json>] [--amas AMA3,AMA4]
+node dist/analysis/ama_fitting/calibrate_convergence_er.js [--data <lp-file.json>] [--amas AMA3,AMA4]
 ```
 See `analysis/ama_fitting/calibrate_convergence_er.ts` for details on the
 implied-ER correction (Jensen's inequality).

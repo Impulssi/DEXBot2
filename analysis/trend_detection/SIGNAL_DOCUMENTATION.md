@@ -388,7 +388,7 @@ that only need adjustment when you want to change how strict the signal is.
 ## Recommended 1h Setup
 
 ```bash
-tsx analysis/analyze_derivatives.ts \
+node dist/analysis/analyze_derivatives.js \
   --source json \
   --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --sma 500 --fast-sma 100 \

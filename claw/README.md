@@ -31,8 +31,8 @@ Integration layer for BitShares blockchain operations from DEXBot2 and supported
 | Track persistent short positions | [Position Manager](#position-manager) | `npm run example:position-manager` |
 | Choose a runtime (OpenClaw, Hermes, NanoBot, etc.) | [Multi-Runtime Support](#multi-runtime-support) | — |
 | Generate skill files for a runtime | [Multi-Runtime Support](#multi-runtime-support) | `npm run <runtime>:skill` |
-| Preview or apply bot setting changes | [Bot Settings](#bot-settings) | `tsx scripts/claw_bridge.ts bot-settings-preview` |
-| Inspect an on-chain MPA position | [Position Health](#position-health) | `tsx scripts/claw_bridge.ts mpa-position` |
+| Preview or apply bot setting changes | [Bot Settings](#bot-settings) | `npm run claw:bridge -- bot-settings-preview` |
+| Inspect an on-chain MPA position | [Position Health](#position-health) | `npm run claw:bridge -- mpa-position` |
 | List HONEST asset pricing | [HONEST Asset Report](#honest-asset-report) | `npm run report:honest-assets` |
 
 ## Install
@@ -140,7 +140,7 @@ npm run report:honest-assets
 JSON output:
 
 ```bash
-tsx scripts/honest_assets_report.ts --json
+node ../dist/claw/scripts/honest_assets_report.js --json
 ```
 
 ## Signing And Broadcast
@@ -209,9 +209,9 @@ For a deeper comparison, see [docs/RUNTIME_COMPARISON.md](docs/RUNTIME_COMPARISO
 Use the runtime-neutral bridge command for JSON-friendly local integration:
 
 ```bash
-tsx scripts/claw_bridge.ts manifest
-tsx scripts/claw_bridge.ts profile-context --payload '{"botRef":"default"}'
-tsx scripts/claw_bridge.ts market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
+npm run claw:bridge -- manifest
+npm run claw:bridge -- profile-context --payload '{"botRef":"default"}'
+npm run claw:bridge -- market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
 ```
 
 ### Bot Settings
@@ -219,9 +219,9 @@ tsx scripts/claw_bridge.ts market-snapshot --payload '{"baseSymbol":"BTS","quote
 Use the bridge to read, preview, and apply DEXBot2 bot settings through the locked profile adapter:
 
 ```bash
-tsx scripts/claw_bridge.ts bot-settings --payload '{"botRef":"default"}'
-tsx scripts/claw_bridge.ts bot-settings-preview --payload '{"botRef":"default","patch":{"incrementPercent":0.4,"weightDistribution":{"sell":0.7,"buy":0.4}}}'
-tsx scripts/claw_bridge.ts bot-settings-apply --payload '{"botRef":"default","patch":{"incrementPercent":0.4,"weightDistribution":{"sell":0.7,"buy":0.4}}}'
+npm run claw:bridge -- bot-settings --payload '{"botRef":"default"}'
+npm run claw:bridge -- bot-settings-preview --payload '{"botRef":"default","patch":{"incrementPercent":0.4,"weightDistribution":{"sell":0.7,"buy":0.4}}}'
+npm run claw:bridge -- bot-settings-apply --payload '{"botRef":"default","patch":{"incrementPercent":0.4,"weightDistribution":{"sell":0.7,"buy":0.4}}}'
 ```
 
 Settings writes are serialized through the profile lock and the recalc trigger is written atomically, so concurrent bot-setting updates do not clobber each other.
@@ -273,10 +273,10 @@ OpenFang uses the same shared bridge surface through a local CLI wrapper.
 <details><summary>Compatibility command surface (click to expand)</summary>
 
 ```bash
-tsx scripts/claw_bridge.ts --runtime openfang manifest
-tsx scripts/claw_bridge.ts --runtime openfang profile-context --payload '{"botRef":"default"}'
-tsx scripts/claw_bridge.ts --runtime openfang market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
-tsx scripts/claw_bridge.ts --runtime openfang create-limit-order --payload '{"accountName":"your-account","sellAsset":"BTS","receiveAsset":"USD","amountToSell":10,"minToReceive":2}'
+npm run openfang:bridge -- manifest
+npm run openfang:bridge -- profile-context --payload '{"botRef":"default"}'
+npm run openfang:bridge -- market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
+npm run openfang:bridge -- create-limit-order --payload '{"accountName":"your-account","sellAsset":"BTS","receiveAsset":"USD","amountToSell":10,"minToReceive":2}'
 ```
 
 </details>
@@ -296,8 +296,8 @@ Add the shared Claw MCP server to `~/.hermes/config.yaml`:
 ```yaml
 mcp_servers:
   claw:
-    command: "tsx"
-    args: ["/absolute/path/to/claw/scripts/claw_mcp_server.ts", "--profile-root", "/absolute/path/to/DEXBot2"]
+    command: "node"
+    args: ["/absolute/path/to/DEXBot2/dist/claw/scripts/claw_mcp_server.js", "--profile-root", "/absolute/path/to/DEXBot2"]
 ```
 
 Hermes should use the shared MCP server for live tools and keep the generated `SKILL.md` focused on workflow guidance. The Claw MCP server registers raw tool ids such as `claw_manifest`; if Hermes shows a namespaced label in its UI, use the label shown there.
@@ -309,7 +309,7 @@ Run the MCP server over stdio:
 ```bash
 CLAW_ROOT="$(pwd)"
 DEXBOT_ROOT="$(cd .. && pwd)"
-tsx scripts/claw_mcp_server.ts --profile-root "$DEXBOT_ROOT"
+node ../dist/claw/scripts/claw_mcp_server.js --profile-root "$DEXBOT_ROOT"
 ```
 
 The stdio transport uses newline-delimited JSON-RPC messages on `stdin` and `stdout`.
@@ -340,10 +340,10 @@ NanoClaw already ships its own `claw` skill, so keep this bridge skill named `bi
 <details><summary>Compatibility command surface (click to expand)</summary>
 
 ```bash
-tsx scripts/claw_bridge.ts --runtime nanoclaw manifest
-tsx scripts/claw_bridge.ts --runtime nanoclaw profile-context --payload '{"botRef":"default"}'
-tsx scripts/claw_bridge.ts --runtime nanoclaw market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
-tsx scripts/claw_bridge.ts --runtime nanoclaw create-limit-order --payload '{"accountName":"your-account","sellAsset":"BTS","receiveAsset":"USD","amountToSell":10,"minToReceive":2}'
+npm run nanoclaw:bridge -- manifest
+npm run nanoclaw:bridge -- profile-context --payload '{"botRef":"default"}'
+npm run nanoclaw:bridge -- market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
+npm run nanoclaw:bridge -- create-limit-order --payload '{"accountName":"your-account","sellAsset":"BTS","receiveAsset":"USD","amountToSell":10,"minToReceive":2}'
 ```
 
 </details>
@@ -361,13 +361,13 @@ npm run zeroclaw:skill -- --repo-root "$CLAW_ROOT" --profile-root "$DEXBOT_ROOT"
 <details><summary>Compatibility command surface (click to expand)</summary>
 
 ```bash
-tsx scripts/claw_bridge.ts --runtime zeroclaw manifest
-tsx scripts/claw_bridge.ts --runtime zeroclaw profile-context --payload '{"botRef":"default"}'
-tsx scripts/claw_bridge.ts --runtime zeroclaw market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
-tsx scripts/claw_bridge.ts --runtime zeroclaw create-limit-order --payload '{"accountName":"your-account","sellAsset":"BTS","receiveAsset":"USD","amountToSell":10,"minToReceive":2}'
-tsx scripts/claw_bridge.ts --runtime zeroclaw update-limit-order --payload '{"accountName":"your-account","orderId":"1.7.123","newParams":{"amountToSell":10,"minToReceive":2}}'
-tsx scripts/claw_bridge.ts --runtime zeroclaw execute-batch --payload '{"accountName":"your-account","operations":[]}'
-tsx scripts/claw_bridge.ts --runtime zeroclaw borrow-mpa --payload '{"accountName":"your-account","mpaAsset":"HONEST.USD","debtDelta":10,"collateralDelta":25000}'
+npm run zeroclaw:bridge -- manifest
+npm run zeroclaw:bridge -- profile-context --payload '{"botRef":"default"}'
+npm run zeroclaw:bridge -- market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
+npm run zeroclaw:bridge -- create-limit-order --payload '{"accountName":"your-account","sellAsset":"BTS","receiveAsset":"USD","amountToSell":10,"minToReceive":2}'
+npm run zeroclaw:bridge -- update-limit-order --payload '{"accountName":"your-account","orderId":"1.7.123","newParams":{"amountToSell":10,"minToReceive":2}}'
+npm run zeroclaw:bridge -- execute-batch --payload '{"accountName":"your-account","operations":[]}'
+npm run zeroclaw:bridge -- borrow-mpa --payload '{"accountName":"your-account","mpaAsset":"HONEST.USD","debtDelta":10,"collateralDelta":25000}'
 ```
 
 </details>
@@ -385,13 +385,13 @@ npm run nullclaw:skill -- --repo-root "$CLAW_ROOT" --profile-root "$DEXBOT_ROOT"
 <details><summary>Compatibility command surface (click to expand)</summary>
 
 ```bash
-tsx scripts/claw_bridge.ts --runtime nullclaw manifest
-tsx scripts/claw_bridge.ts --runtime nullclaw profile-context --payload '{"botRef":"default"}'
-tsx scripts/claw_bridge.ts --runtime nullclaw market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
-tsx scripts/claw_bridge.ts --runtime nullclaw create-limit-order --payload '{"accountName":"your-account","sellAsset":"BTS","receiveAsset":"USD","amountToSell":10,"minToReceive":2}'
-tsx scripts/claw_bridge.ts --runtime nullclaw update-limit-order --payload '{"accountName":"your-account","orderId":"1.7.123","newParams":{"amountToSell":10,"minToReceive":2}}'
-tsx scripts/claw_bridge.ts --runtime nullclaw execute-batch --payload '{"accountName":"your-account","operations":[]}'
-tsx scripts/claw_bridge.ts --runtime nullclaw borrow-mpa --payload '{"accountName":"your-account","mpaAsset":"HONEST.USD","debtDelta":10,"collateralDelta":25000}'
+npm run nullclaw:bridge -- manifest
+npm run nullclaw:bridge -- profile-context --payload '{"botRef":"default"}'
+npm run nullclaw:bridge -- market-snapshot --payload '{"baseSymbol":"BTS","quoteSymbol":"USD"}'
+npm run nullclaw:bridge -- create-limit-order --payload '{"accountName":"your-account","sellAsset":"BTS","receiveAsset":"USD","amountToSell":10,"minToReceive":2}'
+npm run nullclaw:bridge -- update-limit-order --payload '{"accountName":"your-account","orderId":"1.7.123","newParams":{"amountToSell":10,"minToReceive":2}}'
+npm run nullclaw:bridge -- execute-batch --payload '{"accountName":"your-account","operations":[]}'
+npm run nullclaw:bridge -- borrow-mpa --payload '{"accountName":"your-account","mpaAsset":"HONEST.USD","debtDelta":10,"collateralDelta":25000}'
 ```
 
 </details>
@@ -412,7 +412,7 @@ Start the memU MCP server:
 ```bash
 npm run memu:mcp
 # or
-tsx scripts/memu_mcp_server.ts --memu-dir /path/to/claw/data/memu
+node ../dist/claw/scripts/memu_mcp_server.js --memu-dir /path/to/claw/data/memu
 ```
 
 `--memu-dir` is optional; it defaults to the resolved memU data directory
@@ -430,18 +430,18 @@ memU MCP server configuration for Hermes:
 ```yaml
 mcp_servers:
   memu:
-    command: "tsx"
-    args: ["/absolute/path/to/claw/scripts/memu_mcp_server.ts", "--memu-dir", "/absolute/path/to/claw/data/memu"]
+    command: "node"
+    args: ["/absolute/path/to/DEXBot2/dist/claw/scripts/memu_mcp_server.js", "--memu-dir", "/absolute/path/to/claw/data/memu"]
 ```
 
 <details><summary>Compatibility command surface (click to expand)</summary>
 
 ```bash
 # Via claw bridge
-tsx scripts/claw_bridge.ts memu-manifest
-tsx scripts/claw_bridge.ts memu-memorize --payload '{"resourceUrl":"/path/to/conv.txt","modality":"conversation"}'
-tsx scripts/claw_bridge.ts memu-retrieve --payload '{"queries":[{"role":"user","content":{"text":"What are my trading preferences?"}}]}'
-tsx scripts/claw_bridge.ts memu-status
+npm run claw:bridge -- memu-manifest
+npm run claw:bridge -- memu-memorize --payload '{"resourceUrl":"/path/to/conv.txt","modality":"conversation"}'
+npm run claw:bridge -- memu-retrieve --payload '{"queries":[{"role":"user","content":{"text":"What are my trading preferences?"}}]}'
+npm run claw:bridge -- memu-status
 
 # Via npm scripts
 npm run memu:status
@@ -475,7 +475,7 @@ The position health subsystem discovers on-chain debt positions, classifies coll
 Inspect one on-chain MPA position:
 
 ```bash
-tsx scripts/claw_bridge.ts mpa-position --payload '{"accountName":"your-account","mpaAsset":"HONEST.USD"}'
+npm run claw:bridge -- mpa-position --payload '{"accountName":"your-account","mpaAsset":"HONEST.USD"}'
 ```
 
 The decision loop (`modules/decision_loop.ts`) is exposed as a module API. Its `evaluate()` call ties discovery, trend analysis, and health assessment into a single result with prioritized actions.
@@ -487,19 +487,19 @@ Read, preview, and apply DEXBot2 bot settings through the locked profile adapter
 Inspect the default policy:
 
 ```bash
-tsx scripts/claw_bridge.ts bot-settings --payload '{"botRef":"default"}'
+npm run claw:bridge -- bot-settings --payload '{"botRef":"default"}'
 ```
 
 Preview an update without applying:
 
 ```bash
-tsx scripts/claw_bridge.ts bot-settings-preview --payload '{"botRef":"default","patch":{"weightDistribution":{"sell":0.7,"buy":0.4}}}'
+npm run claw:bridge -- bot-settings-preview --payload '{"botRef":"default","patch":{"weightDistribution":{"sell":0.7,"buy":0.4}}}'
 ```
 
 Apply the update and write the recalc trigger:
 
 ```bash
-tsx scripts/claw_bridge.ts bot-settings-apply --payload '{"botRef":"default","patch":{"weightDistribution":{"sell":0.7,"buy":0.4}}}'
+npm run claw:bridge -- bot-settings-apply --payload '{"botRef":"default","patch":{"weightDistribution":{"sell":0.7,"buy":0.4}}}'
 ```
 
 ## High-Level Actions

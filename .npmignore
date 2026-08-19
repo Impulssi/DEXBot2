@@ -1,2 +1,1 @@
-# Compiled analysis helpers are redundant — the full analysis/ source ships.
-dist/analysis
+# Keep this file empty — all dist/ output ships now.

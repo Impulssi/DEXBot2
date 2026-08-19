@@ -34,7 +34,7 @@ bootstrap (gaps filled via `candle_utils.fillCandleGaps`), but without pruning.
 
 **`<ASSET_A>`/`<ASSET_B>` pool (3 years):**
 ```bash
-tsx analysis/ama_fitting/fetch_lp_candles.ts \
+node dist/analysis/ama_fitting/fetch_lp_candles.js \
   --pool 1.19.133 \
   --assetA <ASSET_A> --assetAId <asset_a_id> --assetAPrecision <n> \
   --assetB <ASSET_B>     --assetBId <asset_b_id>    --assetBPrecision <n> \
@@ -73,20 +73,20 @@ to `profiles/market_profiles.json`.
 
 **Run on the fetched LP data:**
 ```bash
-tsx analysis/ama_fitting/optimizer_high_resolution.ts \
+node dist/analysis/ama_fitting/optimizer_high_resolution.js \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 ```
 
 **Export winners to the market adapter profile file:**
 ```bash
-tsx analysis/ama_fitting/optimizer_high_resolution.ts \
+node dist/analysis/ama_fitting/optimizer_high_resolution.js \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --write-profiles
 ```
 
 Override ranges via CLI:
 ```bash
-tsx analysis/ama_fitting/optimizer_high_resolution.ts \
+node dist/analysis/ama_fitting/optimizer_high_resolution.js \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --erMin 100 --erMax 600 \
   --slowMin 800 --slowMax 6000
@@ -118,7 +118,7 @@ override any individually:
 --ama1Weight 0.0031  --ama2Weight 0.0025  --ama3Weight 0.00185  --ama4Weight 0.0013
 
 # Override only AMA1 and AMA4, keeping AMA2/AMA3 defaults
-tsx analysis/ama_fitting/optimizer_high_resolution.ts \
+node dist/analysis/ama_fitting/optimizer_high_resolution.js \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --ama1Weight 0.003 --ama4Weight 0.002
 ```
@@ -206,7 +206,7 @@ real LP candle data. Accounts for Jensen's inequality: the average smoothing
 constant is not the smoothing constant of the average ER.
 
 ```bash
-tsx analysis/ama_fitting/calibrate_convergence_er.ts --data <lp-file.json> --amas AMA3
+node dist/analysis/ama_fitting/calibrate_convergence_er.js --data <lp-file.json> --amas AMA3
 ```
 
 ### `analyze_lambda_vs_slow.ts`
@@ -221,7 +221,7 @@ values land on the curve — differences of ±1–2 slow units vs the 3-D optimi
 are expected since the optimizer also tunes ER and Fast simultaneously.
 
 ```bash
-tsx analysis/ama_fitting/analyze_lambda_vs_slow.ts \
+node dist/analysis/ama_fitting/analyze_lambda_vs_slow.js \
   --data <lp-file.json> --maxSlow 250 --lambdaEnd 0.0045 --lambdaSteps 50
 ```
 
@@ -232,7 +232,7 @@ AMA series on LP candle data. Reports reposition counts and inter-reposition
 step distributions.
 
 ```bash
-tsx analysis/ama_fitting/analyze_ama_price_changes.ts \
+node dist/analysis/ama_fitting/analyze_ama_price_changes.js \
   --data <lp-file.json> --results <optimization-results.json>
 ```
 

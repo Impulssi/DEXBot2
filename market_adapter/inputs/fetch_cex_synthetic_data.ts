@@ -829,7 +829,7 @@ function applyBotDerivedConfig(config: any) {
 
 function printHelp() {
     console.log(`Usage:
-  tsx market_adapter/inputs/fetch_cex_synthetic_data.ts [options]
+  node dist/market_adapter/inputs/fetch_cex_synthetic_data.js [options]
 
 Options:
   --exchange <name|auto>   Exchange to use or comma-separated preference list

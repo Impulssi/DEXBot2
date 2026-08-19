@@ -64,7 +64,7 @@ npm run analysis:tradingview -- \
 CLI direct equivalent:
 
 ```bash
-tsx analysis/tradingview/analyze_tradingview.ts \
+node dist/analysis/tradingview/analyze_tradingview.js \
   --source market_adapter \
   --bot-key <bot-key>
 ```
@@ -81,7 +81,7 @@ tsx analysis/tradingview/analyze_tradingview.ts \
 ## From an Explicit Candle File
 
 ```bash
-tsx analysis/tradingview/analyze_tradingview.ts \
+node dist/analysis/tradingview/analyze_tradingview.js \
   --file market_adapter/data/market_adapter_<bot-key>_1h.json \
   --chart analysis/charts/<pair>_tradingview.html
 ```
@@ -89,7 +89,7 @@ tsx analysis/tradingview/analyze_tradingview.ts \
 Using LP candle files directly:
 
 ```bash
-tsx analysis/tradingview/analyze_tradingview.ts \
+node dist/analysis/tradingview/analyze_tradingview.js \
   --file market_adapter/data/lp/<pair-folder>/lp_pool_<id>_<interval>.json \
   --chart analysis/charts/tradingview_chart.html
 ```
@@ -108,7 +108,7 @@ If you pass a raw JSON file, the runner normalizes the candles before rendering.
 Use the market adapter LP exporter to pull blockchain-backed candles before generating the HTML:
 
 ```bash
-tsx market_adapter/inputs/fetch_lp_data.ts --pool 133 --precA 4 --precB 5 --interval 1h --lookback 26280h
+node dist/market_adapter/inputs/fetch_lp_data.js --pool 133 --precA 4 --precB 5 --interval 1h --lookback 26280h
 ```
 
 For date range fetching, use `--start` and `--end` (e.g. `--start 2024-03-06 --end 2025-03-06`).

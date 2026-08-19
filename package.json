@@ -14,7 +14,7 @@
   },
   "files": [
     "dist",
-    "!dist/analysis",
+
     "ecosystem.config.cjs",
     "scripts/bots",
     "scripts/clean-dist.js",
@@ -82,21 +82,21 @@
     "pmain": "bash scripts/pmain.sh",
     "pdev": "bash scripts/pdev.sh",
     "ptest": "bash scripts/ptest.sh",
-    "lp:chart": "tsx scripts/generate_lp_chart.ts",
-    "market-adapter:whitelist": "tsx scripts/generate_market_adapter_whitelist.ts",
-    "market-adapter:fetch-cex-synthetic": "tsx market_adapter/inputs/fetch_cex_synthetic_data.ts",
-    "analysis:tradingview": "tsx analysis/tradingview/analyze_tradingview.ts",
-    "ama:chart:lp-local": "tsx analysis/ama_fitting/generate_unified_comparison_chart.ts",
-    "analysis:derivatives": "tsx analysis/analyze_derivatives.ts",
-    "analysis:trade-pnl": "tsx analysis/trade_profitability.ts",
-    "native:release-gates": "tsx scripts/native_release_gates.ts",
+    "lp:chart": "npm run build && node dist/scripts/generate_lp_chart.js",
+    "market-adapter:whitelist": "npm run build && node dist/scripts/generate_market_adapter_whitelist.js",
+    "market-adapter:fetch-cex-synthetic": "npm run build && node dist/market_adapter/inputs/fetch_cex_synthetic_data.js",
+    "analysis:tradingview": "npm run build && node dist/analysis/tradingview/analyze_tradingview.js",
+    "ama:chart:lp-local": "npm run build && node dist/analysis/ama_fitting/generate_unified_comparison_chart.js",
+    "analysis:derivatives": "npm run build && node dist/analysis/analyze_derivatives.js",
+    "analysis:trade-pnl": "npm run build && node dist/analysis/trade_profitability.js",
+    "native:release-gates": "npm run build && node dist/scripts/native_release_gates.js",
     "native:serial-snapshots": "tsx tests/test_native_serial_ops.ts",
     "native:ecc-invariants": "tsx tests/test_native_ecc.ts",
-    "native:corpus": "tsx scripts/generate_mainnet_corpus_report.ts",
-    "test:credit-renewal": "tsx scripts/test-credit-renewal.ts",
-    "version:sync": "tsx scripts/sync-version.ts",
-    "version:check": "tsx scripts/sync-version.ts --check",
-    "verify:browser-bundle": "tsx scripts/verify-browser-bundle.ts",
+    "native:corpus": "npm run build && node dist/scripts/generate_mainnet_corpus_report.js",
+    "test:credit-renewal": "npm run build && node dist/scripts/test-credit-renewal.js",
+    "version:sync": "npm run build && node dist/scripts/sync-version.js",
+    "version:check": "npm run build && node dist/scripts/sync-version.js --check",
+    "verify:browser-bundle": "npm run build && node dist/scripts/verify-browser-bundle.js",
     "pretest": "tsc --noEmit",
     "test": "node --import tsx scripts/run-tests.ts",
     "test:live": "RUN_LIVE_BITSHARES_TESTS=1 node --import tsx scripts/run-tests.ts",
@@ -174,14 +174,10 @@
     "url": "https://github.com/froooze/DEXBot2/issues"
   },
   "homepage": "https://github.com/froooze/DEXBot2#readme",
-  "tsx": {
-    "tsconfig": true
-  },
-  "dependencies": {
-    "tsx": "^4.22.3"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
     "typescript": "^6.0.3"
   }
 }

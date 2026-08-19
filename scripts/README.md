@@ -90,7 +90,7 @@ bash scripts/reset-settings.sh
 **Purpose:** Check `bots.json` for schema errors or missing required fields.
 ```bash
 # Validate the live bot configuration
-tsx scripts/validate_bots.ts
+node dist/scripts/validate_bots.js
 ```
 
 ### Market Adapter Whitelist Generation
@@ -118,7 +118,7 @@ dexbot white --prune
 ```bash
 # Calculates RMS Error (hardcoded threshold: 1 promille ≈ 3.2% avg error)
 # RMS quadratically penalizes large errors - see docs/GRID_RECALCULATION.md
-tsx scripts/divergence-calc.ts
+node dist/scripts/divergence-calc.js
 ```
 **Reference:** RMS threshold interpretation in [Grid Recalculation docs](../docs/GRID_RECALCULATION.md)
 
@@ -127,7 +127,7 @@ tsx scripts/divergence-calc.ts
 **Purpose:** Analyze grid trading metrics and order distribution patterns.
 ```bash
 # Analyzes spread accuracy, geometric consistency, and fund distribution
-tsx scripts/analyze-orders.ts
+node dist/scripts/analyze-orders.js
 ```
 
 For AMA bots (`gridPrice: ama`) the analyzer reads `<botKey>.dynamicgrid.json`
@@ -140,7 +140,7 @@ static weights.
 **File:** `diagnose-kibana-candles.ts`
 **Purpose:** Fetch raw Kibana LP candles for a specific pool to verify trading activity.
 ```bash
-tsx scripts/diagnose-kibana-candles.ts
+node dist/scripts/diagnose-kibana-candles.js
 ```
 
 ### Pool History Diagnostics
@@ -148,17 +148,17 @@ tsx scripts/diagnose-kibana-candles.ts
 **Purpose:** Inspect raw BitShares pool history API responses.
 ```bash
 # Inspect pool history (default pool 1.19.133)
-tsx scripts/diagnose-pool-history.ts
+node dist/scripts/diagnose-pool-history.js
 
 # Custom pool, limit, and time range
-tsx scripts/diagnose-pool-history.ts --pool 1.19.x --limit 100 --hours 48 --maxPages 5
+node dist/scripts/diagnose-pool-history.js --pool 1.19.x --limit 100 --hours 48 --maxPages 5
 ```
 
 ### Print Grid Sample
 **File:** `print_grid.ts`
 **Purpose:** Demonstrate the grid structure — shows consecutive price levels with percentage differences between adjacent slots.
 ```bash
-tsx scripts/print_grid.ts
+node dist/scripts/print_grid.js
 ```
 
 ### Grid Calculation Runner
@@ -166,10 +166,10 @@ tsx scripts/print_grid.ts
 **Purpose:** Standalone order grid calculation debugger — loads a bot config, initializes the grid, and simulates sync cycles.
 ```bash
 # Default (first bot, 3 cycles)
-tsx scripts/runner.ts
+node dist/scripts/runner.js
 
 # Specific bot, 10 cycles with 1s delay
-LIVE_BOT_NAME=my-bot CALC_CYCLES=10 CALC_DELAY_MS=1000 tsx scripts/runner.ts
+LIVE_BOT_NAME=my-bot CALC_CYCLES=10 CALC_DELAY_MS=1000 node dist/scripts/runner.js
 ```
 Useful for verifying config produces the expected grid, testing price derivation, and debugging fund allocation.
 Requires a live BitShares connection (asset metadata lookups and price derivation are on-chain).
@@ -215,7 +215,7 @@ Tests run with native Node `assert` — no test framework needed. See [tests/REA
 **File:** `analyze-git.ts`
 **Purpose:** Analyze git history and generate a chart of lines added vs deleted by file.
 ```bash
-tsx scripts/analyze-git.ts
+node dist/scripts/analyze-git.js
 ```
 
 ### Credit Renewal Test
@@ -402,8 +402,8 @@ alias dbu='dexbot update'
 alias dbc='bash scripts/clear-logs.sh'
 alias dbr='bash scripts/clear-orders.sh'
 alias dba='bash scripts/clear-all.sh'
-alias dbv='tsx scripts/validate_bots.ts'
-alias dbd='tsx scripts/divergence-calc.ts'
+alias dbv='node dist/scripts/validate_bots.js'
+alias dbd='node dist/scripts/divergence-calc.js'
 ```
 
 ---

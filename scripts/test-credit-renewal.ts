@@ -81,7 +81,7 @@ function parseArgs(argv: string[]) {
 }
 
 function printHelp() {
-  console.log(`Usage: tsx scripts/test-credit-renewal.ts [options]
+  console.log(`Usage: node dist/scripts/test-credit-renewal.js [options]
 
 Dry-run the credit renewal plan for an existing BitShares credit position.
 

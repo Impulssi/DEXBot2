@@ -149,7 +149,7 @@ For a narrower override, set `deltaThresholdPercent` in
 
 ### CLI Override
 ```bash
-tsx market_adapter/market_adapter.ts --deltaPercent 2
+node dist/market_adapter/market_adapter.js --deltaPercent 2
 ```
 
 ### Bot Configuration (Complementary)
@@ -233,7 +233,7 @@ with those presets.
 - You want fewer but larger full resyncs
 
 To change the threshold for every bot, edit `profiles/general.settings.json`
-or use the `tsx dexbot.ts bot` general settings menu. To change the AMA preset
+or use the `dexbot bot` general settings menu. To change the AMA preset
 used by a specific market, edit `profiles/market_profiles.json`. To change the
 fallback bot-level AMA settings, edit the bot entry in `profiles/bots.json`.
 

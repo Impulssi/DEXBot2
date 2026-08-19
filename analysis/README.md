@@ -21,15 +21,15 @@ Tools that inspect DEXBot trading behavior and the market data it operates on. O
 | Tool | Ask this when… | One-line command |
 |------|----------------|------------------|
 | [`trade_profitability.ts`](#trade-profitability-analyzer-trade_profitabilityts) | "Is my bot making money?" — PnL, R-multiples, drawdown | `npm run analysis:trade-pnl -- <account-id>` |
-| [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `tsx analysis/analyze_risk_profile.ts --bot-key <bot-key>` |
-| [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `tsx analysis/analyze_trade_heatmap.ts --bot-key <bot-key>` |
+| [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `node dist/analysis/analyze_risk_profile.js --bot-key <bot-key>` |
+| [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `node dist/analysis/analyze_trade_heatmap.js --bot-key <bot-key>` |
 | [`tradingview/analyze_tradingview.ts`](#tradingview-chart-tradingviewanalyze_tradingviewts) | "Just give me a candle chart" | `npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>` |
-| [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `tsx analysis/analyze_dynamic_weight.ts --bot-key <bot-key>` |
-| [`analyze_volatility.ts`](#volatility-analyze_volatilityts) | "Both weights clipped too hard / not enough?" | `tsx analysis/analyze_volatility.ts --bot-key <bot-key>` |
-| [`analyze_regime.ts`](#supporting-sub-signals) | "Is the trend/chaos gate too aggressive?" | `tsx analysis/analyze_regime.ts --bot-key <bot-key>` |
-| [`analyze_kalman.ts`](#supporting-sub-signals) | "Is Kalman's contribution to the blend right?" | `tsx analysis/analyze_kalman.ts --bot-key <bot-key>` |
-| [`ama_fitting/`](#ama-fitting) | "Which AMA preset fits this market?" | `tsx analysis/ama_fitting/optimizer_high_resolution.ts --data <lp-file>` |
-| [`bot_fitting/`](#bot-fitting) | "What spread / increment / ratio for my grid?" | `tsx analysis/bot_fitting/backtest_ama_sweep.ts --data <lp-file>` |
+| [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `node dist/analysis/analyze_dynamic_weight.js --bot-key <bot-key>` |
+| [`analyze_volatility.ts`](#volatility-analyze_volatilityts) | "Both weights clipped too hard / not enough?" | `node dist/analysis/analyze_volatility.js --bot-key <bot-key>` |
+| [`analyze_regime.ts`](#supporting-sub-signals) | "Is the trend/chaos gate too aggressive?" | `node dist/analysis/analyze_regime.js --bot-key <bot-key>` |
+| [`analyze_kalman.ts`](#supporting-sub-signals) | "Is Kalman's contribution to the blend right?" | `node dist/analysis/analyze_kalman.js --bot-key <bot-key>` |
+| [`ama_fitting/`](#ama-fitting) | "Which AMA preset fits this market?" | `node dist/analysis/ama_fitting/optimizer_high_resolution.js --data <lp-file>` |
+| [`bot_fitting/`](#bot-fitting) | "What spread / increment / ratio for my grid?" | `node dist/analysis/bot_fitting/backtest_ama_sweep.js --data <lp-file>` |
 
 > `analyze_derivatives.ts` (SMA / MACD / RSI derivative layer, uses `derivative_chart_generator.ts`) is a legacy tool surfaced via `npm run analysis:derivatives` — kept for reference.
 
@@ -67,7 +67,7 @@ Two entry points, depending on what you're asking:
 
 ```bash
 npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>
-tsx analysis/analyze_dynamic_weight.ts --bot-key <bot-key>
+node dist/analysis/analyze_dynamic_weight.js --bot-key <bot-key>
 ```
 
 **"How much money did my bot make?"** — pass a BitShares account ID or name:
@@ -77,7 +77,7 @@ npm run analysis:trade-pnl -- 1.2.123456 --hours 168
 ```
 
 > The market adapter source reads from `market_adapter/state/market_adapter_centers.json` — run the bot first to populate state.
-> Prefer the `npm run analysis:*` shortcuts; they wrap the `tsx ...` runners with the same flags (see [npm Script Shortcuts](#npm-script-shortcuts) for the full mapping).
+> Prefer the `npm run analysis:*` shortcuts; they wrap the compiled runners with the same flags (see [npm Script Shortcuts](#npm-script-shortcuts) for the full mapping).
 
 ## Data Prerequisites
 
@@ -89,10 +89,10 @@ Most runners expect candle data. Two paths to get it:
 
 ```bash
 # Via the market adapter LP exporter (recommended for blockchain-backed candles)
-tsx market_adapter/inputs/fetch_lp_data.ts --pool 133 --precA 4 --precB 5 --interval 1h --lookback 26280h
+node dist/market_adapter/inputs/fetch_lp_data.js --pool 133 --precA 4 --precB 5 --interval 1h --lookback 26280h
 
 # Via the analysis fetcher (uses Kibana source directly)
-tsx analysis/ama_fitting/fetch_lp_candles.ts --pool 1.19.133 \
+node dist/analysis/ama_fitting/fetch_lp_candles.js --pool 1.19.133 \
   --assetA <ASSET_A> --assetAId <asset_a_id> --assetAPrecision <n> \
   --assetB <ASSET_B> --assetBId <asset_b_id> --assetBPrecision <n>
 ```
@@ -113,10 +113,10 @@ See [ama_fitting/README.md](ama_fitting/README.md) for full fetch options and da
 Measures inventory risk by calculating empirical divergence quantiles (based on price-to-AMA deviation). Use this to calibrate 'Safe Range' clamping tiers for your liquidity strategy.
 
 ```bash
-tsx analysis/analyze_risk_profile.ts --bot-key <bot-key>
+node dist/analysis/analyze_risk_profile.js --bot-key <bot-key>
 
 # From explicit LP candle file
-tsx analysis/analyze_risk_profile.ts \
+node dist/analysis/analyze_risk_profile.js \
   --file market_adapter/data/lp/<pair>/lp_pool_<id>_1h.json \
   --ama AMA3 \
   --output analysis/charts/risk_report.html
@@ -135,21 +135,21 @@ Fetches `fill_order` operations for a BitShares account from Kibana within a spe
 
 ```bash
 # Account by ID, last 7 days (default)
-tsx analysis/trade_profitability.ts 1.2.123456
+node dist/analysis/trade_profitability.js 1.2.123456
 
 # Account by name with on-chain resolution
-tsx analysis/trade_profitability.ts "my-account-name" --lookup --hours 720
+node dist/analysis/trade_profitability.js "my-account-name" --lookup --hours 720
 
 # Absolute window with asset filter
-tsx analysis/trade_profitability.ts 1.2.123456 \
+node dist/analysis/trade_profitability.js 1.2.123456 \
   --start 2026-07-01 --end 2026-07-07 --asset 1.3.3291
 
 # Export trade log and full analysis
-tsx analysis/trade_profitability.ts 1.2.123456 \
+node dist/analysis/trade_profitability.js 1.2.123456 \
   --hours 168 --csv trades.csv --json results.json
 
 # Conservative accounting (FIFO)
-tsx analysis/trade_profitability.ts 1.2.123456 \
+node dist/analysis/trade_profitability.js 1.2.123456 \
   --hours 168 --match-mode fifo
 ```
 
@@ -226,10 +226,10 @@ tsx analysis/trade_profitability.ts 1.2.123456 \
 Generates a 2D heatmap + summed histogram showing where trade volume concentrates relative to AMA deviation. Time-slice rows show how the distribution evolved; the bottom histogram shows the aggregate bell-curve shape with threshold annotations.
 
 ```bash
-tsx analysis/analyze_trade_heatmap.ts --bot-key <bot-key>
+node dist/analysis/analyze_trade_heatmap.js --bot-key <bot-key>
 
 # From explicit LP candle file
-tsx analysis/analyze_trade_heatmap.ts \
+node dist/analysis/analyze_trade_heatmap.js \
   --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --ama AMA3 \
   --output analysis/charts/trade_heatmap.html \
@@ -269,7 +269,7 @@ Generates a standalone TradingView-style HTML chart with candle OHLC, SMA, AMA, 
 npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>
 
 # From an explicit candle file
-tsx analysis/tradingview/analyze_tradingview.ts \
+node dist/analysis/tradingview/analyze_tradingview.js \
   --file market_adapter/data/market_adapter_<bot-key>_1h.json \
   --chart analysis/charts/<pair>_tradingview.html
 ```
@@ -286,10 +286,10 @@ Two weight-tuning paths feed into the market adapter:
 Interactive 4-panel chart for the asymmetric path: AMA slope plus Kalman confirmation, gated by Hurst Exponent and Permutation Entropy. Use this when tuning buy/sell weight bias, AMA slope offset behavior, and regime damping.
 
 ```bash
-tsx analysis/analyze_dynamic_weight.ts --bot-key <bot-key>
+node dist/analysis/analyze_dynamic_weight.js --bot-key <bot-key>
 
 # From LP candle file with custom parameters
-tsx analysis/analyze_dynamic_weight.ts \
+node dist/analysis/analyze_dynamic_weight.js \
   --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --alpha 0.6 --gain 0.25 --clip 20
 ```
@@ -301,7 +301,7 @@ Full research docs: [DYNAMIC_WEIGHT_RESEARCH.md](trend_detection/DYNAMIC_WEIGHT_
 ATR-based symmetric volatility penalty. Use when both buy and sell weights are being reduced too much or too little.
 
 ```bash
-tsx analysis/analyze_volatility.ts --bot-key <bot-key>
+node dist/analysis/analyze_volatility.js --bot-key <bot-key>
 ```
 
 ### Supporting sub-signals
@@ -315,16 +315,16 @@ The asymmetric path depends on three more filters; each ships as a standalone an
 | `analyze_kalman.ts` | Kalman velocity / displacement | Isolating the Kalman side of the AMA / Kalman blend |
 
 ```bash
-tsx analysis/analyze_regime.ts --bot-key <bot-key>
-tsx analysis/analyze_regime_windows.ts --bot-key <bot-key>
-tsx analysis/analyze_kalman.ts --bot-key <bot-key>
+node dist/analysis/analyze_regime.js --bot-key <bot-key>
+node dist/analysis/analyze_regime_windows.js --bot-key <bot-key>
+node dist/analysis/analyze_kalman.js --bot-key <bot-key>
 
 # All also accept explicit LP candle files
-tsx analysis/analyze_volatility.ts \
+node dist/analysis/analyze_volatility.js \
   --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
-tsx analysis/analyze_regime.ts \
+node dist/analysis/analyze_regime.js \
   --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
-tsx analysis/analyze_kalman.ts \
+node dist/analysis/analyze_kalman.js \
   --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 ```
 
@@ -357,11 +357,11 @@ Shared analyzers and chart renderers for the dynamic-weight signal path. Core en
 **Tests:**
 
 ```bash
-tsx analysis/trend_detection/tests/test_kalman_trend.ts
-tsx analysis/trend_detection/tests/test_kalman_velocity_smoothing.ts
+node dist/analysis/trend_detection/tests/test_kalman_trend.js
+node dist/analysis/trend_detection/tests/test_kalman_velocity_smoothing.js
 ```
 
-**Note:** `trend_detection/` has no external dependencies — runs directly with `tsx`.
+**Note:** `trend_detection/` has no external dependencies — runs directly from the compiled build (`node dist/...`).
 
 ### `ama_fitting/`
 
@@ -387,15 +387,15 @@ The current fetched 3-year pool 133 1h dataset calibrates `AMA_CONVERGENCE_ER_AV
 
 ```bash
 # Default data file (pool 133 1h)
-tsx analysis/ama_fitting/calibrate_convergence_er.ts
+node dist/analysis/ama_fitting/calibrate_convergence_er.js
 
 # Custom data, specific AMAs
-tsx analysis/ama_fitting/calibrate_convergence_er.ts \
+node dist/analysis/ama_fitting/calibrate_convergence_er.js \
   --data market_adapter/data/lp/<path>/<file>.json \
   --amas AMA1,AMA3
 ```
 
-**Note:** `ama_fitting/` has no external dependencies — runs directly via `tsx`.
+**Note:** `ama_fitting/` has no external dependencies — runs directly from the compiled build (`node dist/...`).
 
 ### `bot_fitting/`
 
@@ -408,12 +408,12 @@ Parameter sweep backtests that simulate grid fills for the AMA winners from `ama
 | `shared_utils.ts` | Candle normalization and shared backtest utilities |
 
 ```bash
-tsx analysis/bot_fitting/backtest_bot_fitting.ts \
+node dist/analysis/bot_fitting/backtest_bot_fitting.js \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 ```
 
 ```bash
-tsx analysis/bot_fitting/backtest_ama_sweep.ts \
+node dist/analysis/bot_fitting/backtest_ama_sweep.js \
   --data market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json \
   --spread 4:16:1 --increment 0.5:4:0.25
 ```
@@ -443,10 +443,10 @@ These npm scripts wrap common analysis runners:
 
 | Script | Command |
 |--------|---------|
-| `npm run analysis:tradingview` | `tsx analysis/tradingview/analyze_tradingview.ts` |
-| `npm run analysis:trade-pnl` | `tsx analysis/trade_profitability.ts` |
-| `npm run analysis:derivatives` | `tsx analysis/analyze_derivatives.ts` (legacy SMA/MACD/RSI layer, reference only) |
-| `npm run ama:chart:lp-local` | `tsx analysis/ama_fitting/generate_unified_comparison_chart.ts` (chart also auto-generated by optimizer) |
+| `npm run analysis:tradingview` | `node dist/analysis/tradingview/analyze_tradingview.js` |
+| `npm run analysis:trade-pnl` | `node dist/analysis/trade_profitability.js` |
+| `npm run analysis:derivatives` | `node dist/analysis/analyze_derivatives.js` (legacy SMA/MACD/RSI layer, reference only) |
+| `npm run ama:chart:lp-local` | `node dist/analysis/ama_fitting/generate_unified_comparison_chart.js` (chart also auto-generated by optimizer) |
 
 All accept `--` forwarded flags.
 

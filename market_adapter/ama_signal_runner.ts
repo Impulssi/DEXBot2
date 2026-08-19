@@ -87,7 +87,7 @@ function printHelp(): void {
     console.log('AMA signal runner (one cycle): updates candles and returns latest AMA values.');
     console.log('');
     console.log('Usage:');
-    console.log('  tsx market_adapter/ama_signal_runner.ts [options]');
+    console.log('  node dist/market_adapter/ama_signal_runner.js [options]');
     console.log('');
     console.log('Options:');
     console.log('  --bot <name|key>           Filter output to a specific bot name or botKey');

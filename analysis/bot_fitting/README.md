@@ -27,11 +27,11 @@ Both scripts require:
 
 ```bash
 # Lightweight sweep
-tsx analysis/bot_fitting/backtest_bot_fitting.ts \
+node dist/analysis/bot_fitting/backtest_bot_fitting.js \
   --data <path-to-lp-candles.json>
 
 # Persistent grid simulation with AMA winners
-tsx analysis/bot_fitting/backtest_ama_sweep.ts \
+node dist/analysis/bot_fitting/backtest_ama_sweep.js \
   --data <path-to-lp-candles.json> \
   --results <path-to-optimization-results.json>
 ```
@@ -45,7 +45,7 @@ tsx analysis/bot_fitting/backtest_ama_sweep.ts \
 Optional tuning (values shown are examples, not defaults):
 
 ```bash
-tsx analysis/bot_fitting/backtest_bot_fitting.ts \
+node dist/analysis/bot_fitting/backtest_bot_fitting.js \
   --data <path-to-lp-candles.json> \
   --spread 0.4:1.6:0.1 \
   --increment 0.2:0.8:0.1 \
@@ -117,7 +117,7 @@ All parameters above are tunable via CLI flags. Additional tuning flags:
 The sweep parallelizes across combos using worker threads (one per CPU core). Use `--help` for the complete option list.
 
 ```bash
-tsx analysis/bot_fitting/backtest_ama_sweep.ts \
+node dist/analysis/bot_fitting/backtest_ama_sweep.js \
   --data <path-to-lp-candles.json> \
   --results <path-to-optimization-results.json> \
   --spread 4:16:1 --increment 0.5:4:0.25

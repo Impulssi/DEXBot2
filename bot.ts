@@ -95,7 +95,7 @@ const botNameEnv = Config.BOT_NAME || Config.PREFERRED_ACCOUNT;
 const botName = botNameArg || botNameEnv;
 
 if (!botName) {
-    launcherLogger.error('No bot name provided. Usage: tsx bot.ts <bot-name>');
+    launcherLogger.error('No bot name provided. Usage: node dist/bot.js <bot-name>');
     launcherLogger.error('Or set BOT_NAME or PREFERRED_ACCOUNT environment variable');
     runtime.exit(1);
 }

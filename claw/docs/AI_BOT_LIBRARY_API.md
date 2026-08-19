@@ -86,7 +86,7 @@ The Claw bridge supports the runtimes below. Each runtime shares the DEXBot2 cre
 
 ZeroClaw should use Claw as a compatibility layer, not as a second signing or credential system.
 
-- ZeroClaw can invoke the JSON/CLI bridge via `tsx scripts/claw_bridge.ts --runtime zeroclaw`.
+- ZeroClaw can invoke the JSON/CLI bridge via `npm run zeroclaw:bridge`.
 - The manifest lives in [../modules/claw_manifest.ts](../modules/claw_manifest.ts) and is safe to query without starting the BitShares runtime.
 - Claw keeps private-key access inside its existing DEXBot2 credential path.
 - ZeroClaw gets read access to market, profile, HONEST, and order context, plus explicit action entrypoints when it needs to request a trade operation.
@@ -102,7 +102,7 @@ The bridge surface currently includes:
 - BTS-backed short open, take-profit, close, and plan builders
 - MPA position lookup
 
-Launcher behavior such as `tsx unlock --claw-only` and `tsx pm2 claw-only` is documented and maintained separately under `skills/launcher-ops/`.
+Launcher behavior such as `npm run claw:unlock` and `npm run pm2:claw-only` is documented and maintained separately under `skills/launcher-ops/`.
 
 Recommended trust boundary:
 
@@ -122,7 +122,7 @@ cd claw && npm run zeroclaw:skill -- --profile-root /path/to/DEXBot2 --output ~/
 
 NullClaw uses the same bridge surface, with a native skill path centered on `SKILL.toml` in the workspace.
 
-- NullClaw can invoke the JSON/CLI bridge via `tsx scripts/claw_bridge.ts --runtime nullclaw`.
+- NullClaw can invoke the JSON/CLI bridge via `npm run nullclaw:bridge`.
 - The manifest lives in [../modules/claw_manifest.ts](../modules/claw_manifest.ts) and is safe to query without starting the BitShares runtime.
 - Claw keeps private-key access inside its existing DEXBot2 credential path.
 - NullClaw gets the same read access to market, profile, HONEST, and order context, plus explicit action entrypoints when it needs to request a trade operation.
@@ -137,7 +137,7 @@ cd claw && npm run nullclaw:skill -- --profile-root /path/to/DEXBot2 --output ~/
 
 NanoClaw uses the same bridge surface, with a native `SKILL.md` path in the workspace skill tree.
 
-- NanoClaw can invoke the JSON/CLI bridge via `tsx scripts/claw_bridge.ts --runtime nanoclaw`.
+- NanoClaw can invoke the JSON/CLI bridge via `npm run nanoclaw:bridge`.
 - The bridge lives in [../modules/claw_bridge.ts](../modules/claw_bridge.ts) and uses the shared Claw command surface.
 - Keep the generated skill named `bitshares-claw` so it does not collide with NanoClaw's bundled `claw` skill.
 
@@ -151,7 +151,7 @@ cd claw && npm run nanoclaw:skill -- --profile-root /path/to/DEXBot2 --output /p
 
 OpenFang uses the same bridge surface through a CLI-first wrapper and a workspace skill file.
 
-- OpenFang can invoke the JSON/CLI bridge via `tsx scripts/claw_bridge.ts --runtime openfang`.
+- OpenFang can invoke the JSON/CLI bridge via `npm run openfang:bridge`.
 - The bridge lives in [../modules/claw_bridge.ts](../modules/claw_bridge.ts) and uses the shared Claw command surface.
 - Keep the generated skill named `bitshares-claw` so it stays separate from runtime-specific OpenFang skills and remains a thin wrapper around the shared CLI bridge.
 
@@ -185,7 +185,7 @@ mcp_servers:
     args: ["/absolute/path/to/claw/scripts/claw_mcp_server.js", "--profile-root", "/path/to/DEXBot2"]
 ```
 
-> In development you may substitute `tsx` + `claw_mcp_server.ts`; the generated skill file emits the `node` + `.js` form so it works against the compiled build (`npm run build`) without `tsx` installed.
+> The generated skill file emits the `node` + `.js` form so it works against the compiled build (`npm run build`) without `tsx` installed.
 
 ### OpenClaw Compatibility
 

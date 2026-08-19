@@ -1,18 +1,16 @@
 #!/usr/bin/env node
 process.argv[2] = 'bots';
+// Shim: runs compiled dist/dexbot.js
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
 const root = path.resolve(__dirname, '..');
 const distTarget = path.join(root, 'dist', 'dexbot.js');
 
-if (existsSync(distTarget)) {
-  await import(pathToFileURL(distTarget).href);
-} else {
-  require('tsx/cjs');
-  require(path.join(root, 'dexbot.ts'));
+if (!existsSync(distTarget)) {
+  console.error('dist/dexbot.js not found. Run `npm run build` first.');
+  process.exit(1);
 }
+await import(pathToFileURL(distTarget).href);

@@ -55,7 +55,7 @@ function parseArgs(argv: any) {
 function printHelp() {
   console.log([
     'Usage:',
-    '  tsx scripts/claw_skill_md.ts --runtime <openclaw|hermes|openfang|nanobot|picoclaw|nanoclaw|zeroclaw|nullclaw|memu> [--repo-root PATH] [--profile-root PATH] [--output PATH]',
+    '  node dist/claw/scripts/claw_skill_md.js --runtime <openclaw|hermes|openfang|nanobot|picoclaw|nanoclaw|zeroclaw|nullclaw|memu> [--repo-root PATH] [--profile-root PATH] [--output PATH]',
     '',
     'Outputs a SKILL.md file for the requested runtime.',
     'If --output is omitted, the markdown is written to stdout.'

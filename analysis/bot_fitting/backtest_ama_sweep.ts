@@ -127,7 +127,7 @@ function printHelp() {
     console.log('AMA Sweep Backtest — persistent grid simulation with weight profiles');
     console.log('');
     console.log('Usage:');
-    console.log('  tsx analysis/bot_fitting/backtest_ama_sweep.ts [options]');
+    console.log('  node dist/analysis/bot_fitting/backtest_ama_sweep.js [options]');
     console.log('');
     console.log('Options:');
     console.log('  --data <path>           LP candle JSON');
