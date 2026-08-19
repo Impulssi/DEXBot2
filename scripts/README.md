@@ -238,7 +238,6 @@ npm run verify:browser-bundle
 ```bash
 bash scripts/create-bot-symlinks.sh
 ```
-Auto-runs on `npm postinstall` for global installs.
 
 ### Version Sync
 **File:** `sync-version.ts`
@@ -253,6 +252,10 @@ npm run version:sync
 ---
 
 ## 🌳 BRANCH SYNCHRONIZATION
+
+> **Git-only:** These scripts require a `.git` directory and will not work with
+> global npm package installs (`npm install -g dexbot`). They are intended for
+> source checkout workflows only.
 
 ### Synchronize test → dev → main
 **File:** `pmain.sh` (also: `npm run pmain`)
@@ -292,41 +295,61 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 
 | Wrapper | Target Command | Usage |
 |:---|:---|:---|
-| `scripts/bots` | `dexbot bot` | `./scripts/bots` |
-| `scripts/keys` | `dexbot key` | `./scripts/keys` |
-| `scripts/dexbot` | `dexbot` | `./dexbot <cmd>` |
-| `scripts/unlock` | `./unlock` | `./unlock` |
-| `scripts/pm2` | `./pm2` | `./pm2` |
+| `scripts/bots` | `dexbot bots` | `./scripts/bots` |
+| `scripts/keys` | `dexbot keys` | `./scripts/keys` |
+| `scripts/dexbot` | `dexbot` | `./scripts/dexbot <cmd>` |
+| `scripts/unlock` | `unlock.ts` / `dist/unlock.js` | `./scripts/unlock` |
+| `scripts/pm2` | `pm2.ts` / `dist/pm2.js` | `./scripts/pm2` |
 
 ---
 
 ## 📦 NPM SCRIPTS
 
-| Command | File | Purpose |
-|:---|:---|:---|
-| `npm test` | `scripts/run-tests.ts` | Run full test suite (excludes live-chain tests) |
-| `npm run test:live` | `scripts/run-tests.ts` | Run full test suite including live-chain tests |
-| `npm run typecheck` | — | TypeScript type checking (`tsc --noEmit`) |
-| `npm run build` | — | Clean + compile TypeScript |
-| `npm run clean` | `scripts/clean-dist.js` | Remove compiled `dist/` output |
-| `npm run ptest` | `scripts/ptest.sh` | Sync local test → origin/test |
-| `npm run pdev` | `scripts/pdev.sh` | Sync local test → dev |
-| `npm run pmain` | `scripts/pmain.sh` | Sync local test → dev → main |
-| `npm run unlock` | `unlock.ts` | Build + single-prompt credential unlock (full bot) |
-| `npm run claw:unlock` | `unlock.ts` | Build + single-prompt unlock (claw-only mode) |
-| `npm run pm2:unlock` | `pm2.ts` | Build + launch full bot via PM2 ecosystem |
-| `npm run pm2:claw-only` | `pm2.ts` | Build + launch claw-only PM2 process |
-| `npm run lp:chart` | `scripts/generate_lp_chart.ts` | Generate uPlot LP chart |
-| `npm run market-adapter:whitelist` | `scripts/generate_market_adapter_whitelist.ts` | Generate/update whitelist from AMA-configured bots |
-| `npm run analysis:derivatives` | `analysis/analyze_derivatives.ts` | Derivative analysis report |
-| `npm run version:sync` | `scripts/sync-version.ts` | Rewrite plugin/manifest versions from root `package.json` |
-| `npm run version:check` | `scripts/sync-version.ts --check` | Verify all version manifests match root `package.json` |
-| `npm run native:release-gates` | `scripts/native_release_gates.ts` | Verify native library build, linkage, and mainnet corpus round-trips |
-| `npm run native:serial-snapshots` | `tests/test_native_serial_ops.ts` | Pin wire-format bytes for signed operation types |
-| `npm run native:ecc-invariants` | `tests/test_native_ecc.ts` | Validate ECDH key derivation, ECDSA signing, WIF, brain key, and hash functions |
-| `npm run native:corpus` | `scripts/generate_mainnet_corpus_report.ts` | Generate `profiles/native_validation/mainnet_corpus_report.json` by reserializing recent mainnet transactions through the native serializer and diffing against the chain's own `get_transaction_hex` output (and `block.transaction_ids` when the node exposes them) |
-| `npm run test:credit-renewal` | `scripts/test-credit-renewal.ts` | Test credit offer renewal for a specific bot |
-| `npm run verify:browser-bundle` | `scripts/verify-browser-bundle.ts` | Verify browser-safe surface bundles correctly |
+### Build & Test
+| Command | Purpose |
+|:---|:---|
+| `npm run build` | Clean + compile TypeScript |
+| `npm run clean` | Remove compiled `dist/` output |
+| `npm run typecheck` | TypeScript type checking (`tsc --noEmit`) |
+| `npm run build:watch` | TypeScript incremental build watcher |
+| `npm test` | Run full test suite (excludes live-chain tests) |
+| `npm run test:live` | Run full test suite including live-chain tests |
+
+### Runtime
+| Command | Purpose |
+|:---|:---|
+| `npm run unlock` | Build + single-prompt credential unlock (full bot) |
+| `npm run claw:unlock` | Build + single-prompt unlock (claw-only mode) |
+| `npm run pm2:unlock` | Build + launch full bot via PM2 ecosystem |
+| `npm run pm2:claw-only` | Build + launch claw-only PM2 process |
+| `npm run pm2:start` | Start PM2 processes from ecosystem config |
+| `npm run pm2:stop` | Stop PM2 processes from ecosystem config |
+
+### Branch Sync *(git checkout only)*
+| Command | Purpose |
+|:---|:---|
+| `npm run ptest` | Push local test → origin/test |
+| `npm run pdev` | Sync local test → dev |
+| `npm run pmain` | Sync local test → dev → main |
+
+### Version
+| Command | Purpose |
+|:---|:---|
+| `npm run version:sync` | Rewrite plugin/manifest versions from root `package.json` |
+| `npm run version:check` | Verify all version manifests match root `package.json` |
+
+### Analysis
+| Command | Purpose |
+|:---|:---|
+| `npm run market-adapter:whitelist` | Generate/update whitelist from AMA-configured bots |
+| `npm run market-adapter:fetch-cex-synthetic` | Fetch CEX synthetic data for market adapter |
+| `npm run analysis:derivatives` | Derivative analysis report |
+| `npm run analysis:tradingview` | TradingView-style chart export |
+| `npm run analysis:trade-pnl` | Trade PnL analysis from fill data |
+| `npm run ama:chart:lp-local` | Generate local LP comparison chart |
+| `npm run lp:chart` | Generate uPlot LP chart |
+| `npm run test:credit-renewal` | Test credit offer renewal for a specific bot |
+| `npm run verify:browser-bundle` | Verify browser-safe surface bundles correctly |
 
 ---
 

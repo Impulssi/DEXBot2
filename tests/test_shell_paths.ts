@@ -296,7 +296,7 @@ function copyScripts(destScriptsDir: string): void {
         encoding: 'utf8',
     });
     check('create-bot-symlinks runs from npm layout', res.status === 0, `${res.status}: ${res.stderr || res.stdout}`);
-    const link = path.join(homeProfiles, 'XRP-BTS.config.js');
+    const link = path.join(homeProfiles, 'XRP-BTS.config.cjs');
     check('create-bot-symlinks targets home profiles',
         fs.existsSync(link) && fs.readlinkSync(link) === path.join(homeProfiles, 'ecosystem.config.cjs'));
     check('create-bot-symlinks does not write into package dir',

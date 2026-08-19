@@ -1,7 +1,7 @@
 #!/bin/bash
 # create-bot-symlinks.sh - Create ecosystem config symlinks for each bot
 #
-# This allows: pm2 start bot-name (or: pm2 start bot-name.config.js)
+# This allows: pm2 start bot-name (or: pm2 start bot-name.config.cjs)
 #
 # Usage: ./scripts/create-bot-symlinks.sh
 
@@ -35,7 +35,7 @@ const ecoConfig = '$ECOSYSTEM_CONFIG';
 
 (botsConfig.bots || []).forEach(bot => {
     const botName = bot.name;
-    const symlink = path.join(profilesDir, botName + '.config.js');
+    const symlink = path.join(profilesDir, botName + '.config.cjs');
 
     // Remove old symlink if exists
     if (fs.existsSync(symlink)) {
@@ -45,7 +45,7 @@ const ecoConfig = '$ECOSYSTEM_CONFIG';
     // Create symlink
     try {
         fs.symlinkSync(ecoConfig, symlink);
-        console.log('✓ Created symlink: profiles/' + botName + '.config.cjs -> ecosystem.config.cjs');
+        console.log('✓ Created symlink: profiles/' + botName + '.config.cjs -> ' + path.basename(ecoConfig));
     } catch (err) {
         console.error('✗ Error creating symlink for ' + botName + ':', err.message);
     }

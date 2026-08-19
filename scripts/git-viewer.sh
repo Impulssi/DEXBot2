@@ -12,7 +12,8 @@
 #   - delta: Enhanced diff viewer with syntax highlighting
 #   - fzf: Fuzzy finder for interactive selection
 #   - bat/batcat: Syntax-highlighted file viewer
-# This function checks each dependency and installs missing packages via apt-get
+# This function checks each dependency and installs missing packages
+# using the appropriate package manager for the current OS.
 check_dependencies() {
     local missing_packages=()
 
@@ -34,8 +35,23 @@ check_dependencies() {
     # Install missing packages if any were found
     if [ ${#missing_packages[@]} -gt 0 ]; then
         echo "Installing missing dependencies: ${missing_packages[@]}"
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq "${missing_packages[@]}"
+
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "${missing_packages[@]}"
+        elif command -v brew &> /dev/null; then
+            brew install "${missing_packages[@]}"
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y "${missing_packages[@]}"
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -S --noconfirm "${missing_packages[@]}"
+        else
+            echo "Warning: Could not detect package manager. Please install manually: ${missing_packages[@]}"
+            echo "  apt-get: sudo apt-get install ${missing_packages[*]}"
+            echo "  brew:    brew install ${missing_packages[*]}"
+            return 0
+        fi
+
         echo "Dependencies installed successfully!"
         sleep 1
     fi
