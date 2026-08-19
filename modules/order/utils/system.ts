@@ -58,7 +58,7 @@ import { PATHS } from '../../paths.js';
 import { toFiniteNumber, isValidNumber } from '../format.js';
 import * as MathUtils from './math.js';
 import * as OrderUtils from './order.js';
-import Logger from '../../logger.js';
+import Logger from '../../order/logger.js';
 import { runtime } from '../../runtime.js';
 import { getErrorMessage } from '../../utils/errors.js';
 import { withTimeout } from './timeout.js';
@@ -121,6 +121,40 @@ export const lookupAsset = async (BitShares: any, s: string): Promise<any> => {
     }
 
     throw new Error(`CRITICAL: Cannot fetch asset precision for '${s}'`);
+};
+
+/**
+ * Resolve a full asset object from an asset reference (object ID like 1.3.x or symbol).
+ * Routes object IDs to get_assets and symbols to lookup_asset_symbols, trying
+ * camelCase, snake_case, and db.call() forms. Shared by chain_orders, credit_runtime,
+ * and credential_policy so asset resolution behavior stays consistent.
+ *
+ * @param {Object} BitShares - BitShares client instance
+ * @param {*} ref - Asset ID (e.g. '1.3.0') or symbol (e.g. 'BTS')
+ * @returns {Promise<Object|null>} Asset object or null if unresolvable
+ */
+export const resolveAssetByRef = async (BitShares: any, ref: any): Promise<any> => {
+    if (!BitShares?.db) return null;
+    const cacheKey = String(ref);
+    const method = /^1\.3\.\d+$/.test(cacheKey) ? 'get_assets' : 'lookup_asset_symbols';
+    const camelMethod = method.replace(/_([a-z])/g, (_: any, c: string) => c.toUpperCase());
+    try {
+        if (typeof BitShares.db[camelMethod] === 'function') {
+            const result = await BitShares.db[camelMethod]([cacheKey]);
+            return Array.isArray(result) ? result[0] || null : null;
+        }
+        if (typeof BitShares.db[method] === 'function') {
+            const result = await BitShares.db[method]([cacheKey]);
+            return Array.isArray(result) ? result[0] || null : null;
+        }
+        if (typeof BitShares.db.call === 'function') {
+            const result = await BitShares.db.call(method, [[cacheKey]]);
+            return Array.isArray(result) ? result[0] || null : null;
+        }
+    } catch (e: any) {
+        systemLogger.debug(`resolveAssetByRef failed for ${cacheKey}: ${getErrorMessage(e)}`);
+    }
+    return null;
 };
 
 /**
@@ -762,7 +796,7 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
             manager.boundaryIdx,
             manager.assets || null,
             {
-                persistedAt: new Date().toISOString(),
+                persistedAt: nowIso(),
                 config: debugConfig,
                 accountTotals,
                 btsBalance
@@ -1157,7 +1191,15 @@ export function ensureProfilesDirectory(profilesDir: string): boolean {
 }
 
 /**
- * Pause execution for a specified duration.
+ * Returns the current date and time in ISO format.
+ * @returns {string} ISO timestamp.
+ */
+export function nowIso(): string {
+    return new Date().toISOString();
+}
+
+/**
+ * Sleep for a duration.
  * @param {number} ms - Milliseconds to sleep
  * @returns {Promise<void>}
  */

@@ -1686,5 +1686,5 @@ async function _reconcileStartupSide({
     };
 }
 
-export { _countActiveOnGrid, _pickVirtualSlotsToActivate, _getStartupSideComparators, _isGridEdgeFullyActive, _findLargestOrder, _cancelLargestOrder, _createOrderFromGrid, _cancelChainOrder, _recoverStartupSyncFailure, _refreshStartupUpdatePlans, _prepareStartupUpdatePlan, _finalizeStartupUpdate, _executeStartupUpdateBatch, _executeStartupSingleUpdate, _executeStartupSequentialUpdateFallback, _createStartupOrderWithHandling, _extractBatchOperationResults, _resolveGroupRecovery, _executeStartupCreateGroupBatch, _buildOutsideInCreateGroups, _executePlannedStartupCreates, _reconcileStartupSide }
+export { _countActiveOnGrid, _pickVirtualSlotsToActivate, _createOrderFromGrid, _cancelChainOrder, _recoverStartupSyncFailure, _refreshStartupUpdatePlans, _executeStartupUpdateBatch, _executeStartupSequentialUpdateFallback, _executeStartupCreateGroupBatch, _createStartupOrderWithHandling, _executePlannedStartupCreates, _reconcileStartupSide }
 

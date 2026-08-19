@@ -44,7 +44,7 @@
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
-import Logger from './logger.js';
+import Logger from './order/logger.js';
 import { NODE_MANAGEMENT } from './constants.js';
 import { PATHS, getNodeBlacklistFile } from './paths.js';
 import { compareNodeHealth } from './node_health_cache.js';
@@ -59,6 +59,7 @@ import {
     writeHealthCache,
 } from './node_health_cache.js';
 import { getErrorMessage } from './utils/errors.js';
+import { nowIso } from './order/utils/system.js';
 
 interface NodeManagerConfig {
     list?: string[];
@@ -396,7 +397,7 @@ class NodeManager {
                 stats.latencyMs = latencyMs;
                 stats.failureCount = 0;
                 this.failureLedger.reset(nodeUrl);
-                stats.lastCheckTime = new Date().toISOString();
+                stats.lastCheckTime = nowIso();
                 stats.lastErrorMessage = null;
                 stats.chainId = result;
 
@@ -627,7 +628,7 @@ class NodeManager {
         }
 
         stats.failureCount = result.failureCount;
-        stats.lastCheckTime = new Date().toISOString();
+        stats.lastCheckTime = nowIso();
         if (errorMessage) stats.lastErrorMessage = errorMessage;
 
         if (result.outcome === 'blacklisted') {

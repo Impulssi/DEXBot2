@@ -13,7 +13,7 @@ if (process.env.RUN_LIVE_BITSHARES_TESTS !== '1') {
 }
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');
-const { fixedTo } = require('../modules/utils/math_utils');
+const { fixedTo } = require('../modules/order/utils/math');
 const { getErrorMessage } = require('../modules/utils/errors');
 
 const colors = {

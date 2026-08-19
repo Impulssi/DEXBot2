@@ -4,7 +4,7 @@ const require = createRequire(import.meta.url);
 
 import { createTransactionBuilder } from './tx/builder.js';
 import * as txCache from './tx/tx_cache.js';
-import Logger from '../logger.js';
+import Logger from '../order/logger.js';
 import { getErrorMessage } from '../utils/errors.js';
 'use strict';
 

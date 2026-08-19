@@ -573,13 +573,13 @@ class DEXBot {
     /**
      * Apply replay-safe fill accounting for tracked fills (those with a valid grid order).
      * @param {Object} fill - Fill event object
-     * @param {import('./types.js').FillOperationData} fillOp - Fill operation data
+     * @param {any} fillOp - Fill operation data
      * @param {Object} [options={}]
      * @param {string} [options.context]
      * @param {Object} [options.logger]
      * @param {string} [options.replayMessage]
      * @param {string} [options.persistenceMode='batched']
-     * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
+     * @returns {Promise<any>}
      */
     async _applyReplaySafeTrackedFillAccounting(fill: any, fillOp: any, {
         context,
@@ -603,13 +603,13 @@ class DEXBot {
     /**
      * Apply replay-safe fill accounting for orphan fills (grid order not found).
      * @param {Object} fill - Fill event object
-     * @param {import('./types.js').FillOperationData} fillOp - Fill operation data
+     * @param {any} fillOp - Fill operation data
      * @param {Object} [options={}]
      * @param {string} [options.context]
      * @param {Object} [options.logger]
      * @param {string} [options.replayMessage]
      * @param {string} [options.persistenceMode='batched']
-     * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
+     * @returns {Promise<any>}
      */
     async _applyReplaySafeOrphanFillAccounting(fill: any, fillOp: any, {
         context,
@@ -633,7 +633,7 @@ class DEXBot {
     /**
      * Refresh dynamic weight distribution from market adapter.
      * @param {string} [context='runtime'] - Context label for logging
-     * @returns {import('./types.js').DynamicWeightRefreshResult|null}
+     * @returns {any|null}
      */
     _refreshDynamicWeightDistribution(context: any = 'runtime') {
         return DexbotMaintenanceRuntime.refreshDynamicWeightDistribution(this, context);
@@ -1072,7 +1072,7 @@ class DEXBot {
 
     /**
      * Execute blockchain operations with appropriate strategy (single batch or pair mode).
-     * @param {Array<import('./types.js').CreatedOperation>} operations - Array of operation objects
+     * @param {Array<any>} operations - Array of operation objects
      * @param {Array<Object>} opContexts - Array of operation context metadata (1:1 with operations)
      * @returns {Promise<{result: Object, opContexts: Array}>} Execution result with contexts
      */
@@ -1109,7 +1109,7 @@ class DEXBot {
      * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
      * @param {Object|null} [orderLike=null] - Optional order-like object for ideal size comparison
      * @param {number|null} [fallbackSize=null] - Fallback ideal size
-     * @returns {import('./types.js').OrderValidationResult}
+     * @returns {any}
      */
     _validateOrderSizeForExecution(size: any, type: any, orderLike: any = null, fallbackSize: any = null) {
         return cowRuntime.validateOrderSizeForExecution(this, size, type, orderLike, fallbackSize);
@@ -1527,7 +1527,7 @@ class DEXBot {
     /**
      * Build a COW result object (workingGrid + actions) from a simple plan.
      * @param {Object|Array} plan - Plan object or array of ordersToPlace
-     * @returns {{workingGrid: import('./types.js').WorkingGrid, workingIndexes: Object, workingBoundary: number, actions: Array}}
+     * @returns {{workingGrid: any, workingIndexes: Object, workingBoundary: number, actions: Array}}
      */
     _buildCowResultFromPlan(plan: any) {
         return cowRuntime.buildCowResultFromPlan(this, plan);
@@ -1535,7 +1535,7 @@ class DEXBot {
 
     /**
      * Restore skipped update slots in the working grid to master state.
-     * @param {import('./types.js').WorkingGrid} workingGrid - Working grid to restore slots into
+     * @param {any} workingGrid - Working grid to restore slots into
      * @param {Set<string>} skippedSlotIds - Set of slot IDs that were skipped
      * @param {number} [skippedCount=0] - Count of skipped actions for logging
      * @returns {void}

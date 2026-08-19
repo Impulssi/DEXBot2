@@ -65,8 +65,9 @@ import { path } from '../path_api.js';
 import * as Format from './format.js';
 import { TIMING, DEFAULT_CONFIG } from '../constants.js';
 import { PATHS } from '../paths.js';
-import Logger from '../logger.js';
+import Logger from '../order/logger.js';
 import { getErrorMessage } from '../utils/errors.js';
+import { nowIso } from './utils/system.js';
 const _require = createRequire(import.meta.url);
 const storage = getStorage();
 let _readline: any;
@@ -284,7 +285,7 @@ async function writeSettingsJSON(botConfig: any, botName: any, outputPath: any) 
                 base: botConfig.assetA,
                 quote: botConfig.assetB
             },
-            exported_at: new Date().toISOString()
+            exported_at: nowIso()
         };
 
         storage.writeFile(outputPath, JSON.stringify(sanitized, null, 2) + '\n', 'utf8');
@@ -347,7 +348,7 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
             csv_path: csvPath,
             settings_path: settingsPath,
             output_dir: outputDir,
-            timestamp: new Date().toISOString()
+            timestamp: nowIso()
         };
     } catch (err: any) {
         exportLogger.error(`Export failed for ${botKey}: ${getErrorMessage(err)}`);

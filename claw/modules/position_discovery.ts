@@ -11,7 +11,7 @@
 
 import { loadDexbotOrderUtils } from './dexbot_bridge.js';
 import { computeBtsPerMpa } from './mpa_utils.js';
-import { roundTo } from '../../modules/utils/math_utils.js';
+import { roundTo } from '../../modules/order/utils/math.js';
 'use strict';
 
 import { getAsset, getBackingAsset, getBitassetData, getFullAccount } from './chain_queries.js';

@@ -19,8 +19,8 @@ import { writeJsonAtomic } from './utils/atomic_write.js';
 import { acquireFileLockSync, releaseFileLockSync } from './utils/file_lock.js';
 import { updateDynamicGridSnapshotSync } from './utils/dynamic_grid_snapshot.js';
 import { PATHS, getRecalculateTriggerFile } from '../modules/paths.js';
-import Logger from '../modules/logger.js';
-import { fixedTo, roundTo } from '../modules/utils/math_utils.js';
+import Logger from '../modules/order/logger.js';
+import { fixedTo, roundTo } from '../modules/order/utils/math.js';
 import { usesAmaGridPrice } from '../modules/dexbot_maintenance_runtime.js';
 import {
     normalizeAtrPeriod,

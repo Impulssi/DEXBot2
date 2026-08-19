@@ -14,6 +14,7 @@ const { readOpenOrdersWithMetaSafe, readOpenOrdersGuarded } = chainOrdersModule 
 import { BroadcastUncertainError as BroadcastUncertainErrorBinding } from './dexbot_credential_client.js';
 const BroadcastUncertainError = BroadcastUncertainErrorBinding as any;
 import * as orderUtils from './order/utils/order.js';
+import { sleep } from './order/utils/system.js';
 const {
     buildCreateOrderArgs,
     buildCreateOpFingerprint,
@@ -1447,7 +1448,7 @@ function resolveIdealSizeForValidation(_bot: any, orderLike: any, fallbackSize: 
  * @param {string} type
  * @param {Object|null} [orderLike=null]
  * @param {number|null} [fallbackSize=null]
- * @returns {import('./types.js').OrderValidationResult}
+ * @returns {any}
  */
 function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike: any = null, fallbackSize: any = null) {
     return validateOrderSize(
@@ -1555,7 +1556,7 @@ function buildActionsFromPlan(_bot: any, plan: any) {
  * Build a COW result object (workingGrid + actions) from a simple plan.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object|Array} plan
- * @returns {{workingGrid: import('./types.js').WorkingGrid, workingIndexes: Object, workingBoundary: number, actions: Array}}
+ * @returns {{workingGrid: any, workingIndexes: Object, workingBoundary: number, actions: Array}}
  */
 function buildCowResultFromPlan(bot: any, plan: any) {
     const workingGrid = new WorkingGrid(bot.manager.orders, {
@@ -1698,13 +1699,6 @@ function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, execu
 }
 
 /**
- * Sleep for a given number of milliseconds.
- */
-function sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
  * Poll the chain after an uncertain broadcast to check if CREATE operations
  * were actually accepted. Uses fingerprint matching against readOpenOrders.
  * Falls back to reconciliation if polling cannot confirm within retries.
@@ -1821,7 +1815,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
 /**
  * Restore skipped update slots in the working grid to master state.
  * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {import('./types.js').WorkingGrid} workingGrid
+ * @param {any} workingGrid
  * @param {Set<string>} skippedSlotIds
  * @param {number} [skippedCount=0]
  */

@@ -40,7 +40,7 @@ import { TIMING, NODE_MANAGEMENT, NATIVE_CLIENT } from './constants.js';
 import NodeManager from './node_manager.js';
 import { readGeneralSettings } from './general_settings.js';
 import { sleep } from './order/utils/system.js';
-import Logger from './logger.js';
+import Logger from './order/logger.js';
 import * as native from './bitshares-native/index.js';
 import { createSigningClient } from './bitshares-native/index.js';
 import { getErrorMessage } from './utils/errors.js';

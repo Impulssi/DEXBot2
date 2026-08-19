@@ -2,7 +2,7 @@
 import { NATIVE_CLIENT } from '../../constants.js';
 import { ops as serialOps } from '../serial/index.js';
 import getEcc from '../crypto/ecc_selector.js';
-import Logger from '../../logger.js';
+import Logger from '../../order/logger.js';
 import * as txCache from './tx_cache.js';
 import { getErrorMessage } from '../../utils/errors.js';
 'use strict';
@@ -37,16 +37,6 @@ class TransactionTooLargeError extends Error {
     constructor(message: string) {
         super(message);
         this.code = 'TX_TOO_LARGE';
-    }
-}
-
-class BroadcastError extends Error {
-    code: string;
-    result: any;
-    constructor(message: string, result: any) {
-        super(message);
-        this.code = 'BROADCAST_ERROR';
-        this.result = result;
     }
 }
 
@@ -341,5 +331,5 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
     return tx;
 }
 
-export { createTransactionBuilder, TransactionTooLargeError, BroadcastError, MAX_TX_SIZE, MAX_OPS_PER_TX }
+export { createTransactionBuilder, TransactionTooLargeError, MAX_TX_SIZE, MAX_OPS_PER_TX }
 

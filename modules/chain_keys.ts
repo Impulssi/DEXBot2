@@ -497,8 +497,8 @@ function checkKeysFileSecurity() {
  * Unlock the key vault with a master password.
  * Uses modern scrypt v2 vault format with HMAC verification.
  * @param {string} password - Master password
- * @param {import('./types.js').KeysFile} [accountsData=loadAccounts()] - Accounts data object
- * @returns {import('./types.js').VaultSecret} Derived vault secret
+ * @param {any} [accountsData=loadAccounts()] - Accounts data object
+ * @returns {any} Derived vault secret
  * @throws {MasterPasswordError} If password is incorrect
  * @throws {Error} If vault format is unsupported
  */

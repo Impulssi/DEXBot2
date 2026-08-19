@@ -43,7 +43,7 @@ class ProcessedFillStore {
 
     /**
      * Create a ProcessedFillStore instance.
-     * @param {import('./types').ProcessedFillStoreConfig} [options] - Configuration
+     * @param {any} [options] - Configuration
      * @param {number} [options.batchMs] - Batch interval in ms for coalesced writes
      * @param {number} [options.batchSize] - Max batch size before auto-flush
      * @param {Function} [options.warn] - Warning logger function

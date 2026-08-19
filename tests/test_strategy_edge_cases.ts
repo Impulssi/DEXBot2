@@ -17,7 +17,7 @@ const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, COW_ACTIONS } = require('../modules/constants');
 const { reconcileGrid } = require('../modules/order/utils/validate');
 const assert = require('assert');
-const { roundTo } = require('../modules/utils/math_utils');
+const { roundTo } = require('../modules/order/utils/math');
 const { getErrorMessage } = require('../modules/utils/errors');
 
 let testsPassed = 0;

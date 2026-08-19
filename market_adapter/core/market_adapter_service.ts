@@ -8,8 +8,8 @@ import { KalmanTrendAnalyzer } from './signals/kalman_trend_analyzer.js';
 import { adjustCollateralRatio } from './strategies/collateral_manager.js';
 import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants.js';
 import { resolveConfiguredPriceBound } from '../../modules/order/utils/order.js';
-import Logger from '../../modules/logger.js';
-import { roundTo } from '../../modules/utils/math_utils.js';
+import Logger from '../../modules/order/logger.js';
+import { roundTo } from '../../modules/order/utils/math.js';
 'use strict';
 
 import {

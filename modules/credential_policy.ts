@@ -16,11 +16,11 @@ import { randomBytes, createHmac, timingSafeEqual } from './crypto/sync.js';
 import * as client from './bitshares_client.js';
 const { BitShares } = client;
 import { isPositiveInt } from './order/utils/math.js';
-import { parseJsonWithComments } from './order/utils/system.js';
+import { parseJsonWithComments, resolveAssetByRef, nowIso } from './order/utils/system.js';
 import { FEE_PARAMETERS, NATIVE_CLIENT } from './constants.js';
 import { getCredentialReadyFilePath, assertPrivatePathSecurity } from './credential_runtime.js';
 import { PATHS } from './paths.js';
-import Logger from './logger.js';
+import Logger from './order/logger.js';
 import { getStorage } from './storage/index.js';
 import { runtime } from './runtime.js';
 import { LRUCache } from './bitshares-native/lru_cache.js';
@@ -119,13 +119,8 @@ async function resolveAssetRefToId(assetRef: string): Promise<string | null> {
     try {
         if (ASSET_OBJECT_ID_PATTERN.test(cacheKey)) {
             resolvedId = cacheKey;
-        } else if (BitShares?.db?.lookup_asset_symbols) {
-            const result = await BitShares.db.lookup_asset_symbols([cacheKey]);
-            const asset = Array.isArray(result) ? result[0] : null;
-            resolvedId = asset?.id ? String(asset.id) : null;
-        } else if (BitShares?.db?.get_assets) {
-            const result = await BitShares.db.get_assets([cacheKey]);
-            const asset = Array.isArray(result) ? result[0] : null;
+        } else {
+            const asset = await resolveAssetByRef(BitShares, cacheKey);
             resolvedId = asset?.id ? String(asset.id) : null;
         }
     } catch (_: any) {
@@ -669,7 +664,7 @@ function buildPolicyContext(request: any): PolicyContext {
         accountName: request.accountName,
         requestType: request.type,
         sessionId: request.sessionId || null,
-        timestamp: new Date().toISOString(),
+        timestamp: nowIso(),
         operations: request.operations || [],
     };
 }

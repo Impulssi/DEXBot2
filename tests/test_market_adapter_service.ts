@@ -19,7 +19,7 @@ const { KalmanTrendAnalyzer } = require('../analysis/trend_detection/kalman_tren
 const { buildKalmanVelocitySeries, computeAbsolutePercentileThreshold } = require('../analysis/trend_detection/kalman_velocity_smoothing');
 const { computeDynamicWeightSeries } = require('../market_adapter/core/strategies/dynamic_weight_series');
 const { sleepUntilAlignedBoundary } = require('../market_adapter/test_helpers');
-const { roundToDecimals } = require('../modules/utils/math_utils');
+const { roundToDecimals } = require('../modules/order/utils/math');
 
 function generateCandles(count, price) {
     const candles = [];

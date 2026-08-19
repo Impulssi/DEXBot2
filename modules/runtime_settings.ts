@@ -1,6 +1,8 @@
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
+import { deepMerge } from './settings_merge.js';
+
 import {
     GRID_LIMITS, FEE_PARAMETERS, INCREMENT_BOUNDS, TIMING,
     LOG_LEVEL, LOGGING_CONFIG, FILL_PROCESSING,
@@ -11,20 +13,17 @@ function _toScreamingCase(key: string): string {
     return key.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
 }
 
-function _deepMerge(target: any, source: any): any {
-    for (const key of Object.keys(source)) {
-        const sv = source[key];
-        if (sv === undefined) continue;
-        const targetKey = _toScreamingCase(key);
-        const existing = target[targetKey];
-        if (sv !== null && typeof sv === 'object' && !Array.isArray(sv)
-            && existing !== undefined && existing !== null && typeof existing === 'object' && !Array.isArray(existing)) {
-            target[targetKey] = _deepMerge(existing, sv);
-        } else {
-            target[targetKey] = sv;
-        }
+function _normalizeKeys(obj: any): any {
+    if (Array.isArray(obj) || obj === null || typeof obj !== 'object') return obj;
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(obj)) {
+        out[_toScreamingCase(k)] = _normalizeKeys(v);
     }
-    return target;
+    return out;
+}
+
+function _deepMerge(target: any, source: any): any {
+    return deepMerge(target, _normalizeKeys(source));
 }
 
 export interface BotRuntimeSettings {
@@ -63,26 +62,26 @@ export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRu
 
     const marketOverrides = _resolveMarketOverrides(botConfig);
     if (marketOverrides) {
-        if (marketOverrides.gridLimits) _deepMerge(result.gridLimits, marketOverrides.gridLimits);
-        if (marketOverrides.feeParams) _deepMerge(result.feeParams, marketOverrides.feeParams);
-        if (marketOverrides.incrementBounds) _deepMerge(result.incrementBounds, marketOverrides.incrementBounds);
-        if (marketOverrides.timing) _deepMerge(result.timing, marketOverrides.timing);
-        if (marketOverrides.fillProcessing) _deepMerge(result.fillProcessing, marketOverrides.fillProcessing);
-        if (marketOverrides.pipelineTiming) _deepMerge(result.pipelineTiming, marketOverrides.pipelineTiming);
-        if (marketOverrides.apiLimits) _deepMerge(result.apiLimits, marketOverrides.apiLimits);
+        if (marketOverrides.gridLimits) result.gridLimits = _deepMerge(result.gridLimits, marketOverrides.gridLimits);
+        if (marketOverrides.feeParams) result.feeParams = _deepMerge(result.feeParams, marketOverrides.feeParams);
+        if (marketOverrides.incrementBounds) result.incrementBounds = _deepMerge(result.incrementBounds, marketOverrides.incrementBounds);
+        if (marketOverrides.timing) result.timing = _deepMerge(result.timing, marketOverrides.timing);
+        if (marketOverrides.fillProcessing) result.fillProcessing = _deepMerge(result.fillProcessing, marketOverrides.fillProcessing);
+        if (marketOverrides.pipelineTiming) result.pipelineTiming = _deepMerge(result.pipelineTiming, marketOverrides.pipelineTiming);
+        if (marketOverrides.apiLimits) result.apiLimits = _deepMerge(result.apiLimits, marketOverrides.apiLimits);
         if (marketOverrides.poolSlippageTolerance !== undefined) result.feeParams.POOL_SLIPPAGE_TOLERANCE = marketOverrides.poolSlippageTolerance;
     }
 
-    if (botConfig.gridLimits) _deepMerge(result.gridLimits, botConfig.gridLimits);
-    if (botConfig.feeParams) _deepMerge(result.feeParams, botConfig.feeParams);
-    if (botConfig.incrementBounds) _deepMerge(result.incrementBounds, botConfig.incrementBounds);
-    if (botConfig.timing) _deepMerge(result.timing, botConfig.timing);
-    if (botConfig.fillProcessing) _deepMerge(result.fillProcessing, botConfig.fillProcessing);
-    if (botConfig.pipelineTiming) _deepMerge(result.pipelineTiming, botConfig.pipelineTiming);
-    if (botConfig.apiLimits) _deepMerge(result.apiLimits, botConfig.apiLimits);
+    if (botConfig.gridLimits) result.gridLimits = _deepMerge(result.gridLimits, botConfig.gridLimits);
+    if (botConfig.feeParams) result.feeParams = _deepMerge(result.feeParams, botConfig.feeParams);
+    if (botConfig.incrementBounds) result.incrementBounds = _deepMerge(result.incrementBounds, botConfig.incrementBounds);
+    if (botConfig.timing) result.timing = _deepMerge(result.timing, botConfig.timing);
+    if (botConfig.fillProcessing) result.fillProcessing = _deepMerge(result.fillProcessing, botConfig.fillProcessing);
+    if (botConfig.pipelineTiming) result.pipelineTiming = _deepMerge(result.pipelineTiming, botConfig.pipelineTiming);
+    if (botConfig.apiLimits) result.apiLimits = _deepMerge(result.apiLimits, botConfig.apiLimits);
     if (botConfig.logging) {
         if (botConfig.logging.level) result.logging.level = botConfig.logging.level;
-        if (botConfig.logging.config) _deepMerge(result.logging.config, botConfig.logging.config);
+        if (botConfig.logging.config) result.logging.config = _deepMerge(result.logging.config, botConfig.logging.config);
     }
 
     return result;

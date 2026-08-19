@@ -1,4 +1,5 @@
 const assert = require('assert');
+const fs = require('fs');
 const { EventEmitter } = require('events');
 const childProcess = require('child_process');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
@@ -87,14 +88,17 @@ function restoreStubs() {
 
 installStubs();
 
+const controllerRoot = '/tmp/dexbot2-test';
+fs.mkdirSync(controllerRoot, { recursive: true });
+
 const { createCredentialDaemonController } = require('../modules/launcher/credential_daemon');
 
 (async () => {
     try {
         const controller = createCredentialDaemonController({
-            root: '/tmp/dexbot2-test',
-            socketPath: '/tmp/dexbot2-test/dexbot-cred.sock',
-            readyFilePath: '/tmp/dexbot2-test/dexbot-cred.ready',
+            root: controllerRoot,
+            socketPath: `${controllerRoot}/dexbot-cred.sock`,
+            readyFilePath: `${controllerRoot}/dexbot-cred.ready`,
             pollIntervalMs: 1,
         });
         logs.length = 0;

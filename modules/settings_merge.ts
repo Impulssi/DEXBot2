@@ -59,19 +59,22 @@ function filterCommentKeys(obj: Record<string, any>): Record<string, any> {
 /**
  * Deep recursive merge: source values override target values at any depth.
  * Plain objects are merged recursively; arrays and primitives are replaced.
+ * Comment/metadata keys (prefixed with _) and `undefined` source values are skipped.
  */
 function deepMerge(target: any, source: any): any {
     const result = { ...target };
     for (const key of Object.keys(source)) {
         if (key.startsWith('_')) continue;
-        if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
-            if (result[key] && typeof result[key] === 'object' && !Array.isArray(result[key])) {
-                result[key] = deepMerge(result[key], source[key]);
+        const sv = source[key];
+        if (sv === undefined) continue;
+        if (sv !== null && typeof sv === 'object' && !Array.isArray(sv)) {
+            if (result[key] !== undefined && result[key] !== null && typeof result[key] === 'object' && !Array.isArray(result[key])) {
+                result[key] = deepMerge(result[key], sv);
             } else {
-                result[key] = { ...source[key] };
+                result[key] = { ...sv };
             }
         } else {
-            result[key] = source[key];
+            result[key] = sv;
         }
     }
     return result;
@@ -255,5 +258,5 @@ function mergeSettings(raw: any, defaults: Record<string, any>): Record<string, 
     return result;
 }
 
-export { mergeSettings }
+export { deepMerge, mergeSettings }
 

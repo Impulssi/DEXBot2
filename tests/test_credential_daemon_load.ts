@@ -8,8 +8,8 @@ console.log('Running credential daemon load regression test');
 
 // Regression guard for the ESM-migration class of bug: the daemon is loaded
 // via CJS require() calls and must survive module evaluation.  Commit
-// eaf21c01 removed the module.exports fallback from modules/logger.ts, which
-// made `require('./modules/logger')` return the ESM namespace instead of the
+// eaf21c01 removed the module.exports fallback from modules/order/logger.ts, which
+// made `require('./modules/order/logger')` return the ESM namespace instead of the
 // Logger class — the daemon crashed at load with "Logger is not a
 // constructor" before it ever connected to the one-shot bootstrap socket,
 // causing unlock to fail with "Timed out waiting for credential daemon

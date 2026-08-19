@@ -76,7 +76,6 @@ const int64ToSafeValue = (n: bigint): number | string => (
         ? Number(n)
         : n.toString()
 );
-const unsigned = (v: number): number => (v >>> 0);
 const $required = (obj: any, name?: string): void => { if (obj == null) throw new Error(`${name || 'value'} required`); };
 const requireRange = (min: number, max: number, v: any, name?: string): void => {
     if (v < min || v > max) throw new Error(`${name || 'value'} out of range [${min}, ${max}]: ${v}`);
@@ -213,16 +212,6 @@ const uint64: SerType = {
             throw new Error(`uint64 out of range [0, 18446744073709551615]: ${v}`);
         }
         return String(n);
-    },
-};
-
-const varuint64: SerType = {
-    fromByteBuffer(b: BufReader): any { return b.readVarint64(); },
-    appendByteBuffer(b: BufWriter, v: any): void { b.writeVarint64(BigInt(String(unsigned(v)))); },
-    fromObject(v: any): any { return Number(BigInt(String(unsigned(v)))); },
-    toObject(v: any, debug?: any): any {
-        if (debug && debug.use_default && v === undefined) return '0';
-        return String(unsigned(v));
     },
 };
 
@@ -386,49 +375,6 @@ function setType(st_operation: any): SerType & { validate: (arr: any[]) => any[]
             }
             if (!v) v = [];
             return validate(v.map((item: any) => st_operation.toObject(item, debug)));
-        },
-    };
-}
-
-function fixedArrayType(count: number, st_operation: any): SerType {
-    return {
-        fromByteBuffer(b: BufReader): any {
-            const result: any[] = [];
-            for (let i = 0; i < count; i++) {
-                result.push(st_operation.fromByteBuffer(b));
-            }
-            return result;
-        },
-        appendByteBuffer(b: BufWriter, v: any): void {
-            if (count !== 0) {
-                $required(v, 'fixed_array');
-            }
-            for (let i = 0; i < count; i++) {
-                st_operation.appendByteBuffer(b, v ? v[i] : undefined);
-            }
-        },
-        fromObject(v: any): any {
-            if (count !== 0) $required(v, 'fixed_array');
-            const result: any[] = [];
-            for (let i = 0; i < count; i++) {
-                result.push(st_operation.fromObject(v ? v[i] : undefined));
-            }
-            return result;
-        },
-        toObject(v: any, debug?: any): any {
-            if (debug && debug.use_default && v === undefined) {
-                const result: any[] = [];
-                for (let i = 0; i < count; i++) {
-                    result.push(st_operation.toObject(undefined, debug));
-                }
-                return result;
-            }
-            if (count !== 0) $required(v, 'fixed_array');
-            const result: any[] = [];
-            for (let i = 0; i < count; i++) {
-                result.push(st_operation.toObject(v ? v[i] : undefined, debug));
-            }
-            return result;
         },
     };
 }
@@ -697,91 +643,6 @@ function staticVariantType(st_operations: any[]): SerType & { st_operations: any
     };
 }
 
-function mapType(key_st_operation: any, value_st_operation: any): SerType & { validate: (arr: any[]) => any[] } {
-    function validate(arr: any[]): any[] {
-        if (!Array.isArray(arr)) throw new Error('expecting array');
-        const dup: Record<string | number, boolean> = {};
-        for (const o of arr) {
-            if (!(o.length === 2)) throw new Error('expecting two elements');
-            const k = o[0];
-            if (typeof k === 'number' || typeof k === 'string') {
-                if (dup[k] !== undefined) throw new Error('duplicate (map)');
-                dup[k] = true;
-            }
-        }
-        return sortOperation(arr, key_st_operation);
-    }
-
-    return {
-        validate,
-        fromByteBuffer(b: BufReader): any {
-            const size = b.readVarint32();
-            const result: any[] = [];
-            for (let i = 0; i < size; i++) {
-                result.push([key_st_operation.fromByteBuffer(b), value_st_operation.fromByteBuffer(b)]);
-            }
-            return validate(result);
-        },
-        appendByteBuffer(b: BufWriter, v: any): void {
-            validate(v);
-            b.writeVarint32(v.length);
-            for (const [k, val] of v) {
-                key_st_operation.appendByteBuffer(b, k);
-                value_st_operation.appendByteBuffer(b, val);
-            }
-        },
-        fromObject(v: any): any {
-            $required(v, 'map');
-            const result = v.map(([k, val]: [any, any]) => [
-                key_st_operation.fromObject(k),
-                value_st_operation.fromObject(val),
-            ]);
-            return validate(result);
-        },
-        toObject(v: any, debug?: any): any {
-            if (debug && debug.use_default && v === undefined) {
-                return [[key_st_operation.toObject(undefined, debug), value_st_operation.toObject(undefined, debug)]];
-            }
-            $required(v, 'map');
-            return validate(v.map(([k, val]: [any, any]) => [
-                key_st_operation.toObject(k, debug),
-                value_st_operation.toObject(val, debug),
-            ]));
-        },
-    };
-}
-
-const vote_id: SerType & { TYPE: number; ID: number; compare: (a: any, b: any) => number } = {
-    TYPE: 0x000000FF,
-    ID: 0xFFFFFF00,
-    fromByteBuffer(b: BufReader): any {
-        const val = b.readUint32();
-        return { type: val & this.TYPE, id: (val & this.ID) >>> 8 };
-    },
-    appendByteBuffer(b: BufWriter, v: any): void {
-        $required(v, 'vote_id');
-        if (typeof v === 'string') v = vote_id.fromObject(v);
-        b.writeUint32((v.id << 8) | v.type);
-    },
-    fromObject(v: any): any {
-        $required(v, 'vote_id');
-        if (typeof v === 'object') return v;
-        const [type, id] = String(v).split(':');
-        return { type: parseInt(type, 10), id: parseInt(id, 10) };
-    },
-    toObject(v: any, debug?: any): any {
-        if (debug && debug.use_default && v === undefined) return '0:0';
-        $required(v, 'vote_id');
-        if (typeof v === 'string') v = vote_id.fromObject(v);
-        return `${v.type}:${v.id}`;
-    },
-    compare(a: any, b: any): number {
-        if (typeof a !== 'object') a = vote_id.fromObject(a);
-        if (typeof b !== 'object') b = vote_id.fromObject(b);
-        return parseInt(a.id, 10) - parseInt(b.id, 10);
-    },
-};
-
 const public_key_type: SerType & { _toPublic(): void } = {
     _toPublic(): void {
         throw new Error('public_key type requires ecc module - import from index');
@@ -807,25 +668,5 @@ const public_key_type: SerType & { _toPublic(): void } = {
     },
 };
 
-const address_type: SerType = {
-    fromByteBuffer(b: BufReader): any { return b.read(20); },
-    appendByteBuffer(b: BufWriter, v: any): void {
-        $required(v, 'address');
-        const buf = Buffer.isBuffer(v) ? v : Buffer.from(v, 'hex');
-        b.write(buf);
-    },
-    fromObject(v: any): any {
-        $required(v, 'address');
-        if (Buffer.isBuffer(v)) return v;
-        return Buffer.from(v, 'hex');
-    },
-    toObject(v: any, debug?: any): any {
-        if (debug && debug.use_default && v === undefined) return '';
-        $required(v, 'address');
-        if (Buffer.isBuffer(v)) return v.toString('hex');
-        return String(v);
-    },
-};
-
-export { uint8, uint16, uint32, varint32, int64, uint64, varuint64, string_type as string, bytesType as bytes, bool_type as bool, arrayType as array, time_point_sec, setType as set, fixedArrayType as fixed_array, idType as id_type, protocolIdType as protocol_id_type, object_id_type, vote_id, optionalType as optional, extensionType as extension, staticVariantType as static_variant, mapType as map, public_key_type as public_key, address_type as address, void_type, void_type as future_extensions, ObjectId, sortOperation, firstEl, strCmp }
+export { uint8, uint16, uint32, varint32, int64, uint64, string_type as string, bytesType as bytes, bool_type as bool, arrayType as array, time_point_sec, setType as set, protocolIdType as protocol_id_type, object_id_type, optionalType as optional, extensionType as extension, staticVariantType as static_variant, public_key_type as public_key, void_type, void_type as future_extensions }
 

@@ -1,32 +1,27 @@
 'use strict';
 
 import { createHash, createHmac, randomBytes as cryptoRandomBytes, createECDH } from '../../crypto/sync.js';
-import { base58Encode as _base58Encode, base58Decode as _base58Decode } from '../../utils/base58check.js';
+import { base58Encode as _base58Encode, base58Decode as _base58Decode, encode as base58CheckEncode, decode as _base58CheckDecode } from '../../utils/base58check.js';
 import { getErrorMessage } from '../../utils/errors.js';
-
-interface EcPoint {
-    x: bigint;
-    y: bigint;
-}
+import type { EcPoint } from '../../crypto/provider.js';
+import {
+    secp256k1,
+    SECP256K1_BASE_POINT,
+    bigIntFromBuffer,
+    bufferFromBigInt,
+    mod,
+    modPow,
+    modInverse,
+    ecPointMul,
+    ecPointAdd,
+    pointFromPublicKey,
+    publicKeyFromPoint as _publicKeyFromPoint,
+} from '../../crypto/pure_secp256k1.js';
 
 interface WifDecodeResult {
     privateKey: Buffer;
     compressed: boolean;
 }
-
-const secp256k1 = {
-    p: BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F'),
-    n: BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141'),
-    Gx: BigInt('0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798'),
-    Gy: BigInt('0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8'),
-    a: BigInt(0),
-    b: BigInt(7),
-};
-
-const SECP256K1_BASE_POINT: EcPoint = {
-    x: secp256k1.Gx,
-    y: secp256k1.Gy,
-};
 
 function sha256(data: Buffer): Buffer {
     return createHash('sha256').update(data).digest();
@@ -79,24 +74,6 @@ function privateKeyToPublicKey(rawKey: Buffer, compressed = true): Buffer {
     return ecdh.getPublicKey(null, compressed ? 'compressed' : 'uncompressed');
 }
 
-function bigIntFromBuffer(buf: Buffer): bigint {
-    return BigInt('0x' + buf.toString('hex'));
-}
-
-function bufferFromBigInt(bn: bigint, length = 32): Buffer {
-    let hex = bn.toString(16);
-    if (hex.length % 2) hex = '0' + hex;
-    if (hex.length > length * 2) {
-        throw new Error(`BigInt 0x${bn.toString(16)} exceeds requested byte length ${length}`);
-    }
-    if (hex.length < length * 2) hex = hex.padStart(length * 2, '0');
-    return Buffer.from(hex, 'hex');
-}
-
-function mod(value: bigint, modulus: bigint): bigint {
-    return ((value % modulus) + modulus) % modulus;
-}
-
 function publicKeyFromBuffer(pubKeyBuffer: Buffer): Buffer {
     if (!Buffer.isBuffer(pubKeyBuffer)) {
         throw new Error('public key must be a Buffer');
@@ -105,41 +82,7 @@ function publicKeyFromBuffer(pubKeyBuffer: Buffer): Buffer {
 }
 
 function publicKeyFromPoint(point: EcPoint): Buffer {
-    const prefix = (point.y & 1n) === 1n ? 0x03 : 0x02;
-    const xBuf = bufferFromBigInt(point.x, 32);
-    return Buffer.concat([Buffer.from([prefix]), xBuf]);
-}
-
-function pointFromPublicKey(pubKeyBuffer: Buffer): EcPoint {
-    if (!Buffer.isBuffer(pubKeyBuffer)) {
-        throw new Error('public key must be a Buffer');
-    }
-    if (pubKeyBuffer.length === 33) {
-        const prefix = pubKeyBuffer[0];
-        if (prefix !== 0x02 && prefix !== 0x03) {
-            throw new Error('Unsupported compressed public key prefix');
-        }
-        const x = bigIntFromBuffer(pubKeyBuffer.slice(1));
-        const alpha = mod(x * x * x + secp256k1.a * x + secp256k1.b, secp256k1.p);
-        let y = modPow(alpha, (secp256k1.p + 1n) / 4n, secp256k1.p);
-        if ((y & 1n) !== BigInt(prefix & 1)) {
-            y = secp256k1.p - y;
-        }
-        return { x, y };
-    }
-    if (pubKeyBuffer.length === 65 && pubKeyBuffer[0] === 0x04) {
-        return {
-            x: bigIntFromBuffer(pubKeyBuffer.slice(1, 33)),
-            y: bigIntFromBuffer(pubKeyBuffer.slice(33, 65)),
-        };
-    }
-    if (pubKeyBuffer.length === 64) {
-        return {
-            x: bigIntFromBuffer(pubKeyBuffer.slice(0, 32)),
-            y: bigIntFromBuffer(pubKeyBuffer.slice(32, 64)),
-        };
-    }
-    throw new Error('Unsupported public key length: ' + pubKeyBuffer.length);
+    return Buffer.from(_publicKeyFromPoint(point));
 }
 
 function deterministicK(digest: Buffer, privateKey: Buffer, counter = 0): bigint {
@@ -224,75 +167,6 @@ function recoverPublicKey(digest: Buffer, r: Buffer, s: Buffer, recoveryId: numb
     return publicKeyFromPoint(Q);
 }
 
-function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
-    let result = 1n;
-    base = base % mod;
-    while (exp > 0n) {
-        if (exp & 1n) result = (result * base) % mod;
-        exp >>= 1n;
-        base = (base * base) % mod;
-    }
-    return result;
-}
-
-function modInverse(a: bigint, n: bigint): bigint {
-    let [t, newT] = [0n, 1n];
-    let [r, newR] = [n, a];
-    while (newR !== 0n) {
-        const quotient = r / newR;
-        [t, newT] = [newT, t - quotient * newT];
-        [r, newR] = [newR, r - quotient * newR];
-    }
-    if (r > 1n) throw new Error('modular inverse does not exist');
-    if (t < 0n) t += n;
-    return t;
-}
-
-function ecPointMul(point: EcPoint, scalar: bigint): EcPoint | null {
-    if (scalar === 0n) return null;
-    if (scalar < 0n) {
-        return ecPointMul({ x: point.x, y: secp256k1.p - point.y }, -scalar);
-    }
-
-    let result: EcPoint | null = null;
-    let addend: EcPoint = { x: point.x, y: point.y };
-    let s = scalar;
-
-    while (s > 0n) {
-        if (s & 1n) {
-            result = result ? ecPointAdd(result, addend) : addend;
-        }
-        addend = ecPointAdd(addend, addend)!;
-        s >>= 1n;
-    }
-    return result;
-}
-
-function ecPointAdd(a: EcPoint | null, b: EcPoint | null): EcPoint | null {
-    if (!a) return b;
-    if (!b) return a;
-    if (a.x === b.x && a.y === b.y) {
-        return ecPointDouble(a);
-    }
-    if (a.x === b.x) return null;
-
-    const p = secp256k1.p;
-    const lam = mod((b.y - a.y) * modInverse(mod(b.x - a.x, p), p), p);
-    const x = mod(lam * lam - a.x - b.x, p);
-    const y = mod(lam * (a.x - x) - a.y, p);
-
-    return { x, y };
-}
-
-function ecPointDouble(point: EcPoint): EcPoint {
-    const p = secp256k1.p;
-    const lam = mod((3n * point.x * point.x + secp256k1.a) * modInverse(mod(2n * point.y, p), p), p);
-    const x = mod(lam * lam - 2n * point.x, p);
-    const y = mod(lam * (point.x - x) - point.y, p);
-
-    return { x, y };
-}
-
 function sign(digest: Buffer, privateKey: Buffer): Buffer {
     if (!Buffer.isBuffer(digest) || digest.length !== 32) {
         throw new Error('Digest must be 32 bytes');
@@ -333,8 +207,8 @@ function sign(digest: Buffer, privateKey: Buffer): Buffer {
             recoveryId ^= 1;
         }
 
-        const rBuf = bufferFromBigInt(rBig, 32);
-        const sBuf = bufferFromBigInt(sBig, 32);
+        const rBuf = Buffer.from(bufferFromBigInt(rBig, 32));
+        const sBuf = Buffer.from(bufferFromBigInt(sBig, 32));
 
         if (!(rBuf[0] < 0x80 && (rBuf[0] !== 0 || rBuf[1] >= 0x80))) {
             nonce++;
@@ -493,19 +367,8 @@ function base58Decode(str: string): Buffer {
     return Buffer.from(_base58Decode(str));
 }
 
-function base58CheckEncode(payload: Buffer): string {
-    const checksum = hash256(payload).slice(0, 4);
-    return base58Encode(Buffer.concat([payload, checksum]));
-}
-
 function base58CheckDecode(str: string): Buffer {
-    const decoded = base58Decode(str);
-    if (decoded.length < 4) throw new Error('Invalid base58check: too short');
-    const payload = decoded.slice(0, -4);
-    const checksum = decoded.slice(-4);
-    const expected = hash256(payload).slice(0, 4);
-    if (!checksum.equals(expected)) throw new Error('Invalid base58check: checksum mismatch');
-    return payload;
+    return Buffer.from(_base58CheckDecode(str));
 }
 
 function normalizeBrainKey(name: string, role: string, password: string): Buffer {

@@ -1,6 +1,6 @@
 
 import { toFiniteNumber } from './order/format.js';
-import { resolveConfigValue } from './order/utils/math.js';
+import { resolveConfigValue, isPercentageString } from './order/utils/math.js';
 import { DEFAULT_TARGET_CR } from './constants.js';
 import { roundToDecimals } from './order/utils/math.js';
 'use strict';
@@ -44,7 +44,7 @@ function positiveOrNull(value: unknown): number | null {
 function resolveCollateralLimit(value: unknown, referenceAmount: unknown): number | null {
     const resolved = resolveConfigValue(value, referenceAmount);
     if (!Number.isFinite(resolved)) return null;
-    if (typeof value === 'string' && value.trim().endsWith('%')) {
+    if (isPercentageString(value)) {
         return resolved >= 0 ? resolved : null;
     }
     return resolved > 0 ? resolved : null;
@@ -71,7 +71,7 @@ function clampIncreaseToTotalMax(rawIncrease: unknown, currentTotal: unknown, ma
 function resolveMinCollateralIncreaseThreshold(value: unknown, referenceAmount: unknown = null): number | null {
     if (value === undefined) return 0;
     if (value === null) return null;
-    if (typeof value === 'string' && value.trim().endsWith('%')) {
+    if (isPercentageString(value)) {
         const trimmed = value.trim();
         if (!/^(?:\d+(?:\.\d+)?|\.\d+)%$/.test(trimmed)) {
             return null;

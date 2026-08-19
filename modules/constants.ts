@@ -1358,7 +1358,7 @@ let COW_PERFORMANCE = {
 };
 
 // Native BitShares Client Configuration
-// Constants from the btsdex → native integration (modules/bitshares-native/).
+// Constants from the native integration (modules/bitshares-native/).
 // Documents chain-level constants, transport tuning, cache sizing, and serialization
 // parameters. The underlying native module is self-contained; these mirror its
 // defaults and serve as the canonical reference for DEXBot2 runtime behavior.

@@ -1,7 +1,7 @@
 
 import getEcc from './bitshares-native/crypto/ecc_selector.js';
 import { NATIVE_CLIENT } from './constants.js';
-import Logger from './logger.js';
+import Logger from './order/logger.js';
 import { getErrorMessage } from './utils/errors.js';
 'use strict';
 

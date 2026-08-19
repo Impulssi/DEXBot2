@@ -4,7 +4,7 @@ import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { PATHS } from '../../modules/paths.js';
-import { roundTo } from '../../modules/utils/math_utils.js';
+import { roundTo } from '../../modules/order/utils/math.js';
 
 'use strict';
 /**

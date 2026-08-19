@@ -9,6 +9,7 @@ import { writeJsonFileAtomic as baseWriteJsonFileAtomic } from '../../modules/bo
 import { acquireFileLock } from '../../market_adapter/utils/file_lock.js';
 import { assertNoDuplicateBotKeys } from '../../modules/bot_settings.js';
 import { clone } from './utils.js';
+import { createBotKey, sanitizeKey } from '../../modules/account_orders.js';
 const storage = getStorage();
 
 import type { BotSettings, ProfileOptions, Logger, ClawProfileBundle } from './types.js';
@@ -599,30 +600,6 @@ function buildBotSettingsView(bot: Record<string, any> | null, bundle: ClawProfi
     rawValidation: currentValidation,
     validation: effectiveValidation
   };
-}
-
-/**
- * Sanitize an arbitrary value into a lowercase, hyphenated bot-key string.
- */
-function sanitizeKey(source: any) {
-  if (!source) return 'bot';
-  return String(source)
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'bot';
-}
-
-function createBotKey(bot: any, index: any) {
-  if (bot && bot.name) {
-    return sanitizeKey(bot.name);
-  }
-  const identifier = bot && bot.assetA && bot.assetB
-    ? `${bot.assetA}/${bot.assetB}`
-    : bot && bot.assetAId && bot.assetBId
-      ? `${bot.assetAId}/${bot.assetBId}`
-      : `bot-${index}`;
-  return `${sanitizeKey(identifier)}-${index}`;
 }
 
 /**

@@ -22,7 +22,7 @@ import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entrop
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { writeChartFile }            from './chart_utils.js';
 import { getCandleClose }            from './math_utils.js';
-import { roundTo } from '../modules/utils/math_utils.js';
+import { roundTo } from '../modules/order/utils/math.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;

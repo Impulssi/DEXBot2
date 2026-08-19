@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from './chart_utils.js';
 import { getStorage } from '../modules/storage/index.js';
 const { ensureDir, readJSON } = getStorage();
-import { fixedTo } from '../modules/utils/math_utils.js';
+import { fixedTo } from '../modules/order/utils/math.js';
 import { bindHoverStateFn, zoomResetScript } from './chart_ui.js';
 'use strict';
 function parseArgs(argv = process.argv.slice(2)) {

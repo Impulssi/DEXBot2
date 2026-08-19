@@ -224,7 +224,7 @@ Commit `e64db685` replaced 6 single-value boolean state fields with refcounts/st
 | `maxBatchAttempts` | `3` | `grid_reconcile.ts:415` | Update-batch retry limit |
 | `PRICE_TOLERANCE_MAX_PERCENT` | `0.01` (1%) | `constants.ts:452` | Cap on price tolerance |
 | `PRICE_TOLERANCE_MIN_ABSOLUTE` | `0.0001` | `constants.ts:456` | Floor for price tolerance |
-| `PIPELINE_TIMING.TIMEOUT_MS` | `300000` (5min) | `constants.ts:807` | Base pipeline timing; resync uses 2× (10 min) |
+| `PIPELINE_TIMING.TIMEOUT_MS` | `300000` (5min) | `constants.ts:805` | Base pipeline timing; resync uses 2× (10 min) |
 
 ---
 

@@ -1,7 +1,7 @@
 
 import { NATIVE_CLIENT } from '../../constants.js';
 import { LRUCache } from '../lru_cache.js';
-import Logger from '../../logger.js';
+import Logger from '../../order/logger.js';
 import { hasTxBuilderFeeCacheTtlSet, getTxBuilderFeeCacheTtl } from '../../config.js';
 import { getErrorMessage } from '../../utils/errors.js';
 'use strict';

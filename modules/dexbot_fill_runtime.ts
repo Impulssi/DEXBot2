@@ -127,7 +127,7 @@ async function flushProcessedFillPersistenceForKeys(bot: any, fillKeys: any, rea
  * Build a degraded orphan fill replay key when the standard fill history id is missing.
  * The fallback key is derived from order_id, block_num, pays/receives amounts and asset IDs.
  * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {import('./types.js').FillEvent} fill - Raw fill event
+ * @param {any} fill - Raw fill event
  * @returns {string|null} Orphan fallback key or null if insufficient data
  */
 function buildOrphanFillFallbackKey(bot: any, fill: any) {
@@ -158,8 +158,8 @@ function buildOrphanFillFallbackKey(bot: any, fill: any) {
  * Apply fill accounting with replay-safe deduplication.
  * Prevents the same fill from being accounted twice across restarts or re-syncs.
  * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {import('./types.js').FillEvent} fill - Raw fill event
- * @param {import('./types.js').FillOperationData} fillOp - Extracted fill operation data
+ * @param {any} fill - Raw fill event
+ * @param {any} fillOp - Extracted fill operation data
  * @param {Object} [options] - Options
  * @param {Function} [options.missingKeyMessage] - Callback to generate log message when fill key is missing
  * @param {Function} [options.fallbackKeyMessage] - Callback to generate log message when fallback key is used
@@ -171,7 +171,7 @@ function buildOrphanFillFallbackKey(bot: any, fill: any) {
  * @param {string} [options.replayLevel='debug'] - Log level for replay messages
  * @param {string} [options.persistenceMode='immediate'] - Processed fill persistence mode (wrappers default to 'batched')
  * @param {boolean} [options.allowOrphanFallbackKey=false] - Allow degraded orphan fallback key
- * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
+ * @returns {Promise<any>}
  */
 async function applyReplaySafeFillAccounting(bot: any, fill: any, fillOp: any, {
     missingKeyMessage,
@@ -237,14 +237,14 @@ async function applyReplaySafeFillAccounting(bot: any, fill: any, fillOp: any, {
  * Apply replay-safe fill accounting for tracked fills (with fill history id).
  * Wraps applyReplaySafeFillAccounting with context and default message builders.
  * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {import('./types.js').FillEvent} fill - Raw fill event
- * @param {import('./types.js').FillOperationData} fillOp - Extracted fill operation data
+ * @param {any} fill - Raw fill event
+ * @param {any} fillOp - Extracted fill operation data
  * @param {Object} [options] - Options
  * @param {string} [options.context] - Context label for log messages
  * @param {Object} [options.logger] - Logger instance
  * @param {Function} [options.replayMessage] - Callback to generate log message on duplicate fill
  * @param {string} [options.persistenceMode='batched'] - Processed fill persistence mode
- * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
+ * @returns {Promise<any>}
  */
 async function applyReplaySafeTrackedFillAccounting(bot: any, fill: any, fillOp: any, {
     context,
@@ -270,14 +270,14 @@ async function applyReplaySafeTrackedFillAccounting(bot: any, fill: any, fillOp:
  * Apply replay-safe fill accounting for orphan fills (missing fill history id).
  * Uses a degraded orphan fallback key when the standard key is unavailable.
  * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {import('./types.js').FillEvent} fill - Raw fill event
- * @param {import('./types.js').FillOperationData} fillOp - Extracted fill operation data
+ * @param {any} fill - Raw fill event
+ * @param {any} fillOp - Extracted fill operation data
  * @param {Object} [options] - Options
  * @param {string} [options.context] - Context label for log messages
  * @param {Object} [options.logger] - Logger instance
  * @param {Function} [options.replayMessage] - Callback to generate log message on duplicate fill
  * @param {string} [options.persistenceMode='batched'] - Processed fill persistence mode
- * @returns {Promise<import('./types.js').ReplaySafeFillResult>}
+ * @returns {Promise<any>}
  */
 async function applyReplaySafeOrphanFillAccounting(bot: any, fill: any, fillOp: any, {
     context,

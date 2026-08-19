@@ -27,7 +27,7 @@ function loadSettingsFile(filePath: string, { silent = false, exitOnError = true
         if (exitOnError) {
             throw err;
         }
-        throw err;
+        return { config: {}, filePath };
     }
 }
 

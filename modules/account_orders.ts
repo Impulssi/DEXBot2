@@ -65,8 +65,8 @@ import { PATHS } from './paths.js';
 import AsyncLock from './order/async_lock.js';
 import { isPhantomOrder } from './order/utils/order.js';
 import * as Format from './order/format.js';
-import { ensureDir } from './order/utils/system.js';
-import Logger from './logger.js';
+import { ensureDir, nowIso } from './order/utils/system.js';
+import Logger from './order/logger.js';
 import { getErrorMessage } from './utils/errors.js';
 const storage = getStorage();
 const { toFiniteNumber } = Format;
@@ -117,15 +117,6 @@ function createBotKey(bot: any, index: any) {
       ? `${bot.assetAId}/${bot.assetBId}`
       : `bot-${index}`;
   return `${sanitizeKey(identifier)}-${index}`;
-}
-
-/**
- * Returns the current date and time in ISO format.
- * @returns {string} ISO timestamp.
- * @private
- */
-function nowIso() {
-  return new Date().toISOString();
 }
 
 const SENSITIVE_KEY_PATTERN = /(private|secret|password|credential|wif|token|hmac|memo)/i;
@@ -665,5 +656,5 @@ class AccountOrders {
   }
 }
 
-export { AccountOrders, createBotKey }
+export { AccountOrders, createBotKey, sanitizeKey }
 

@@ -808,14 +808,12 @@ async function testCryptoSync() {
     assert.strictEqual(typeof sync.createHash, 'function');
     assert.strictEqual(typeof sync.createHmac, 'function');
     assert.strictEqual(typeof sync.randomBytes, 'function');
-    assert.strictEqual(typeof sync.randomFill, 'function');
     assert.strictEqual(typeof sync.timingSafeEqual, 'function');
     assert.strictEqual(typeof sync.hkdfSync, 'function');
     assert.strictEqual(typeof sync.scryptSync, 'function');
     assert.strictEqual(typeof sync.createCipheriv, 'function');
     assert.strictEqual(typeof sync.createDecipheriv, 'function');
     assert.strictEqual(typeof sync.createECDH, 'function');
-    assert.strictEqual(typeof sync.scrypt, 'function');
 
     // SHA-256 known vector
     const hash = sync.createHash('sha256');
@@ -838,19 +836,6 @@ async function testCryptoSync() {
     const r2 = sync.randomBytes(16);
     assert.strictEqual(r1.length, 16);
     assert.notStrictEqual(r1.toString('hex'), r2.toString('hex'));
-
-    // randomFill
-    await new Promise<void>((resolve, reject) => {
-        const fillBuf = Buffer.alloc(16);
-        sync.randomFill(fillBuf, (err: any, buf: Buffer) => {
-            if (err) return reject(err);
-            try {
-                assert.strictEqual(buf.length, 16);
-                assert.ok(buf.some((b: number) => b !== 0));
-                resolve();
-            } catch (e) { reject(e); }
-        });
-    });
 
     // timingSafeEqual
     assert.ok(sync.timingSafeEqual(Buffer.from('abc'), Buffer.from('abc')));
@@ -885,15 +870,6 @@ async function testCryptoSync() {
     // hkdfSync
     const hkdfBuf = sync.hkdfSync('sha256', Buffer.from('key'), Buffer.alloc(16), Buffer.from('info'), 32);
     assert.strictEqual(hkdfBuf.byteLength || hkdfBuf.length, 32);
-
-    // scrypt (async callback-based)
-    const scryptResult = await new Promise<Buffer>((resolve, reject) => {
-        sync.scrypt('password', 'salt', 32, { N: 16, r: 1, p: 1 }, (err: any, buf: Buffer) => {
-            if (err) return reject(err);
-            resolve(buf);
-        });
-    });
-    assert.strictEqual(scryptResult.length, 32);
 
     console.log('  ✓ crypto/sync all exports');
 }

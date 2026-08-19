@@ -73,7 +73,7 @@
 
 import { ORDER_TYPES, FEE_PARAMETERS, DEFAULT_CONFIG, GRID_LIMITS } from '../../constants.js';
 import * as Format from '../format.js';
-import Logger from '../../logger.js';
+import Logger from '../../order/logger.js';
 import * as fundRegistry from '../../fund_registry.js';
 import { getErrorMessage } from '../../utils/errors.js';
 const { isValidNumber, toFiniteNumber } = Format;
@@ -115,7 +115,7 @@ function isExplicitZeroAllocation(value: any) {
  * @param {*} v - Value to test
  * @returns {boolean} True if v is a string ending with '%'
  */
-function isPercentageString(v: any) {
+function isPercentageString(v: any): v is string {
     return typeof v === 'string' && v.trim().endsWith('%');
 }
 
@@ -661,6 +661,14 @@ function getPrecisionsForManager(assets: any) {
 }
 
 /**
+ * Compute the quantum (smallest representable unit) for a given asset precision.
+ * quantum = 10^-precision (e.g., 8 decimals → 1e-8).
+ */
+function quantumForPrecision(precision: any): number {
+    return Math.pow(10, -precision);
+}
+
+/**
  * Calculate precision slack (rounding tolerance) for a given precision level.
  * Used for safe comparison of blockchain values that may differ by rounding.
  * 
@@ -669,7 +677,7 @@ function getPrecisionsForManager(assets: any) {
  * @returns {number} Tolerance value (e.g., 2 * 10^-8 for 8-decimal precision)
  */
 function getPrecisionSlack(precision: any, factor: any = 2) {
-    return factor * Math.pow(10, -precision);
+    return factor * quantumForPrecision(precision);
 }
 
 /**
@@ -1302,7 +1310,7 @@ function countGapBandSpread(manager: any, orders: Iterable<any>, resolveIndex: (
     return count;
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.

@@ -73,13 +73,13 @@ function encode(payload: Uint8Array | string): string {
 
 function decode(value: string): Uint8Array {
     const decoded = base58Decode(value);
-    if (decoded.length < 4) throw new Error('Invalid Base58Check payload');
+    if (decoded.length < 4) throw new Error('Invalid base58check: too short');
 
     const payload = decoded.subarray(0, -4);
     const expected = decoded.subarray(-4);
     const actual = checksum(payload);
     if (!timingSafeEqual(expected, actual)) {
-        throw new Error('Invalid Base58Check checksum');
+        throw new Error('Invalid base58check: checksum mismatch');
     }
 
     return payload;
@@ -104,13 +104,13 @@ async function encodeAsync(payload: Uint8Array): Promise<string> {
 async function decodeAsync(value: string): Promise<Uint8Array> {
     const provider = getCrypto();
     const decoded = base58Decode(value);
-    if (decoded.length < 4) throw new Error('Invalid Base58Check payload');
+    if (decoded.length < 4) throw new Error('Invalid base58check: too short');
 
     const payload = decoded.subarray(0, -4);
     const expected = decoded.subarray(-4);
     const actual = await checksumAsync(payload);
     if (!await provider.timingSafeEqual(expected, actual)) {
-        throw new Error('Invalid Base58Check checksum');
+        throw new Error('Invalid base58check: checksum mismatch');
     }
 
     return payload;

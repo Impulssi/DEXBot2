@@ -49,7 +49,8 @@ import {
     getPrecisionSlack,
     getDoubleDustThreshold,
     findPriceCollision,
-    calculatePriceTolerance
+    calculatePriceTolerance,
+    clamp
 } from './math.js';
 import {
     isOrderOnChain,
@@ -385,7 +386,7 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
     if (targetBoundary !== null) {
         const maxIdx = Math.max(0, masterGrid.size - 1);
         if (targetBoundary < 0 || targetBoundary > maxIdx) {
-            const clamped = Math.max(0, Math.min(maxIdx, targetBoundary));
+            const clamped = clamp(targetBoundary, 0, maxIdx);
             if (logger) {
                 logger(`[RECONCILE] Clamping target boundary ${targetBoundary} -> ${clamped} (max ${maxIdx}).`, 'warn');
             }
@@ -613,7 +614,7 @@ function summarizeActions(actions: any) {
 /**
  * Check if a rebalance result has executable actions.
  *
- * @param {import('./types').ReconcileResult} rebalanceResult - Rebalance result to check
+ * @param {any} rebalanceResult - Rebalance result to check
  * @returns {boolean} True if actions array is non-empty
  */
 function hasExecutableActions(rebalanceResult: any) {
@@ -638,7 +639,7 @@ function hasExecutableActions(rebalanceResult: any) {
  * where calculatePriceTolerance exceeds the grid increment) from killing
  * all other CREATE/UPDATE/CANCEL actions in the same batch.
  *
- * @param {Array<import('./types').CowAction>} actions - List of COW actions
+ * @param {Array<any>} actions - List of COW actions
  * @param {Map} orders - Current order grid
  * @param {Object|null} [assets=null] - Asset metadata for tolerance calculation
  * @param {Array<Object>} [chainOrderCandidates=[]] - Unmatched on-chain orders
@@ -926,7 +927,7 @@ function _isProjectionUnchanged(current: any, targetOrder: any, resultSize: any,
 
 /**
  * Project target grid into working grid
- * @param {import('./types').WorkingGrid} workingGrid - Working grid to modify
+ * @param {any} workingGrid - Working grid to modify
  * @param {Map} targetGrid - Target state
  * @param {Object} [options] - Optional parameters
  * @param {Array} [options.actions] - Pre-existing COW actions to consider

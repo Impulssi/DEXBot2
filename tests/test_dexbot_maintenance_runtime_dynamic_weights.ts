@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
 const { ensureDir, readJSON, writeJSON } = require('../modules/storage').getStorage();
-const { fixedTo } = require('../modules/utils/math_utils');
+const { fixedTo } = require('../modules/order/utils/math');
 
 console.log('Running dexbot maintenance runtime dynamic weight tests');
 
@@ -150,6 +150,7 @@ async function testPerformGridResyncAppliesVolatilityOnlyDynamicWeights() {
             },
         }),
         parseJsonWithComments: (text) => JSON.parse(text),
+        nowIso: () => new Date().toISOString(),
     });
     setCachedModule(formatPath, {});
     setCachedModule(orderUtilsPath, {
@@ -969,6 +970,7 @@ async function testRmsDivergenceRunsFullGridResync() {
         },
         loadAmaCenterSnapshot: () => null,
         parseJsonWithComments: (text) => JSON.parse(text),
+        nowIso: () => new Date().toISOString(),
     });
     setCachedModule(gridPath, {
         monitorDivergence: async () => ({
@@ -1076,6 +1078,7 @@ function installSpreadTestModules(opts: {
         applyGridDivergenceCorrections: opts.applyCorrections,
         loadAmaCenterSnapshot: () => null,
         parseJsonWithComments: (text) => JSON.parse(text),
+        nowIso: () => new Date().toISOString(),
     });
     setCachedModule(gridPath, {
         monitorDivergence: async () => opts.divergence,
@@ -1244,6 +1247,7 @@ async function testDexbotClassPerformGridResyncForwardsOptions() {
         initializeFeeCache: async () => {},
         applyGridDivergenceCorrections: async (_1: any, _2: any, _3: any, _4: any, _5: any) => {},
         parseJsonWithComments: (text) => JSON.parse(text),
+        nowIso: () => new Date().toISOString(),
     });
     setCachedModule(validatePath, {
         hasExecutableActions: () => false,

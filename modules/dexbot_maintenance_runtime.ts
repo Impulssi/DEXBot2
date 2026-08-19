@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url);
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createHash } from './crypto/sync.js';
+import { nowIso } from './order/utils/system.js';
 import { path } from './path_api.js';
 import * as chainOrders from './chain_orders.js';
 import * as grid from './order/grid.js';
@@ -115,7 +116,7 @@ function usesAmaGridPrice(bot: any) {
 /**
  * Find a bot entry in the bots config snapshot that matches a runtime config.
  * Matches by botKey or name.
- * @param {import('./types.js').BotsConfigSnapshot} snapshot - Bots configuration snapshot
+ * @param {any} snapshot - Bots configuration snapshot
  * @param {Object} config - Runtime bot configuration
  * @returns {Object|null} Matched bot entry or null
  */
@@ -136,7 +137,7 @@ function findSnapshotBotForRuntimeConfig(snapshot: any, config: any) {
 
 /**
  * Check if a runtime bot configuration requires the market adapter.
- * @param {import('./types.js').BotsConfigSnapshot} snapshot - Bots configuration snapshot
+ * @param {any} snapshot - Bots configuration snapshot
  * @param {Object} config - Runtime bot configuration
  * @returns {boolean} True if the bot uses AMA grid pricing
  */
@@ -271,7 +272,7 @@ async function maybeRunTargetedDriftReconciliation(bot: any, context: any) {
 
 /**
  * Load and fingerprint the bots.json configuration file.
- * @returns {import('./types.js').BotsConfigSnapshot} Snapshot with exists flag, fingerprint, active bots list, and adapter requirement
+ * @returns {any} Snapshot with exists flag, fingerprint, active bots list, and adapter requirement
  */
 function loadBotsConfigSnapshot() {
     if (!storage.exists(PROFILES_BOTS_FILE)) {
@@ -421,7 +422,7 @@ async function stopMarketAdapterPm2() {
  * Starts or stops the market adapter based on whether any active bot uses AMA grid pricing.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [context='periodic'] - Context label for logging
- * @returns {Promise<import('./types.js').MarketAdapterSyncResult>}
+ * @returns {Promise<any>}
  */
 async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = 'periodic') {
     if (bot._marketAdapterWatchdogInFlight) {
@@ -570,7 +571,7 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
  * Applies live dynamic weights if the bot is whitelisted and weights are ready.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [context='runtime'] - Context label for logging
- * @returns {import('./types.js').DynamicWeightRefreshResult}
+ * @returns {any}
  */
 function refreshDynamicWeightDistribution(bot: any, context: any = 'runtime') {
     const baseWeights = cloneWeightDistribution(
@@ -641,7 +642,7 @@ function refreshDynamicWeightDistribution(bot: any, context: any = 'runtime') {
  * Read and parse a trigger file's metadata payload.
  * Determines whether the trigger originated from the market adapter or was manual.
  * @param {string} triggerFile - Path to the trigger file
- * @returns {import('./types.js').GridResyncMetadata} Parsed trigger metadata
+ * @returns {any} Parsed trigger metadata
  */
 function readTriggerMetadata(triggerFile: any) {
     const manualTriggerMetadata = (payload: any = null) => ({
@@ -678,7 +679,7 @@ function readTriggerMetadata(triggerFile: any) {
  * Build grid resync metadata from a reason string.
  * Maps known reason strings to structured metadata with refresh flags.
  * @param {string} reason - Resync reason identifier (e.g. 'manual_grid_resync', 'rms_structural_grid_resync')
- * @returns {import('./types.js').GridResyncMetadata}
+ * @returns {any}
  */
 function buildGridResyncMetadata(reason: any) {
     const resetSource = String(reason || '').trim() || 'dexbot_grid_resync';
@@ -703,8 +704,8 @@ function buildGridResyncMetadata(reason: any) {
 
 /**
  * Build grid resync options from a reason string or metadata object.
- * @param {string|import('./types.js').GridResyncMetadata} reasonOrMetadata - Reason string or metadata object
- * @returns {import('./types.js').GridResyncOptions}
+ * @param {string|any} reasonOrMetadata - Reason string or metadata object
+ * @returns {any}
  */
 function buildGridResyncOptions(reasonOrMetadata: any) {
     const metadata = typeof reasonOrMetadata === 'string'
@@ -747,7 +748,7 @@ function promoteAmaCenterSnapshotForGridReset(botKey: any) {
                 ...snapshot,
                 gridCenterPrice: amaCenterPrice,
                 centerPrice: amaCenterPrice,
-                updatedAt: new Date().toISOString(),
+                updatedAt: nowIso(),
             };
         });
         return result.ok;
@@ -767,7 +768,7 @@ function promoteAmaCenterSnapshotForGridReset(botKey: any) {
 function updateBotGridResetMetadata(botKey: any, options: { resetAt?: string; resetSource?: string } = {}) {
     if (!botKey) return false;
 
-    const resetAt = options.resetAt || new Date().toISOString();
+    const resetAt = options.resetAt || nowIso();
     const resetSource = options.resetSource || 'dexbot_grid_resync';
     const snapshotPath = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
 
@@ -796,7 +797,7 @@ function updateBotGridResetMetadata(botKey: any, options: { resetAt?: string; re
  * Perform a full grid resync: reload config, optionally refresh center price,
  * recalculate the grid, persist, and record reset metadata.
  * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {import('./types.js').GridResyncOptions} [options] - Grid resync options
+ * @param {any} [options] - Grid resync options
  * @param {boolean} [options.skipIdle=false] - Skip the idle-cooldown deferral
  * @returns {Promise<boolean>} True if resync succeeded
  */
@@ -907,7 +908,7 @@ function performGridResync(bot: any, options: {
             await self.manager.persistGrid();
             success = true;
             if (updateBotGridResetMetadata(self.config?.botKey, {
-                resetAt: new Date().toISOString(),
+                resetAt: nowIso(),
                 resetSource,
             })) {
                 self._log('Recorded grid reset metadata for dynamic grid state.', 'info');
@@ -1308,7 +1309,7 @@ function stopBlockchainFetchInterval(bot: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} botId - Bot identifier
  * @param {string} [context='shutdown'] - Context label for logging
- * @returns {Promise<import('./types.js').MarketAdapterReleaseResult>}
+ * @returns {Promise<any>}
  */
 async function releaseMarketAdapterRuntime(_bot: any, botId: any, context: any = 'shutdown') {
     if (isPm2Runtime()) {
@@ -1397,7 +1398,7 @@ function scheduleMaintenanceAfterIdle(ctx: any, context: any, options: any = {})
 /**
  * Schedule a deferred grid resync after idle delay elapses.
  * @param {Object} ctx - Bot context
- * @param {import('./types.js').GridResyncOptions} [options] - Grid resync options
+ * @param {any} [options] - Grid resync options
  */
 function scheduleDeferredGridResync(ctx: any, options: any = {}) {
     if (

@@ -73,7 +73,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT } from '../../constants.js';
 import * as Format from '../format.js';
 import * as MathUtils from './math.js';
-import Logger from '../../logger.js';
+import Logger from '../../order/logger.js';
 import { sleep } from './system.js';
 import { getErrorMessage } from '../../utils/errors.js';
 const { isValidNumber, toFiniteNumber } = Format;
@@ -1215,14 +1215,14 @@ function parseOptionalPrecision(value: any) {
 function precisionToQuantum(precision: any) {
     const p = parseOptionalPrecision(precision);
     if (p === null) return null;
-    const quantum = Math.pow(10, -p);
+    const quantum = MathUtils.quantumForPrecision(p);
     return quantum > 0 ? quantum : Number.EPSILON;
 }
 
 function observedQuantum(a: any, b: any) {
     const maxDecimals = Math.max(getDecimalPlaces(a), getDecimalPlaces(b));
     if (maxDecimals <= 0) return Number.EPSILON;
-    const quantum = Math.pow(10, -maxDecimals);
+    const quantum = MathUtils.quantumForPrecision(maxDecimals);
     return quantum > 0 ? quantum : Number.EPSILON;
 }
 

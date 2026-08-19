@@ -641,7 +641,7 @@ class SyncEngine {
      * @param {Object} mgr - OrderManager instance
      * @param {number} assetAPrecision - Asset A precision
      * @param {number} assetBPrecision - Asset B precision
-     * @param {Map<string, import('./types').ParsedChainOrder>} parsedChainOrders - Parsed chain orders by ID
+     * @param {Map<string, any>} parsedChainOrders - Parsed chain orders by ID
      * @param {Map<string, Object>} rawChainOrders - Raw blockchain order objects by ID
      * @param {Set<string>} chainOrderIdsOnGrid - Output set: chain order IDs matched to grid
      * @param {Set<string>} matchedGridOrderIds - Output set: grid order IDs matched to chain
@@ -650,7 +650,7 @@ class SyncEngine {
      * @param {Array<Object>} ordersNeedingCorrection - Output array: orders flagged for price correction
      * @param {Array<Object>} unmatchedChainOrders - Output array: open chain orders with no adoptable grid slot
      * @param {Object} options - Sync options (skipAccounting, etc.)
-     * @returns {Promise<import('./types').SyncResult>}
+     * @returns {Promise<any>}
      */
     async _performSyncFromOpenOrders(mgr: any, assetAPrecision: number, assetBPrecision: number, parsedChainOrders: Map<string, any>, rawChainOrders: Map<string, any>,
         chainOrderIdsOnGrid: Set<string>, matchedGridOrderIds: Set<string>, filledOrders: any[], updatedOrders: any[], ordersNeedingCorrection: any[], unmatchedChainOrders: any[], options: Record<string, any>) {
@@ -1292,7 +1292,7 @@ class SyncEngine {
      * Process one incremental fill-history event.
      * @param {Object} fill - Fill history event object
      * @param {Object} [options] - Persistence mode options
-     * @returns {Promise<import('./types').SyncResult>}
+     * @returns {Promise<any>}
      */
     async syncFromFillHistory(fill: any, options: Record<string, any> = {}) {
         const mgr = this.manager;
@@ -1466,7 +1466,7 @@ class SyncEngine {
      *
      * @param {Array} fills - Array of fill history event objects (same block group)
      * @param {Object} [options] - Persistence mode options
-     * @returns {Promise<import('./types').BatchSyncResult>}
+     * @returns {Promise<any>}
      */
     async syncFromFillHistoryBatch(fills: any[], options: Record<string, any> = {}) {
         const mgr = this.manager;

@@ -196,6 +196,9 @@ function privateKeyToPublicKey(rawKey: Uint8Array, compressed = true): Uint8Arra
 }
 
 export {
+    bytesFromHex,
+    hexFromBytes,
+    concatBytes,
     secp256k1,
     SECP256K1_BASE_POINT,
     bigIntFromBuffer,

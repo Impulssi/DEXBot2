@@ -236,9 +236,5 @@ function getSharedMarketAdapterRuntime(options = {}) {
     return sharedRuntime;
 }
 
-function resetSharedMarketAdapterRuntime() {
-    sharedRuntime = null;
-}
-
-export { createMarketAdapterRuntime, getSharedMarketAdapterRuntime, isLikelyAdapterRunning, isLikelyMarketAdapterProcess, isLockStale, isProcessAlive, loadLockInfo, resetSharedMarketAdapterRuntime, waitForChildExit }
+export { createMarketAdapterRuntime, getSharedMarketAdapterRuntime, isLikelyAdapterRunning, isLikelyMarketAdapterProcess, isLockStale, isProcessAlive, loadLockInfo, waitForChildExit }
 

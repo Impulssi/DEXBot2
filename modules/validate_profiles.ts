@@ -407,5 +407,5 @@ function printValidationProblems(result: { errors: ProblemList; warnings: Proble
     return true;
 }
 
-export { validateAllProfiles, printValidationProblems, loadJsonFile, validateMarketProfiles, validateWhitelist, validateMarketAdapterSettings, validateGeneralSettings, validateCrossFileConsistency }
+export { validateAllProfiles, printValidationProblems }
 

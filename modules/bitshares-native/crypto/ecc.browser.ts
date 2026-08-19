@@ -19,7 +19,7 @@ import * as pureSecp from '../../crypto/pure_secp256k1.js';
 
 import type { EcPoint } from '../../crypto/provider.js';
 
-import { base58Encode as _base58Encode, base58Decode as _base58Decode } from '../../utils/base58check.js';
+import { base58Encode as _base58Encode, base58Decode as _base58Decode, encodeAsync as base58CheckEncode, decodeAsync as base58CheckDecode } from '../../utils/base58check.js';
 const secp256k1 = pureSecp.secp256k1;
 const pointFromPublicKey = pureSecp.pointFromPublicKey;
 const publicKeyFromPoint = pureSecp.publicKeyFromPoint;
@@ -29,34 +29,10 @@ const ecPointDouble = pureSecp.ecPointDouble;
 const modPow = pureSecp.modPow;
 const modInverse = pureSecp.modInverse;
 const mod = pureSecp.mod;
+const bytesFromHex = pureSecp.bytesFromHex;
+const concatBytes = pureSecp.concatBytes;
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-function bufToHex(buf: Uint8Array): string {
-    return Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-function hexToBuf(hex: string): Uint8Array {
-    const len = hex.length >> 1;
-    const out = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        out[i] = parseInt(hex.substr(i * 2, 2), 16);
-    }
-    return out;
-}
-
-function concatBuf(...arrays: Uint8Array[]): Uint8Array {
-    let len = 0;
-    for (const a of arrays) len += a.length;
-    const out = new Uint8Array(len);
-    let off = 0;
-    for (const a of arrays) { out.set(a, off); off += a.length; }
-    return out;
-}
-
-function sliceBuf(buf: Uint8Array, start: number, end?: number): Uint8Array {
-    return buf.slice(start, end ?? buf.length);
-}
 
 function equalsBuf(a: Uint8Array, b: Uint8Array): boolean {
     if (a.length !== b.length) return false;
@@ -163,15 +139,15 @@ async function deterministicK(digest: Uint8Array, privateKey: Uint8Array, counte
     let K = new Uint8Array(32);
     let V = new Uint8Array(32).fill(0x01);
 
-    K = new Uint8Array(await hmacSha256(K, concatBuf(V, zero, x, h1)));
+    K = new Uint8Array(await hmacSha256(K, concatBytes(V, zero, x, h1)));
     V = new Uint8Array(await hmacSha256(K, V));
-    K = new Uint8Array(await hmacSha256(K, concatBuf(V, one, x, h1)));
+    K = new Uint8Array(await hmacSha256(K, concatBytes(V, one, x, h1)));
     V = new Uint8Array(await hmacSha256(K, V));
 
     let retry = false;
     const rfc6979Generate = async (): Promise<Uint8Array> => {
         if (retry) {
-            K = new Uint8Array(await hmacSha256(K, concatBuf(V, zero)));
+            K = new Uint8Array(await hmacSha256(K, concatBytes(V, zero)));
             V = new Uint8Array(await hmacSha256(K, V));
         }
         V = new Uint8Array(await hmacSha256(K, V));
@@ -265,7 +241,7 @@ async function sign(digest: Uint8Array, privateKey: Uint8Array): Promise<Uint8Ar
         if (recoveryId < 0 || recoveryId > 3) { nonce++; continue; }
 
         const compactI = recoveryId + 27 + 4;
-        return concatBuf(new Uint8Array([compactI]), rBuf, sBuf);
+        return concatBytes(new Uint8Array([compactI]), rBuf, sBuf);
     }
     throw new Error(`Failed to produce valid signature after ${MAX_SIGN_RETRIES} retries`);
 }
@@ -283,7 +259,7 @@ async function verify(digest: Uint8Array, signature: Uint8Array, publicKey: Uint
     const sBig = bigIntFromBuffer(s);
     if (rBig <= 0n || rBig >= secp256k1.n || sBig <= 0n || sBig >= secp256k1.n) return false;
 
-    const pubBuf = typeof publicKey === 'string' ? hexToBuf(publicKey) : publicKey;
+    const pubBuf = typeof publicKey === 'string' ? bytesFromHex(publicKey) : publicKey;
     const Q = pointFromPublicKey(pubBuf);
     const e = bigIntFromBuffer(digest) % secp256k1.n;
     const w = modInverse(sBig, secp256k1.n);
@@ -304,21 +280,6 @@ function base58Decode(str: string): Uint8Array {
     return _base58Decode(str);
 }
 
-async function base58CheckEncode(payload: Uint8Array): Promise<string> {
-    const csum = (await hash256(payload)).slice(0, 4);
-    return base58Encode(concatBuf(payload, csum));
-}
-
-async function base58CheckDecode(str: string): Promise<Uint8Array> {
-    const decoded = base58Decode(str);
-    if (decoded.length < 4) throw new Error('Invalid base58check: too short');
-    const payload = decoded.slice(0, -4);
-    const checksum = decoded.slice(-4);
-    const expected = (await hash256(payload)).slice(0, 4);
-    if (!equalsBuf(checksum, expected)) throw new Error('Invalid base58check: checksum mismatch');
-    return payload;
-}
-
 // ── WIF ─────────────────────────────────────────────────────────────
 
 interface WifDecodeResult {
@@ -328,8 +289,8 @@ interface WifDecodeResult {
 
 async function wifEncode(privateKey: Uint8Array, compressed = true): Promise<string> {
     if (privateKey.length !== 32) throw new Error('Private key must be 32 bytes');
-    let payload = concatBuf(new Uint8Array([0x80]), privateKey);
-    if (compressed) payload = concatBuf(payload, new Uint8Array([0x01]));
+    let payload = concatBytes(new Uint8Array([0x80]), privateKey);
+    if (compressed) payload = concatBytes(payload, new Uint8Array([0x01]));
     return base58CheckEncode(payload);
 }
 
@@ -348,7 +309,7 @@ async function wifDecode(wif: string): Promise<WifDecodeResult> {
 function buildPublicKeyDer(compressedPub: Uint8Array): Uint8Array {
     let point: Uint8Array;
     if (compressedPub.length === 64) {
-        point = concatBuf(new Uint8Array([0x04]), compressedPub);
+        point = concatBytes(new Uint8Array([0x04]), compressedPub);
     } else if (compressedPub.length === 33) {
         const prefix = compressedPub[0];
         const x = bigIntFromBuffer(compressedPub.slice(1, 33));
@@ -356,25 +317,25 @@ function buildPublicKeyDer(compressedPub: Uint8Array): Uint8Array {
         const ySq = (x3 + secp256k1.b) % secp256k1.p;
         let y = modPow(ySq, (secp256k1.p + 1n) / 4n, secp256k1.p);
         if ((y & 1n) !== BigInt(prefix === 0x03)) y = secp256k1.p - y;
-        point = concatBuf(new Uint8Array([0x04]), bufferFromBigInt(x, 32), bufferFromBigInt(y, 32));
+        point = concatBytes(new Uint8Array([0x04]), bufferFromBigInt(x, 32), bufferFromBigInt(y, 32));
     } else if (compressedPub.length === 65) {
         point = compressedPub;
     } else {
         throw new Error('Unsupported public key length: ' + compressedPub.length);
     }
-    const seqHeader = hexToBuf('3056301006072a8648ce3d020106052b8104000a034200');
-    return concatBuf(seqHeader, point);
+    const seqHeader = bytesFromHex('3056301006072a8648ce3d020106052b8104000a034200');
+    return concatBytes(seqHeader, point);
 }
 
 function buildSignatureDer(r: Uint8Array, s: Uint8Array): Uint8Array {
     const encodeInt = (buf: Uint8Array): Uint8Array => {
         let data = buf;
-        if (data[0] & 0x80) data = concatBuf(new Uint8Array([0x00]), data);
-        return concatBuf(new Uint8Array([0x02, data.length]), data);
+        if (data[0] & 0x80) data = concatBytes(new Uint8Array([0x00]), data);
+        return concatBytes(new Uint8Array([0x02, data.length]), data);
     };
     const rEnc = encodeInt(r);
     const sEnc = encodeInt(s);
-    return concatBuf(new Uint8Array([0x30, rEnc.length + sEnc.length]), rEnc, sEnc);
+    return concatBytes(new Uint8Array([0x30, rEnc.length + sEnc.length]), rEnc, sEnc);
 }
 
 // ── Brain key ───────────────────────────────────────────────────────
@@ -396,13 +357,13 @@ async function brainKeyToPrivateKey(brainKey: Uint8Array | string, sequence = 0)
 
 async function publicKeyToString(pubKeyBuf: Uint8Array, addressPrefix = 'BTS'): Promise<string> {
     const csum = (await sha256(pubKeyBuf)).slice(0, 4);
-    return addressPrefix + base58Encode(concatBuf(pubKeyBuf, csum));
+    return addressPrefix + base58Encode(concatBytes(pubKeyBuf, csum));
 }
 
 async function addressFromPublicKey(pubKeyBuf: Uint8Array, addressPrefix = 'BTS'): Promise<string> {
     const hash = await ripemd160(await sha512(pubKeyBuf));
     const csum = (await ripemd160(hash)).slice(0, 4);
-    return addressPrefix + base58Encode(concatBuf(hash, csum));
+    return addressPrefix + base58Encode(concatBytes(hash, csum));
 }
 
 function publicKeyFromBuffer(pubKeyBuffer: Uint8Array): Uint8Array {

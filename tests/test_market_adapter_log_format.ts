@@ -11,7 +11,7 @@ const {
 } = require('../market_adapter/log_format');
 const { DEFAULT_CONFIG, MARKET_ADAPTER } = require('../modules/constants');
 const { DEFAULT_AMA } = require('../market_adapter/market_adapter');
-const { fixedTo } = require('../modules/utils/math_utils');
+const { fixedTo } = require('../modules/order/utils/math');
 
 console.log('Running market adapter log format tests');
 

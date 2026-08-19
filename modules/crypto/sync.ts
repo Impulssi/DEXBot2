@@ -30,12 +30,9 @@ function throwNoCrypto(name: string): never {
 export const createHash = _crypto ? _crypto.createHash.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createHash')) as any;
 export const createHmac = _crypto ? _crypto.createHmac.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createHmac')) as any;
 export const randomBytes = _crypto ? _crypto.randomBytes.bind(_crypto) : ((..._: any[]) => throwNoCrypto('randomBytes')) as any;
-export const randomFill = _crypto ? _crypto.randomFill.bind(_crypto) : ((..._: any[]) => throwNoCrypto('randomFill')) as any;
 export const timingSafeEqual = _crypto ? _crypto.timingSafeEqual.bind(_crypto) : ((..._: any[]) => throwNoCrypto('timingSafeEqual')) as any;
 export const hkdfSync = _crypto ? _crypto.hkdfSync.bind(_crypto) : ((..._: any[]) => throwNoCrypto('hkdfSync')) as any;
 export const scryptSync = _crypto ? _crypto.scryptSync.bind(_crypto) : ((..._: any[]) => throwNoCrypto('scryptSync')) as any;
 export const createCipheriv = _crypto ? _crypto.createCipheriv.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createCipheriv')) as any;
 export const createDecipheriv = _crypto ? _crypto.createDecipheriv.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createDecipheriv')) as any;
 export const createECDH = _crypto ? _crypto.createECDH.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createECDH')) as any;
-export const scrypt = _crypto ? _crypto.scrypt.bind(_crypto) : ((..._: any[]) => throwNoCrypto('scrypt')) as any;
-export const createPrivateKey = _crypto ? _crypto.createPrivateKey.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createPrivateKey')) as any;

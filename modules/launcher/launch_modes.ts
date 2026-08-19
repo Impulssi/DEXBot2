@@ -82,8 +82,6 @@ function parseUnlockArgs(argv = process.argv) {
     };
 }
 
-const parseUnlockStartArgs = parseUnlockArgs;
-
 function parsePm2Args(argv = process.argv) {
     const args = argv.slice(2);
     const headless = args.includes('--headless');
@@ -130,5 +128,5 @@ function parsePm2Args(argv = process.argv) {
     };
 }
 
-export { findFirstPositionalArg, parsePm2Args, parseUnlockArgs, parseUnlockStartArgs }
+export { findFirstPositionalArg, parsePm2Args, parseUnlockArgs }
 

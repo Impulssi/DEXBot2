@@ -7,7 +7,7 @@ async function main() {
 console.log('Running logger tests');
 
 const Logger = require('../modules/order/index').default.logger;
-const { createPm2AwareLogger } = require('../modules/logger');
+const { createPm2AwareLogger } = require('../modules/order/logger');
 const { unlink: safeUnlink } = require('../modules/storage').getStorage();
 
 // Capture console output by stream

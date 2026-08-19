@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 import { NATIVE_CLIENT } from '../constants.js';
-import Logger from '../logger.js';
+import Logger from '../order/logger.js';
 import { getErrorMessage } from '../utils/errors.js';
 'use strict';
 
@@ -92,7 +92,7 @@ function createSubscriptionManager(chainClient: any): any {
         return null;
     }
 
-    // btsdex parity: use get_account_history (unfiltered) instead of
+    // Use get_account_history (unfiltered) instead of
     // get_account_history_operations (type-filtered). The type-filtered API
     // walks a per-account linked list and may miss fill_order operations even
     // when they exist on chain for the account. The unfiltered API uses the
@@ -212,7 +212,7 @@ function createSubscriptionManager(chainClient: any): any {
     async function primeLastDeliveredHistoryId(sub: any): Promise<string> {
         if (!sub?.accountId) return SUBSCRIPTIONS.HISTORY_API_OBJECT;
 
-        // btsdex parity: use get_account_history (unfiltered) to find the
+        // Use get_account_history (unfiltered) to find the
         // single most recent history entry. This seeds the cursor past "1.11.0"
         // so fetchFillHistoryEntries can scan from the latest entry forward.
         const fetchAnyPage = getAccountHistoryFetcher();
@@ -272,7 +272,7 @@ function createSubscriptionManager(chainClient: any): any {
 
         if (!Array.isArray(data) || data.length === 0) return;
 
-        // Extract fill objects directly from notice data (mirrors btsdex behavior).
+        // Extract fill objects directly from notice data.
         // The BitShares node sends full 1.11.x operation history objects in the
         // notice when a fill occurs. We pass them straight to callbacks — no
         // history scan, no cursor tracking needed for live fills.
@@ -387,8 +387,8 @@ function createSubscriptionManager(chainClient: any): any {
 
         subscriptionsLogger.info(`handleNotice: dispatching ${fillObjects.length} fill(s) directly from notice data`);
 
-        // Batch fills per-subscription and dispatch all at once (mirrors btsdex behavior
-        // where a single callback receives all fills from one notice).
+        // Batch fills per-subscription and dispatch all at once, so a single
+        // callback receives all fills from one notice.
         for (const [, sub] of subscriptions) {
             if (!sub.active) continue;
             const subFills = fillObjects.filter((fill) => fillMatchesAccount(fill, sub.accountId));
@@ -776,7 +776,7 @@ function createSubscriptionManager(chainClient: any): any {
                     scheduleReconnectRetry(failure.entry, failure.err);
                 }
 
-                // NOTE: No initial catch-up scan here — matching main+btsdex behavior.
+                // NOTE: No initial catch-up scan here.
                 // The startup sync (synchronizeWithChain) handles all fills from downtime.
                 // processObjects is called on reconnect (resubscribeEntry/resubscribeAll)
                 // to catch fills missed during disconnect, at which point the grid is loaded.

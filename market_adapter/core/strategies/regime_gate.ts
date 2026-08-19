@@ -2,7 +2,7 @@
 import { HurstAnalyzer } from '../signals/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer } from '../signals/permutation_entropy_analyzer.js';
 import { MARKET_ADAPTER } from '../../../modules/constants.js';
-import { roundTo } from '../../../modules/utils/math_utils.js';
+import { roundTo } from '../../../modules/order/utils/math.js';
 import { bilinearInterpolate } from './regime_interp.js';
 'use strict';
 

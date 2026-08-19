@@ -87,7 +87,7 @@ import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER, MARKET_ADAPTER
 import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
 import { parseJsonWithComments } from './order/utils/system.js';
-import { assertNoDuplicateBotKeys } from './bot_settings.js';
+import { assertNoDuplicateBotKeys, loadSettingsFile } from './bot_settings.js';
 import { mergeSettings } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
 const storage = getStorage();
@@ -102,19 +102,10 @@ const PROFILES_DIR = PATHS.PROFILES_DIR;
  * @returns {Object} An object containing the config and the file path.
  */
 function loadBotsConfig() {
-    if (!storage.exists(BOTS_FILE)) {
-        return { config: { bots: [] }, filePath: BOTS_FILE };
-    }
-    try {
-        const content = storage.readFile(BOTS_FILE);
-        if (!content || !content.trim()) return { config: { bots: [] }, filePath: BOTS_FILE };
-        const parsed = parseJsonWithComments(content);
-        if (!Array.isArray(parsed.bots)) parsed.bots = [];
-        return { config: parsed, filePath: BOTS_FILE };
-    } catch (err: any) {
-        console.error('Failed to load bots configuration:', getErrorMessage(err));
-        return { config: { bots: [] }, filePath: BOTS_FILE };
-    }
+    const { config, filePath } = loadSettingsFile(BOTS_FILE, { silent: true, exitOnError: false });
+    if (!config || typeof config !== 'object') return { config: { bots: [] }, filePath };
+    if (!Array.isArray(config.bots)) config.bots = [];
+    return { config, filePath };
 }
 
 /**

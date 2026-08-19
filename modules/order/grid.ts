@@ -141,6 +141,7 @@ import {
     resolveGapBand,
     countGapBandSpread,
     adjustBudgetForBtsFees,
+    clamp,
 } from './utils/math.js';
 import {
     filterOrdersByType,
@@ -267,7 +268,7 @@ export function clearGridBloatFlag(manager: any): void {
      *
      * @param {import('./types').OrderManager} manager
      * @param {'buy'|'sell'} side
-     * @returns {Promise<import('./types').SizingContext|null>}
+     * @returns {Promise<any|null>}
      */
 export async function getSizingContext(manager: any, side: any): Promise<any> {
         return await _getSizingContext(manager, side);
@@ -279,7 +280,7 @@ export async function getSizingContext(manager: any, side: any): Promise<any> {
      *
      * @param {import('./types').OrderManager} manager - OrderManager instance
      * @param {string} side - 'buy' or 'sell'
-     * @returns {Promise<import('./types').SizingContext|null>}
+     * @returns {Promise<any|null>}
      * @private
      */
 export async function _getSizingContext(manager: any, side: any, { skipRecalc = false }: { skipRecalc?: boolean } = {}) {
@@ -379,8 +380,8 @@ export async function _getSizingContext(manager: any, side: any, { skipRecalc = 
      * - n = ceil(ln(1.02) / ln(1.005)) = ceil(3.98) = 4 steps
      * - G = max(2, 4) = 4 slots
      *
-     * @param {import('./types').GridConfig} config - Grid configuration
-     * @returns {import('./types').GridCreationResult}
+     * @param {any} config - Grid configuration
+     * @returns {any}
      */
 export function createOrderGrid(config: any): any {
         const { startPrice, minPrice, maxPrice, incrementPercent } = config;
@@ -551,7 +552,7 @@ function _clearOrderCachesLogic(manager: any): void {
      * - Sanitizes phantom orders (ACTIVE/PARTIAL without orderId → VIRTUAL)
      *
      * @param {import('./types').OrderManager} manager - The manager instance.
-     * @param {Array<import('./types').GridOrderSlot>} grid - The persisted grid array.
+     * @param {Array<any>} grid - The persisted grid array.
      * @param {number|null} [boundaryIdx=null] - The master boundary index.
      * @returns {Promise<void>}
      */
@@ -937,7 +938,7 @@ export async function initializeGrid(manager: any): Promise<void> {
                     'warn'
                 );
             } else {
-                const clamped = Math.min(rMaxP, Math.max(rMinP, gridStartPrice));
+                const clamped = clamp(gridStartPrice, rMinP, rMaxP);
                 manager.logger?.log?.(
                     `initializeGrid: startPrice (${mp}) outside bounds [${rMinP}, ${rMaxP}]; clamping to ${clamped}`,
                     'warn'
@@ -1233,7 +1234,7 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
      * Check for grid divergence and trigger update if threshold is met.
      *
      * @param {import('./types').OrderManager} manager - Manager instance with order state
-     * @returns {import('./types').SideUpdateFlags}
+     * @returns {any}
      */
 export function checkAndUpdateGridIfNeeded(manager: any): any {
         const threshold = manager.config?.gridLimits?.GRID_REGENERATION_PERCENTAGE;
@@ -1587,10 +1588,10 @@ export async function updateGridFromBlockchainSnapshot(manager: any, orderType: 
      *   - Prevents mixing old and new grid state
      *   - Ensures consistent RMS metrics across both sides
      *
-     * @param {Array<import('./types').GridOrderSlot>} calculatedGrid - Ideal calculated grid
-     * @param {Array<import('./types').GridOrderSlot>} persistedGrid - Persisted grid state
+     * @param {Array<any>} calculatedGrid - Ideal calculated grid
+     * @param {Array<any>} persistedGrid - Persisted grid state
      * @param {import('./types').OrderManager|null} [manager=null] - Manager instance (for grid lock access)
-     * @returns {Promise<import('./types').GridComparisonResult>}
+     * @returns {Promise<any>}
      */
 export async function compareGrids(calculatedGrid: any, persistedGrid: any, manager: any = null): Promise<any> {
         if (!Array.isArray(calculatedGrid) || !Array.isArray(persistedGrid)) {
@@ -1723,9 +1724,9 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
      * Performs both Ratio-based and RMS-based divergence checks.
      * 
      * @param {import('./types').OrderManager} manager - Manager instance
-     * @param {Array<import('./types').GridOrderSlot>} calculatedGrid - Ideal/calculated grid
-     * @param {Array<import('./types').GridOrderSlot>} persistedGrid - Current/persisted grid
-     * @returns {Promise<import('./types').DivergenceResult>}
+     * @param {Array<any>} calculatedGrid - Ideal/calculated grid
+     * @param {Array<any>} persistedGrid - Current/persisted grid
+     * @returns {Promise<any>}
      */
 export async function monitorDivergence(manager: any, calculatedGrid: any, persistedGrid: any): Promise<any> {
         // 1. Check ratio-based divergence (available funds vs allocated)
@@ -1808,7 +1809,7 @@ export function calculateCurrentSpread(manager: any): number {
      * @param {import('./types').OrderManager} manager - Manager instance
      * @param {Object} BitShares - BitShares API client
      * @param {Function|null} [updateOrdersOnChainBatch=null] - Optional batch update function
-     * @returns {Promise<import('./types').SpreadCheckResult>}
+     * @returns {Promise<any>}
      */
 export async function checkSpreadCondition(manager: any, _BitShares: any, updateOrdersOnChainBatch: any = null): Promise<any> {
         // CRITICAL: Acquire corrections lock to serialize spread correction operations
@@ -2037,7 +2038,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
      *
      * @param {import('./types').OrderManager} manager - The manager instance.
      * @param {Function|null} [updateOrdersOnChainBatch=null] - Optional batch update function.
-     * @returns {Promise<import('./types').DustCheckResult>}
+     * @returns {Promise<any>}
      */
 export async function checkGridHealth(manager: any, _updateOrdersOnChainBatch: any = null): Promise<any> {
         if (!manager) return { buyDust: false, sellDust: false, buyDustOrders: [], sellDustOrders: [] };
@@ -2075,7 +2076,7 @@ export async function checkGridHealth(manager: any, _updateOrdersOnChainBatch: a
      * on individual orders (dust is cancelled immediately on detection).
      *
      * @param {import('./types').OrderManager} manager
-     * @returns {Promise<import('./types').DustCheckResult>}
+     * @returns {Promise<any>}
      */
 export async function checkWindowDust(manager: any): Promise<any> {
         if (!manager) return { buyDust: false, sellDust: false, buyDustOrders: [], sellDustOrders: [] };
@@ -2209,10 +2210,10 @@ async function _computeDustThresholdMap(manager: any, type: any): Promise<Map<st
      * objects so callers can act on them (e.g. auto-cancel).
      * @private
      * @param {import('./types').OrderManager} manager
-     * @param {Array<import('./types').GridOrderSlot>} partials - Candidate partial orders to test.
+     * @param {Array<any>} partials - Candidate partial orders to test.
      * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
      * @param {Map<string, number>} [thresholdMap=null] - Optional precomputed per-slot dust thresholds.
-     * @returns {Promise<Array<import('./types').GridOrderSlot>>} Orders whose size is below the dust threshold.
+     * @returns {Promise<Array<any>>} Orders whose size is below the dust threshold.
      */
 async function _getDustOrders(manager: any, partials: any, type: any, thresholdMap: any = null): Promise<any[]> {
         if (!partials || partials.length === 0) return [];
@@ -2230,7 +2231,7 @@ async function _getDustOrders(manager: any, partials: any, type: any, thresholdM
     /**
      * Check if any partial orders on a side represent "dust" that should be cleaned.
      * @param {import('./types').OrderManager} manager - Manager instance
-     * @param {Array<import('./types').GridOrderSlot>} partials - Partial orders to check
+     * @param {Array<any>} partials - Partial orders to check
      * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
      * @returns {Promise<boolean>} true if dust partials exist
      * @private
@@ -2242,7 +2243,7 @@ async function _hasAnyDust(manager: any, partials: any, type: any): Promise<bool
     /**
      * Public dust helper shared by StrategyEngine and Grid health checks.
      * @param {import('./types').OrderManager} manager
-     * @param {Array<import('./types').GridOrderSlot>} partials
+     * @param {Array<any>} partials
      * @param {'buy'|'sell'} side
      * @returns {Promise<boolean>}
      */
@@ -2256,9 +2257,9 @@ export async function hasAnyDust(manager: any, partials: any, side: any): Promis
      * Public dust helper that returns the subset of candidate partials currently below
      * the configured dust threshold for the requested side.
      * @param {import('./types').OrderManager} manager
-     * @param {Array<import('./types').GridOrderSlot>} partials
+     * @param {Array<any>} partials
      * @param {'buy'|'sell'} side
-     * @returns {Promise<Array<import('./types').GridOrderSlot>>}
+     * @returns {Promise<Array<any>>}
      */
 export async function getDustOrders(manager: any, partials: any, side: any): Promise<any[]> {
         const type = side === 'buy' ? ORDER_TYPES.BUY : side === 'sell' ? ORDER_TYPES.SELL : null;
@@ -2394,7 +2395,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
      * Prepares one or more orders to correct a wide spread.
      * @param {import('./types').OrderManager} manager - The OrderManager instance.
      * @param {string} preferredSide - The side to place the correction on (ORDER_TYPES.BUY/SELL).
-     * @returns {Promise<import('./types').SpreadCorrectionResult>}
+     * @returns {Promise<any>}
      * @throws {Error} If preferredSide is invalid.
      */
     export async function prepareSpreadCorrectionOrders(manager: any, preferredSide: any, outOfSpread: number = 0): Promise<any> {
@@ -2751,7 +2752,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
                     ? buyEndIdx + maxDist
                     : buyEndIdx - maxDist;
                 const maxIdx = allSlotsByPrice.length - 1;
-                const clamped = Math.max(0, Math.min(maxIdx, boundaryIdx));
+                const clamped = clamp(boundaryIdx, 0, maxIdx);
                 if (clamped !== boundaryIdx) {
                     manager.logger?.log?.(
                         `[SPREAD-CORRECTION] Boundary promotion clamped on ${sideName}: ` +

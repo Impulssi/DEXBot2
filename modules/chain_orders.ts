@@ -110,12 +110,12 @@ import { floatToBlockchainInt, blockchainToFloat, normalizeInt, validateOrderAmo
 import { FILL_PROCESSING, TIMING, NATIVE_CLIENT, DAEMON_CODES } from './constants.js';
 import * as Format from './order/format.js';
 import AsyncLock from './order/async_lock.js';
-import { readInput } from './order/utils/system.js';
+import { readInput, resolveAssetByRef } from './order/utils/system.js';
 import * as chainKeys from './chain_keys.js';
 import { getKeyStore } from './key_store.js';
 import { BroadcastUncertainError } from './dexbot_credential_client.js';
 import { classifyBroadcastFailure } from './broadcast_failure.js';
-import Logger from './logger.js';
+import Logger from './order/logger.js';
 import { getErrorMessage } from './utils/errors.js';
 function getNodeManager() { return require('./bitshares_client').getNodeManager(); }
 const { toFiniteNumber } = Format;
@@ -192,22 +192,8 @@ const _accountResolutionCache = new Map();
  */
 async function _getAssetPrecision(assetRef: any) {
     if (!assetRef) throw new Error("Asset reference required for _getAssetPrecision");
-    try {
-        if (typeof assetRef === 'string' && assetRef.match(/^1\.3\.\d+$/)) {
-            if (BitShares && BitShares.db && typeof BitShares.db.get_assets === 'function') {
-                const assets = await BitShares.db.get_assets([assetRef]);
-                if (Array.isArray(assets) && assets[0] && typeof assets[0].precision === 'number') return assets[0].precision;
-            }
-        } else if (typeof assetRef === 'string') {
-            if (BitShares && BitShares.db && typeof BitShares.db.lookup_asset_symbols === 'function') {
-                const res = await BitShares.db.lookup_asset_symbols([assetRef]);
-                if (Array.isArray(res) && res[0] && typeof res[0].precision === 'number') return res[0].precision;
-            }
-        }
-    } catch (e: any) {
-        throw new Error(`CRITICAL: Could not resolve precision for asset ${assetRef}. Halting operation to prevent scaling errors. Cause: ${getErrorMessage(e)}`);
-    }
-
+    const asset = await resolveAssetByRef(BitShares, assetRef);
+    if (asset && typeof asset.precision === 'number') return asset.precision;
     throw new Error(`CRITICAL: Could not resolve precision for asset ${assetRef}. Halting operation to prevent scaling errors. Cause: asset not found or precision missing.`);
 }
 
@@ -476,8 +462,8 @@ function isDaemonSigningToken(value: any) {
  * Execute blockchain operations via the credential daemon.
  * @param {string} accountName - Account name
  * @param {Object} signingToken - Daemon signing token with socketPath, sessionId, botHmacSecret
- * @param {Array<import('./types.js').CreatedOperation>} operations - Array of operation objects
- * @returns {Promise<import('./types.js').BroadcastResult>} Broadcast result
+ * @param {Array<any>} operations - Array of operation objects
+ * @returns {Promise<any>} Broadcast result
  */
 async function executeViaDaemonToken(accountName: any, signingToken: any, operations: any, extraOptions: any = {}) {
     const nodeManager = getNodeManager();

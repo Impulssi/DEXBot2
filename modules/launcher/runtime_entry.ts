@@ -3,22 +3,8 @@ import { dirname as _esmDirname } from 'node:path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = _esmDirname(__filename);
 
-/**
- * Resolve the DEXBot2 project root from any directory path inside the
- * project (source or dist layout).  When the input is the `dist/`
- * directory itself, the project root is its parent; otherwise the input
- * itself is the project root.
- *
- * Centralises the BUILD_DIR-aware check that was previously copy-pasted
- * across 40+ files as
- *     path.basename(dir) === BUILD_DIR ? path.dirname(dir) : dir
- */
-
 import { path } from '../path_api.js';
 import { isDistRuntime as isDistCodeRoot } from '../utils/build_dir.js';
-function resolveProjectRoot(dirPath: string): string {
-    return isDistCodeRoot(dirPath) ? path.dirname(dirPath) : dirPath;
-}
 
 // Centralised scripts root: the directory containing the entry-point scripts.
 // At this module depth (modules/launcher/), it resolves to <root> (source)
@@ -58,5 +44,5 @@ function buildRuntimeScriptArgs({
     return ['--import', 'tsx', scriptPath, ...scriptArgs];
 }
 
-export { buildRuntimeScriptArgs, buildRuntimeScriptPath, isDistCodeRoot, resolveProjectRoot, SCRIPTS_ROOT }
+export { buildRuntimeScriptArgs, buildRuntimeScriptPath, isDistCodeRoot, SCRIPTS_ROOT }
 

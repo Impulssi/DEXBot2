@@ -269,21 +269,6 @@ function buildDexbotStartArgs(botName: any, dryrun: any = false) {
     });
 }
 
-function buildUnlockArgs({ isolated = false, botName = null }: any = {}) {
-    const scriptArgs: string[] = [];
-    if (isolated) {
-        scriptArgs.push('--isolated');
-    }
-    if (botName) {
-        scriptArgs.push(botName);
-    }
-    return buildRuntimeScriptArgs({
-        codeRoot: CODE_ROOT,
-        scriptSegments: ['unlock'],
-        scriptArgs,
-    });
-}
-
 // ── Update scheduler ───────────────────────────────────────────────
 
 function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProcessRef?: { current: any }; log?: (...data: any[]) => void; warn?: (...data: any[]) => void } = {}) {
@@ -433,5 +418,5 @@ function printControlActionSummary(action: any, botNames: any, serviceNames: any
     console.log();
 }
 
-export { MONOLITHIC_PID_FILE, MONOLITHIC_BOT_PID_FILE, MONOLITHIC_BOT_INFO_FILE, MONOLITHIC_CRED_PID_FILE, MONOLITHIC_OUT_LOG, MONOLITHIC_ERROR_LOG, CREDENTIAL_SOCKET_FILE, CREDENTIAL_READY_FILE, cleanupStateFiles, readLiveMonolithicPid, readMonolithicBotInfo, isLikelyCredentialDaemonProcess, isLikelyDexbotProcess, isLikelyUnlockProcess, isExpectedProcessStarttime, isExpectedMonolithicBotPid, readProcStat, isProcessInDstate, stopCredentialDaemonPid, cleanupCredentialRuntimeFiles, stopCredentialDaemon, ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialDaemonStatus, ensureLogDir, buildDexbotStartArgs, buildUnlockArgs, createUpdateScheduler, getActiveAmaBotFingerprint, listConfiguredBots, getAllControlBotNames, getControlBotNames, getControlActionLabel, getControlServiceNames, printControlActionSummary, formatBotCount }
+export { MONOLITHIC_PID_FILE, MONOLITHIC_BOT_PID_FILE, MONOLITHIC_BOT_INFO_FILE, MONOLITHIC_CRED_PID_FILE, MONOLITHIC_OUT_LOG, MONOLITHIC_ERROR_LOG, CREDENTIAL_SOCKET_FILE, CREDENTIAL_READY_FILE, cleanupStateFiles, readLiveMonolithicPid, readMonolithicBotInfo, isLikelyCredentialDaemonProcess, isLikelyDexbotProcess, isLikelyUnlockProcess, isExpectedProcessStarttime, isExpectedMonolithicBotPid, readProcStat, isProcessInDstate, stopCredentialDaemonPid, cleanupCredentialRuntimeFiles, stopCredentialDaemon, ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialDaemonStatus, ensureLogDir, buildDexbotStartArgs, createUpdateScheduler, getActiveAmaBotFingerprint, listConfiguredBots, getAllControlBotNames, getControlBotNames, getControlActionLabel, getControlServiceNames, printControlActionSummary, formatBotCount }
 

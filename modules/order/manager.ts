@@ -677,7 +677,7 @@ class OrderManager {
     }
 
     /**
-     * @returns {import('./types').BootstrapResult}
+     * @returns {any}
      */
     finishBootstrap() {
         const result = { hadDrift: false, driftInfo: null };
@@ -751,7 +751,7 @@ class OrderManager {
      * value can lag behind the actual orders state (virtualized orders
      * release committed capital via updateOptimisticFreeBalance without
      * triggering a recalc).  Reading from the orders map avoids that race.
-     * @returns {import('./types').ChainFundsSnapshot}
+     * @returns {any}
      */
     getChainFundsSnapshot() {
         let committedBuy = 0, committedSell = 0;
@@ -905,7 +905,7 @@ class OrderManager {
     }
 
     /**
-     * @param {import('./types').AccountTotals} totals - Account balance totals
+     * @param {any} totals - Account balance totals
      * @returns {Promise<void>}
      */
     async setAccountTotals(totals: any = { buy: null, sell: null, buyFree: null, sellFree: null }) {
@@ -1088,7 +1088,7 @@ class OrderManager {
     /**
      * @param {Array<import('./types').Order>} orders
      * @param {Object} info
-     * @returns {Promise<import('./types').SyncResult>}
+     * @returns {Promise<any>}
      */
     syncFromOpenOrders(orders: any, info: any) {
         return this.sync.syncFromOpenOrders(orders, info);
@@ -1097,7 +1097,7 @@ class OrderManager {
     /**
      * @param {Object} fill - Fill event data
      * @param {Object} [options]
-     * @returns {Promise<import('./types').SyncResult>}
+     * @returns {Promise<any>}
      */
     syncFromFillHistory(fill: any, options: any) {
         return this.sync.syncFromFillHistory(fill, options);
@@ -1106,7 +1106,7 @@ class OrderManager {
     /**
      * @param {Array} fills - Array of fill event objects (same block group)
      * @param {Object} [options]
-     * @returns {Promise<import('./types').BatchSyncResult>}
+     * @returns {Promise<any>}
      */
     syncFromFillHistoryBatch(fills: any, options: any) {
         return this.sync.syncFromFillHistoryBatch(fills, options);
@@ -1115,7 +1115,7 @@ class OrderManager {
     /**
      * @param {Object} data - Chain data to synchronize
      * @param {string} src - Source identifier
-     * @returns {Promise<import('./types').SyncResult>}
+     * @returns {Promise<any>}
      */
     async synchronizeWithChain(data: any, src: any) {
         // Lock delegation: createOrder/cancelOrder acquire _gridLock internally;
@@ -1326,7 +1326,7 @@ class OrderManager {
     /**
      * @param {Array<import('./types').Order>} updates - Order updates to apply
      * @param {string} [context] - Update context label
-     * @param {import('./types').OrderUpdateOptions} [options]
+     * @param {any} [options]
      * @returns {Promise<boolean>}
      */
     async applyGridUpdateBatch(updates: any, context: any = 'batch-update', options: any = {}) {
@@ -1430,7 +1430,7 @@ class OrderManager {
      * @param {Array<import('./types').Order>} orders - Filled orders
      * @param {Set<string>} [excl] - Order IDs to exclude
      * @param {Object} [options]
-     * @returns {Promise<import('./types').CowRebalanceResult>}
+     * @returns {Promise<any>}
      */
     async processFilledOrders(orders: any, excl: any, _options: any) {
         // Step 1: Handle Fills (Accounting & State Updates)
@@ -1597,7 +1597,7 @@ class OrderManager {
     }
 
     /**
-     * @returns {import('./types').DriftCheckResult}
+     * @returns {any}
      */
     checkFundDriftAfterFills() {
         if (!this.assets || !hasValidAccountTotals(this.accountTotals)) {
@@ -1608,7 +1608,7 @@ class OrderManager {
 
     /**
      * @param {Object|number} [pipelineSignals] - Pipeline state signals or queue length
-     * @returns {import('./types').PipelineEmptyResult}
+     * @returns {any}
      */
     isPipelineEmpty(pipelineSignals: number | Record<string, any> = 0) {
         const normalizedSignals: Record<string, any> = (typeof pipelineSignals === 'number')
@@ -1686,7 +1686,7 @@ class OrderManager {
     /**
      * @param {Array} [fills] - Fill events triggering rebalance
      * @param {Set<string>} [excludeIds] - Order IDs to exclude
-     * @returns {Promise<import('./types').CowRebalanceResult>}
+     * @returns {Promise<any>}
      */
     async performSafeRebalance(fills: any = [], excludeIds: any = new Set()) {
         this.logger.log("[SAFE-REBALANCE] Starting with COW...", "info");
@@ -1901,7 +1901,7 @@ class OrderManager {
     /**
      * @param {Object} [options]
      * @param {boolean} [options.allowBootstrapTransient]
-     * @returns {import('./types').PersistenceValidationResult}
+     * @returns {any}
      */
     validateGridStateForPersistence(options: Record<string, any> = {}) {
         const result = validateGridForPersistence(this.orders, this.accountTotals);
@@ -1942,7 +1942,7 @@ class OrderManager {
      *   map is not touched. This is the only race-free way to persist a freshly
      *   built grid (e.g. from the startup `storeGrid` callback) without briefly
      *   swapping the live map and exposing it to concurrent readers.
-     * @returns {Promise<import('./types').PersistenceValidationResult>}
+     * @returns {Promise<any>}
      */
     async persistGrid(snapshotOrders: any, recentFillKeys?: any, fundSnapshot?: { btsFeesOwed: number; accountTotals: any }) {
         if (this._gridPersistenceSuspendedReason) {
@@ -2002,7 +2002,7 @@ class OrderManager {
     }
 
     /**
-     * @returns {import('./types').Metrics}
+     * @returns {any}
      */
     getMetrics() {
         return {

@@ -7,11 +7,12 @@ import { getStorage } from './storage/index.js';
 import * as client from './bitshares_client.js';
 const { BitShares, waitForConnected } = client;
 import * as chainOrders from './chain_orders.js';
-import { blockchainToFloat, floatToBlockchainInt, resolveConfigValue } from './order/utils/math.js';
+import { blockchainToFloat, floatToBlockchainInt, resolveConfigValue, isPercentageString, parsePercentageString } from './order/utils/math.js';
 import { toFiniteNumber } from './order/format.js';
 import { createBotKey } from './account_orders.js';
 import * as fundRegistry from './fund_registry.js';
 import { writeJsonFileAtomic } from './bots_file_lock.js';
+import { resolveAssetByRef, nowIso } from './order/utils/system.js';
 import { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING, NATIVE_CLIENT } from './constants.js';
 import { roundToDecimals } from './order/utils/math.js';
 import { PATHS } from './paths.js';
@@ -61,11 +62,9 @@ function normalizeResolvedPriceResult(value: any, liveSource: any, missingSource
 function positiveOrPercentOrNull(value: any): number | null {
     const numeric = positiveOrNull(value);
     if (numeric !== null) return numeric;
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    if (!trimmed.endsWith('%')) return null;
-    const percent = Number.parseFloat(trimmed.slice(0, -1));
-    return Number.isFinite(percent) && percent > 0 ? percent / 100 : null;
+    if (!isPercentageString(value)) return null;
+    const parsed = parsePercentageString(value);
+    return parsed !== null && parsed > 0 ? parsed : null;
 }
 
 function normalizeNumberArray(value: any): string[] {
@@ -406,7 +405,7 @@ class CreditRuntime {
 
     async persistState(reason: any = 'update'): Promise<any> {
         ensureDirSync(this.stateDir);
-        this.state.updatedAt = new Date().toISOString();
+        this.state.updatedAt = nowIso();
         this.state.botKey = this.botKey;
         this.state.reborrowPending = Array.isArray(this.state.pendingReborrows) && this.state.pendingReborrows.length > 0;
 
@@ -472,14 +471,8 @@ class CreditRuntime {
             return this._assetCache.get(cacheKey);
         }
 
-        let asset: any = null;
-        if (/^1\.3\.\d+$/.test(cacheKey)) {
-            const result = await this._dbCall('get_assets', [[cacheKey]]);
-            asset = Array.isArray(result) ? result[0] : null;
-        } else {
-            const result = await this._dbCall('lookup_asset_symbols', [[cacheKey]]);
-            asset = Array.isArray(result) ? result[0] : null;
-        }
+        await waitForConnected();
+        const asset = await resolveAssetByRef(BitShares, cacheKey);
 
         if (asset) {
             this._assetCache.set(cacheKey, asset);
@@ -1811,7 +1804,7 @@ class CreditRuntime {
             borrowAmount: borrowInt,
             collateralAmount: requiredCollateralInt,
             autoReborrow: !!policy?.autoReborrow,
-            requestedAt: new Date().toISOString()
+            requestedAt: nowIso()
         };
 
         return op;
@@ -2071,7 +2064,7 @@ class CreditRuntime {
                             specificPolicy: reborrowPolicy,
                             pendingRepayAmount: repayAmount,
                             pendingReleaseCollateralAmount: options.pendingReleaseCollateralAmount,
-                            requestedAt: new Date().toISOString(),
+                            requestedAt: nowIso(),
                             reason: getErrorMessage(err),
                         };
                     }
@@ -2102,7 +2095,7 @@ class CreditRuntime {
                         specificPolicy: reborrowPolicy,
                         pendingRepayAmount: repayAmount,
                         pendingReleaseCollateralAmount: options.pendingReleaseCollateralAmount,
-                        requestedAt: new Date().toISOString(),
+                        requestedAt: nowIso(),
                         reason: 'offer unavailable',
                     };
                 }
@@ -2110,7 +2103,7 @@ class CreditRuntime {
         }
 
         const result = await this.executeOperations(operations, 'credit repay');
-        this.state.lastRepayAt = new Date().toISOString();
+        this.state.lastRepayAt = nowIso();
         const onChainDeals = await this._fetchBorrowerDeals();
         const sourceDealStillActive = onChainDeals.some((entry) => String(entry?.id) === String(dealSummary.id));
         await this.refreshState();
@@ -2131,7 +2124,7 @@ class CreditRuntime {
                 specificPolicy: reborrowPolicy,
                 pendingRepayAmount: repayAmount,
                 pendingReleaseCollateralAmount: options.pendingReleaseCollateralAmount,
-                requestedAt: new Date().toISOString(),
+                requestedAt: nowIso(),
                 reason: deferredReborrowRequest?.reason || null,
             };
             if (reborrowOffer) {
@@ -2181,7 +2174,7 @@ class CreditRuntime {
             specificPolicy: request.specificPolicy || null,
             pendingRepayAmount: request.pendingRepayAmount ?? null,
             pendingReleaseCollateralAmount: request.pendingReleaseCollateralAmount ?? null,
-            requestedAt: request.requestedAt || new Date().toISOString(),
+            requestedAt: request.requestedAt || nowIso(),
             reason: request.reason || null,
         });
         this.state.reborrowPending = this.state.pendingReborrows.length > 0;
@@ -2839,7 +2832,7 @@ class CreditRuntime {
             const lastAction = {
                 context,
                 plan,
-                executedAt: new Date().toISOString(),
+                executedAt: nowIso(),
                 executed,
             };
             const configuredCollateralAsset = await this._resolveAsset(lendingItem.collateralAsset);
@@ -2851,13 +2844,13 @@ class CreditRuntime {
             this.state.lastCrAdjustment = {
                 context,
                 plan,
-                executedAt: new Date().toISOString(),
+                executedAt: nowIso(),
             };
             if (typeof this.bot?.requestGridReset === 'function') {
                 try {
                     const resetReason = plan.resetReason || 'cr-adjustment';
                     const resetResult = await this.bot.requestGridReset(resetReason);
-                    this.state.lastGridResetAt = new Date().toISOString();
+                    this.state.lastGridResetAt = nowIso();
                     return { plan, executed, resetResult };
                 } catch (err: any) {
                     this.warn(`credit runtime: grid reset after CR adjustment failed: ${getErrorMessage(err)}`);
@@ -3023,7 +3016,7 @@ class CreditRuntime {
                         collateralAmount: offer.collateralAmount,
                         borrowAmount: offer.borrowAmount,
                         offerId: offer.offer.id,
-                        executedAt: new Date().toISOString(),
+                        executedAt: nowIso(),
                     };
                     await this.refreshCreditState({}, lendingItem);
                     const gridMaintenanceResult = await this._checkGridMaintenanceAfterCreditUpdate('credit capital update', {

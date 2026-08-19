@@ -59,7 +59,7 @@ setUmask(0o077);
 const { getStorage } = require('./modules/storage');
 const storage = getStorage();
 const { runtime } = require('./modules/runtime');
-const { createPm2AwareLogger } = require('./modules/logger');
+const { createPm2AwareLogger } = require('./modules/order/logger');
 const DEXBot = require('./modules/dexbot_class').default;
 const { normalizeBotEntry } = require('./modules/dexbot_class').default;
 const { loadSettingsFile, resolveRawBotEntries, selectBotEntry } = require('./modules/bot_settings');
