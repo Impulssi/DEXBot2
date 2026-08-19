@@ -1,0 +1,2 @@
+# Compiled analysis helpers are redundant — the full analysis/ source ships.
+dist/analysis

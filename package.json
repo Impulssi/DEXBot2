@@ -15,15 +15,48 @@
   "files": [
     "dist",
     "ecosystem.config.cjs",
+    "scripts/bots",
+    "scripts/clean-dist.js",
     "scripts/clear-all.sh",
     "scripts/clear-logs.sh",
     "scripts/clear-market-adapter.sh",
     "scripts/clear-orders.sh",
     "scripts/create-bot-symlinks.sh",
+    "scripts/dexbot",
+    "scripts/git-viewer.sh",
+    "scripts/keys",
     "scripts/lib/dexbot-paths.sh",
+    "scripts/pdev.sh",
+    "scripts/pm2",
+    "scripts/pmain.sh",
     "scripts/postinstall.js",
+    "scripts/ptest.sh",
+    "scripts/README.md",
+    "scripts/repo-stats.html",
     "scripts/reset-settings.sh",
+    "scripts/unlock",
+    "scripts/update.js",
     "claw",
+    "docs/BITSHARES_ONBOARDING.md",
+    "docs/CREDENTIAL_SECURITY.md",
+    "docs/GRID_RECALCULATION.md",
+    "docs/GRID_RECONCILE.md",
+    "docs/LOGGING.md",
+    "docs/MPA_CREDIT_USAGE.md",
+    "docs/COPY_ON_WRITE_MASTER_PLAN.md",
+    "docs/COW_INVARIANTS.md",
+    "docs/FUND_MOVEMENT_AND_ACCOUNTING.md",
+    "docs/DEXBOT_COMPARISON.md",
+    "docs/EVOLUTION.md",
+    "docs/WORKFLOW.md",
+    "docs/architecture.md",
+    "docs/developer_guide.md",
+    "docs/docker.md",
+    "market_adapter/README.md",
+    "modules/README.md",
+    "analysis",
+    "tests/README.md",
+    "CHANGELOG.md",
     "README.md",
     "LICENSE"
   ],
@@ -143,9 +176,11 @@
   "tsx": {
     "tsconfig": true
   },
+  "dependencies": {
+    "tsx": "^4.22.3"
+  },
   "devDependencies": {
     "@types/node": "^25.9.1",
-    "tsx": "^4.22.3",
     "typescript": "^6.0.3"
   }
 }
