@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.18] - 2026-08-19 - Compile-First Runtime Migration (tsx to dist)
+
+### 2026-08-19
+
+- **Refactor(build)**: drop the tsx runtime dependency and run compiled `dist/` everywhere — `tsx` moves from `dependencies` to `devDependencies`; the root shims (`bot.js`, `dexbot.js`, `pm2.js`, `unlock.js`, `credential-daemon.js`, `scripts/update.js`) and launcher wrappers (`scripts/{bots,dexbot,keys,pm2,unlock}`) now hard-error on a missing `dist/` build instead of falling back to tsx. The published npm package never shipped the root `.ts` entrypoints, so the tsx fallback was dead for consumers while forcing tsx into production installs. The research toolset now compiles into the shipped tarball (`analysis/` is added to the tsconfig build and `.npmignore` no longer excludes `dist/analysis`); npm scripts (`lp:chart`, `market-adapter:*`, `analysis:*`, `ama:chart:lp-local`, `native:*`, `test:credit-renewal`, `version:sync`, `verify:browser-bundle`, and all `claw/*` commands) run the compiled `node dist/...` output. Every doc, skill file, and in-tool usage string is converted from `tsx <file>.ts` to the compiled form or the matching `npm run *` shortcut. Tests are intentionally untouched — they still run via tsx (`node --import tsx` / `npx tsx tests/...`) since `tests/` is not compiled (`package.json`, `claw/package.json`, `tsconfig.json`, `.npmignore`, `scripts/README.md`, `market_adapter/README.md`, all analysis READMEs, `claw/README.md`, `claw/docs/*`, `claw/skills/*`, `docs/GRID_RECALCULATION.md`, `bot.ts`, `claw/scripts/claw_bridge.ts`, `claw/scripts/claw_skill_md.ts`, `claw/examples/short_mpa_bts_strategy.ts`, `market_adapter/ama_signal_runner.ts`, `market_adapter/inputs/fetch_cex_synthetic_data.ts`, `scripts/test-credit-renewal.ts`, `scripts/generate_lp_chart.ts`, `scripts/clear-market-adapter.sh`, `analysis/bot_usage/discover_bot_accounts.ts`, `analysis/bot_fitting/backtest_ama_sweep.ts`).
+
 ## [1.4.17] - 2026-08-19 - Duplicate-Code Consolidation, Dead Export Purge, Analysis Source Centralization
 
 ### 2026-08-19

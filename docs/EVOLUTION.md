@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.17 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.18 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 2,024 commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 249 automated test files
-- **Releases**: 94 release entries (v0.1.0 to v1.4.17)
+- **Releases**: 95 release entries (v0.1.0 to v1.4.18)
 
 ---
 
@@ -200,11 +200,12 @@ Compact view; per-commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
 | v1.4.14 → v1.4.15 | 2 | Global npm install path handling (profiles, market-adapter, and claw data/state relocation under `~/.config/dexbot2/profiles`, `DEXBOT_MARKET_ADAPTER_DATA_DIR`/`STATE_DIR` and `DEXBOT_CLAW_DATA_DIR` env overrides, shared `scripts/lib/dexbot-paths.sh` for the clear/reset shell scripts, `clear-all` now wipes claw data), test alignment with sig-digit formatting |
 | v1.4.15 → v1.4.16 | 4 | Unified profile-state resolution (single resolver-derived profiles dir for all installs, credential-runtime `root` removal, shell-path mirror), divergence surplus/hole pairs → in-place rotations, npm auto-update flow for global installs, no master-password prompt when no vault exists |
 | v1.4.16 → v1.4.17 | 10 | Analysis source resolution centralization (`resolve_source.ts`) + strict TypeScript, shared chart CSS/browser-JS helpers, audit-driven duplicate-code consolidation (EC math, Base58Check, settings merge, asset resolution, nowIso/clamp/quantum helpers), dead export purge (`types.ts` trim, serial/launcher/formats, shim deletions), claw `createBotKey` dedup + runtime edge-case hardening, test/daemon regression fixes, full analysis toolset shipped in npm package, scripts README refresh |
+| v1.4.17 → v1.4.18 | 1 | tsx runtime dependency removal — compiled `node dist/...` workflow for all shims, npm scripts, and research tools (analysis toolset now ships compiled in the tarball), every doc/skill/usage string converted from `tsx ...ts` |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 19, 2026 (v1.4.17)
-**Total Commits**: 2,034
+**Last Updated**: August 19, 2026 (v1.4.18)
+**Total Commits**: 2,025
 **Date Range**: December 2, 2025 – August 19, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
