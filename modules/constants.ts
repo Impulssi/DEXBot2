@@ -912,8 +912,8 @@ let MARKET_ADAPTER = {
     // AMA_SLOPE_DELTA_THRESHOLD_PERCENT: Percentage of max slope used as the slope trigger
     // threshold. Used as (AMA_SLOPE_DELTA_THRESHOLD_PERCENT / 100) in the computation:
     //   threshold = (AMA_SLOPE_DELTA_THRESHOLD_PERCENT / 100) × maxSlopePct
-    //   - Default: 10 (meaning 10% of max slope)
-    AMA_SLOPE_DELTA_THRESHOLD_PERCENT: 10,
+    //   - Default: 8 (meaning 8% of max slope)
+    AMA_SLOPE_DELTA_THRESHOLD_PERCENT: 8,
 
     // DYNAMIC_WEIGHT_ASYMMETRIC_TREND_THRESHOLD: Minimum blended trend strength required
     // before the bot applies a directional weight shift in the asymmetrical path.
