@@ -274,6 +274,11 @@ async function testCOWDivergenceCorrection() {
     // desired slots hold no orders.
     console.log('Test 5: Surplus + holes become rotation UPDATEs instead of cancel+create');
     {
+        // Boundary 9: all 10 slots lie in the BUY rail (idx <= boundary), which
+        // is the geometric invariant the divergence correction now enforces —
+        // slots above the boundary would otherwise be gap-band strays excluded
+        // by isSlotInRail.  Desired window is top-3 by price = slots 7/8/9.
+        manager.boundaryIdx = 9;
         for (let i = 0; i < 10; i++) {
             await manager._updateOrder({
                 id: `slot-${i}`,
@@ -349,6 +354,87 @@ async function testCOWDivergenceCorrection() {
         }
 
         console.log('  ✓ Surplus orders repriced in place onto hole slots\n');
+    }
+
+    // Test 6: h-bts regression — a fund-driven boundary shift leaves on-chain
+    // SELL orders inside the new spread gap.  The SPREAD GUARD keeps them typed
+    // SELL (never SPREAD+ACTIVE), so a type-only window would pick them as
+    // "closest to market" and leave the rail parked across the gap (spread
+    // collapsed to one step).  The geometric rail filter must exclude them and
+    // cancel them as surplus, keeping only true in-rail sells in the window.
+    console.log('Test 6: Gap-band SELL strays excluded from the desired window and cancelled');
+    {
+        // boundary 5, gap 2 → sellStart 8; gap band = slots 6,7.
+        manager.boundaryIdx = 5;
+        manager._gapSlots = 2;
+        manager.config.activeOrders.sell = 2;
+
+        for (let i = 0; i < 10; i++) {
+            const type = i <= 5 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+            await manager._updateOrder({
+                id: `slot-${i}`,
+                price: 95 + i,
+                type,
+                state: ORDER_STATES.VIRTUAL,
+                size: 0
+            });
+        }
+
+        // On-chain SELL orders: two strays inside the gap band (slots 6,7 —
+        // kept typed SELL by the SPREAD GUARD) + two in-rail sells (slots 8,9).
+        // Without the geometric filter, desired = 6,7 (lowest-priced SELLs) and
+        // nothing is corrected; with it, desired = 8,9 and 6,7 are surplus.
+        for (const i of [6, 7, 8, 9]) {
+            await manager._updateOrder({
+                id: `slot-${i}`,
+                price: 95 + i,
+                type: ORDER_TYPES.SELL,
+                state: ORDER_STATES.ACTIVE,
+                size: 100,
+                orderId: `chain-gap-${i}`
+            });
+        }
+
+        manager._gridSidesUpdated = new Set([ORDER_TYPES.SELL]);
+
+        let capturedCowResult = null;
+        const mockUpdateFn = async (cowResult) => {
+            capturedCowResult = cowResult;
+            return { executed: true };
+        };
+
+        await applyGridDivergenceCorrections(manager, { storeMasterGrid: async () => {} }, 'bot-key', mockUpdateFn, updateGridFromBlockchainSnapshot);
+
+        assert(capturedCowResult && Array.isArray(capturedCowResult.actions), 'Should have actions');
+
+        const cancelActions = capturedCowResult.actions.filter(a => a.type === COW_ACTIONS.CANCEL);
+        const cancelIds = cancelActions.map(a => a.id);
+        console.log(`  - CANCEL actions: ${cancelIds.join(', ') || '(none)'}`);
+
+        assert(cancelIds.includes('slot-6'), 'Gap-band stray slot-6 should be cancelled as surplus');
+        assert(cancelIds.includes('slot-7'), 'Gap-band stray slot-7 should be cancelled as surplus');
+        assert(!cancelIds.includes('slot-8'), 'In-rail sell slot-8 must NOT be cancelled');
+        assert(!cancelIds.includes('slot-9'), 'In-rail sell slot-9 must NOT be cancelled');
+
+        // Working grid: cancelled strays become VIRTUAL spread placeholders.
+        for (const id of ['slot-6', 'slot-7']) {
+            const workingOrder = capturedCowResult.workingGrid.get(id);
+            assert(workingOrder, `Working grid should have ${id}`);
+            assert(workingOrder.state === ORDER_STATES.VIRTUAL,
+                `Cancelled gap-band stray ${id} should be VIRTUAL`);
+            assert(workingOrder.orderId === null,
+                `Cancelled gap-band stray ${id} should clear orderId`);
+        }
+
+        // In-rail sells keep their chain ids in the working grid.
+        for (const id of ['slot-8', 'slot-9']) {
+            const idx = id.split('-')[1];
+            const workingOrder = capturedCowResult.workingGrid.get(id);
+            assert(workingOrder && workingOrder.orderId === `chain-gap-${idx}`,
+                `In-rail sell ${id} should keep its chain id`);
+        }
+
+        console.log('  ✓ Gap-band strays cancelled; in-rail sells kept\n');
     }
 
     console.log('✓ All COW Divergence Correction tests PASSED!\n');

@@ -101,10 +101,33 @@ function testGenerateMarketLpChartUplot() {
             [1710014400000, 1.19, 1.28, 1.15, 1.23, 11],
         ],
     });
+    // AMA strategies for the synthetic pair.  The repo has no checked-in
+    // market_profiles.json (it is auto-generated on first run), so the test
+    // must provide its own profile fixture instead of depending on live
+    // profile data that may not exist in a fresh checkout.
+    writeJSON(path.join(tmpDir, 'market_profiles.json'), {
+        profiles: [
+            {
+                assetA: 'IOB.XRP',
+                assetB: 'BTS',
+                assetAId: '1.3.3926',
+                assetBId: '1.3.0',
+                intervalSeconds: 3600,
+                updatedAt: '2026-04-13T00:00:00.000Z',
+                amas: {
+                    AMA1: { name: 'AMA1', erPeriod: 1, fastPeriod: 2, slowPeriod: 3 },
+                    AMA2: { name: 'AMA2', erPeriod: 2, fastPeriod: 4, slowPeriod: 10 },
+                    AMA3: { name: 'AMA3', erPeriod: 3, fastPeriod: 8, slowPeriod: 20 },
+                    AMA4: { name: 'AMA4', erPeriod: 5, fastPeriod: 16, slowPeriod: 40 },
+                },
+            },
+        ],
+    });
     const result = generateMarketLpChartUplot({
         dataFile,
         noOpen: true,
         outFile,
+        profilesFile: path.join(tmpDir, 'market_profiles.json'),
         logger: { log() {} },
     });
 

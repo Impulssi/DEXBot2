@@ -9,8 +9,8 @@
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
-import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, resolveGapBand } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, parseSlotIndex, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
+import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, resolveGapBand, isSlotInRail } from './utils/math.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -93,15 +93,7 @@ function _deriveBudgetedSideSizes(manager: any, type: any): Map<string, number> 
     // filter was the only guard.
     const resolved = resolveGapBand(manager);
     const boundaryKnown = resolved.boundaryIdx !== null && resolved.sellStartIdx !== null;
-    const boundaryIdx = resolved.boundaryIdx;
-    const sellStartIdx = resolved.sellStartIdx;
-    const inSideRail = (o: any): boolean => {
-        if (!boundaryKnown) return true;
-        const idx = parseSlotIndex(o.id);
-        if (idx === null) return true;
-        if (type === ORDER_TYPES.BUY) return idx <= boundaryIdx!;
-        return idx >= sellStartIdx!;
-    };
+    const inSideRail = (o: any): boolean => isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, o);
     const typeFilter = boundaryKnown
         ? (o: any) => o && o.price != null && (o.type === type || o.type === ORDER_TYPES.SPREAD)
         : (o: any) => o && o.price != null && o.type === type;
@@ -147,18 +139,11 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     // would sit inside the gap and remove the spread. The SPREAD GUARD keeps
     // such slots typed BUY/SELL (never SPREAD+ACTIVE), so a VIRTUAL sell left
     // behind by a rotation/rebalance could otherwise be re-picked here and
-    // placed back inside the gap. Filter by geometry, not just type.
+    // placed back inside the gap. Filter by geometry (shared
+    // MathUtils.isSlotInRail helper), not just type.
     const resolved = resolveGapBand(manager);
     const boundaryKnown = resolved.boundaryIdx !== null && resolved.sellStartIdx !== null;
-    const boundaryIdx = resolved.boundaryIdx;
-    const sellStartIdx = resolved.sellStartIdx;
-    const inRail = (slot: any): boolean => {
-        if (!boundaryKnown) return true;
-        const idx = parseSlotIndex(slot.id);
-        if (idx === null) return true;
-        if (type === ORDER_TYPES.BUY) return idx <= boundaryIdx!;
-        return idx >= sellStartIdx!;
-    };
+    const inRail = (slot: any): boolean => isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, slot);
 
     // CRITICAL FIX: Filter by type BEFORE sorting.
     // Only get slots of the requested type (SELL or BUY), not a mix.  Empty

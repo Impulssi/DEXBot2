@@ -1310,7 +1310,47 @@ function countGapBandSpread(manager: any, orders: Iterable<any>, resolveIndex: (
     return count;
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+/**
+ * Pure geometric rail-membership test for a grid slot.
+ *
+ * Classifies a slot by index for a given boundary/gap geometry: BUY slots live
+ * at or below the boundary, SELL slots at or above sellStartIdx
+ * (boundary + gapSlots + 1), and the band between them holds the spread.
+ *
+ * Centralises the in-rail exclusion previously duplicated inline across the
+ * strategy window (strategy.ts), virtual-slot activation
+ * (grid_reconcile_internal.ts), and the COW divergence correction (system.ts).
+ * Drift between those copies is what let a fund-driven boundary shift leave a
+ * SPREAD GUARD-typed stray inside the gap as "closest to market" — collapsing
+ * the spread (h-bts: boundary 107→110 left the sell rail parked at 111-130
+ * with the bottom three, 111-113, inside the new spread gap; real spread 0.5%
+ * vs the 2.0% target).
+ *
+ * @param {number|null} boundaryIdx - Working boundary index.  null/undefined
+ *   (or non-finite) means "boundary unknown" and the slot is NOT excluded
+ *   (returns true), mirroring grid_reconcile_internal's boundaryKnown guard.
+ * @param {number} gapSlots - Spread gap slot count.  A non-finite value means
+ *   the SELL start cannot be derived, so the slot is not excluded.
+ * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL.
+ * @param {any} slot - Grid slot (or any object exposing an id like `slot-3`);
+ *   slots with an unparseable id are not excluded.
+ * @returns {boolean} true when the slot sits inside the requested rail (or its
+ *   geometry cannot be determined), false when it sits outside the rail.
+ */
+function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any): boolean {
+    if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) return true;
+    const match = /^slot-(\d+)$/.exec(String(slot?.id ?? ''));
+    if (!match) return true;
+    const idx = parseInt(match[1], 10);
+    if (!Number.isFinite(idx)) return true;
+    if (orderType === ORDER_TYPES.BUY) return idx <= Number(boundaryIdx);
+    if (orderType !== ORDER_TYPES.SELL) return true;
+    const sellStartIdx = getSellStartIdx(boundaryIdx, gapSlots);
+    if (!Number.isFinite(sellStartIdx)) return true;
+    return idx >= sellStartIdx;
+}
+
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.

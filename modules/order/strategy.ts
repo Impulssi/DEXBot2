@@ -50,6 +50,7 @@
 
 import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 import { calculateGapSlots } from './grid.js';
+import { isSlotInRail } from './utils/math.js';
 import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
@@ -255,21 +256,11 @@ class StrategyEngine {
         // band (to avoid the illegal SPREAD+ACTIVE state). Such a stray slot
         // must NOT be counted in the active window: otherwise the window keeps
         // the rail parked in its old position and an on-chain sell gets left
-        // inside the gap (spread removed). Exclude stray slots by geometry so
-        // reconcile treats them as surplus and relocates them back onto the rail.
-        const sellStartIdx = newBoundaryIdx + gapSlots + 1;
-        const slotIndex = (o: any) => {
-            const n = /slot-(\d+)/i.exec(String(o?.id ?? ''));
-            return n ? parseInt(n[1], 10) : null;
-        };
-        const inBuyRail = (o: any) => {
-            const i = slotIndex(o);
-            return i === null || i <= newBoundaryIdx;
-        };
-        const inSellRail = (o: any) => {
-            const i = slotIndex(o);
-            return i === null || i >= sellStartIdx;
-        };
+        // inside the gap (spread removed). Exclude stray slots by geometry
+        // (shared MathUtils.isSlotInRail helper) so reconcile treats them as
+        // surplus and relocates them back onto the rail.
+        const inBuyRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o);
+        const inSellRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o);
 
         // Sort Closest-First for windowing
         const buySlots = allBuySlots

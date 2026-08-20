@@ -906,6 +906,30 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         
         const actions = resizeCowResult?.actions ? [...resizeCowResult.actions] : [];
 
+        // Geometric rail constraint for desired-slot selection.  After a
+        // fund-driven boundary shift (syncBoundaryToFunds → pendingBoundaryIdx)
+        // the working grid is re-typed for the NEW boundary while
+        // manager.boundaryIdx still carries the pre-shift value, so the gap band
+        // must be derived from the working boundary.  Uses the shared
+        // MathUtils.isSlotInRail helper (also used by the strategy window and
+        // _pickVirtualSlotsToActivate): the SPREAD GUARD keeps gap-band strays
+        // typed BUY/SELL (never SPREAD+ACTIVE), so without a geometric filter
+        // they are selected as "closest to market" and left inside the gap —
+        // collapsing the spread when the boundary shifts into the rail (h-bts:
+        // boundary 107→110 left the sell rail parked at 111-130 with the bottom
+        // three, 111-113, inside the new spread gap; real spread 0.5% instead
+        // of the 2.0% target).
+        const workingBoundaryIdx = (pendingBoundaryIdx !== null && pendingBoundaryIdx !== undefined && Number.isFinite(Number(pendingBoundaryIdx)))
+            ? Number(pendingBoundaryIdx)
+            : manager.boundaryIdx;
+        const gapSlots = manager._gapSlots ?? MathUtils.calculateGapSlots(
+            manager.config?.incrementPercent,
+            manager.config?.targetSpreadPercent,
+            manager.config?.gridLimits
+        );
+        const inRailByType = (orderType: any) => (slot: any) =>
+            MathUtils.isSlotInRail(workingBoundaryIdx, gapSlots, orderType, slot);
+
         for (const orderType of manager._gridSidesUpdated) {
             const sideName = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
             const sidePrecision = MathUtils.getPrecisionByOrderType(manager.assets, orderType);
@@ -925,9 +949,15 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                     return wSlot && wSlot.type === orderType;
                 });
 
-            // Get all slots for this side from working grid
+            // Get all slots for this side from working grid.
+            // Exclude gap-band strays by geometry (inRailByType) so the desired
+            // window always matches the working boundary's rails.  Otherwise a
+            // stray on-chain SELL inside the new spread band (kept typed SELL by
+            // the SPREAD GUARD) would be picked as "closest to market" and never
+            // relocated, collapsing the spread after a boundary shift.
             const allSideSlots = (Array.from(workingGrid.values()) as any[])
                 .filter((o: any) => o.type === orderType)
+                .filter(inRailByType(orderType))
                 .sort((a: any, b: any) => sideName === 'buy' ? b.price - a.price : a.price - b.price);
 
             // Calculate target count
