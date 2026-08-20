@@ -33,6 +33,7 @@ function getAssetFeesSafe(...args: any) { return require('./order/utils/math').g
 import * as constantsModule from './constants.js';
 const {
     COW_ACTIONS,
+    COW_PERFORMANCE,
     ORDER_STATES,
     ORDER_TYPES,
     REBALANCE_STATES,
@@ -1223,6 +1224,183 @@ function chainOrderUnchangedFromCache(chainOrder: any, cachedRaw: any) {
     return String(base.amount ?? '') === String(cachedBase)
         && String(quote.amount ?? '') === String(cachedQuote)
         && String(chainOrder.for_sale ?? '') === String(cachedForSale);
+}
+
+/**
+ * Summarize a partial (non-atomic) broadcast for the batch-failure catch log.
+ * Supports both the pair-mode grouped path (groupsBroadcast/groupsTotal) and
+ * the chunked broadcast path. For chunked broadcasts only fully-executed
+ * chunks are counted as broadcast: chunks that failed are excluded, and
+ * chunks that were never attempted (aborted after a definitive failure) are
+ * excluded too, so the ratio reflects how many chunks actually completed.
+ * @param {Error} err - The partial-state error thrown by the execution path
+ * @returns {string} e.g. "1/3 chunks broadcast" or "1/2 groups broadcast"
+ */
+function formatPartialBroadcastSummary(err: any) {
+    if (!err || typeof err !== 'object') return '?/?';
+    if (err.chunkedBroadcast === true) {
+        const total = Number.isFinite(Number(err.chunksTotal)) ? Number(err.chunksTotal) : null;
+        const failed = Number.isFinite(Number(err.chunksFailed)) ? Number(err.chunksFailed) : 0;
+        const aborted = Number.isFinite(Number(err.chunksAborted)) ? Number(err.chunksAborted) : 0;
+        if (total === null) return '?/? chunks broadcast';
+        const broadcast = Math.max(0, total - failed - aborted);
+        return `${broadcast}/${total} chunks broadcast`;
+    }
+    const broadcast = err.groupsBroadcast;
+    const total = err.groupsTotal;
+    return `${broadcast ?? '?'}/${total ?? '?'} groups broadcast`;
+}
+
+/**
+ * Execute a batch with retry-on-uncertain semantics, enforcing a per-broadcast
+ * operation cap (MAX_OPS_PER_BROADCAST). When the batch carries more
+ * operations than the cap, it is split into sequential broadcast chunks of at
+ * most `maxOps` operations each, so a single on-chain transaction never holds
+ * more than the configured number of order operations (the original "N fills
+ * per broadcast" intent, applied at the op level rather than the fill level).
+ *
+ * Failure isolation — no swallowed orders: if one chunk's broadcast is
+ * uncertain (BroadcastUncertainError), the remaining chunks are STILL
+ * broadcast, so no order is silently dropped. A definitively rejected chunk
+ * (e.g. insufficient funds, stale order) aborts the remaining chunks — nothing
+ * in a definitively rejected transaction landed, so continuing would only burn
+ * rejected broadcasts. The first failure is re-thrown after the loop (with
+ * partialOnChainState set when any earlier chunk landed), letting the caller's
+ * recovery machinery adopt the landed chunks' orders from the chain and
+ * re-plan the failed chunk's orders. Chunks that broadcast successfully are
+ * merged into a single grouped result compatible with the existing success
+ * path.
+ *
+ * Known limitation: chunk boundaries are cut by array index, not by create-pair
+ * group boundaries. Pair-mode grouping (buy+sell placed outside→center in one
+ * transaction) is applied per chunk, so a buy/sell pair that straddles a chunk
+ * boundary is placed in two sequential transactions rather than one atomic
+ * pair transaction.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Array} operations
+ * @param {Array} opContexts
+ * @returns {Promise<{result: Object, opContexts: Array}>}
+ */
+async function executeChunkedWithRetryOnUncertain(bot: any, operations: any, opContexts: any) {
+    const configuredMax = typeof bot._getMaxOpsPerBroadcast === 'function'
+        ? bot._getMaxOpsPerBroadcast()
+        : COW_PERFORMANCE?.MAX_OPS_PER_BROADCAST;
+    const maxOps = Number.isFinite(configuredMax) && configuredMax >= 1
+        ? Math.floor(configuredMax)
+        : 1;
+    if (!Array.isArray(operations) || operations.length <= maxOps) {
+        return await executeWithRetryOnUncertain(bot, operations, opContexts);
+    }
+
+    const chunks: { operations: any[]; opContexts: any[]; }[] = [];
+    for (let i = 0; i < operations.length; i += maxOps) {
+        chunks.push({
+            operations: operations.slice(i, i + maxOps),
+            opContexts: opContexts.slice(i, i + maxOps),
+        });
+    }
+
+    bot.manager.logger.log(
+        `[COW] Splitting ${operations.length} operations into ${chunks.length} broadcast chunk(s) of at most ${maxOps} ops each (MAX_OPS_PER_BROADCAST).`,
+        'info'
+    );
+
+    const mergedOperationResults: any[] = [];
+    const mergedRawResults: any[] = [];
+    const mergedContexts: any[] = [];
+    let firstFailure: { index: number; err: any; } | null = null;
+    let failedChunkCount = 0;
+    let abortedChunkCount = 0;
+    // Accumulate partial-state markers from EVERY failed chunk, not just the
+    // first: a later uncertain chunk that fails mid-pair-groups (landed some
+    // groups) carries its own partialOnChainState/broadcastedOperationCount
+    // that must contribute to the re-thrown error.
+    let landedOpsFromFailures = 0;
+    let anyFailurePartial = false;
+
+    for (let idx = 0; idx < chunks.length; idx++) {
+        const chunk = chunks[idx];
+        // Refresh the broadcast heartbeat per chunk: a multi-chunk sequence
+        // holds the broadcast slot for its full duration, so the watchdog (if
+        // ever wired to this timestamp) must not observe a stale heartbeat.
+        bot._lastBroadcastHeartbeatAt = Date.now();
+        bot.manager.logger.log(
+            `[COW] Broadcasting chunk ${idx + 1}/${chunks.length} with ${chunk.operations.length} operation(s)...`,
+            'info'
+        );
+        try {
+            const exec = await executeWithRetryOnUncertain(bot, chunk.operations, chunk.opContexts);
+            const chunkResults = extractOperationResults(exec.result, 'chunked-broadcast', bot.manager?.logger?.log?.bind(bot.manager?.logger));
+            mergedOperationResults.push(...chunkResults);
+            mergedRawResults.push(exec.result?.raw || null);
+            mergedContexts.push(...exec.opContexts);
+        } catch (err: any) {
+            if (firstFailure === null) firstFailure = { index: idx, err };
+            failedChunkCount++;
+            const failedChunkLandedOps = Number.isFinite(Number(err.broadcastedOperationCount))
+                ? Number(err.broadcastedOperationCount)
+                : 0;
+            landedOpsFromFailures += failedChunkLandedOps;
+            if (err.partialOnChainState === true || failedChunkLandedOps > 0) anyFailurePartial = true;
+            if (err instanceof BroadcastUncertainError) {
+                // Uncertainty: the tx result is unknown — the chunk may or may
+                // not have landed. Continuing the remaining chunks preserves
+                // their orders (no swallowing) and recovery reconciles the
+                // uncertain chunk against the chain.
+                bot.manager.logger.log(
+                    `[COW] Chunk ${idx + 1}/${chunks.length} broadcast uncertain (${getErrorMessage(err)}); ` +
+                    `continuing with the remaining ${chunks.length - idx - 1} chunk(s) so no orders are swallowed.`,
+                    'error'
+                );
+                continue;
+            }
+            // Definitive failure (e.g. insufficient funds, stale order): the
+            // transaction was rejected, so nothing in this chunk landed. Pair
+            // mode already stops at the first failed group; the chunked wrapper
+            // should match — continuing would only burn rejected broadcasts.
+            abortedChunkCount = chunks.length - idx - 1;
+            bot.manager.logger.log(
+                `[COW] Chunk ${idx + 1}/${chunks.length} broadcast failed definitively (${getErrorMessage(err)}); ` +
+                `aborting the remaining ${abortedChunkCount} chunk(s) — the rejected chunk landed nothing.`,
+                'error'
+            );
+            break;
+        }
+    }
+
+    if (firstFailure !== null) {
+        const failedErr = firstFailure.err;
+        // Preserve partial-state markers from ANY failed chunk (e.g. pair mode
+        // landed some groups INSIDE a failing chunk) — the wrapper must only
+        // add to them, never downgrade (downgrading would skip the forensic
+        // log and force a wasted poll in the caller).
+        failedErr.partialOnChainState = mergedContexts.length > 0
+            || anyFailurePartial;
+        failedErr.chunkedBroadcast = true;
+        failedErr.chunksTotal = chunks.length;
+        failedErr.chunksFailed = failedChunkCount;
+        failedErr.chunksAborted = abortedChunkCount;
+        failedErr.broadcastedOperationCount = mergedContexts.length + landedOpsFromFailures;
+        throw failedErr;
+    }
+
+    // All chunks succeeded — merge into the grouped result shape the success
+    // path already understands (same shape as executeOperationsWithStrategy's
+    // pair-mode output).
+    return {
+        result: {
+            success: true,
+            raw: {
+                grouped: true,
+                groupsExecuted: chunks.length,
+                groupResults: mergedRawResults,
+            },
+            operation_results: mergedOperationResults,
+            grouped: true,
+            groupsExecuted: chunks.length
+        },
+        opContexts: mergedContexts
+    };
 }
 
 /**
@@ -2681,7 +2859,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
 
         bot.manager.logger.log(`[COW] Broadcasting batch with ${operations.length} operations...`, 'info');
         bot._lastBroadcastHeartbeatAt = Date.now();
-        const execution = await executeWithRetryOnUncertain(bot, operations, opContexts);
+        const execution = await executeChunkedWithRetryOnUncertain(bot, operations, opContexts);
         const result = execution.result;
         const executedContexts = execution.opContexts;
 
@@ -2823,7 +3001,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         bot.manager.logger.log(`[COW] Batch transaction failed: ${getErrorMessage(err)}`, 'error');
         if (err?.partialOnChainState) {
             bot.manager.logger.log(
-                `[COW] Non-atomic grouped execution detected (${err.groupsBroadcast}/${err.groupsTotal} groups broadcast). Local rollback cannot undo confirmed on-chain operations; next sync/reconcile will converge state.`,
+                `[COW] Non-atomic grouped execution detected (${formatPartialBroadcastSummary(err)}). Local rollback cannot undo confirmed on-chain operations; next sync/reconcile will converge state.`,
                 'warn'
             );
         }
@@ -3364,7 +3542,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, recoverAfterMissingCreateResults, preserveMissingCreateBlockersAfterRecovery, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults };
+export { buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, recoverAfterMissingCreateResults, preserveMissingCreateBlockersAfterRecovery, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults };
 
 
 export default {
@@ -3388,6 +3566,8 @@ export default {
     autoCancelOneUnmatchedOrphan,
     shouldExecuteCreatePairMode,
     executeWithRetryOnUncertain,
+    executeChunkedWithRetryOnUncertain,
+    formatPartialBroadcastSummary,
     executeOperationsWithStrategy,
     validateOperationFunds,
     resolveIdealSizeForValidation,

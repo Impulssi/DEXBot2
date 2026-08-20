@@ -1354,7 +1354,17 @@ let COW_PERFORMANCE = {
     // WORKING_GRID_BYTES_PER_ORDER: Estimated memory usage per order in working grid (bytes).
     // Used for memory profiling and warning thresholds.
     // Default: 500 bytes (includes order object, metadata, and overhead).
-    WORKING_GRID_BYTES_PER_ORDER: 500
+    WORKING_GRID_BYTES_PER_ORDER: 500,
+
+    // MAX_OPS_PER_BROADCAST: Maximum number of order operations (creates,
+    // updates, cancels) carried by a single on-chain broadcast transaction.
+    // FILL_PROCESSING.MAX_FILL_BATCH_SIZE caps the number of FILLS per
+    // rebalance cycle, but one fill batch can expand into many more order
+    // operations (e.g. 4 fills -> 12 creates + 4 updates = 16 ops), so the
+    // fill cap is a weak proxy for broadcast size. Batches larger than this
+    // cap are split into sequential broadcasts of at most this many ops each,
+    // bounding per-transaction stress on the chain.
+    MAX_OPS_PER_BROADCAST: 4
 };
 
 // Native BitShares Client Configuration

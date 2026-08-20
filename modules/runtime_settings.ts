@@ -6,7 +6,7 @@ import { deepMerge } from './settings_merge.js';
 import {
     GRID_LIMITS, FEE_PARAMETERS, INCREMENT_BOUNDS, TIMING,
     LOG_LEVEL, LOGGING_CONFIG, FILL_PROCESSING,
-    PIPELINE_TIMING, API_LIMITS,
+    PIPELINE_TIMING, API_LIMITS, COW_PERFORMANCE,
 } from './constants.js';
 
 function _toScreamingCase(key: string): string {
@@ -32,6 +32,7 @@ export interface BotRuntimeSettings {
     incrementBounds: Record<string, any>;
     timing: Record<string, any>;
     fillProcessing: Record<string, any>;
+    cowPerformance: Record<string, any>;
     pipelineTiming: Record<string, any>;
     apiLimits: Record<string, any>;
     logging: {
@@ -42,7 +43,7 @@ export interface BotRuntimeSettings {
 
 export const RUNTIME_SETTINGS_KEYS: readonly string[] = [
     'gridLimits', 'feeParams', 'incrementBounds', 'timing',
-    'fillProcessing', 'pipelineTiming', 'apiLimits', 'logging',
+    'fillProcessing', 'cowPerformance', 'pipelineTiming', 'apiLimits', 'logging',
 ];
 
 export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRuntimeSettings {
@@ -52,6 +53,7 @@ export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRu
         incrementBounds: { ...INCREMENT_BOUNDS },
         timing: { ...TIMING },
         fillProcessing: { ...FILL_PROCESSING },
+        cowPerformance: { ...COW_PERFORMANCE },
         pipelineTiming: { ...PIPELINE_TIMING },
         apiLimits: { ...API_LIMITS },
         logging: {
@@ -67,6 +69,7 @@ export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRu
         if (marketOverrides.incrementBounds) result.incrementBounds = _deepMerge(result.incrementBounds, marketOverrides.incrementBounds);
         if (marketOverrides.timing) result.timing = _deepMerge(result.timing, marketOverrides.timing);
         if (marketOverrides.fillProcessing) result.fillProcessing = _deepMerge(result.fillProcessing, marketOverrides.fillProcessing);
+        if (marketOverrides.cowPerformance) result.cowPerformance = _deepMerge(result.cowPerformance, marketOverrides.cowPerformance);
         if (marketOverrides.pipelineTiming) result.pipelineTiming = _deepMerge(result.pipelineTiming, marketOverrides.pipelineTiming);
         if (marketOverrides.apiLimits) result.apiLimits = _deepMerge(result.apiLimits, marketOverrides.apiLimits);
         if (marketOverrides.poolSlippageTolerance !== undefined) result.feeParams.POOL_SLIPPAGE_TOLERANCE = marketOverrides.poolSlippageTolerance;
@@ -77,6 +80,7 @@ export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRu
     if (botConfig.incrementBounds) result.incrementBounds = _deepMerge(result.incrementBounds, botConfig.incrementBounds);
     if (botConfig.timing) result.timing = _deepMerge(result.timing, botConfig.timing);
     if (botConfig.fillProcessing) result.fillProcessing = _deepMerge(result.fillProcessing, botConfig.fillProcessing);
+    if (botConfig.cowPerformance) result.cowPerformance = _deepMerge(result.cowPerformance, botConfig.cowPerformance);
     if (botConfig.pipelineTiming) result.pipelineTiming = _deepMerge(result.pipelineTiming, botConfig.pipelineTiming);
     if (botConfig.apiLimits) result.apiLimits = _deepMerge(result.apiLimits, botConfig.apiLimits);
     if (botConfig.logging) {
@@ -103,6 +107,7 @@ function _resolveMarketOverrides(botConfig: Record<string, any>): Record<string,
             if (settings.globals.runtimeTiming) overrides.timing = { ...settings.globals.runtimeTiming };
             if (settings.globals.runtimeIncrementBounds) overrides.incrementBounds = { ...settings.globals.runtimeIncrementBounds };
             if (settings.globals.runtimeFillProcessing) overrides.fillProcessing = { ...settings.globals.runtimeFillProcessing };
+            if (settings.globals.runtimeCowPerformance) overrides.cowPerformance = { ...settings.globals.runtimeCowPerformance };
             if (settings.globals.runtimePipelineTiming) overrides.pipelineTiming = { ...settings.globals.runtimePipelineTiming };
             if (settings.globals.runtimeApiLimits) overrides.apiLimits = { ...settings.globals.runtimeApiLimits };
             if (settings.globals.runtimePoolSlippageTolerance !== undefined) overrides.poolSlippageTolerance = settings.globals.runtimePoolSlippageTolerance;
@@ -116,6 +121,7 @@ function _resolveMarketOverrides(botConfig: Record<string, any>): Record<string,
                 if (pair.marketTiming) overrides.timing = _deepMerge(overrides.timing || {}, pair.marketTiming);
                 if (pair.marketIncrementBounds) overrides.incrementBounds = _deepMerge(overrides.incrementBounds || {}, pair.marketIncrementBounds);
                 if (pair.marketFillProcessing) overrides.fillProcessing = _deepMerge(overrides.fillProcessing || {}, pair.marketFillProcessing);
+                if (pair.marketCowPerformance) overrides.cowPerformance = _deepMerge(overrides.cowPerformance || {}, pair.marketCowPerformance);
                 if (pair.marketPipelineTiming) overrides.pipelineTiming = _deepMerge(overrides.pipelineTiming || {}, pair.marketPipelineTiming);
                 if (pair.marketApiLimits) overrides.apiLimits = _deepMerge(overrides.apiLimits || {}, pair.marketApiLimits);
                 if (pair.marketPoolSlippageTolerance !== undefined) overrides.poolSlippageTolerance = pair.marketPoolSlippageTolerance;
@@ -127,6 +133,7 @@ function _resolveMarketOverrides(botConfig: Record<string, any>): Record<string,
                     if (bo.botTiming) overrides.timing = _deepMerge(overrides.timing || {}, bo.botTiming);
                     if (bo.botIncrementBounds) overrides.incrementBounds = _deepMerge(overrides.incrementBounds || {}, bo.botIncrementBounds);
                     if (bo.botFillProcessing) overrides.fillProcessing = _deepMerge(overrides.fillProcessing || {}, bo.botFillProcessing);
+                    if (bo.botCowPerformance) overrides.cowPerformance = _deepMerge(overrides.cowPerformance || {}, bo.botCowPerformance);
                     if (bo.botPipelineTiming) overrides.pipelineTiming = _deepMerge(overrides.pipelineTiming || {}, bo.botPipelineTiming);
                     if (bo.botApiLimits) overrides.apiLimits = _deepMerge(overrides.apiLimits || {}, bo.botApiLimits);
                     if (bo.botPoolSlippageTolerance !== undefined) overrides.poolSlippageTolerance = bo.botPoolSlippageTolerance;

@@ -88,6 +88,7 @@ import {
 import {
     TIMING,
     FILL_PROCESSING,
+    COW_PERFORMANCE,
     DAEMON_CODES,
 } from './constants.js';
 import { normalizeBotEntry } from './bot_settings.js';
@@ -188,6 +189,7 @@ class DEXBot {
         this.config.incrementBounds = rs.incrementBounds;
         this.config.timing = rs.timing;
         this.config.fillProcessing = rs.fillProcessing;
+        this.config.cowPerformance = rs.cowPerformance;
         this.config.pipelineTiming = rs.pipelineTiming;
         this.config.logging = rs.logging;
 
@@ -830,6 +832,20 @@ class DEXBot {
     }
 
     /**
+     * Resolve the centralized per-broadcast operation cap.
+     * A single COW rebalance can produce more operations than fills (e.g. 4
+     * fills -> 12 creates + 4 updates = 16 ops), so MAX_FILL_BATCH_SIZE alone
+     * does not bound transaction size. This cap splits the broadcast into
+     * sequential transactions of at most MAX_OPS_PER_BROADCAST operations each.
+     * @returns {number} Positive maximum number of order operations per broadcast
+     */
+    _getMaxOpsPerBroadcast() {
+        const raw = this.config.cowPerformance?.MAX_OPS_PER_BROADCAST ?? COW_PERFORMANCE.MAX_OPS_PER_BROADCAST;
+        const numeric = Number(raw);
+        return Number.isFinite(numeric) && numeric >= 1 ? Math.floor(numeric) : 1;
+    }
+
+    /**
      * Extract operation results from a batch transaction result.
      * @param {Object|Array|null} result - Transaction result from executeBatch
      * @param {string} [warnContext=''] - Context for warning messages
@@ -1068,6 +1084,19 @@ class DEXBot {
      */
     async _executeWithRetryOnUncertain(operations: any, opContexts: any) {
         return cowRuntime.executeWithRetryOnUncertain(this, operations, opContexts);
+    }
+
+    /**
+     * Execute operations with retry-on-uncertain semantics AND a per-broadcast
+     * operation cap (see executeChunkedWithRetryOnUncertain). Larger batches
+     * are split into sequential broadcasts of at most _getMaxOpsPerBroadcast()
+     * ops each; a failed chunk does not swallow the remaining chunks' orders.
+     * @param {Array<any>} operations - Array of operation objects
+     * @param {Array<Object>} opContexts - Array of operation context metadata (1:1 with operations)
+     * @returns {Promise<{result: Object, opContexts: Array}>} Execution result with contexts
+     */
+    async _executeChunkedWithRetryOnUncertain(operations: any, opContexts: any) {
+        return cowRuntime.executeChunkedWithRetryOnUncertain(this, operations, opContexts);
     }
 
     /**

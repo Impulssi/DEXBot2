@@ -1,0 +1,463 @@
+/**
+ * tests/test_cow_ops_per_broadcast.ts
+ *
+ * Verifies the per-broadcast operation cap (MAX_OPS_PER_BROADCAST) enforced by
+ * executeChunkedWithRetryOnUncertain:
+ *   1. Batches at or below the cap broadcast as a single transaction.
+ *   2. Batches above the cap are split into sequential broadcast chunks of at
+ *      most `maxOps` operations each; the merged result preserves the
+ *      operation_results <-> opContexts alignment.
+ *   3. A failed chunk does NOT swallow the remaining chunks' orders: later
+ *      chunks are still broadcast, and the first failure is re-thrown with
+ *      partialOnChainState set so recovery re-plans the failed chunk's orders.
+ */
+
+const assert = require('assert');
+
+const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub');
+const { ensureFeeCache } = require('./helpers/fee_cache_init');
+ensureFeeCache();
+
+const bitsharesClientPath = require.resolve('../modules/bitshares_client');
+installBitsharesClientStub(bitsharesClientPath);
+
+const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
+const { chainOrders } = installChainOrdersStub();
+const { BroadcastUncertainError } = require('../modules/dexbot_credential_client');
+const { COW_PERFORMANCE } = require('../modules/constants');
+
+const DEFAULT_MAX_OPS = COW_PERFORMANCE.MAX_OPS_PER_BROADCAST;
+
+function makeOps(n: number) {
+    const operations = [];
+    const opContexts = [];
+    for (let i = 0; i < n; i++) {
+        operations.push({ op_name: 'limit_order_create', op_data: { testMarker: i } });
+        opContexts.push({
+            kind: 'create',
+            id: `slot-${i}`,
+            order: { id: `slot-${i}`, type: 'buy', price: 0.02, size: 100 },
+            finalInts: { sell: 1000000, receive: 50000000, sellAssetId: '1.3.0', receiveAssetId: '1.3.121' }
+        });
+    }
+    return { operations, opContexts };
+}
+
+function makeResult(ops: any[]) {
+    return {
+        success: true,
+        operation_results: ops.map((op: any) => (op.op_name === 'limit_order_create' ? [1, '1.7.100'] : [1])),
+    };
+}
+
+function makeBot(opts: { maxOps?: number } = {}) {
+    const DEXBot = require('../modules/dexbot_class').default;
+    const bot = new DEXBot({
+        botKey: 'test_cow_ops_per_broadcast',
+        dryRun: false,
+        startPrice: 1,
+        assetA: 'BTS',
+        assetB: 'USD',
+        incrementPercent: 0.5
+    });
+    bot.manager = {
+        assets: {
+            assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
+            assetB: { id: '1.3.121', precision: 5, symbol: 'USD' }
+        },
+        orders: new Map(),
+        _gridVersion: 0,
+        _fundLock: { acquire: async (fn: any) => fn(), isLocked: () => false, isReentrant: () => false },
+        logger: {
+            log: (msg: any, level: any) => { /* noop */ },
+            logFundsStatus: () => {}
+        },
+        requestStructuralGridResync: async () => {},
+        _lastUnmatchedChainOrders: [],
+        _pendingBroadcasts: new Map(),
+        lockOrders: () => {},
+        unlockOrders: () => {},
+        startBroadcasting: () => {},
+        stopBroadcasting: () => {},
+        _setRebalanceState: () => {},
+        _resetRebalanceStateToDepth: () => {},
+        pauseFundRecalc: () => {},
+        resumeFundRecalc: async () => {},
+        _clearWorkingGridRef: () => {},
+        _throwOnIllegalState: false
+    };
+    bot.account = 'test-account';
+    bot.privateKey = 'test-private-key';
+    bot._currentCycleId = 1;
+    if (opts.maxOps) bot._getMaxOpsPerBroadcast = () => opts.maxOps;
+    return bot;
+}
+
+async function testSingleBroadcastAtOrBelowCap() {
+    console.log('[OPSCAP-001] Batch at/below cap → single broadcast (no chunking)...');
+    const bot = makeBot({ maxOps: 4 });
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
+    let callCount = 0;
+
+    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+        callCount++;
+        assert.strictEqual(ops.length, 4, 'must be a single broadcast of 4 ops');
+        return makeResult(ops);
+    };
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+
+    try {
+        const { operations, opContexts } = makeOps(4);
+        const result = await bot._executeChunkedWithRetryOnUncertain(operations, opContexts);
+        assert.strictEqual(callCount, 1, 'single broadcast expected at/below cap');
+        assert.strictEqual(result.opContexts.length, 4, 'all contexts returned');
+        assert.ok(Array.isArray(result.result.operation_results), 'operation_results must be an array');
+        assert.strictEqual(result.result.operation_results.length, 4, 'operation_results aligned with contexts');
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
+    }
+    console.log('✓ OPSCAP-001 passed');
+}
+
+async function testChunkedSplitAndAlignment() {
+    console.log('[OPSCAP-002] 10 ops with cap 4 → 3 broadcasts (4+4+2), merged results aligned...');
+    const bot = makeBot({ maxOps: 4 });
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
+    const broadcastSizes: number[] = [];
+
+    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+        broadcastSizes.push(ops.length);
+        return makeResult(ops);
+    };
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+
+    try {
+        const { operations, opContexts } = makeOps(10);
+        const result = await bot._executeChunkedWithRetryOnUncertain(operations, opContexts);
+        assert.deepStrictEqual(broadcastSizes, [4, 4, 2], 'must broadcast 4+4+2');
+        assert.strictEqual(result.opContexts.length, 10, 'all contexts merged');
+        assert.strictEqual(result.result.operation_results.length, 10, 'operation_results merged 1:1 with contexts');
+        assert.strictEqual(result.result.raw.grouped, true, 'merged result marked grouped');
+        assert.strictEqual(result.result.raw.groupsExecuted, 3, '3 chunks executed');
+        assert.strictEqual(result.result.raw.groupResults.length, 3, '3 raw group results');
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
+    }
+    console.log('✓ OPSCAP-002 passed');
+}
+
+async function testFailedChunkDoesNotSwallowRemaining() {
+    console.log('[OPSCAP-003] Middle chunk fails (both retry attempts) → later chunks still broadcast, first failure re-thrown with partialOnChainState...');
+    const bot = makeBot({ maxOps: 4 });
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
+    const broadcastSizes: number[] = [];
+
+    // Chunk 2 carries testMarker 4..7; fail it. No retry fires because the
+    // empty chain read cannot verify absence (deferred), so it fails once.
+    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+        broadcastSizes.push(ops.length);
+        if (ops[0]?.op_data?.testMarker === 4) {
+            throw new BroadcastUncertainError('opscap-003-uncertain', { batchId: 'opscap-003', timeoutMs: 30000 });
+        }
+        return makeResult(ops);
+    };
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+
+    try {
+        const { operations, opContexts } = makeOps(10);
+        await assert.rejects(
+            () => bot._executeChunkedWithRetryOnUncertain(operations, opContexts),
+            (err: any) => {
+                assert.ok(err instanceof BroadcastUncertainError, 'must re-throw the chunk failure');
+                assert.strictEqual(err.chunkedBroadcast, true, 'must be marked as chunked broadcast');
+                assert.strictEqual(err.partialOnChainState, true, 'earlier chunk landed → partial on-chain state');
+                assert.strictEqual(err.chunksTotal, 3, '3 chunks total');
+                assert.strictEqual(err.chunksFailed, 1, 'exactly 1 chunk failed');
+                assert.strictEqual(err.broadcastedOperationCount, 6, 'chunk 1 (4) + chunk 3 (2) landed; only chunk 2 failed');
+                return true;
+            }
+        );
+        // Chunk 1 lands (4), chunk 2 fails once (no verified absence → no blind retry), chunk 3 lands (2).
+        assert.deepStrictEqual(broadcastSizes, [4, 4, 2], 'failed chunk does not swallow the remaining chunk (no orders dropped)');
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
+    }
+    console.log('✓ OPSCAP-003 passed');
+}
+
+async function testAccessorDefault() {
+    console.log('[OPSCAP-004] _getMaxOpsPerBroadcast defaults from COW_PERFORMANCE...');
+    const bot = makeBot();
+    assert.strictEqual(bot._getMaxOpsPerBroadcast(), Math.max(1, DEFAULT_MAX_OPS));
+    assert.ok(bot._getMaxOpsPerBroadcast() >= 1, 'cap must be at least 1');
+    console.log('✓ OPSCAP-004 passed');
+}
+
+async function testConfigOverride() {
+    console.log('[OPSCAP-005] _getMaxOpsPerBroadcast honors bot-level cowPerformance override...');
+    const DEXBot = require('../modules/dexbot_class').default;
+    const bot = new DEXBot({
+        botKey: 'test_cow_ops_per_broadcast_override',
+        dryRun: false,
+        startPrice: 1,
+        assetA: 'BTS',
+        assetB: 'USD',
+        incrementPercent: 0.5,
+        cowPerformance: { MAX_OPS_PER_BROADCAST: 2 }
+    });
+    bot.manager = {
+        assets: {},
+        orders: new Map(),
+        logger: { log: () => {}, logFundsStatus: () => {} },
+        _pendingBroadcasts: new Map(),
+    };
+    assert.strictEqual(bot._getMaxOpsPerBroadcast(), 2, 'must honor bot-level override');
+    console.log('✓ OPSCAP-005 passed');
+}
+
+async function testNonNumericCapFallsBackToMin() {
+    console.log('[OPSCAP-006] Non-numeric cap (NaN) → accessor and chunked execution fall back to min 1 (no infinite loop)...');
+    const DEXBot = require('../modules/dexbot_class').default;
+    const bot = new DEXBot({
+        botKey: 'test_cow_ops_per_broadcast_nan',
+        dryRun: false,
+        startPrice: 1,
+        assetA: 'BTS',
+        assetB: 'USD',
+        incrementPercent: 0.5,
+        cowPerformance: { MAX_OPS_PER_BROADCAST: 'abc' as any }
+    });
+    bot.manager = {
+        assets: {},
+        orders: new Map(),
+        logger: { log: () => {}, logFundsStatus: () => {} },
+        _pendingBroadcasts: new Map(),
+    };
+    assert.strictEqual(bot._getMaxOpsPerBroadcast(), 1, 'non-numeric cap must resolve to 1');
+
+    // Runtime guard in executeChunkedWithRetryOnUncertain must also survive a
+    // NaN/string maxOps even if the accessor is bypassed (e.g. fake bot).
+    const botStr = makeBot();
+    botStr._getMaxOpsPerBroadcast = () => ('abc' as any);
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
+    const broadcastSizes: number[] = [];
+
+    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+        broadcastSizes.push(ops.length);
+        return makeResult(ops);
+    };
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+
+    try {
+        const { operations, opContexts } = makeOps(6);
+        const result = await botStr._executeChunkedWithRetryOnUncertain(operations, opContexts);
+        assert.deepStrictEqual(broadcastSizes, [1, 1, 1, 1, 1, 1], 'each op broadcast in its own chunk, no hang');
+        assert.strictEqual(result.opContexts.length, 6, 'all contexts returned');
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
+    }
+    console.log('✓ OPSCAP-006 passed');
+}
+
+async function testDefinitiveFailureAbortsRemaining() {
+    console.log('[OPSCAP-008] Definitive (non-uncertain) chunk failure → remaining chunks aborted (no burned broadcasts), partial state preserved...');
+    const bot = makeBot({ maxOps: 4 });
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
+    const broadcastSizes: number[] = [];
+
+    // Chunk 2 (marker 4..7) fails definitively; chunk 3 must NOT be broadcast.
+    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+        broadcastSizes.push(ops.length);
+        if (ops[0]?.op_data?.testMarker === 4) {
+            throw new Error('opscap-008-insufficient-funds');
+        }
+        return makeResult(ops);
+    };
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+
+    try {
+        const { operations, opContexts } = makeOps(10);
+        await assert.rejects(
+            () => bot._executeChunkedWithRetryOnUncertain(operations, opContexts),
+            (err: any) => {
+                assert.ok(!(err instanceof BroadcastUncertainError), 'definitive failure must pass through as-is');
+                assert.match(err.message, /insufficient-funds/, 'original definitive error preserved');
+                assert.strictEqual(err.partialOnChainState, true, 'chunk 1 landed → partial on-chain state kept');
+                assert.strictEqual(err.chunkedBroadcast, true, 'marked as chunked broadcast');
+                assert.strictEqual(err.chunksTotal, 3, '3 chunks total');
+                assert.strictEqual(err.chunksFailed, 1, 'only chunk 2 failed');
+                assert.strictEqual(err.chunksAborted, 1, 'chunk 3 was aborted (never attempted)');
+                assert.strictEqual(err.broadcastedOperationCount, 4, 'chunk 1 (4) landed');
+                return true;
+            }
+        );
+        assert.deepStrictEqual(broadcastSizes, [4, 4], 'chunk 3 NOT broadcast after definitive failure');
+        const { formatPartialBroadcastSummary } = require('../modules/dexbot_cow_runtime');
+        const summaryErr = new BroadcastUncertainError('opscap-008', { batchId: 'opscap-008', timeoutMs: 30000 });
+        summaryErr.partialOnChainState = true;
+        summaryErr.chunkedBroadcast = true;
+        summaryErr.chunksTotal = 3;
+        summaryErr.chunksFailed = 1;
+        summaryErr.chunksAborted = 1;
+        assert.strictEqual(
+            formatPartialBroadcastSummary(summaryErr),
+            '1/3 chunks broadcast',
+            'aborted chunk must NOT count as broadcast (only chunk 1 fully executed)'
+        );
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
+    }
+    console.log('✓ OPSCAP-008 passed');
+}
+
+async function testPairModePartialNotDowngraded() {
+    console.log('[OPSCAP-009] Failing chunk already carrying partialOnChainState (pair-mode landed groups) is NOT downgraded...');
+    const bot = makeBot({ maxOps: 4 });
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
+
+    // 10 ops -> 3 chunks. Chunk 1 (marker 0..3) fails mid-pair-groups after
+    // landing 1 group; chunk 2 (marker 4..7) fails definitively (-> abort).
+    // No chunk fully succeeds, so mergedContexts stays 0. Without the fix,
+    // `mergedContexts.length > 0` (0) would downgrade partialOnChainState
+    // true->false, skipping the forensic log and resetting the op count.
+    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+        if (ops[0]?.op_data?.testMarker === 0) {
+            const err: any = new BroadcastUncertainError('opscap-009-group-fail', { batchId: 'opscap-009', timeoutMs: 30000 });
+            err.partialOnChainState = true;
+            err.groupsBroadcast = 1;
+            err.groupsTotal = 2;
+            err.broadcastedOperationCount = 2;
+            throw err;
+        }
+        if (ops[0]?.op_data?.testMarker === 4) {
+            throw new Error('opscap-009-definitive');
+        }
+        return makeResult(ops);
+    };
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+
+    try {
+        const { operations, opContexts } = makeOps(10);
+        await assert.rejects(
+            () => bot._executeChunkedWithRetryOnUncertain(operations, opContexts),
+            (err: any) => {
+                assert.ok(err instanceof BroadcastUncertainError, 'uncertain error propagated');
+                assert.strictEqual(err.partialOnChainState, true, 'must preserve pair-mode partial state (no downgrade)');
+                assert.strictEqual(err.chunksTotal, 3, '3 chunks total');
+                assert.strictEqual(err.chunksFailed, 2, 'chunk 1 (uncertain) + chunk 2 (definitive) failed');
+                assert.strictEqual(err.chunksAborted, 1, 'chunk 3 was aborted');
+                assert.strictEqual(err.broadcastedOperationCount, 2, 'the 2 landed group ops are counted (not reset to 0)');
+                return true;
+            }
+        );
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
+    }
+    console.log('✓ OPSCAP-009 passed');
+}
+
+async function testLaterChunkPartialMarkersAccumulate() {
+    console.log('[OPSCAP-010] Non-first failing chunk internal partial markers accumulate into the re-thrown error...');
+    const bot = makeBot({ maxOps: 4 });
+    const origExecuteBatch = chainOrders.executeBatch;
+    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
+
+    // 10 ops -> 3 chunks. Chunk 1 (marker 0..3) succeeds. Chunk 2 (marker
+    // 4..7) fails uncertain mid-pair-groups after landing 2 ops (carries its
+    // own partialOnChainState=true / broadcastedOperationCount=2). Chunk 3
+    // (marker 8..9) succeeds. The re-thrown error must count chunk 1 (4) +
+    // chunk 3 (2) fully-executed + chunk 2's 2 landed ops = 8.
+    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+        if (ops[0]?.op_data?.testMarker === 4) {
+            const err: any = new BroadcastUncertainError('opscap-010-group-fail', { batchId: 'opscap-010', timeoutMs: 30000 });
+            err.partialOnChainState = true;
+            err.groupsBroadcast = 1;
+            err.groupsTotal = 2;
+            err.broadcastedOperationCount = 2;
+            throw err;
+        }
+        return makeResult(ops);
+    };
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+
+    try {
+        const { operations, opContexts } = makeOps(10);
+        await assert.rejects(
+            () => bot._executeChunkedWithRetryOnUncertain(operations, opContexts),
+            (err: any) => {
+                assert.ok(err instanceof BroadcastUncertainError, 'uncertain error propagated');
+                assert.strictEqual(err.partialOnChainState, true, 'partial state preserved');
+                assert.strictEqual(err.chunksTotal, 3, '3 chunks total');
+                assert.strictEqual(err.chunksFailed, 1, 'only chunk 2 failed');
+                assert.strictEqual(err.chunksAborted, 0, 'no chunks aborted (uncertain failure continues)');
+                assert.strictEqual(err.broadcastedOperationCount, 8, 'chunk 1 (4) + chunk 3 (2) + chunk 2 landed (2) = 8');
+                return true;
+            }
+        );
+    } finally {
+        chainOrders.executeBatch = origExecuteBatch;
+        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
+    }
+    console.log('✓ OPSCAP-010 passed');
+}
+
+async function testHardAbortLogUsesChunkedFields() {
+    console.log('[OPSCAP-007] Partial-state log summary uses chunk fields (not stale groups fields)...');
+    const { formatPartialBroadcastSummary } = require('../modules/dexbot_cow_runtime');
+
+    const chunkedErr = new BroadcastUncertainError('opscap-007-uncertain', { batchId: 'opscap-007', timeoutMs: 30000 });
+    chunkedErr.partialOnChainState = true;
+    chunkedErr.chunkedBroadcast = true;
+    chunkedErr.chunksTotal = 3;
+    chunkedErr.chunksFailed = 1;
+    assert.strictEqual(
+        formatPartialBroadcastSummary(chunkedErr),
+        '2/3 chunks broadcast',
+        'must report chunk counts (total - failed), not stale groups fields'
+    );
+
+    const groupedErr = new BroadcastUncertainError('opscap-007-grouped', { batchId: 'opscap-007', timeoutMs: 30000 });
+    groupedErr.partialOnChainState = true;
+    groupedErr.groupsBroadcast = 1;
+    groupedErr.groupsTotal = 2;
+    assert.strictEqual(
+        formatPartialBroadcastSummary(groupedErr),
+        '1/2 groups broadcast',
+        'must preserve the pair-mode groups format'
+    );
+
+    assert.strictEqual(formatPartialBroadcastSummary(null), '?/?', 'non-object err must not throw');
+    console.log('✓ OPSCAP-007 passed');
+}
+
+async function main() {
+    console.log('Running COW ops-per-broadcast cap tests...');
+    await testSingleBroadcastAtOrBelowCap();
+    await testChunkedSplitAndAlignment();
+    await testFailedChunkDoesNotSwallowRemaining();
+    await testAccessorDefault();
+    await testConfigOverride();
+    await testNonNumericCapFallsBackToMin();
+    await testHardAbortLogUsesChunkedFields();
+    await testDefinitiveFailureAbortsRemaining();
+    await testPairModePartialNotDowngraded();
+    await testLaterChunkPartialMarkersAccumulate();
+    console.log('All COW ops-per-broadcast tests passed');
+}
+
+main().catch((err) => {
+    console.error('COW ops-per-broadcast test FAILED:', err);
+    process.exit(1);
+});
