@@ -1216,9 +1216,10 @@ export function sleep(ms: number): Promise<void> {
  * @param {Object} [options={}] - Input options
  * @param {boolean} [options.hideEchoBack=false] - Hide input echo (for passwords)
  * @param {string} [options.mask=''] - Character to display instead of input
+ * @param {Function} [options.colorize] - Live colorizer applied to the typed input on redraw
  * @returns {Promise<string>} Trimmed user input
  */
-export function readInput(prompt: string, options: { hideEchoBack?: boolean; mask?: string; validate?: (input: string) => boolean } = {}): Promise<string> {
+export function readInput(prompt: string, options: { hideEchoBack?: boolean; mask?: string; validate?: (input: string) => boolean; colorize?: (input: string) => string } = {}): Promise<string> {
     return new Promise((resolve: any) => {
         const stdin = runtime.stdin!; const stdout = runtime.stdout;
         const ESC_SEQUENCE_TIMEOUT_MS = 150;
@@ -1233,7 +1234,10 @@ export function readInput(prompt: string, options: { hideEchoBack?: boolean; mas
         function redraw() {
             const shouldMask = options.hideEchoBack || typeof options.mask === 'string';
             const maskChar = options.mask || '*';
-            const display = shouldMask ? maskChar.repeat(input.length) : input;
+            let display = shouldMask ? maskChar.repeat(input.length) : input;
+            if (!shouldMask && input.length > 0 && typeof options.colorize === 'function') {
+                display = options.colorize(input);
+            }
             stdout.write('\r\x1b[K' + prompt + display);
             if (cursorPos < input.length) {
                 stdout.write('\x1b[' + (input.length - cursorPos) + 'D');
