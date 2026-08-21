@@ -131,7 +131,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Asymmetric Offset** | Directional weight shift (buy-heavy or sell-heavy) driven by AMA/Kalman trend |
 | **Derivative Signal** | SMA/MACD/RSI-based entry bias and momentum gate for optional strategy filtering |
 | **Momentum Gate** | N-bar commitment tracking that confirms derivative signals before acting |
-| **Grid Price** | Price anchor for grid math; can be numeric, `"pool"`, `"book"`, or AMA keyword (`"ama"`, `"ama1"`–`"ama4"`) |
+| **GridPrice** | Price anchor for grid math; can be numeric, `"pool"`, `"book"`, or AMA keyword (`"ama"`, `"ama1"`–`"ama4"`) |
 
 ### Grid Concepts
 
