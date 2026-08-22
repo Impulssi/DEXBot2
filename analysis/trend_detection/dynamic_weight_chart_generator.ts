@@ -38,7 +38,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
     const GAIN_MIN = 0.5,     GAIN_MAX = 2.0;
     const AMA_MS_MIN = 0.04,  AMA_MS_MAX = 0.12;
     const KAL_MS_MIN = 0.5,   KAL_MS_MAX = 1.5;
-    const CLIP_PCT_MAX = 55;
+    const CLIP_PCT_MAX = 20;
     const TH_MIN = 0,         TH_MAX = 0.5;
     const KF_MIN = 0,         KF_MAX = 200;
     const KFD_MIN = 1.0,      KFD_MAX = 3.0;
@@ -130,12 +130,15 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
     const amaSlopePct       = results.map((r: any) => r.amaSlopePct ?? null);
     const kalmanVelocityPctRaw = results.map((r: any) => r.velocityRawPct ?? r.velocityPct ?? null);
     const kalmanDisplacementPct = results.map((r: any) => r.displacementRawPct ?? r.displacementPct ?? null);
-    const kalmanVelocityPct = buildKalmanVelocitySeries(results, {
-        kalmanSmoothPct: defaultKalmanSmoothPct,
-        kalmanDispScaleMult: defaultKalmanDispScaleMult,
-        kalmanDispThresholdMult: defaultKalmanDispThresholdMult,
-        kalmanSmoothSpanPct: defaultKalmanSmoothSpanPct,
-    });
+    const kalmanVelocityPct = buildKalmanVelocitySeries(
+        results.map((r: any) => ({ velocityPct: r.velocityRawPct ?? r.velocityPct ?? null, displacementPct: r.displacementRawPct ?? r.displacementPct ?? null })),
+        {
+            kalmanSmoothPct: defaultKalmanSmoothPct,
+            kalmanDispScaleMult: defaultKalmanDispScaleMult,
+            kalmanDispThresholdMult: defaultKalmanDispThresholdMult,
+            kalmanSmoothSpanPct: defaultKalmanSmoothSpanPct,
+        }
+    );
     const kalmanIsReady      = results.map((r: any) => r.isReady ?? false);
     const signals            = results.map((r: any) => r.signal);
     const amaLabel           = data.amaKey || 'AMA3';
@@ -591,8 +594,10 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             if (currentClipPct > 0) {
                 const slopes = [];
                 for (let i = amaReadyBar; i < data.realBarCount; i++) {
-                    const s = computeSlopeAtIndex(i, lb);
-                    if (s !== 0) slopes.push(Math.abs(s));
+                    // Keep every finite slope (zeros included) — matches the live
+                    // market adapter service clip pool exactly.
+                    const s = computeAverageAmaSlopePct(data.ama3Prices[i], data.ama3Prices[i - lb], lb);
+                    if (Number.isFinite(s)) slopes.push(Math.abs(s));
                 }
                 if (slopes.length > 0) {
                     slopes.sort((a, b) => a - b);

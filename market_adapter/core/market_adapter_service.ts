@@ -643,7 +643,6 @@ class MarketAdapterService {
         }
 
         const kalmanResult = kalmanHistory[kalmanHistory.length - 1];
-        const kalmanWarmupBars = kalman.warmupBars ?? 20;
 
         // Regime gate (Hurst + PE bilinear multiplier)
         const regimeSensitivity = cfg.regimeSensitivity ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_REGIME_SENSITIVITY;
@@ -688,7 +687,13 @@ class MarketAdapterService {
 
         let kalmanSmoothedVelocityPct: (number | null)[] = new Array(kalmanHistory.length).fill(null);
         if (useKalmanBlend) {
-            kalmanSmoothedVelocityPct = buildKalmanVelocitySeries(kalmanHistory, {
+            // Feed the smoothing pipeline unrounded velocity/displacement (matches
+            // the research chart payload, which prefers velocityRawPct).
+            const kalmanRawPoints = kalmanHistory.map((kr: any) => ({
+                velocityPct: kr.velocityRawPct ?? kr.velocityPct,
+                displacementPct: kr.displacementRawPct ?? kr.displacementPct,
+            }));
+            kalmanSmoothedVelocityPct = buildKalmanVelocitySeries(kalmanRawPoints, {
                 kalmanSmoothPct,
                 kalmanDispScaleMult,
                 kalmanDispThresholdMult,
@@ -696,11 +701,7 @@ class MarketAdapterService {
             });
 
             kalClipThreshold = useClipThreshold
-                ? computeAbsolutePercentileThreshold(
-                    kalmanSmoothedVelocityPct.slice(kalmanWarmupBars),
-                    clipPercentile,
-                    Infinity
-                )
+                ? computeAbsolutePercentileThreshold(kalmanSmoothedVelocityPct, clipPercentile, Infinity)
                 : Infinity;
         }
 

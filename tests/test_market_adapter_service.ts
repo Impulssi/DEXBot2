@@ -178,15 +178,18 @@ function buildDynamicWeightParityInputs(candles, cfg, botAma) {
     const kalmanHistory = [];
     for (const close of closes) kalmanHistory.push(kalman.update(close));
 
-    const kalmanSmoothedVelocityPct = buildKalmanVelocitySeries(kalmanHistory, {
+    const kalmanRawPoints = kalmanHistory.map((kr) => ({
+        velocityPct: kr.velocityRawPct ?? kr.velocityPct,
+        displacementPct: kr.displacementRawPct ?? kr.displacementPct,
+    }));
+    const kalmanSmoothedVelocityPct = buildKalmanVelocitySeries(kalmanRawPoints, {
         kalmanSmoothPct: cfg.kalmanSmoothPct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_SMOOTH_PCT_DEFAULT,
         kalmanDispScaleMult: cfg.kalmanDispScaleMult ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_DISP_SCALE_MULT_DEFAULT,
         kalmanDispThresholdMult: cfg.kalmanDispThresholdMult ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_DISP_THRESHOLD_MULT_DEFAULT,
         kalmanSmoothSpanPct: cfg.kalmanSmoothSpanPct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_SMOOTH_SPAN_PCT_DEFAULT,
     });
-    const kalmanWarmupBars = kalman.warmupBars ?? 20;
     const kalClipThreshold = computeAbsolutePercentileThreshold(
-        kalmanSmoothedVelocityPct.slice(kalmanWarmupBars),
+        kalmanSmoothedVelocityPct,
         clipPercentile,
         Infinity
     );
