@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { formatMetric2 } from '../modules/order/format.js';
 import { getStorage } from '../modules/storage/index.js';
+import { PATHS } from '../modules/paths.js';
 const { ensureDir } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors.js';
 
@@ -897,7 +898,7 @@ class RepoAnalyzer {
 </body>
 </html>`;
 
-        const outputPath = path.join(process.cwd(), 'analysis', 'charts', 'repo-stats.html');
+        const outputPath = path.join(PATHS.ANALYSIS.CHARTS_DIR, 'repo-stats.html');
         ensureDir(path.dirname(outputPath));
         fs.writeFileSync(outputPath, html);
         console.log('HTML chart generated: ' + outputPath);

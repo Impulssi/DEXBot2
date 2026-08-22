@@ -37,7 +37,7 @@ interface RunOpts { env?: Record<string, string | undefined>; cwd?: string; inpu
 // home, which would make resolution machine-dependent). Pass noHome to exercise
 // the HOME-unset passwd fallback via a PATH-shimmed getent.
 const HOME_DEFAULT = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-shell-home-'));
-const SCRUBBED_ENV_KEYS = ['HOME', 'DEXBOT_PROFILE_ROOT', 'DEXBOT2_ROOT', 'DEXBOT_MARKET_ADAPTER_DATA_DIR', 'DEXBOT_MARKET_ADAPTER_STATE_DIR', 'DEXBOT_CLAW_DATA_DIR'];
+const SCRUBBED_ENV_KEYS = ['HOME', 'XDG_CONFIG_HOME', 'DEXBOT_PROFILE_ROOT', 'DEXBOT2_ROOT', 'DEXBOT_MARKET_ADAPTER_DATA_DIR', 'DEXBOT_MARKET_ADAPTER_STATE_DIR', 'DEXBOT_CLAW_DATA_DIR'];
 
 function childEnv(extra: Record<string, string | undefined> = {}, noHome = false): Record<string, string | undefined> {
     const env: Record<string, string | undefined> = { ...process.env };

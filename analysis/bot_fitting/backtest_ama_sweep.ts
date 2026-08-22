@@ -7,6 +7,7 @@ import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
 import { range } from '../math_utils.js';
 import { parseListOrRange, loadLpData, fmt } from './shared_utils.js';
 import { getStorage } from '../../modules/storage/index.js';
+import { PATHS } from '../../modules/paths.js';
 const { readJSON, writeJSON } = getStorage();
 'use strict';
 
@@ -759,7 +760,7 @@ async function run() {
 
     // ── Save JSON ───────────────────────────────────────────────────────────
     const outName = `ama_sweep_results_${path.basename(cfg.dataPath!, '.json')}.json`;
-    const outPath = path.join(__dirname, outName);
+    const outPath = path.join(PATHS.ANALYSIS.RESULTS_DIR, outName);
     writeJSON(outPath, {
         meta: {
             generatedAt: new Date().toISOString(),

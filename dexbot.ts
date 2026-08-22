@@ -146,7 +146,7 @@ const {
     saveSettingsFile,
 } = require('./modules/bot_settings');
 const { buildRuntimeScriptArgs } = require('./modules/launcher/runtime_entry');
-const { PATHS, getRecalculateTriggerFile } = require('./modules/paths');
+const { PATHS, HOME_PROFILES_DIR, getRecalculateTriggerFile } = require('./modules/paths');
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
@@ -1228,9 +1228,8 @@ async function bootstrap() {
         isNewSetup = ensureProfilesDirectory(PROFILES_DIR);
     } catch (err: any) {
         if (err && (err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'EROFS')) {
-            const { homedir } = require('os');
             const { spawnSync: respawn } = require('child_process') as any as any;
-            const fallbackDir = path.join(homedir(), '.config', 'dexbot2', 'profiles');
+            const fallbackDir = HOME_PROFILES_DIR;
             console.log(`Config directory not writable at: ${PROFILES_DIR}`);
             console.log(`Auto-using ${fallbackDir} instead. Set DEXBOT_PROFILE_ROOT to override.\n`);
             const newEnv = { ...process.env, DEXBOT_PROFILE_ROOT: fallbackDir };

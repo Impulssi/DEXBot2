@@ -706,7 +706,9 @@ function resolveProfilesDir(profileRoot: any) {
     candidates.push(path.join(envRoot, 'profiles'));
   }
 
-  if (Config.CWD) candidates.push(path.resolve(Config.CWD, 'profiles'));
+  // No bare CWD/profiles candidate here: an existing home config is
+  // authoritative (matching modules/paths.ts), and legacy cwd profiles are
+  // handled by the central resolver's migration logic below.
 
   for (const candidate of candidates) {
     if (isFileLike(candidate)) {

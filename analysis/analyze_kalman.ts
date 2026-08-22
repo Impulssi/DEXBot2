@@ -11,12 +11,14 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
+import path from 'node:path';
 import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer.js';
 import { generateHTML } from './trend_detection/kalman_chart_generator.js';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { computeAverageAmaSlopePct } from '../market_adapter/core/strategies/dynamic_weight_series.js';
 import { getCandleClose } from './math_utils.js';
 import { writeChartFile } from './chart_utils.js';
+import { PATHS } from '../modules/paths.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
 'use strict';
@@ -39,7 +41,7 @@ function parseArgs() {
         source: { type: 'market_adapter', config: { botKey: '' } },
         rNoise: 0.05,
         qNoise: 0.005,
-        chartFile: 'analysis/charts/kalman_chart.html',
+        chartFile: path.join(PATHS.ANALYSIS.CHARTS_DIR, 'kalman_chart.html'),
         quiet: false,
         listBots: false,
     };

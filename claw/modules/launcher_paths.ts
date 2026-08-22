@@ -44,8 +44,10 @@ function normalizeRoot(options: Record<string, any> = {}) {
       if (parent === candidate) break;
       candidate = parent;
     }
-    // Fall back to one level up (original behavior)
-    return path.dirname(resolved);
+    // No code root found above the profile dir (e.g. a home config like
+    // ~/.config/dexbot2/profiles). Spawn from the code location actually
+    // running this launcher instead of guessing an unrelated ancestor.
+    return DEFAULT_ROOT;
   }
   return DEFAULT_ROOT;
 }

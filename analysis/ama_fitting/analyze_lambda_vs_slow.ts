@@ -186,8 +186,8 @@ function generateChartHtml(results: any, metricCache: any, fixEr: any, fixFast: 
     const cacheSlow = metricCache.map((m: any) => m.slow);
     const cacheMove = metricCache.map((m: any) => m.movement);
 
-    const uplotCode = fs.readFileSync(path.resolve(__dirname, '..', 'uplot', 'uPlot.iife.min.js'), 'utf8');
-    const uplotCSS = fs.readFileSync(path.resolve(__dirname, '..', 'uplot', 'uPlot.min.css'), 'utf8');
+    const uplotCode = fs.readFileSync(path.join(PATHS.ANALYSIS.ASSETS_DIR, 'uPlot.iife.min.js'), 'utf8');
+    const uplotCSS = fs.readFileSync(path.join(PATHS.ANALYSIS.ASSETS_DIR, 'uPlot.min.css'), 'utf8');
 
     const amaAnnotations = [
         { label: 'AMA1', lambda: 0.0031, slow: 62.1, color: '#ef5350' },

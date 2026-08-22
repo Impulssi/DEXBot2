@@ -778,7 +778,7 @@ function getClawToolCatalog() {
   return CLAW_TOOL_CATALOG.map(cloneTool);
 }
 
-function buildClawCommandExamples(scriptPath = 'tsx scripts/claw_bridge.ts') {
+function buildClawCommandExamples(scriptPath = 'tsx claw/scripts/claw_bridge.ts') {
   return CLAW_TOOL_CATALOG
     .filter((tool) => Array.isArray(tool.exampleArgs))
     .map((tool) => [

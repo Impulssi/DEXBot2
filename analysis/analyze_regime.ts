@@ -18,7 +18,9 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
+import path from 'node:path';
 import { MARKET_ADAPTER }              from '../modules/constants.js';
+import { PATHS }                       from '../modules/paths.js';
 import { HurstAnalyzer }               from './trend_detection/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer }  from './trend_detection/permutation_entropy_analyzer.js';
 import { generateRegimeHTML }          from './trend_detection/regime_chart_generator.js';
@@ -44,7 +46,7 @@ function parseArgs() {
         listBots:    boolean;
     } = {
         source:      { type: 'market_adapter', config: { botKey: '' } },
-        chartFile:   'analysis/charts/regime_chart.html',
+        chartFile:   path.join(PATHS.ANALYSIS.CHARTS_DIR, 'regime_chart.html'),
         hurstWindow: HURST_CONFIG.window,
         peWindow:    PE_CONFIG.window,
         peM:         PE_CONFIG.m,

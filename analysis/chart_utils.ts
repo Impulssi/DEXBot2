@@ -2,12 +2,35 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getStorage } from '../modules/storage/index.js';
+import { PATHS } from '../modules/paths.js';
 const { ensureDir } = getStorage();
 'use strict';
 
 /**
  * Chart utilities for analysis HTML generators.
  */
+
+// Runtime assets every generated chart references as ../uplot/* relative to
+// its own directory (charts live in <root>/charts, assets in <root>/uplot).
+const UPLOT_RUNTIME_FILES = ['uPlot.iife.min.js', 'uPlot.min.css'];
+
+/**
+ * Generated HTML loads uPlot from a sibling `uplot/` dir next to the charts
+ * dir. In a source checkout that dir is the vendored original; anywhere else
+ * (relocated analysis root under npm/home profiles, or a custom --chart path)
+ * materialize a copy so the relative refs keep resolving.
+ */
+function ensureSiblingUplotAssets(chartDir: any) {
+    const targetDir = path.join(path.dirname(path.resolve(chartDir)), 'uplot');
+    const sourceDir = PATHS.ANALYSIS.ASSETS_DIR;
+    if (targetDir === path.resolve(sourceDir)) return;
+    if (UPLOT_RUNTIME_FILES.every((f) => fs.existsSync(path.join(targetDir, f)))) return;
+    if (!fs.existsSync(sourceDir)) return;
+    fs.mkdirSync(targetDir, { recursive: true });
+    for (const f of UPLOT_RUNTIME_FILES) {
+        fs.copyFileSync(path.join(sourceDir, f), path.join(targetDir, f));
+    }
+}
 
 
 function escapeHtml(str: string) {
@@ -34,6 +57,7 @@ function toEpochSeconds(ts: any, fallbackIdx: any) {
 function writeChartFile(filePath: any, html: any) {
     const chartDir = path.dirname(filePath);
     if (!fs.existsSync(chartDir)) ensureDir(chartDir);
+    ensureSiblingUplotAssets(chartDir);
     fs.writeFileSync(filePath, html, 'utf8');
 }
 

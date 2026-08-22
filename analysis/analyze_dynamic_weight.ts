@@ -12,6 +12,7 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
+import path from 'node:path';
 import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer.js';
 import { HurstAnalyzer } from './trend_detection/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer.js';
@@ -19,6 +20,7 @@ import { generateHTML } from './trend_detection/dynamic_weight_chart_generator.j
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { computeAmaSlopeWeights } from '../market_adapter/core/strategies/ama_slope_model.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
+import { PATHS } from '../modules/paths.js';
 import { writeChartFile } from './chart_utils.js';
 import { getCandleClose } from './math_utils.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
@@ -64,7 +66,7 @@ function parseArgs() {
         dispScaleMinPct?: number;
     } = {
         source: { type: 'market_adapter', config: { botKey: '' } },
-        chartFile: 'analysis/charts/dynamic_weight_chart.html',
+        chartFile: path.join(PATHS.ANALYSIS.CHARTS_DIR, 'dynamic_weight_chart.html'),
         alpha: MARKET_ADAPTER.DYNAMIC_WEIGHT_ALPHA,
         gain: MARKET_ADAPTER.DYNAMIC_WEIGHT_GAIN,
         dispWeight: MARKET_ADAPTER.DYNAMIC_WEIGHT_DW,

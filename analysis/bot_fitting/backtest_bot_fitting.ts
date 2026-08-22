@@ -4,6 +4,7 @@ import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
 import { range } from '../math_utils.js';
 import { parseListOrRange, loadLpData, fmt } from './shared_utils.js';
 import { getStorage } from '../../modules/storage/index.js';
+import { PATHS } from '../../modules/paths.js';
 const { ensureDir, readJSON, writeJSON } = getStorage();
 
 'use strict';
@@ -125,28 +126,32 @@ function parseArgs() {
  * The optimizer names results `optimization_results_<base>_w<λ1>_<λ2>_<λ3>_<λ4>.json`
  * (per-AMA distance weights appended as a `_w...` suffix). To stay robust against
  * weight overrides, pick the most recently written `optimization_results_<base>_w*.json`
- * in `ama_fitting/`; fall back to the legacy `optimization_results_<base>.json` name
- * if no suffixed file exists.
+ * in the analysis results dir (legacy ama_fitting location still scanned); fall
+ * back to the legacy `optimization_results_<base>.json` name if no suffixed file exists.
  */
 function resolveAutoResultsPath(dataPath: string): string {
     const base = path.basename(dataPath, '.json');
-    const dir = path.join(__dirname, '..', 'ama_fitting');
+    // Canonical results dir first, then the legacy ama_fitting location so
+    // previously generated files are still discovered.
+    const dirs = [PATHS.ANALYSIS.RESULTS_DIR, path.join(PATHS.PROJECT_ROOT, 'analysis', 'ama_fitting')];
     const prefix = `optimization_results_${base}_w`;
     let newest: { file: string; mtimeMs: number } | null = null;
     try {
-        for (const entry of fs.readdirSync(dir)) {
-            if (!entry.startsWith(prefix) || !entry.endsWith('.json')) continue;
-            const full = path.join(dir, entry);
-            const stat = fs.statSync(full);
-            if (!newest || stat.mtimeMs > newest.mtimeMs) {
-                newest = { file: full, mtimeMs: stat.mtimeMs };
+        for (const dir of dirs) {
+            for (const entry of fs.readdirSync(dir)) {
+                if (!entry.startsWith(prefix) || !entry.endsWith('.json')) continue;
+                const full = path.join(dir, entry);
+                const stat = fs.statSync(full);
+                if (!newest || stat.mtimeMs > newest.mtimeMs) {
+                    newest = { file: full, mtimeMs: stat.mtimeMs };
+                }
             }
         }
     } catch {
         // dir unreadable — fall through to legacy name check
     }
     if (newest) return newest.file;
-    return path.join(dir, `optimization_results_${base}.json`);
+    return path.join(PATHS.ANALYSIS.RESULTS_DIR, `optimization_results_${base}.json`);
 }
 
 function loadAmaStrategies(resultsPath: string) {
@@ -388,8 +393,8 @@ function run() {
     console.log();
 
     const outName = `bot_fitting_results_${path.basename(cfg.dataPath!, '.json')}.json`;
-    const outPath = path.join(__dirname, outName);
-    ensureDir(__dirname);
+    const outPath = path.join(PATHS.ANALYSIS.RESULTS_DIR, outName);
+    ensureDir(PATHS.ANALYSIS.RESULTS_DIR);
     writeJSON(outPath, {
         meta: {
             generatedAt: new Date().toISOString(),

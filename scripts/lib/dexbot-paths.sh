@@ -39,10 +39,13 @@ if [ -z "$PROFILE_ROOT" ]; then
     else
         # Home dir: $HOME normally; when unset (e.g. cron/systemd), mirror
         # Node's os.homedir() passwd fallback so the shell side does not fall
-        # back into a node_modules package dir on npm installs.
-        HOME_PROFILES=""
-        if [ -n "$HOME" ]; then
-            HOME_PROFILES="${HOME}/.config/dexbot2/profiles"
+        # back into a node_modules package dir on npm installs. XDG_CONFIG_HOME
+        # overrides the config base, mirroring HOME_CONFIG_DIR in paths.ts.
+        CONFIG_BASE=""
+        if [ -n "$XDG_CONFIG_HOME" ]; then
+            CONFIG_BASE="$XDG_CONFIG_HOME"
+        elif [ -n "$HOME" ]; then
+            CONFIG_BASE="${HOME}/.config"
         else
             PASSWD_HOME=""
             if command -v getent >/dev/null 2>&1; then
@@ -50,20 +53,26 @@ if [ -z "$PROFILE_ROOT" ]; then
             elif command -v dscl >/dev/null 2>&1; then
                 PASSWD_HOME="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
             fi
-            [ -n "$PASSWD_HOME" ] && HOME_PROFILES="${PASSWD_HOME}/.config/dexbot2/profiles"
+            [ -n "$PASSWD_HOME" ] && CONFIG_BASE="${PASSWD_HOME}/.config"
         fi
+        HOME_PROFILES="${CONFIG_BASE:+${CONFIG_BASE}/dexbot2/profiles}"
         # An existing home config is authoritative — the user has migrated.
         if [ -n "$HOME_PROFILES" ] && has_profile_state "$HOME_PROFILES"; then
             PROFILE_ROOT="$HOME_PROFILES"
         else
             # Legacy migration: keep a populated repo/cwd profiles dir until a
             # home config exists. npm packages never fall back into the package
-            # dir. Written as explicit checks (no word-splitting loop) so it
-            # behaves identically under bash, dash, and zsh.
-            case "$PROJECT_ROOT" in
-                *node_modules*) LEGACY_REPO="" ;;
-                *) LEGACY_REPO="${PROJECT_ROOT}/profiles" ;;
-            esac
+            # dir — exact-parent check (basename of dirname), mirroring
+            # isGlobalNpmPackageDir() in modules/paths.ts; a substring match
+            # would also skip legit repos whose path merely contains the word.
+            # Written as explicit checks (no word-splitting loop) so it behaves
+            # identically under bash, dash, and zsh.
+            LEGACY_REPO=""
+            if [ "$(basename "$(dirname "$PROJECT_ROOT")")" = "node_modules" ]; then
+                LEGACY_REPO=""
+            else
+                LEGACY_REPO="${PROJECT_ROOT}/profiles"
+            fi
             PROFILE_ROOT=""
             if [ -n "$LEGACY_REPO" ] && has_profile_state "$LEGACY_REPO"; then
                 PROFILE_ROOT="$LEGACY_REPO"

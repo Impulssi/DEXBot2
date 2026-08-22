@@ -17,9 +17,11 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
+import path from 'node:path';
 import { HurstAnalyzer }              from './trend_detection/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
+import { PATHS } from '../modules/paths.js';
 import { writeChartFile }            from './chart_utils.js';
 import { getCandleClose }            from './math_utils.js';
 import { roundTo } from '../modules/order/utils/math.js';
@@ -59,7 +61,7 @@ function parseArgs() {
         listBots:  boolean;
     } = {
         source:    { type: 'market_adapter', config: { botKey: '' } },
-        chartFile: 'analysis/charts/regime_windows_heatmap.html',
+        chartFile: path.join(PATHS.ANALYSIS.CHARTS_DIR, 'regime_windows_heatmap.html'),
         quiet:     false,
         listBots:  false,
     };

@@ -21,7 +21,6 @@
  */
 
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { computeATRSeries } from '../market_adapter/core/strategies/atr/calculator.js';
@@ -29,6 +28,7 @@ import { normalizeAtrPeriod } from '../market_adapter/core/config_normalizers.js
 import { computeVolatilityShift } from '../market_adapter/core/strategies/volatility_shift.js';
 import { generateHTML } from './trend_detection/volatility_chart_generator.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
+import { PATHS } from '../modules/paths.js';
 import { getCandleClose } from './math_utils.js';
 import { writeChartFile } from './chart_utils.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
@@ -40,7 +40,7 @@ const MIN_WEIGHT = MARKET_ADAPTER.DYNAMIC_WEIGHT_MIN_WEIGHT;
 const MAX_WEIGHT = MARKET_ADAPTER.DYNAMIC_WEIGHT_MAX_WEIGHT;
 const DEFAULT_THRESHOLD = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_THRESHOLD;
 const DEFAULT_CLAMP = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP;
-const DEFAULT_CHART_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'charts');
+const DEFAULT_CHART_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'volatility_chart.html');
 
 function computeATRSeriesNormalized(candles: any[], period = DEFAULT_ATR_PERIOD) {

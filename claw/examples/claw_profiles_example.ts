@@ -5,7 +5,10 @@ const { createClawInfrastructure } = require('../modules/claw_infra');
 const { getErrorMessage } = require('../../modules/utils/errors');
 
 async function main() {
-  const profileRoot = process.argv[2] || process.env.DEXBOT_PROFILE_ROOT || null;
+  // Pass an explicit profile root via argv[2], or null to let the shared
+  // resolver decide (env override → home config → legacy layouts). Reading
+  // DEXBOT_PROFILE_ROOT here directly would bypass that priority order.
+  const profileRoot = process.argv[2] || null;
   const botRef = process.argv[3] || null;
 
   const claw = createClawInfrastructure({

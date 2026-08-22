@@ -1,6 +1,6 @@
 // Must be before any require() due to config caching trap
 const ORIG_ENV: Record<string, string | undefined> = {};
-for (const k of ['DEXBOT_PROFILE_ROOT', 'DEXBOT2_ROOT', 'DEXBOT_MARKET_ADAPTER_DATA_DIR', 'DEXBOT_MARKET_ADAPTER_STATE_DIR', 'DEXBOT_CLAW_DATA_DIR'] as const) {
+for (const k of ['DEXBOT_PROFILE_ROOT', 'DEXBOT2_ROOT', 'DEXBOT_MARKET_ADAPTER_DATA_DIR', 'DEXBOT_MARKET_ADAPTER_STATE_DIR', 'DEXBOT_CLAW_DATA_DIR', 'DEXBOT_ANALYSIS_DIR', 'XDG_CONFIG_HOME'] as const) {
     ORIG_ENV[k] = process.env[k];
     delete process.env[k];
 }
@@ -407,6 +407,85 @@ check('resolveProfilesDir returns a string',
     const quiet = p14.computeRelocationNotices(path.join(repoRoot, 'profiles'), repoRoot);
     check('no relocation notice when profiles stay at the repo layout',
         quiet.length === 0, quiet.join(' | '));
+}
+
+// ── 15) Analysis dirs: source layout keeps repo location ────────────
+{
+    const p15 = freshPaths();
+    const repoRoot = path.resolve(__dirname, '..');
+    const repoProfiles = path.join(repoRoot, 'profiles');
+    const a = p15.resolveAnalysisDirs(repoProfiles, repoRoot);
+    check('source checkout keeps PROJECT_ROOT/analysis outputs',
+        a.DIR === path.join(repoRoot, 'analysis'),
+        a.DIR);
+    check('source checkout charts dir is PROJECT_ROOT/analysis/charts',
+        a.CHARTS_DIR === path.join(repoRoot, 'analysis', 'charts'),
+        a.CHARTS_DIR);
+    check('source checkout results dir is PROJECT_ROOT/analysis/results',
+        a.RESULTS_DIR === path.join(repoRoot, 'analysis', 'results'),
+        a.RESULTS_DIR);
+    check('vendored assets always stay at the code root',
+        a.ASSETS_DIR === path.join(repoRoot, 'analysis', 'uplot'),
+        a.ASSETS_DIR);
+}
+
+// ── 16) Analysis dirs: relocated under profiles for npm installs ─────
+{
+    const p16 = freshPaths();
+    const fakeNpmRoot = path.join(tmpRoot, 'node_modules', 'dexbot');
+    const a = p16.resolveAnalysisDirs(tmpRoot, fakeNpmRoot);
+    const wantDir = path.join(tmpRoot, 'analysis');
+    check('npm install relocates analysis outputs under profiles',
+        a.DIR === wantDir,
+        `expected ${wantDir}, got ${a.DIR}`);
+    check('npm install charts dir follows relocated root',
+        a.CHARTS_DIR === path.join(wantDir, 'charts'),
+        a.CHARTS_DIR);
+}
+
+// ── 17) Analysis dirs: missing source dir → profiles layout ─────────
+{
+    const p17 = freshPaths();
+    const fakeRoot = fs.mkdtempSync(path.join(tmpRoot, 'no-analysis-'));
+    const a = p17.resolveAnalysisDirs(path.join(fakeRoot, 'profiles'), fakeRoot);
+    check('non-source layout relocates analysis under profiles',
+        a.DIR === path.join(fakeRoot, 'profiles', 'analysis'),
+        a.DIR);
+}
+
+// ── 18) Analysis dirs: env var overrides layout ─────────────────────
+{
+    const p18 = freshPaths();
+    const cfg = require('../modules/config').Config;
+    const override = path.join(tmpRoot, 'custom-analysis');
+    const saved = cfg.DEXBOT_ANALYSIS_DIR;
+    try {
+        cfg.DEXBOT_ANALYSIS_DIR = override;
+        const a = p18.resolveAnalysisDirs(tmpRoot, path.resolve(__dirname, '..'));
+        check('DEXBOT_ANALYSIS_DIR overrides analysis root',
+            a.DIR === override,
+            `expected ${override}, got ${a.DIR}`);
+        check('charts derive from overridden analysis root',
+            a.CHARTS_DIR === path.join(override, 'charts'));
+    } finally {
+        cfg.DEXBOT_ANALYSIS_DIR = saved;
+    }
+}
+
+// ── 19) XDG_CONFIG_HOME overrides the user config base ──────────────
+{
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const xdgBase = path.join(tmpRoot, 'xdg-base');
+    process.env.XDG_CONFIG_HOME = xdgBase;
+    try {
+        const p19 = freshPaths();
+        check('XDG_CONFIG_HOME redirects HOME_PROFILES_DIR',
+            p19.HOME_PROFILES_DIR === path.join(xdgBase, 'dexbot2', 'profiles'),
+            p19.HOME_PROFILES_DIR);
+    } finally {
+        if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+        else process.env.XDG_CONFIG_HOME = savedXdg;
+    }
 }
 
 // ── Summary ────────────────────────────────────────────────────────────

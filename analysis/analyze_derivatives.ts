@@ -20,10 +20,12 @@
  */
 
 
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DerivativeAnalyzer } from './trend_detection/derivative_analyzer.js';
 import { generateHTML } from './derivative_chart_generator.js';
 import { writeChartFile } from './chart_utils.js';
+import { PATHS } from '../modules/paths.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 'use strict';
 
@@ -85,7 +87,7 @@ function parseArgs(): CliConfig {
         interpHoldBars: 3,
         rsiZone: 10,
         rsiExtreme: 90,
-        chartFile: 'analysis/charts/derivative_chart.html',
+        chartFile: path.join(PATHS.ANALYSIS.CHARTS_DIR, 'derivative_chart.html'),
         quiet: false,
         listBots: false,
     };
@@ -173,7 +175,7 @@ Analyzer options:
     --file PATH      JSON candle input
 
   Output:
-    --chart FILE   Chart output path (default: analysis/charts/derivative_chart.html)
+    --chart FILE   Chart output path (default: <analysis charts dir>/derivative_chart.html)
     --list-bots    List available bot keys from bots.json
     --quiet        Suppress log output
     `);

@@ -11,14 +11,15 @@ function normalizeClawRepoRoot(repoRoot: string) {
   return normalizeRepoRoot(repoRoot);
 }
 
-// Generated docs must reference scripts that actually exist. Prefer the built
-// .js (dist layout); fall back to the .ts source run through tsx.
+// Generated docs must reference scripts that actually exist. Claw tooling
+// lives in claw/scripts/ (shipped as source); prefer a compiled sibling when
+// present, otherwise fall back to the .ts source run through tsx.
 function resolveScriptInvocation(repoRoot: string, name: string) {
-  const jsPath = path.join(repoRoot, 'scripts', `${name}.js`);
+  const jsPath = path.join(repoRoot, 'claw', 'scripts', `${name}.js`);
   if (storage.exists(jsPath)) {
     return { command: 'node', script: jsPath };
   }
-  return { command: 'npx tsx', script: path.join(repoRoot, 'scripts', `${name}.ts`) };
+  return { command: 'npx tsx', script: path.join(repoRoot, 'claw', 'scripts', `${name}.ts`) };
 }
 
 function buildBridgeInvocation(repoRoot: string, profileRoot: string, command: string, extraArgs: any[] = []) {
@@ -208,7 +209,7 @@ function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) 
         'Start the memU MCP server:',
         '',
         '```bash',
-        `tsx ${path.join(repoRoot, 'scripts', 'memu_mcp_server.ts').replace(/\\/g, '/')} --memu-dir ${PATHS.CLAW.MEMU_DIR.replace(/\\/g, '/')}`,
+        `tsx ${path.join(repoRoot, 'claw', 'scripts', 'memu_mcp_server.ts').replace(/\\/g, '/')} --memu-dir ${PATHS.CLAW.MEMU_DIR.replace(/\\/g, '/')}`,
         '```',
         '',
         'Or use the npm script:',

@@ -8,11 +8,12 @@ import { getStorage } from '../modules/storage/index.js';
 const { ensureDir, readJSON } = getStorage();
 import { fixedTo } from '../modules/order/utils/math.js';
 import { bindHoverStateFn, zoomResetScript } from './chart_ui.js';
+import { PATHS } from '../modules/paths.js';
 'use strict';
 function parseArgs(argv = process.argv.slice(2)) {
     const cfg: { inputFile: string | null; outputFile: string; title: string; quiet: boolean } = {
         inputFile: null,
-        outputFile: 'analysis/charts/derivative_chart.html',
+        outputFile: path.join(PATHS.ANALYSIS.CHARTS_DIR, 'derivative_chart.html'),
         title: 'Derivative Trend Analysis',
         quiet: false,
     };
@@ -40,7 +41,7 @@ Derivative Chart Generator (uPlot)
 Usage:
   tsx analysis/derivative_chart_generator.ts --input <file.json> [options]
 Options:
-  --output FILE   Output HTML (default: analysis/charts/derivative_chart.html)
+  --output FILE   Output HTML (default: <analysis charts dir>/derivative_chart.html)
   --title TEXT    Chart title
   --quiet         Suppress output
     `);

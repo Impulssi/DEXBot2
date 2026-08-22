@@ -719,7 +719,8 @@ async function run() {
     const outName = dataFile
         ? `optimization_results_${path.basename(dataFile, '.json')}${lambdaSuffix}.json`
         : `optimization_results_high_resolution${lambdaSuffix}.json`;
-    const outPath = path.join(__dirname, outName);
+    const outPath = path.join(PATHS.ANALYSIS.RESULTS_DIR, outName);
+    ensureDir(path.dirname(outPath));
     writeJSON(outPath, {
         meta: {
             dataLabel,

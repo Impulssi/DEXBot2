@@ -62,6 +62,21 @@ function dirHasState(dir: string): boolean {
 }
 
 /**
+ * User-level config home: XDG_CONFIG_HOME when set (snapshot via Config),
+ * else ~/.config. All user state roots derive from this single constant so
+ * npm installs, source checkouts, and overrides agree on one location.
+ */
+const HOME_CONFIG_DIR = path.join(
+    Config.XDG_CONFIG_HOME && Config.XDG_CONFIG_HOME.trim()
+        ? path.resolve(Config.XDG_CONFIG_HOME)
+        : path.join(homedir(), '.config'),
+    'dexbot2'
+);
+
+/** Default profiles dir under the user config home (~/.config/dexbot2/profiles). */
+const HOME_PROFILES_DIR = path.join(HOME_CONFIG_DIR, 'profiles');
+
+/**
  * Resolve the profiles (user state) directory.
  *
  * Priority:
@@ -85,8 +100,7 @@ function resolveProfilesDir(projectRoot = PROJECT_ROOT): string {
         return path.join(Config.DEXBOT2_ROOT, 'profiles');
     }
 
-    const home = homedir();
-    const homeDir = home ? path.join(home, '.config', 'dexbot2', 'profiles') : '';
+    const homeDir = HOME_PROFILES_DIR;
     const repoDir = path.join(projectRoot, 'profiles');
     const cwdDir = path.join(process.cwd(), 'profiles');
 
@@ -184,6 +198,34 @@ function resolveClawDirs(profilesDir = PROFILES_DIR, projectRoot = PROJECT_ROOT)
 const CLAW = resolveClawDirs(PROFILES_DIR, PROJECT_ROOT);
 
 /**
+ * Analysis research outputs (charts, optimizer/backtest results). Same layout
+ * rule as market adapter/claw: outputs stay next to the code only in a source
+ * checkout whose profiles also resolve to the repo; otherwise they follow the
+ * resolved profiles dir so an npm install never writes generated artifacts
+ * into its own (reinstall-wiped, possibly read-only) package tree.
+ * DEXBOT_ANALYSIS_DIR overrides the root.
+ */
+function resolveAnalysisDirs(profilesDir = PROFILES_DIR, projectRoot = PROJECT_ROOT) {
+    const sourceDir = path.join(projectRoot, 'analysis');
+    const useSourceLayout = profilesDir === path.join(projectRoot, 'profiles') && fs.existsSync(sourceDir);
+    const outRoot = Config.DEXBOT_ANALYSIS_DIR
+        ? path.resolve(Config.DEXBOT_ANALYSIS_DIR)
+        : useSourceLayout
+            ? sourceDir
+            : path.join(profilesDir, 'analysis');
+    return {
+        DIR: outRoot,
+        CHARTS_DIR: path.join(outRoot, 'charts'),
+        RESULTS_DIR: path.join(outRoot, 'results'),
+        // Vendored read-only assets always live with the code (repo checkout
+        // or npm package), never under the relocated output root.
+        ASSETS_DIR: path.join(sourceDir, 'uplot'),
+    };
+}
+
+const ANALYSIS = resolveAnalysisDirs(PROFILES_DIR, PROJECT_ROOT);
+
+/**
  * Relocation notices: when market-adapter/claw/credit-runtime state no longer
  * resolves to the source layout (home profiles, npm install, or a
  * DEXBOT_PROFILE_ROOT override) but the repo still holds files at the old
@@ -269,9 +311,7 @@ const PATHS = {
 
   CLAW,
 
-  ANALYSIS: {
-    CHARTS_DIR: path.join(PROJECT_ROOT, 'analysis', 'charts'),
-  },
+  ANALYSIS,
 };
 
 function getNodeBlacklistFile(stateDir?: string): string {
@@ -290,5 +330,5 @@ function getRecalculateTriggerFile(botKey: string): string {
   return path.join(PATHS.PROFILES_DIR, `recalculate.${botKey}.trigger`);
 }
 
-export { PATHS, resolveProfilesDir, resolveMarketAdapterDirs, resolveClawDirs, isGlobalNpmPackageDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile, computeRelocationNotices }
+export { PATHS, HOME_CONFIG_DIR, HOME_PROFILES_DIR, resolveProfilesDir, resolveMarketAdapterDirs, resolveClawDirs, resolveAnalysisDirs, isGlobalNpmPackageDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile, computeRelocationNotices }
 
