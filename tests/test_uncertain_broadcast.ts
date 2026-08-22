@@ -1945,7 +1945,10 @@ async function testRecoverFromPersistedGrid() {
         },
         loadBoundaryIdx: (force) => {
             if (force) loadBoundaryCalled = true;
-            return 42;
+            // Valid dummy boundary for this 2-slot grid: both slots fall on
+            // the BUY side of the geometry, so the persisted-boundary gate
+            // (validatePersistedBoundary) accepts it.
+            return 1;
         }
     };
 
@@ -2017,7 +2020,9 @@ async function testRecoverFromPersistedGridTruncatedRead() {
 
     bot.accountOrders = {
         loadGrid: () => persistedGrid,
-        loadBoundaryIdx: () => 42,
+        // Valid dummy boundary (42 would be rejected by the persisted-boundary
+        // gate before the chain read this test exercises).
+        loadBoundaryIdx: () => 1,
     };
 
     // Truncated read: the get_full_accounts window omitted the freshest
@@ -2213,7 +2218,11 @@ async function testRecoverFromPersistedGridUnmatchedRemain() {
 
     bot.accountOrders = {
         loadGrid: () => persistedGrid,
-        loadBoundaryIdx: () => 0,
+        // Valid dummy boundary: 0 would strand the placed SELL (idx 1) inside
+        // the implied band (gapSlots=2) and the restore gate would reject the
+        // snapshot before sync even runs — masking the unmatched-order path
+        // this test exercises.
+        loadBoundaryIdx: () => 1,
     };
 
     chainOrders.readOpenOrdersWithMeta = async () => ({ orders: chainState, truncated: false });

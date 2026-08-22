@@ -8,7 +8,7 @@ import { ORDER_TYPES, TIMING } from './constants.js';
 import * as Format from './order/format.js';
 import * as grid from './order/grid.js';
 import { convertToSpreadPlaceholder, parseChainOrder } from './order/utils/order.js';
-import { blockchainToFloat } from './order/utils/math.js';
+import { blockchainToFloat, calculateGapSlots, validatePersistedBoundary } from './order/utils/math.js';
 import { hasExecutableActions } from './order/utils/validate.js';
 import { getErrorMessage } from './utils/errors.js';
 const { isGridBloated } = grid;
@@ -324,6 +324,33 @@ async function recoverFromPersistedGrid(bot: any) {
         }
 
         const boundaryIdx = bot.accountOrders.loadBoundaryIdx(true);
+
+        // PERSISTED-BOUNDARY GATE: a snapshot whose stored boundary fails
+        // validation is poison (e.g. committed by the pre-5eb3ca7 promotion
+        // overrun).  Refuse the snapshot BEFORE loadGrid so the caller's
+        // fallback — requestGridReset(refreshCenterPrice) — rebuilds clean
+        // geometry instead of re-ingesting the damage and reporting success.
+        // Without this, structural resync would "recover" straight back into
+        // the corrupted state on every attempt.
+        if (typeof boundaryIdx === 'number') {
+            // Same gapSlots source as loadGrid's restore gate (config-derived,
+            // NOT manager._gapSlots — a stale value from a prior load with a
+            // since-changed config must not flip this verdict).
+            const gapSlots = calculateGapSlots(
+                bot.manager.config?.incrementPercent,
+                bot.manager.config?.targetSpreadPercent,
+                bot.manager.config?.gridLimits
+            );
+            const check = validatePersistedBoundary(boundaryIdx, persistedGrid, gapSlots);
+            if (!check.ok) {
+                bot.manager.logger.log(
+                    `[RECOVERY] Persisted boundary failed validation (${check.reason}: ${check.detail}). ` +
+                    `Rejecting snapshot so structural resync rebuilds clean geometry.`,
+                    'error'
+                );
+                return { success: false, reason: `persisted boundary rejected (${check.reason})` };
+            }
+        }
 
         await grid.loadGrid(bot.manager, persistedGrid, boundaryIdx);
 

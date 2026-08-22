@@ -140,6 +140,7 @@ import {
     getSellStartIdx,
     resolveGapBand,
     countGapBandSpread,
+    validatePersistedBoundary,
     adjustBudgetForBtsFees,
     clamp,
 } from './utils/math.js';
@@ -583,10 +584,75 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                 manager.funds.btsFeesOwed = savedBtsFeesOwed;
             });
 
+            // RESTORE-TIME BOUNDARY GATE: a persisted boundary is untrusted
+            // disk state.  Any writer bug that committed AND persisted an
+            // overrun boundary (e.g. the pre-5eb3ca7 promotion path) would
+            // otherwise legalize itself on every restart: resolveGapBand
+            // re-derives sellStartIdx from whatever value is restored, and
+            // none of the runtime gates (commit gate, detectors) run before
+            // this point.  Validate against the snapshot BEFORE restoring;
+            // on failure attempt to repair by re-deriving the structural
+            // center boundary from slot prices, falling back to "no boundary"
+            // (callers sync against chain right after load either way).
+            const loadGapSlots = calculateGapSlots(
+                manager.config?.incrementPercent,
+                manager.config?.targetSpreadPercent,
+                manager.config?.gridLimits
+            );
+            let restoredBoundary = typeof boundaryIdx === 'number' ? boundaryIdx : null;
+            if (restoredBoundary !== null) {
+                const check = validatePersistedBoundary(restoredBoundary, grid, loadGapSlots);
+                if (!check.ok) {
+                    manager.logger?.log?.(
+                        `[GRID-LOAD] Persisted boundary rejected (${check.reason}): ${check.detail}. ` +
+                        `Attempting re-derivation from slot prices.`,
+                        'error'
+                    );
+                    restoredBoundary = null;
+                    const startPrice = Number(manager.config?.startPrice);
+                    if (Number.isFinite(startPrice) && Array.isArray(grid) && grid.length > 0) {
+                        const priceSorted = [...grid].sort((a: any, b: any) => Number(a.price) - Number(b.price));
+                        const derived = calculateIdealBoundary(
+                            priceSorted.map((s: any) => ({ price: s.price })),
+                            startPrice,
+                            loadGapSlots
+                        );
+                        if (Number.isInteger(derived) && derived >= 0
+                            && validatePersistedBoundary(derived, priceSorted, loadGapSlots).ok) {
+                            // boundaryIdx indexes the STORED array ordering, not
+                            // the price-sorted copy — map the anchor slot back
+                            // so the repair stays correct even if a snapshot is
+                            // not price-sorted (the honest-load path assumes it;
+                            // the repair path must not inherit that silently).
+                            const anchorSlot = priceSorted[derived];
+                            let mappedIdx = grid.indexOf(anchorSlot);
+                            if (mappedIdx === -1 && anchorSlot?.id != null) {
+                                mappedIdx = grid.findIndex((s: any) => s && s.id === anchorSlot.id);
+                            }
+                            if (mappedIdx >= 0) {
+                                restoredBoundary = mappedIdx;
+                                manager.logger?.log?.(
+                                    `[GRID-LOAD] Persisted boundary repaired: ${boundaryIdx} -> ${mappedIdx} ` +
+                                    `(re-derived from slot prices, sorted idx ${derived}).`,
+                                    'warn'
+                                );
+                            }
+                        }
+                    }
+                    if (restoredBoundary === null) {
+                        manager.logger?.log?.(
+                            `[GRID-LOAD] Could not re-derive a safe boundary; continuing without one. ` +
+                            `The next sync cycle will reconcile grid geometry against the chain.`,
+                            'error'
+                        );
+                    }
+                }
+            }
+
             // Restore boundary index for StrategyEngine
-            if (typeof boundaryIdx === 'number') {
-                manager._restoreBoundary(boundaryIdx);
-                manager.logger?.log?.(`Restored boundary index: ${boundaryIdx}`, 'info');
+            if (restoredBoundary !== null) {
+                manager._restoreBoundary(restoredBoundary);
+                manager.logger?.log?.(`Restored boundary index: ${restoredBoundary}`, 'info');
             }
 
             // Reassign slot types based on current boundary.
@@ -595,15 +661,11 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
             // split spread zones and ILLEGAL_SPREAD_STATE errors.  The subsequent
             // sync will detect type mismatches with chain orders (e.g. a BUY-zone
             // slot holding a SELL chain order) and auto-cancel + recreate them.
-            if (typeof boundaryIdx === 'number') {
-                const gapSlots = calculateGapSlots(
-                    manager.config?.incrementPercent,
-                    manager.config?.targetSpreadPercent,
-                    manager.config?.gridLimits
-                );
+            if (restoredBoundary !== null) {
+                const gapSlots = loadGapSlots;
                 manager._gapSlots = gapSlots;
-                const buyEndIdx = boundaryIdx;
-                const sellStartIdx = getSellStartIdx(boundaryIdx, gapSlots);
+                const buyEndIdx = restoredBoundary;
+                const sellStartIdx = getSellStartIdx(restoredBoundary, gapSlots);
                 let reassignCount = 0;
                 grid = grid.map((slot: any, i: any) => {
                     const correctType = (i <= buyEndIdx)
@@ -657,7 +719,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                 });
                 if (reassignCount > 0) {
                     manager.logger?.log?.(
-                        `[GRID-TYPE-CORRECT] Reassigned ${reassignCount} stale slot type(s) based on boundary ${boundaryIdx}`,
+                        `[GRID-TYPE-CORRECT] Reassigned ${reassignCount} stale slot type(s) based on boundary ${restoredBoundary}`,
                         'warn'
                     );
                 }

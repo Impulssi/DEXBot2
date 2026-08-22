@@ -1314,13 +1314,23 @@ function resolveGapBand(manager: { _gapSlots?: any; boundaryIdx?: any; config?: 
  * center (calculateFundDrivenBoundary clamps only to [0, N−gapSlots−1]), so a
  * startPrice-distance rule would false-positive on valid fund-driven shifts.
  *
+ * @param options.rejectInBandPlacements - When true, additionally reject a
+ *   boundary under which a PLACED order sits strictly inside the implied gap
+ *   band (stranding).  Honest writers never produce this — the promotion walk
+ *   caps depth upstream and syncBoundaryToFunds clamps between typed rails —
+ *   so it is OFF at commit time (a refusal could not repair the placement
+ *   anyway; _assertGapBandIntactPostCommit detects it post-commit) but ON for
+ *   persisted-state validation, where stranding is exactly the poison
+ *   signature and the safe fallback is a rebuild.
+ *
  * @returns `{ ok: true }`, or `{ ok: false, reason, detail }` where `reason`
  *   is a stable short code and `detail` carries indices/prices for logs.
  */
 function validateBoundaryCommit(
     proposedBoundary: any,
     orders: Iterable<any>,
-    gapSlots: number
+    gapSlots: number,
+    options: { rejectInBandPlacements?: boolean } = {}
 ): { ok: boolean; reason?: string; detail?: string } {
     if (proposedBoundary == null) return { ok: true };
     const raw = Number(proposedBoundary);
@@ -1348,8 +1358,15 @@ function validateBoundaryCommit(
         const price = Number(o.price);
         if (idx <= raw) {
             if (price > maxBuyPrice) maxBuyPrice = price;
-        } else if (idx >= sellStart && price < minSellPrice) {
-            minSellPrice = price;
+        } else if (idx >= sellStart) {
+            if (price < minSellPrice) minSellPrice = price;
+        } else if (options.rejectInBandPlacements) {
+            return {
+                ok: false,
+                reason: 'placed_order_in_band',
+                detail: `boundary=${raw} gapSlots=${gapSlots} placed idx=${idx} price=${price} ` +
+                    `sits strictly inside implied band (${raw}, ${sellStart})`
+            };
         }
     }
     if (Number.isFinite(maxBuyPrice) && Number.isFinite(minSellPrice) && minSellPrice <= maxBuyPrice) {
@@ -1360,6 +1377,31 @@ function validateBoundaryCommit(
         };
     }
     return { ok: true };
+}
+
+/**
+ * Validate a boundary restored from PERSISTED state (disk snapshot) before it
+ * is trusted for grid geometry.
+ *
+ * Disk state crosses a trust boundary the in-memory commit gate does not: any
+ * writer bug (e.g. the pre-5eb3ca7 promotion overrun) may have committed AND
+ * persisted an invalid boundary that would otherwise legalize itself on every
+ * restart.  This is strictly stricter than validateBoundaryCommit — it also
+ * rejects stranding (a placed order inside the implied band) because at
+ * restore time the safe fallback is a rebuild/re-derivation, not a refusal.
+ *
+ * Callers:
+ * - loadGrid (grid.ts) before _restoreBoundary — repairs via re-derivation.
+ * - recoverFromPersistedGrid (dexbot_state_recovery.ts) BEFORE loading, so a
+ *   poisoned snapshot is refused and structural resync falls through to the
+ *   clean full-grid reset instead of re-ingesting the damage.
+ */
+function validatePersistedBoundary(
+    proposedBoundary: any,
+    orders: Iterable<any>,
+    gapSlots: number
+): { ok: boolean; reason?: string; detail?: string } {
+    return validateBoundaryCommit(proposedBoundary, orders, gapSlots, { rejectInBandPlacements: true });
 }
 
 /**
@@ -1434,7 +1476,7 @@ function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any
     return idx >= sellStartIdx;
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.
