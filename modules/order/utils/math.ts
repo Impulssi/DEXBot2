@@ -1247,6 +1247,24 @@ function getSellStartIdx(boundaryIdx: any, gapSlots: any): number {
 }
 
 /**
+ * Resolve the configured gap-slot count for a manager-like object.
+ * Single source of truth for the `_gapSlots ?? calculateGapSlots(config)`
+ * pattern — used by resolveGapBand and the COW boundary-commit gate so the
+ * two can never disagree on band width.
+ */
+function resolveGapSlots(manager: { _gapSlots?: any; config?: any }): number {
+    const configured = manager._gapSlots;
+    if (configured != null && Number.isFinite(Number(configured))) {
+        return Math.max(0, Math.floor(Number(configured)));
+    }
+    return calculateGapSlots(
+        manager.config?.incrementPercent,
+        manager.config?.targetSpreadPercent,
+        manager.config?.gridLimits
+    );
+}
+
+/**
  * Resolve gap-band geometry from a manager-like object.
  * Centralises the gap-slots + sellStartIdx computation duplicated across
  * grid.ts, accounting.ts, and grid_reconcile_internal.ts.
@@ -1259,11 +1277,7 @@ function getSellStartIdx(boundaryIdx: any, gapSlots: any): number {
  *   boundary restored yet" and skip geometry-based filtering.
  */
 function resolveGapBand(manager: { _gapSlots?: any; boundaryIdx?: any; config?: any }): { gapSlots: number; boundaryIdx: number | null; sellStartIdx: number | null } {
-    const gapSlots = manager._gapSlots ?? calculateGapSlots(
-        manager.config?.incrementPercent,
-        manager.config?.targetSpreadPercent,
-        manager.config?.gridLimits
-    );
+    const gapSlots = resolveGapSlots(manager);
     // Explicit null/undefined guard: Number(null) === 0, which would silently
     // treat "no boundary" as boundary 0 — a valid index that biases all slots
     // to the SELL rail.  Return null so callers can detect the unknown state.
@@ -1276,6 +1290,76 @@ function resolveGapBand(manager: { _gapSlots?: any; boundaryIdx?: any; config?: 
     }
     const sellStartIdx = getSellStartIdx(raw, gapSlots);
     return { gapSlots, boundaryIdx: raw, sellStartIdx };
+}
+
+/**
+ * Validate a proposed boundary commit against geometry INDEPENDENT of the
+ * mutable committed boundary.
+ *
+ * resolveGapBand() re-derives sellStartIdx from whatever boundary is committed
+ * — a one-time overrun therefore becomes permanent geometry on the next cycle.
+ * This gate runs at COW-commit time and rejects boundary values that no honest
+ * writer should produce:
+ *
+ *   1. numeric sanity — finite, integer, non-negative
+ *   2. array range   — boundary index exists in the price-sorted slot space
+ *      (the same sort used by promotion/`getSlotCorrectType`)
+ *   3. crossed book  — among PLACED orders, the highest boundary-classified
+ *      BUY must price strictly below the lowest implied-SELL.  Placed prices
+ *      do not depend on the boundary, so this detects an overrun regardless
+ *      of which writer produced it.
+ *
+ * Deliberately NOT checked here: distance from config.startPrice-derived
+ * geometry.  Fund-skewed boundaries legitimately sit far from the structural
+ * center (calculateFundDrivenBoundary clamps only to [0, N−gapSlots−1]), so a
+ * startPrice-distance rule would false-positive on valid fund-driven shifts.
+ *
+ * @returns `{ ok: true }`, or `{ ok: false, reason, detail }` where `reason`
+ *   is a stable short code and `detail` carries indices/prices for logs.
+ */
+function validateBoundaryCommit(
+    proposedBoundary: any,
+    orders: Iterable<any>,
+    gapSlots: number
+): { ok: boolean; reason?: string; detail?: string } {
+    if (proposedBoundary == null) return { ok: true };
+    const raw = Number(proposedBoundary);
+    if (!Number.isFinite(raw) || !Number.isInteger(raw)) {
+        return { ok: false, reason: 'non_integer_boundary', detail: `proposed=${proposedBoundary}` };
+    }
+    if (raw < 0) {
+        return { ok: false, reason: 'negative_boundary', detail: `proposed=${raw}` };
+    }
+
+    const sorted = Array.from(orders ?? [])
+        .filter((o: any) => o && o.price != null && Number.isFinite(Number(o.price)))
+        .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+    const maxIdx = sorted.length - 1;
+    if (raw > maxIdx) {
+        return { ok: false, reason: 'boundary_out_of_range', detail: `proposed=${raw} maxIdx=${maxIdx}` };
+    }
+
+    const sellStart = raw + gapSlots + 1;
+    let maxBuyPrice = -Infinity;
+    let minSellPrice = Infinity;
+    for (let idx = 0; idx < sorted.length; idx++) {
+        const o = sorted[idx];
+        if (!o.orderId) continue;
+        const price = Number(o.price);
+        if (idx <= raw) {
+            if (price > maxBuyPrice) maxBuyPrice = price;
+        } else if (idx >= sellStart && price < minSellPrice) {
+            minSellPrice = price;
+        }
+    }
+    if (Number.isFinite(maxBuyPrice) && Number.isFinite(minSellPrice) && minSellPrice <= maxBuyPrice) {
+        return {
+            ok: false,
+            reason: 'crossed_book_geometry',
+            detail: `boundary=${raw} gapSlots=${gapSlots} bestPlacedBuy=${maxBuyPrice} >= bestImpliedSell=${minSellPrice}`
+        };
+    }
+    return { ok: true };
 }
 
 /**
@@ -1350,7 +1434,7 @@ function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any
     return idx >= sellStartIdx;
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.

@@ -46,7 +46,10 @@ import {
     hasValidAccountTotals,
     resolveConfigValueWithRegistry,
     isExplicitZeroAllocation,
-    floatToBlockchainInt
+    floatToBlockchainInt,
+    validateBoundaryCommit,
+    resolveGapSlots,
+    resolveGapBand
 } from './utils/math.js';
 import {
     validateOrder,
@@ -1555,6 +1558,67 @@ class OrderManager {
     }
 
     /**
+     * DEFENSE-IN-DEPTH (runs after every COW commit): verify the committed
+     * state still has an intact gap band — implied geometry inside the slot
+     * array, and no placed order strictly inside the implied spread.
+     *
+     * This is a DETECTOR, not a guard: the grid is already committed when it
+     * runs.  Violations are logged loudly and flagged via _recoveryState
+     * (structuralResyncRequested) so the maintenance loop reconciles against
+     * the chain.  Purpose is any-writer detection — if a path other than the
+     * promotion clamp commits a boundary that invades the opposite rail or
+     * strands placed orders inside the spread, this fires.
+     */
+    _assertGapBandIntactPostCommit(): void {
+        try {
+            const resolved = resolveGapBand(this);
+            if (resolved.boundaryIdx === null || resolved.sellStartIdx === null) return;
+            const { boundaryIdx, sellStartIdx } = resolved;
+
+            const sorted = Array.from(this.orders.values() as Iterable<any>)
+                .filter((o: any) => o && o.price != null && Number.isFinite(Number(o.price)))
+                .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+            const maxIdx = sorted.length - 1;
+
+            const problems: string[] = [];
+            if (maxIdx < 0 || boundaryIdx < 0 || boundaryIdx > maxIdx) {
+                problems.push(`boundary ${boundaryIdx} outside slot range [0, ${maxIdx}]`);
+            }
+            if (sellStartIdx > maxIdx + 1) {
+                problems.push(`implied sellStart ${sellStartIdx} beyond slot range (${maxIdx})`);
+            }
+            for (let idx = 0; idx < sorted.length; idx++) {
+                const o = sorted[idx];
+                if (!o.orderId) continue;
+                if (idx > boundaryIdx && idx < sellStartIdx) {
+                    problems.push(
+                        `placed ${o.type || 'order'} ${o.id} @ ${o.price} sits inside gap band ` +
+                        `(${boundaryIdx + 1}..${sellStartIdx - 1})`
+                    );
+                }
+            }
+
+            if (problems.length > 0) {
+                this.logger.log(
+                    `[COW] GAP-BAND INVARIANT VIOLATION after commit: ${problems.slice(0, 5).join('; ')}` +
+                    `${problems.length > 5 ? ` (+${problems.length - 5} more)` : ''}. Requesting structural resync.`,
+                    'error'
+                );
+                if (this._recoveryState) {
+                    this._recoveryState = {
+                        ...this._recoveryState,
+                        lastFailureAt: Date.now(),
+                        structuralResyncRequested: true
+                    };
+                }
+            }
+        } catch (err: any) {
+            // Detector must never break the commit path.
+            this.logger.log(`[COW] Gap-band post-commit check failed: ${getErrorMessage(err)}`, 'warn');
+        }
+    }
+
+    /**
      * @returns {Object|null} The consumed signal or null
      */
     consumeIllegalStateSignal() {
@@ -1823,6 +1887,28 @@ class OrderManager {
                 );
 
                 const finalMap = workingGrid.toMap();
+
+                // BOUNDARY COMMIT GATE (fix: self-referential gap geometry).
+                // resolveGapBand() re-derives sellStartIdx from whatever value
+                // lands in boundaryIdx, so an overrun boundary legalizes itself
+                // on the next cycle.  Validate the proposed boundary against
+                // the NEW grid state (price-sorted, placed-order aware) before
+                // it becomes permanent.  On rejection the grid still commits —
+                // the orders may already be live on-chain and must stay
+                // tracked — but the previous (last-known-valid) boundary is
+                // kept so classification never inherits the overrun.
+                const commitGapSlots = resolveGapSlots(this);
+                const boundaryCheck = validateBoundaryCommit(workingBoundary, finalMap.values(), commitGapSlots);
+                let commitBoundary = workingBoundary;
+                if (!boundaryCheck.ok) {
+                    this.logger.log(
+                        `[COW] Boundary commit rejected (${boundaryCheck.reason}): ${boundaryCheck.detail}. ` +
+                        `Keeping previous boundary ${this.boundaryIdx}.`,
+                        'error'
+                    );
+                    commitBoundary = this.boundaryIdx;
+                }
+
                 // RC-4: Deep-freeze all modified orders before committing to master state
                 // Ensures COW immutability invariants are maintained for all grid entries.
                 for (const [, order] of finalMap.entries()) {
@@ -1832,7 +1918,7 @@ class OrderManager {
                 }
 
                 this.orders = Object.freeze(finalMap);
-                this._setBoundary(workingBoundary);
+                this._setBoundary(commitBoundary);
                 this._gridVersion++;
                 committed = true;
 
@@ -1854,6 +1940,8 @@ class OrderManager {
                 releaseStackEntry();
                 return false;
             }
+
+            this._assertGapBandIntactPostCommit();
 
             try {
                 if (!skipRecalc) {

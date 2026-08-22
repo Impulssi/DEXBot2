@@ -7,8 +7,10 @@ const cowRuntime = require('../modules/dexbot_cow_runtime');
 async function testSpreadBoundaryPromotion() {
     console.log('Running test: Spread Boundary Promotion');
 
-    // Layout: BUY 0-3, gap 4-5, SELL 6-7 (VIRTUAL).
-    // After BUY promotion by 2, boundary 3→5, sellStartIdx 6→8 (empty SELL zone).
+    // Layout: BUY 0-3, gap 4-7 (gapSlots=4), SELL zone empty.
+    // MIN_SPREAD_ORDERS=2 reserves 2 of the 4 band slots, so a quota of 2
+    // promotes exactly slot-4 and slot-5. After promotion boundary 3→5,
+    // After promotion boundary 3→5, sellStartIdx 8→10 (empty SELL zone).
     const manager = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
@@ -25,8 +27,7 @@ async function testSpreadBoundaryPromotion() {
 
     for (let i = 0; i < 8; i++) {
         const isBuy = i <= 3;
-        const isGap = i >= 4 && i <= 5;
-        const type = isBuy ? ORDER_TYPES.BUY : isGap ? ORDER_TYPES.SPREAD : ORDER_TYPES.SPREAD;
+        const type = isBuy ? ORDER_TYPES.BUY : ORDER_TYPES.SPREAD;
         const state = isBuy ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
         const size = isBuy ? 10 : 0;
         const orderId = isBuy ? `1.7.${100 + i}` : '';
@@ -40,7 +41,7 @@ async function testSpreadBoundaryPromotion() {
         });
     }
     manager.boundaryIdx = 3;
-    manager._gapSlots = 2;
+    manager._gapSlots = 4;
     await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
     await manager.recalculateFunds();
 
@@ -64,19 +65,18 @@ async function testSpreadBoundaryPromotion() {
     console.log('  PASS: funded BUY correction promotes the boundary and fills the gap edge');
 }
 
-async function testSellSideBoundaryPromotion() {
-    console.log('Running test: SELL-side Spread Boundary Promotion');
+async function testPromotionReservesMinSpread() {
+    console.log('Running test: Promotion never consumes the MIN_SPREAD_ORDERS floor');
 
-    // Layout: BUY 0-1 (VIRTUAL), gap 2-3, SELL 4-7.
-    // Geometric cap: maxPromotable = buyEndIdx = 1, so only the gap slot
-    // closest to the SELL edge (slot-3) is promoted.  Boundary 1→0,
-    // sellStartIdx 4→3.  slot-3 (idx 3) lands at sellStartIdx, in-rail.
+    // Layout: BUY 0-3, gap 4-5 (gapSlots=2 == MIN_SPREAD_ORDERS). The whole
+    // band is reserved — promoting either slot would zero the spread, so
+    // promotion must be disabled entirely and no boundary returned.
     const manager = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
         startPrice: 1,
         botFunds: { buy: 1000, sell: 1000 },
-        activeOrders: { buy: 0, sell: 4 },
+        activeOrders: { buy: 4, sell: 0 },
         incrementPercent: 1,
         targetSpreadPercent: 1
     });
@@ -86,9 +86,161 @@ async function testSellSideBoundaryPromotion() {
     };
 
     for (let i = 0; i < 8; i++) {
-        const isSell = i >= 4;
-        const isGap = i >= 2 && i <= 3;
-        const type = isSell ? ORDER_TYPES.SELL : isGap ? ORDER_TYPES.SPREAD : ORDER_TYPES.SPREAD;
+        const isBuy = i <= 3;
+        const type = isBuy ? ORDER_TYPES.BUY : ORDER_TYPES.SPREAD;
+        const state = isBuy ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
+        const size = isBuy ? 10 : 0;
+        const orderId = isBuy ? `1.7.${100 + i}` : '';
+        await manager._updateOrder({
+            id: `slot-${i}`,
+            price: 1 + i * 0.01,
+            type,
+            state,
+            size,
+            orderId
+        });
+    }
+    manager.boundaryIdx = 3;
+    manager._gapSlots = 2;
+    await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    await manager.recalculateFunds();
+
+    const correction = await Grid.prepareSpreadCorrectionOrders(manager, ORDER_TYPES.BUY, 2);
+
+    assert.strictEqual(correction.ordersToPlace.length, 0,
+        'Must not promote when band size == MIN_SPREAD_ORDERS (spread would zero)');
+    assert.strictEqual(correction.boundaryIdx, undefined,
+        'No boundary move may be returned when promotion is refused');
+
+    console.log('  PASS: minimum-width gap blocks boundary promotion entirely');
+}
+
+async function testStrandingDepthCaps() {
+    console.log('Running test: stranding depth caps keep promoted slots consistent');
+
+    // --- BUY: a placed SELL close above the band caps promotion depth ---
+    // Layout (10 slots): BUY 0-1 ACTIVE, gap 2-5 (gapSlots=4), slot-6 empty,
+    // slot-7 ACTIVE SELL.  Promoting both slot-2 AND slot-3 would move the
+    // implied sell zone start to 3+4+1=8 — past the placed sell at 7,
+    // stranding it inside the new band.  Depth cap = 7-4-1-1 = 1 → only
+    // slot-2 may promote; boundary 1→2 keeps the sell zone at 2+4+1=7.
+    {
+        const manager = new OrderManager({
+            assetA: 'BASE',
+            assetB: 'QUOTE',
+            startPrice: 1,
+            botFunds: { buy: 1000, sell: 1000 },
+            activeOrders: { buy: 4, sell: 0 },
+            incrementPercent: 1,
+            targetSpreadPercent: 1
+        });
+        manager.assets = {
+            assetA: { id: '1.3.1', symbol: 'BASE', precision: 5 },
+            assetB: { id: '1.3.2', symbol: 'QUOTE', precision: 5 }
+        };
+        for (let i = 0; i < 10; i++) {
+            const isBuy = i <= 1;
+            const isPlacedSell = i === 7;
+            await manager._updateOrder({
+                id: `slot-${i}`,
+                price: 1 + i * 0.01,
+                type: isBuy ? ORDER_TYPES.BUY : isPlacedSell ? ORDER_TYPES.SELL : ORDER_TYPES.SPREAD,
+                state: (isBuy || isPlacedSell) ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
+                size: (isBuy || isPlacedSell) ? 10 : 0,
+                orderId: (isBuy || isPlacedSell) ? `1.7.${200 + i}` : ''
+            });
+        }
+        manager.boundaryIdx = 1;
+        manager._gapSlots = 4;
+        await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+        await manager.recalculateFunds();
+
+        const correction = await Grid.prepareSpreadCorrectionOrders(manager, ORDER_TYPES.BUY, 2);
+        assert.deepStrictEqual(
+            correction.ordersToPlace.map((o: any) => o.id),
+            ['slot-2'],
+            'Stranding cap must limit BUY promotion depth to 1 slot'
+        );
+        assert.strictEqual(correction.boundaryIdx, 2,
+            'Boundary must move exactly to the capped promotion edge (implied sell zone stays at/below the placed sell)');
+    }
+
+    // --- SELL: a placed BUY near the rail edge caps promotion depth ---
+    // Layout (8 slots): BUY 0-2 ACTIVE (highest placed at idx 2), slot-3
+    // empty in-rail, gap 4-6 (gapSlots=3, boundary=3, sellStartIdx=7),
+    // slot-7 ACTIVE SELL.  Walk floor for SELL = buyEnd+1+reserve = 6;
+    // depth cap = 3−2 = 1 → exactly slot-6 promotes; boundary 3→2 puts the
+    // new sell zone at 2+3+1=6, so slot-6 lands at its edge and no placed
+    // buy is stranded.
+    {
+        const manager = new OrderManager({
+            assetA: 'BASE',
+            assetB: 'QUOTE',
+            startPrice: 1,
+            botFunds: { buy: 1000, sell: 1000 },
+            activeOrders: { buy: 4, sell: 4 },
+            incrementPercent: 1,
+            targetSpreadPercent: 1
+        });
+        manager.assets = {
+            assetA: { id: '1.3.1', symbol: 'BASE', precision: 5 },
+            assetB: { id: '1.3.2', symbol: 'QUOTE', precision: 5 }
+        };
+        for (let i = 0; i < 8; i++) {
+            const isBuy = i <= 2;
+            const isSell = i >= 7;
+            await manager._updateOrder({
+                id: `slot-${i}`,
+                price: 1 + i * 0.01,
+                type: isBuy ? ORDER_TYPES.BUY : isSell ? ORDER_TYPES.SELL : ORDER_TYPES.SPREAD,
+                state: (isBuy || isSell) ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
+                size: (isBuy || isSell) ? 10 : 0,
+                orderId: (isBuy || isSell) ? `1.7.${300 + i}` : ''
+            });
+        }
+        manager.boundaryIdx = 3;
+        manager._gapSlots = 3;
+        await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+        await manager.recalculateFunds();
+
+        const correction = await Grid.prepareSpreadCorrectionOrders(manager, ORDER_TYPES.SELL, 1);
+        assert.deepStrictEqual(
+            correction.ordersToPlace.map((o: any) => o.id),
+            ['slot-6'],
+            'Stranding cap must limit SELL promotion to the single slot at the walk floor'
+        );
+        assert.strictEqual(correction.boundaryIdx, 2,
+            'Boundary must drop exactly one step (to the highest placed buy), keeping slot-6 at the sell zone edge');
+    }
+
+    console.log('  PASS: stranding depth caps prevent boundary slides over live orders');
+}
+
+async function testSellSideBoundaryPromotion() {
+    console.log('Running test: SELL-side Spread Boundary Promotion');
+
+    // Layout: BUY 0-1 (VIRTUAL), gap 2-4 (gapSlots=3), SELL 5-7.
+    // MIN_SPREAD_ORDERS=2 reserves 2 of the 3 band slots, and the boundary
+    // can drop at most buyEndIdx=1 step below its rail edge, so exactly one
+    // gap slot (slot-4, closest to the SELL edge) is promoted.
+    // Boundary 1→0, sellStartIdx 5→4. slot-4 lands at sellStartIdx, in-rail.
+    const manager = new OrderManager({
+        assetA: 'BASE',
+        assetB: 'QUOTE',
+        startPrice: 1,
+        botFunds: { buy: 1000, sell: 1000 },
+        activeOrders: { buy: 0, sell: 3 },
+        incrementPercent: 1,
+        targetSpreadPercent: 1
+    });
+    manager.assets = {
+        assetA: { id: '1.3.1', symbol: 'BASE', precision: 5 },
+        assetB: { id: '1.3.2', symbol: 'QUOTE', precision: 5 }
+    };
+
+    for (let i = 0; i < 8; i++) {
+        const isSell = i >= 5;
+        const type = isSell ? ORDER_TYPES.SELL : ORDER_TYPES.SPREAD;
         const state = isSell ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
         const size = isSell ? 10 : 0;
         const orderId = isSell ? `1.7.${100 + i}` : '';
@@ -102,16 +254,16 @@ async function testSellSideBoundaryPromotion() {
         });
     }
     manager.boundaryIdx = 1;
-    manager._gapSlots = 2;
+    manager._gapSlots = 3;
     await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
     await manager.recalculateFunds();
 
     const correction = await Grid.prepareSpreadCorrectionOrders(manager, ORDER_TYPES.SELL, 2);
 
-    assert.strictEqual(correction.ordersToPlace.length, 1, 'Geometric cap allows only 1 promoted slot');
+    assert.strictEqual(correction.ordersToPlace.length, 1, 'Reserve cap allows only 1 promoted slot');
     assert.deepStrictEqual(
         correction.ordersToPlace.map(order => order.id).sort(),
-        ['slot-3'],
+        ['slot-4'],
         'Only the gap slot closest to the SELL edge is promoted'
     );
     assert.strictEqual(correction.boundaryIdx, 0, 'Boundary moves left by 1 (from 1 to 0)');
@@ -121,9 +273,9 @@ async function testSellSideBoundaryPromotion() {
         correction
     );
     assert.strictEqual(cowResult.workingBoundary, 0, 'COW plan should carry the boundary');
-    assert.strictEqual(cowResult.workingGrid.get('slot-3').type, ORDER_TYPES.SELL, 'Promoted slot should be typed SELL in the working grid');
+    assert.strictEqual(cowResult.workingGrid.get('slot-4').type, ORDER_TYPES.SELL, 'Promoted slot should be typed SELL in the working grid');
 
-    console.log('  PASS: funded SELL correction respects geometric cap and places 1 slot');
+    console.log('  PASS: funded SELL correction respects reserve cap and places 1 slot');
 }
 
 async function testPartialPlacementBoundaryPromotion() {
@@ -297,6 +449,8 @@ async function testNoDuplicateInRailSlot() {
 
 async function runAll() {
     await testSpreadBoundaryPromotion();
+    await testPromotionReservesMinSpread();
+    await testStrandingDepthCaps();
     await testSellSideBoundaryPromotion();
     await testPartialPlacementBoundaryPromotion();
     await testNullBoundaryBlocksPromotion();

@@ -2353,36 +2353,63 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds or committed inventory' };
     }
 
+    /**
+     * Resolve the MIN_SPREAD_ORDERS gap reserve used by boundary promotion.
+     * Promotion may never consume the last `reserve` empty slots of the gap
+     * band — this is the floor that keeps the spread from being zeroed.
+     */
+    function resolveMinSpreadOrdersReserve(manager: any): number {
+        const raw = Number(manager?.config?.gridLimits?.MIN_SPREAD_ORDERS ?? GRID_LIMITS.MIN_SPREAD_ORDERS);
+        return (Number.isFinite(raw) && raw >= 0) ? Math.floor(raw) : GRID_LIMITS.MIN_SPREAD_ORDERS;
+    }
+
     // Collect contiguous empty gap-band slots adjacent to a rail edge for boundary
     // promotion.  BUY walks upward from the boundary into the gap, SELL walks
     // downward from the sell start; both stop at the first unavailable slot.
     // Mirrors are collapsed into one directional walk (step +/- 1).
     //
-    // NOTE: the promotion cap is the OPPOSITE RAIL's span, NOT the gap-band size.
-    // SELL promotion moves the boundary down by the promoted count (boundary =
-    // buyEndIdx - count), so capping at buyEndIdx keeps it >= 0.  BUY promotion
-    // moves the boundary up; capping at the SELL rail size (maxIdx+1-sellStartIdx)
-    // keeps the promoted boundary at or below the last placed slot.  The walk's
-    // own idx < sellStartIdx / idx > buyEndIdx bounds already limit promotion to
-    // the band, so this cap only binds when the opposite rail is smaller than the
-    // band — i.e. an empty opposite rail (cap 0) blocks promotion entirely.
+    // PROMOTION CAP (gap-band geometry): promotion may consume at most
+    // bandSize − MIN_SPREAD_ORDERS slots, where bandSize = sellStartIdx −
+    // buyEndIdx − 1.  The previous cap (the OPPOSITE RAIL's span) constrained
+    // nothing: for BUY it was the sell rail's length and for SELL the buy
+    // rail's length, so a single correction could promote every gap slot and
+    // zero the spread.  Reserving MIN_SPREAD_ORDERS empty slots guarantees the
+    // gap never closes within this path regardless of quota.
+    //
+    // DEFENSE-IN-DEPTH WALK BOUNDS: the loop itself also stops
+    // MIN_SPREAD_ORDERS short of the opposite rail edge (idx <= sellStartIdx−1−
+    // reserve for BUY / idx >= buyEndIdx+1+reserve for SELL), so even if the
+    // cap above is ever miscomputed the walk cannot consume the reserved gap.
+    // When bandSize <= reserve the bound disables promotion entirely.
     function _collectPromotableBoundarySlots(
         allSlotsByPrice: any[],
         railType: string,
         buyEndIdx: number,
         sellStartIdx: number,
-        quota: number
+        quota: number,
+        spreadReserve: number,
+        maxDepth: number
     ): any[] {
         const isBuy = railType === ORDER_TYPES.BUY;
-        const maxIdx = allSlotsByPrice.length - 1;
-        const maxPromotable = isBuy
-            ? Math.max(0, maxIdx + 1 - sellStartIdx)
-            : Math.max(0, buyEndIdx);
-        const promotionQuota = Math.min(quota, maxPromotable);
+        const bandSize = Math.max(0, sellStartIdx - buyEndIdx - 1);
+        // Depth is bounded by three independent caps (defense-in-depth):
+        //   reserve cap  — keep MIN_SPREAD_ORDERS empties in the band
+        //   stranding cap— the boundary slide must never move a placed
+        //                  opposite-rail order into the implied spread band;
+        //                  constraining DEPTH here (not clamping the derived
+        //                  boundary afterwards) keeps the promoted slots'
+        //                  classification consistent with the new geometry
+        //   walk bounds  — hard stop short of the opposite rail edge, even if
+        //                  both caps above were ever miscomputed
+        const maxPromotable = Math.max(0, bandSize - spreadReserve);
+        const promotionQuota = Math.min(quota, maxPromotable, Math.max(0, maxDepth));
         const promoted: any[] = [];
         const step = isBuy ? 1 : -1;
         for (let idx = isBuy ? buyEndIdx + 1 : sellStartIdx - 1;
-            promoted.length < promotionQuota && (isBuy ? idx < sellStartIdx : idx > buyEndIdx);
+            promoted.length < promotionQuota
+                && (isBuy
+                    ? idx <= sellStartIdx - 1 - spreadReserve
+                    : idx >= buyEndIdx + 1 + spreadReserve);
             idx += step) {
             const slot = allSlotsByPrice[idx];
             if (!slot || !isSlotAvailable(slot)) break;
@@ -2517,6 +2544,33 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         // fiction.  Without promotion there is nothing to commit, so falling
         // back to the pre-existing candidate paths is safe.
         const promotedCandidates: any[] = [];
+        const spreadReserve = resolveMinSpreadOrdersReserve(manager);
+        // STRANDING DEPTH CAP: the post-commit geometry re-derives the band
+        // from the new boundary, sliding it over opposite-rail slots.  A
+        // slide may never swallow an already-PLACED order into that band, so
+        // promotion depth is capped up-front — constraining depth keeps the
+        // derived boundary consistent with every promoted slot's placement;
+        // clamping the boundary afterwards would not.
+        let maxPromotionDepth = Infinity;
+        if (railType === ORDER_TYPES.BUY) {
+            for (let idx = Math.max(sellStartIdx, 0); idx < allSlotsByPrice.length; idx++) {
+                if (allSlotsByPrice[idx]?.orderId) {
+                    // Implied sell zone must start at/below the lowest placed
+                    // sell: B' + gapSlots + 1 <= idx  =>  depth <= idx − G − 1 − B.
+                    maxPromotionDepth = idx - gapSlots - 1 - buyEndIdx;
+                    break;
+                }
+            }
+        } else {
+            for (let idx = Math.min(buyEndIdx, allSlotsByPrice.length - 1); idx >= 0; idx--) {
+                if (allSlotsByPrice[idx]?.orderId) {
+                    // Boundary may not drop below the highest placed buy:
+                    // B' = B − depth >= idx  =>  depth <= B − idx.
+                    maxPromotionDepth = buyEndIdx - idx;
+                    break;
+                }
+            }
+        }
         if (boundaryKnown && orphanedVirtualCandidates.length + typedSpreadCandidates.length < missingSlots) {
             const rawQuota = missingSlots - orphanedVirtualCandidates.length - typedSpreadCandidates.length;
             promotedCandidates.push(..._collectPromotableBoundarySlots(
@@ -2524,7 +2578,9 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
                 railType,
                 buyEndIdx,
                 sellStartIdx,
-                rawQuota
+                rawQuota,
+                spreadReserve,
+                maxPromotionDepth
             ));
             if (promotedCandidates.length > 0) {
                 manager.logger?.log?.(
@@ -2751,21 +2807,35 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
                 boundaryIdx = railType === ORDER_TYPES.BUY
                     ? buyEndIdx + maxDist
                     : buyEndIdx - maxDist;
+                // PROMOTION BOUNDARY BACKSTOP (refusal-only): the boundary is
+                // DERIVED from the placed promoted set (buyEndIdx ± maxDist),
+                // so shifting it here would silently strand those fresh orders
+                // inside the implied band.  All real constraints — the
+                // MIN_SPREAD_ORDERS reserve and opposite-rail stranding — are
+                // enforced UPSTREAM as walk-depth caps.  This backstop only
+                // verifies array limits plus the reserve ceiling; any
+                // violation signals an internal inconsistency, so promotion is
+                // refused loudly instead of silently re-geometried.
                 const maxIdx = allSlotsByPrice.length - 1;
-                const clamped = clamp(boundaryIdx, 0, maxIdx);
-                if (clamped !== boundaryIdx) {
+                const lo = 0;
+                const hi = railType === ORDER_TYPES.BUY
+                    ? Math.min(maxIdx, sellStartIdx - 1 - spreadReserve)
+                    : maxIdx;
+                if (lo > hi || boundaryIdx < lo || boundaryIdx > hi) {
                     manager.logger?.log?.(
-                        `[SPREAD-CORRECTION] Boundary promotion clamped on ${sideName}: ` +
-                        `${boundaryIdx} -> ${clamped}`,
+                        `[SPREAD-CORRECTION] Boundary promotion refused on ${sideName}: ` +
+                        `derived boundary ${boundaryIdx} violates safe range [${lo}, ${hi}] ` +
+                        `(band ${buyEndIdx + 1}..${sellStartIdx - 1})`,
                         'warn'
                     );
-                    boundaryIdx = clamped;
+                    boundaryIdx = undefined;
+                } else {
+                    manager.logger?.log?.(
+                        `[SPREAD-CORRECTION] Boundary promotion on ${sideName}: ` +
+                        `${buyEndIdx} -> ${boundaryIdx} (${placedPromotedIds.size} placed, maxDist ${maxDist})`,
+                        'info'
+                    );
                 }
-                manager.logger?.log?.(
-                    `[SPREAD-CORRECTION] Boundary promotion on ${sideName}: ` +
-                    `${buyEndIdx} -> ${boundaryIdx} (${placedPromotedIds.size} placed, maxDist ${maxDist})`,
-                    'info'
-                );
             } else {
                 boundaryIdx = undefined;
             }

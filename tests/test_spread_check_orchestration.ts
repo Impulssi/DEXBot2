@@ -14,9 +14,11 @@ const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 async function testMidGridEmptyPromotesInsteadOfResync() {
     console.log('Running test: mid-grid empty rail promotes instead of resync');
 
-    // Layout: BUY 0-2 ACTIVE (funded, full), gap 3-4 SPREAD VIRTUAL,
-    // SELL 5-7 SPREAD VIRTUAL (empty rail, zero on-chain orders).
+    // Layout: BUY 0-2 ACTIVE (funded, full), gap 3-5 SPREAD VIRTUAL,
+    // SELL zone 6-7 SPREAD VIRTUAL (empty rail, zero on-chain orders).
     // Boundary mid-grid at 2 → both rails have >= 2 slots → NO resync.
+    // gapSlots=3 keeps one promotable slot above the MIN_SPREAD_ORDERS=2
+    // reserve (bandSize 3 − reserve 2 = 1).
     const manager = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
@@ -43,7 +45,7 @@ async function testMidGridEmptyPromotesInsteadOfResync() {
         });
     }
     manager.boundaryIdx = 2;
-    manager._gapSlots = 2;
+    manager._gapSlots = 3;
     await manager.setAccountTotals({ buy: 1000, sell: 0, buyFree: 1000, sellFree: 0 });
     await manager.recalculateFunds();
 

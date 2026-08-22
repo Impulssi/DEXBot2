@@ -2198,6 +2198,76 @@ async function waitForCowBroadcastSingleFlight(bot: any, label: string) {
  * @param {Object} [options={}] - Internal execution options (replanDepth)
  * @returns {Promise<Object>}
  */
+/**
+ * PRE-BROADCAST CROSSED-BOOK ASSERT (defense-in-depth, any-writer detection).
+ *
+ * Simulates the post-batch book: currently placed master orders plus this
+ * batch's action overlay (CREATEs add, CANCELs remove, UPDATEs reprice/move).
+ * Returns a detail string when a planned BUY would price at-or-above a planned
+ * SELL — a state no honest planner produces — so the caller can refuse the
+ * broadcast instead of paying for adverse fills.  Placed order prices are
+ * independent of grid geometry, so this catches boundary overruns regardless
+ * of which writer produced them.
+ *
+ * Detector only: any internal failure returns null (never blocks a broadcast).
+ */
+function detectCrossedBookPlan(manager: any, actions: any[]): string | null {
+    try {
+        const startPrice = Number(manager?.config?.startPrice);
+        const book = new Map<string, { type: string; price: number }>();
+        for (const o of Array.from(manager?.orders?.values?.() ?? []) as any[]) {
+            if (!o || !o.orderId || o.price == null) continue;
+            const price = Number(o.price);
+            if (!Number.isFinite(price)) continue;
+            let type = o.type;
+            if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) {
+                // Legacy SPREAD-typed placed order: derive side from the same
+                // price-vs-startPrice convention used across the codebase.
+                if (!Number.isFinite(startPrice)) continue;
+                type = price < startPrice ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+            }
+            book.set(String(o.id), { type, price });
+        }
+        for (const a of actions ?? []) {
+            const id = String(a.id ?? a.orderId ?? '');
+            if (a.type === COW_ACTIONS.CANCEL) {
+                if (id) book.delete(id);
+            } else if (a.type === COW_ACTIONS.UPDATE) {
+                const newPrice = Number(a.newPrice ?? a.order?.price);
+                const newType = a.order?.type;
+                if (id && Number.isFinite(newPrice)) {
+                    const entry = book.get(id);
+                    const type = (newType === ORDER_TYPES.BUY || newType === ORDER_TYPES.SELL)
+                        ? newType
+                        : entry?.type;
+                    if (entry) book.delete(id);
+                    const key = String(a.newGridId ?? id);
+                    if (type === ORDER_TYPES.BUY || type === ORDER_TYPES.SELL) {
+                        book.set(key, { type, price: newPrice });
+                    }
+                }
+            } else if (a.type === COW_ACTIONS.CREATE) {
+                const price = Number(a.order?.price);
+                const type = a.order?.type;
+                if (!Number.isFinite(price) || (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL)) continue;
+                if (id) book.set(id, { type, price });
+            }
+        }
+        let maxBuy = -Infinity;
+        let minSell = Infinity;
+        for (const { type, price } of book.values()) {
+            if (type === ORDER_TYPES.BUY && price > maxBuy) maxBuy = price;
+            else if (type === ORDER_TYPES.SELL && price < minSell) minSell = price;
+        }
+        if (Number.isFinite(maxBuy) && Number.isFinite(minSell) && minSell <= maxBuy) {
+            return `bestPlacedBuy=${maxBuy} >= bestPlacedSell=${minSell}`;
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
 async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: any = {}) {
     const replanDepth = Number.isFinite(Number(options?.replanDepth)) ? Number(options.replanDepth) : 0;
     bot._currentCycleId = (Number.isFinite(Number(bot._currentCycleId)) ? Number(bot._currentCycleId) : 0) + 1;
@@ -2462,6 +2532,24 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     }
 
     const { assetA, assetB } = bot.manager.assets;
+
+    // CROSSED-BOOK GATE: refuse to broadcast any batch whose simulated result
+    // prices a BUY at-or-above a SELL (see detectCrossedBookPlan).
+    const crossedBookDetail = detectCrossedBookPlan(bot.manager, actions);
+    if (crossedBookDetail) {
+        bot.manager.logger.log(
+            `[COW] Rejecting batch pre-broadcast: crossed book detected (${crossedBookDetail})`,
+            'error'
+        );
+        popPushedWorkingGrid(bot, cowResult);
+        return {
+            executed: false,
+            aborted: true,
+            reason: 'CROSSED_BOOK',
+            detail: crossedBookDetail,
+            hadRotation: false
+        };
+    }
     const operations: any[] = [];
     const opContexts: any[] = [];
     const skippedUpdateSlotIds = new Set();
