@@ -1,6 +1,6 @@
 {
   "name": "dexbot",
-  "version": "1.4.19",
+  "version": "1.4.20",
   "description": "The first open source trading bot with zero runtime dependencies and a fully adaptive market making strategy.",
   "main": "dist/modules/dexbot_class.js",
   "exports": {
@@ -14,7 +14,6 @@
   },
   "files": [
     "dist",
-
     "ecosystem.config.cjs",
     "scripts/bots",
     "scripts/clean-dist.js",
