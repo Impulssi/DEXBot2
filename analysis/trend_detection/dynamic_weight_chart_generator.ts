@@ -32,6 +32,40 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
     const results = data.allResults || [];
     if (results.length === 0) throw new Error('No analysis results in input');
 
+    // Slider ranges — single source of truth for HTML attrs, tooltips,
+    // payload transport, and client paste-clamp bounds.
+    const LB_MIN = 1,         LB_MAX = 32;
+    const GAIN_MIN = 0.5,     GAIN_MAX = 2.0;
+    const AMA_MS_MIN = 0.04,  AMA_MS_MAX = 0.12;
+    const KAL_MS_MIN = 0.5,   KAL_MS_MAX = 1.5;
+    const CLIP_PCT_MAX = 55;
+    const TH_MIN = 0,         TH_MAX = 0.5;
+    const KF_MIN = 0,         KF_MAX = 200;
+    const KFD_MIN = 1.0,      KFD_MAX = 3.0;
+    const DSP_MIN = 0.25,     DSP_MAX = 4.0;
+    const KDT_MIN = 0.25,     KDT_MAX = 3.0;
+    const KFS_MIN = 20,       KFS_MAX = 200;
+    const CF_MIN = 0,         CF_MAX = 5;
+    const REGI_MIN = 0,       REGI_MAX = 2;
+    const SLIDER_RANGES = {
+        alpha:                  [0, 1],
+        dispWeight:             [0, 1],
+        neutralZonePct:         [0, 1],
+        lookbackBars:           [LB_MIN, LB_MAX],
+        amaMaxSlopePct:         [AMA_MS_MIN, AMA_MS_MAX],
+        kalmanMaxSlopePct:      [KAL_MS_MIN, KAL_MS_MAX],
+        clipPct:                [0, CLIP_PCT_MAX],
+        minOutputThreshold:     [TH_MIN, TH_MAX],
+        kalmanSmoothPct:        [KF_MIN, KF_MAX],
+        kalmanDispScaleMult:    [KFD_MIN, KFD_MAX],
+        dispScaleMinPct:        [DSP_MIN, DSP_MAX],
+        kalmanDispThresholdMult: [KDT_MIN, KDT_MAX],
+        kalmanSmoothSpanPct:    [KFS_MIN, KFS_MAX],
+        signalConfirmBars:      [CF_MIN, CF_MAX],
+        gain:                   [GAIN_MIN, GAIN_MAX],
+        regimeSensitivity:      [REGI_MIN, REGI_MAX],
+    };
+
     const ma = data.marketAdapter || {};
     const amaWeightConfig = data.amaWeightConfig || {};
     const defaultAlpha        = data.alpha            ?? ma.alpha ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ALPHA;
@@ -47,30 +81,26 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_MAX_SLOPE_PCT;
     const defaultClipPct      = data.clipPct          ?? ma.clipPercentile ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE;
     const defaultMinOutputThresholdRaw = data.minOutputThreshold ?? ma.minOutputThreshold ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_TREND_THRESHOLD;
-    const defaultMinOutputThreshold = Math.min(Math.max(defaultMinOutputThresholdRaw, 0), 0.5);
+    const defaultMinOutputThreshold = Math.min(Math.max(defaultMinOutputThresholdRaw, TH_MIN), TH_MAX);
     const defaultOutputClamp = data.outputClamp ?? ma.outputClamp ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
     const lookbackBarsRaw     = amaWeightConfig.lookbackBars  ?? ma.amaLookbackBars ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS;
-    const lookbackBars        = Math.ceil(Math.max(1, Math.min(32, Number.isFinite(lookbackBarsRaw) ? lookbackBarsRaw : 1)));
+    const lookbackBars        = Math.ceil(Math.max(LB_MIN, Math.min(LB_MAX, Number.isFinite(lookbackBarsRaw) ? lookbackBarsRaw : LB_MIN)));
 
-    // Log mapping for lookback slider (1 to 32 bars)
-    const LB_LOG_MIN_N = Math.log(1);
-    const LB_LOG_MAX_N = Math.log(32);
-    const clampedLb = Math.min(Math.max(lookbackBars, 1), 32);
+    // Log mapping for lookback slider
+    const LB_LOG_MIN_N = Math.log(LB_MIN);
+    const LB_LOG_MAX_N = Math.log(LB_MAX);
+    const clampedLb = Math.min(Math.max(lookbackBars, LB_MIN), LB_MAX);
     const lbInitSlider = Math.round((Math.log(clampedLb) - LB_LOG_MIN_N) / (LB_LOG_MAX_N - LB_LOG_MIN_N) * 1000);
 
     // Log mapping for gain slider
-    const GAIN_LOG_MIN_N = Math.log(0.5);
-    const GAIN_LOG_MAX_N = Math.log(2.0);
-    const clampedGain = Math.min(Math.max(defaultGain, 0.5), 2.0);
+    const GAIN_LOG_MIN_N = Math.log(GAIN_MIN);
+    const GAIN_LOG_MAX_N = Math.log(GAIN_MAX);
+    const clampedGain = Math.min(Math.max(defaultGain, GAIN_MIN), GAIN_MAX);
     const gainInitSlider = Math.round((Math.log(clampedGain) - GAIN_LOG_MIN_N) / (GAIN_LOG_MAX_N - GAIN_LOG_MIN_N) * 1000);
 
     // Log mapping for slope saturation sliders
-    const AMA_MS_MIN = 0.04;
-    const AMA_MS_MAX = 0.12;
     const AMA_MS_LOG_MIN_N = Math.log(AMA_MS_MIN);
     const AMA_MS_LOG_MAX_N = Math.log(AMA_MS_MAX);
-    const KAL_MS_MIN = 0.15;
-    const KAL_MS_MAX = 1.5;
     const KAL_MS_LOG_MIN_N = Math.log(KAL_MS_MIN);
     const KAL_MS_LOG_MAX_N = Math.log(KAL_MS_MAX);
     const clampedAmaMs = Math.min(Math.max(defaultAmaMaxSlopePct, AMA_MS_MIN), AMA_MS_MAX);
@@ -317,24 +347,24 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
 
                 <div class="group-sep"></div>
                 <div class="ctrl nz"><label for="nz-slider">nz%</label><input type="range" id="nz-slider" min="0" max="100" value="${Math.round(defaultNeutralZone * 100)}" title="Neutral Zone %"><span class="val" id="nz-value">${defaultNeutralZone.toFixed(2)}</span></div>
-                <div class="ctrl lb"><label for="lb-slider">lb</label><input type="range" id="lb-slider" min="0" max="1000" value="${lbInitSlider}" title="Lookback Bars (1-32)"><span class="val" id="lb-value">${lookbackBars}</span></div>
-                <div class="ctrl ms-ama"><label for="ama-ms-slider">amaS%</label><input type="range" id="ama-ms-slider" min="0" max="1000" value="${amaMsInitSlider}" title="AMA Max Slope % per bar (0.04-0.12)"><span class="val" id="ama-ms-value">${defaultAmaMaxSlopePct.toFixed(4)}</span></div>
-                <div class="ctrl clip"><label for="clip-slider">clip%</label><input type="range" id="clip-slider" min="0" max="55" value="${Math.min(defaultClipPct, 55)}" title="Outlier Clip %"><span class="val" id="clip-value">${Math.min(defaultClipPct, 55)}%</span></div>
+                <div class="ctrl lb"><label for="lb-slider">lb</label><input type="range" id="lb-slider" min="0" max="1000" value="${lbInitSlider}" title="Lookback Bars (${LB_MIN}-${LB_MAX})"><span class="val" id="lb-value">${lookbackBars}</span></div>
+                <div class="ctrl ms-ama"><label for="ama-ms-slider">amaS%</label><input type="range" id="ama-ms-slider" min="0" max="1000" value="${amaMsInitSlider}" title="AMA Max Slope % per bar (${AMA_MS_MIN}-${AMA_MS_MAX})"><span class="val" id="ama-ms-value">${defaultAmaMaxSlopePct.toFixed(4)}</span></div>
+                <div class="ctrl clip"><label for="clip-slider">clip%</label><input type="range" id="clip-slider" min="0" max="${CLIP_PCT_MAX}" value="${Math.min(defaultClipPct, CLIP_PCT_MAX)}" title="Outlier Clip %"><span class="val" id="clip-value">${Math.min(defaultClipPct, CLIP_PCT_MAX)}%</span></div>
 
                 <div class="group-sep"></div>
-                <div class="ctrl th"><label for="th-slider">th%</label><input type="range" id="th-slider" min="0" max="50" value="${Math.round(defaultMinOutputThreshold * 100)}" title="Minimum pre-gain blended output required before the signal is allowed through (0.00-0.50)"><span class="val" id="th-value">${defaultMinOutputThreshold.toFixed(2)}</span></div>
+                <div class="ctrl th"><label for="th-slider">th%</label><input type="range" id="th-slider" min="0" max="${TH_MAX * 100}" value="${Math.round(defaultMinOutputThreshold * 100)}" title="Minimum pre-gain blended output required before the signal is allowed through (${TH_MIN.toFixed(2)}-${TH_MAX.toFixed(2)})"><span class="val" id="th-value">${defaultMinOutputThreshold.toFixed(2)}</span></div>
 
                 <div class="group-sep"></div>
                 <div class="row-break"></div>
-        <div class="ctrl ms-kal"><label for="kal-ms-slider">kalS%</label><input type="range" id="kal-ms-slider" min="0" max="1000" value="${kalMsInitSlider}" title="Kalman Max Slope % (0.15-1.5)"><span class="val" id="kal-ms-value">${clampedKalMs.toFixed(2)}</span></div>
-        <div class="ctrl kf"><label for="kf-slider">kf</label><input type="range" id="kf-slider" min="0" max="200" value="${defaultKalmanSmoothPct}" title="Kalman smoothing blend (0 = raw, 100 = current adaptive smoothing, 200 = stronger smoothing)"><span class="val" id="kf-value">${defaultKalmanSmoothPct}%</span></div>
-                <div class="ctrl kfd"><label for="kfd-slider">kfd</label><input type="range" id="kfd-slider" min="100" max="300" value="${Math.round(defaultKalmanDispScaleMult * 100)}" title="Kalman displacement scale multiplier (1x to 3x)"><span class="val" id="kfd-value">${defaultKalmanDispScaleMult.toFixed(2)}x</span></div>
-                <div class="ctrl dsp"><label for="dsp-slider">dsp</label><input type="range" id="dsp-slider" min="25" max="400" value="${Math.round(defaultDispScaleMinPct * 100)}" title="Minimum displacement scale floor (0.25x to 4.0x)"><span class="val" id="dsp-value">${defaultDispScaleMinPct.toFixed(2)}x</span></div>
-                <div class="ctrl kdt"><label for="kdt-slider">kdt</label><input type="range" id="kdt-slider" min="25" max="300" value="${Math.round(defaultKalmanDispThresholdMult * 100)}" title="Kalman displacement threshold multiplier (0.25x to 3x)"><span class="val" id="kdt-value">${defaultKalmanDispThresholdMult.toFixed(2)}x</span></div>
-                <div class="ctrl kfs"><label for="kfs-slider">kfs</label><input type="range" id="kfs-slider" min="20" max="200" value="${defaultKalmanSmoothSpanPct}" title="Adaptive EMA span ratio (20% span / 200% span; floor fixed at 0)"><span class="val" id="kfs-value">${defaultKalmanSmoothSpanPct}%</span></div>
-                <div class="ctrl cf"><label for="cf-slider">cf</label><input type="range" id="cf-slider" min="0" max="5" value="${defaultSignalConfirmBars}" title="Signal confirmation bars (0 disables latching; otherwise flips after N opposite echo bars)"><span class="val" id="cf-value">${defaultSignalConfirmBars}</span></div>
-                <div class="ctrl off"><label for="gain-slider">gain</label><input type="range" id="gain-slider" min="0" max="1000" value="${gainInitSlider}" title="Output Gain (0.5-2.0)"><span class="val" id="gain-value">${clampedGain.toFixed(3)}</span></div>
-                <div class="ctrl regime"><label for="regime-slider">regi</label><input type="range" id="regime-slider" min="0" max="200" value="${regimeInitSlider}" title="Regime Sensitivity"><span class="val" id="regime-value">${defaultRegimeSensitivity.toFixed(2)}</span></div>
+        <div class="ctrl ms-kal"><label for="kal-ms-slider">kalS%</label><input type="range" id="kal-ms-slider" min="0" max="1000" value="${kalMsInitSlider}" title="Kalman Max Slope % (${KAL_MS_MIN}-${KAL_MS_MAX})"><span class="val" id="kal-ms-value">${clampedKalMs.toFixed(2)}</span></div>
+        <div class="ctrl kf"><label for="kf-slider">kf</label><input type="range" id="kf-slider" min="${KF_MIN}" max="${KF_MAX}" value="${defaultKalmanSmoothPct}" title="Kalman smoothing blend (${KF_MIN} = raw, 100 = current adaptive smoothing, ${KF_MAX} = stronger smoothing)"><span class="val" id="kf-value">${defaultKalmanSmoothPct}%</span></div>
+                <div class="ctrl kfd"><label for="kfd-slider">kfd</label><input type="range" id="kfd-slider" min="${KFD_MIN * 100}" max="${KFD_MAX * 100}" value="${Math.round(defaultKalmanDispScaleMult * 100)}" title="Kalman displacement scale multiplier (${KFD_MIN}x to ${KFD_MAX}x)"><span class="val" id="kfd-value">${defaultKalmanDispScaleMult.toFixed(2)}x</span></div>
+                <div class="ctrl dsp"><label for="dsp-slider">dsp</label><input type="range" id="dsp-slider" min="${DSP_MIN * 100}" max="${DSP_MAX * 100}" value="${Math.round(defaultDispScaleMinPct * 100)}" title="Minimum displacement scale floor (${DSP_MIN}x to ${DSP_MAX.toFixed(1)}x)"><span class="val" id="dsp-value">${defaultDispScaleMinPct.toFixed(2)}x</span></div>
+                <div class="ctrl kdt"><label for="kdt-slider">kdt</label><input type="range" id="kdt-slider" min="${KDT_MIN * 100}" max="${KDT_MAX * 100}" value="${Math.round(defaultKalmanDispThresholdMult * 100)}" title="Kalman displacement threshold multiplier (${KDT_MIN}x to ${KDT_MAX}x)"><span class="val" id="kdt-value">${defaultKalmanDispThresholdMult.toFixed(2)}x</span></div>
+                <div class="ctrl kfs"><label for="kfs-slider">kfs</label><input type="range" id="kfs-slider" min="${KFS_MIN}" max="${KFS_MAX}" value="${defaultKalmanSmoothSpanPct}" title="Adaptive EMA span ratio (${KFS_MIN}% span / ${KFS_MAX}% span; floor fixed at 0)"><span class="val" id="kfs-value">${defaultKalmanSmoothSpanPct}%</span></div>
+                <div class="ctrl cf"><label for="cf-slider">cf</label><input type="range" id="cf-slider" min="${CF_MIN}" max="${CF_MAX}" value="${defaultSignalConfirmBars}" title="Signal confirmation bars (0 disables latching; otherwise flips after N opposite echo bars)"><span class="val" id="cf-value">${defaultSignalConfirmBars}</span></div>
+                <div class="ctrl off"><label for="gain-slider">gain</label><input type="range" id="gain-slider" min="0" max="1000" value="${gainInitSlider}" title="Output Gain (${GAIN_MIN.toFixed(1)}-${GAIN_MAX.toFixed(1)})"><span class="val" id="gain-value">${clampedGain.toFixed(3)}</span></div>
+                <div class="ctrl regime"><label for="regime-slider">regi</label><input type="range" id="regime-slider" min="0" max="${REGI_MAX * 100}" value="${regimeInitSlider}" title="Regime Sensitivity"><span class="val" id="regime-value">${defaultRegimeSensitivity.toFixed(2)}</span></div>
                 <button class="copy-btn" id="copy-params-btn">copy</button>
                 <button class="paste-btn" id="paste-params-btn">paste</button>
             </div>
@@ -351,7 +381,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         </div>
     </div>
 
-    <script id="payload" type="application/json">${serializeJsonForScript({ dates, prices, hurstArr, peArr, hurstSegments, peSegments, ama3Prices, amaSeedSmaLine, amaSlopePct, kalmanVelocityPctRaw, kalmanVelocityPct, kalmanDisplacementPct, kalmanIsReady, signals, alpha: defaultAlpha, gain: defaultGain, kalmanSmoothPct: defaultKalmanSmoothPct, kalmanDispScaleMult: defaultKalmanDispScaleMult, kalmanDispThresholdMult: defaultKalmanDispThresholdMult, kalmanSmoothSpanPct: defaultKalmanSmoothSpanPct, signalConfirmBars: defaultSignalConfirmBars, neutralZonePct: defaultNeutralZone, dispWeight: defaultDispWeight, amaMaxSlopePct: defaultAmaMaxSlopePct, kalmanMaxSlopePct: defaultKalmanMaxSlopePct, maxDispPct, clipPct: defaultClipPct, minOutputThreshold: defaultMinOutputThreshold, outputClamp: defaultOutputClamp, regimeSensitivity: defaultRegimeSensitivity, absoluteThreshold: defaultAbsoluteThreshold, lookbackBars, amaErPeriod, amaSlowPeriod, amaWarmupBars, amaSlopeReadyBars, realBarCount, amaPctMax, kalPctMax, amaPercentiles, kalPercentiles, amaSlopeLogMin: AMA_MS_LOG_MIN_N, amaSlopeLogMax: AMA_MS_LOG_MAX_N, kalSlopeLogMin: KAL_MS_LOG_MIN_N, kalSlopeLogMax: KAL_MS_LOG_MAX_N, lbLogMin: LB_LOG_MIN_N, lbLogMax: LB_LOG_MAX_N, gainLogMin: GAIN_LOG_MIN_N, gainLogMax: GAIN_LOG_MAX_N, dispScaleMinPct: defaultDispScaleMinPct, weightMin: MARKET_ADAPTER.DYNAMIC_WEIGHT_MIN_WEIGHT, weightMax: MARKET_ADAPTER.DYNAMIC_WEIGHT_MAX_WEIGHT, marketAdapter: ma, amaWeightConfig, hNodes: [0.5 + MARKET_ADAPTER.HURST_ZONE_BAND, 0.5, 0.5 - MARKET_ADAPTER.HURST_ZONE_BAND], pNodes: MARKET_ADAPTER.PE_NODES, regimeTable: MARKET_ADAPTER.REGIME_TABLE })}</script>
+    <script id="payload" type="application/json">${serializeJsonForScript({ dates, prices, hurstArr, peArr, hurstSegments, peSegments, ama3Prices, amaSeedSmaLine, amaSlopePct, kalmanVelocityPctRaw, kalmanVelocityPct, kalmanDisplacementPct, kalmanIsReady, signals, alpha: defaultAlpha, gain: defaultGain, kalmanSmoothPct: defaultKalmanSmoothPct, kalmanDispScaleMult: defaultKalmanDispScaleMult, kalmanDispThresholdMult: defaultKalmanDispThresholdMult, kalmanSmoothSpanPct: defaultKalmanSmoothSpanPct, signalConfirmBars: defaultSignalConfirmBars, neutralZonePct: defaultNeutralZone, dispWeight: defaultDispWeight, amaMaxSlopePct: defaultAmaMaxSlopePct, kalmanMaxSlopePct: defaultKalmanMaxSlopePct, maxDispPct, clipPct: defaultClipPct, minOutputThreshold: defaultMinOutputThreshold, outputClamp: defaultOutputClamp, regimeSensitivity: defaultRegimeSensitivity, absoluteThreshold: defaultAbsoluteThreshold, lookbackBars, amaErPeriod, amaSlowPeriod, amaWarmupBars, amaSlopeReadyBars, realBarCount, amaPctMax, kalPctMax, amaPercentiles, kalPercentiles, amaSlopeLogMin: AMA_MS_LOG_MIN_N, amaSlopeLogMax: AMA_MS_LOG_MAX_N, kalSlopeLogMin: KAL_MS_LOG_MIN_N, kalSlopeLogMax: KAL_MS_LOG_MAX_N, lbLogMin: LB_LOG_MIN_N, lbLogMax: LB_LOG_MAX_N, gainLogMin: GAIN_LOG_MIN_N, gainLogMax: GAIN_LOG_MAX_N, sliderRanges: SLIDER_RANGES, dispScaleMinPct: defaultDispScaleMinPct, weightMin: MARKET_ADAPTER.DYNAMIC_WEIGHT_MIN_WEIGHT, weightMax: MARKET_ADAPTER.DYNAMIC_WEIGHT_MAX_WEIGHT, marketAdapter: ma, amaWeightConfig, hNodes: [0.5 + MARKET_ADAPTER.HURST_ZONE_BAND, 0.5, 0.5 - MARKET_ADAPTER.HURST_ZONE_BAND], pNodes: MARKET_ADAPTER.PE_NODES, regimeTable: MARKET_ADAPTER.REGIME_TABLE })}</script>
 
     <script>
         const data = JSON.parse(document.getElementById('payload').textContent);
@@ -362,6 +392,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         const Y_AXIS_SIZE = ${Y_AXIS_SIZE};
         const ma = data.marketAdapter || {};
         const amaWeightConfig = data.amaWeightConfig || {};
+        const SR = data.sliderRanges ?? ${serializeJsonForScript(SLIDER_RANGES)};
 
         const ABSOLUTE_THRESHOLD = data.absoluteThreshold ?? ${JSON.stringify(defaultAbsoluteThreshold)};
         const WEIGHT_MIN = data.weightMin ?? ${JSON.stringify(MARKET_ADAPTER.DYNAMIC_WEIGHT_MIN_WEIGHT)};
@@ -373,7 +404,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
 
         let currentAlpha   = data.alpha ?? ${JSON.stringify(defaultAlpha)};
         let currentGain  = data.gain ?? ${JSON.stringify(defaultGain)};
-        let currentMinOutputThreshold = Math.min(Math.max(data.minOutputThreshold ?? ${JSON.stringify(defaultMinOutputThreshold)}, 0), 0.5);
+        let currentMinOutputThreshold = Math.min(Math.max(data.minOutputThreshold ?? ${JSON.stringify(defaultMinOutputThreshold)}, SR.minOutputThreshold[0]), SR.minOutputThreshold[1]);
         let currentKalmanSmoothPct = data.kalmanSmoothPct ?? ${JSON.stringify(defaultKalmanSmoothPct)};
         let currentKalmanDispScaleMult = data.kalmanDispScaleMult ?? ${JSON.stringify(defaultKalmanDispScaleMult)};
         let currentKalmanDispThresholdMult = data.kalmanDispThresholdMult ?? ${JSON.stringify(defaultKalmanDispThresholdMult)};
@@ -395,7 +426,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         const LB_LOG_MIN = data.lbLogMin;
         const LB_LOG_MAX = data.lbLogMax;
         const lbSliderToVal = (pos) => Math.round(Math.exp(LB_LOG_MIN + (pos / 1000) * (LB_LOG_MAX - LB_LOG_MIN)));
-        const lbValToSlider = (val) => Math.round((Math.log(Math.max(1, val)) - LB_LOG_MIN) / (LB_LOG_MAX - LB_LOG_MIN) * 1000);
+        const lbValToSlider = (val) => Math.round((Math.log(Math.max(SR.lookbackBars[0], val)) - LB_LOG_MIN) / (LB_LOG_MAX - LB_LOG_MIN) * 1000);
 
         const GAIN_LOG_MIN = data.gainLogMin;
         const GAIN_LOG_MAX = data.gainLogMax;
@@ -482,7 +513,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         }
 
         function recalcLatchedSignals() {
-            const confirmBars = Math.max(0, Math.min(5, currentSignalConfirmBars));
+            const confirmBars = Math.max(SR.signalConfirmBars[0], Math.min(SR.signalConfirmBars[1], currentSignalConfirmBars));
             if (confirmBars === 0) {
                 for (let i = 0; i < data.dates.length; i++) {
                     currentLatchedSignals[i] = data.signals[i] || null;
@@ -1079,7 +1110,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             });
 
             document.getElementById('th-slider').addEventListener('input', (e) => {
-                currentMinOutputThreshold = Math.min(Math.max(parseInt(e.target.value, 10) / 100, 0), 0.5);
+                currentMinOutputThreshold = Math.min(Math.max(parseInt(e.target.value, 10) / 100, SR.minOutputThreshold[0]), SR.minOutputThreshold[1]);
                 document.getElementById('th-value').textContent = currentMinOutputThreshold.toFixed(2);
                 recalcWeights();
                 refreshChartsPreservingZoom();
@@ -1157,67 +1188,67 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
 function applyParams(p, btn) {
                 if (typeof p !== 'object' || p === null) throw new Error('not an object');
                 if (p.alpha != null) {
-                    currentAlpha = Math.max(0, Math.min(1, p.alpha));
+                    currentAlpha = Math.max(SR.alpha[0], Math.min(SR.alpha[1], p.alpha));
                     document.getElementById('alpha-slider').value = Math.round(currentAlpha * 100);
                     document.getElementById('alpha-value').textContent = currentAlpha.toFixed(2);
                 }
                 if (p.dispWeight != null) {
-                    currentDw = Math.max(0, Math.min(1, p.dispWeight));
+                    currentDw = Math.max(SR.dispWeight[0], Math.min(SR.dispWeight[1], p.dispWeight));
                     document.getElementById('dw-slider').value = Math.round(currentDw * 100);
                     document.getElementById('dw-value').textContent = currentDw.toFixed(2);
                 }
                 if (p.amaMaxSlopePct != null) {
-                    currentAmaMaxSlopePct = Math.max(0.01, Math.min(0.5, p.amaMaxSlopePct));
+                    currentAmaMaxSlopePct = Math.max(SR.amaMaxSlopePct[0], Math.min(SR.amaMaxSlopePct[1], p.amaMaxSlopePct));
                     document.getElementById('ama-ms-slider').value = Math.round((Math.log(currentAmaMaxSlopePct) - AMA_MS_LOG_MIN) / (AMA_MS_LOG_MAX - AMA_MS_LOG_MIN) * 1000);
                     document.getElementById('ama-ms-value').textContent = currentAmaMaxSlopePct.toFixed(4);
                 }
                 if (p.kalmanMaxSlopePct != null) {
-                    currentKalmanMaxSlopePct = Math.max(0.15, Math.min(1.5, p.kalmanMaxSlopePct));
+                    currentKalmanMaxSlopePct = Math.max(SR.kalmanMaxSlopePct[0], Math.min(SR.kalmanMaxSlopePct[1], p.kalmanMaxSlopePct));
                     document.getElementById('kal-ms-slider').value = Math.round((Math.log(currentKalmanMaxSlopePct) - KAL_MS_LOG_MIN) / (KAL_MS_LOG_MAX - KAL_MS_LOG_MIN) * 1000);
                     document.getElementById('kal-ms-value').textContent = currentKalmanMaxSlopePct.toFixed(2);
                 }
                 if (p.gain != null) {
-                    currentGain = Math.max(0.5, Math.min(2.0, p.gain));
+                    currentGain = Math.max(SR.gain[0], Math.min(SR.gain[1], p.gain));
                     document.getElementById('gain-slider').value = gainValToSlider(currentGain);
                     document.getElementById('gain-value').textContent = currentGain.toFixed(3);
                 }
                 if (p.minOutputThreshold != null) {
-                    currentMinOutputThreshold = Math.max(0, Math.min(0.5, p.minOutputThreshold));
+                    currentMinOutputThreshold = Math.max(SR.minOutputThreshold[0], Math.min(SR.minOutputThreshold[1], p.minOutputThreshold));
                     document.getElementById('th-slider').value = Math.round(currentMinOutputThreshold * 100);
                     document.getElementById('th-value').textContent = currentMinOutputThreshold.toFixed(2);
                 }
                 if (p.kalmanSmoothPct != null) {
-                currentKalmanSmoothPct = Math.max(0, Math.min(200, Math.round(p.kalmanSmoothPct)));
+                currentKalmanSmoothPct = Math.max(SR.kalmanSmoothPct[0], Math.min(SR.kalmanSmoothPct[1], Math.round(p.kalmanSmoothPct)));
                     document.getElementById('kf-slider').value = currentKalmanSmoothPct;
                     document.getElementById('kf-value').textContent = currentKalmanSmoothPct + '%';
                 }
                 if (p.kalmanDispScaleMult != null) {
-                    currentKalmanDispScaleMult = Math.max(1.0, Math.min(3.0, p.kalmanDispScaleMult));
+                    currentKalmanDispScaleMult = Math.max(SR.kalmanDispScaleMult[0], Math.min(SR.kalmanDispScaleMult[1], p.kalmanDispScaleMult));
                     document.getElementById('kfd-slider').value = Math.round(currentKalmanDispScaleMult * 100);
                     document.getElementById('kfd-value').textContent = currentKalmanDispScaleMult.toFixed(2) + 'x';
                 }
                 if (p.dispScaleMinPct != null) {
-                    currentDispScaleMinPct = Math.max(0.25, Math.min(4.0, p.dispScaleMinPct));
+                    currentDispScaleMinPct = Math.max(SR.dispScaleMinPct[0], Math.min(SR.dispScaleMinPct[1], p.dispScaleMinPct));
                     document.getElementById('dsp-slider').value = Math.round(currentDispScaleMinPct * 100);
                     document.getElementById('dsp-value').textContent = currentDispScaleMinPct.toFixed(2) + 'x';
                 }
                 if (p.kalmanDispThresholdMult != null) {
-                    currentKalmanDispThresholdMult = Math.max(0.25, Math.min(3.0, p.kalmanDispThresholdMult));
+                    currentKalmanDispThresholdMult = Math.max(SR.kalmanDispThresholdMult[0], Math.min(SR.kalmanDispThresholdMult[1], p.kalmanDispThresholdMult));
                     document.getElementById('kdt-slider').value = Math.round(currentKalmanDispThresholdMult * 100);
                     document.getElementById('kdt-value').textContent = currentKalmanDispThresholdMult.toFixed(2) + 'x';
                 }
                 if (p.kalmanSmoothSpanPct != null) {
-                    currentKalmanSmoothSpanPct = Math.max(20, Math.min(200, Math.round(p.kalmanSmoothSpanPct)));
+                    currentKalmanSmoothSpanPct = Math.max(SR.kalmanSmoothSpanPct[0], Math.min(SR.kalmanSmoothSpanPct[1], Math.round(p.kalmanSmoothSpanPct)));
                     document.getElementById('kfs-slider').value = currentKalmanSmoothSpanPct;
                     document.getElementById('kfs-value').textContent = currentKalmanSmoothSpanPct + '%';
                 }
                 if (p.signalConfirmBars != null) {
-                    currentSignalConfirmBars = Math.max(0, Math.min(5, Math.round(p.signalConfirmBars)));
+                    currentSignalConfirmBars = Math.max(SR.signalConfirmBars[0], Math.min(SR.signalConfirmBars[1], Math.round(p.signalConfirmBars)));
                     document.getElementById('cf-slider').value = currentSignalConfirmBars;
                     document.getElementById('cf-value').textContent = currentSignalConfirmBars;
                 }
                 if (p.clipPct != null) {
-                    currentClipPct = Math.max(0, Math.min(55, Math.round(p.clipPct)));
+                    currentClipPct = Math.max(SR.clipPct[0], Math.min(SR.clipPct[1], Math.round(p.clipPct)));
                     document.getElementById('clip-slider').value = currentClipPct;
                     document.getElementById('clip-value').textContent = currentClipPct + '%';
                     if (currentClipPct === 0) {
@@ -1229,17 +1260,17 @@ function applyParams(p, btn) {
                     }
                 }
                 if (p.neutralZonePct != null) {
-                    currentNz = Math.max(0, Math.min(1, p.neutralZonePct));
+                    currentNz = Math.max(SR.neutralZonePct[0], Math.min(SR.neutralZonePct[1], p.neutralZonePct));
                     document.getElementById('nz-slider').value = Math.round(currentNz * 100);
                     document.getElementById('nz-value').textContent = currentNz.toFixed(2);
                 }
                 if (p.regimeSensitivity != null) {
-                    currentRegimeSensitivity = Math.max(0, Math.min(2, p.regimeSensitivity));
+                    currentRegimeSensitivity = Math.max(SR.regimeSensitivity[0], Math.min(SR.regimeSensitivity[1], p.regimeSensitivity));
                     document.getElementById('regime-slider').value = Math.round(currentRegimeSensitivity * 100);
                     document.getElementById('regime-value').textContent = currentRegimeSensitivity.toFixed(2);
                 }
                 if (p.lookbackBars != null) {
-                    currentLookbackBars = Math.max(1, Math.min(32, Math.round(p.lookbackBars)));
+                    currentLookbackBars = Math.max(SR.lookbackBars[0], Math.min(SR.lookbackBars[1], Math.round(p.lookbackBars)));
                     document.getElementById('lb-slider').value = lbValToSlider(currentLookbackBars);
                     document.getElementById('lb-value').textContent = currentLookbackBars;
                 }
