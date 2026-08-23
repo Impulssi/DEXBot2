@@ -31,6 +31,7 @@
  *   loadBotsConfig, saveBotsConfig, listBots, selectBotIndex,
  *   loadGeneralSettings, saveGeneralSettings, isMultiplierString,
  *   colorPriceRangeValue, colorMultiplierInput,
+ *   isPercentageString, colorPercentageInput,
  *   normalizePercentageInput, promptBotData, promptGeneralSettings
  *
  * ===============================================================================
@@ -446,6 +447,27 @@ function colorMultiplierInput(value: string): string {
 }
 
 /**
+ * Checks if a value is a percentage string (e.g. "50%").
+ * @param {*} value - The value to check.
+ * @returns {boolean} True if it's a percentage string.
+ */
+function isPercentageString(value: any): boolean {
+    return typeof value === 'string' && /^[-+]?[0-9]+(?:\.[0-9]+)?%$/.test(value.trim());
+}
+
+/**
+ * Colors a funds value string for display: green when it is a relative
+ * percentage ("100%"), red when it is a fixed amount (no relative scaling).
+ * Used for live input feedback: turns green the moment the "%" is typed.
+ * @param {string} value - The value to color.
+ * @returns {string} ANSI-colored value string.
+ */
+function colorPercentageInput(value: any): string {
+    if (isPercentageString(value)) return `\x1b[92m${value}\x1b[0m`;
+    return `\x1b[38;5;160m${value}\x1b[0m`;
+}
+
+/**
  * Colors a price range value for display: green when it is a relative
  * multiplier ("1.55x"), red when it is a fixed price (no relative scaling).
  * @param {*} value - The value to color.
@@ -691,8 +713,8 @@ function normalizePercentageInput(value: string): string | null {
  * @returns {Promise<number|string>} The value or '\x1b' if ESC.
  */
 async function askNumberOrPercentage(promptText: string, defaultValue?: any): Promise<any> {
-    const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
-    const raw = (await readInput(`${promptText}${suffix}: `)).trim();
+    const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${colorPercentageInput(defaultValue)}]` : '';
+    const raw = (await readInput(`${promptText}${suffix}: `, { colorize: (input) => colorPercentageInput(input) })).trim();
     if (raw === '\x1b') return '\x1b';
     if (raw === '') return defaultValue;
     const percent = normalizePercentageInput(raw);
@@ -853,7 +875,7 @@ async function promptBotData(base = {}) {
              console.log(`\x1b[1;33m2) Identity:\x1b[0m   \x1b[38;5;208mName:\x1b[0m ${data.name || '?'} , \x1b[38;5;208mAccount:\x1b[0m ${data.preferredAccount || '?'} , \x1b[38;5;208mActive:\x1b[0m ${data.active}, \x1b[38;5;208mDryRun:\x1b[0m ${data.dryRun}`);
              console.log(`\x1b[1;33m3) Price:\x1b[0m      \x1b[38;5;208mRange:\x1b[0m [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], \x1b[38;5;208mStart:\x1b[0m ${data.startPrice}, \x1b[38;5;208mPool:\x1b[0m ${data.poolRef || 'none'}, \x1b[38;5;208mGridPrice:\x1b[0m ${data.gridPrice === null ? 'startPrice' : data.gridPrice}`);
              console.log(`\x1b[1;33m4) Grid:\x1b[0m       \x1b[38;5;208mWeights:\x1b[0m (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), \x1b[38;5;208mIncr:\x1b[0m ${data.incrementPercent}%, \x1b[38;5;208mSpread:\x1b[0m ${data.targetSpreadPercent}%`);
-             console.log(`\x1b[1;33m5) Funding:\x1b[0m    \x1b[38;5;208mSell:\x1b[0m ${data.botFunds.sell}, \x1b[38;5;208mBuy:\x1b[0m ${data.botFunds.buy} | \x1b[38;5;208mOrders:\x1b[0m (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
+             console.log(`\x1b[1;33m5) Funding:\x1b[0m    \x1b[38;5;208mSell:\x1b[0m ${colorPercentageInput(data.botFunds.sell)}, \x1b[38;5;208mBuy:\x1b[0m ${colorPercentageInput(data.botFunds.buy)} | \x1b[38;5;208mOrders:\x1b[0m (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
              console.log('--------------------------------------------------');
              console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
              console.log('\x1b[97mC) Cancel (Discard changes)\x1b[0m');
