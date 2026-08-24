@@ -15,6 +15,7 @@ import * as kibanaMarketSource from './core/kibana_market_candles.js';
 import { tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles } from './candle_utils.js';
 import { toIntervalLabel } from './interval_utils.js';
 import { loadMarketProfiles } from '../analysis/tradingview/tradingview_uplot_chart_generator.js';
+import { candleFileForBot as candleFilePathForLabel } from '../analysis/bot_key_utils.js';
 import { writeJsonAtomic } from './utils/atomic_write.js';
 import { acquireFileLockSync, releaseFileLockSync } from './utils/file_lock.js';
 import { updateDynamicGridSnapshotSync } from './utils/dynamic_grid_snapshot.js';
@@ -672,7 +673,7 @@ function candleFileForBot(botKey: any, intervalSeconds: any = RUNTIME_DEFAULTS.i
     const label = intervalSeconds === RUNTIME_DEFAULTS.intervalSeconds
         ? RUNTIME_DEFAULTS.intervalLabel
         : toIntervalLabel(intervalSeconds);
-    return path.join(DATA_DIR, `market_adapter_${botKey}_${label}.json`);
+    return candleFilePathForLabel(botKey, label, DATA_DIR);
 }
 
 function calculateBotThreshold(cfg: any) {

@@ -3,15 +3,15 @@ import { path } from '../modules/path_api.js';
 import { getStorage } from '../modules/storage/index.js';
 import { normalizeAssetSymbol, isExactPair, isSamePair } from './utils/chain.js';
 import { toIntervalLabel } from './interval_utils.js';
-import { PROJECT_ROOT } from './utils/paths.js';
+import { PATHS } from '../modules/paths.js';
 'use strict';
 
 const storage = getStorage();
 const { readJSON } = storage;
 
 
-const ANALYSIS_AMA_FITTING_DIR = path.join(PROJECT_ROOT, 'analysis', 'ama_fitting');
-const MARKET_ADAPTER_DIR = path.join(PROJECT_ROOT, 'market_adapter');
+const ANALYSIS_AMA_FITTING_DIR = path.join(PATHS.PROJECT_ROOT, 'analysis', 'ama_fitting');
+const MARKET_ADAPTER_DIR = path.join(PATHS.PROJECT_ROOT, 'market_adapter');
 
 function inferIntervalLabel(meta: any) {
     const sec = Number(meta?.intervalSeconds);
@@ -174,5 +174,5 @@ function loadStrategiesForLpChart({ dataFile, meta, profilesFile, extraSearchDir
     return loadStrategiesFromProfiles(profilesFile, meta);
 }
 
-export { loadStrategiesForLpChart, loadStrategiesFromProfiles, loadStrategiesFromResults }
+export { loadStrategiesForLpChart, loadStrategiesFromProfiles }
 

@@ -145,5 +145,5 @@ async function getLpClosePricesForPool(poolId: any, assetA: any, assetB: any, co
     });
 }
 
-export { discoverPoolAssets, getLpCandlesForPool, getLpClosePricesForPool, kibanaSearch }
+export { discoverPoolAssets, getLpCandlesForPool, getLpClosePricesForPool }
 

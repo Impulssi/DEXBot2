@@ -7,15 +7,15 @@
  * then fetches all swap history from Kibana and exports OHLCV candles to JSON.
  *
  * Usage:
- *   tsx market_adapter/inputs/fetch_lp_data.ts
- *   tsx market_adapter/inputs/fetch_lp_data.ts --bot <botName> --interval 4h --lookback 8760h
+ *   node dist/market_adapter/inputs/fetch_lp_data.js
+ *   node dist/market_adapter/inputs/fetch_lp_data.js --bot <botName> --interval 4h --lookback 8760h
  *
  * Manual override (no blockchain connection needed):
- *   tsx market_adapter/inputs/fetch_lp_data.ts --pool <poolId> --precA <precA> --precB <precB>
+ *   node dist/market_adapter/inputs/fetch_lp_data.js --pool <poolId> --precA <precA> --precB <precB>
  *
  * Date range fetch (for historical windows or multi-step fetching):
- *   tsx market_adapter/inputs/fetch_lp_data.ts --pool <poolId> --precA <precA> --precB <precB> --interval 1h --start 2024-03-06 --end 2025-03-06
- *   tsx market_adapter/inputs/fetch_lp_data.ts --pool <poolId> --precA <precA> --precB <precB> --interval 1h --start 2025-03-06 --end 2026-03-06
+ *   node dist/market_adapter/inputs/fetch_lp_data.js --pool <poolId> --precA <precA> --precB <precB> --interval 1h --start 2024-03-06 --end 2025-03-06
+ *   node dist/market_adapter/inputs/fetch_lp_data.js --pool <poolId> --precA <precA> --precB <precB> --interval 1h --start 2025-03-06 --end 2026-03-06
  *
  * Output:
  *   market_adapter/data/lp/<assetA>_<assetB>/lp_pool_<poolId>_<interval>.json

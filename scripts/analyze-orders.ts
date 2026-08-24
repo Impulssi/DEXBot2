@@ -11,8 +11,8 @@
  * - Grid slot distribution (% near center) vs grid composition
  *
  * Usage:
- *   tsx scripts/analyze-orders.ts          # terminal output
- *   tsx scripts/analyze-orders.ts --export     # standalone HTML report
+ *   node dist/scripts/analyze-orders.js          # terminal output
+ *   node dist/scripts/analyze-orders.js --export # standalone HTML report
  */
 
 
@@ -27,6 +27,7 @@ import { getWhitelistFlags } from '../modules/market_adapter_whitelist.js';
 import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors.js';
+import { sanitizeKey } from '../modules/utils/sanitize_key.js';
 import { pathToFileURL } from 'node:url';
 const ORDERS_DIR = PATHS.ORDERS_DIR;
 const BOTS_CONFIG = PATHS.PROFILES.BOTS_JSON;
@@ -68,15 +69,6 @@ const HEADER_WIDTH = 11 + BAR_WIDTH;
  * Utility Functions
  * Helper functions for file I/O, formatting, and data retrieval
  */
-
-function sanitizeKey(source: string | null | undefined): string {
-  if (!source) return 'bot';
-  return String(source)
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'bot';
-}
 
 function createBotKey(bot: Record<string, any> | null | undefined, index: number): string {
   if (bot && bot.name) {

@@ -2473,5 +2473,5 @@ class MarketAdapterService {
     }
 }
 
-export { MarketAdapterService, AMA_SLOPE_PERCENT_MODE_PER_BAR, normalizeAmaSlopePercentMode, normalizeAmaSlopeLookbackBars, convertSlopePercentToPerBar }
+export { MarketAdapterService, AMA_SLOPE_PERCENT_MODE_PER_BAR, normalizeAmaSlopePercentMode, convertSlopePercentToPerBar }
 

@@ -10,9 +10,9 @@ import { getErrorMessage } from '../modules/utils/errors.js';
  * machine-readable AMA outputs per bot.
  *
  * Usage:
- *   tsx market_adapter/ama_signal_runner.ts
- *   tsx market_adapter/ama_signal_runner.ts --bot XRP-BTS
- *   tsx market_adapter/ama_signal_runner.ts --bot xrp-bts-0 --compact
+ *   node dist/market_adapter/ama_signal_runner.js
+ *   node dist/market_adapter/ama_signal_runner.js --bot XRP-BTS
+ *   node dist/market_adapter/ama_signal_runner.js --bot xrp-bts-0 --compact
  */
 
 import { runOnceForAma } from './market_adapter.js';

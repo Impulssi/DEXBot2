@@ -573,7 +573,6 @@ market_adapter/
 |-- ama_signal_runner.ts           one-cycle JSON signal CLI
 |-- candle_utils.ts                candle transforms, gap detection, pruning
 |-- interval_utils.ts              shared interval label helpers
-|-- merge_lp_data.ts               candle export merge utility
 |-- lp_chart_core.ts               chart HTML renderer
 |-- lp_chart_strategy_loader.ts    AMA strategy/profile resolver for charts
 |-- lp_chart_runner.ts             LP chart orchestration
@@ -612,7 +611,6 @@ market_adapter/
 |   |-- data_discovery.ts          data directory auto-discovery
 |   |-- atomic_write.ts            atomic file write utility
 |   |-- dynamic_grid_snapshot.ts   dynamic grid snapshot helpers
-|   `-- paths.ts                   path resolution helpers
 |-- data/                          runtime candle caches and exports
 `-- state/                         runtime state, centers, and lock file
 ```

@@ -125,5 +125,5 @@ function kibanaSearch(config: any, esQuery: any) {
   });
 }
 
-export { DEFAULT_CONFIG, INDEX, KIBANA_URL, kibanaSearch }
+export { DEFAULT_CONFIG, kibanaSearch }
 

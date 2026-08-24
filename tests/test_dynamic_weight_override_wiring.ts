@@ -271,7 +271,7 @@ function testResolveBotCfgKeepsMarkedPerBarAmaSlopePercents() {
 }
 
 function testBilinearInterpolateUsesOverrideNodes() {
-    const { bilinearInterpolate } = require('../market_adapter/core/strategies/regime_gate');
+    const { bilinearInterpolate } = require('../market_adapter/core/strategies/regime_interp');
 
     const table = [
         [1.0, 0.7, 0.3],

@@ -5,19 +5,15 @@ import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
 import {
     getCandleClose,
-    getCandleHigh,
-    getCandleLow,
     getCandleTimestamp,
     normalizeCandle,
 } from '../market_adapter/candle_utils.js';
-import { computeATRSeries } from '../market_adapter/core/strategies/atr/calculator.js';
 
 
 /**
  * Math utilities for analysis scripts.
  *
- * Candle accessors and ATR series computation are centralized in
- * market_adapter (candle_utils.ts / strategies/atr/calculator.ts) and
+ * Candle accessors are centralized in market_adapter (candle_utils.ts) and
  * re-exported here so analysis tooling shares one logic path with the
  * live adapter and the browser-embedded chart scripts.
  */
@@ -50,10 +46,7 @@ function loadCandleFile(filePath: any) {
 export {
     range,
     calcStdDev,
-    computeATRSeries,
     getCandleClose,
-    getCandleHigh,
-    getCandleLow,
     getCandleTimestamp,
     normalizeCandle,
     loadCandleFile,

@@ -11,7 +11,6 @@ const require = createRequire(import.meta.url);
  * This is intended as a seed generator for brand-new market_adapter files.
  * It does not rely on TradingView or Kibana.
  */
-const { path } = require('../../modules/path_api');
 const { getStorage } = require('../../modules/storage');
 const storage = getStorage();
 const { fillCandleGaps } = require('../candle_utils');
@@ -22,6 +21,7 @@ const { PATHS } = require('../../modules/paths');
 const { MARKET_ADAPTER } = require('../../modules/constants');
 const { getAmaWarmupBars } = require('../core/strategies/ama');
 const { getErrorMessage } = require('../../modules/utils/errors');
+const { candleFileForBot } = require('../../analysis/bot_key_utils');
 const {
     DEFAULTS: MARKET_ADAPTER_DEFAULTS,
     resolveAmaForBot,
@@ -891,7 +891,7 @@ function chooseOutputPath(config: any, intervalLabel: any) {
         }
         throw new Error('Provide --bot-key or --out when generating candles');
     }
-    return path.join(PATHS.MARKET_ADAPTER.DATA_DIR, `market_adapter_${botKey}_${intervalLabel}.json`);
+    return candleFileForBot(botKey, intervalLabel);
 }
 
 function dedupeCandles(candles: any) {

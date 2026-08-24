@@ -68,6 +68,7 @@ import * as Format from './order/format.js';
 import { ensureDir, nowIso } from './order/utils/system.js';
 import Logger from './order/logger.js';
 import { getErrorMessage } from './utils/errors.js';
+import { sanitizeKey } from './utils/sanitize_key.js';
 const storage = getStorage();
 const { toFiniteNumber } = Format;
 
@@ -81,21 +82,6 @@ const accountOrdersLogger = new Logger('AccountOrders');
  */
 function ensureDirExists(filePath: any) {
   ensureDir(path.dirname(filePath));
-}
-
-/**
- * Sanitizes a string to be used as a key in storage.
- * @param {string} source - The source string.
- * @returns {string} The sanitized string.
- * @private
- */
-function sanitizeKey(source: any) {
-  if (!source) return 'bot';
-  return String(source)
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'bot';
 }
 
 /**

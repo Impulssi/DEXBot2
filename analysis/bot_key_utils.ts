@@ -6,6 +6,7 @@ import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { loadMarketProfiles } from './tradingview/tradingview_uplot_chart_generator.js';
+import { sanitizeKey } from '../modules/utils/sanitize_key.js';
 'use strict';
 
 
@@ -20,11 +21,6 @@ function loadBotSettings(filePath = PATHS.PROFILES.BOTS_JSON) {
     } catch (_) {
         return null;
     }
-}
-
-function sanitizeKey(source: any) {
-    if (!source) return 'bot';
-    return String(source).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'bot';
 }
 
 function computeBotKey(bot: any, index: number) {

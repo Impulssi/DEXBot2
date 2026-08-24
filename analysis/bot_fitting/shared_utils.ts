@@ -42,5 +42,5 @@ function fmt(x: number, d = 2) {
     return Number(x).toFixed(d);
 }
 
-export { toCandles, parseListOrRange, loadLpData, fmt }
+export { parseListOrRange, loadLpData, fmt }
 

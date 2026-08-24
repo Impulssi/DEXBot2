@@ -84,7 +84,7 @@ function main() {
         if (e.code === 'ENOENT') {
             console.error(`Data file not found: ${opts.data}`);
             console.error('Export LP candles first, or point --data at an existing file.');
-            console.error('  tsx market_adapter/inputs/fetch_lp_data.ts --pool 133 --precA 4 --precB 5 --interval 1h --lookback 26280h');
+            console.error('  node dist/market_adapter/inputs/fetch_lp_data.js --pool 133 --precA 4 --precB 5 --interval 1h --lookback 26280h');
         } else if (e instanceof SyntaxError) {
             console.error(`Failed to parse JSON from: ${opts.data}`);
             console.error(e.message);
