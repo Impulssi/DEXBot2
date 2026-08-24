@@ -1415,9 +1415,17 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
 
     newBoundaryIdx += netShift;
 
-    // Clamp boundary
+    // Clamp boundary — cap at one slot before the gap band's SELL rail,
+    // matching calculateFundDrivenBoundary's geometry. Degenerate geometries
+    // (fewer slots than the gap needs) fall back to the legacy length-1
+    // ceiling instead of collapsing the boundary below its current position.
+    const gapAwareCeiling = allSlots.length - gapSlots - 1;
+    const legacyCeiling = allSlots.length - 1;
+    const ceiling = gapAwareCeiling >= 0
+        ? gapAwareCeiling
+        : Math.max(legacyCeiling, Number(currentBoundaryIdx ?? 0));
     return {
-        boundaryIdx: Math.max(0, Math.min(allSlots.length - 1, newBoundaryIdx)),
+        boundaryIdx: Math.max(0, Math.min(ceiling, newBoundaryIdx)),
         remainingBudget,
     };
 }

@@ -99,6 +99,18 @@ async function testValidatorSemantics() {
     assert.strictEqual(validateBoundaryCommit(-1, grid, 2).ok, false, 'negative rejected');
     assert.strictEqual(validateBoundaryCommit(99, grid, 2).reason, 'boundary_out_of_range', 'out-of-range rejected');
 
+    // Sell-rail ceiling (writer alignment): both boundary writers clamp to
+    // [0, N−gapSlots−1]; the gate rejects beyond-ceiling proposals so an
+    // overrun from a legacy snapshot or buggy writer cannot self-legalize
+    // zero-SELL geometry via resolveGapBand. N=10, g=2 -> maxAllowed 7.
+    const ceilResult = validateBoundaryCommit(8, grid, 2);
+    assert.strictEqual(ceilResult.ok, false, 'beyond-ceiling boundary rejected at commit gate');
+    assert.strictEqual(ceilResult.reason, 'sell_rail_ceiling_exceeded', 'stable reason for ceiling overrun');
+    assert.ok(/maxAllowed=7/.test(ceilResult.detail), 'detail carries the ceiling');
+    assert.strictEqual(validateBoundaryCommit(7, grid, 2).ok, true, 'ceiling value itself accepted (writer parity)');
+    assert.strictEqual(validatePersistedBoundary(9, grid, 2).ok, false,
+        'restore gate rejects past-ceiling persisted boundary');
+
     // Crossed-placed-book check limitation (pinned deliberately): entries
     // are price-sorted before position classification, so any BUY-side index
     // always prices <= any SELL-side index. Equal prices sort ADJACENTLY and

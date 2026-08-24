@@ -1304,7 +1304,13 @@ function resolveGapBand(manager: { _gapSlots?: any; boundaryIdx?: any; config?: 
  *   1. numeric sanity — finite, integer, non-negative
  *   2. array range   — boundary index exists in the price-sorted slot space
  *      (the same sort used by promotion/`getSlotCorrectType`)
- *   3. crossed book  — among PLACED orders, the highest boundary-classified
+ *   3. sell-rail ceiling — boundary may not exceed the shared writer ceiling
+ *      `[0, N−gapSlots−1]`. Both boundary writers (calculateFundDrivenBoundary
+ *      and the fill-driven deriveTargetBoundary) clamp to that window; a
+ *      proposal past it could only come from a legacy persisted snapshot or a
+ *      buggy future writer, and would self-legalize zero-SELL geometry via
+ *      resolveGapBand() on the next cycle.
+ *   4. crossed book  — among PLACED orders, the highest boundary-classified
  *      BUY must price strictly below the lowest implied-SELL.  Placed prices
  *      do not depend on the boundary, so this detects an overrun regardless
  *      of which writer produced it.
@@ -1347,6 +1353,19 @@ function validateBoundaryCommit(
     const maxIdx = sorted.length - 1;
     if (raw > maxIdx) {
         return { ok: false, reason: 'boundary_out_of_range', detail: `proposed=${raw} maxIdx=${maxIdx}` };
+    }
+
+    // Sell-rail ceiling: align the gate with the shared writer window
+    // [0, N−gapSlots−1]. Skipped for degenerate geometries (fewer slots than
+    // the gap band needs), where no boundary satisfies it and legacy behavior
+    // applies.
+    const sellRailCeiling = maxIdx - gapSlots;
+    if (sellRailCeiling >= 0 && raw > sellRailCeiling) {
+        return {
+            ok: false,
+            reason: 'sell_rail_ceiling_exceeded',
+            detail: `proposed=${raw} maxAllowed=${sellRailCeiling} slots=${sorted.length} gapSlots=${gapSlots}`
+        };
     }
 
     const sellStart = raw + gapSlots + 1;
