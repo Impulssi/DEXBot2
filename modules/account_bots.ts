@@ -32,6 +32,8 @@
  *   loadGeneralSettings, saveGeneralSettings, isMultiplierString,
  *   colorPriceRangeValue, colorMultiplierInput,
  *   isPercentageString, colorPercentageInput,
+ *   isDynamicPriceSource, colorStartPriceValue, colorGridPriceValue,
+ *   colorBooleanFlag,
  *   normalizePercentageInput, promptBotData, promptGeneralSettings
  *
  * ===============================================================================
@@ -92,6 +94,7 @@ import { parseJsonWithComments } from './order/utils/system.js';
 import { assertNoDuplicateBotKeys, loadSettingsFile } from './bot_settings.js';
 import { mergeSettings } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
+import { roundToDecimals } from './order/utils/math.js';
 const storage = getStorage();
 const { writeJSON } = storage;
 
@@ -478,6 +481,68 @@ function colorPriceRangeValue(value: any): string {
 }
 
 /**
+ * Checks if a value is a dynamic price source ("pool", "book", or an AMA
+ * keyword such as "ama" / "ama1".."ama4").
+ * @param {*} value - The value to check.
+ * @returns {boolean} True if it is a dynamic price source string.
+ */
+function isDynamicPriceSource(value: any): boolean {
+    if (typeof value !== 'string') return false;
+    const lower = value.trim().toLowerCase();
+    return lower === 'pool' || lower === 'book' || /^ama(?:[1-4])?$/.test(lower);
+}
+
+/**
+ * Colors a start-price value for display: green when it is a dynamic source
+ * ("pool"/"book"), red when it is a fixed numeric price (no live rescaling).
+ * Used for live input feedback: turns green the moment a source keyword is typed.
+ * @param {*} value - The start price value to color.
+ * @returns {string} ANSI-colored value string.
+ */
+function colorStartPriceValue(value: any): string {
+    const text = String(value ?? '');
+    if (isDynamicPriceSource(text)) return `\x1b[92m${text}\x1b[0m`;
+    return `\x1b[38;5;160m${text}\x1b[0m`;
+}
+
+/**
+ * Colors a grid-price value for display: green for dynamic sources
+ * ("pool"/"book"/AMA keywords), red for fixed numeric references. A null
+ * gridPrice delegates to startPrice, so the "startPrice" label inherits the
+ * start-price coloring.
+ * @param {*} value - The grid price value to color.
+ * @param {*} [startPrice] - The bot's current startPrice for null resolution.
+ * @returns {string} ANSI-colored value string.
+ */
+function colorGridPriceValue(value: any, startPrice?: any): string {
+    if (value === null || value === undefined) {
+        const label = isDynamicPriceSource(startPrice)
+            ? `\x1b[92mstartPrice\x1b[0m`
+            : `\x1b[38;5;160mstartPrice\x1b[0m`;
+        return label;
+    }
+    const text = String(value);
+    if (isDynamicPriceSource(text)) return `\x1b[92m${text}\x1b[0m`;
+    return `\x1b[38;5;160m${text}\x1b[0m`;
+}
+
+/**
+ * Colors a boolean flag value for display: green when the flag is in its
+ * healthy state, red when it is not.
+ * @param {*} value - The boolean value to color.
+ * @param {boolean} greenWhenTrue - True when `true` is the healthy state
+ *                                   (e.g. Active), false when `false` is
+ *                                   healthy (e.g. DryRun off).
+ * @returns {string} ANSI-colored "true"/"false" string.
+ */
+function colorBooleanFlag(value: any, greenWhenTrue: boolean): string {
+    const isTrue = !!value;
+    const healthy = greenWhenTrue ? isTrue : !isTrue;
+    const text = String(isTrue);
+    return healthy ? `\x1b[92m${text}\x1b[0m` : `\x1b[38;5;160m${text}\x1b[0m`;
+}
+
+/**
  * Converts a cron string to a readable format (days delta and time).
  * Only supports simple daily/multi-day patterns like "0 0 * /N * *".
  * @param {string} cron
@@ -549,6 +614,8 @@ async function askNumberWithBounds(promptText: string, defaultValue?: any, minVa
 
 /**
  * Prompts the user for the target spread percentage.
+ * Values are rounded to two decimal places: the displayed minimum, the
+ * validation threshold, and the returned value all share cent precision.
  * @param {string} promptText - The prompt text to display.
  * @param {number} [defaultValue] - The default value to use if input is empty.
  * @param {number} incrementPercent - The grid increment percentage.
@@ -558,9 +625,9 @@ async function askNumberWithBounds(promptText: string, defaultValue?: any, minVa
 async function askTargetSpreadPercent(promptText: string, defaultValue?: any, incrementPercent: number = 0, minSpreadFactor: number = GRID_LIMITS.MIN_SPREAD_FACTOR): Promise<any> {
     const safeIncrement = Number.isFinite(incrementPercent) ? incrementPercent : 0;
     const safeMinSpreadFactor = Number.isFinite(minSpreadFactor) ? minSpreadFactor : GRID_LIMITS.MIN_SPREAD_FACTOR;
-    const minRequired = safeIncrement * safeMinSpreadFactor;
-    const minRequiredLabel = minRequired.toFixed(6);
-    const effectiveDefault = Number.isFinite(defaultValue) ? Math.max(defaultValue, minRequired) : defaultValue;
+    const minRequired = roundToDecimals(safeIncrement * safeMinSpreadFactor, 2);
+    const minRequiredLabel = minRequired.toFixed(2);
+    const effectiveDefault = Number.isFinite(defaultValue) ? Math.max(roundToDecimals(defaultValue, 2), minRequired) : defaultValue;
     const suffix = effectiveDefault !== undefined && effectiveDefault !== null ? ` [${effectiveDefault.toFixed(2)}]` : '';
     const raw = (await readInput(`${promptText} (>= ${minRequiredLabel})${suffix}: `)).trim();
     if (raw === '\x1b') return '\x1b';
@@ -585,7 +652,7 @@ async function askTargetSpreadPercent(promptText: string, defaultValue?: any, in
         console.log(`Invalid ${promptText}: ${parsed}. Cannot be negative`);
         return askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor);
     }
-    return parsed;
+    return roundToDecimals(parsed, 2);
 }
 
 /**
@@ -749,8 +816,10 @@ async function askBoolean(promptText: string, defaultValue?: any): Promise<any> 
  */
 async function askStartPrice(promptText: string, defaultValue?: any): Promise<any> {
     while (true) {
-        const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
-        const raw = (await readInput(`${promptText}${suffix}: `)).trim();
+        const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${colorStartPriceValue(defaultValue)}]` : '';
+        const raw = (await readInput(`${promptText}${suffix}: `, {
+            colorize: (input: string) => colorStartPriceValue(input)
+        })).trim();
 
         if (raw === '\x1b') return '\x1b';
 
@@ -808,12 +877,18 @@ async function askPoolRef(promptText: string, currentValue?: string | null | und
  * Prompts the user for the grid price mode (pool, book, ama, numeric, or startprice).
  * @param {string} promptText - The prompt text to display.
  * @param {string} [defaultValue] - The default value to use if input is empty.
+ * @param {*} [startPrice] - The bot's current startPrice, used to color the
+ *                           "startPrice" default label when gridPrice is null.
  * @returns {Promise<string>} The grid price mode or '\x1b' if ESC.
  */
-async function askGridPriceMode(promptText: string, defaultValue?: any): Promise<any> {
+async function askGridPriceMode(promptText: string, defaultValue?: any, startPrice?: any): Promise<any> {
     while (true) {
-        const shownDefault = defaultValue === null || defaultValue === undefined ? 'startPrice' : defaultValue;
-        const raw = (await readInput(`${promptText} [${shownDefault}]: `)).trim();
+        const coloredDefault = defaultValue === null || defaultValue === undefined
+            ? colorGridPriceValue(null, startPrice)
+            : colorGridPriceValue(defaultValue);
+        const raw = (await readInput(`${promptText} [${coloredDefault}]: `, {
+            colorize: (input: string) => colorGridPriceValue(input)
+        })).trim();
         if (raw === '\x1b') return '\x1b';
         if (!raw) return defaultValue === undefined ? null : defaultValue;
 
@@ -872,8 +947,8 @@ async function promptBotData(base = {}) {
         if (showMenu) {
              console.log('\n\x1b[1m--- Bot Editor: ' + (data.name || 'New Bot') + ' ---\x1b[0m');
              console.log(`\x1b[1;33m1) Pair:\x1b[0m       \x1b[1;31m${data.assetA || '?'} / ${data.assetB || '?'} \x1b[0m`);
-             console.log(`\x1b[1;33m2) Identity:\x1b[0m   \x1b[38;5;208mName:\x1b[0m ${data.name || '?'} , \x1b[38;5;208mAccount:\x1b[0m ${data.preferredAccount || '?'} , \x1b[38;5;208mActive:\x1b[0m ${data.active}, \x1b[38;5;208mDryRun:\x1b[0m ${data.dryRun}`);
-             console.log(`\x1b[1;33m3) Price:\x1b[0m      \x1b[38;5;208mRange:\x1b[0m [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], \x1b[38;5;208mStart:\x1b[0m ${data.startPrice}, \x1b[38;5;208mPool:\x1b[0m ${data.poolRef || 'none'}, \x1b[38;5;208mGridPrice:\x1b[0m ${data.gridPrice === null ? 'startPrice' : data.gridPrice}`);
+             console.log(`\x1b[1;33m2) Identity:\x1b[0m   \x1b[38;5;208mName:\x1b[0m ${data.name || '?'} , \x1b[38;5;208mAccount:\x1b[0m ${data.preferredAccount || '?'} , \x1b[38;5;208mActive:\x1b[0m ${colorBooleanFlag(data.active, true)}, \x1b[38;5;208mDryRun:\x1b[0m ${colorBooleanFlag(data.dryRun, false)}`);
+             console.log(`\x1b[1;33m3) Price:\x1b[0m      \x1b[38;5;208mRange:\x1b[0m [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], \x1b[38;5;208mStart:\x1b[0m ${colorStartPriceValue(data.startPrice)}, \x1b[38;5;208mPool:\x1b[0m ${data.poolRef || 'none'}, \x1b[38;5;208mGridPrice:\x1b[0m ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
              console.log(`\x1b[1;33m4) Grid:\x1b[0m       \x1b[38;5;208mWeights:\x1b[0m (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), \x1b[38;5;208mIncr:\x1b[0m ${data.incrementPercent}%, \x1b[38;5;208mSpread:\x1b[0m ${data.targetSpreadPercent}%`);
              console.log(`\x1b[1;33m5) Funding:\x1b[0m    \x1b[38;5;208mSell:\x1b[0m ${colorPercentageInput(data.botFunds.sell)}, \x1b[38;5;208mBuy:\x1b[0m ${colorPercentageInput(data.botFunds.buy)} | \x1b[38;5;208mOrders:\x1b[0m (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
              console.log('--------------------------------------------------');
@@ -926,7 +1001,7 @@ async function promptBotData(base = {}) {
                 if (startP === '\x1b') break;
                 const poolR = await askPoolRef('poolRef (pinned pool ID for pool price)', data.poolRef);
                 if (poolR === '\x1b') break;
-                const gp = await askGridPriceMode('gridPrice (pool/book/ama/number/none)', data.gridPrice);
+                const gp = await askGridPriceMode('gridPrice (pool/book/ama/number/none)', data.gridPrice, data.startPrice);
                 if (gp === '\x1b') break;
                 data.minPrice = minP;
                 data.maxPrice = maxP;
@@ -981,9 +1056,9 @@ async function promptBotData(base = {}) {
                     const spreadFactor = Number.isFinite(currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR)
                         ? currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR
                         : GRID_LIMITS.MIN_SPREAD_FACTOR;
-                    const minRequiredSpread = data.incrementPercent * spreadFactor;
+                    const minRequiredSpread = roundToDecimals(data.incrementPercent * spreadFactor, 2);
                     if (data.targetSpreadPercent + Number.EPSILON < minRequiredSpread) {
-                        console.log(`\x1b[38;5;160mError: targetSpreadPercent (${data.targetSpreadPercent}) must be >= ${spreadFactor}x incrementPercent (${minRequiredSpread.toFixed(6)}).\x1b[0m`);
+                        console.log(`\x1b[38;5;160mError: targetSpreadPercent (${data.targetSpreadPercent}) must be >= ${spreadFactor}x incrementPercent (${minRequiredSpread.toFixed(2)}).\x1b[0m`);
                         break;
                     }
                 }
