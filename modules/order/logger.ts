@@ -427,7 +427,7 @@ class Logger {
         const reset = c.reset;
 
         const output = `Funds${headerContext}: ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`;
-        this.log(output.replace(/\x1b\[[0-9;]*m/g, ''), 'info');
+        this.log(output, 'info');
 
         if (isDebugMode && isCriticalEvent && this.config.display?.fundStatus?.showDetailed) {
             this._logDetailedFunds(manager, headerContext);

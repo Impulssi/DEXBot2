@@ -103,14 +103,6 @@ function formatSizeByOrderType(value: number, orderType: string, assets: { asset
 	return formatAmountByPrecision(value, precision);
 }
 
-/**
- * Format an amount with strict precision validation.
- * Returns 'N/A' if value or precision is invalid.
- * 
- * @param {*} value - Value to format
- * @param {number} precision - Decimal precision
- * @returns {string} Formatted amount or 'N/A'
- */
 // ===============================================================================
 // SECTION 2: PRICE FORMATTING
 // ===============================================================================

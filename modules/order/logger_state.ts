@@ -1,7 +1,5 @@
 'use strict';
 
-import { GRID_LIMITS } from '../constants.js';
-
 /**
  * modules/order/logger_state.ts - Logger State Manager
  *
@@ -25,7 +23,7 @@ import { GRID_LIMITS } from '../constants.js';
  * ===============================================================================
  *
  * INITIALIZATION (1 method)
- *   1. constructor() - Create new LoggerState with empty previousState and changeHistory
+ *   1. constructor() - Create new LoggerState with empty previousState
  *      Initializes tracking for: funds, orders, fills, boundary, errors
  *
  * CHANGE DETECTION (1 method)
@@ -52,11 +50,6 @@ import { GRID_LIMITS } from '../constants.js';
  * 3. _deepDiff: Recursively compares all keys, detects additions/deletions
  * 4. Returns: { isNew: false, changes: { key: { from, to } } }
  *
- * CHANGE HISTORY:
- * - Stores up to 100 recent changes (FIFO circular buffer)
- * - Each entry: { timestamp, category, type, data }
- * - Enables audit trails and debugging of state transitions
- *
  * ===============================================================================
  *
  * @class
@@ -64,8 +57,6 @@ import { GRID_LIMITS } from '../constants.js';
 
 class LoggerState {
     previousState: Record<string, any>;
-    changeHistory: Array<{ timestamp: number; category: string; type: string; data: any }>;
-    maxHistory: number;
 
     constructor() {
         this.previousState = {
@@ -75,8 +66,6 @@ class LoggerState {
             boundary: null,
             errors: null
         };
-        this.changeHistory = [];
-        this.maxHistory = GRID_LIMITS.STATE_CHANGE_HISTORY_MAX;
     }
 
     /**

@@ -526,11 +526,6 @@ let GRID_LIMITS = {
         RMS_PERCENTAGE: 14.3
     },
 
-    // STATE_CHANGE_HISTORY_MAX: Maximum number of state changes to retain in circular buffer.
-    // Used by StateChangeLogger (modules/order/logger_state.ts) for tracking recent
-    // grid/fund mutations. Default: 100 entries (balances memory usage with debugging utility).
-    STATE_CHANGE_HISTORY_MAX: 100,
-
     // RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT: Relative threshold for in-memory
     // order equality checks in COW delta planning.
     // Example: 0.1 means two values are considered equal when diff < 0.1% of magnitude.
