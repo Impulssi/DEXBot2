@@ -585,7 +585,11 @@ function getConnectionStatus() {
  * @returns {Promise<void>}
  */
 async function disconnectClient() {
-    ensureInitialized();
+    // Nothing to tear down if the client was never initialized. Calling
+    // ensureInitialized() here would lazily create the whole client stack
+    // (including the "Loaded config for N nodes" log) just to immediately
+    // discard it — e.g. `dexbot bot` after an idle bot-manager session.
+    if (!_initialized) return;
     intentionalDisconnect = true;
     connected = false;
     try {
