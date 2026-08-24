@@ -101,6 +101,21 @@ const { writeJSON } = storage;
 
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
+const COLORS = {
+    reset: '\x1b[0m',
+    bold: '\x1b[1m',
+    white: '\x1b[97m',
+    gray: '\x1b[38;5;250m',
+    blue: '\x1b[38;5;39m',
+    cyan: '\x1b[38;5;45m',
+    orange: '\x1b[38;5;208m',
+    yellow: '\x1b[33m',
+    yellowBold: '\x1b[1;33m',
+    green: '\x1b[92m',
+    greenBold: '\x1b[1;32m',
+    red: '\x1b[1;31m',
+    redStrong: '\x1b[38;5;196m'
+};
 
 /**
  * Loads the bots configuration from profiles/bots.json.
@@ -386,7 +401,7 @@ async function askAssetB(promptText: string, defaultValue?: any, assetA?: string
 async function askWeightDistribution(promptText: string, defaultValue?: any): Promise<any> {
     const MIN_WEIGHT = -1;
     const MAX_WEIGHT = 2;
-    console.log('  \x1b[38;5;45m-1=SuperValley\x1b[0m ←→ \x1b[38;5;39m0=Valley\x1b[0m ←→ \x1b[38;5;250m0.5=Neutral\x1b[0m ←→ \x1b[38;5;208m1=Mountain\x1b[0m ←→ \x1b[38;5;196m2=SuperMountain\x1b[0m');
+    console.log(`  ${COLORS.cyan}-1=SuperValley${COLORS.reset} ←→ ${COLORS.blue}0=Valley${COLORS.reset} ←→ ${COLORS.gray}0.5=Neutral${COLORS.reset} ←→ ${COLORS.orange}1=Mountain${COLORS.reset} ←→ ${COLORS.redStrong}2=SuperMountain${COLORS.reset}`);
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
     if (raw === '\x1b') return '\x1b';
@@ -445,8 +460,8 @@ function isMultiplierString(value: any): boolean {
  * @returns {string} ANSI-colored value string.
  */
 function colorMultiplierInput(value: string): string {
-    if (isMultiplierString(value)) return `\x1b[92m${value}\x1b[0m`;
-    return `\x1b[38;5;160m${value}\x1b[0m`;
+    if (isMultiplierString(value)) return `${COLORS.green}${value}${COLORS.reset}`;
+    return `${COLORS.red}${value}${COLORS.reset}`;
 }
 
 /**
@@ -466,8 +481,8 @@ function isPercentageString(value: any): boolean {
  * @returns {string} ANSI-colored value string.
  */
 function colorPercentageInput(value: any): string {
-    if (isPercentageString(value)) return `\x1b[92m${value}\x1b[0m`;
-    return `\x1b[38;5;160m${value}\x1b[0m`;
+    if (isPercentageString(value)) return `${COLORS.green}${value}${COLORS.reset}`;
+    return `${COLORS.red}${value}${COLORS.reset}`;
 }
 
 /**
@@ -501,8 +516,8 @@ function isDynamicPriceSource(value: any): boolean {
  */
 function colorStartPriceValue(value: any): string {
     const text = String(value ?? '');
-    if (isDynamicPriceSource(text)) return `\x1b[92m${text}\x1b[0m`;
-    return `\x1b[38;5;160m${text}\x1b[0m`;
+    if (isDynamicPriceSource(text)) return `${COLORS.green}${text}${COLORS.reset}`;
+    return `${COLORS.red}${text}${COLORS.reset}`;
 }
 
 /**
@@ -517,13 +532,13 @@ function colorStartPriceValue(value: any): string {
 function colorGridPriceValue(value: any, startPrice?: any): string {
     if (value === null || value === undefined) {
         const label = isDynamicPriceSource(startPrice)
-            ? `\x1b[92mstartPrice\x1b[0m`
-            : `\x1b[38;5;160mstartPrice\x1b[0m`;
+            ? `${COLORS.green}startPrice${COLORS.reset}`
+            : `${COLORS.red}startPrice${COLORS.reset}`;
         return label;
     }
     const text = String(value);
-    if (isDynamicPriceSource(text)) return `\x1b[92m${text}\x1b[0m`;
-    return `\x1b[38;5;160m${text}\x1b[0m`;
+    if (isDynamicPriceSource(text)) return `${COLORS.green}${text}${COLORS.reset}`;
+    return `${COLORS.red}${text}${COLORS.reset}`;
 }
 
 /**
@@ -539,7 +554,7 @@ function colorBooleanFlag(value: any, greenWhenTrue: boolean): string {
     const isTrue = !!value;
     const healthy = greenWhenTrue ? isTrue : !isTrue;
     const text = String(isTrue);
-    return healthy ? `\x1b[92m${text}\x1b[0m` : `\x1b[38;5;160m${text}\x1b[0m`;
+    return healthy ? `${COLORS.green}${text}${COLORS.reset}` : `${COLORS.red}${text}${COLORS.reset}`;
 }
 
 /**
@@ -945,15 +960,15 @@ async function promptBotData(base = {}) {
 
     while (!finished) {
         if (showMenu) {
-             console.log('\n\x1b[1m--- Bot Editor: ' + (data.name || 'New Bot') + ' ---\x1b[0m');
-             console.log(`\x1b[1;33m1) Pair:\x1b[0m       \x1b[1;31m${data.assetA || '?'} / ${data.assetB || '?'} \x1b[0m`);
-             console.log(`\x1b[1;33m2) Identity:\x1b[0m   \x1b[38;5;208mName:\x1b[0m ${data.name || '?'} , \x1b[38;5;208mAccount:\x1b[0m ${data.preferredAccount || '?'} , \x1b[38;5;208mActive:\x1b[0m ${colorBooleanFlag(data.active, true)}, \x1b[38;5;208mDryRun:\x1b[0m ${colorBooleanFlag(data.dryRun, false)}`);
-             console.log(`\x1b[1;33m3) Price:\x1b[0m      \x1b[38;5;208mRange:\x1b[0m [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], \x1b[38;5;208mStart:\x1b[0m ${colorStartPriceValue(data.startPrice)}, \x1b[38;5;208mPool:\x1b[0m ${data.poolRef || 'none'}, \x1b[38;5;208mGridPrice:\x1b[0m ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
-             console.log(`\x1b[1;33m4) Grid:\x1b[0m       \x1b[38;5;208mWeights:\x1b[0m (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), \x1b[38;5;208mIncr:\x1b[0m ${data.incrementPercent}%, \x1b[38;5;208mSpread:\x1b[0m ${data.targetSpreadPercent}%`);
-             console.log(`\x1b[1;33m5) Funding:\x1b[0m    \x1b[38;5;208mSell:\x1b[0m ${colorPercentageInput(data.botFunds.sell)}, \x1b[38;5;208mBuy:\x1b[0m ${colorPercentageInput(data.botFunds.buy)} | \x1b[38;5;208mOrders:\x1b[0m (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
+             console.log(`\n${COLORS.bold}--- Bot Editor: ` + (data.name || 'New Bot') + ` ---${COLORS.reset}`);
+             console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.red}${data.assetA || '?'} / ${data.assetB || '?'} ${COLORS.reset}`);
+             console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} , ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} , ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
+             console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
+             console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
+             console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
              console.log('--------------------------------------------------');
-             console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
-             console.log('\x1b[97mC) Cancel (Discard changes)\x1b[0m');
+             console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
+             console.log(`${COLORS.white}C) Cancel (Discard changes)${COLORS.reset}`);
             showMenu = false;
         }
 
@@ -1048,7 +1063,7 @@ async function promptBotData(base = {}) {
             case 's':
                 // Final basic validation before saving
                 if (!data.name || !data.assetA || !data.assetB || !data.preferredAccount) {
-                    console.log('\x1b[38;5;160mError: Name, Pair, and Account are required before saving.\x1b[0m');
+                    console.log(`${COLORS.red}Error: Name, Pair, and Account are required before saving.${COLORS.reset}`);
                     break;
                 }
                 {
@@ -1058,7 +1073,7 @@ async function promptBotData(base = {}) {
                         : GRID_LIMITS.MIN_SPREAD_FACTOR;
                     const minRequiredSpread = roundToDecimals(data.incrementPercent * spreadFactor, 2);
                     if (data.targetSpreadPercent + Number.EPSILON < minRequiredSpread) {
-                        console.log(`\x1b[38;5;160mError: targetSpreadPercent (${data.targetSpreadPercent}) must be >= ${spreadFactor}x incrementPercent (${minRequiredSpread.toFixed(2)}).\x1b[0m`);
+                        console.log(`${COLORS.red}Error: targetSpreadPercent (${data.targetSpreadPercent}) must be >= ${spreadFactor}x incrementPercent (${minRequiredSpread.toFixed(2)}).${COLORS.reset}`);
                         break;
                     }
                 }
@@ -1091,20 +1106,20 @@ async function promptGeneralSettings() {
     let finished = false;
 
      while (!finished) {
-          console.log('\x1b[1m--- General Settings (Global) ---\x1b[0m');
-          console.log(`\x1b[1;33m1) Grid Health:\x1b[0m   \x1b[38;5;208mRatio:\x1b[0m ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, \x1b[38;5;208mRMS:\x1b[0m ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, \x1b[38;5;208mAMA Delta:\x1b[0m ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%`);
-          console.log(`\x1b[1;33m2) Order Recovery:\x1b[0m \x1b[38;5;208mDust Threshold:\x1b[0m ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
+          console.log(`${COLORS.bold}--- General Settings (Global) ---${COLORS.reset}`);
+          console.log(`${COLORS.yellowBold}1) Grid Health:${COLORS.reset}   ${COLORS.orange}Ratio:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, ${COLORS.orange}AMA Delta:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%`);
+          console.log(`${COLORS.yellowBold}2) Order Recovery:${COLORS.reset} ${COLORS.orange}Dust Threshold:${COLORS.reset} ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
           const nodeCount = (settings.NODES.list || []).length;
           const hcIntervalMin = ((settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000).toFixed(0);
           const prefNodeDisplay = settings.NODES.selection?.preferredNode || 'none';
-          console.log(`\x1b[1;33m3) Node Config:\x1b[0m \x1b[38;5;208mNodes:\x1b[0m ${nodeCount}, \x1b[38;5;208mHealthChk:\x1b[0m ${hcIntervalMin}min, \x1b[38;5;208mPrefNode:\x1b[0m ${prefNodeDisplay}`);
-          console.log(`\x1b[1;33m4) Log lvl:\x1b[0m      \x1b[38;5;208m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
-          const updaterStatus = settings.UPDATER.ACTIVE ? `\x1b[92mON\x1b[0m` : `\x1b[38;5;160mOFF\x1b[0m`;
+          console.log(`${COLORS.yellowBold}3) Node Config:${COLORS.reset} ${COLORS.orange}Nodes:${COLORS.reset} ${nodeCount}, ${COLORS.orange}HealthChk:${COLORS.reset} ${hcIntervalMin}min, ${COLORS.orange}PrefNode:${COLORS.reset} ${prefNodeDisplay}`);
+          console.log(`${COLORS.yellowBold}4) Log lvl:${COLORS.reset}      ${COLORS.orange}${settings.LOG_LEVEL}${COLORS.reset} (debug, info, warn, error)`);
+          const updaterStatus = settings.UPDATER.ACTIVE ? `${COLORS.green}ON${COLORS.reset}` : `${COLORS.red}OFF${COLORS.reset}`;
           const currentSched = parseCronToDelta(settings.UPDATER.SCHEDULE || "0 0 * * *");
-          console.log(`\x1b[1;33m5) Updater:\x1b[0m      [${updaterStatus}] \x1b[38;5;208mBranch:\x1b[0m ${settings.UPDATER.BRANCH}, \x1b[38;5;208mInterval:\x1b[0m ${currentSched.days}d, \x1b[38;5;208mTime:\x1b[0m ${currentSched.time}`);
+          console.log(`${COLORS.yellowBold}5) Updater:${COLORS.reset}      [${updaterStatus}] ${COLORS.orange}Branch:${COLORS.reset} ${settings.UPDATER.BRANCH}, ${COLORS.orange}Interval:${COLORS.reset} ${currentSched.days}d, ${COLORS.orange}Time:${COLORS.reset} ${currentSched.time}`);
           console.log('--------------------------------------------------');
-          console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
-          console.log('\x1b[97mC) Cancel (Discard changes)\x1b[0m');
+          console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
+          console.log(`${COLORS.white}C) Cancel (Discard changes)${COLORS.reset}`);
 
          const choice = (await readInput('Select section to edit or action: ', {
               validate: (input: string) => ['1', '2', '3', '4', '5', 's', 'c'].includes(input)
@@ -1142,13 +1157,13 @@ async function promptGeneralSettings() {
                     let editorCancelled = false;
 
                     while (true) {
-                        console.log('\x1b[1m  === Node List Editor ===\x1b[0m');
+                        console.log(`  ${COLORS.bold}=== Node List Editor ===${COLORS.reset}`);
                         nodeList.forEach((node, i) => {
-                            console.log(`  \x1b[38;5;208m${i + 1})\x1b[0m ${node}`);
+                            console.log(`  ${COLORS.orange}${i + 1})${COLORS.reset} ${node}`);
                         });
-                        console.log('  \x1b[1;32mA) Add node\x1b[0m');
-                        console.log('  \x1b[1;31mR) Remove node\x1b[0m');
-                        console.log('  \x1b[1;33mD) Done\x1b[0m');
+                        console.log(`  ${COLORS.greenBold}A) Add node${COLORS.reset}`);
+                        console.log(`  ${COLORS.red}R) Remove node${COLORS.reset}`);
+                        console.log(`  ${COLORS.yellowBold}D) Done${COLORS.reset}`);
 
                         const nodeChoice = (await readInput('  Choice: ')).trim().toLowerCase();
                         if (nodeChoice === '\x1b') {
@@ -1161,17 +1176,17 @@ async function promptGeneralSettings() {
                             if (newNode === '\x1b') continue;
                             if (newNode && newNode.trim()) {
                                 nodeList.push(newNode.trim());
-                                console.log(`  \x1b[92mAdded.\x1b[0m Count: ${nodeList.length}`);
+                                console.log(`  ${COLORS.green}Added.${COLORS.reset} Count: ${nodeList.length}`);
                             }
                         } else if (nodeChoice === 'r') {
                             if (nodeList.length <= 1) {
-                                console.log('  \x1b[33mNeed at least one node. Add another first.\x1b[0m');
+                                console.log(`  ${COLORS.yellow}Need at least one node. Add another first.${COLORS.reset}`);
                                 continue;
                             }
                             const removeIdx = await askIntegerInRange('  Enter node number to remove', 1, 1, nodeList.length);
                             if (removeIdx === '\x1b') continue;
                             const removed = nodeList.splice(removeIdx - 1, 1)[0];
-                            console.log(`  \x1b[92mRemoved:\x1b[0m ${removed}`);
+                            console.log(`  ${COLORS.green}Removed:${COLORS.reset} ${removed}`);
                         } else if (nodeChoice === 'd') {
                             settings.NODES.list = nodeList;
                             break;
@@ -1201,7 +1216,7 @@ async function promptGeneralSettings() {
                 if (upActive === '\x1b') break;
                 settings.UPDATER.ACTIVE = upActive;
 
-                 console.log('  \x1b[38;5;250mBranch:\x1b[0m \x1b[92mmain\x1b[0m, \x1b[38;5;208mdev\x1b[0m, \x1b[38;5;160mtest\x1b[0m, or \x1b[38;5;39mauto\x1b[0m (detected current)');
+                 console.log(`  ${COLORS.gray}Branch:${COLORS.reset} ${COLORS.green}main${COLORS.reset}, ${COLORS.orange}dev${COLORS.reset}, ${COLORS.red}test${COLORS.reset}, or ${COLORS.blue}auto${COLORS.reset} (detected current)`);
                 const branch = await askUpdaterBranch('Branch', settings.UPDATER.BRANCH);
                 if (branch === '\x1b') break;
 
