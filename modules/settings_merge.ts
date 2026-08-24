@@ -153,7 +153,9 @@ function mergeSettings(raw: any, defaults: Record<string, any>): Record<string, 
                     ? { ...defaultVal }
                     : defaultVal;
                 result[key] = typeof base === 'object' && base !== null && !Array.isArray(base)
-                    ? { ...base, ...cleanRaw }
+                    ? (typeof cleanRaw === 'object' && cleanRaw !== null && !Array.isArray(cleanRaw)
+                        ? { ...base, ...cleanRaw }
+                        : base)
                     : cleanRaw;
                 break;
             }

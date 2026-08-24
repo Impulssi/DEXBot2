@@ -258,17 +258,6 @@ class ProcessedFillStore {
     }
 
     /**
-     * Discard pending writes for specific fill keys from the queue.
-     * @param {string[]|Set<string>} fillKeys - Fill keys to discard
-     */
-    discardKeys(fillKeys: string[] | Set<string>): void {
-        const keySet = fillKeys instanceof Set ? fillKeys : new Set(fillKeys || []);
-        for (const fillKey of keySet) {
-            if (fillKey) this.pendingWrites.delete(fillKey);
-        }
-    }
-
-    /**
      * Queue a fill key for batched persistence.
      * @param {string} fillKey - Fill deduplication key
      * @param {number} timestamp - Processing timestamp
@@ -284,7 +273,7 @@ class ProcessedFillStore {
 
         if (!schedule) return;
 
-        if ((this.pendingWrites?.size ?? 0) >= (this._batchSize ?? 0)) {
+        if (this._batchSize !== undefined && this.pendingWrites.size >= this._batchSize) {
             void this.flush('batch-size');
             return;
         }

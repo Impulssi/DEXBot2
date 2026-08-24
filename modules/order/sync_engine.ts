@@ -1328,6 +1328,7 @@ class SyncEngine {
         // The guard is lowered before the final consolidated recalc so the
         // settled (re-anchored) state is still verified.
         mgr._fillBatchInFlight = (mgr._fillBatchInFlight ?? 0) + 1;
+        let fillGuardLowered = false;
 
         try {
             const totalsGate = await mgr.refreshAccountTotalsIfStale();
@@ -1446,6 +1447,7 @@ class SyncEngine {
                 } finally {
                     // Lower the guard before the final consolidated recalc so the
                     // settled (re-anchored) state is still verified.
+                    fillGuardLowered = true;
                     mgr._fillBatchInFlight = Math.max(0, (mgr._fillBatchInFlight ?? 0) - 1);
                     await mgr.resumeFundRecalc();
                 }
@@ -1455,7 +1457,9 @@ class SyncEngine {
         } finally {
             // Safety net: ensure the guard never leaks across cycles on early
             // returns (deferral) or exceptions in the refresh/lock region.
-            if ((mgr._fillBatchInFlight ?? 0) > 0) mgr._fillBatchInFlight--;
+            // Skipped when the inner finally already lowered it for this
+            // invocation so concurrent batches cannot zero each other's count.
+            if (!fillGuardLowered && (mgr._fillBatchInFlight ?? 0) > 0) mgr._fillBatchInFlight--;
         }
     }
 
@@ -1525,6 +1529,7 @@ class SyncEngine {
         // before the final consolidated recalc so the settled state is still
         // verified.
         mgr._fillBatchInFlight = (mgr._fillBatchInFlight ?? 0) + 1;
+        let fillGuardLowered = false;
 
         try {
             const totalsGate = await mgr.refreshAccountTotalsIfStale();
@@ -1750,6 +1755,7 @@ class SyncEngine {
                 } finally {
                     // Lower the guard before the final consolidated recalc so the
                     // settled (re-anchored) state is still verified.
+                    fillGuardLowered = true;
                     mgr._fillBatchInFlight = Math.max(0, (mgr._fillBatchInFlight ?? 0) - 1);
                     await mgr.resumeFundRecalc();
                 }
@@ -1759,7 +1765,9 @@ class SyncEngine {
         } finally {
             // Safety net: ensure the guard never leaks across cycles on early
             // returns (deferral) or exceptions in the refresh/lock region.
-            if ((mgr._fillBatchInFlight ?? 0) > 0) mgr._fillBatchInFlight--;
+            // Skipped when the inner finally already lowered it for this
+            // invocation so concurrent batches cannot zero each other's count.
+            if (!fillGuardLowered && (mgr._fillBatchInFlight ?? 0) > 0) mgr._fillBatchInFlight--;
         }
     }
 
@@ -1817,7 +1825,6 @@ class SyncEngine {
         if (!mgr.assets) return { newOrders: [], ordersNeedingCorrection: [] };
 
         switch (source) {
-            // ... [existing cases: createOrder, cancelOrder] ...
             case 'createOrder': {
                 const { gridOrderId, chainOrderId, isPartialPlacement, expectedType, fee } = chainData;
                 const runCreate = async () => {

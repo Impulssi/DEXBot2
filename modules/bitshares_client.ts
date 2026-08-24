@@ -29,7 +29,7 @@
  * 11. getConnectionError() - Get last connection error
  * 12. onReconnect(callback) - Register reconnect callback
  * 13. onReconnect(callback) - Register reconnect callback
- * 14. withTimeout(promise, timeoutMs) - Wrap promise with timeout
+ * 14. withTimeout(promise, timeoutMs, options) - Wrap promise with timeout (re-exported from order/utils/timeout.js)
  * 15. _assessFailover() - Internal failover assessment
  * 16. _internal - @internal Internal state (connected flag) — test-only, do not rely on in production
  * ===============================================================================
@@ -40,6 +40,7 @@ import { TIMING, NODE_MANAGEMENT, NATIVE_CLIENT } from './constants.js';
 import NodeManager from './node_manager.js';
 import { readGeneralSettings } from './general_settings.js';
 import { sleep } from './order/utils/system.js';
+import { withTimeout } from './order/utils/timeout.js';
 import Logger from './order/logger.js';
 import * as native from './bitshares-native/index.js';
 import { createSigningClient } from './bitshares-native/index.js';
@@ -105,34 +106,6 @@ let _resolvers: any = null;
 // connect attempt with the current generation and, on resolution, drop
 // the result and force a disconnect if the generation has moved on.
 let _connectGeneration = 0;
-
-/**
- * Race a promise against a timeout, with two safety guarantees:
- *   1. The timer is always cleared on settle, so the timeout promise does not
- *      hold a ref to the event loop.
- *   2. The inner promise is observed even if the timeout wins the race, so a
- *      late rejection cannot become an unhandledRejection (which would tear
- *      the process down via graceful_shutdown.ts).
- * @param {Promise<any>} inner The underlying call to bound.
- * @param {number} timeoutMs Max time to wait before rejecting with a timeout error.
- * @param {string} label Short label used in the timeout error message.
- * @returns {Promise<any>}
- */
-function withTimeout(inner: any, timeoutMs: any, label: any) {
-    let timer: any;
-    const timeout = new Promise((_: any, reject: any) => {
-        timer = setTimeout(
-            () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
-            timeoutMs
-        );
-    });
-    // Attach a no-op rejection handler to the inner promise so that a late
-    // rejection does not trigger process.on('unhandledRejection'). The race
-    // winner's rejection is what the caller observes; the late inner rejection
-    // is intentionally swallowed.
-    Promise.resolve(inner).catch(() => {});
-    return Promise.race([inner, timeout]).finally(() => clearTimeout(timer));
-}
 
 function ensureInitialized() {
     if (_initialized) return;
@@ -247,15 +220,18 @@ function ensureInitialized() {
         : [];
     nodeManagerEnabled = nodeSettings?.enabled ?? NODE_MANAGEMENT.DEFAULT_ENABLED;
 
+    const effectiveNodes = configuredNodes.length > 0 ? configuredNodes : NODE_MANAGEMENT.DEFAULT_NODES;
+    _nativeClient.setNodes(effectiveNodes.slice());
     if (nodeManagerEnabled) {
         nodeConfig = {
             ...nodeSettings,
             enabled: nodeManagerEnabled,
-            list: configuredNodes.length > 0 ? configuredNodes : NODE_MANAGEMENT.DEFAULT_NODES,
+            list: effectiveNodes,
         };
         nodeManager = new NodeManager(nodeConfig);
-        _nativeClient.setNodes(Array.isArray(nodeConfig.list) ? nodeConfig.list.slice() : nodeConfig.list);
         logger.info(`Loaded config for ${nodeConfig.list.length} nodes`);
+    } else {
+        logger.info(`Node management disabled; using ${effectiveNodes.length} configured node(s)`);
     }
 }
 
@@ -307,7 +283,7 @@ async function restartBitsharesConnection(serverList: any, reason: any = 'startu
             await withTimeout(
                 connectPromise,
                 TRANSPORT.CONNECT_TOTAL_TIMEOUT_MS,
-                'BitShares connection'
+                { label: 'BitShares connection' }
             );
         } catch (connectErr: any) {
             // The native connect() sweep continues in the background even
@@ -449,7 +425,6 @@ function handleConnectionStatus(status: any) {
 
     if (status === 'closed' || status === 'closing') {
         connected = false;
-        lastConnectionError = null;
     }
     if (status === 'closed' && canHandleFailover && !reconnectInProgress) {
         if (intentionalDisconnect) {
@@ -538,7 +513,12 @@ async function waitForConnected(timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS, o
         if (elapsedMs >= timeoutMs) break;
 
         if (nodeManagerEnabled && Date.now() >= nextNodeRefreshAt) {
-            await refreshStartupNodeServers(elapsedMs === 0 ? 'initial' : 'retry');
+            const remainingBeforeRefreshMs = timeoutMs - (Date.now() - start);
+            if (remainingBeforeRefreshMs <= 0) break;
+            await Promise.race([
+                refreshStartupNodeServers(elapsedMs === 0 ? 'initial' : 'retry'),
+                sleep(Math.max(0, remainingBeforeRefreshMs)),
+            ]);
             nextNodeRefreshAt = Date.now() + refreshNodesEveryMs;
         }
 

@@ -143,7 +143,11 @@ function _resolveMarketOverrides(botConfig: Record<string, any>): Record<string,
 
         if (Object.keys(overrides).length === 0) return null;
         return overrides;
-    } catch (_: any) {
+    } catch (err: any) {
+        console.warn(
+            `[runtime_settings] Failed to resolve market adapter overrides for bot "${botConfig?.name ?? 'unknown'}" ` +
+            `(${err?.message || err}); continuing with base settings only.`
+        );
         return null;
     }
 }

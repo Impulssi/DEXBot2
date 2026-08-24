@@ -194,6 +194,7 @@ async function recoverExplicitStaleOrders(bot: any, staleOrderIds: any, reason: 
     if (staleIds.length === 0) {
         return { executed: false, hadRotation: false, stale: false };
     }
+    const staleIdSet = new Set(staleIds);
 
     bot.manager.logger.log(
         `[COW] Stale order(s) detected: ${staleIds.join(', ')}. Applying targeted cleanup.`,
@@ -203,7 +204,7 @@ async function recoverExplicitStaleOrders(bot: any, staleOrderIds: any, reason: 
     const updates: any[] = [];
 
     for (const [, gridOrder] of bot.manager.orders.entries()) {
-        if (!gridOrder?.orderId || !staleOrderIds.has(gridOrder.orderId)) continue;
+        if (!gridOrder?.orderId || !staleIdSet.has(gridOrder.orderId)) continue;
         bot._staleCleanedOrderIds.set(gridOrder.orderId, Date.now());
         updates.push(convertToSpreadPlaceholder(gridOrder));
     }

@@ -31,7 +31,12 @@ function _loadRegistry(): any {
         } else {
             _registry = {};
         }
-    } catch (_err: any) {
+    } catch (err: any) {
+        console.error(
+            `[fund_registry] Failed to load ${REGISTRY_FILE} (${err?.message || err}); ` +
+            `resetting to an empty registry — previously registered bot allocations are unavailable ` +
+            `and will be overwritten on the next save. Restore the file from backup before restarting other bots.`
+        );
         _registry = {};
     }
     return _registry;
@@ -211,7 +216,7 @@ async function releaseAllocation(account: string, botName: string): Promise<void
                 }
             } else {
                 const pct = _parsePercentage(acc.bots[botName][side]);
-                acc.totalAllocatedPct[side] = (acc.totalAllocatedPct[side] || 0) - pct;
+                acc.totalAllocatedPct[side] = Math.max(0, (acc.totalAllocatedPct[side] || 0) - pct);
             }
         }
         delete acc.bots[botName];

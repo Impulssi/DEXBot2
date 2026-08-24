@@ -852,7 +852,7 @@ async function evaluatePolicy(policy: any, context: PolicyContext): Promise<{ al
                 const opName = op.op_name;
 
                 // Check if op type is allowed
-                if (!(opName in policy.allowedOps)) {
+                if (!Object.hasOwn(policy.allowedOps, String(opName))) {
                     return {
                         allow: false,
                         reason: `op type "${opName}" not permitted`,

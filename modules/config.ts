@@ -31,7 +31,9 @@ function strWithDefault(key: string, defaultValue: string): string {
 
 function num(key: string, defaultValue: number): number {
     const val = hasProcess() ? process.env[key] : undefined;
-    return val !== undefined ? Number(val) : defaultValue;
+    if (val === undefined || val === '') return defaultValue;
+    const parsed = Number(val);
+    return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
 function bool(key: string): boolean {

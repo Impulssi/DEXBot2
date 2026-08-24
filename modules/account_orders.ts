@@ -241,9 +241,17 @@ class AccountOrders {
       const parsed = storage.readJSON(filePath);
       if (typeof parsed === 'object' && parsed !== null) return parsed;
     } catch (err: any) {
-      if (err?.code !== 'ENOENT' && !(err instanceof SyntaxError)) {
-        accountOrdersLogger.warn(`Failed to read ${filePath} - ${getErrorMessage(err)}`);
+      if (err?.code === 'ENOENT') {
+        return null;
       }
+      if (err instanceof SyntaxError) {
+        accountOrdersLogger.warn(
+          `Corrupt profile file ${filePath} (${getErrorMessage(err)}); ` +
+          `starting from empty state — the next persist will overwrite it.`
+        );
+        return null;
+      }
+      accountOrdersLogger.warn(`Failed to read ${filePath} - ${getErrorMessage(err)}`);
     }
     return null;
   }

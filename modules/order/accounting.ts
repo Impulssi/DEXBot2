@@ -78,7 +78,7 @@
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
-import { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS } from '../constants.js';
+import { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS, GRID_LIMITS } from '../constants.js';
 import { resolveAccountRef } from './utils/system.js';
 import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order.js';
 import * as Format from './format.js';
@@ -519,7 +519,7 @@ class Accountant {
           }
           const precisionSlackBuy = getPrecisionSlack(buyPrecision);
          const precisionSlackSell = getPrecisionSlack(sellPrecision);
-          const PERCENT_TOLERANCE = (mgr.config?.gridLimits?.FUND_INVARIANT_PERCENT_TOLERANCE) / 100;
+          const PERCENT_TOLERANCE = (mgr.config?.gridLimits?.FUND_INVARIANT_PERCENT_TOLERANCE ?? GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE) / 100;
 
          // FIX 5: Widen tolerance when orphan fills were recently credited.
          // Orphan fill accounting adjusts mgr.accountTotals optimistically, but
