@@ -239,6 +239,20 @@ async function createMinimalBot(botKey = 'test-orphan-spiral') {
   // disabled here — this test exercises the fill pipeline, not maintenance.
   bot._runGridMaintenance = async () => {};
 
+  // This harness intentionally underfunds the seeded grid, so every fill
+  // batch fails fund validation by design (that skip-broadcast path is part
+  // of what the pipeline must survive). Mute those two expected warnings so
+  // they don't read as real failures in the run diagnostics.
+  const originalLog = bot.manager.logger.log.bind(bot.manager.logger);
+  bot.manager.logger.log = (msg: any, lvl: any) => {
+    const text = typeof msg === 'string' ? msg : String(msg);
+    if (text.includes('[VALIDATION] Fund validation FAILED') ||
+        text.includes('Skipping batch broadcast:')) {
+      return;
+    }
+    return originalLog(msg, lvl);
+  };
+
   return { bot, persistedFills };
 }
 

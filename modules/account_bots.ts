@@ -999,7 +999,7 @@ async function promptBotData(base = {}) {
                 if (maxP === '\x1b') break;
                 const startP = await askStartPrice('startPrice (pool, book or A/B)', data.startPrice);
                 if (startP === '\x1b') break;
-                const poolR = await askPoolRef('poolRef (pinned pool ID for pool price)', data.poolRef);
+                const poolR = await askPoolRef('poolRef (pinned pool ID for price source)', data.poolRef);
                 if (poolR === '\x1b') break;
                 const gp = await askGridPriceMode('gridPrice (pool/book/ama/number/none)', data.gridPrice, data.startPrice);
                 if (gp === '\x1b') break;

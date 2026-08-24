@@ -443,6 +443,19 @@ async function testSingleStaleCancelBatchUsesStaleOnlyFastPath() {
 
     const originalExecuteBatch = chainOrders.executeBatch;
     const originalBuildCancelOrderOp = chainOrders.buildCancelOrderOp;
+
+    // The injected stale-order failure cascades into expected ERROR logs:
+    // the batch broadcast fails with the injected error, then grid
+    // persistence fails (this harness has no storage backend). Mute both so
+    // the run diagnostics don't show them as real failures.
+    const originalManagerLog = bot.manager.logger.log.bind(bot.manager.logger);
+    bot.manager.logger.log = (msg: any, lvl: any) => {
+        const text = typeof msg === 'string' ? msg : String(msg);
+        if (text.includes('[PERSIST] Grid persistence FAILED')) return;
+        if (text.includes('[COW] Batch transaction failed: Limit order 1.7.999 does not exist')) return;
+        return originalManagerLog(msg, lvl);
+    };
+
     try {
         chainOrders.buildCancelOrderOp = async () => ({
             op_name: 'limit_order_cancel',
@@ -472,6 +485,7 @@ async function testSingleStaleCancelBatchUsesStaleOnlyFastPath() {
         // Stale cleanup should preserve manager index consistency
         assertOrdersStructurallySound(bot.manager);
     } finally {
+        bot.manager.logger.log = originalManagerLog;
         chainOrders.executeBatch = originalExecuteBatch;
         chainOrders.buildCancelOrderOp = originalBuildCancelOrderOp;
     }
