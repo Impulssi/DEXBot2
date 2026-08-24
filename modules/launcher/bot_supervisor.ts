@@ -33,12 +33,10 @@ const {
     RESTART_DELAY_MS,
     SHUTDOWN_TIMEOUT_MS,
     STAGGER_DELAY_MS,
-    MAX_MEMORY_MB,
     MEMORY_CHECK_INTERVAL_MS,
     STATUS_LOG_INTERVAL_MS,
     MAX_CRON_LOOKAHEAD_MINUTES,
 } = LAUNCHER.SUPERVISOR;
-const MAX_MEMORY_BYTES = MAX_MEMORY_MB * 1024 * 1024;
 
 const SUPERVISOR_PREFIX = '[supervisor]';
 
@@ -507,11 +505,10 @@ function createBotSupervisor({
         if (shuttingDown) return;
         for (const [name, state] of botStates) {
             if (state.status !== 'running' || !state.child) continue;
-            if (!state.memoryLimitBytes) continue;
             const rss = getChildRss(state.child);
             if (rss <= 0) continue;
-            const memoryLimitBytes = state.memoryLimitBytes || MAX_MEMORY_BYTES;
-            if (rss > memoryLimitBytes) {
+            const memoryLimitBytes = state.memoryLimitBytes;
+            if (memoryLimitBytes && rss > memoryLimitBytes) {
                 const rssMB = Math.round(rss / 1024 / 1024);
                 const limitMB = Math.round(memoryLimitBytes / 1024 / 1024);
                 logError(`${name} exceeded memory limit (${rssMB}MB > ${limitMB}MB). Restarting...`);
@@ -889,7 +886,9 @@ function createBotSupervisor({
         statusLogTimer = setInterval(printStatusSummary, statusLogIntervalMs);
         if (statusLogTimer) statusLogTimer.unref();
 
-        log(`Memory limit: ${MAX_MEMORY_MB}MB per process`);
+        for (const appDef of activeApps) {
+            log(`Memory limit for ${appDef.name}: ${appDef.max_memory_restart || 'unlimited'}`);
+        }
 
         for (let i = 0; i < activeApps.length; i++) {
             const app = activeApps[i];

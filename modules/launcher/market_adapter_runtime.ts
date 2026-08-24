@@ -1,7 +1,7 @@
 
 import { buildScopedChildEnv } from './child_env.js';
 import { Config } from '../config.js';
-import { LAUNCHER, MARKET_ADAPTER } from '../constants.js';
+import { LAUNCHER } from '../constants.js';
 import { PATHS } from '../paths.js';
 import { getProcessDiscovery } from '../process_discovery.js';
 import { withTimeout } from '../order/utils/timeout.js';
@@ -14,10 +14,6 @@ const { readJSON, unlink: safeUnlink } = storage;
 import { buildRuntimeScriptPath, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry.js';
 
 const DEFAULT_SCRIPT = buildRuntimeScriptPath(DEFAULT_CODE_ROOT, ['market_adapter', 'market_adapter']);
-const DEFAULT_STALE_LOCK_MS = (
-    MARKET_ADAPTER.RUNTIME_DEFAULTS.pollSeconds * 1000 +
-    MARKET_ADAPTER.WATCHDOG_DEFAULTS.staleLockGraceMs
-);
 
 function loadLockInfo(lockPath: string): any {
     try {
@@ -28,10 +24,6 @@ function loadLockInfo(lockPath: string): any {
     }
 }
 
-function isProcessAlive(pid: number): boolean {
-    return getProcessDiscovery().isAlive(pid);
-}
-
 function isLikelyMarketAdapterProcess(pid: number): boolean {
     if (!Number.isInteger(pid) || pid <= 0) return false;
     if (!getProcessDiscovery().isAlive(pid)) return false;
@@ -40,18 +32,20 @@ function isLikelyMarketAdapterProcess(pid: number): boolean {
     return cmdline.includes('node') && /market_adapter\/market_adapter\.(?:js|ts)\b/.test(cmdline);
 }
 
-function isLockStale(lockPath = PATHS.MARKET_ADAPTER.LOCK_FILE, staleAfterMs = DEFAULT_STALE_LOCK_MS, isAdapterProcess = isLikelyMarketAdapterProcess): boolean {
+function isLockStale(
+    lockPath = PATHS.MARKET_ADAPTER.LOCK_FILE,
+    _staleAfterMs?: number,
+    isAdapterProcess = isLikelyMarketAdapterProcess
+): boolean {
     try {
         const info = loadLockInfo(lockPath);
         const pid = Number(info.pid);
         // Runtime startup may remove malformed locks so a new owned process can acquire the file.
         if (!Number.isInteger(pid) || pid <= 0) return true;
-        if (!isAdapterProcess(pid)) return true;
-        const mtimeMs = storage.stat(lockPath).mtimeMs;
-        if ((Date.now() - mtimeMs) > staleAfterMs) {
-            return !isAdapterProcess(pid);
-        }
-        return false;
+        // A lock whose holder is not a live market adapter process is stale,
+        // regardless of file age. A live adapter's lock is never removed
+        // solely because its mtime is old.
+        return !isAdapterProcess(pid);
     } catch (_: any) {
         return false;
     }
@@ -236,5 +230,5 @@ function getSharedMarketAdapterRuntime(options = {}) {
     return sharedRuntime;
 }
 
-export { createMarketAdapterRuntime, getSharedMarketAdapterRuntime, isLikelyAdapterRunning, isLikelyMarketAdapterProcess, isLockStale, isProcessAlive, loadLockInfo, waitForChildExit }
+export { createMarketAdapterRuntime, getSharedMarketAdapterRuntime, isLikelyAdapterRunning, isLikelyMarketAdapterProcess, isLockStale, loadLockInfo, waitForChildExit }
 

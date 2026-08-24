@@ -72,6 +72,12 @@ async function stopPid(pid: any, timeoutMs: any = 5000) {
     } catch (e: any) {
         if (e.code !== 'ESRCH') throw e;
     }
+
+    const killSettledAt = Date.now();
+    while ((Date.now() - killSettledAt) < timeoutMs) {
+        if (!isPidAlive(pid)) return true;
+        await sleep(100);
+    }
     return !isPidAlive(pid);
 }
 

@@ -58,10 +58,6 @@ async function readProcCpuPercent(pid: any, samples: any = 2, intervalMs: any = 
     return getProcessDiscovery().readCpuPercent(pid, samples, intervalMs);
 }
 
-function readProcArgs(pid: any) {
-    return getProcessDiscovery().readArgs(pid);
-}
-
 function readProcUptime(pid: any) {
     return getProcessDiscovery().readUptime(pid);
 }
@@ -92,5 +88,5 @@ function printControlStatus(status: any) {
     }
 }
 
-export { STATUS_COLORS, colorStatus, statusTitle, statusLabel, statusBool, statusActiveBotName, statusSuccess, statusError, readProcStat, readProcMemMB, readProcCpuTime, readProcCpuPercent, readProcArgs, readProcUptime, formatControlUptime, formatMemoryWithUptime, printControlStatus }
+export { STATUS_COLORS, colorStatus, statusTitle, statusLabel, statusBool, statusActiveBotName, statusSuccess, statusError, readProcStat, readProcMemMB, readProcCpuTime, readProcCpuPercent, readProcUptime, formatControlUptime, formatMemoryWithUptime, printControlStatus }
 

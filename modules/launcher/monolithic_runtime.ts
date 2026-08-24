@@ -303,6 +303,7 @@ function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProc
                 });
                 const code = await new Promise((resolve: any) => {
                     updateChild.on('close', resolve);
+                    updateChild.on('error', () => resolve(-1));
                 });
                 if (code === 0 && !cancelled) {
                     _pendingRestart = true;
