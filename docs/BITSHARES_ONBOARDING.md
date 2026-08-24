@@ -12,9 +12,9 @@ trade, assuming you are new to BitShares and the Linux terminal:
 7. Going live
 8. Troubleshooting first-run mistakes
 
-**Prerequisite:** DEXBot2 is installed. See the "Install" section of the root
-[README](../README.md#install) for installation options (`npm i -g dexbot` or
-clone + `npm install`).
+**Prerequisite:** DEXBot2 is installed. See the "Installation" section of the
+root [README](../README.md#-installation) for installation options
+(`npm i -g dexbot` or clone + `npm install`).
 
 ---
 
@@ -261,11 +261,36 @@ Key answers for your first bot:
   `"book"` reads the order-book mid price, or a number for a fixed anchor). If
   your pair has no native pool, set **poolRef** to a pool id such as `1.19.48`.
 
-Keep all other defaults — they are sensible. The only things worth tuning later:
-`targetSpreadPercent` (profit per cycle), `incrementPercent` (grid density),
-`minPrice` / `maxPrice` (grid bounds), and `gridPrice` — set it to `"ama"` so
-the market adapter centers the grid on the AMA signal. See the "Recommended Bot
-Setup" section of the [README](../README.md#recommended-bot-setup).
+Keep all other defaults — they are sensible. Prefer **relative values** where
+possible: dynamic price sources like `"pool"` / `"book"` for `startPrice`,
+`"ama"` for `gridPrice`, `"2x"`-style multipliers for `minPrice` / `maxPrice`,
+and `"100%"`-style percentages for funds (`botFunds`). Relative values rescale
+automatically as the market moves; fixed numbers do not. The bot editor
+highlights these inputs live: **green** = relative/dynamic (recommended),
+**red** = fixed absolute value.
+
+The only things worth tuning later:
+
+- `targetSpreadPercent` — controls profit room per cycle
+  (≈ `spread - increment - fees`) but trades less often when wider.
+- `incrementPercent` — order steps and order size: smaller increments create
+  more grid levels and smaller orders, larger increments fewer levels and
+  larger orders. Smaller increments cycle faster — higher profits, but more
+  fees.
+- `weightDistribution` — advanced order sizing per side (`{ "sell": …,
+  "buy": … }`, range `-1` to `2`). Higher weight puts more funds in orders
+  near the market price; lower weight shifts funds toward the grid edge.
+  `-1` = super-valley, `0` = valley, `0.5` = neutral, `1` = mountain
+  (default), `2` = super-mountain — the bot editor shows this scale live.
+  Leave it at the default `{ "sell": 1.0, "buy": 1.0 }` for your first bot.
+- `minPrice` / `maxPrice` — grid bounds. Once AMA is active, tighten them
+  around the market's maximum expected volatility instead of a wide range.
+- `gridPrice` — set it to `"ama"` so the market adapter centers the grid on the
+  AMA signal (`"ama"` uses the pair's default preset; `"ama1"`–`"ama4"` pin a
+  specific one, fastest to slowest).
+
+See the "Recommended Bot Setup" section of the
+[README](../README.md#recommended-bot-setup).
 
 ### Activate the market adapter
 

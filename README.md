@@ -147,18 +147,26 @@ Both installs use the same CLI and store all user state — keys, `bots.json`, l
 
 Keep the default settings first, and tune these:
 
-1. **Tune `targetSpreadPercent`** — controls profit room per completed cycle. A
-   wider spread targets more profit per cycle but trades less often.
+1. **Tune `targetSpreadPercent`** — controls profit room per completed cycle:
+   profit ≈ `spread - increment - fees`. A wider spread targets more profit per
+   cycle but trades less often.
 
-2. **Tune `incrementPercent`** — controls grid density and order size. Smaller
+2. **Tune `incrementPercent`** — controls order steps and order size. Smaller
    increments create more grid levels and smaller orders; larger increments
-   create fewer levels and larger orders.
+   create fewer levels and larger orders. Smaller increments cycle faster —
+   higher profits, but more fees.
 
-3. **Set `gridPrice` to `"ama"`** — so the market adapter can center the grid
+3. **Tune `weightDistribution`** (optional) — per-side sizing control. Higher
+   weight = more funds in orders near the market price; lower weight = funds
+   shifted toward the grid edge. Range `-1` (super-valley) to `2`
+   (super-mountain); the default `{ "sell": 1.0, "buy": 1.0 }` suits most
+   setups.
+
+4. **Set `gridPrice` to `"ama"`** — so the market adapter can center the grid
    on AMA. Pick a specific preset if desired: `"ama1"` is the fastest,
    `"ama4"` the slowest, and `"ama"` uses the pair's default preset.
 
-4. **Generate the market-adapter whitelist:**
+5. **Generate the market-adapter whitelist:**
 
    ```bash
    dexbot white
@@ -168,15 +176,17 @@ Keep the default settings first, and tune these:
    live writes and range scaling. Use `dexbot white --dynamic-weight` for
    newly generated dynamic-weight entries; existing entries are preserved.
 
-5. **Start DEXBot2** with `dexbot start`.
+6. **Start DEXBot2** with `dexbot start`.
 
-6. **Tune `minPrice` / `maxPrice`** around the market's volatility range. Once
+7. **Tune `minPrice` / `maxPrice`** around the market's volatility range. Once
    AMA is active, tighten them around the maximum expected market volatility
    instead of using an unnecessarily wide range.
 
 ### Bot Options Reference
 
 Configuration options from `dexbot bot`, stored in `bots.json` in the profiles directory:
+
+> **Prefer relative values** — use dynamic price sources where available: `"pool"` (liquidity-pool price) or `"book"` (order-book mid) for `startPrice`, `"ama"` for `gridPrice`, `"2x"`-style multipliers for `minPrice` / `maxPrice`, and `"100%"`-style percentages for funds (`botFunds`). Relative values rescale automatically as the market moves; fixed numbers do not. The bot editor highlights these inputs live: **green** = relative/dynamic (recommended), **red** = fixed absolute value.
 
 <details><summary><mark>Full parameter reference (click to expand)</mark></summary>
 
@@ -192,10 +202,10 @@ Configuration options from `dexbot bot`, stored in `bots.json` in the profiles d
 | **`poolRef`** | string \| null | Optional pinned pool ID for `startPrice: "pool"`. Overrides pool discovery with a direct fetch (e.g. `"1.19.48"` or `"48"`). Useful when the trading pair has no native pool. Default `null`. |
 | **`minPrice`** | num \| str | Lower bound. Default `"2x"` means `gridPrice / 2` when AMA is active, otherwise `startPrice / 2`. |
 | **`maxPrice`** | num \| str | Upper bound. Default `"2x"` means `gridPrice * 2` when AMA is active, otherwise `startPrice * 2`. |
-| **`gridPrice`** | num \| str \| null | Grid reference. Use `"ama"` for the recommended AMA center; `null` falls back to `startPrice`; numeric values use that fixed value. |
-| **`incrementPercent`** | number | Geometric step between layers. Default `0.5` = 0.5%. |
-| **`targetSpreadPercent`** | number | Width of the empty spread zone between buy and sell orders. Default `2` = 2%. |
-| **`weightDistribution`** | object | Advanced sizing control. Default `{ "sell": 1.0, "buy": 1.0 }`; leave unchanged for normal setup. |
+| **`gridPrice`** | num \| str \| null | Grid reference. Use `"ama"` for the recommended AMA center (`"ama"` picks the pair's default preset; `"ama1"`–`"ama4"` pin fastest to slowest); `null` falls back to `startPrice`; numeric values use that fixed value. |
+| **`incrementPercent`** | number | Geometric step between orders. Default `0.5` = 0.5%. |
+| **`targetSpreadPercent`** | number | Width of the empty spread zone between buy and sell orders. Default `2` = 2%. Profit per completed cycle ≈ `spread - increment - fees`. |
+| **`weightDistribution`** | object | Advanced sizing control per side. Range `-1` to `2`: `-1` = super-valley, `0` = valley, `0.5` = neutral, `1` = mountain (default), `2` = super-mountain. Higher weight = more funds in orders near the market price; lower weight = more funds shifted toward the grid edge. Default `{ "sell": 1.0, "buy": 1.0 }`; leave unchanged for normal setup. |
 | **`botFunds`** | object | Capital: `{ "sell": "100%", "buy": 1000 }`. Numbers or percentage strings |
 | **`activeOrders`** | object | Target active orders per side: `{ "sell": 20, "buy": 20 }` |
 
