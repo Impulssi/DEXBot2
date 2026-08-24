@@ -257,7 +257,7 @@ Dependency utilities merged into `modules/order/utils/order.ts` during v0.6.0-pa
 ### Build Step 2: Core Integration ✅
 - `performSafeRebalance()` → delegates to `_applySafeRebalanceCOW()`.
 - `_applySafeRebalanceCOW()` — creates working grid, runs planning, returns result without modifying master.
-- `_reconcileGridCOW()` — delta reconciliation against working copy.
+- `WorkingGrid.buildDelta()` — delta reconciliation against working copy (`modules/order/working_grid.ts:204`, delegating to `utils/order.ts`).
 - `_commitWorkingGrid()` — atomic swap from working to master.
 
 ### Build Step 3: Broadcast Integration ✅
@@ -362,7 +362,7 @@ await updateOrdersOnChainBatch(cowResult); // Execute via COW
 |--------|-------------|
 | `performSafeRebalance(fills, excludeIds)` | Entry point — delegates to COW |
 | `_applySafeRebalanceCOW(fills, excludeIds)` | Creates working grid, runs planning |
-| `_reconcileGridCOW(targetGrid, boundary, workingGrid)` | Delta against working copy |
+| `WorkingGrid.buildDelta(masterGrid)` | Delta between master and working copy (`modules/order/working_grid.ts:204`, delegating to `utils/order.ts`) |
 | `_commitWorkingGrid(workingGrid, indexes, boundary, options = {})` | Atomic swap to master |
 | `_setRebalanceState(state)` | Track rebalance state |
 | `_currentWorkingGrid` | Reference to working grid during rebalance for fill sync |
@@ -479,26 +479,17 @@ Stale-Plan & Stack Discipline Tests (v1.4.8):
 ## Appendix C: Constants Added (`modules/constants.ts`)
 
 ### COW Performance Thresholds
-- `COW_PERFORMANCE.MAX_REBALANCE_PLANNING_MS` — max time for rebalance planning phase.
-- `COW_PERFORMANCE.MAX_COMMIT_MS` — max time for grid commit operation.
-- `COW_PERFORMANCE.MAX_MEMORY_MB` — memory threshold for working grid operations.
-- `COW_PERFORMANCE.INDEX_REBUILD_THRESHOLD` — grid size threshold for index rebuilding.
+- `COW_PERFORMANCE.MAX_REBALANCE_PLANNING_MS` — planning-phase duration above which a slow-plan warning is logged (100ms).
+- `COW_PERFORMANCE.GRID_MEMORY_WARNING` — working grid size (bytes) that triggers a memory warning (5,000).
 - `COW_PERFORMANCE.WORKING_GRID_BYTES_PER_ORDER` — estimated memory per order (500 bytes).
+- `COW_PERFORMANCE.MAX_OPS_PER_BROADCAST` — maximum order operations (creates, updates, cancels) per broadcast transaction (4); larger batches are split into sequential broadcasts.
 
 ### Pipeline Timing
-- `PIPELINE_TIMING.MAX_FEE_EVENT_CACHE_SIZE` — LRU cache limit for fee dedup (10,000 entries).
-- `PIPELINE_TIMING.FEE_EVENT_DEDUP_TTL_MS` — fee event deduplication TTL (6 hours).
-- `PIPELINE_TIMING.CACHE_EVICTION_RETENTION_RATIO` — LRU eviction retention (0.75).
 - `PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS` — recovery decay fallback (180 seconds).
 
 ### Grid & Timing
 - `GRID_LIMITS.RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT` — relative threshold (%) for in-memory COW order equality checks.
-- `GRID_LIMITS.STATE_CHANGE_HISTORY_MAX` — max state change history entries (100).
 - `TIMING.LOCK_REFRESH_MIN_MS` — minimum lock refresh interval (250ms).
-
-### Fee Dedup Precision
-- Fee-event dedupe keys now quantize size with `floatToBlockchainInt(size, orderPrecision)` (derived from BUY/SELL side precision).
-- Fixed `1e8` satoshi conversion is no longer used.
 
 ## Appendix D: Validation Gates
 

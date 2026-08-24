@@ -548,12 +548,11 @@ The simplified approach prioritizes fund availability over aggressive correction
 Spread corrections respect these hard limits:
 
 ```javascript
-// In modules/constants.ts
-SPREAD_LIMITS: {
-    MIN_SPREAD_ORDERS: 2,           // Always maintain minimum gap
-    TARGET_SPREAD_PERCENT: (user-configured),  // Fixed width, no inflation
-    MAX_REPLACEMENT_SLOTS: 5,       // Conservative correction cap
-}
+// In modules/constants.ts (GRID_LIMITS)
+MIN_SPREAD_ORDERS: 2,           // Always maintain minimum gap
+
+// Spread width itself stays user-configured (`targetSpreadPercent`) — fixed, no inflation.
+// Correction count has no separate slot cap; it is bounded by the funds check below.
 
 // Each correction order must be healthy
 const minHealthySize = calculateMinOrderSize(side);
@@ -590,27 +589,30 @@ BLOCKCHAIN_FETCH_INTERVAL_MIN: 240,  // 4 hours = 240 minutes
 
 ### Implementation Flow
 
+**1. Interval startup** — `setupBlockchainFetchInterval()` in
+`modules/dexbot_maintenance_runtime.ts` starts the interval during bot initialization:
+
 ```javascript
-// 1. Timer started during bot initialization
-this.periodicRefreshTimer = setInterval(
-    () => this._performPeriodicRefresh(),
-    BLOCKCHAIN_FETCH_INTERVAL_MIN * 60 * 1000
-);
-
-// 2. When timer fires:
-async _performPeriodicRefresh() {
-    // Fetch latest market price
-    const latestPrice = await derivePrice('book');  // Or 'pool'
-
-    // Update internal anchor if using dynamic pricing
-    if (config.startPrice === 'book' || config.startPrice === 'pool') {
-        this.manager.startPrice = latestPrice;
-    }
-
-    // Grid remains un-affected (fund-driven during normal ops)
-    // Only used for valuation calculations and divergence checks
-}
+bot._blockchainFetchInterval = setInterval(tick, BLOCKCHAIN_FETCH_INTERVAL_MIN * 60 * 1000);
 ```
+
+**2. Tick guards** *(no lock held)*
+- Skip if shutdown has begun or a previous tick is still in flight
+- Sync market adapter watchdog config
+
+**3. Periodic work** *(under the fill-processing lock)*
+- Reset accountant recovery state
+- Refresh dynamic weight distribution
+- `fetchAccountTotals(accountId)` — refreshes balances and the valuation anchor
+- Read open orders via guarded read — truncated/empty reads defer the sync; fills are still caught by subscriptions and the next cycle
+- `synchronizeWithChain(...)` — re-aligns the grid with on-chain reality; detected fills run through the normal batched rebalance pipeline and the grid is persisted, unmatched chain orders log as surplus/divergence
+- `performPeriodicGridChecks(bot)` — maintenance checks (see [Lifecycle](LIFECYCLE.md))
+
+Grid placement remains fund-driven during normal operation; the periodic tick keeps
+balances, valuations, and open-order state fresh rather than directly moving prices.
+A per-instance override (`_blockchainFetchIntervalMin`, e.g. for shared accounts from
+the fund registry) can shorten or lengthen the interval; setting a non-positive value
+disables the loop entirely.
 
 ### When `startPrice` is Numeric
 
@@ -780,10 +782,10 @@ stateDiagram-v2
 
 A **phantom order** is an illegal state where an order exists as ACTIVE/PARTIAL without a corresponding blockchain `orderId`. This corrupts fund tracking and causes "doubled funds" warnings.
 
-**Why Phantoms Occur**:
-1. **Grid Resize Bug**: `Grid._updateOrdersForSide()` could force VIRTUAL → ACTIVE without blockchain confirmation
-2. **Sync Gap**: Orders without orderId could remain ACTIVE indefinitely if sync logic skipped them
-3. **No Validation**: No centralized check prevented invalid state assignments
+**Risks the Three-Layer Defense Guards Against**:
+1. **Resize State Forcing**: Grid resize forcing VIRTUAL → ACTIVE without blockchain confirmation
+2. **Sync Gaps**: Orders without `orderId` remaining ACTIVE if sync logic skips them
+3. **Unvalidated Assignment**: Invalid state assignments without a centralized check
 
 **Prevention System** (Three-Layer Defense):
 
@@ -983,7 +985,7 @@ graph TB
     SKIP --> DONE
 ```
 
-**Key Improvement (v1.0.0)**: Force reload mechanism now ensures fresh persisted grid data before comparison, preventing stale cache from causing false divergence detections.
+The force reload mechanism loads fresh persisted grid data before comparison, preventing stale cache from causing false divergence detections.
 
 ---
 
@@ -1150,9 +1152,12 @@ The system continuously monitors three mathematical invariants:
 
 ### Index Consistency
 
-- **Validation**: `validateIndices()` checks Map ↔ Set consistency
-- **Repair**: `_repairIndices()` rebuilds indices if corruption detected
-- **Defensive**: Called after critical operations
+- **Grid versioning**: `_gridVersion` is bumped on every grid mutation; the
+  `_ordersByType` / `_ordersByState` index caches invalidate automatically when the
+  version changes (no manual rebuild step)
+- **Structural checks**: tests use `assertOrdersStructurallySound()`
+  (`tests/helpers/order_test_helpers.ts`) to verify every order in the Map is non-null
+  with valid `state` and `type`
 
 ---
 
@@ -1278,7 +1283,7 @@ tsx tests/test_dexbot_credit_wiring.ts
 
 3. **Verify invariants**
    ```javascript
-   expect(manager.validateIndices()).toBe(true);
+   assertOrdersStructurallySound(manager);  // Order Map structurally valid
    expect(chainTotal === chainFree + chainCommitted).toBe(true);
    ```
 
@@ -1382,7 +1387,7 @@ The strategy engine has been significantly strengthened with improvements to fun
 - Before executing batch order placements, available funds are validated
 - Prevents insufficient fund errors during large rotation cycles
 - Uses atomic check-and-deduct pattern for safety
-- Located in: `modules/order/strategy.ts` - `rebalanceSideRobust()`
+- Located in: `modules/dexbot_cow_runtime.ts` - `validateOperationFunds()`
 
 **2. Dust Partial Handling**
 - Improved dust detection algorithm prevents false positives
@@ -1408,9 +1413,9 @@ The strategy engine has been significantly strengthened with improvements to fun
 - Located in: `modules/order/manager.ts` - `processFilledOrders()`
 
 **6. Precision Spread Management (Logarithmic Logic)**
-- **Discrete Step Tracking**: Replaced the legacy linear multiplier (`SPREAD_WIDENING_MULTIPLIER`) with a discrete 1-slot logarithmic buffer. This ensures correction triggers exactly when the market moves by one full increment.
-- **Center-Gap Awareness**: Refined the grid initialization math to account for the "Center Gap" naturally created during symmetric centering. This reduces the initial spread by ~0.5% (one full increment) compared to the previous version.
-- **Collision-Free Safety**: Increased `MIN_SPREAD_FACTOR` to 2.1 to ensure that the security minimum (2 spread orders) never conflicts with the spread correction threshold, even at micro-spread configurations.
+- **Discrete Step Tracking**: A discrete 1-slot logarithmic buffer ensures correction triggers exactly when the market moves by one full increment.
+- **Center-Gap Awareness**: Grid initialization math accounts for the "Center Gap" naturally created during symmetric centering, reducing the initial spread by ~0.5% (one full increment).
+- **Collision-Free Safety**: `MIN_SPREAD_FACTOR` of 2.1 ensures that the security minimum (2 spread orders) never conflicts with the spread correction threshold, even at micro-spread configurations.
 
 ### Related Documentation
 

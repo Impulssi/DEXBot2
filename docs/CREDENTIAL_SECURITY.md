@@ -288,16 +288,6 @@ The failure path is consistent regardless of whether the daemon or the
 interactive password prompt handled the authentication, making the output
 predictable for monitoring and alerting.
 
-### Legacy vault migration
-
-Older vaults stored a plain **SHA-256** hash of the master password for
-verification. This hash is deliberately weak by modern standards. The v2
-scrypt-derived vault format replaced it entirely: `masterPasswordHash` is no
-longer read, written, or migrated. A legacy vault that has not been converted
-is rejected by `unlockWithPassword` with "Unsupported key vault format" —
-recreate `profiles/keys.json` with the current key manager to adopt the v2
-format (HMAC-SHA256 vault verifier, scrypt-derived key).
-
 ---
 
 ## 6. Startup Path — Daemon-First, Interactive Fallback
@@ -391,7 +381,6 @@ accounts or after an unclean exit.
 | `probeBootstrapSocket` (live probe before cleanup) | Bootstrap dir cleanup | Prevents removing a live bootstrap directory |
 | `delete process.env.DEXBOT_CRED_BOOTSTRAP_PATH_FILE` | Daemon startup | Bootstrap path cannot be inherited by child processes or read from /proc |
 | Attempt limit (3) + immediate exit | Interactive auth | Limits online brute-force window |
-| `masterPasswordHash` removed | Legacy vault upgrade | Weak SHA-256 verifier no longer read, written, or migrated |
 
 ---
 

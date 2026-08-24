@@ -309,7 +309,7 @@ Yes — each bot entry in `profiles/bots.json` accepts an optional `logging` fie
 }
 ```
 
-The per-bot `logging` is deep-merged on top of the global config from `general.settings.json`. See `modules/types.ts` (`BotLoggingOverrides`), `modules/runtime_settings.ts`, and `modules/order/manager.ts` for the wiring.
+The per-bot `logging` is deep-merged on top of the global config from `general.settings.json`. See `modules/runtime_settings.ts` for the merge logic and `modules/order/manager.ts` for where the merged config reaches the logger.
 
 **Q: What about PM2?**
 The logger auto-detects PM2 and suppresses file writes (PM2 captures stdout/stderr). File rotation is also suppressed under PM2.

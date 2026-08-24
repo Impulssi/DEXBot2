@@ -79,7 +79,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 
 | Term | Meaning |
 |------|---------|
-| **Fixed-Cap Batch Fill Processing** | Groups fills with a hard cap using `MAX_FILL_BATCH_SIZE` (default 4): `<= cap` uses one unified batch; `> cap` chunks at cap size. In the documented 29-fill Feb 7 crash scenario, this reduces the estimated divergence window from ~90s to ~24s; see [`FUND_MOVEMENT_AND_ACCOUNTING.md`](FUND_MOVEMENT_AND_ACCOUNTING.md#14-fill-batch-processing--cache-fund-timeline). |
+| **Fixed-Cap Batch Fill Processing** | Groups fills with a hard cap using `MAX_FILL_BATCH_SIZE` (default 4): `<= cap` uses one unified batch; `> cap` chunks at cap size. In the documented 29-fill Feb 7 crash scenario, this reduces the estimated divergence window from ~90s to ~24s; see [`FUND_MOVEMENT_AND_ACCOUNTING.md`](FUND_MOVEMENT_AND_ACCOUNTING.md#15-fill-batch-processing--timeline). |
 | **Recovery Retry System** | Count+time-based retry mechanism with periodic reset. Replaces one-shot `_recoveryAttempted` flag. Max 5 attempts per episode with 60s minimum interval between retries. |
 | **Orphan-Fill Deduplication** | Map+TTL-based tracking of stale-cleaned order IDs to prevent double-crediting. Delayed orphan fill events are still blocked by checking `_staleCleanedOrderIds`. |
 
@@ -226,9 +226,7 @@ If you see prices like `0.000795` when expecting `1350`:
 
 ## Precision & Quantization Best Practices
 
-**Problem**: Floating-point arithmetic accumulates rounding errors over many calculations. After repeated price derivations, fund allocations, and order sizing, float values drift from their true blockchain precision.
-
-**Solution**: Use centralized quantization utilities from `modules/order/utils/math.ts` to eliminate accumulation.
+Floating-point arithmetic accumulates rounding errors across repeated price derivations, fund allocations, and order sizing. Always use the centralized quantization utilities in `modules/order/utils/math.ts` to eliminate accumulation.
 
 ### When to Quantize
 
@@ -304,7 +302,7 @@ _updateOrder(order, context, { skipAccounting, fee })
 // COW rebalance pipeline
 performSafeRebalance(fills, excludeIds)       // Entry point; delegates to COW
 _applySafeRebalanceCOW(fills, excludeIds)     // Creates WorkingGrid, runs planning
-_reconcileGridCOW(targetGrid, boundary, wg)   // Computes delta against working copy
+_workingGrid.buildDelta(masterGrid)          // Computes actions vs master (utils/order.ts buildDelta)
 _commitWorkingGrid(workingGrid, indexes, boundary, { skipRecalc }) // Atomic swap: working → master
 
 // COW state tracking
@@ -630,8 +628,9 @@ if (isOrderHealthy(order, minHealthySize)) {
 #### `getPrecisionSlack(precision, factor)`
 ```javascript
 // Calculate float comparison tolerance for given precision
-// Returns: 10^(-precision) * factor (typically factor = 0.001 = 0.1%)
-const slack = getPrecisionSlack(5, 0.001);  // Returns 0.00001 * 0.001 = 0.00000001
+// Location: modules/order/utils/math.ts
+// Returns: factor * quantumForPrecision(precision) (factor defaults to 2)
+const slack = getPrecisionSlack(5);  // Returns 2 * 10^-5 = 0.00002
 
 // Use case: Floating-point safe comparisons
 if (Math.abs(order.size - expected) <= slack) {
@@ -907,7 +906,7 @@ convention marker — AsyncLock does not enforce it at runtime.
 - Divergence checks (Level 1) nest inside fill processing
 - Sync operations (Level 2) are acquired before grid mutations — the timeout-protected lock is inner, so a stuck sync releases the outer lock
 - Grid mutations (Level 3) and fund operations (Level 4) are innermost
-- All paths follow the same order — the historical `gridLockAlreadyHeld` workaround flag has been eliminated
+- All paths follow the same order
 
 **`adjustTotalBalance` Locking Contract** (v1.4.7):
 
@@ -1240,11 +1239,9 @@ manager.accountant._verifyFundInvariants(
 
 **2. Index Consistency Check**
 ```javascript
-// Periodically
-const isValid = manager.validateIndices();
-if (!isValid) {
-    manager._repairIndices();
-}
+// Index caches invalidate automatically via _gridVersion bumps — no manual
+// validation/repair API exists. For structural checks (e.g. in tests):
+assertOrdersStructurallySound(manager);  // tests/helpers/order_test_helpers.ts
 ```
 
 **3. Grid Diagnostics**
@@ -1499,9 +1496,10 @@ manager.logger.logFundsStatus(manager, 'CONTEXT');
 console.log(manager.getMetrics());
 ```
 
-### Validate Indices
+### Check Order Map Integrity
 ```javascript
-const isValid = manager.validateIndices();
+// Structural check (tests); index caches self-invalidate via _gridVersion
+assertOrdersStructurallySound(manager);
 ```
 
 ### Check Specific Order
@@ -1705,7 +1703,7 @@ console.log(' - Testing [action] updates [fund pool]...');
     // Assert
     const finalFunds = manager.funds[poolName][side];
     assert.strictEqual(finalFunds, expectedValue);
-    assert.strictEqual(manager.validateIndices(), true);  // Indices OK?
+    assertOrdersStructurallySound(manager);  // Order Map structurally sound?
 }
 ```
 
@@ -1774,7 +1772,7 @@ try {
     // Perform operation
     await fundDependentOperation();
     // Check state consistency
-    assert.strictEqual(manager.validateIndices(), true);
+    assertOrdersStructurallySound(manager);
 } finally {
     manager.unlockOrders(['order-1']);
 }
@@ -1833,7 +1831,7 @@ manager.orders.forEach(order => {
 });
 
 // 4. Check index consistency
-console.log('Indices valid?', manager.validateIndices());
+assertOrdersStructurallySound(manager);  // throws if any order entry is corrupt
 
 // 5. Examine specific fund pool
 console.log('Virtual buy:', manager.funds.virtual.buy);

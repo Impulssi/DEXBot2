@@ -397,7 +397,7 @@ and dedupes while one resync is already pending or running.
 - Fill/rotation operations are causing noticeable size errors
 
 **Disable (set to 0) if:**
-- You want to rely ONLY on AMA triggers (Issue #5: RMS Divergence Check Disabling)
+- You want to rely ONLY on AMA triggers
 - You want to prevent automatic full resync from divergence alone
 - You manually trigger full grid resyncs through other mechanisms
 
@@ -593,18 +593,6 @@ Removed trigger file.
 ✅ **Do:** Monitor grid update frequency
 - Log output should show full resyncs and maintenance resizes are balanced
 - Adjust thresholds if too frequent or too rare
-
----
-
-## Related Issues
-
-> Issue numbers below refer to the project's historical internal tracker and
-> are kept here for archival context. They are not always resolvable against
-> external issue trackers.
-
-- **Issue #5:** RMS Divergence Check Disabling — Ability to set `RMS_PERCENTAGE: 0` to disable checks
-- **Feature:** AMA Integration — AMA-derived center snapshots are already used for market-adapter-triggered grid recentering
-- **Issue #1:** Fund Validation Bug — Fixed validation logic for order batch placement
 
 ---
 

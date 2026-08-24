@@ -46,7 +46,7 @@
 | **Target Exchange** | BitShares DEX | BitShares DEX |
 | **Lines of Code** | ~10,846 Python LOC in `dexbot/` | Large TypeScript codebase; core runtime, adapter, analysis, Claw, and test modules |
 | **Source Files** | 72 Python files in `dexbot/` | ~527 TS files across the repo |
-| **Test Files** | 16 Python test files | 249 `test_*.ts` files (249 auto-discovered via `globSync`) |
+| **Test Files** | 16 Python test files | 252 `test_*.ts` files (252 auto-discovered via `globSync`) |
 
 ### Summary
 
@@ -70,7 +70,7 @@ DEXBot2 is a ground-up rewrite in TypeScript that prioritizes production correct
 | **Process Manager** | Systemd service (Linux) | `dexbot start` (native monolithic launcher, default; `unlock` runtime) — PM2 optional |
 | **External APIs** | CoinGecko, CCXT, Waves | On-chain/pool/Kibana candle inputs; optional CEX synthetic seed generator (`fetch_cex_synthetic_data.ts`) for adapter bootstrap |
 | **Container** | Docker (Ubuntu 18.04) | Docker (multi-stage) |
-| **Testing** | pytest + Docker testnet | Native Node assert (249 `test_*.ts` files; auto-discovered via `globSync`) |
+| **Testing** | pytest + Docker testnet | Native Node assert (252 `test_*.ts` files; auto-discovered via `globSync`) |
 | **CI/CD** | Travis CI, AppVeyor | GitHub Actions / local deterministic script suite |
 | **Packaging** | PyInstaller (Win/Mac/Linux binaries) | npm / `unlock` + optional PM2 ecosystem |
 
@@ -616,7 +616,7 @@ Where:
 ### DEXBot2
 
 - **Framework:** Native Node `assert` module (no external test framework)
-- **249 `test_*.ts` files** auto-discovered via `globSync` (`tests/test_*.ts` + `claw/tests/test_*.ts`), covering:
+- **252 `test_*.ts` files** auto-discovered via `globSync` (`tests/test_*.ts` + `claw/tests/test_*.ts`), covering:
   - Unit tests: accounting, strategy, grid, manager logic
   - Copy-on-Write semantics: COW commits, guards, concurrent fills
   - Edge cases: authoritative full-fill resolution, partial fills, BTS fee accounting, precision
@@ -634,7 +634,7 @@ Where:
 | Feature | DEXBot | DEXBot2 |
 |---|---|---|
 | **Framework** | pytest | Native Node assert |
-| **Test Count** | 16 Python test files | 249 `test_*.ts` files; auto-discovered via `globSync` |
+| **Test Count** | 16 Python test files | 252 `test_*.ts` files; auto-discovered via `globSync` |
 | **Test Types** | Unit + integration | Unit + integration + edge-case + runtime regression |
 | **Testnet Integration** | Yes (Docker) | No (mocks) |
 | **External Dependency** | pytest, Docker | None |
@@ -786,7 +786,7 @@ Where:
 | **Total Commits** | 2281 | 2,034 (v1.4.17) |
 | **Lines of Code** | ~10,846 Python LOC in `dexbot/` | Large TypeScript runtime + adapter + Claw + analysis + tests |
 | **Source Files** | 72 Python files in `dexbot/` | ~527 TS files across the repo |
-| **Test Files** | 16 Python test files | 249 `test_*.ts` files (249 auto-discovered via `globSync`) |
+| **Test Files** | 16 Python test files | 252 `test_*.ts` files (252 auto-discovered via `globSync`) |
 | **Documentation** | Sphinx docs + README | 50+ Markdown docs plus Claw skills/references |
 | **Strategies** | 3 + plugins | 1 |
 | **Max Concurrent Bots** | Many (one process) | Many (one monolithic process by default; per-bot via `--isolated`/PM2) |
@@ -814,7 +814,7 @@ Each bottleneck in DEXBot compounds because they run *serially in sequence* — 
 | # | Bottleneck | DEXBot | DEXBot2 (with references) | Multiplier |
 |---|------------|--------|---------------------------|------------|
 | 1 | **RPC queries** | Per-order `get_objects` loop called twice per cycle → 2×N sequential RPCs. | Single batch `get_objects([…])` in `fetchRefBlock` — **`modules/bitshares-native/tx/builder.ts`**; parallel account refresh via `Promise.all` — **`modules/bitshares-native/subscriptions.ts`** (`refreshTasks`, `scanTasks`). | **~400×** |
-| 2 | **Order counting** | Geometric while-loop iterating `price /= 1+increment` ~920 times per call. | O(1) `Math.log` spread-step formula in `calculateSpreadSteps` — **`modules/order/utils/math.ts`**; O(1) spread check in `shouldFlagOutOfSpread` — **`modules/order/utils/order.ts`**. | **~920× CPU** |
+| 2 | **Order counting** | Geometric while-loop iterating `price /= 1+increment` ~920 times per call. | O(1) `Math.log` spread-step formula in `calculateGapSlots` — **`modules/order/utils/math.ts`**; O(1) spread check in `shouldFlagOutOfSpread` — **`modules/order/utils/order.ts`**. | **~920× CPU** |
 | 3 | **Market price** | Fresh `ticker()` RPC inside every order placement. | Cached `centerPrice` served from `botState`, zero RPC per placement — **`market_adapter/market_adapter.ts`** + **`market_adapter/core/market_adapter_service.ts`**. | **~∞ (eliminated)** |
 | 4 | **Account refresh** | Full `_account.refresh()` fetches all orders + balances + history every cycle. | Targeted `set_subscribe_callback` pushing only `OP_FILL_ORDER` ops — **`modules/bitshares-native/subscriptions.ts`** (`refreshSubscriptions`); filtered per-account; no full re-read — **`modules/chain_orders.ts`**. | **~50×** |
 | 5 | **Thread blocking** | `time.sleep(2–6)` on retry blocks the GIL thread entirely. | Async `await sleep()` + `AsyncLock` queue — **`modules/order/async_lock.ts`**; lock guards in **`modules/order/manager.ts`**; backoff in **`modules/order/utils/system.ts`**. | **~100× I/O utilization** |
@@ -838,7 +838,7 @@ DEXBot2 parallel path:  [batch RPC] ─┐
                          [JSON write] ┘
 ```
 
-The Python runtime overhead (≈2× slower than V8 on equivalent CPU work) is the *least* impactful factor here — but it still compounds with everything else. The geometric while-loops and `_calc_increase` iterations all run at Python bytecode speed, thousands of iterations per cycle. DEXBot2 eliminates the iterations entirely with O(1) formulas (`calculateSpreadSteps` in `math.ts`, `shouldFlagOutOfSpread` in `order.ts`) — so the 2× language factor is just insurance on top of the architectural gains.
+The Python runtime overhead (≈2× slower than V8 on equivalent CPU work) is the *least* impactful factor here — but it still compounds with everything else. The geometric while-loops and `_calc_increase` iterations all run at Python bytecode speed, thousands of iterations per cycle. DEXBot2 eliminates the iterations entirely with O(1) formulas (`calculateGapSlots` in `math.ts`, `shouldFlagOutOfSpread` in `order.ts`) — so the 2× language factor is just insurance on top of the architectural gains.
 
 The 500× figure is not theoretical: it materializes in production when higher order counts, slower public nodes, transient block-expiration retries, and wide geometric ranges all hit at once — a scenario DEXBot handles by piling seconds onto seconds, while DEXBot2 absorbs each factor with negligible marginal cost.
 
@@ -886,7 +886,7 @@ The 500× figure is not theoretical: it materializes in production when higher o
 | **Security** | ★★★☆☆ | ★★★★★ (AES-256-GCM, credential daemon, authority resolution) | DEXBot2 |
 | **Ease of Setup** | ★★☆☆☆ (PyQt5/PyInstaller/Systemd dependency hell) | ★★★★★ (`npm i -g dexbot`, zero deps) | DEXBot2 |
 | **Accessibility** | ★★★★★ (GUI) | ★★☆☆☆ (CLI only) | DEXBot |
-| **Testing Depth** | ★★★☆☆ | ★★★★★ (249 test files; focused regressions) | DEXBot2 |
+| **Testing Depth** | ★★★☆☆ | ★★★★★ (252 test files; focused regressions) | DEXBot2 |
 | **Documentation** | ★★★☆☆ | ★★★★★ (architecture/accounting/security/adapter docs) | DEXBot2 |
 | **Dependency Footprint** | ★★☆☆☆ (heavy) | ★★★★★ (0 runtime deps) | DEXBot2 |
 | **Extensibility** | ★★★★★ (plugins) | ★☆☆☆☆ | DEXBot |

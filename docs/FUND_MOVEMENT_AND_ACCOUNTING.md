@@ -52,15 +52,13 @@ funds.allocated → _getSizingContext()       (budget for spread correction)
 **Key points:**
 - `botFunds` percentage applies to **total** capital (free + locked in orders), not just free. A bot at `"50%"` gets half of everything, not half of what's currently idle.
 - `funds.allocated` is the ceiling for each side. Existing orders already consume part of it; the remaining free portion is available for new placements.
-- The downstream `applyBotFundsAllocation()` (`manager.ts:953`) also caps `funds.available` to `<= allocated` as a safety net, but the primary budget chokepoint is `getSideBudget` / `_getSizingContext` reading `allocated` directly (v1.2.6).
+- The downstream `applyBotFundsAllocation()` (`manager.ts:949`) also caps `funds.available` to `<= allocated` as a safety net, but the primary budget chokepoint is `getSideBudget` / `_getSizingContext` reading `allocated` directly (v1.2.6).
 
 ---
 
 ### 1.4 Mixed Order Fund Validation
 
-**Problem Fixed**: Early batch builders ran a single fund check keyed off the first order's side, so a mixed BUY/SELL batch could trip a false "insufficient funds" warning even when each side had ample capital — the BUY check was applied to SELL orders (or vice versa).
-
-**Solution**: Per-asset validation using a signed-delta water-mark. The current validator tracks the **peak** running requirement per asset (not a side lump sum), so BUY and SELL ops in the same batch are validated independently against their own free balance.
+Mixed BUY/SELL batches are validated per asset using a signed-delta **peak** running requirement (not a side lump sum), so BUY and SELL ops in the same batch are checked independently against their own free balance.
 
 #### Fund Availability Checks by Asset
 
@@ -69,7 +67,7 @@ funds.allocated → _getSizingContext()       (budget for spread correction)
 
 #### Implementation Location
 
-File: `modules/dexbot_cow_runtime.ts` — `validateOperationFunds()` (line 1309), called from the COW batch broadcast path at line 2648. `modules/dexbot_class.ts` exposes a thin wrapper `_validateOperationFunds()` (line 1165).
+File: `modules/dexbot_cow_runtime.ts` — `validateOperationFunds()` (line 1488), called from the COW batch broadcast path at line 2908. `modules/dexbot_class.ts` exposes a thin wrapper `_validateOperationFunds()` (line 1122).
 
 ```javascript
 // Per-asset peak requirement vs. quantized chain-free snapshot.
@@ -112,19 +110,9 @@ See [developer_guide.md#order-state-helper-functions](developer_guide.md#order-s
 
 ### 1.5 Fill Batch Processing & Timeline
 
-#### Problem Solved
+#### Fixed-Cap Batch Fill Processing
 
-Previously, fills were processed one-at-a-time (~3s per broadcast). A burst of 29 fills in the Feb 7 market crash took ~90 seconds, during which:
-- Market prices moved significantly
-- Orders became stale (filled on-chain but not yet synced)
-- Orphan fills were created (fill events for orders no longer on-chain)
-- Fund tracking diverged from blockchain reality
-
-**Impact**: The extended 90s window meant the bot couldn't react to market moves, creating a cascading failure.
-
-#### Solution: Fixed-Cap Batch Fill Processing
-
-**Mechanism**: Fill events arrive via `modules/dexbot_fill_runtime.ts` (the fill-runtime module), which pushes them into `bot._incomingFillQueue` (declared in `modules/dexbot_class.ts`). The drain loop in `dexbot_fill_runtime.ts` then chunks the queue into capped batches and calls `modules/order/manager.ts::processFilledOrders` (line 1442) once per chunk to run the full rebalance pipeline.
+**Mechanism**: Fill events arrive via `modules/dexbot_fill_runtime.ts` (the fill-runtime module), which pushes them into `bot._incomingFillQueue` (declared in `modules/dexbot_class.ts`). The drain loop in `dexbot_fill_runtime.ts` then chunks the queue into capped batches and calls `modules/order/manager.ts::processFilledOrders` (line 1438) once per chunk to run the full rebalance pipeline.
 
 **Batch Sizing Algorithm**: A single cap-based batch size (`FILL_PROCESSING.MAX_FILL_BATCH_SIZE`): a queue depth of 4 or fewer is processed as one unified batch; deeper queues are chunked into repeated batches of 4 (the last chunk may be smaller).
 
@@ -176,9 +164,7 @@ IF ratio >= GRID_REGENERATION_PERCENTAGE (default: 3%):
 
 #### Recovery Retry System
 
-**Problem**: One-shot `_recoveryAttempted` boolean flag meant permanent lockup if recovery failed once.
-
-**New Behavior**: Count+time-based retry system with periodic reset.
+Recovery uses a count+time-based retry system with periodic reset, so a single failed recovery attempt never locks out future retries.
 
 **State Machine**:
 ```
@@ -221,25 +207,14 @@ When a batch fails because an on-chain order no longer exists, the cleanup relea
 
 ### 1.6 Remainder Accuracy During Capped Resize
 
-#### Problem Fixed
+When grid resize is capped by available funds, accounting tracks what portion of the ideal grid went unallocated via per-slot tracking:
+- **Fully allocated slots**: receive their ideal size (no remainder)
+- **Fund-capped slots**: receive less than ideal because available funds ran out mid-allocation
 
-When grid resize was capped by available funds, the accounting system needed to track what portion of the ideal grid went unallocated. This required careful per-slot tracking to distinguish between:
-- **Fully allocated slots**: received their ideal size (no remainder)
-- **Fund-capped slots**: received less than ideal because available funds ran out mid-allocation
+Computing the remainder from totals instead overstates it when some slots are fully allocated and others are capped.
 
-Without per-slot tracking, the remainder was computed from totals, which overstated it when some slots were fully allocated and others were capped.
+#### Per-Slot Tracking
 
-#### Solution: Per-Slot Tracking
-
-**Old Behavior** (Incorrect):
-```javascript
-// Compute unallocated remainder from ideal sizes
-const remainder = totalIdealSizes - totalAllocatedSizes;
-// Problem: If actual allocation capped at 80% due to insufficient funds,
-// this uses 100% ideal in calculation → remainder overstated
-```
-
-**New Behavior** (Correct):
 ```javascript
 // Track per-slot applied sizes
 const appliedSizes = [];
@@ -415,25 +390,9 @@ targetSlot.orderId = newOrderId;
 
 ### 3.6 Orphan-Fill Deduplication & Double-Credit Prevention
 
-**Location**: `modules/dexbot_class.ts` — constructor, `_recoverExplicitStaleOrders()` (line 445), orphan-fill guard in the fill drain loop (line ~1633), and pruning pass after each cycle (line ~1919).
+**Location**: `modules/dexbot_class.ts` — constructor, `_recoverExplicitStaleOrders()` (line 448); orphan-fill guard in the fill drain loop and pruning pass after each cycle now live in `modules/dexbot_fill_runtime.ts` (guard ~lines 628-646, pruning ~lines 934-946).
 
-#### Problem Solved
-
-During Feb 7 market crash, stale-order batch failures cascaded into double-crediting:
-
-**Scenario**:
-1. Batch operation scheduled with 12 orders
-2. Order X is on-chain, included in batch
-3. Between sync and broadcast, order X fills on market (stale order)
-4. Batch execution fails: "Limit order X does not exist"
-5. Error handler: Clean up grid slot X, release funds to `chainFree`
-6. Meanwhile, fill event arrives: "Order X was filled at price Y for amount Z"
-7. Orphan-fill handler: Credits proceeds to `chainFree` AGAIN
-8. **Result**: Double-credit of proceeds, inflated `chainTotal`, fund drift
-
-**In Crash Numbers**: 7 orphan fills × ~700 BTS = ~4,600 BTS inflated → cascaded to 47,842 BTS total drift.
-
-#### Solution: Stale-Cleaned Order ID Tracking with TTL + Recycled-Slot Guard
+#### Stale-Cleaned Order ID Tracking with TTL + Recycled-Slot Guard
 
 **Mechanism**: Track which orders were cleaned up during batch failure recovery using timestamp + grid-slot retention.
 
@@ -566,7 +525,7 @@ BitShares charges fees for `limit_order_create` and `limit_order_cancel`.
     2.  If sufficient `chainFree` available: deduct full amount atomically.
     3.  If insufficient: defer settlement and retry when funds become available.
 
--   **Adoption fee parity (1.4.8):** COW chain-adoption paths charge fees exactly like the normal open-orders loop. `adoptPlacedBatchFromChain` (refused-commit and poll-confirmed paths) and the startup uncertain-create adoption apply the create/cancel/update fees via `_applySync` — previously create-only charging let optimistic BTS drift when a batch's orders were adopted without fee accounting.
+-   **Adoption fee parity:** COW chain-adoption paths charge fees exactly like the normal open-orders loop. `adoptPlacedBatchFromChain` (refused-commit and poll-confirmed paths) and the startup uncertain-create adoption apply the create/cancel/update fees via `_applySync`.
 
 -   **Safe fee lookup:** `processBatchResults` uses `getAssetFeesSafe('BTS')` with zero-fee fallbacks — the throwing variant can no longer hard-fail a whole batch after a successful commit (`modules/dexbot_cow_runtime.ts`).
 
@@ -588,7 +547,7 @@ These are deducted from the *proceeds* of a fill.
 
 For BTS fees, the system returns a structured object (not a simple number) with multiple fields for accounting precision.
 
-**Location**: `modules/order/utils/math.ts::getAssetFees()` (line 312). The fee cache itself is populated by `modules/order/utils/system.ts::initializeFeeCache()` (line 631).
+**Location**: `modules/order/utils/math.ts::getAssetFees()` (line 312). The fee cache itself is populated by `modules/order/utils/system.ts::initializeFeeCache()` (line 665).
 
 #### BTS Fee Object (Always Object)
 
@@ -651,10 +610,6 @@ const createFee = feeInfo.createFee;   // BTS only
 
 ### 5.4 BUY Side Sizing & Fee Accounting
 
-**Problem Fixed**: BUY side fee calculations incorrectly applied fees to base asset instead of quote asset.
-
-**Solution**: Corrected fee accounting with proper asset assignment.
-
 #### Fee Application by Side
 
 | Side | Asset | Calculation | Notes |
@@ -702,13 +657,11 @@ For BUY orders that are makers:
 
 ### 5.5 Precision & Quantization
 
-**Problem**: Floating-point arithmetic accumulates rounding errors over many calculations. After dozens of order size calculations, price derivations, and fund allocations, float values drift from their true blockchain integer representations, causing mismatches between internal state and on-chain reality.
-
-**Solution**: Centralized quantization utilities that eliminate float accumulation by round-tripping through blockchain integer representation.
+Floating-point arithmetic drifts from true blockchain integer representations over many order-size calculations, price derivations, and fund allocations. Quantization eliminates this accumulation by round-tripping every value through its blockchain integer form.
 
 #### 5.5.1 Core Quantization Functions
 
-**Location**: `modules/order/utils/math.ts` (line 260)
+**Location**: `modules/order/utils/math.ts` (line 265)
 
 ##### `quantizeFloat(value, precision)` - Eliminate Accumulation Errors
 
@@ -771,21 +724,13 @@ const normalized = normalizeInt(currentSizeInt, 8);
 - Normalizing fund totals before invariant checks
 - Preparing sizes for blockchain transaction encoding
 
-#### 5.5.2 Consolidation Impact
+#### 5.5.2 Consolidated Quantization
 
-Previously, five separate quantization implementations existed:
-- `dexbot_class.ts` - Manual rounding logic
-- `order.ts` - Custom precision handling
-- `strategy.ts` - Divergent rounding approach
-- `chain_orders.ts` - Different quantization pattern
-- `export.ts` - Isolated float conversions
+Quantization has a single source of truth: `quantizeFloat()` in `modules/order/utils/math.ts`.
 
-**After Consolidation:**
-✅ Single source of truth (`math.ts`)
 ✅ Consistent precision handling across all modules
 ✅ Reduced regression risk (tested once, used everywhere)
-✅ Eliminated subtle float accumulation bugs
-✅ All 34+ test suites pass with zero regressions
+✅ No subtle float accumulation bugs from divergent rounding paths
 
 #### 5.5.3 Precision Best Practices
 
@@ -818,7 +763,7 @@ This prevents the bug where `available = chainFree + required` created a tautolo
 
 ## 6. Safety & Invariants
 
-The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference. Invariants are checked by `_verifyFundInvariants()` (`modules/order/accounting.ts` line 502) after every blockchain sync cycle. The verification reads from a snapshot captured under `_fundLock` — `actualBuy`/`actualSell` are captured at snapshot time, not read live outside the lock, closing a TOCTOU window. When a violation is detected, the system logs a `CRITICAL` error and attempts automatic recovery via `manager.accountant.recalculateFunds()` (`modules/order/accounting.ts` line 347, delegated from `modules/order/manager.ts` lines 981–990) — resetting internal state to match on-chain reality. If the grid lock is held (mid-rebalance), recovery is deferred until the lock is released. The bot continues operating throughout; it does **not** halt on invariant violations.
+The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference. Invariants are checked by `_verifyFundInvariants()` (`modules/order/accounting.ts` line 501) after every blockchain sync cycle. The verification reads from a snapshot captured under `_fundLock` — `actualBuy`/`actualSell` are captured at snapshot time, not read live outside the lock, closing a TOCTOU window. When a violation is detected, the system logs a `CRITICAL` error and attempts automatic recovery via `manager.accountant.recalculateFunds()` (`modules/order/accounting.ts` line 346, delegated from `modules/order/manager.ts` lines 981–990) — resetting internal state to match on-chain reality. If the grid lock is held (mid-rebalance), recovery is deferred until the lock is released. The bot continues operating throughout; it does **not** halt on invariant violations.
 
 ### 6.1 The Equality Invariant
 Total funds on chain must equal free plus committed.
@@ -834,18 +779,17 @@ A violation here means the grid has allocated more capital than actually exists 
 
 ### 6.3 Race Condition Protection (TOCTOU)
 To prevent "Time-of-Check to Time-of-Use" errors:
-1.  **Locking:** `AsyncLock` (re-entrant) prevents concurrent updates to the same order. Nested `acquire()` from the same execution context runs the callback directly instead of queueing, eliminating the `fillLockAlreadyHeld` parameter that previously threaded through 25+ call sites.
+1.  **Locking:** `AsyncLock` (re-entrant) prevents concurrent updates to the same order. Nested `acquire()` from the same execution context runs the callback directly instead of queueing.
 2.  **Atomic Deduct:** `tryDeductFromChainFree` checks *and* subtracts in a single synchronous step.
 3.  **Bootstrapping:** Fills arriving during startup (`isBootstrapping=true`) are queued until the grid is fully reconciled ([GRID_RECONCILE.md](GRID_RECONCILE.md)).
 
-### 6.4 Stale Accounting & Fee Over-Credit Guards (v1.2.1)
-Two additional accounting hardening measures added in v1.2.1:
+### 6.4 Stale Accounting & Fee Over-Credit Guards
 
-**Stale `accountTotals` no longer HARD-ABORTs COW commit.** Transient staleness (e.g., the periodic balance fetch overlaps with a COW commit) logs a `WARN` and schedules recovery instead of throwing `ACCOUNTING_COMMITMENT_FAILED`. Totals are also refreshed after bootstrap to prevent a spurious full recovery on the first maintenance cycle.
+**Stale `accountTotals` does not abort COW commit.** Transient staleness (e.g., the periodic balance fetch overlaps with a COW commit) logs a `WARN` and schedules recovery instead of throwing `ACCOUNTING_COMMITMENT_FAILED`. Totals are also refreshed after bootstrap to prevent a spurious full recovery on the first maintenance cycle.
 
-**Fee-deduction failure escalates to `error`.** When `getAssetFees` throws during fill processing (e.g., network blip), `_deductFeesFromProceeds` previously returned raw proceeds without deduction and logged at `warn` level — silently inflating `accountTotals` over time. The log is now `error` with explicit "fund tracking will over-credit" language so operators can detect the drift source in production logs.
+**Fee-deduction failure logs at `error`.** When `getAssetFees` throws during fill processing (e.g., network blip), `_deductFeesFromProceeds` skips the deduction and logs at `error` with explicit "fund tracking will over-credit" language so operators can detect the drift source in production logs.
 
-**TOCTOU in `processFillAccounting`.** `_buildBtsDeferredRefundAdjustment` reads `btsFeeState` from `mgr.orders`, but the order lock was acquired after accounting ran. Fixed by acquiring the lock first, then running `processFillAccounting` under the lock. This fix was also ported to POST-RESET and BOOTSTRAP tracked-fill accounting paths.
+**TOCTOU protection in `processFillAccounting`.** `_buildBtsDeferredRefundAdjustment` reads `btsFeeState` from `mgr.orders` while the order lock is held — the lock is acquired before accounting runs, and the POST-RESET and BOOTSTRAP tracked-fill accounting paths follow the same locking pattern.
 
 ---
 *Technical Reference for DEXBot2 v1.4.21 release*

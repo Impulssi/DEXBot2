@@ -233,7 +233,7 @@ When `maxBorrowAmountPerOperation` is set, each credit-maintenance cycle runs `_
 
 - Discovers deals whose `debtAmount` exceeds `maxBorrowAmountPerOperation`.
 - Splits each oversized deal into `ceil(debt / maxPerOp)` equal pieces via atomic repay+reborrow transactions. Total debt across the new deals is preserved; only deal granularity changes.
-- Skips a deal if any piece would fall below the offer's `min_deal_amount` (the offer is cached for the runtime lifetime, so on-chain `min_deal_amount` changes mid-split are not re-read).
+- Skips a deal if any piece would fall below the offer's `min_deal_amount` (offers are cached with a 10-minute TTL — `TIMING.OFFER_CACHE_TTL_MS` — so on-chain `min_deal_amount` changes are picked up on the next re-fetch).
 - Pauses `BLOCKCHAIN_SETTLE_DELAY_MS` between pieces; aborts on shutdown.
 - Stops once `CREDIT_DEAL_SPLIT_MAX_PIECES` pieces have been emitted in the current cycle. Remaining oversized deals are deferred to the next maintenance cycle.
 - Uses an in-process `_splitInFlight` guard so `runMaintenance` and `runCreditWatchdog` cannot start overlapping splits.
@@ -342,12 +342,12 @@ Treat this file as runtime state, not primary configuration. The source of truth
 
 - `modules/credit_runtime.ts`: debt workflow executor (Phase 0 oversized-deal splitter lives here)
 - `modules/cr_planner.ts`: MPA debt-first planner; clamps `debtDelta` by `maxBorrowAmountPerOperation`
-- `modules/types.ts`: `LendingEntryBase` — shared `mpa` / `creditOffer` type including `maxBorrowAmountPerOperation`
+- `modules/cr_planner.ts`: `DebtFirstCrPlanOptions` — planner options carrying `maxBorrowAmountPerOperation`; lending-item shapes are validated inline in `bot_settings.ts`
 - `modules/dexbot_class.ts`: runtime startup and watchdog lifecycle
 - `modules/bot_settings.ts`: `debtPolicy` validation
 - `market_adapter/README.md`: AMA pricing, grid triggers, and dynamic-weight runtime
 - `modules/credential_policy.ts`: signing constraints for credit and call-order operations
-- `tests/test_credit_runtime.ts`: credit runtime behavior coverage (including 6 oversized-deal splitter tests)
+- `tests/test_credit_runtime.ts`: credit runtime behavior coverage (including 3 oversized-deal splitter tests)
 - `tests/test_multi_asset_distribution.ts`: collateral distribution and multi-asset state coverage
 
 </details>

@@ -211,7 +211,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 - `INV-BATCH-001` Illegal state batch abort
   - `executeBatch` throws `ILLEGAL_SPREAD_STATE` on an illegal grid layout (emitted at `modules/order/utils/validate.ts`, propagated via `modules/order/manager.ts` `_throwOnIllegalState`).
-  - The `_handleBatchHardAbort` catch for `ILLEGAL_ORDER_STATE` (`dexbot_state_recovery.ts:126`) is a test-only dead branch — production never emits that code; only the test stub at `tests/test_patch17_invariants.ts:396` uses it.
+  - The `_handleBatchHardAbort` catch for `ILLEGAL_ORDER_STATE` (`dexbot_state_recovery.ts:133`) is a test-only dead branch — production never emits that code; only the test stub at `tests/test_patch17_invariants.ts:396` uses it.
   - In production, recovery + cooldown are armed on the next maintenance tick via `_abortFlowIfIllegalState` (the `INV-MAINT-002` path), returning `abortedForIllegalState: true` to the caller. The caller does not need to return immediately; the maintenance tick handles recovery.
   - Hard abort triggers one immediate recovery sync (`_triggerStateRecoverySync`) plus arms one maintenance cooldown cycle (`_maintenanceCooldownCycles = Math.max(current, 1)`).
 
@@ -230,7 +230,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
     - NOT virtualize the slot.
     - Preserve `orderId` until sync reconciles it.
     - NOT mark the order as stale-cleaned.
-  - Fast path: if the batch result indicates `ORDER_SIZE_DRIFT_TARGETED` (`dexbot_state_recovery.ts:247`), a targeted repair applies the correction directly and skips `_triggerStateRecoverySync`.
+  - Fast path: if the batch result indicates `ORDER_SIZE_DRIFT_TARGETED` (`dexbot_state_recovery.ts:263`), a targeted repair applies the correction directly and skips `_triggerStateRecoverySync`.
 
 ---
 
@@ -254,7 +254,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-REG-001` Cross-bot allocation ≤ proportional share
   - Per-bot committed amounts (sum of on-chain orders) must not exceed `totalChainBalance × allocatedPercent`.
   - Violation triggers an error-level log entry (not silent), with tolerance `max(PERCENT_TOLERANCE * 3, 0.15)`.
-  - Registry registration is pre-flight + atomic; only shared-account bots register (`dexbot.ts:521` filters `accountGroups[a].length > 1`), and registration completes before any shared-account bot starts.
+  - Registry registration is pre-flight + atomic; only shared-account bots register (`dexbot.ts:535` filters `accountGroups[a].length > 1`), and registration completes before any shared-account bot starts.
   - Release happens in `DEXBot.shutdown`.
 
 - `INV-REG-002` Async-locked registry writes
@@ -290,7 +290,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 - `INV-BROADCAST-002` Deadlock-free reconcile after uncertain broadcast
   - `_reconcileAfterUncertainBroadcast` does not need a `fillLockAlreadyHeld` flag because `AsyncLock` is re-entrant — a second `acquire()` from within the same execution context runs the callback directly instead of queueing.
-  - The `gridLockAlreadyHeld` flag has been eliminated — the lock hierarchy was corrected so that `_syncLock(2)` is acquired before `_gridLock(3)` in all paths.
+  - The lock hierarchy requires `_syncLock(2)` to be acquired before `_gridLock(3)` in all paths; no `gridLockAlreadyHeld` bypass flag exists.
 
 - `INV-BROADCAST-003` Verify-before-retry; never re-sign an uncertain broadcast
   - An uncertain outcome (RPC timeout, connection dropped with a response pending, unknown code) must never be re-signed — a re-sign would land a duplicate transaction on chain (new tx ID per signature).

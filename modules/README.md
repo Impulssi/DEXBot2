@@ -127,7 +127,8 @@ modules/
 └── utils/
     ├── base58check.ts             Base58Check encoding
     ├── build_dir.ts               BUILD_DIR constant helper
-    └── errors.ts                  getErrorMessage helper
+    ├── errors.ts                  getErrorMessage helper
+    └── sanitize_key.ts            shared sanitizeKey helper
 ```
 
 ## Key Relationships
