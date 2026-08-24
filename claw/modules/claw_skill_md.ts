@@ -237,20 +237,17 @@ function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) 
 }
 
 function buildRuntimeWorkflow(runtime: any) {
-  if (runtime.runtime === 'hermes') {
-    return [
-      '- Start with `claw_manifest`, `claw_runtime`, `claw_profile_context`, `claw_market_snapshot`, `claw_account_snapshot`, or `claw_open_orders`.',
-      '- For MPA and short workflows, use `claw_build_open_short_plan`, `claw_build_take_profit_plan`, or `claw_build_close_short_plan` before executing trades.',
-      '- Use `claw_honest_context`, `claw_honest_pair`, and `claw_honest_price` when the task involves HONEST assets or discovery.',
-      '- The shared Claw MCP server registers raw tool ids such as `claw_manifest`; if Hermes shows a namespaced label in its UI, follow the label shown there.'
-    ].join('\n');
-  }
-
-  return [
+  const baseLines = [
     '- Start with `claw_manifest`, `claw_runtime`, `claw_profile_context`, `claw_market_snapshot`, `claw_account_snapshot`, or `claw_open_orders`.',
     '- For MPA and short workflows, use `claw_build_open_short_plan`, `claw_build_take_profit_plan`, or `claw_build_close_short_plan` before executing trades.',
     '- Use `claw_honest_context`, `claw_honest_pair`, and `claw_honest_price` when the task involves HONEST assets or discovery.'
-  ].join('\n');
+  ];
+
+  if (runtime.runtime === 'hermes') {
+    baseLines.push('- The shared Claw MCP server registers raw tool ids such as `claw_manifest`; if Hermes shows a namespaced label in its UI, follow the label shown there.');
+  }
+
+  return baseLines.join('\n');
 }
 
 function buildRuntimeSkillToml(runtime: any, repoRoot: string, profileRoot: string) {

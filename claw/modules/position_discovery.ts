@@ -9,16 +9,11 @@
  */
 
 
-import { loadDexbotOrderUtils } from './dexbot_bridge.js';
-import { computeBtsPerMpa } from './mpa_utils.js';
 import { roundTo } from '../../modules/order/utils/math.js';
 'use strict';
 
 import { getAsset, getBackingAsset, getBitassetData, getFullAccount } from './chain_queries.js';
-
-function getBlockchainToFloat() {
-  return loadDexbotOrderUtils().blockchainToFloat;
-}
+import { computeCallOrderAmounts } from './mpa_utils.js';
 
 /**
  * Normalize a raw call order into a position object compatible with
@@ -31,13 +26,7 @@ function getBlockchainToFloat() {
  * @returns {Object} Normalized position
  */
 function normalizeCallOrder(callOrder: any, mpaAsset: any, backingAsset: any, bitassetData: any) {
-  const blockchainToFloat = getBlockchainToFloat();
-  const debtAmount = blockchainToFloat(callOrder.debt, mpaAsset.precision);
-  const collateralAmount = blockchainToFloat(callOrder.collateral, backingAsset.precision);
-  const settlement = bitassetData?.current_feed?.settlement_price;
-  const btsPerMpa = computeBtsPerMpa(settlement, mpaAsset, backingAsset);
-  const debtValueInBts = debtAmount && btsPerMpa ? debtAmount * btsPerMpa : 0;
-  const collateralRatio = debtValueInBts > 0 ? collateralAmount / debtValueInBts : null;
+  const amounts = computeCallOrderAmounts(callOrder, mpaAsset, backingAsset, bitassetData);
 
   return {
     id: callOrder.id,
@@ -48,11 +37,11 @@ function normalizeCallOrder(callOrder: any, mpaAsset: any, backingAsset: any, bi
     backingSymbol: backingAsset.symbol,
     onChain: {
       callOrderId: callOrder.id,
-      collateralAmount: collateralAmount || 0,
-      collateralRatio,
-      debtAmount: debtAmount || 0,
-      debtValueInBts,
-      btsPerMpa,
+      collateralAmount: amounts.collateralAmount,
+      collateralRatio: amounts.collateralRatio,
+      debtAmount: amounts.debtAmount,
+      debtValueInBts: amounts.debtValueInBts,
+      btsPerMpa: amounts.btsPerMpa,
       feedPublicationTime: bitassetData?.current_feed_publication_time || null,
     },
   };
@@ -76,21 +65,21 @@ async function discoverPositions(accountName: string) {
     callOrders.map((co: any) => co?.call_price?.quote?.asset_id).filter(Boolean)
   )];
 
-  // Resolve all assets in parallel
+  // Resolve every debt asset's MPA/backing/bitasset triple in parallel.
   const assetCache = new Map();
   const bitassetCache = new Map();
 
-  for (const assetId of debtAssetIds) {
-    const mpaAsset = await getAsset(assetId);
-    if (!mpaAsset) continue;
-    assetCache.set(assetId, mpaAsset);
+  await Promise.all(debtAssetIds.map(async (assetId) => {
+    const [mpaAsset, backingAsset, bitassetData] = await Promise.all([
+      getAsset(assetId).catch(() => null),
+      getBackingAsset(assetId).catch(() => null),
+      getBitassetData(assetId).catch(() => null)
+    ]);
 
-    const backingAsset = await getBackingAsset(assetId);
+    if (mpaAsset) assetCache.set(assetId, mpaAsset);
     if (backingAsset) assetCache.set(`backing:${assetId}`, backingAsset);
-
-    const bitassetData = await getBitassetData(assetId);
     if (bitassetData) bitassetCache.set(assetId, bitassetData);
-  }
+  }));
 
   // Normalize each call order
   const positions: any[] = [];

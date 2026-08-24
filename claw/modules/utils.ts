@@ -5,5 +5,13 @@ function clone(value: any) {
   return JSON.parse(JSON.stringify(value));
 }
 
-export { clone }
+function requirePositiveNumber(value: any, fieldName: string) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    throw new Error(`${fieldName} must be a positive number`);
+  }
+  return numericValue;
+}
+
+export { clone, requirePositiveNumber }
 

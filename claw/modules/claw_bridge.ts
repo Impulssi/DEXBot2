@@ -11,7 +11,8 @@ import { buildCloseShortPlan, buildOpenShortPlan, buildTakeProfitPlan, closeShor
 import { launcherRun, launcherDrystart, launcherReset, launcherDisable, launcherPm2Start, launcherPm2Stop, launcherPm2Delete, launcherPm2Restart } from './claw_launcher.js';
 
 
-import type { ClawBridgeOptions, Logger } from './types.js';
+import type { ClawBridgeOptions } from './types.js';
+import { validateMemuCommandArgs } from './memu_bridge.js';
 
 function stripPrivateKey(options: ClawBridgeOptions = {}): ClawBridgeOptions {
   const sanitized = { ...options };
@@ -21,22 +22,35 @@ function stripPrivateKey(options: ClawBridgeOptions = {}): ClawBridgeOptions {
 
 /**
  * Split a "BASE/QUOTE" pair string into { baseSymbol, quoteSymbol }.
- * Throws if the pair does not contain a '/'.
+ * Throws if the value is not a two-segment BASE/QUOTE string — extra segments
+ * are rejected instead of being silently dropped.
  */
 function splitPair(pairValue: string) {
   if (typeof pairValue !== 'string' || !pairValue.includes('/')) {
     throw new Error('pair must be provided as BASE/QUOTE');
   }
 
-  const [baseSymbol, quoteSymbol] = pairValue.split('/');
-  if (!baseSymbol || !quoteSymbol) {
+  const segments = pairValue.split('/');
+  if (segments.length !== 2 || !segments[0] || !segments[1]) {
     throw new Error('pair must be provided as BASE/QUOTE');
   }
 
   return {
-    baseSymbol: baseSymbol.trim(),
-    quoteSymbol: quoteSymbol.trim()
+    baseSymbol: segments[0].trim(),
+    quoteSymbol: segments[1].trim()
   };
+}
+
+/**
+ * Resolve explicit asset symbols or fall back to the parsed pair option.
+ * Returns null when neither is available so callers can raise their own
+ * command-specific error.
+ */
+function resolvePairSymbols(safeOptions: ClawBridgeOptions) {
+  if (!safeOptions.pair) {
+    return null;
+  }
+  return splitPair(safeOptions.pair);
 }
 
 /**
@@ -45,6 +59,25 @@ function splitPair(pairValue: string) {
  */
 function getProfileContextRef(options: ClawBridgeOptions = {}): string | null {
   return options.botRef || options.identifier || options.botId || options.pair || null;
+}
+
+const MEMU_COMMAND_MAP: Record<string, string> = {
+  'memu-memorize': 'memorize',
+  'memu-retrieve': 'retrieve',
+  'memu-create-item': 'create-item',
+  'memu-update-item': 'update-item',
+  'memu-delete-item': 'delete-item',
+  'memu-memorize-conversation': 'memorize-conversation',
+  'memu-memorize-trading-context': 'memorize-trading-context',
+  'memu-retrieve-trading-context': 'retrieve-trading-context'
+};
+
+/**
+ * Credit runtime commands address bots by botRef or identifier only (never
+ * botId/pair, unlike profile-context).
+ */
+function getCreditRuntimeBotRef(options: ClawBridgeOptions = {}): string | null {
+  return options.botRef || options.identifier || null;
 }
 
 /**
@@ -121,12 +154,12 @@ async function runClawCommand(command: string, options: ClawBridgeOptions = {}):
 
     case 'profile-context':
       return bridge.profiles.getClawProfileContext(
-        safeOptions.botRef || safeOptions.identifier || safeOptions.botId || safeOptions.pair || null,
+        getProfileContextRef(safeOptions),
         safeOptions
       );
 
     case 'market-snapshot': {
-      const pair = safeOptions.pair ? splitPair(safeOptions.pair) : null;
+      const pair = resolvePairSymbols(safeOptions);
       const baseSymbol = safeOptions.baseSymbol || pair?.baseSymbol;
       const quoteSymbol = safeOptions.quoteSymbol || pair?.quoteSymbol;
 
@@ -173,7 +206,7 @@ async function runClawCommand(command: string, options: ClawBridgeOptions = {}):
       });
 
     case 'honest-pair': {
-      const pair = safeOptions.pair ? splitPair(safeOptions.pair) : null;
+      const pair = resolvePairSymbols(safeOptions);
       const assetA = safeOptions.assetA || pair?.baseSymbol;
       const assetB = safeOptions.assetB || pair?.quoteSymbol;
 
@@ -185,7 +218,7 @@ async function runClawCommand(command: string, options: ClawBridgeOptions = {}):
     }
 
     case 'honest-price': {
-      const pair = safeOptions.pair ? splitPair(safeOptions.pair) : null;
+      const pair = resolvePairSymbols(safeOptions);
       const assetA = safeOptions.assetA || pair?.baseSymbol;
       const assetB = safeOptions.assetB || pair?.quoteSymbol;
 
@@ -290,18 +323,14 @@ async function runClawCommand(command: string, options: ClawBridgeOptions = {}):
       return getMpaPosition(safeOptions.accountName || safeOptions.accountRef || accountName, safeOptions.mpaAsset);
 
     case 'credit-runtime-status':
-      return bridge.creditRuntime.getStatus(
-        safeOptions.botRef || safeOptions.identifier || null
-      );
+      return bridge.creditRuntime.getStatus(getCreditRuntimeBotRef(safeOptions));
 
     case 'credit-runtime-refresh':
-      return bridge.creditRuntime.refresh(
-        safeOptions.botRef || safeOptions.identifier || null
-      );
+      return bridge.creditRuntime.refresh(getCreditRuntimeBotRef(safeOptions));
 
     case 'credit-runtime-maintenance':
       return bridge.creditRuntime.runMaintenance(
-        safeOptions.botRef || safeOptions.identifier || null,
+        getCreditRuntimeBotRef(safeOptions),
         safeOptions.context || 'periodic',
         safeOptions,
         options.privateKey
@@ -309,13 +338,13 @@ async function runClawCommand(command: string, options: ClawBridgeOptions = {}):
 
     case 'credit-runtime-watchdog':
       return bridge.creditRuntime.runWatchdog(
-        safeOptions.botRef || safeOptions.identifier || null,
+        getCreditRuntimeBotRef(safeOptions),
         options.privateKey
       );
 
     case 'credit-runtime-reborrows':
       return bridge.creditRuntime.processReborrows(
-        safeOptions.botRef || safeOptions.identifier || null,
+        getCreditRuntimeBotRef(safeOptions),
         options.privateKey
       );
 
@@ -346,72 +375,23 @@ async function runClawCommand(command: string, options: ClawBridgeOptions = {}):
     case 'memu-manifest':
       return require('./memu_bridge').describeMemuBridge(safeOptions);
 
-    case 'memu-memorize': {
-      if (!safeOptions.resourceUrl || !safeOptions.modality) {
-        throw new Error('memu-memorize requires resourceUrl and modality');
-      }
-      return runMemuCommand('memorize', safeOptions);
-    }
-
-    case 'memu-retrieve': {
-      if (!safeOptions.queries) {
-        throw new Error('memu-retrieve requires queries');
-      }
-      return runMemuCommand('retrieve', safeOptions);
-    }
-
+    case 'memu-memorize':
+    case 'memu-retrieve':
     case 'memu-list-categories':
-      return runMemuCommand('list-categories', safeOptions);
-
     case 'memu-list-items':
-      return runMemuCommand('list-items', safeOptions);
-
-    case 'memu-create-item': {
-      if (!(safeOptions.categoryId || safeOptions.categoryName || safeOptions.category) || !safeOptions.summary) {
-        throw new Error('memu-create-item requires categoryId or categoryName, plus summary');
-      }
-      return runMemuCommand('create-item', safeOptions);
-    }
-
-    case 'memu-update-item': {
-      if (!safeOptions.itemId || !safeOptions.updates) {
-        throw new Error('memu-update-item requires itemId and updates');
-      }
-      return runMemuCommand('update-item', safeOptions);
-    }
-
-    case 'memu-delete-item': {
-      if (!safeOptions.itemId) {
-        throw new Error('memu-delete-item requires itemId');
-      }
-      return runMemuCommand('delete-item', safeOptions);
-    }
-
+    case 'memu-create-item':
+    case 'memu-update-item':
+    case 'memu-delete-item':
     case 'memu-clear':
-      return runMemuCommand('clear', safeOptions);
-
     case 'memu-status':
-      return runMemuCommand('status', safeOptions);
-
-    case 'memu-memorize-conversation': {
-      if (!safeOptions.messages) {
-        throw new Error('memu-memorize-conversation requires messages');
-      }
-      return runMemuCommand('memorize-conversation', safeOptions);
-    }
-
-    case 'memu-memorize-trading-context': {
-      if (!safeOptions.context) {
-        throw new Error('memu-memorize-trading-context requires context');
-      }
-      return runMemuCommand('memorize-trading-context', safeOptions);
-    }
-
+    case 'memu-memorize-conversation':
+    case 'memu-memorize-trading-context':
     case 'memu-retrieve-trading-context': {
-      if (!safeOptions.query) {
-        throw new Error('memu-retrieve-trading-context requires query');
-      }
-      return runMemuCommand('retrieve-trading-context', safeOptions);
+      const memuCommand = MEMU_COMMAND_MAP[command] || command.replace(/^memu-/, '');
+      // Shared validation with runMemuCommand/memu_mcp_server so every surface
+      // rejects missing args with the same message.
+      validateMemuCommandArgs(memuCommand, safeOptions);
+      return runMemuCommand(memuCommand, safeOptions);
     }
 
     default:

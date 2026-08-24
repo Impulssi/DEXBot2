@@ -186,6 +186,10 @@ function buildSummary(assessments: Array<Record<string, any>>) {
 function resetAnalyzers() {
   analyzers.clear();
   analyzerConfigs.clear();
+  // Premiums belong to the analyzer generation that produced them; keeping
+  // them across a reset would let the reuse path report a stale value from
+  // discarded config.
+  marketPremiums.clear();
 }
 
 export { evaluate, getOrCreateAnalyzer, resetAnalyzers }

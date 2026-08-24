@@ -3,11 +3,12 @@ import * as client from './bitshares_client.js';
 const { BitShares } = client;
 import { executeOperations } from './chain_broadcast.js';
 import { loadDexbotOrderUtils, requireDexbot2Module, loadDexbotOrderConstants } from './dexbot_bridge.js';
-import { requireBtsBackedMpa, CORE_SYMBOL } from './mpa_utils.js';
-import { getAsset, getBackingAsset, getFullAccount, readOpenOrders, resolveAccountId, resolveAccountName } from './chain_queries.js';
+import { requireBtsBackedMpa } from './mpa_utils.js';
+import { getAsset, getFullAccount, readOpenOrders, resolveAccountId, resolveAccountName } from './chain_queries.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
 
-// Graphene protocol constant: operation type 4 = limit_order_create (fill events carry op[0] = 4 for matched orders)
+// Graphene protocol constant: operation type 4 = fill_order (limit_order_create
+// is type 1). Account history subscriptions emit op[0] = 4 for matched fills.
 const FILL_ORDER_OPERATION_TYPE = 4;
 const accountSubscriptions = new Map();
 
@@ -134,18 +135,7 @@ async function buildBorrowMpaOperation({
     throw new Error(`Account not found: ${accountName}`);
   }
 
-  const mpaMeta = await resolveAssetMeta(mpaAsset);
-  if (!mpaMeta.bitasset_data_id) {
-    throw new Error(`${mpaAsset} is not a market-issued asset`);
-  }
-
-  const backingAsset = await getBackingAsset(mpaAsset);
-  if (!backingAsset) {
-    throw new Error(`Could not resolve backing asset for ${mpaAsset}`);
-  }
-  if (backingAsset.symbol !== CORE_SYMBOL) {
-    throw new Error(`${mpaAsset} is backed by ${backingAsset.symbol}, not ${CORE_SYMBOL}; use short_mpa_strategy for non-BTS MPAs`);
-  }
+  const { backingAsset, mpaAsset: mpaMeta } = await requireBtsBackedMpa(mpaAsset, 'use short_mpa_strategy for non-BTS MPAs');
 
   const floatToBlockchainInt = getFloatToBlockchainInt();
   const debtInt = floatToBlockchainInt(debtDelta, mpaMeta.precision);
@@ -179,18 +169,7 @@ async function buildSettleMpaOperation({ accountName, mpaAsset, amount }: any) {
     throw new Error(`Account not found: ${accountName}`);
   }
 
-  const mpaMeta = await resolveAssetMeta(mpaAsset);
-  if (!mpaMeta.bitasset_data_id) {
-    throw new Error(`${mpaAsset} is not a market-issued asset`);
-  }
-
-  const backingAsset = await getBackingAsset(mpaAsset);
-  if (!backingAsset) {
-    throw new Error(`Could not resolve backing asset for ${mpaAsset}`);
-  }
-  if (backingAsset.symbol !== CORE_SYMBOL) {
-    throw new Error(`${mpaAsset} is backed by ${backingAsset.symbol}, not ${CORE_SYMBOL}`);
-  }
+  const { mpaAsset: mpaMeta } = await requireBtsBackedMpa(mpaAsset);
 
   const floatToBlockchainInt = getFloatToBlockchainInt();
   const settleAmountInt = floatToBlockchainInt(amount, mpaMeta.precision);
@@ -304,36 +283,19 @@ async function listenForFills(accountNameOrId: any, callback: any) {
 
   if (!accountSubscriptions.has(accountName)) {
     const callbacks: Set<Function> = new Set();
-    const bsCallback = (updates: any[] = []) => {
-      const fills = updates.filter((update) => update?.op && update.op[0] === FILL_ORDER_OPERATION_TYPE);
-      if (fills.length === 0) {
-        return;
-      }
-
-      for (const fn of Array.from(callbacks)) {
-        // The callback may be async. Run it synchronously so sync throws are
-        // caught here, and attach a catch for async rejections so a rejected
-        // handler cannot become an unhandled promise rejection (crash on
-        // Node >= 15).
-        try {
-          const result = fn(fills);
-          if (result && typeof result.then === 'function') {
-            result.catch((err: any) => {
-              console.error('listenForFills callback error:', getErrorMessage(err));
-            });
-          }
-        } catch (err: any) {
-          console.error('listenForFills callback error:', getErrorMessage(err));
-        }
-      }
-    };
-
-    BitShares.subscribe('account', bsCallback, accountName);
+    let bsCallback: Function | null = null;
+    try {
+      bsCallback = await subscribeAccountFills(accountName, callbacks);
+    } catch (err: any) {
+      throw new Error(`Failed to subscribe to account updates for ${accountName}: ${getErrorMessage(err)}`);
+    }
+    // Register only after the remote subscription succeeded so callers never
+    // believe they are subscribed when setup actually failed.
     accountSubscriptions.set(accountName, { callbacks, bsCallback });
   }
 
   const entry = accountSubscriptions.get(accountName);
-  if (!entry) {
+  if (!entry || !entry.bsCallback) {
     throw new Error(`Subscription entry not found for ${accountName}`);
   }
   entry.callbacks.add(callback);
@@ -357,5 +319,40 @@ async function listenForFills(accountNameOrId: any, callback: any) {
   };
 }
 
-export { adjustMpaCollateral, borrowMpa, buildBorrowMpaOperation, buildCancelLimitOrderOperation, buildCreateLimitOrderOperation, buildUpdateLimitOrderOperation, buildSettleMpaOperation, cancelLimitOrder, createLimitOrder, executeBatch, getMpaPosition, getOpenOrders, listenForFills, repayMpaDebt, updateLimitOrder, settleMpa }
+/**
+ * Subscribe to account history fills and fan them out to every registered
+ * callback. The underlying subscription call is async and can reject (network
+ * error, unknown account); the promise is awaited by listenForFills so a
+ * failure surfaces instead of becoming an unhandled rejection.
+ */
+async function subscribeAccountFills(accountName: string, callbacks: Set<Function>) {
+  const bsCallback = (updates: any[] = []) => {
+    const fills = updates.filter((update) => update?.op && update.op[0] === FILL_ORDER_OPERATION_TYPE);
+    if (fills.length === 0) {
+      return;
+    }
+
+    for (const fn of Array.from(callbacks)) {
+      // The callback may be async. Run it synchronously so sync throws are
+      // caught here, and attach a catch for async rejections so a rejected
+      // handler cannot become an unhandled promise rejection (crash on
+      // Node >= 15).
+      try {
+        const result = fn(fills);
+        if (result && typeof result.then === 'function') {
+          result.catch((err: any) => {
+            console.error('listenForFills callback error:', getErrorMessage(err));
+          });
+        }
+      } catch (err: any) {
+        console.error('listenForFills callback error:', getErrorMessage(err));
+      }
+    }
+  };
+
+  await BitShares.subscribe('account', bsCallback, accountName);
+  return bsCallback;
+}
+
+export { adjustMpaCollateral, borrowMpa, buildBorrowMpaOperation, buildCreateLimitOrderOperation, buildUpdateLimitOrderOperation, buildSettleMpaOperation, cancelLimitOrder, createLimitOrder, executeBatch, getMpaPosition, getOpenOrders, listenForFills, repayMpaDebt, updateLimitOrder, settleMpa }
 

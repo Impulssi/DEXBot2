@@ -51,14 +51,6 @@ function booleanSchema(description: any) {
   };
 }
 
-function stringArraySchema(description: any) {
-  return {
-    type: 'array',
-    items: { type: 'string' },
-    ...(description ? { description } : {})
-  };
-}
-
 function pairArraySchema(description: any) {
   return {
     type: 'array',
@@ -171,6 +163,45 @@ function payloadTool(argsDesc: string, schema: any, overrides: any) {
     inputSchema: schema,
     ...overrides,
   });
+}
+
+// Shared payload schemas for paired execute/plan tools so the two surfaces
+// cannot drift apart.
+function honestPairPayloadSchema() {
+  return objectSchema({
+    assetA: stringSchema('First asset symbol'),
+    assetB: stringSchema('Second asset symbol'),
+    pair: stringSchema('Pair such as HONEST.USD/BTS')
+  });
+}
+
+function shortLegPayloadSchema() {
+  return objectSchema({
+    accountName: stringSchema('BitShares account name'),
+    mpaAsset: stringSchema('MPA asset symbol'),
+    debtAmount: numberSchema('Debt amount to borrow'),
+    collateralAmount: numberSchema('Collateral to lock'),
+    sellPriceInBts: numberSchema('Sell price in BTS'),
+    targetCollateralRatio: numberSchema('Optional target collateral ratio')
+  }, ['mpaAsset', 'debtAmount', 'collateralAmount', 'sellPriceInBts']);
+}
+
+function takeProfitPayloadSchema() {
+  return objectSchema({
+    accountName: stringSchema('BitShares account name'),
+    mpaAsset: stringSchema('MPA asset symbol'),
+    amountToCover: numberSchema('Amount to cover'),
+    buyPriceInBts: numberSchema('Buy price in BTS')
+  }, ['mpaAsset', 'amountToCover', 'buyPriceInBts']);
+}
+
+function closeShortPayloadSchema() {
+  return objectSchema({
+    accountName: stringSchema('BitShares account name'),
+    mpaAsset: stringSchema('MPA asset symbol'),
+    amountToRepay: numberSchema('Debt amount to repay'),
+    releaseCollateralDelta: numberSchema('Optional collateral release amount')
+  }, ['mpaAsset', 'amountToRepay']);
 }
 
 function launcherTool(command: string, description: string, toolName: string, botNameDesc = 'Bot name as defined in profiles/bots.json. Omit for all active bots.') {
@@ -321,8 +352,8 @@ const CLAW_TOOL_CATALOG = Object.freeze([
     }),
     toolName: 'claw_honest_context'
   }),
-  payloadTool('JSON object with assetA and assetB, or pair', objectSchema({ assetA: stringSchema('First asset symbol'), assetB: stringSchema('Second asset symbol'), pair: stringSchema('Pair such as HONEST.USD/BTS') }), { command: 'honest-pair', description: 'Resolve HONEST pair context', toolName: 'claw_honest_pair' }),
-  payloadTool('JSON object with assetA and assetB, or pair', objectSchema({ assetA: stringSchema('First asset symbol'), assetB: stringSchema('Second asset symbol'), pair: stringSchema('Pair such as HONEST.USD/BTS') }), { command: 'honest-price', description: 'Resolve HONEST pair price', toolName: 'claw_honest_price' }),
+  payloadTool('JSON object with assetA and assetB, or pair', honestPairPayloadSchema(), { command: 'honest-pair', description: 'Resolve HONEST pair context', toolName: 'claw_honest_pair' }),
+  payloadTool('JSON object with assetA and assetB, or pair', honestPairPayloadSchema(), { command: 'honest-price', description: 'Resolve HONEST pair price', toolName: 'claw_honest_price' }),
   createToolDefinition({
     command: 'create-limit-order',
     description: 'Create a BitShares limit order',
@@ -480,12 +511,12 @@ const CLAW_TOOL_CATALOG = Object.freeze([
     risk: 'execute',
     toolName: 'claw_settle_mpa'
   }),
-  payloadTool('JSON object with accountName, mpaAsset, debtAmount, collateralAmount, sellPriceInBts, optional targetCollateralRatio', objectSchema({ accountName: stringSchema('BitShares account name'), mpaAsset: stringSchema('MPA asset symbol'), debtAmount: numberSchema('Debt amount to borrow'), collateralAmount: numberSchema('Collateral to lock'), sellPriceInBts: numberSchema('Sell price in BTS'), targetCollateralRatio: numberSchema('Optional target collateral ratio') }, ['mpaAsset', 'debtAmount', 'collateralAmount', 'sellPriceInBts']), { command: 'open-short-bts', description: 'Build and execute the open leg of a BTS-backed short', risk: 'execute', toolName: 'claw_open_short_bts' }),
-  payloadTool('JSON object with accountName, mpaAsset, debtAmount, collateralAmount, sellPriceInBts', objectSchema({ accountName: stringSchema('BitShares account name'), mpaAsset: stringSchema('MPA asset symbol'), debtAmount: numberSchema('Debt amount to borrow'), collateralAmount: numberSchema('Collateral to lock'), sellPriceInBts: numberSchema('Sell price in BTS') }, ['mpaAsset', 'debtAmount', 'collateralAmount', 'sellPriceInBts']), { command: 'build-open-short-plan', description: 'Build the open-short plan without broadcasting', risk: 'plan', toolName: 'claw_build_open_short_plan' }),
-  payloadTool('JSON object with accountName, mpaAsset, amountToCover, buyPriceInBts', objectSchema({ accountName: stringSchema('BitShares account name'), mpaAsset: stringSchema('MPA asset symbol'), amountToCover: numberSchema('Amount to cover'), buyPriceInBts: numberSchema('Buy price in BTS') }, ['mpaAsset', 'amountToCover', 'buyPriceInBts']), { command: 'take-profit-bts', description: 'Place the take-profit leg for a BTS-backed short', risk: 'execute', toolName: 'claw_take_profit_bts' }),
-  payloadTool('JSON object with accountName, mpaAsset, amountToCover, buyPriceInBts', objectSchema({ accountName: stringSchema('BitShares account name'), mpaAsset: stringSchema('MPA asset symbol'), amountToCover: numberSchema('Amount to cover'), buyPriceInBts: numberSchema('Buy price in BTS') }, ['mpaAsset', 'amountToCover', 'buyPriceInBts']), { command: 'build-take-profit-plan', description: 'Build the take-profit plan without broadcasting', risk: 'plan', toolName: 'claw_build_take_profit_plan' }),
-  payloadTool('JSON object with accountName, mpaAsset, amountToRepay, optional releaseCollateralDelta', objectSchema({ accountName: stringSchema('BitShares account name'), mpaAsset: stringSchema('MPA asset symbol'), amountToRepay: numberSchema('Debt amount to repay'), releaseCollateralDelta: numberSchema('Optional collateral release amount') }, ['mpaAsset', 'amountToRepay']), { command: 'close-short-bts', description: 'Close a BTS-backed short', risk: 'execute', toolName: 'claw_close_short_bts' }),
-  payloadTool('JSON object with accountName, mpaAsset, amountToRepay, optional releaseCollateralDelta', objectSchema({ accountName: stringSchema('BitShares account name'), mpaAsset: stringSchema('MPA asset symbol'), amountToRepay: numberSchema('Debt amount to repay'), releaseCollateralDelta: numberSchema('Optional collateral release amount') }, ['mpaAsset', 'amountToRepay']), { command: 'build-close-short-plan', description: 'Build the close-short plan without broadcasting', risk: 'plan', toolName: 'claw_build_close_short_plan' }),
+  payloadTool('JSON object with accountName, mpaAsset, debtAmount, collateralAmount, sellPriceInBts, optional targetCollateralRatio', shortLegPayloadSchema(), { command: 'open-short-bts', description: 'Build and execute the open leg of a BTS-backed short', risk: 'execute', toolName: 'claw_open_short_bts' }),
+  payloadTool('JSON object with accountName, mpaAsset, debtAmount, collateralAmount, sellPriceInBts, optional targetCollateralRatio', shortLegPayloadSchema(), { command: 'build-open-short-plan', description: 'Build the open-short plan without broadcasting', risk: 'plan', toolName: 'claw_build_open_short_plan' }),
+  payloadTool('JSON object with accountName, mpaAsset, amountToCover, buyPriceInBts', takeProfitPayloadSchema(), { command: 'take-profit-bts', description: 'Place the take-profit leg for a BTS-backed short', risk: 'execute', toolName: 'claw_take_profit_bts' }),
+  payloadTool('JSON object with accountName, mpaAsset, amountToCover, buyPriceInBts', takeProfitPayloadSchema(), { command: 'build-take-profit-plan', description: 'Build the take-profit plan without broadcasting', risk: 'plan', toolName: 'claw_build_take_profit_plan' }),
+  payloadTool('JSON object with accountName, mpaAsset, amountToRepay, optional releaseCollateralDelta', closeShortPayloadSchema(), { command: 'close-short-bts', description: 'Close a BTS-backed short', risk: 'execute', toolName: 'claw_close_short_bts' }),
+  payloadTool('JSON object with accountName, mpaAsset, amountToRepay, optional releaseCollateralDelta', closeShortPayloadSchema(), { command: 'build-close-short-plan', description: 'Build the close-short plan without broadcasting', risk: 'plan', toolName: 'claw_build_close_short_plan' }),
   createToolDefinition({
     command: 'mpa-position',
     description: 'Read the on-chain MPA position for an account',

@@ -6,26 +6,26 @@ const { createMemuBridge } = require('../modules/memu_bridge');
 async function main() {
   console.log('=== memU + DEXBot2 Integration Example ===\n');
 
-  const memu = createMemuBridge({
-    memuDir: process.env.MEMU_DIR || undefined,
-    llmProfiles: process.env.OPENAI_API_KEY
-      ? {
-          default: {
-            base_url: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-            api_key: process.env.OPENAI_API_KEY,
-            chat_model: process.env.OPENAI_CHAT_MODEL || 'gpt-4o',
-            embed_model: process.env.OPENAI_EMBED_MODEL || 'text-embedding-3-small',
-            client_backend: 'sdk'
-          }
-        }
-      : undefined
-  });
-
-  console.log('memU bridge created');
-  console.log(`  memuDir: ${memu.memuDir}`);
-  console.log(`  stateDir: ${memu.stateDir}\n`);
-
   try {
+    const memu = createMemuBridge({
+      memuDir: process.env.MEMU_DIR || undefined,
+      llmProfiles: process.env.OPENAI_API_KEY
+        ? {
+            default: {
+              base_url: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+              api_key: process.env.OPENAI_API_KEY,
+              chat_model: process.env.OPENAI_CHAT_MODEL || 'gpt-4o',
+              embed_model: process.env.OPENAI_EMBED_MODEL || 'text-embedding-3-small',
+              client_backend: 'sdk'
+            }
+          }
+        : undefined
+    });
+
+    console.log('memU bridge created');
+    console.log(`  memuDir: ${memu.memuDir}`);
+    console.log(`  stateDir: ${memu.stateDir}\n`);
+
     console.log('--- Step 1: Check memU status ---');
     const status = await memu.getStatus();
     console.log('Status:', JSON.stringify(status, null, 2));

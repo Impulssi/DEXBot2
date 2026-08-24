@@ -24,7 +24,7 @@ function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {
         assetA: botEntry.assetA,
         assetB: botEntry.assetB,
       },
-      _log: (msg: string, level?: string) => {
+      _log: (msg: string) => {
         const logger = infra.runtime?.logger || console;
         if (typeof logger.info === 'function') logger.info(`[credit-runtime] ${msg}`);
         else logger.log(`[credit-runtime] ${msg}`);
@@ -100,10 +100,7 @@ function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {
       const rt = await _getRuntime(botRef);
       if (!rt) {
         try {
-          const bundle = await infra.profiles.loadBundle();
-          const bot = bundle.bots.find(
-            (b: Record<string, any>) => b.botKey === botRef || b.name === botRef,
-          );
+          const bot = await _resolveBotEntry(botRef);
           if (!bot) return { error: `bot not found: ${botRef}` };
           if (!bot.debtPolicy) return { error: `bot ${botRef} has no debtPolicy configured` };
           return { error: `unable to initialize credit runtime for ${botRef}` };
@@ -141,19 +138,6 @@ function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {
       if (!rt) return { processed: 0, remaining: 0 };
       _ensureSigningKey(rt, privateKey);
       return rt.processPendingReborrows();
-    },
-
-    listRuntimes(): any[] {
-      return Array.from(_runtimes.entries())
-        .filter(([_, rt]) => rt.isEnabled())
-        .map(([key, rt]) => ({
-          botKey: key,
-          enabled: rt.isEnabled(),
-        }));
-    },
-
-    getRuntime(botRef: string): any | null {
-      return _runtimes.get(botRef) || null;
     },
   };
 }

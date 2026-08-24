@@ -154,5 +154,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   });
 }
 
-export { describeScriptRuntimeManifest as describeRuntimeManifest, main }
+export { describeScriptRuntimeManifest as describeRuntimeManifest }
 

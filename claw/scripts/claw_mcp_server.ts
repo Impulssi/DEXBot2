@@ -6,7 +6,7 @@
 // console shim has been installed. Static imports here are limited to the
 // lightweight transport helpers (mcp_utils) which never write to stdout.
 
-import { success, failure, runMcpServer, createMessageParser } from '../modules/mcp_utils.js';
+import { createJsonRpcToolsHandler, jsonRpcError, runMcpServer, createMessageParser } from '../modules/mcp_utils.js';
 import { pathToFileURL } from 'node:url';
 
 console.log = () => {};
@@ -59,83 +59,25 @@ async function listMcpTools() {
   }));
 }
 
-async function handleRequest(message: any, defaults: any) {
-  const { id, method, params } = message;
-
-  switch (method) {
-    case 'initialize':
-      return success(id, {
-        // Echo the client's requested protocol version when provided, so a
-        // JSONL-speaking client can negotiate its own version.
-        protocolVersion: params?.protocolVersion || '2024-11-05',
-        capabilities: {
-          tools: {
-            listChanged: false
-          }
-        },
-        serverInfo: {
-          name: 'bitshares-claw',
-          version: '0.1.0'
-        }
-      });
-
-    case 'notifications/initialized':
-      return;
-
-    case 'ping':
-      return success(id, {});
-
-    case 'tools/list':
-      try {
-        return success(id, {
-          tools: await listMcpTools()
-        });
-      } catch (error: any) {
-        return failure(id, -32602, `Failed to load tool catalog: ${error && error.message ? error.message : String(error)}`);
-      }
-
-    case 'tools/call': {
-      try {
-        const { getClawToolByName } = await import('../modules/claw_catalog.js');
-        const tool = getClawToolByName(params?.name);
-        if (!tool) {
-          return failure(id, -32602, `Unknown tool: ${params?.name || '(missing)'}`);
-        }
-
-        const { runClawCommand } = await import('../modules/claw_bridge.js');
-        const result = await runClawCommand(tool.command, {
-          ...defaults,
-          ...(params?.arguments || {})
-        });
-
-        return success(id, {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(result, null, 2)
-            }
-          ],
-          structuredContent: result
-        });
-      } catch (error: any) {
-        return success(id, {
-          content: [
-            {
-              type: 'text',
-              text: error && error.stack ? error.stack : String(error)
-            }
-          ],
-          isError: true
-        });
-      }
-    }
-
-    default:
-      if (id !== undefined) {
-        return failure(id, -32601, `Method not found: ${method}`);
-      }
+async function callTool(params: any, defaults: any) {
+  const { getClawToolByName } = await import('../modules/claw_catalog.js');
+  const tool = getClawToolByName(params?.name);
+  if (!tool) {
+    throw jsonRpcError(-32602, `Unknown tool: ${params?.name || '(missing)'}`);
   }
+
+  const { runClawCommand } = await import('../modules/claw_bridge.js');
+  return runClawCommand(tool.command, {
+    ...defaults,
+    ...(params?.arguments || {})
+  });
 }
+
+const handleRequest = createJsonRpcToolsHandler({
+  serverName: 'bitshares-claw',
+  listTools: listMcpTools,
+  callTool
+});
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runMcpServer(parseArgs, handleRequest).catch((err: unknown) => {
@@ -144,5 +86,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   });
 }
 
-export { createMessageParser, failure, handleRequest, listMcpTools, success }
-
+export { createMessageParser, handleRequest }

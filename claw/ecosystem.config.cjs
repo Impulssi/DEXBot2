@@ -2,9 +2,8 @@
 
 const path = require('node:path');
 
-// The compiled ecosystem config (claw/ecosystem.config.ts → dist/claw/) anchors
-// all paths to the dist/claw build output. This committed .cjs mirrors that
-// layout so `pm2 start ecosystem.config.cjs` works from the claw/ package root.
+// This ecosystem config anchors all paths to the dist/claw build output so
+// `pm2 start ecosystem.config.cjs` works from the claw/ package root.
 const DIST_CLAW = path.join(__dirname, '..', 'dist', 'claw');
 
 module.exports = {

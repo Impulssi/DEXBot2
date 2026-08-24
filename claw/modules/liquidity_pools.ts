@@ -1,7 +1,7 @@
 
 
 import * as client from './bitshares_client.js';
-import { getDexbot2Root, loadDexbotOrderSystemUtils, requireDexbot2Module } from './dexbot_bridge.js';
+import { loadDexbotOrderSystemUtils, requireDexbot2Module } from './dexbot_bridge.js';
 function getDexbotSystem() {
   return loadDexbotOrderSystemUtils();
 }
@@ -13,9 +13,16 @@ function derivePoolPrice(assetA: any, assetB: any, poolRef?: string | null | Rec
     try {
       const { withPoolRef: wrapWithPoolRef } = requireDexbot2Module('modules/order/utils/withPoolRef') as any;
       const override = wrapWithPoolRef(client.BitShares, resolvedPoolRef);
-      if (override) return override.derivePoolPrice(assetA, assetB);
+      // The caller pinned a specific pool: honoring the pin or failing is
+      // correct, silently deriving from a different auto-selected pool is not.
+      if (!override) {
+        console.warn(`[liquidity-pools] derivePoolPrice could not pin pool ${resolvedPoolRef}`);
+        return null;
+      }
+      return override.derivePoolPrice(assetA, assetB);
     } catch (e: any) {
       console.warn(`[liquidity-pools] derivePoolPrice with poolRef failed: ${e?.message || e}`);
+      return null;
     }
   }
   return system.derivePoolPrice(client.BitShares, assetA, assetB);
@@ -47,5 +54,5 @@ function createDexbotPoolHelper() {
   };
 }
 
-export { derivePoolPrice, derivePrice, createDexbotPoolHelper, getDexbot2Root, requireDexbot2Module }
+export { derivePoolPrice, derivePrice, createDexbotPoolHelper }
 

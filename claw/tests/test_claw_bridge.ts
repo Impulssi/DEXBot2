@@ -225,6 +225,9 @@ function createBridgeHarness() {
     }
   });
 
+  // Snapshot the real validator before the mock replaces the module: claw
+  // bridge delegates memu-* argument validation to it.
+  const realMemuBridge = require(memuBridgePath);
   registerMock(memuBridgePath, {
     describeMemuBridge: (options: any) => ({
       options,
@@ -238,7 +241,8 @@ function createBridgeHarness() {
         options,
         source: 'memu'
       };
-    }
+    },
+    validateMemuCommandArgs: realMemuBridge.validateMemuCommandArgs
   });
 
   clearModule(bridgePath);
@@ -499,7 +503,7 @@ async function testRunClawCommandDispatchMatrix() {
       () => bridge.runClawCommand('memu-create-item', {
         summary: 'missing category'
       }),
-      /memu-create-item requires categoryId or categoryName, plus summary/
+      /create-item requires categoryId or categoryName, plus summary/
     );
 
     await assert.rejects(

@@ -42,11 +42,13 @@ export function tomlString(value: any) {
 }
 
 export function buildSkillTomlLines(skillName: string, description: string, tags: string[], tools: any[]) {
+  // name/description go through tomlString so embedded quotes/backslashes
+  // produce valid escaped TOML basic strings.
   const lines = [
     '[skill]',
-    `name = "${skillName}"`,
-    `description = "${description}"`,
-    `version = "${DEXBOT_VERSION}"`,
+    `name = ${tomlString(skillName)}`,
+    `description = ${tomlString(description)}`,
+    `version = ${tomlString(DEXBOT_VERSION)}`,
     `tags = [${tags.map(t => JSON.stringify(t)).join(', ')}]`
   ];
 

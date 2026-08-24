@@ -3,21 +3,16 @@ import { getStorage } from '../../modules/storage/index.js';
 import { path } from '../../modules/path_api.js';
 import { PATHS } from '../../modules/paths.js';
 import { Config } from '../../modules/config.js';
-import { requireBtsBackedMpa, computeBtsPerMpa } from './mpa_utils.js';
+import { requireBtsBackedMpa, computeCallOrderAmounts, getBlockchainToFloat } from './mpa_utils.js';
 import { listenForFills } from './chain_actions.js';
 import { writeJsonFileAtomic } from './dexbot_profiles.js';
-import { loadDexbotOrderUtils } from './dexbot_bridge.js';
-import { clone } from './utils.js';
+import { clone, requirePositiveNumber } from './utils.js';
 const storage = getStorage();
 import { closeShortOnBts, openShortOnBts, placeTakeProfitBuyOrderOnBts } from './short_mpa_strategy.js';
 import { getAsset, getBackingAsset, getBalances, getBitassetData, getFullAccount } from './chain_queries.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
 
 import type { ShortPositionOptions, PositionManagerOptions } from './types.js';
-
-function getBlockchainToFloat() {
-  return loadDexbotOrderUtils().blockchainToFloat;
-}
 
 const DEFAULT_STATE_PATH = PATHS.CLAW.POSITIONS_FILE;
 const STRATEGY_NAME = 'short-mpa-bts';
@@ -36,14 +31,6 @@ function requireString(value: any, fieldName: string) {
     throw new Error(`${fieldName} is required`);
   }
   return value.trim();
-}
-
-function requirePositiveNumber(value: any, fieldName: string) {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue) || numericValue <= 0) {
-    throw new Error(`${fieldName} must be a positive number`);
-  }
-  return numericValue;
 }
 
 function almostZero(value: any, epsilon: number = 1e-12) {
@@ -114,18 +101,6 @@ function createPositionPnl() {
 
 function toTrackedAsset(asset: any) {
   return asset ? { id: asset.id, precision: asset.precision, symbol: asset.symbol } : null;
-}
-
-function resolvePositionAssets(position: any) {
-  const tracked = position?.assets || {};
-  return {
-    collateral: tracked.collateral || null,
-    mpa: tracked.mpa || null
-  };
-}
-
-function getOrderTracking(position: any, side: string) {
-  return side === 'entry' ? position.entry : position.exit;
 }
 
 function getAssetPrecisionFromTracking(orderTracking: any, assetId: string) {
@@ -265,7 +240,7 @@ function refreshPositionPnl(position: any) {
 }
 
 function normalizeCallPosition(callOrder: any, mpaAsset: any, backingAsset: any, bitassetData: any) {
-  if (!callOrder) {
+  if (!callOrder || !mpaAsset || !backingAsset) {
     return {
       collateralAmount: 0,
       collateralRatio: null,
@@ -276,18 +251,13 @@ function normalizeCallPosition(callOrder: any, mpaAsset: any, backingAsset: any,
     };
   }
 
-  const blockchainToFloat = getBlockchainToFloat();
-  const debtAmount = blockchainToFloat(callOrder.debt, mpaAsset.precision);
-  const collateralAmount = blockchainToFloat(callOrder.collateral, backingAsset.precision);
-  const btsPerMpa = computeBtsPerMpa(bitassetData?.current_feed?.settlement_price, mpaAsset, backingAsset);
-  const debtValueInBts = debtAmount && btsPerMpa ? debtAmount * btsPerMpa : 0;
-  const collateralRatio = debtValueInBts > 0 ? collateralAmount / debtValueInBts : null;
+  const amounts = computeCallOrderAmounts(callOrder, mpaAsset, backingAsset, bitassetData);
 
   return {
-    collateralAmount: collateralAmount || 0,
-    collateralRatio,
-    debtAmount: debtAmount || 0,
-    debtValueInBts,
+    collateralAmount: amounts.collateralAmount,
+    collateralRatio: amounts.collateralRatio,
+    debtAmount: amounts.debtAmount,
+    debtValueInBts: amounts.debtValueInBts,
     exists: true,
     feedPublicationTime: bitassetData?.current_feed_publication_time || null
   };
@@ -560,7 +530,14 @@ class PositionManager {
     });
     position.lastCloseTx = result?.repayResult?.raw || null;
 
-    await this.syncPosition(positionId);
+    // Persist before syncing: syncPosition can throw (network failure, asset
+    // resolution), and losing the close event/tx record after a successful
+    // on-chain repay would corrupt the position history. Mirrors openShort.
+    await this.saveState();
+
+    await this.syncPosition(positionId).catch((syncErr: any) => {
+      console.warn(`[POSITION] Post-close sync failed for ${positionId}: ${getErrorMessage(syncErr)}`);
+    });
     return this.getPosition(positionId);
   }
 
@@ -577,7 +554,15 @@ class PositionManager {
     const mpaAsset = await getAsset(position.debt.asset);
     const backingAsset = await getBackingAsset(position.debt.asset);
     const bitassetData = await getBitassetData(position.debt.asset);
-    const callOrder = callOrders.find((entry: any) => entry?.call_price?.quote?.asset_id === mpaAsset?.id) || null;
+    // Only match a call order when the debt asset resolved; matching against
+    // an undefined id could pair the position with an unrelated call order,
+    // and normalizing without asset precision would crash.
+    if (!mpaAsset) {
+      console.warn(`[POSITION] Could not resolve debt asset ${position.debt.asset} for ${positionId}; skipping on-chain debt sync`);
+    }
+    const callOrder = mpaAsset
+      ? callOrders.find((entry: any) => entry?.call_price?.quote?.asset_id === mpaAsset.id) || null
+      : null;
     const debtState = normalizeCallPosition(callOrder, mpaAsset, backingAsset, bitassetData);
     const openOrderIds = openOrders.map((entry: any) => entry?.id).filter(Boolean);
     const entryOrderOpen = position.entry.orderId ? openOrderIds.includes(position.entry.orderId) : false;
@@ -692,8 +677,14 @@ class PositionManager {
           });
           changed = true;
 
+          // Isolate user callback failures: a rejected onFill must not abort
+          // this handler before saveState()/post-fill syncs persist the fill.
           if (typeof onFill === 'function') {
-            await onFill(clone(position), fill);
+            try {
+              await onFill(clone(position), fill);
+            } catch (err: any) {
+              console.error(`[POSITION] onFill callback failed for ${position.id}: ${getErrorMessage(err)}`);
+            }
           }
         }
       }

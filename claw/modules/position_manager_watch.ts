@@ -1,6 +1,5 @@
 
 import { getStorage } from '../../modules/storage/index.js';
-import { path } from '../../modules/path_api.js';
 import { PATHS } from '../../modules/paths.js';
 import { PositionManager, DEFAULT_STATE_PATH } from './position_manager.js';
 import * as client from './bitshares_client.js';
@@ -178,12 +177,14 @@ function createPositionManagerWatcher(options: Record<string, any> = {}) {
       throw new Error('accountName is required. Pass --account or set BITSHARES_ACCOUNT.');
     }
 
-    running = true;
     logger.info(`[position-manager-watch] starting for ${resolvedOptions.accountName}`);
 
+    // Only flag running once the connection succeeded: a failed start must
+    // leave the watcher non-running (and re-startable) with healthy=false.
     await waitForConnected().catch((err: any) => {
       throw new Error(`BitShares connection not ready: ${getErrorMessage(err)}`);
     });
+    running = true;
 
     await manager.syncAllPositions()
       .then(() => recordSyncSuccess())

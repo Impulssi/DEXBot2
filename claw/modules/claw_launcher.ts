@@ -56,6 +56,40 @@ function getSpawn(): any {
     return _spawn;
 }
 
+/**
+ * Spawn a detached background child and wait for the spawn itself to succeed.
+ * Spawn failures (missing script, ENOENT, EACCES) are reported asynchronously
+ * via the child's 'error' event; waiting one macrotask lets those surface as a
+ * thrown error instead of callers receiving a false { started: true } result.
+ * A permanent 'error' handler remains attached so late errors are logged
+ * rather than crashing the host with an unhandled 'error' event.
+ */
+function spawnDetached(scriptPath: string, args: string[], cwd: string): Promise<any> {
+    const child = getSpawn()('node', [scriptPath, ...args], {
+        detached: true,
+        stdio: 'ignore',
+        cwd
+    });
+
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        child.on('error', (err: any) => {
+            if (!settled) {
+                settled = true;
+                reject(new Error(`Failed to spawn ${scriptPath}: ${getErrorMessage(err)}`));
+                return;
+            }
+            console.error(`[LAUNCHER] Child process error (${scriptPath}): ${getErrorMessage(err)}`);
+        });
+        setImmediate(() => {
+            if (!settled) {
+                settled = true;
+                resolve(child);
+            }
+        });
+    });
+}
+
 let _pm2: any;
 function getPM2Module(): any {
     if (_pm2 === undefined) {
@@ -88,16 +122,7 @@ async function launcherStart(botName: string | null, options: Record<string, any
     args.push(botName);
   }
 
-  const child = getSpawn()('node', [dexbotPath, ...args], {
-    detached: true,
-    stdio: 'ignore',
-    cwd: ROOT
-  });
-
-  child.on('error', (err: any) => {
-    console.error(`[LAUNCHER] Failed to spawn ${dexbotPath}: ${getErrorMessage(err)}`);
-  });
-
+  const child = await spawnDetached(dexbotPath, args, ROOT);
   child.unref();
 
   return {
@@ -124,16 +149,7 @@ async function launcherDrystart(botName: string | null, options: Record<string, 
     args.push(botName);
   }
 
-  const child = getSpawn()('node', [dexbotPath, ...args], {
-    detached: true,
-    stdio: 'ignore',
-    cwd: ROOT
-  });
-
-  child.on('error', (err: any) => {
-    console.error(`[LAUNCHER] Failed to spawn ${dexbotPath}: ${getErrorMessage(err)}`);
-  });
-
+  const child = await spawnDetached(dexbotPath, args, ROOT);
   child.unref();
 
   return {
@@ -158,7 +174,7 @@ async function launcherReset(botName: string | null, options: Record<string, any
   const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
   const entries = normalizeBotEntries(resolveRawBotEntries(config));
 
-  const targets = botName ? entries.filter((b: any) => b.name === botName) : entries.filter((b: any) => b.active);
+  const targets = botName ? entries.filter((b: any) => b.name === botName) : entries.filter((b: any) => b.active !== false);
 
   if (botName && targets.length === 0) {
     throw new Error(`Bot '${botName}' not found in ${PROFILES_BOTS_FILE}`);
@@ -252,7 +268,7 @@ async function launcherPm2Start(botName: string | null, options: Record<string, 
   const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
   const entries = normalizeBotEntries(resolveRawBotEntries(config));
 
-  const targets = botName ? entries.filter((b: any) => b.name === botName) : entries.filter((b: any) => b.active);
+  const targets = botName ? entries.filter((b: any) => b.name === botName) : entries.filter((b: any) => b.active !== false);
 
   if (botName && targets.length === 0) {
     throw new Error(`Bot '${botName}' not found or not active in ${PROFILES_BOTS_FILE}`);
@@ -292,7 +308,7 @@ async function launcherPm2Start(botName: string | null, options: Record<string, 
  * @param {Object} [options={}] - Options
  * @returns {Promise<Object>} { stopped: true, target }
  */
-async function launcherPm2Stop(target: string, options: Record<string, any> = {}) {
+async function launcherPm2Stop(target: string, _options: Record<string, any> = {}) {
   await getPM2Module().stopPM2Processes(target || 'all');
   return {
     stopped: true,
@@ -306,7 +322,7 @@ async function launcherPm2Stop(target: string, options: Record<string, any> = {}
  * @param {Object} [options={}] - Options
  * @returns {Promise<Object>} { deleted: true, target }
  */
-async function launcherPm2Delete(target: string, options: Record<string, any> = {}) {
+async function launcherPm2Delete(target: string, _options: Record<string, any> = {}) {
   await getPM2Module().deletePM2Processes(target || 'all');
   return {
     deleted: true,
@@ -320,7 +336,7 @@ async function launcherPm2Delete(target: string, options: Record<string, any> = 
  * @param {Object} [options={}] - Options
  * @returns {Promise<Object>} { restarted: true, target }
  */
-async function launcherPm2Restart(target: string, options: Record<string, any> = {}) {
+async function launcherPm2Restart(target: string, _options: Record<string, any> = {}) {
   await getPM2Module().restartPM2Processes(target || 'all');
   return {
     restarted: true,
@@ -422,16 +438,7 @@ async function launcherClawOnly(options: Record<string, any> = {}) {
   const ROOT = normalizeRoot(options);
   const pm2ScriptPath = resolveRuntimeScript(ROOT, 'pm2.js');
 
-  const child = getSpawn()('node', [pm2ScriptPath, 'claw-only'], {
-    detached: true,
-    stdio: 'ignore',
-    cwd: ROOT
-  });
-
-  child.on('error', (err: any) => {
-    console.error(`[LAUNCHER] Failed to spawn ${pm2ScriptPath}: ${getErrorMessage(err)}`);
-  });
-
+  const child = await spawnDetached(pm2ScriptPath, ['claw-only'], ROOT);
   child.unref();
 
   return {
@@ -459,16 +466,7 @@ async function launcherUnlockStart(botName: string | null, options: Record<strin
     args.push(botName);
   }
 
-  const child = getSpawn()('node', [unlockPath, ...args], {
-    detached: true,
-    stdio: 'ignore',
-    cwd: ROOT
-  });
-
-  child.on('error', (err: any) => {
-    console.error(`[LAUNCHER] Failed to spawn ${unlockPath}: ${getErrorMessage(err)}`);
-  });
-
+  const child = await spawnDetached(unlockPath, args, ROOT);
   child.unref();
 
   return {
@@ -481,5 +479,5 @@ async function launcherUnlockStart(botName: string | null, options: Record<strin
   };
 }
 
-export { launcherRun, launcherStart, launcherDrystart, launcherReset, launcherDisable, launcherPm2Start, launcherPm2Stop, launcherPm2Delete, launcherPm2Restart }
+export { launcherRun, launcherDrystart, launcherReset, launcherDisable, launcherPm2Start, launcherPm2Stop, launcherPm2Delete, launcherPm2Restart }
 

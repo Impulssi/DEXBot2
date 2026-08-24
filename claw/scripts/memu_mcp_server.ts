@@ -4,13 +4,43 @@
 // the full claw catalog (via claw_manifest), so suppress incidental console
 // logs the same way claw_mcp_server does.
 
-import { describeMemuBridge } from '../modules/memu_bridge.js';
-import { success, failure, runMcpServer, createMessageParser } from '../modules/mcp_utils.js';
-import { runMemuCommand } from '../modules/memu_bridge.js';
+import { createJsonRpcToolsHandler, jsonRpcError, runMcpServer } from '../modules/mcp_utils.js';
+import { runMemuCommand, validateMemuCommandArgs } from '../modules/memu_bridge.js';
 import { pathToFileURL } from 'node:url';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 
 console.log = () => {};
 console.warn = () => {};
+
+// MCP tool name -> runMemuCommand command.
+const TOOL_COMMANDS: Record<string, string> = {
+  'memu_manifest': 'manifest',
+  'memu_memorize': 'memorize',
+  'memu_retrieve': 'retrieve',
+  'memu_list_categories': 'list-categories',
+  'memu_list_items': 'list-items',
+  'memu_create_item': 'create-item',
+  'memu_update_item': 'update-item',
+  'memu_delete_item': 'delete-item',
+  'memu_clear': 'clear',
+  'memu_status': 'status',
+  'memu_memorize_conversation': 'memorize-conversation',
+  'memu_memorize_trading_context': 'memorize-trading-context',
+  'memu_retrieve_trading_context': 'retrieve-trading-context'
+};
+
+/**
+ * Redact a CLI argument that may carry secrets (LLM API keys, database DSNs).
+ * Malformed JSON must be reported without echoing the full raw value into
+ * error messages or process logs.
+ */
+function redactSensitiveArg(value: any) {
+  const text = String(value);
+  const prefixLength = 12;
+  const prefix = text.slice(0, Math.min(prefixLength, text.length));
+  return `${prefix}<...${text.length} chars redacted>`;
+}
+
 function parseArgs(argv: any) {
   const options: Record<string, any> = {};
 
@@ -33,8 +63,8 @@ function parseArgs(argv: any) {
     if (arg === '--llm-profile' && next) {
       try {
         options.llmProfiles = JSON.parse(next);
-      } catch (e) {
-        throw new Error(`Invalid JSON for --llm-profile: ${next}`);
+      } catch {
+        throw new Error(`Invalid JSON for --llm-profile: ${redactSensitiveArg(next)}`);
       }
       i += 1;
       continue;
@@ -43,8 +73,8 @@ function parseArgs(argv: any) {
     if (arg === '--db-config' && next) {
       try {
         options.databaseConfig = JSON.parse(next);
-      } catch (e) {
-        throw new Error(`Invalid JSON for --db-config: ${next}`);
+      } catch {
+        throw new Error(`Invalid JSON for --db-config: ${redactSensitiveArg(next)}`);
       }
       i += 1;
       continue;
@@ -54,7 +84,7 @@ function parseArgs(argv: any) {
   return options;
 }
 
-function listMcpTools() {
+async function listMcpTools() {
   return [
     {
       name: 'memu_manifest',
@@ -286,157 +316,30 @@ function listMcpTools() {
   ];
 }
 
-async function handleRequest(message: any, defaults: any) {
-  const { id, method, params } = message;
-
-  switch (method) {
-    case 'initialize':
-      return success(id, {
-        // Echo the client's requested protocol version when provided (JSONL
-        // transport; see claw_runtime_matrix.ts).
-        protocolVersion: params?.protocolVersion || '2024-11-05',
-        capabilities: {
-          tools: {
-            listChanged: false
-          }
-        },
-        serverInfo: {
-          name: 'bitshares-memu',
-          version: '0.1.0'
-        }
-      });
-
-    case 'notifications/initialized':
-      return;
-
-    case 'ping':
-      return success(id, {});
-
-    case 'tools/list':
-      return success(id, {
-        tools: listMcpTools()
-      });
-
-    case 'tools/call': {
-      const toolName = params?.name;
-      const args = params?.arguments || {};
-
-      try {
-        let result;
-
-        switch (toolName) {
-          case 'memu_manifest':
-            result = describeMemuBridge(defaults);
-            break;
-
-          case 'memu_memorize':
-            if (!args.resourceUrl || !args.modality) {
-              return failure(id, -32602, 'memu_memorize requires resourceUrl and modality');
-            }
-            result = await runMemuTool('memorize', args, defaults);
-            break;
-
-          case 'memu_retrieve':
-            if (!args.queries) {
-              return failure(id, -32602, 'memu_retrieve requires queries');
-            }
-            result = await runMemuTool('retrieve', args, defaults);
-            break;
-
-          case 'memu_list_categories':
-            result = await runMemuTool('list-categories', args, defaults);
-            break;
-
-          case 'memu_list_items':
-            result = await runMemuTool('list-items', args, defaults);
-            break;
-
-          case 'memu_create_item':
-            if (!(args.categoryId || args.categoryName) || !args.summary) {
-              return failure(id, -32602, 'memu_create_item requires categoryId or categoryName, plus summary');
-            }
-            result = await runMemuTool('create-item', args, defaults);
-            break;
-
-          case 'memu_update_item':
-            if (!args.itemId || !args.updates) {
-              return failure(id, -32602, 'memu_update_item requires itemId and updates');
-            }
-            result = await runMemuTool('update-item', args, defaults);
-            break;
-
-          case 'memu_delete_item':
-            if (!args.itemId) {
-              return failure(id, -32602, 'memu_delete_item requires itemId');
-            }
-            result = await runMemuTool('delete-item', args, defaults);
-            break;
-
-          case 'memu_clear':
-            result = await runMemuTool('clear', args, defaults);
-            break;
-
-          case 'memu_status':
-            result = await runMemuTool('status', args, defaults);
-            break;
-
-          case 'memu_memorize_conversation':
-            if (!args.messages) {
-              return failure(id, -32602, 'memu_memorize_conversation requires messages');
-            }
-            result = await runMemuTool('memorize-conversation', args, defaults);
-            break;
-
-          case 'memu_memorize_trading_context':
-            if (!args.context) {
-              return failure(id, -32602, 'memu_memorize_trading_context requires context');
-            }
-            result = await runMemuTool('memorize-trading-context', args, defaults);
-            break;
-
-          case 'memu_retrieve_trading_context':
-            if (!args.query) {
-              return failure(id, -32602, 'memu_retrieve_trading_context requires query');
-            }
-            result = await runMemuTool('retrieve-trading-context', args, defaults);
-            break;
-
-          default:
-            return failure(id, -32602, `Unknown tool: ${toolName}`);
-        }
-
-        return success(id, {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(result, null, 2)
-            }
-          ],
-          structuredContent: result
-        });
-      } catch (error: any) {
-        return success(id, {
-          content: [
-            {
-              type: 'text',
-              text: error && error.stack ? error.stack : String(error)
-            }
-          ],
-          isError: true
-        });
-      }
-    }
-
-    default:
-      if (id !== undefined) {
-        return failure(id, -32601, `Method not found: ${method}`);
-      }
+async function callTool(params: any, defaults: any) {
+  const toolName = params?.name;
+  const command = TOOL_COMMANDS[toolName];
+  if (!command) {
+    throw jsonRpcError(-32602, `Unknown tool: ${toolName}`);
   }
-}
 
-async function runMemuTool(command: any, args: any, defaults: any) {
+  const args = params?.arguments || {};
+  // Shared validation with runMemuCommand/claw_bridge so every surface rejects
+  // missing args with the same message; surfaced as invalid params (-32602).
+  try {
+    validateMemuCommandArgs(command, { ...defaults, ...args });
+  } catch (err: any) {
+    throw jsonRpcError(-32602, getErrorMessage(err));
+  }
+
   return runMemuCommand(command, { ...defaults, ...args });
 }
+
+const handleRequest = createJsonRpcToolsHandler({
+  serverName: 'bitshares-memu',
+  listTools: listMcpTools,
+  callTool
+});
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runMcpServer(parseArgs, handleRequest).catch((err: unknown) => {
@@ -445,5 +348,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   });
 }
 
-export { createMessageParser, failure, handleRequest, listMcpTools, success }
 

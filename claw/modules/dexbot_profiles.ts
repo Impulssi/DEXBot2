@@ -12,7 +12,7 @@ import { clone } from './utils.js';
 import { createBotKey, sanitizeKey } from '../../modules/account_orders.js';
 const storage = getStorage();
 
-import type { BotSettings, ProfileOptions, Logger, ClawProfileBundle } from './types.js';
+import type { BotSettings, ProfileOptions, ClawProfileBundle } from './types.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
 
 const DEFAULT_MANIFEST_FILE = 'config.json';
@@ -661,7 +661,7 @@ async function normalizeBotEntries(rawEntries: Record<string, any>[], options: P
     if (logger) {
       validateBotEntry(entry, index, logger);
     }
-    const normalized = { active: entry.active === undefined ? true : !!entry.active, ...entry };
+    const normalized = { ...entry, active: entry.active === undefined ? true : !!entry.active };
     results.push({ ...normalized, botIndex: index, botKey: createBotKey(normalized, index) });
   }
   return results;
@@ -1008,8 +1008,8 @@ async function loadDexbotProfileBundle(profileRoot: string | null, options: Part
  * The adapter wraps bundle loading, settings validation, and atomic writes behind
  * per-file locks so concurrent updates do not clobber each other.
  *
- * @returns {Object} Adapter with loadBundle, listBots, findBot, getBotBundle,
- *   getBotSettings, previewBotSettingsUpdate, applyBotSettingsPatch, getProfilesDir
+ * @returns {Object} Adapter with loadBundle, getBotSettings,
+ *   previewBotSettingsUpdate, applyBotSettingsPatch, updateBotSettings, getClawProfileContext
  */
 function createDexbotProfileAdapter(profileRoot: string | null, options: Partial<ProfileOptions> = {}) {
   let cachedBundle: any = null;
@@ -1023,16 +1023,6 @@ function createDexbotProfileAdapter(profileRoot: string | null, options: Partial
 
   function getProfilesDir() {
     return resolveProfilesDir(profileRoot || options.profileRoot);
-  }
-
-  async function listBots({ activeOnly = false, forceReload = false } = {}) {
-    const bundle = await loadBundle(forceReload);
-    return activeOnly ? bundle.activeBots : bundle.bots;
-  }
-
-  async function findBot(identifier: any, forceReload = false) {
-    const bundle = await loadBundle(forceReload);
-    return bundle.bots.find((bot: any) => matchBotIdentifier(bot, identifier)) || null;
   }
 
   async function getBotBundle(identifier: any, forceReload = false) {
@@ -1272,20 +1262,14 @@ function createDexbotProfileAdapter(profileRoot: string | null, options: Partial
   }
 
   return {
-    buildClawProfileContext: (bundle: any, contextOptions = {}) => buildClawProfileContext(bundle, contextOptions),
     applyBotSettingsPatch,
-    findBot,
-    getBotBundle,
     getBotSettings,
     getClawProfileContext,
-    getProfilesDir,
-    listBots,
     loadBundle,
     previewBotSettingsUpdate,
-    resolveProfilesDir: () => resolveProfilesDir(profileRoot || options.profileRoot),
     updateBotSettings
   };
 }
 
-export { buildBotSettingsView, createBotKey, createDexbotProfileAdapter, buildClawProfileContext, describeBotSettingMutability, loadDexbotProfileBundle, matchBotIdentifier, normalizeBotSettings, normalizeBotEntries, readTriggerFile, resolveProfilesDir, resolveRawBotEntries, sanitizeKey, validateBotEntry, validateBotSettingsPatch, validateBotSettingsState, writeJsonFileAtomic }
+export { createBotKey, createDexbotProfileAdapter, matchBotIdentifier, normalizeBotEntries, resolveProfilesDir, resolveRawBotEntries, validateBotEntry, writeJsonFileAtomic }
 

@@ -2,15 +2,7 @@
 import { Config } from '../../modules/config.js';
 import { borrowMpa, createLimitOrder, repayMpaDebt } from './chain_actions.js';
 import { requireBtsBackedMpa } from './mpa_utils.js';
-
-function requirePositiveNumber(value: any, fieldName: string) {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue) || numericValue <= 0) {
-    throw new Error(`${fieldName} must be a positive number`);
-  }
-
-  return numericValue;
-}
+import { requirePositiveNumber } from './utils.js';
 
 function requireNonNegativeNumber(value: any, fieldName: string) {
   const numericValue = Number(value);

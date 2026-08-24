@@ -15,8 +15,6 @@ import { acquireFileLock } from '../../market_adapter/utils/file_lock.js';
 import { clone } from './utils.js';
 const storage = getStorage();
 
-import { createPositionManagerWatcher, parsePositionManagerWatchArgs, runPositionManagerWatch } from './position_manager_watch.js';
-
 import type {
   RuntimeContextOptions,
   CredentialClientOptions,
@@ -27,9 +25,7 @@ import type {
 } from './types.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
 
-const CLAW_ROOT = PATHS.CLAW.DIR;
 const DEFAULT_DATA_DIR = PATHS.CLAW.DATA_DIR;
-const DEFAULT_STATE_DIR = PATHS.CLAW.STATE_DIR;
 
 
 /**
@@ -332,5 +328,5 @@ function createClawInfrastructure(options: ClawInfrastructureOptions = {}) {
   };
 }
 
-export { DEFAULT_DATA_DIR, DEFAULT_STATE_DIR, createBitsharesClient, createClawInfrastructure, createCredentialClient, createHonestEcosystemAdapter, createMarketAdapter, createOrderTools, createRuntimeContext, createStateStore, createPositionManagerWatcher, parsePositionManagerWatchArgs, runPositionManagerWatch }
+export { createClawInfrastructure, createRuntimeContext, createStateStore }
 

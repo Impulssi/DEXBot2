@@ -130,7 +130,7 @@ function resolveAccountName(options: Record<string, any> = {}) {
   return options.accountName || Config.BITSHARES_ACCOUNT || null;
 }
 
-async function createSigningClientFromCredentialDaemon(options: Record<string, any> = {}) {
+async function createSigningClientFromCredentialDaemon() {
   throw new Error(
     'The credential daemon no longer exports raw private keys. ' +
     'Use broadcastOperationViaCredentialDaemon() or executeOperationsViaCredentialDaemon() ' +
@@ -152,15 +152,59 @@ async function getSigningClient(options: Record<string, any> = {}) {
     throw new Error('Credential daemon is not ready');
   }
 
-  return createSigningClientFromCredentialDaemon({
-    ...options,
-    accountName
-  });
+  return createSigningClientFromCredentialDaemon();
 }
 
 function normalizeOperations(operations: any) {
   const ops = Array.isArray(operations) ? operations : [operations];
   return ops.filter(Boolean);
+}
+
+/**
+ * Shared credential-daemon broadcast plumbing: clamps the request timeout so
+ * the daemon's inner deadline can fire first, waits for the daemon, resolves
+ * session credentials, and retries once on session/HMAC failures (SIGHUP on
+ * source-auth denials). `dispatch` performs the actual daemon call and must
+ * be idempotent-safe: it is only re-invoked after credentials are re-resolved.
+ */
+async function viaCredentialDaemon(accountName: string, options: Record<string, any>, dispatch: (creds: { sessionId: string | null; botHmacSecret: string | null }) => Promise<any>) {
+  const daemonTimeoutMs = Number.isFinite(Number(options.daemonTimeoutMs))
+    ? Number(options.daemonTimeoutMs)
+    : undefined;
+  // Clamp the broadcast request timeout up to the default outer window: the
+  // daemon's inner deadline (25s) must be allowed to fire and reply a typed
+  // BROADCAST_DEADLINE before this socket timer. A caller-supplied short
+  // timeout would time out mid-broadcast — a false uncertain.
+  const requestTimeoutMs = Number.isFinite(Number(options.daemonRequestTimeoutMs))
+    ? Math.max(Number(options.daemonRequestTimeoutMs), DEFAULT_BROADCAST_TIMEOUT_MS)
+    : undefined;
+
+  await waitForCredentialDaemon(daemonTimeoutMs, options);
+
+  const creds = await resolveSessionCredentials(accountName, options);
+  const socketOptions = {
+    socketPath: options.socketPath,
+    timeoutMs: requestTimeoutMs
+  };
+
+  try {
+    return await dispatch({ ...socketOptions, ...creds });
+  } catch (err: any) {
+    const msg = String(getErrorMessage(err) || err);
+    if (msg.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED) || msg.includes(DAEMON_ERRORS.SESSION_EXPIRED)) {
+      const isSourceAuthError = msg.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED);
+      console.warn(`[CLAW] Session/HMAC error, re-resolving credentials and retrying: ${msg}`);
+      if (isSourceAuthError) {
+        _sendSighupToDaemon();
+      }
+      const retry = await resolveSessionCredentials(accountName, options);
+      if (isSourceAuthError) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      return await dispatch({ ...socketOptions, ...retry });
+    }
+    throw err;
+  }
 }
 
 async function executeOperations(operations: any, options: Record<string, any> = {}) {
@@ -175,66 +219,20 @@ async function executeOperations(operations: any, options: Record<string, any> =
       throw new Error('accountName is required');
     }
 
-    const daemonTimeoutMs = Number.isFinite(Number(options.daemonTimeoutMs))
-      ? Number(options.daemonTimeoutMs)
-      : undefined;
-    // Clamp the broadcast request timeout up to the default outer window: the
-    // daemon's inner deadline (25s) must be allowed to fire and reply a typed
-    // BROADCAST_DEADLINE before this socket timer. A caller-supplied short
-    // timeout would time out mid-broadcast — a false uncertain.
-    const requestTimeoutMs = Number.isFinite(Number(options.daemonRequestTimeoutMs))
-      ? Math.max(Number(options.daemonRequestTimeoutMs), DEFAULT_BROADCAST_TIMEOUT_MS)
-      : undefined;
-
-    await waitForCredentialDaemon(daemonTimeoutMs, options);
-
-    let { sessionId, botHmacSecret } = await resolveSessionCredentials(accountName, options);
-
-    try {
-      const result = await executeOperationsViaCredentialDaemon(accountName, ops, {
-        socketPath: options.socketPath,
-        timeoutMs: requestTimeoutMs,
-        sessionId,
-        botHmacSecret,
+    const result = await viaCredentialDaemon(accountName, options, async (daemonOptions) =>
+      executeOperationsViaCredentialDaemon(accountName, ops, {
+        ...daemonOptions,
         requestType: 'broadcast',
         batchId: options.batchId || null
-      });
+      })
+    );
 
-      return {
-        ...result,
-        operation_results: result.operation_results || [],
-        raw: result.raw || null,
-        success: true
-      };
-    } catch (err: any) {
-      const msg = String(getErrorMessage(err) || err);
-      if (msg.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED) || msg.includes(DAEMON_ERRORS.SESSION_EXPIRED)) {
-        const isSourceAuthError = msg.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED);
-        console.warn(`[CLAW] Session/HMAC error, re-resolving credentials and retrying: ${msg}`);
-        if (isSourceAuthError) {
-          _sendSighupToDaemon();
-        }
-        const retry = await resolveSessionCredentials(accountName, options);
-        if (isSourceAuthError) {
-          await new Promise(r => setTimeout(r, 500));
-        }
-        const result = await executeOperationsViaCredentialDaemon(accountName, ops, {
-          socketPath: options.socketPath,
-          timeoutMs: requestTimeoutMs,
-          sessionId: retry.sessionId,
-          botHmacSecret: retry.botHmacSecret,
-          requestType: 'broadcast',
-          batchId: options.batchId || null
-        });
-        return {
-          ...result,
-          operation_results: result.operation_results || [],
-          raw: result.raw || null,
-          success: true
-        };
-      }
-      throw err;
-    }
+    return {
+      ...result,
+      operation_results: result.operation_results || [],
+      raw: result.raw || null,
+      success: true
+    };
   }
 
   const client = await getSigningClient(options);
@@ -290,27 +288,10 @@ async function broadcastOperation(operation: any, options: Record<string, any> =
       throw new Error('accountName is required');
     }
 
-    const daemonTimeoutMs = Number.isFinite(Number(options.daemonTimeoutMs))
-      ? Number(options.daemonTimeoutMs)
-      : undefined;
-    // Clamp the broadcast request timeout up to the default outer window: the
-    // daemon's inner deadline (25s) must be allowed to fire and reply a typed
-    // BROADCAST_DEADLINE before this socket timer. A caller-supplied short
-    // timeout would time out mid-broadcast — a false uncertain.
-    const requestTimeoutMs = Number.isFinite(Number(options.daemonRequestTimeoutMs))
-      ? Math.max(Number(options.daemonRequestTimeoutMs), DEFAULT_BROADCAST_TIMEOUT_MS)
-      : undefined;
-
-    await waitForCredentialDaemon(daemonTimeoutMs, options);
-
-    let { sessionId, botHmacSecret } = await resolveSessionCredentials(accountName, options);
-
-    async function doBroadcast(sid: string | null | undefined, secret: string | null) {
+    return viaCredentialDaemon(accountName, options, async (daemonOptions) => {
       const result = await broadcastOperationViaCredentialDaemon(accountName, operation, {
-        socketPath: options.socketPath,
-        timeoutMs: requestTimeoutMs,
-        sessionId: sid,
-        botHmacSecret: secret
+        ...daemonOptions,
+        batchId: options.batchId || null
       });
       const operationResults =
         (result && Array.isArray(result.operation_results) && result.operation_results) ||
@@ -318,26 +299,7 @@ async function broadcastOperation(operation: any, options: Record<string, any> =
         (Array.isArray(result) && result[0] && result[0].trx && Array.isArray(result[0].trx.operation_results) && result[0].trx.operation_results) ||
         [];
       return { success: true, raw: result, operation_results: operationResults };
-    }
-
-    try {
-      return await doBroadcast(sessionId, botHmacSecret);
-    } catch (err: any) {
-      const msg = String(getErrorMessage(err) || err);
-      if (msg.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED) || msg.includes(DAEMON_ERRORS.SESSION_EXPIRED)) {
-        const isSourceAuthError = msg.includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED);
-        console.warn(`[CLAW] Session/HMAC error, re-resolving credentials and retrying: ${msg}`);
-        if (isSourceAuthError) {
-          _sendSighupToDaemon();
-        }
-        const retry = await resolveSessionCredentials(accountName, options);
-        if (isSourceAuthError) {
-          await new Promise(r => setTimeout(r, 500));
-        }
-        return await doBroadcast(retry.sessionId, retry.botHmacSecret);
-      }
-      throw err;
-    }
+    });
   }
 
   const client = await getSigningClient(options);
@@ -348,5 +310,5 @@ async function broadcastOperation(operation: any, options: Record<string, any> =
   }
 }
 
-export { broadcastOperation, createSigningClient, createSigningClientFromCredentialDaemon, executeOperations, getSigningClient, resolveAccountName }
+export { broadcastOperation, executeOperations, getSigningClient, resolveAccountName }
 

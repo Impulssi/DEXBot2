@@ -41,17 +41,7 @@ const DEXBOT_VERSION = (() => {
 })();
 
 function resolveMemuScript() {
-  const candidates = [
-    PATHS.CLAW.MEMU_RUNNER_SCRIPT,
-  ];
-
-  for (const candidate of candidates) {
-    if (storage.exists(candidate)) {
-      return candidate;
-    }
-  }
-
-  return candidates[0];
+  return PATHS.CLAW.MEMU_RUNNER_SCRIPT;
 }
 
 function ensureMemuDir(dir: any) {
@@ -132,6 +122,11 @@ function runMemuPython(args: string[], options: Record<string, any> = {}) {
     });
 
     if (options.stdin) {
+      // The child may exit before it drains stdin (bad args, crash); without
+      // an 'error' listener the resulting EPIPE crashes the host process.
+      child.stdin.on('error', () => {
+        // Best-effort write; the close handler reports the real exit status.
+      });
       child.stdin.write(JSON.stringify(options.stdin));
       child.stdin.end();
     }
@@ -431,26 +426,78 @@ function describeMemuBridge(options: Record<string, any> = {}) {
   };
 }
 
+/**
+ * Required-argument spec shared by runMemuCommand, the memU MCP server, and
+ * the claw bridge's memu-* commands, so every surface rejects bad input with
+ * the same message instead of maintaining three copies of the checks.
+ */
+const MEMU_REQUIRED_ARGS: Record<string, { groups: string[][]; message: string }> = {
+  'memorize': {
+    groups: [['resourceUrl'], ['modality']],
+    message: 'memorize requires resourceUrl and modality'
+  },
+  'retrieve': {
+    groups: [['queries']],
+    message: 'retrieve requires queries'
+  },
+  'create-item': {
+    groups: [['categoryId', 'categoryName', 'category'], ['summary']],
+    message: 'create-item requires categoryId or categoryName, plus summary'
+  },
+  'update-item': {
+    groups: [['itemId'], ['updates']],
+    message: 'update-item requires itemId and updates'
+  },
+  'delete-item': {
+    groups: [['itemId']],
+    message: 'delete-item requires itemId'
+  },
+  'memorize-conversation': {
+    groups: [['messages']],
+    message: 'memorize-conversation requires messages array'
+  },
+  'memorize-trading-context': {
+    groups: [['context']],
+    message: 'memorize-trading-context requires context'
+  },
+  'retrieve-trading-context': {
+    groups: [['query']],
+    message: 'retrieve-trading-context requires query'
+  }
+};
+
+/**
+ * Throw when a memU command is missing required arguments.
+ * Each group lists acceptable alternative field names; every group must be
+ * satisfied by at least one present (truthy) field.
+ */
+function validateMemuCommandArgs(command: string, options: Record<string, any>) {
+  const spec = MEMU_REQUIRED_ARGS[command];
+  if (!spec) {
+    return;
+  }
+
+  const satisfied = spec.groups.every(
+    (group) => group.some((field) => options[field])
+  );
+  if (!satisfied) {
+    throw new Error(spec.message);
+  }
+}
+
 async function runMemuCommand(command: string, options: Record<string, any> = {}) {
+  validateMemuCommandArgs(command, options);
   const bridge = createMemuBridge(options);
 
   switch (command) {
     case 'manifest':
       return describeMemuBridge(options);
 
-    case 'memorize': {
-      if (!options.resourceUrl || !options.modality) {
-        throw new Error('memorize requires resourceUrl and modality');
-      }
+    case 'memorize':
       return bridge.memorize(options.resourceUrl, options.modality, options.user);
-    }
 
-    case 'retrieve': {
-      if (!options.queries) {
-        throw new Error('retrieve requires queries');
-      }
+    case 'retrieve':
       return bridge.retrieve(options.queries, options.where, options.method || 'rag');
-    }
 
     case 'list-categories':
       return bridge.listCategories(normalizeScopeWhere(options.where, options.user));
@@ -458,32 +505,19 @@ async function runMemuCommand(command: string, options: Record<string, any> = {}
     case 'list-items':
       return bridge.listItems(normalizeScopeWhere(options.where, options.user));
 
-    case 'create-item': {
-      const categoryRef = options.categoryId || options.categoryName || options.category;
-      if (!categoryRef || !options.summary) {
-        throw new Error('create-item requires categoryId or categoryName, plus summary');
-      }
+    case 'create-item':
       return bridge.createMemoryItem(
-        categoryRef,
+        options.categoryId || options.categoryName || options.category,
         options.summary,
         options.memoryType || 'knowledge',
         options.user
       );
-    }
 
-    case 'update-item': {
-      if (!options.itemId || !options.updates) {
-        throw new Error('update-item requires itemId and updates');
-      }
+    case 'update-item':
       return bridge.updateMemoryItem(options.itemId, options.updates);
-    }
 
-    case 'delete-item': {
-      if (!options.itemId) {
-        throw new Error('delete-item requires itemId');
-      }
+    case 'delete-item':
       return bridge.deleteMemoryItem(options.itemId);
-    }
 
     case 'clear':
       return bridge.clearMemory(normalizeScopeWhere(options.where, options.user));
@@ -491,31 +525,19 @@ async function runMemuCommand(command: string, options: Record<string, any> = {}
     case 'status':
       return bridge.getStatus(normalizeScopeWhere(options.where, options.user));
 
-    case 'memorize-conversation': {
-      if (!options.messages) {
-        throw new Error('memorize-conversation requires messages array');
-      }
+    case 'memorize-conversation':
       return bridge.memorizeConversation(options.messages, options.user);
-    }
 
-    case 'memorize-trading-context': {
-      if (!options.context) {
-        throw new Error('memorize-trading-context requires context');
-      }
+    case 'memorize-trading-context':
       return bridge.memorizeTradingContext(options.context, options.user);
-    }
 
-    case 'retrieve-trading-context': {
-      if (!options.query) {
-        throw new Error('retrieve-trading-context requires query');
-      }
+    case 'retrieve-trading-context':
       return bridge.retrieveTradingContext(options.query, options.user);
-    }
 
     default:
       throw new Error(`Unsupported memU command: ${command}`);
   }
 }
 
-export { createMemuBridge, describeMemuBridge, runMemuCommand, resolveMemuScript, DEFAULT_MEMU_DIR }
+export { createMemuBridge, describeMemuBridge, runMemuCommand, validateMemuCommandArgs }
 

@@ -5,7 +5,7 @@ import { loadDexbotOrderUtils } from './dexbot_bridge.js';
 
 const CORE_SYMBOL = 'BTS';
 
-async function requireBtsBackedMpa(mpaSymbolOrId: any) {
+async function requireBtsBackedMpa(mpaSymbolOrId: any, hint?: string) {
   const mpaAsset = await getAsset(mpaSymbolOrId);
   if (!mpaAsset) {
     throw new Error(`Asset not found: ${mpaSymbolOrId}`);
@@ -19,7 +19,8 @@ async function requireBtsBackedMpa(mpaSymbolOrId: any) {
     throw new Error(`Could not resolve backing asset for ${mpaSymbolOrId}`);
   }
   if (backingAsset.symbol !== CORE_SYMBOL) {
-    throw new Error(`${mpaAsset.symbol || mpaSymbolOrId} is backed by ${backingAsset.symbol}, not ${CORE_SYMBOL}`);
+    const hintSuffix = hint ? `; ${hint}` : '';
+    throw new Error(`${mpaAsset.symbol || mpaSymbolOrId} is backed by ${backingAsset.symbol}, not ${CORE_SYMBOL}${hintSuffix}`);
   }
 
   return {
@@ -62,5 +63,27 @@ function computeBtsPerMpa(settlementPrice: any, mpaAsset: any, backingAsset: any
   return null;
 }
 
-export { CORE_SYMBOL, computeBtsPerMpa, requireBtsBackedMpa }
+/**
+ * Compute the normalized debt/collateral figures for a raw call order.
+ * Canonical implementation shared by position discovery and the position
+ * manager so both surfaces report identical amounts and ratios.
+ */
+function computeCallOrderAmounts(callOrder: any, mpaAsset: any, backingAsset: any, bitassetData: any) {
+  const blockchainToFloat = getBlockchainToFloat();
+  const debtAmount = blockchainToFloat(callOrder.debt, mpaAsset.precision);
+  const collateralAmount = blockchainToFloat(callOrder.collateral, backingAsset.precision);
+  const btsPerMpa = computeBtsPerMpa(bitassetData?.current_feed?.settlement_price, mpaAsset, backingAsset);
+  const debtValueInBts = debtAmount && btsPerMpa ? debtAmount * btsPerMpa : 0;
+  const collateralRatio = debtValueInBts > 0 ? collateralAmount / debtValueInBts : null;
+
+  return {
+    btsPerMpa,
+    collateralAmount: collateralAmount || 0,
+    collateralRatio,
+    debtAmount: debtAmount || 0,
+    debtValueInBts
+  };
+}
+
+export { CORE_SYMBOL, computeBtsPerMpa, computeCallOrderAmounts, getBlockchainToFloat, requireBtsBackedMpa }
 

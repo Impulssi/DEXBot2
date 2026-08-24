@@ -88,7 +88,11 @@ async function fetchLivePoolReserves(poolId: string = HARDCODED_POOL_ID) {
     };
     _poolReservesCache = { poolId, ts: Date.now(), value: result };
     return result;
-  } catch {
+  } catch (err: any) {
+    // Never cache failures, but surface them: silently serving the hardcoded
+    // fallback snapshot hides a degraded node and produces confidently-wrong
+    // bridge prices with no telemetry trail.
+    console.warn(`[honest-ecosystem] live pool reserves fetch failed for ${poolId}, using hardcoded fallback: ${err?.message || err}`);
     return null;
   }
 }
@@ -217,10 +221,15 @@ async function resolveHonestPairContext(assetA: any, assetB: any, options: Recor
   };
 }
 
-async function loadHonestAssets({ prefix = DEFAULT_PREFIX, batchSize = 100, maxPages = 100, startSymbol = DEFAULT_PREFIX }: Record<string, any> = {}) {
-  const all = [];
+/**
+ * Paginate list_assets with the shared dedup/boundary rules used across the
+ * HONEST tooling. `onPage` receives each de-duplicated page and accumulates
+ * whatever it needs; returning `false` stops pagination early (e.g. crossing
+ * a prefix boundary).
+ */
+async function paginateListAssets({ batchSize = 100, maxPages = 100, startSymbol = '' }: Record<string, any> = {}, onPage: (pageItems: any[], batch: any[]) => boolean | void) {
   let lowerBound = startSymbol;
-  let previousLastSymbol = null;
+  let previousLastSymbol: string | null = null;
 
   for (let page = 0; page < maxPages; page += 1) {
     const batch = await listAssets(lowerBound, batchSize);
@@ -237,17 +246,24 @@ async function loadHonestAssets({ prefix = DEFAULT_PREFIX, batchSize = 100, maxP
       break;
     }
 
-    const matching = pageItems.filter((asset) => isHonestAsset(asset) && asset.symbol.startsWith(prefix));
-    all.push(...matching);
+    const keepGoing = await onPage(pageItems, batch);
 
     previousLastSymbol = pageItems[pageItems.length - 1].symbol;
     lowerBound = previousLastSymbol;
 
-    if (batch.length < batchSize) {
+    if (keepGoing === false || batch.length < batchSize) {
       break;
     }
   }
+}
 
+async function loadHonestAssets({ prefix = DEFAULT_PREFIX, batchSize = 100, maxPages = 100, startSymbol = DEFAULT_PREFIX }: Record<string, any> = {}) {
+  const all: any[] = [];
+
+  await paginateListAssets({ batchSize, maxPages, startSymbol }, (pageItems) => {
+    const matching = pageItems.filter((asset) => isHonestAsset(asset) && asset.symbol.startsWith(prefix));
+    all.push(...matching);
+  });
   const mpas = [];
   for (const asset of all) {
     if (!isMpa(asset)) {
@@ -357,5 +373,5 @@ function createHonestEcosystemAdapter(options: Record<string, any> = {}) {
   };
 }
 
-export { CORE_SYMBOL, DEFAULT_PREFIX, REFERENCE_SYMBOL, buildHonestEcosystemContext, createHonestEcosystemAdapter, getHardcodedHonestMoneyBridge, loadHonestAssets, isHardcodedHonestMoneyBtsPair, resolveHardcodedHonestMoneyPrice, resolveHonestPairContext, resolveHonestPairPrice }
+export { buildHonestEcosystemContext, createHonestEcosystemAdapter, getHardcodedHonestMoneyBridge, getHonestMoneyBridge, isMpa, loadHonestAssets, paginateListAssets, resolveHardcodedHonestMoneyPrice, resolveHonestPairContext, resolveHonestPairPrice }
 

@@ -43,6 +43,106 @@ export function failure(id: any, code: any, message: any, data = undefined) {
   });
 }
 
+/**
+ * Build an Error that createJsonRpcToolsHandler maps to a JSON-RPC error
+ * response with the given code instead of the isError:true result convention.
+ * Use -32602 for caller-input problems (invalid params, unknown tool).
+ */
+export function jsonRpcError(code: number, message: string): Error & { statusCode: number } {
+  const err = new Error(message) as Error & { statusCode: number };
+  err.statusCode = code;
+  return err;
+}
+
+/**
+ * Shared JSON-RPC request shell for the claw/memu stdio servers: initialize
+ * handshake (echoing the client's protocolVersion), notifications/initialized,
+ * ping, tools/list (internal failures map to -32603), tools/call delegation,
+ * and method-not-found. `callTool(params, defaults)` returns the result value
+ * for a successful call; thrown Errors carrying a numeric `statusCode`
+ * become JSON-RPC errors, everything else becomes an isError:true result.
+ */
+export function createJsonRpcToolsHandler(options: {
+  serverName: string;
+  serverVersion?: string;
+  listTools: () => any[] | Promise<any[]>;
+  callTool: (params: any, defaults: any) => Promise<any>;
+}) {
+  const { serverName, listTools, callTool } = options;
+  const serverVersion = options.serverVersion || '0.1.0';
+
+  return async function handleRequest(message: any, defaults: any) {
+    const { id, method, params } = message;
+
+    switch (method) {
+      case 'initialize':
+        return success(id, {
+          // Echo the client's requested protocol version when provided, so a
+          // JSONL-speaking client can negotiate its own version.
+          protocolVersion: params?.protocolVersion || '2024-11-05',
+          capabilities: {
+            tools: {
+              listChanged: false
+            }
+          },
+          serverInfo: {
+            name: serverName,
+            version: serverVersion
+          }
+        });
+
+      case 'notifications/initialized':
+        return;
+
+      case 'ping':
+        return success(id, {});
+
+      case 'tools/list':
+        try {
+          return success(id, {
+            tools: await listTools()
+          });
+        } catch (error: any) {
+          // Catalog load failure is a server-side problem, not bad input.
+          return failure(id, -32603, `Failed to load tool catalog: ${error && error.message ? error.message : String(error)}`);
+        }
+
+      case 'tools/call': {
+        try {
+          const result = await callTool(params, defaults);
+          return success(id, {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result, null, 2)
+              }
+            ],
+            structuredContent: result
+          });
+        } catch (error: any) {
+          if (error && typeof error.statusCode === 'number') {
+            return failure(id, error.statusCode, error.message);
+          }
+          return success(id, {
+            content: [
+              {
+                type: 'text',
+                text: error && error.stack ? error.stack : String(error)
+              }
+            ],
+            isError: true
+          });
+        }
+      }
+
+      default:
+        if (id !== undefined) {
+          return failure(id, -32601, `Method not found: ${method}`);
+        }
+    }
+  };
+}
+
 export function createMessageParser(onMessage: any, onDrain?: () => void) {
   if (!hasProcess()) {
     throw new Error('MCP stdio transport not available in this environment');
@@ -128,6 +228,7 @@ export async function runMcpServer(parseArgs: (argv: string[]) => Record<string,
     }
   });
   let lastQueue = Promise.resolve();
+  let finishInput: () => void = () => {};
 
   runtime.stdin!.on('data', (chunk) => {
     lastQueue = parser.push(chunk);
@@ -138,10 +239,18 @@ export async function runMcpServer(parseArgs: (argv: string[]) => Record<string,
       runtime.stdin!.pause();
     }
   });
+  // Without an 'error' listener an EPIPE/EIO on stdin emits an unhandled
+  // 'error' event and crashes the MCP server mid-session. Treat it as EOF.
+  runtime.stdin!.on('error', (err: any) => {
+    runtime.stderr.write(`[mcp] stdin error: ${err && err.stack ? err.stack : String(err)}\n`);
+    // The 'end' event never fires after a stream error; unblock the wait.
+    finishInput();
+  });
   runtime.stdin!.resume();
 
   await new Promise<void>((resolve) => {
     runtime.stdin!.on('end', () => resolve());
+    finishInput = resolve;
   });
   await lastQueue;
 }

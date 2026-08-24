@@ -1,5 +1,5 @@
-import { getAsset, getBackingAsset, getBitassetData, getCallOrders, getDynamicGlobalProperties, listAssets } from '../modules/chain_queries.js';
-import { getHardcodedHonestMoneyBridge } from '../modules/honest_ecosystem.js';
+import { getAsset, getBackingAsset, getBitassetData, getCallOrders, getDynamicGlobalProperties } from '../modules/chain_queries.js';
+import { getHonestMoneyBridge, isMpa, paginateListAssets } from '../modules/honest_ecosystem.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
 
 const DEFAULT_BATCH_SIZE = 100;
@@ -49,67 +49,17 @@ function toPositiveInteger(value: any, fallback: any) {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
-function isMpa(asset: any) {
-  return Boolean(asset && asset.bitasset_data_id);
-}
-
-function isHonestAsset(asset: any) {
-  return typeof asset?.symbol === 'string' && asset.symbol.startsWith('HONEST.');
-}
-
 async function fetchAllAssets({ batchSize, maxPages, startSymbol }: { batchSize: any; maxPages: any; startSymbol: any }) {
-  const results = [];
-  let lowerBound = startSymbol;
-  let previousLastSymbol = null;
-
-  for (let page = 0; page < maxPages; page += 1) {
-    const batch = await listAssets(lowerBound, batchSize);
-    if (!Array.isArray(batch) || batch.length === 0) {
-      break;
-    }
-
-    let pageItems = batch.filter(Boolean);
-    if (previousLastSymbol && pageItems[0]?.symbol === previousLastSymbol) {
-      pageItems = pageItems.slice(1);
-    }
-
-    if (pageItems.length === 0) {
-      break;
-    }
-
+  const results: any[] = [];
+  await paginateListAssets({ batchSize, maxPages, startSymbol }, (pageItems) => {
     results.push(...pageItems);
-    previousLastSymbol = pageItems[pageItems.length - 1].symbol;
-    lowerBound = previousLastSymbol;
-
-    if (batch.length < batchSize) {
-      break;
-    }
-  }
-
+  });
   return results;
 }
 
 async function fetchAssetsByPrefix({ batchSize, maxPages, prefix, startSymbol }: { batchSize: any; maxPages: any; prefix: any; startSymbol: any }) {
-  const results = [];
-  let lowerBound = startSymbol;
-  let previousLastSymbol = null;
-
-  for (let page = 0; page < maxPages; page += 1) {
-    const batch = await listAssets(lowerBound, batchSize);
-    if (!Array.isArray(batch) || batch.length === 0) {
-      break;
-    }
-
-    let pageItems = batch.filter(Boolean);
-    if (previousLastSymbol && pageItems[0]?.symbol === previousLastSymbol) {
-      pageItems = pageItems.slice(1);
-    }
-
-    if (pageItems.length === 0) {
-      break;
-    }
-
-    const matching = [];
+  const matching: any[] = [];
+  await paginateListAssets({ batchSize, maxPages, startSymbol }, (pageItems) => {
     let crossedPrefixBoundary = false;
 
     for (const item of pageItems) {
@@ -125,18 +75,10 @@ async function fetchAssetsByPrefix({ batchSize, maxPages, prefix, startSymbol }:
       }
     }
 
-    results.push(...matching);
+    return !crossedPrefixBoundary;
+  });
 
-    const lastItem = pageItems[pageItems.length - 1];
-    previousLastSymbol = lastItem?.symbol || previousLastSymbol;
-    lowerBound = previousLastSymbol || lowerBound;
-
-    if (crossedPrefixBoundary || batch.length < batchSize) {
-      break;
-    }
-  }
-
-  return results;
+  return matching;
 }
 
 async function mapWithConcurrency(items: any, concurrency: any, mapper: any) {
@@ -179,16 +121,14 @@ function computeBasePerQuote(priceObject: any, assetMap: any) {
 }
 
 async function getHonestMoneyPerBts(referenceAsset: any, coreAsset: any) {
-  const bridge = getHardcodedHonestMoneyBridge();
-  const coreSide = [bridge.liquidityPool.reserves[0], bridge.liquidityPool.reserves[1]].find((asset) => asset.symbol === coreAsset.symbol);
-  const referenceSide = [bridge.liquidityPool.reserves[0], bridge.liquidityPool.reserves[1]].find((asset) => asset.symbol === referenceAsset.symbol);
+  // Prefer the live HONEST.MONEY/BTS pool (60s-cached); the module falls back
+  // to the hardcoded snapshot when the node cannot serve reserves. Reading the
+  // live bridge here keeps this report — whose purpose is refreshing those
+  // hardcoded values — from always printing stale fallback data.
+  const bridge = await getHonestMoneyBridge();
+  const latestHonestMoneyPerBts = bridge?.latestHonestMoneyPerBts ?? null;
 
-  if (!coreSide || !referenceSide) {
-    return null;
-  }
-
-  const latestHonestMoneyPerBts = referenceSide.amount / coreSide.amount;
-  if (!Number.isFinite(latestHonestMoneyPerBts) || latestHonestMoneyPerBts <= 0) {
+  if (latestHonestMoneyPerBts === null || !Number.isFinite(latestHonestMoneyPerBts) || latestHonestMoneyPerBts <= 0) {
     return null;
   }
 
@@ -197,8 +137,7 @@ async function getHonestMoneyPerBts(referenceAsset: any, coreAsset: any) {
       id: bridge.liquidityPool.id,
       poolSymbol: bridge.liquidityPool.poolSymbol,
       reserves: [
-        bridge.liquidityPool.reserves[0],
-        bridge.liquidityPool.reserves[1]
+        ...bridge.liquidityPool.reserves
       ],
       takerFeePercent: bridge.liquidityPool.takerFeePercent,
       withdrawalFeePercent: bridge.liquidityPool.withdrawalFeePercent
@@ -235,15 +174,12 @@ async function getReferenceFeedData(asset: any, referenceAsset: any, coreAsset: 
     return null;
   }
 
-  let assetPerBts = null;
   let btsPerAsset = null;
 
   if (settlementPrice.base.asset_id === asset.id && settlementPrice.quote.asset_id === coreAsset.id) {
-    assetPerBts = basePerQuote;
     btsPerAsset = 1 / basePerQuote;
   } else if (settlementPrice.base.asset_id === coreAsset.id && settlementPrice.quote.asset_id === asset.id) {
     btsPerAsset = basePerQuote;
-    assetPerBts = 1 / basePerQuote;
   } else {
     return null;
   }
@@ -345,7 +281,6 @@ async function main() {
   const scopedAssets = options.allMpas
     ? allAssets.filter(isMpa).sort((a, b) => a.symbol.localeCompare(b.symbol))
     : allAssets.filter((asset) => asset?.symbol?.startsWith(options.prefix)).sort((a, b) => a.symbol.localeCompare(b.symbol));
-  const mpas = scopedAssets.filter(isMpa);
   const assetMap = new Map([coreAsset, referenceAsset, ...scopedAssets].filter(Boolean).map((asset) => [asset.id, asset]));
 
   const scopedAssetRecords = await mapWithConcurrency(scopedAssets, 4, async (asset: any) => {

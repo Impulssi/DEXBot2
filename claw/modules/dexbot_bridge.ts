@@ -78,5 +78,5 @@ function loadDexbotOrderSystemUtils() {
   return requireDexbot2Module('modules/order/utils/system');
 }
 
-export { getDexbot2Root, loadDexbotOrderConstants, loadDexbotOrderSubsystem, loadDexbotOrderSystemUtils, loadDexbotOrderUtils, requireDexbot2Module, resolveDexbot2Path }
+export { getDexbot2Root, loadDexbotOrderConstants, loadDexbotOrderSubsystem, loadDexbotOrderSystemUtils, loadDexbotOrderUtils, requireDexbot2Module }
 
