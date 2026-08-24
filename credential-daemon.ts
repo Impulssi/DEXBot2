@@ -845,7 +845,7 @@ async function initialize() {
         // Check that the key vault exists at the resolved profiles dir
         const keysPath = PATHS.PROFILES.KEYS_JSON();
         if (!storage.exists(keysPath)) {
-            throw new Error('profiles/keys.json not found. Please run: dexbot key');
+            throw new Error(`Key vault not found at ${keysPath}. Please run: dexbot key`);
         }
 
         // Accept a one-shot bootstrap secret when launched by a wrapper,

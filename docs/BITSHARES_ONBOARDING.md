@@ -237,8 +237,10 @@ dexbot key
 4. Paste the **active private key (WIF)**.
 5. Repeat for any additional accounts.
 
-Keys are stored encrypted in `profiles/keys.json` and held in RAM by the
-credential daemon while the bot runs. See
+Keys are stored encrypted in `keys.json` inside your profiles directory
+(`~/.config/dexbot2/profiles` by default — see
+[Where are the logs?](#where-are-the-logs) for how this resolves) and held in
+RAM by the credential daemon while the bot runs. See
 [CREDENTIAL_SECURITY.md](CREDENTIAL_SECURITY.md) for how this is protected.
 
 ---
@@ -330,7 +332,7 @@ dexbot start --dryrun --foreground   # stop with Ctrl+C
 | :--- | :--- |
 | Runtime status | `dexbot stat` |
 | Live output | `dexbot start --foreground` (stop with Ctrl+C) |
-| Logs | `profiles/logs/` — `dexbot.log`, `dexbot-error.log`, per-bot `<bot-name>.log` |
+| Logs | `<profiles>/logs/` — runtime `dexbot.log`, per-bot `<bot-name>.log` (see [Where are the logs?](#where-are-the-logs)) |
 | Clear logs | `dexbot clear` |
 
 See [LOGGING.md](LOGGING.md) for the full logging reference.
@@ -380,21 +382,39 @@ sure the account name matches your bot config.
 
 `dexbot start` runs in the **background** and returns to the shell — the bot
 keeps running. Check it with `dexbot stat`, watch it with `--foreground`, or
-read the logs in `profiles/logs/`.
+read the logs under `<profiles>/logs/` (see below).
 
 ### "Where are the logs?"
 
-Everything is under `profiles/logs/` — `dexbot.log` / `dexbot-error.log` for
-the runtime, `<bot-name>.log` / `<bot-name>-error.log` per bot.
+All log files live under `<profiles>/logs/`, where `<profiles>` is your
+profiles directory: **`~/.config/dexbot2/profiles` by default for all
+installs** (Windows: `%USERPROFILE%\.config\dexbot2\profiles`). A source
+checkout that already contains a populated `profiles/` folder keeps using
+`<repo>/profiles/logs/`, and the `DEXBOT_PROFILE_ROOT` environment variable
+overrides the location entirely.
+
+| File | Contents |
+| :--- | :--- |
+| `dexbot.log` / `dexbot-error.log` | Runtime (monolithic daemon) stdout/stderr |
+| `<bot-name>.log` / `<bot-name>-error.log` | Per-bot output |
+| `dexbot-cred.log` | Credential daemon |
+| `dexbot-adapter.log` / `dexbot-adapter-error.log` | Market adapter managed by the runtime |
+| `market_adapter.log` | Standalone adapter mode |
+| `dexbot-update.log` / `dexbot-update-error.log` | Auto-updater |
+
+See [LOGGING.md](LOGGING.md) for log levels, rotation, and JSON output.
+`dexbot clear` empties the logs directory wherever it resolves.
 
 ### "I forgot the master password"
 
 The master password is never stored — it only exists in your head. It encrypts
-all the private keys in `profiles/keys.json`, and there is **no recovery path**:
-changing it requires the current password, so a forgotten one means the stored
-keys can no longer be decrypted. Re-import your keys:
+all the private keys in `keys.json` (inside your profiles directory), and
+there is **no recovery path**: changing it requires the current password, so a
+forgotten one means the stored keys can no longer be decrypted. Re-import your
+keys:
 
-1. Delete `profiles/keys.json` (and any running bot/daemon that holds it open).
+1. Delete `keys.json` from your profiles directory (and stop any running
+   bot/daemon that holds it open).
 2. Run `dexbot key` again — it will create a fresh vault.
 3. Import your account keys again (see [Import your key into DEXBot2](#4-import-your-key-into-dexbot2)).
 

@@ -79,6 +79,7 @@ import * as DexbotStateRecovery from './dexbot_state_recovery.js';
 import * as DexbotStartupRuntime from './dexbot_startup_runtime.js';
 import CreditRuntime from './credit_runtime.js';
 import { PATHS } from './paths.js';
+import { path } from './path_api.js';
 import * as Format from './order/format.js';
 import cowRuntime from './dexbot_cow_runtime.js';
 import {
@@ -1469,11 +1470,11 @@ class DEXBot {
                         const errMsg = String(getErrorMessage(err) || '');
                         let hint = '';
                         if (errMsg.includes('ENOENT')) {
-                            hint = `Socket file missing at ${token.socketPath}. The credential daemon process may have been killed (e.g. by stray Ctrl-C). Restart it with: dexbot pm2 restart dexbot-cred. If the problem persists, check the daemon log: profiles/logs/dexbot-cred.log`;
+                            hint = `Socket file missing at ${token.socketPath}. The credential daemon process may have been killed (e.g. by stray Ctrl-C). Restart it with: dexbot pm2 restart dexbot-cred. If the problem persists, check the daemon log: ${path.join(PATHS.LOGS_DIR, 'dexbot-cred.log')}`;
                         } else if (errMsg.includes('ECONNREFUSED')) {
                             hint = `Connection refused at ${token.socketPath}. The daemon may be in a zombie state or restarting. Try: dexbot pm2 restart dexbot-cred.`;
                         } else if (errMsg.includes('timeout')) {
-                            hint = `Probe timed out. The daemon may be under heavy load or blocked. Check profiles/logs/dexbot-cred.log.`;
+                            hint = `Probe timed out. The daemon may be under heavy load or blocked. Check ${path.join(PATHS.LOGS_DIR, 'dexbot-cred.log')}.`;
                         } else {
                             hint = `Write operations will remain paused until re-unlocked with dexbot pm2.`;
                         }

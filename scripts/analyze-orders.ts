@@ -1594,7 +1594,7 @@ function main() {
   // Handle fully empty directory case. If files were skipped, report why below.
   if (files.length === 0 && skippedCandidates.length === 0) {
     if (!exportHtml) {
-      console.log('No order files found in profiles/orders/');
+      console.log(`No order files found in ${ORDERS_DIR}`);
     }
     process.exit(0);
   }

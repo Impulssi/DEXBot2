@@ -107,7 +107,7 @@ if (!botName) {
  */
 function loadBotConfig(name: string) {
     if (!storage.exists(PROFILES_BOTS_FILE)) {
-        launcherLogger.error('profiles/bots.json not found. Run: dexbot bot');
+        launcherLogger.error(`${PROFILES_BOTS_FILE} not found. Run: dexbot bot`);
         runtime.exit(1);
     }
 
@@ -128,7 +128,7 @@ function loadBotConfig(name: string) {
 
         if (!botEntry) {
             const bots = resolveRawBotEntries(config);
-            launcherLogger.error(`Bot '${name}' not found in profiles/bots.json`);
+            launcherLogger.error(`Bot '${name}' not found in ${PROFILES_BOTS_FILE}`);
             launcherLogger.error(`Available bots: ${bots.map((b: any) => b.name).join(', ') || 'none'}`);
             runtime.exit(1);
         }

@@ -413,7 +413,7 @@ alias dbd='node dist/scripts/divergence-calc.js'
 **Monitor live updates while running a script:**
 ```bash
 # Tail the update log in a separate pane
-tail -f profiles/logs/update.log
+tail -f <profiles>/logs/dexbot-update.log
 ```
 
 **Run a specific bot dry-run from the CLI:**

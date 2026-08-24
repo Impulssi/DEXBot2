@@ -94,7 +94,7 @@ async function runOrderManagerCalculation() {
         if (!chosenBot) chosenBot = bots[0];
 
         if (!chosenBot) {
-            throw new Error('No bots found in profiles/bots.json');
+            throw new Error(`No bots found in ${cfgFile}`);
         }
 
         console.log(`Using bot from settings: ${chosenBot.name || '<unnamed>'}`);

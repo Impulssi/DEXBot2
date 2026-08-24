@@ -23,7 +23,7 @@ function loadSettingsFile(filePath: string, { silent = false, exitOnError = true
     } catch (err: any) {
         console.error('Failed to parse bot settings from', filePath);
         console.error('Error:', getErrorMessage(err));
-        console.error('Please check the JSON syntax in profiles/bots.json and try again.');
+        console.error('Please fix the JSON syntax and try again.');
         if (exitOnError) {
             throw err;
         }

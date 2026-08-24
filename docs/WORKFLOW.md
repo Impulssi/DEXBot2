@@ -211,7 +211,7 @@ recommended mode:
 - **Single process** — no PM2, no separate credential daemon management
 - **Auto-update** — detects new releases, builds, and restarts cleanly
 - **Crash restart** — background mode re-spawns on failure
-- **Per-bot log files** — each bot logs to `profiles/logs/<bot>.log`
+- **Per-bot log files** — each bot logs to `<profiles>/logs/<bot>.log` (`~/.config/dexbot2/profiles/logs` by default)
 - **Built-in daemon** — the credential daemon is managed internally
 
 Legacy PM2 mode (`npm run pm2:unlock`) is de-emphasized but still available.
@@ -257,7 +257,7 @@ the canonical name is preferred in scripts and docs.
 | `dexbot restart` | `restartall` | Restart the monolithic runtime (unlock mode) |
 | `dexbot delete` | — | Shut down and clean up the monolithic runtime (unlock mode) |
 | `dexbot whitelist` | `white` | Generate market adapter whitelist from AMA bot configs |
-| `dexbot clear` | — | Remove all log files from `profiles/logs/` |
+| `dexbot clear` | — | Remove all log files from the logs directory (`<profiles>/logs`) |
 
 ## NPM Scripts for Branch Synchronization
 

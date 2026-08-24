@@ -50,7 +50,7 @@ const __dirname = _esmDirname(__filename);
  *   dexbot default                - Reset settings to defaults (deletes general.settings.json, market_profiles.json, market_adapter_settings.json)
  *   dexbot disable all            - Mark all bots inactive in config
  *   dexbot disable <bot>          - Mark bot inactive in config
- *   dexbot clear                  - Clear all log files in profiles/logs/
+ *   dexbot clear                  - Clear all log files in <profiles>/logs/
  *
  * CONFIGURATION:
  *   dexbot key                    - Set up master password and keyring
@@ -87,10 +87,14 @@ const __dirname = _esmDirname(__filename);
  * CONFIGURATION
  * ===============================================================================
  *
- * Bots:  profiles/bots.json
- * Keys:  profiles/keys.json (gitignored, encrypted)
- * State: profiles/orders/{botKey}.json (per-bot grid snapshots)
- * Logs:  profiles/logs/{botname}.log (managed by PM2)
+ * Bots:  <profiles>/bots.json
+ * Keys:  <profiles>/keys.json (encrypted)
+ * State: <profiles>/orders/{botKey}.json (per-bot grid snapshots)
+ * Logs:  <profiles>/logs/{botname}.log
+ *
+ * <profiles> resolves to ~/.config/dexbot2/profiles by default for all
+ * installs (override: DEXBOT_PROFILE_ROOT); a source checkout with a
+ * populated profiles/ dir in the repo keeps using it.
  *
  * ===============================================================================
  */
@@ -185,8 +189,8 @@ const CLI_EXAMPLES = [
     { title: 'Start bots with PM2', command: 'dexbot pm2', notes: 'Generates ecosystem config, authenticates, and starts PM2.' },
     { title: 'Update DEXBot2', command: 'dexbot update', notes: 'Fetches latest code, updates dependencies, and restarts PM2.' },
     { title: 'Export bot trades for QTradeX', command: 'dexbot export <bot>', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' },
-    { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across profiles/orders/ and prints spread/increment/funds/distribution metrics. Add a bot key to render only that bot, and --export for an HTML report.' },
-    { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from profiles/logs/.' },
+    { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across the orders directory (<profiles>/orders) and prints spread/increment/funds/distribution metrics. Add a bot key to render only that bot, and --export for an HTML report.' },
+    { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from the logs directory (<profiles>/logs).' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
 
@@ -236,7 +240,7 @@ function printCLIUsage() {
     console.log('  bot               Launch the interactive bot configurator (modules/account_bots.ts).');
     console.log('  pm2               Start all active bots with PM2 (authenticate + generate config + start).');
     console.log('  update            Update DEXBot2 from the repository and restart active bots.');
-    console.log('  order             Analyze persisted order grids in profiles/orders/ (spread, increment, funds). Use --export for HTML.');
+    console.log('  order             Analyze persisted order grids in <profiles>/orders/ (spread, increment, funds). Use --export for HTML.');
     console.log('  order [<bot>]     Analyze only the specified bot.');
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Legacy alias for start (repo-root: `./unlock`).');
@@ -244,8 +248,8 @@ function printCLIUsage() {
     console.log('  restart           Restart the monolithic runtime.');
     console.log('  delete            Stop/delete all runtime processes.');
     console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune) are forwarded.');
-    console.log('  clear             Remove all log files from profiles/logs/ (runs scripts/clear-logs.sh).');
-    console.log('  clear-orders      Remove all persisted order files from profiles/orders/.');
+    console.log('  clear             Remove all log files from <profiles>/logs/ (runs scripts/clear-logs.sh).');
+    console.log('  clear-orders      Remove all persisted order files from <profiles>/orders/.');
     console.log('  clear-market-adapter  Remove market adapter data, state, and logs.');
     console.log('  clear-all         Remove orders, logs, and market adapter files (combines the above).');
     console.log('Options:');
@@ -460,7 +464,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
         if (errors.length) {
             console.error(startupError('ERROR: Invalid configuration for one or more **active** bots:'));
             errors.forEach((e: any) => console.error(startupError(`  - ${e}`)));
-            console.error(startupError('Fix the configuration problems in profiles/bots.json and restart. Aborting.'));
+            console.error(startupError(`Fix the configuration problems in ${PROFILES_BOTS_FILE} and restart. Aborting.`));
             process.exit(1);
         }
 
@@ -616,8 +620,8 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                 console.error(startupError(`Failed to start bot: ${getErrorMessage(err)}`));
                 if (err && getErrorMessage(err) && String(getErrorMessage(err)).toLowerCase().includes('marketprice')) {
                     console.info('Hint: startPrice could not be derived.');
-                    console.info(' - If using profiles/bots.json with "pool" or "book" signals, ensure the chain contains a matching liquidity pool or order book for the configured pair.');
-                    console.info(' - Alternatively, set a numeric `startPrice` directly in profiles/bots.json for this bot to avoid auto-derive.');
+                    console.info(` - If using ${PROFILES_BOTS_FILE} with "pool" or "book" signals, ensure the chain contains a matching liquidity pool or order book for the configured pair.`);
+                    console.info(` - Alternatively, set a numeric \`startPrice\` directly in ${PROFILES_BOTS_FILE} for this bot to avoid auto-derive.`);
                     console.info(' - You can also set LIVE_BOT_NAME or BOT_NAME to select a different bot from the profiles settings.');
                 }
             }
@@ -781,7 +785,7 @@ async function exportBotTrades(botName: string | undefined) {
         const bot = resolveRawBotEntries(botsData).find((b: any) => b.name === botName);
 
         if (!bot) {
-            console.error(startupError(`Bot '${botName}' not found in profiles/bots.json`));
+            console.error(startupError(`Bot '${botName}' not found in ${PROFILES_BOTS_FILE}`));
             process.exit(1);
         }
 

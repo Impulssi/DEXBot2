@@ -1245,7 +1245,7 @@ async function promptGeneralSettings() {
  * @returns {Promise<void>}
  */
 async function main() {
-    console.log('dexbot bot — bots.json configurator (writes profiles/bots.json)');
+    console.log(`dexbot bot — bots.json configurator (writes ${BOTS_FILE})`);
     const { config, filePath } = loadBotsConfig();
     let exit = false;
      while (!exit) {

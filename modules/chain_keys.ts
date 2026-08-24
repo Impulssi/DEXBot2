@@ -505,7 +505,7 @@ function checkKeysFileSecurity() {
 function unlockWithPassword(password: any, accountsData: any = loadAccounts()) {
     if (!hasModernVault(accountsData)) {
         if (Object.keys(accountsData.accounts || {}).length > 0) {
-            throw new Error('Unsupported key vault format. Recreate profiles/keys.json with the current key manager.');
+            throw new Error(`Unsupported key vault format. Recreate ${PATHS.PROFILES.KEYS_JSON()} with the current key manager.`);
         }
         throw new Error('No master password set, run `dexbot key`.');
     }
@@ -568,7 +568,7 @@ async function authenticate() {
     const accountsData = loadAccounts();
     if (!hasModernVault(accountsData)) {
         if (Object.keys(accountsData.accounts || {}).length > 0) {
-            throw new Error('Unsupported key vault format. Recreate profiles/keys.json with the current key manager.');
+            throw new Error(`Unsupported key vault format. Recreate ${PATHS.PROFILES.KEYS_JSON()} with the current key manager.`);
         }
         throw new Error('No master password set, run `dexbot key`.');
     }

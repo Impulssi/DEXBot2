@@ -161,7 +161,7 @@ async function launcherReset(botName: string | null, options: Record<string, any
   const targets = botName ? entries.filter((b: any) => b.name === botName) : entries.filter((b: any) => b.active);
 
   if (botName && targets.length === 0) {
-    throw new Error(`Bot '${botName}' not found in profiles/bots.json`);
+    throw new Error(`Bot '${botName}' not found in ${PROFILES_BOTS_FILE}`);
   }
 
   const triggered: Array<Record<string, any>> = [];
@@ -221,7 +221,7 @@ async function launcherDisable(botName: string | null, options: Record<string, a
 
   const match = entries.find((b: any) => b.name === botName);
   if (!match) {
-    throw new Error(`Bot '${botName}' not found in profiles/bots.json`);
+    throw new Error(`Bot '${botName}' not found in ${PROFILES_BOTS_FILE}`);
   }
 
   if (match.active === false) {
@@ -255,7 +255,7 @@ async function launcherPm2Start(botName: string | null, options: Record<string, 
   const targets = botName ? entries.filter((b: any) => b.name === botName) : entries.filter((b: any) => b.active);
 
   if (botName && targets.length === 0) {
-    throw new Error(`Bot '${botName}' not found or not active in profiles/bots.json`);
+    throw new Error(`Bot '${botName}' not found or not active in ${PROFILES_BOTS_FILE}`);
   }
 
   // Then check if daemon is ready

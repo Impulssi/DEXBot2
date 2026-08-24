@@ -508,7 +508,7 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
                         log('No active bots found in config.');
                     }
                 } else {
-                    log('Warning: profiles/bots.json not found, skipping selective restart.');
+                    log(`Warning: ${PATHS.PROFILES.BOTS_JSON} not found, skipping selective restart.`);
                 }
             }
         }
