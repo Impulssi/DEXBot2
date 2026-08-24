@@ -5,9 +5,14 @@
  *   - On construction, schedules an async IndexedDB load into an in-memory Map.
  *     Until the load completes, synchronous reads return undefined/defaults.
  *   - All sync operations (readJSON, writeJSON, exists, etc.) hit the Map.
- *   - Call `await adapter.flush()` periodically or after writes to persist
- *     to IndexedDB.  This matches the browser's single-tab / single-process
- *     concurrency model — no cross-process atomicity needed.
+ *   - Mutations schedule a debounced flush; call `await adapter.flush()`
+ *     to persist to IndexedDB immediately.  This matches the browser's
+ *     single-tab / single-process concurrency model — no cross-process
+ *     atomicity needed.
+ *   - Deletions are tracked as tombstones and replayed as IndexedDB deletes
+ *     on flush so removed files cannot resurrect on the next load.
+ *   - Ingest never overwrites locally newer state: records mutated before
+ *     the load cursor reaches them (writes or deletes) keep their value.
  *
  * IndexedDB schema:
  *   DB name: "DEXBotStorage"
@@ -21,6 +26,12 @@
 
 function createBrowserStorageAdapter() {
   const store = new Map();
+  const tombstones = new Set<string>();
+  // Paths mutated locally during the startup load window; the ingest cursor
+  // must skip them so a stale IndexedDB record cannot revert a fresh write.
+  const localMutations = new Set<string>();
+  const FLUSH_DEBOUNCE_MS = 500;
+  let flushTimer: any = null;
 
   /** Try to open IndexedDB and load all records into memory. */
   async function initFromIndexedDB() {
@@ -33,7 +44,12 @@ function createBrowserStorageAdapter() {
         cursor.onsuccess = (event: any) => {
           const cur = event.target.result;
           if (cur) {
-            store.set(cur.key, cur.value);
+            // Local mutations (writes or deletes) that ran before the cursor
+            // reached this key win over the stored record.
+            const key = String(cur.key);
+            if (!tombstones.has(key) && !localMutations.has(key)) {
+              store.set(cur.key, cur.value);
+            }
             cur.continue();
           } else {
             resolve();
@@ -41,6 +57,8 @@ function createBrowserStorageAdapter() {
         };
         cursor.onerror = () => reject(cursor.error);
       });
+      // Load window over — ingest can no longer clobber local state.
+      localMutations.clear();
     } catch {
       // IndexedDB unavailable — MemoryMap mode
     } finally {
@@ -58,15 +76,29 @@ function createBrowserStorageAdapter() {
       for (const [key, value] of store) {
         os.put(value, key);
       }
+      for (const key of tombstones) {
+        // Unconditional: a write to the path clears its tombstone first, so
+        // any surviving tombstone means the key must not exist in IndexedDB.
+        os.delete(key);
+      }
       await new Promise<void>((resolve: any, reject: any) => {
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
+      tombstones.clear();
     } catch {
       // MemoryMap mode — nothing to flush
     } finally {
       if (db) db.close();
     }
+  }
+
+  function scheduleFlush() {
+    if (flushTimer != null) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      void flush();
+    }, FLUSH_DEBOUNCE_MS);
   }
 
   function openDB() {
@@ -107,6 +139,9 @@ function createBrowserStorageAdapter() {
         mtime: Date.now(),
         mode: options?.mode,
       });
+      tombstones.delete(path);
+      localMutations.add(path);
+      scheduleFlush();
     },
 
     exists(path: any) {
@@ -119,6 +154,9 @@ function createBrowserStorageAdapter() {
 
     unlink(path: any) {
       store.delete(path);
+      tombstones.add(path);
+      localMutations.add(path);
+      scheduleFlush();
     },
 
     readFile(path: any, encoding: any = 'utf8') {
@@ -135,6 +173,9 @@ function createBrowserStorageAdapter() {
         mtime: Date.now(),
         mode: typeof options === 'object' ? options.mode : undefined,
       });
+      tombstones.delete(path);
+      localMutations.add(path);
+      scheduleFlush();
     },
 
     rename(oldPath: any, newPath: any) {
@@ -142,6 +183,11 @@ function createBrowserStorageAdapter() {
       if (entry) {
         store.set(newPath, entry);
         store.delete(oldPath);
+        tombstones.delete(newPath);
+        tombstones.add(oldPath);
+        localMutations.add(oldPath);
+        localMutations.add(newPath);
+        scheduleFlush();
       }
     },
 
@@ -221,6 +267,9 @@ function createBrowserStorageAdapter() {
         mtime: Date.now(),
         mode: typeof options === 'object' ? options.mode : undefined,
       });
+      tombstones.delete(path);
+      localMutations.add(path);
+      scheduleFlush();
     },
 
     appendFileAsync(path: any, data: any, options: any) {
