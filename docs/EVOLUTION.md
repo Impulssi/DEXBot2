@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.20 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.21 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 2,024 commits over ~8 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 249 automated test files
-- **Releases**: 97 release entries (v0.1.0 to v1.4.20)
+- **Releases**: 98 release entries (v0.1.0 to v1.4.21)
 
 ---
 
@@ -61,13 +61,13 @@ v1.4.12 completed the module transition to native ES modules (root + claw `"type
 
 ### Phase 9: Post-ESM Cleanup, Consolidation & Hardening (August 2026)
 
-v1.4.16 centralized all user/runtime state onto a single resolver-derived profiles dir (`~/.config/dexbot2/profiles`) so it survives re-clones and npm updates and never lands in a read-only package dir, turned divergence surplus-cancel + hole-create pairs into in-place order rotations, and added an npm auto-update flow. v1.4.17 consolidated duplicate code (EC math, Base58Check, settings merge, asset resolution), trimmed `modules/types.ts` from 875 lines to the Order union, purged dead exports, and centralized the analysis tooling under strict TypeScript. v1.4.19 capped COW broadcasts at `MAX_OPS_PER_BROADCAST` (4) with chunked retry-on-uncertain broadcasting, fixed a spread-collapse regression via the shared `isSlotInRail` helper, lowered the AMA slope grid-reset threshold to 8, and added editor price feedback plus a `docs/LIFECYCLE.md` onboarding walkthrough. v1.4.20 hardened spread-correction boundary promotion with a MIN_SPREAD_ORDERS reserve floor and commit-time validation, gated persisted-boundary restore against self-legalizing overrun poison, aligned dynamic-weight clip parity between the live service and the research chart, centralized chart slider ranges, and moved all analysis outputs onto the central path resolver.
+v1.4.16 centralized all user/runtime state onto a single resolver-derived profiles dir (`~/.config/dexbot2/profiles`) so it survives re-clones and npm updates and never lands in a read-only package dir, turned divergence surplus-cancel + hole-create pairs into in-place order rotations, and added an npm auto-update flow. v1.4.17 consolidated duplicate code (EC math, Base58Check, settings merge, asset resolution), trimmed `modules/types.ts` from 875 lines to the Order union, purged dead exports, and centralized the analysis tooling under strict TypeScript. v1.4.19 capped COW broadcasts at `MAX_OPS_PER_BROADCAST` (4) with chunked retry-on-uncertain broadcasting, fixed a spread-collapse regression via the shared `isSlotInRail` helper, lowered the AMA slope grid-reset threshold to 8, and added editor price feedback plus a `docs/LIFECYCLE.md` onboarding walkthrough. v1.4.20 hardened spread-correction boundary promotion with a MIN_SPREAD_ORDERS reserve floor and commit-time validation, gated persisted-boundary restore against self-legalizing overrun poison, aligned dynamic-weight clip parity between the live service and the research chart, centralized chart slider ranges, and moved all analysis outputs onto the central path resolver. v1.4.21 fixed silent-failure runtime defects surfaced by a modules-wide audit (NaN fund-invariant tolerance, always-flush fill store, double-decremented fill guard, config num() defaults), aligned the two boundary writers on a shared sell-rail ceiling enforced at commit and restore time, deduplicated claw shared logic while hardening error paths (secret redaction, EPIPE guards, spawn-error surfacing), corrected launcher supervisor/runtime lifecycle bugs, made the browser storage adapter persist deletions and flush debounced, extended editor green/red live color feedback to funds and price inputs, stopped docs/error messages from hardcoding repo-relative profile paths, and pruned dead code across analysis/market_adapter/claw/logging.
 
 ---
 
 ## Development Statistics
 
-The project has accumulated 250 automated test files across 97 release entries. See the **Version History** below for a per-release commit breakdown.
+The project has accumulated 250 automated test files across 98 release entries. See the **Version History** below for a per-release commit breakdown.
 
 ---
 
@@ -132,11 +132,12 @@ Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CH
 | v1.4.8 → v1.4.13 | 45 | Native ESM runtime, broadcast serialization, onboarding |
 | v1.4.13 → v1.4.19 | 36 | Profile-state centralization, code consolidation, per-broadcast op cap |
 | v1.4.19 → v1.4.20 | 5 | Grid boundary promotion hardening, recovery poison gate, analysis output centralization |
+| v1.4.20 → v1.4.21 | 15 | Runtime audit fixes, claw dedup hardening, boundary ceiling alignment, editor color feedback |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 23, 2026 (v1.4.20)
-**Total Commits**: 2,051
-**Date Range**: December 2, 2025 – August 23, 2026
+**Last Updated**: August 24, 2026 (v1.4.21)
+**Total Commits**: 2,067
+**Date Range**: December 2, 2025 – August 24, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
