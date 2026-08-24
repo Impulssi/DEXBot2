@@ -72,11 +72,10 @@
  * CONFIGURATION:
  *   23. getFillProcessingMode() - Get current fill processing mode
  *       Returns 'history' (use fill event data) or 'open' (fetch open orders)
- *   24. getFillProcessingMode() - Get current fill processing mode
- *   25. broadcastTxWithClassification(tx, accountName, operations) - Broadcast with outcome classification
+ *   24. broadcastTxWithClassification(tx, accountName, operations) - Broadcast with outcome classification
  *
  * ERROR HANDLING:
- *   26. BroadcastUncertainError - Error class for uncertain broadcast results
+ *   25. BroadcastUncertainError - Error class for uncertain broadcast results
  *
  * ===============================================================================
  *
@@ -371,7 +370,7 @@ async function _ensureAccountSubscriber(accountName: any, userCallback: any = nu
             await withTimeout(
                 BitShares.subscribe('account', bsCallback, accountName),
                 NATIVE_CLIENT.SUBSCRIPTIONS.SUBSCRIBE_TIMEOUT_MS,
-                'BitShares.subscribe'
+                { label: 'BitShares.subscribe' }
             );
         } catch (subscribeErr: any) {
             // Roll back any partial native-subscription state set up before the
@@ -903,29 +902,12 @@ async function buildUpdateOrderOp(accountName: any, orderId: any, newParams: any
     const priceChanged = newReceiveInt !== currentReceiveInt;
     const amountChanged = deltaSellInt !== 0;
 
-    // PRECISION FIX for price-only updates: if price change is too small to detect (rounds to same value),
-    // adjust minToReceive by 1 unit in the appropriate direction to force the operation.
-    // This ensures partial orders are actually moved even when price change is < 1 blockchain unit.
-    if (!priceChanged && !amountChanged && newParams.newPrice !== undefined && newParams.newPrice !== null) {
-        if (newParams.orderType === 'sell') {
-            // SELL moving down = lower price = receive less → decrease by 1
-            newReceiveInt = currentReceiveInt - 1;
-        } else if (newParams.orderType === 'buy') {
-            // BUY moving up = higher price = receive more → increase by 1
-            newReceiveInt = currentReceiveInt + 1;
-        }
-    }
-
-    // Skip update only if BOTH amount and price are unchanged
-    if (!amountChanged && newReceiveInt === currentReceiveInt) {
-        return null;
-    }
-
-    // At this point, at least one field (amount or price) changed.
-    // If BOTH are unchanged (which shouldn't happen due to check above),
-    // we need to enforce a minimum delta of +1 to ensure operation validity
+    // Skip update if BOTH amount and price are unchanged. Sub-unit price
+    // changes that round to the same minToReceive are treated as no-op — the
+    // caller restores the affected slots from master and retries only when a
+    // delta large enough to survive rounding occurs.
     if (!amountChanged && !priceChanged) {
-        deltaSellInt = 1;
+        return null;
     }
 
     // Adjust newSellInt to strict logic: current + delta
