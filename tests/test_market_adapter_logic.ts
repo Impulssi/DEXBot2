@@ -16,7 +16,6 @@ const {
     normalizeNativeMarketHistoryCandles,
     fetchNativeMarketHistorySince,
     usesAmaGridPrice,
-    usesBookMarketSource,
     applyRuntimeDefaultsFromGeneralSettings,
     _setBitsharesClientForTests,
 } = require('../market_adapter/market_adapter');
@@ -307,7 +306,6 @@ assert.strictEqual(
     'marketSource should not override startPrice for the market adapter'
 );
 assert.strictEqual(resolveMarketSourceForBot({ startPrice: 1.2345 }), null, 'numeric startPrice should disable market-source selection');
-assert.strictEqual(usesBookMarketSource({ startPrice: 'book' }), true, 'book startPrice should enable book mode');
 
 {
     const candles = normalizeNativeMarketHistoryCandles([{

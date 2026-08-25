@@ -80,7 +80,10 @@ function buildDiscoveryQuery(poolId: any, lookbackHours: any) {
  *
  * @param {string|number} poolId      - '1.19.133' or just 133
  * @param {Object}        [config]
- * @returns {Promise<string[]>}       - the 2 asset IDs found in this pool
+ * @returns {Promise<string[]>}       - asset IDs seen in this pool's trades,
+ *                                      ordered by trade count desc. Usually 2,
+ *                                      but may exceed 2 (e.g. fee asset) or be
+ *                                      fewer on thin data.
  */
 async function discoverPoolAssets(poolId: any, config: any = {}) {
     const cfg      = { ...DEFAULT_CONFIG, ...config };

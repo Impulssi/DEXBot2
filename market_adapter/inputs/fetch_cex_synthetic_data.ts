@@ -555,6 +555,8 @@ const EXCHANGES: Record<string, any> = {
                 '30m': '30',
                 '1h': '60',
                 '4h': '240',
+                '6h': '360',
+                '12h': '720',
                 '1d': '1440',
                 '1w': '10080',
             };
@@ -969,53 +971,53 @@ async function probeExchange(exchangeId: any, base: any, quote: any, commonQuote
         }
 
         const markets = def.parseMarkets(marketsRes.json);
-        const xrpCommon = findMarketId(markets, base, commonQuote);
-        const xautCommon = findMarketId(markets, quote, commonQuote);
+        const baseCommon = findMarketId(markets, base, commonQuote);
+        const quoteCommon = findMarketId(markets, quote, commonQuote);
         const nativeCross = findMarketId(markets, base, quote);
 
         const result: {
             exchangeId: any;
             name: any;
             markets: any;
-            xrpCommon: any;
-            xautCommon: any;
+            baseCommon: any;
+            quoteCommon: any;
             nativeCross: any;
-            xrpCandles: any[];
-            xautCandles: any[];
+            baseCandles: any[];
+            quoteCandles: any[];
             nativeCrossCandles: any[];
             requiredCandles: any;
             probeLookbackHours: any;
             probeCandles: number;
             hasUsableTimeframe?: boolean;
             lookbackSatisfied?: boolean;
-            xrpRange?: { count: number; oldestTs: any; newestTs: any; spanHours: number } | null;
-            xautRange?: { count: number; oldestTs: any; newestTs: any; spanHours: number } | null;
+            baseRange?: { count: number; oldestTs: any; newestTs: any; spanHours: number } | null;
+            quoteRange?: { count: number; oldestTs: any; newestTs: any; spanHours: number } | null;
             availableCandles?: number;
             availableLookbackHours?: number;
         } = {
             exchangeId,
             name: def.name,
             markets,
-            xrpCommon,
-            xautCommon,
+            baseCommon,
+            quoteCommon,
             nativeCross,
-            xrpCandles: [],
-            xautCandles: [],
+            baseCandles: [],
+            quoteCandles: [],
             nativeCrossCandles: [],
             requiredCandles,
             probeLookbackHours,
             probeCandles: lookbackHoursToCandles(probeLookbackHours, intervalSeconds),
         };
-        if (xrpCommon && xautCommon) {
-            result.xrpCandles = await fetchHistoricalCandles(def, xrpCommon.id, interval, intervalSeconds, probeLookbackHours, pageLimit);
-            result.xautCandles = await fetchHistoricalCandles(def, xautCommon.id, interval, intervalSeconds, probeLookbackHours, pageLimit);
-            result.hasUsableTimeframe = result.xrpCandles.length > 0 && result.xautCandles.length > 0;
-            result.lookbackSatisfied = result.xrpCandles.length >= result.requiredCandles
-                && result.xautCandles.length >= result.requiredCandles;
-            result.xrpRange = measureCandles(result.xrpCandles, intervalSeconds);
-            result.xautRange = measureCandles(result.xautCandles, intervalSeconds);
-            result.availableCandles = Math.min(result.xrpRange.count, result.xautRange.count);
-            result.availableLookbackHours = Math.min(result.xrpRange.spanHours, result.xautRange.spanHours);
+        if (baseCommon && quoteCommon) {
+            result.baseCandles = await fetchHistoricalCandles(def, baseCommon.id, interval, intervalSeconds, probeLookbackHours, pageLimit);
+            result.quoteCandles = await fetchHistoricalCandles(def, quoteCommon.id, interval, intervalSeconds, probeLookbackHours, pageLimit);
+            result.hasUsableTimeframe = result.baseCandles.length > 0 && result.quoteCandles.length > 0;
+            result.lookbackSatisfied = result.baseCandles.length >= result.requiredCandles
+                && result.quoteCandles.length >= result.requiredCandles;
+            result.baseRange = measureCandles(result.baseCandles, intervalSeconds);
+            result.quoteRange = measureCandles(result.quoteCandles, intervalSeconds);
+            result.availableCandles = Math.min(result.baseRange.count, result.quoteRange.count);
+            result.availableLookbackHours = Math.min(result.baseRange.spanHours, result.quoteRange.spanHours);
         }
 
         if (nativeCross) {
@@ -1050,11 +1052,11 @@ function pickBestExchange(probes: any, preferredExchangeIds: any) {
 function rankProbes(probes: any, preferredExchangeIds: any, onlyUsable: any = false) {
     const preferred = (preferredExchangeIds || []).map((id: any) => lower(id));
     return probes
-        .filter((probe: any) => probe && !probe.error && probe.xrpCommon && probe.xautCommon && probe.hasUsableTimeframe)
+        .filter((probe: any) => probe && !probe.error && probe.baseCommon && probe.quoteCommon && probe.hasUsableTimeframe)
         .map((probe: any) => ({
             ...probe,
-            score: Math.min(probe.xrpRange?.count || 0, probe.xautRange?.count || 0),
-            depthScore: Math.min(probe.xrpRange?.spanHours || 0, probe.xautRange?.spanHours || 0),
+            score: Math.min(probe.baseRange?.count || 0, probe.quoteRange?.count || 0),
+            depthScore: Math.min(probe.baseRange?.spanHours || 0, probe.quoteRange?.spanHours || 0),
             preferredRank: preferred.length > 0 ? preferred.indexOf(lower(probe.exchangeId)) : -1,
             usable: Boolean(probe.lookbackSatisfied),
         }))
@@ -1074,13 +1076,13 @@ function rankProbes(probes: any, preferredExchangeIds: any, onlyUsable: any = fa
 
 function printSummary(probes: any, base: any, quote: any, commonQuote: any) {
     const rows = probes.map((probe: any, index: any) => {
-        const xrp = probe.xrpCommon ? `yes (${probe.xrpCommon.id})` : 'no';
-        const xaut = probe.xautCommon ? `yes (${probe.xautCommon.id})` : 'no';
+        const baseLeg = probe.baseCommon ? `yes (${probe.baseCommon.id})` : 'no';
+        const quoteLeg = probe.quoteCommon ? `yes (${probe.quoteCommon.id})` : 'no';
         const cross = probe.nativeCross ? `yes (${probe.nativeCross.id})` : 'no';
         const candleState = probe.error
             ? `error: ${probe.error}`
-            : `${probe.xrpRange?.count || 0}/${probe.xautRange?.count || 0} candles`;
-        const usable = (!probe.error && probe.xrpCommon && probe.xautCommon && probe.lookbackSatisfied) ? 'yes' : 'no';
+            : `${probe.baseRange?.count || 0}/${probe.quoteRange?.count || 0} candles`;
+        const usable = (!probe.error && probe.baseCommon && probe.quoteCommon && probe.lookbackSatisfied) ? 'yes' : 'no';
         const depth = probe.error
             ? '-'
             : `${(probe.availableLookbackHours || 0).toFixed(1)}h`;
@@ -1088,8 +1090,8 @@ function printSummary(probes: any, base: any, quote: any, commonQuote: any) {
             rank: index + 1,
             exchange: probe.exchangeId,
             name: probe.name || probe.exchangeId,
-            xrp,
-            xaut,
+            baseLeg,
+            quoteLeg,
             cross,
             usable,
             required: `${probe.requiredCandles || '?'} candles`,
@@ -1153,16 +1155,16 @@ async function main() {
     }
 
     const def = EXCHANGES[selected.exchangeId];
-    const xrpMarket = selected.xrpCommon;
-    const xautMarket = selected.xautCommon;
-    const xrpCandles = selected.xrpCandles;
-    const xautCandles = selected.xautCandles;
+    const baseMarket = selected.baseCommon;
+    const quoteMarket = selected.quoteCommon;
+    const baseCandles = selected.baseCandles;
+    const quoteCandles = selected.quoteCandles;
 
-    if (xrpCandles.length === 0 || xautCandles.length === 0) {
+    if (baseCandles.length === 0 || quoteCandles.length === 0) {
         throw new Error(`Selected exchange ${selected.exchangeId} returned no candles for one of the legs`);
     }
 
-    const synthetic = synthesizeCrossCandles(xrpCandles, xautCandles);
+    const synthetic = synthesizeCrossCandles(baseCandles, quoteCandles);
     if (synthetic.length === 0) {
         throw new Error(`Selected exchange ${selected.exchangeId} produced no overlapping synthetic candles`);
     }
@@ -1224,7 +1226,7 @@ async function main() {
     if (!config.quiet) {
         console.log(`Wrote ${filled.length} synthetic candles to ${outPath}`);
         console.log(`Source: ${selected.exchangeId} (${def.name})`);
-        console.log(`Legs: ${xrpMarket.id} and ${xautMarket.id}`);
+        console.log(`Legs: ${baseMarket.id} and ${quoteMarket.id}`);
         console.log(`Output pair: ${upper(config.base)}/${upper(config.quote)}`);
     }
 }

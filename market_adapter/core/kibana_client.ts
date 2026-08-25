@@ -112,8 +112,19 @@ function doKibanaRequest(cfg: any, esQuery: any, resolve: any, reject: any, redi
     req.on('close', () => signal.removeEventListener('abort', onAbort));
   }
 
-  req.on('error', reject);
-  req.on('timeout', () => { req.destroy(); reject(new Error('Kibana request timed out')); });
+  // A destroyed request can emit both 'timeout' and 'error' — settle once.
+  let settled = false;
+  const settleReject = (err: any) => {
+    if (settled) return;
+    settled = true;
+    reject(err);
+  };
+
+  req.on('error', settleReject);
+  req.on('timeout', () => {
+    req.destroy();
+    settleReject(new Error('Kibana request timed out'));
+  });
   req.write(body);
   req.end();
 }

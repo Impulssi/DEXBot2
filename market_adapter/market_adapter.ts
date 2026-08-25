@@ -37,7 +37,6 @@ import {
 import {
     normalizeAssetSymbol,
     normalizeMarketSource,
-    resolveMarketSourceForBot,
     resolveBotContext,
     isExactPair,
     isSamePair,
@@ -338,10 +337,6 @@ function normalizeAmaKey(raw: any) {
 function isAmaKeyword(raw: any) {
     const s = String(raw || '').trim().toLowerCase();
     return AMA_KEYWORDS.has(s);
-}
-
-function usesBookMarketSource(bot: any) {
-    return resolveMarketSourceForBot(bot) === 'book';
 }
 
 function findAmaProfileForBot(bot: any, ctx: any) {
@@ -1433,5 +1428,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         });
 }
 
-export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, calcAmaComparison, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, usesBookMarketSource, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
+export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, calcAmaComparison, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
 

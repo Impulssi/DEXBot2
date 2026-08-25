@@ -592,7 +592,14 @@ async function run() {
         }
 
         if (assetIds.length < 2) {
-            console.error(`  Expected 2 asset IDs, found: [${assetIds.join(', ')}]`);
+            console.error(`  Expected 2 asset IDs in pool trades, found ${assetIds.length}: [${assetIds.join(', ')}]. Widen the window with --lookback.`);
+            process.exit(1);
+        }
+        if (assetIds.length > 2) {
+            // Discovery buckets are ordered by trade count desc — picking the
+            // "first two" of a larger set silently guesses the pair and can
+            // flip between runs. Fail loudly instead.
+            console.error(`  Expected exactly 2 asset IDs in pool trades, found ${assetIds.length}: [${assetIds.join(', ')}]. Narrow the window with --lookback or use auto mode (bots.json).`);
             process.exit(1);
         }
 
@@ -678,26 +685,42 @@ async function run() {
     const stepProbe  = cliPoolId ? 2 : 3;
     const stepFetch  = cliPoolId ? 3 : 4;
 
-    console.log(`\n[${stepProbe}/4] Probing data availability (last 48h)...`);
+    // The probe is informational (nothing branches on it): with --start/--end
+    // it checks the range actually being fetched; otherwise a cheap recent
+    // window capped at 48h. The resolved window below feeds BOTH the query and
+    // the labels, so they can never diverge.
+    const probeCapHours = Math.min(config.lookbackHours, 48);
+    const probeTimeRange = config.timeRange
+        ? {
+            gte: config.timeRange.gte ?? new Date(Date.now() - probeCapHours * 3600 * 1000).toISOString(),
+            lte: config.timeRange.lte ?? new Date().toISOString(),
+        }
+        : null;
+    const probeWindowLabel = probeTimeRange
+        ? `${probeTimeRange.gte} → ${probeTimeRange.lte}`
+        : `last ${probeCapHours}h`;
+
+    console.log(`\n[${stepProbe}/4] Probing data availability (${probeWindowLabel})...`);
     try {
         const probeCandles = await kibanaSource.getLpCandlesForPool(fullPoolId, assetA, assetB, {
             ...config,
             timeout: FETCH_TIMEOUT_MS,
-            lookbackHours: Math.min(config.lookbackHours, 48),
+            lookbackHours: probeCapHours,
             fillGaps: false,
             fillGapsToRequestedRange: false,
+            timeRange: probeTimeRange,
         });
         const volumeCandles = probeCandles.filter((c: any) => Number(c[5] || 0) > 0);
         const nonFlatCandles = volumeCandles.filter((c: any) => c[1] !== c[2] || c[1] !== c[3] || c[1] !== c[4]);
 
-        console.log(`  Candles with trades in 48h: ${volumeCandles.length}`);
-        console.log(`  Non-flat OHLC candles:     ${nonFlatCandles.length}`);
+        console.log(`  Candles with trades in probed window: ${volumeCandles.length}`);
+        console.log(`  Non-flat OHLC candles:               ${nonFlatCandles.length}`);
 
         const sample = volumeCandles[0];
         if (sample) {
             console.log(`  Sample candle: ${new Date(sample[0]).toISOString()} O=${sample[1]} H=${sample[2]} L=${sample[3]} C=${sample[4]} vol=${sample[5]}`);
         } else {
-            console.warn('  No trade candles in last 48h — pool may be low-activity. Proceeding with full lookback.');
+            console.warn('  No trade candles in the probed window — pool may be inactive during this period. Proceeding with full fetch.');
         }
     } catch (err: any) {
         console.error(`  Probe failed: ${getErrorMessage(err)}`);

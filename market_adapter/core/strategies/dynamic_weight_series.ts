@@ -160,8 +160,6 @@ function computeDynamicWeightSeries(inputs: any) {
     };
 }
 
-export { computeDynamicWeightSeries, computeAverageAmaSlopePct, echoLatchSeries, roundToN }
-
 /**
  * Percentile lookup over an already-sorted ascending array. Returns `Infinity`
  * for an empty pool so callers treat it as "no clipping".
@@ -267,6 +265,10 @@ function createAmaSlopeClipTracker(erPeriod: number, lookbackBars: number, clipP
 }
 
 export {
+    computeDynamicWeightSeries,
+    computeAverageAmaSlopePct,
+    echoLatchSeries,
+    roundToN,
     computeAmaSlopeClipThreshold,
     createAmaSlopeClipTracker,
 }

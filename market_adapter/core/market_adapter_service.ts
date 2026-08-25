@@ -8,6 +8,7 @@ import { KalmanTrendAnalyzer } from './signals/kalman_trend_analyzer.js';
 import { adjustCollateralRatio } from './strategies/collateral_manager.js';
 import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants.js';
 import { resolveConfiguredPriceBound } from '../../modules/order/utils/order.js';
+import { usesAmaGridPrice } from '../../modules/grid_price_source.js';
 import Logger from '../../modules/order/logger.js';
 import { roundTo } from '../../modules/order/utils/math.js';
 'use strict';
@@ -139,6 +140,23 @@ class MarketAdapterService {
 
     getNowMs() {
         return typeof this.deps.getNowMs === 'function' ? this.deps.getNowMs() : Date.now();
+    }
+
+    /**
+     * Kibana bootstrap lookback in hours — exact conversion of the required
+     * candle count at the bot's interval, mirroring getGapRepairMaxHours().
+     * The caller passes rawKeepCount (getAmaWarmupBars() + 1 closed bar + 1
+     * in-progress raw bar); if Kibana returns fewer bars than amaWarmupBars
+     * (thin/gappy data), the existing native-backfill fallback handles it.
+     * cfg.bootstrapLookbackHours stays as a floor so operators can seed
+     * deeper history than the analytical minimum.
+     */
+    bootstrapKibanaLookbackHours(cfg: any, keepCount: any) {
+        const intervalSeconds = Number(cfg?.intervalSeconds);
+        const intervalHours = Number.isFinite(intervalSeconds) && intervalSeconds > 0
+            ? intervalSeconds / 3600
+            : 1;
+        return Math.max(Number(cfg?.bootstrapLookbackHours) || 0, Number(keepCount) * intervalHours);
     }
 
     selectClosedCandles(candles: any, intervalSeconds: any, nowMs: any = this.getNowMs()) {
@@ -911,12 +929,20 @@ class MarketAdapterService {
             return { ok: false, reason: 'missing asset pair' };
         }
 
+        // Persisted state files may predate the `bots` map (or hold a partial
+        // JSON) — normalize once here so every later state.bots access is safe.
+        if (!state || typeof state !== 'object') {
+            return { ok: false, reason: 'invalid adapter state' };
+        }
+        if (!state.bots || typeof state.bots !== 'object') {
+            state.bots = {};
+        }
+
         if (hasNumericStartPrice(bot?.startPrice)) {
             const nowIso = new Date().toISOString();
             const thresholdPercent = typeof deps.calculateBotThreshold === 'function'
                 ? deps.calculateBotThreshold(cfg)
                 : null;
-            state.bots = state.bots || {};
             state.bots[bot.botKey] = this.buildDefaultBotState(bot, {
                 startPrice: bot.startPrice,
                 priceMode: 'fixed',
@@ -981,6 +1007,12 @@ class MarketAdapterService {
         };
 
         const staleTailVerifiedRangeFromMeta = () => {
+            // Meta fields are persisted as explicit null when absent — guard
+            // before Number() since Number(null) === 0 would masquerade as a
+            // valid epoch timestamp.
+            if (existingMeta.staleTailVerifiedStartTs == null || existingMeta.staleTailVerifiedEndTs == null) {
+                return {};
+            }
             const startTs = Number(existingMeta.staleTailVerifiedStartTs);
             const endTs = Number(existingMeta.staleTailVerifiedEndTs);
             if (Number.isFinite(startTs) && Number.isFinite(endTs)) {
@@ -1007,7 +1039,7 @@ class MarketAdapterService {
             // Skip Kibana verification if this tail range was already confirmed flat
             // on a previous cycle (the current tail is contained within a verified range).
             const { startTs: vStart, endTs: vEnd } = verifiedRange;
-            if (Number.isFinite(vStart) && (Number.isFinite(vEnd) || vEnd === Number.POSITIVE_INFINITY)
+            if (Number.isFinite(vStart) && Number.isFinite(vEnd)
                     && tailStartTs >= vStart && tailEndTs <= vEnd) {
                 return { candles, keptStaleTailStartTs: tailStartTs, keptStaleTailEndTs: tailEndTs };
             }
@@ -1224,7 +1256,7 @@ class MarketAdapterService {
 
                 if (needBootstrap) {
                     // Bootstrap: Kibana first (deep history), native as fallback
-                    const kibanaLookbackHours = Math.max(cfg.bootstrapLookbackHours, analysisKeepCount * 2);
+                    const kibanaLookbackHours = this.bootstrapKibanaLookbackHours(cfg, rawKeepCount);
                     let kibanaCandles: any = null;
                     try {
                         kibanaCandles = await deps.withRetries(() => fetchKibanaCandles({
@@ -1335,7 +1367,7 @@ class MarketAdapterService {
 
                 }
             } else if (needBootstrap) {
-                const lookbackHours = Math.max(cfg.bootstrapLookbackHours, analysisKeepCount * 2);
+                const lookbackHours = this.bootstrapKibanaLookbackHours(cfg, rawKeepCount);
 
                 // ── Step 1: Kibana first (deep history, handles large candle requirements) ──
                 let kibanaCandles: any = null;
@@ -1948,7 +1980,7 @@ class MarketAdapterService {
         const isAsymmetricBoundsWhitelisted = isGridRangeScalingWhitelisted;
         const hasExplicitBaseWeights = Number.isFinite(bot.weightDistribution?.sell)
             && Number.isFinite(bot.weightDistribution?.buy);
-        const isAmaGridBot = /^ama(?:[1-4])?$/i.test(String(bot?.gridPrice || '').trim());
+        const isAmaGridBot = usesAmaGridPrice(bot);
         const shouldComputeDynamicWeightSignal = isAmaGridBot && hasExplicitBaseWeights
             && (isDynamicWeightWhitelisted || isGridRangeScalingWhitelisted);
         const canExposeDynamicWeights = isDynamicWeightWhitelisted && shouldComputeDynamicWeightSignal;
@@ -2313,9 +2345,7 @@ class MarketAdapterService {
         const stateAmaSlopeThresholdPercent = preserveRetryBaseline
             ? (botState.amaSlopeThresholdPercent ?? amaSlopeThresholdPercent ?? null)
             : (amaSlopeThresholdPercent ?? botState.amaSlopeThresholdPercent ?? null);
-        const stateGridRangeScalingAmaSlope = preserveRetryBaseline
-            ? (botState.gridRangeScalingAmaSlope || previousGridResetAmaSlope || null)
-            : (botState.gridRangeScalingAmaSlope || previousGridResetAmaSlope || null);
+        const stateGridRangeScalingAmaSlope = botState.gridRangeScalingAmaSlope || previousGridResetAmaSlope || null;
 
         state.bots[bot.botKey] = {
             ...botState,

@@ -29,6 +29,7 @@ import { BroadcastUncertainError } from './dexbot_credential_client.js';
 import * as configModule from './config.js';
 const { Config } = configModule;
 import { getErrorMessage } from './utils/errors.js';
+import { usesAmaGridPrice } from './grid_price_source.js';
 function hasOpenOrdersSyncLoopMsSet(...args: any) { return require('./config').hasOpenOrdersSyncLoopMsSet(...args); }
 function getOpenOrdersSyncLoopMs(...args: any) { return require('./config').getOpenOrdersSyncLoopMs(...args); }
 function isGridBloated(...args: any) { return (grid.isGridBloated as any)(...args); }
@@ -105,13 +106,11 @@ const GRID_RESYNC_REASONS = Object.freeze({
 
 /**
  * Check if a bot configuration uses an AMA grid price source.
- * @param {Object} bot - Bot configuration object
- * @returns {boolean} True if gridPrice starts with 'ama' (ama, ama1..ama4)
+ *
+ * Canonical implementation lives in ./grid_price_source.js (browser-safe,
+ * shared with the market adapter service) — re-exported here so existing
+ * Node-side consumers keep their import path.
  */
-function usesAmaGridPrice(bot: any) {
-    const gridPrice = String(bot?.gridPrice || '').trim().toLowerCase();
-    return /^ama(?:[1-4])?$/.test(gridPrice);
-}
 
 /**
  * Find a bot entry in the bots config snapshot that matches a runtime config.

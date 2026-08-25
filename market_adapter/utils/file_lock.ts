@@ -50,7 +50,12 @@ function _isLockStaleOrDead(lockPath: any, staleMs: any, now: any, aliveCheck: a
     if ((now - stat.mtimeMs) > staleMs) return true;
     if (aliveCheck) {
         const info = loadLockInfo(lockPath);
-        if (!aliveCheck(Number(info.pid))) return true;
+        const pid = Number(info.pid);
+        // Non-numeric owner ids (UUID fallback when runtime.pid is unusable)
+        // cannot be liveness-checked — treat the holder as alive rather than
+        // stealing a lock we cannot verify.
+        if (!Number.isInteger(pid) || pid <= 0) return false;
+        if (!aliveCheck(pid)) return true;
     }
     return false;
 }

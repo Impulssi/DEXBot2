@@ -3,6 +3,7 @@
 
 import '../modules/storage/index.js';
 import { getErrorMessage } from '../modules/utils/errors.js';
+import { Config } from '../modules/config.js';
 /**
  * AMA SIGNAL RUNNER
  *
@@ -161,6 +162,8 @@ function parseArgs(): CliArgs {
                 printHelp();
                 process.exit(0);
                 break;
+            default:
+                throw new Error(`Unknown argument: ${a}`);
         }
     }
 
@@ -204,8 +207,6 @@ function buildOutput(payload: AmaPayload | undefined | null, botFilter: string |
         bots: filtered,
     };
 }
-
-import { Config } from '../modules/config.js';
 
 async function main(): Promise<void> {
     const cli = parseArgs();

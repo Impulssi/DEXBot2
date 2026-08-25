@@ -6,16 +6,6 @@
  * analysis/math_utils.ts). Keeps every consumer on one accessor path.
  */
 
-function getCandleHigh(candle: any) {
-    if (!candle) return null;
-    return Array.isArray(candle) ? candle[2] : candle.high;
-}
-
-function getCandleLow(candle: any) {
-    if (!candle) return null;
-    return Array.isArray(candle) ? candle[3] : candle.low;
-}
-
 function getCandleClose(candle: any) {
     if (!candle) return null;
     return Array.isArray(candle) ? candle[4] : candle.close;
@@ -302,5 +292,5 @@ function mergeCandles(a: any, b: any, { onCollision }: any = {}) {
     return [...map.values()].sort((x, y) => x[0] - y[0]);
 }
 
-export { getCandleClose, getCandleHigh, getCandleLow, getCandleTimestamp, normalizeCandle, tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles }
+export { getCandleClose, getCandleTimestamp, normalizeCandle, tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles }
 
