@@ -2,7 +2,7 @@
 import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants.js';
 import { getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
 import { bilinearInterpolate } from '../../market_adapter/core/strategies/regime_interp.js';
-import { computeDynamicWeightSeries, computeAverageAmaSlopePct, echoLatchSeries, roundToN } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
+import { computeDynamicWeightSeries, computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, echoLatchSeries, roundToN } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
 import {
     buildKalmanVelocitySeries,
     computeAbsolutePercentileThreshold,
@@ -18,6 +18,7 @@ import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomR
 // pure logic as the live market adapter service instead of a hand-copied copy.
 const EMBEDDED_SHARED_FUNCS = embedFunctionSources([
     computeAverageAmaSlopePct,
+    computeAmaSlopeClipThreshold,
     bilinearInterpolate,
     echoLatchSeries,
     buildKalmanVelocitySeries,
@@ -589,22 +590,11 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             const amaErWarmup = Math.max(0, Number.isFinite(data.amaErPeriod) ? Math.ceil(data.amaErPeriod) : ${JSON.stringify(MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS].erPeriod)});
             const amaReadyBar = Math.max(lb, amaErWarmup + lb);
 
-            // Recompute clip threshold based on current lookback
-            dynamicClipThreshold = Infinity;
-            if (currentClipPct > 0) {
-                const slopes = [];
-                for (let i = amaReadyBar; i < data.realBarCount; i++) {
-                    // Keep every finite slope (zeros included) — matches the live
-                    // market adapter service clip pool exactly.
-                    const s = computeAverageAmaSlopePct(data.ama3Prices[i], data.ama3Prices[i - lb], lb);
-                    if (Number.isFinite(s)) slopes.push(Math.abs(s));
-                }
-                if (slopes.length > 0) {
-                    slopes.sort((a, b) => a - b);
-                    const idx = Math.min(Math.floor((100 - currentClipPct) / 100 * slopes.length), slopes.length - 1);
-                    dynamicClipThreshold = slopes[idx];
-                }
-            }
+            // Recompute clip threshold based on current lookback — canonical
+            // implementation (computeAmaSlopeClipThreshold injected above),
+            // shared with the live market adapter service. Trailing padded
+            // nulls beyond realBarCount are skipped by its finiteness guards.
+            dynamicClipThreshold = computeAmaSlopeClipThreshold(data.ama3Prices, amaErWarmup, lb, currentClipPct);
 
             for (let i = 0; i < data.realBarCount; i++) {
                 // AMA raw slope % for the display panel (offsets computed in recalcWeights)

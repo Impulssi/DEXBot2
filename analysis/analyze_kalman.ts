@@ -15,7 +15,8 @@ import path from 'node:path';
 import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer.js';
 import { generateHTML } from './trend_detection/kalman_chart_generator.js';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
-import { computeAverageAmaSlopePct } from '../market_adapter/core/strategies/dynamic_weight_series.js';
+import { computeAmaSlopeWeights, createAmaSlopeClipTracker } from '../market_adapter/core/strategies/ama_slope_model.js';
+import { MARKET_ADAPTER } from '../modules/constants.js';
 import { getCandleClose } from './math_utils.js';
 import { writeChartFile } from './chart_utils.js';
 import { PATHS } from '../modules/paths.js';
@@ -23,10 +24,6 @@ import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_s
 
 'use strict';
 
-const LOOKBACK_BARS   = 72;
-const NEUTRAL_ZONE    = 0.15;
-const MAX_SLOPE_PCT   = 3.0;
-const MAX_SLOPE_OFFSET = 0.5;
 
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -96,22 +93,39 @@ async function main() {
         }
 
         // ── AMA weight offset (for comparison panel) ─────────────────────────
+        // Runs the production path (computeAmaSlopeWeights + percentile clip)
+        // so this panel is directly comparable to the live amaSlopeOffset.
         const closes    = candles.map(c => getCandleClose(c) ?? 0);
         const amaValues = calculateAMA(closes, amaConfig);
-        const warmup    = amaConfig.erPeriod + LOOKBACK_BARS + 1;
+        const amaLb     = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS;
+        const clipPct   = MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE;
+        // Ceil to match the readiness guard in computeAmaSlopeWeights
+        // (it uses Math.ceil(opts.erPeriod)), so fractional ER periods don't
+        // leave a 1-bar window that computes a weight where the model is not ready.
+        const warmup    = Math.ceil(amaConfig.erPeriod) + amaLb + 1;
+
+        // Incremental, prefix-only clip pool (no look-ahead) — same thresholds
+        // the live service would have seen at each point in time.
+        const clipTracker = createAmaSlopeClipTracker(amaConfig.erPeriod, amaLb, clipPct);
+        const weightWindowBars = Math.ceil(amaConfig.erPeriod) + amaLb + 1;
 
         for (let i = 0; i < allResults.length; i++) {
+            const amaClipThreshold = clipTracker.push(amaValues[i] ?? NaN);
             if (i < warmup) { allResults[i].amaWeightOffset = null; continue; }
-            const last = amaValues[i];
-            const past = amaValues[i - LOOKBACK_BARS];
-            if (!last || !past || past === 0) { allResults[i].amaWeightOffset = null; continue; }
-            const slopePct = computeAverageAmaSlopePct(last, past, LOOKBACK_BARS)! * LOOKBACK_BARS;
-            if (Math.abs(slopePct) < NEUTRAL_ZONE) {
-                allResults[i].amaWeightOffset = 0;
-            } else {
-                allResults[i].amaWeightOffset = Math.max(-MAX_SLOPE_OFFSET,
-                    Math.min(MAX_SLOPE_OFFSET, (slopePct / MAX_SLOPE_PCT) * MAX_SLOPE_OFFSET));
-            }
+            const slice = amaValues.slice(Math.max(0, i + 1 - weightWindowBars), i + 1);
+            const weights = computeAmaSlopeWeights(slice, 0, {
+                erPeriod:              amaConfig.erPeriod,
+                lookbackBars:          amaLb,
+                maxSlopePct:           MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT,
+                neutralZonePct:        MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT,
+                volatilityExponent:    MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_EXPONENT,
+                volatilityScaleX:      MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT,
+                volatilityThreshold:   MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_THRESHOLD,
+                maxSlopeOffset:        MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP,
+                maxVolatilityOffset:   MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP,
+                clipThreshold:         amaClipThreshold,
+            });
+            allResults[i].amaWeightOffset = weights.rawSlopeOffset;
         }
 
         // ── Generate chart ───────────────────────────────────────────────────

@@ -161,3 +161,112 @@ function computeDynamicWeightSeries(inputs: any) {
 }
 
 export { computeDynamicWeightSeries, computeAverageAmaSlopePct, echoLatchSeries, roundToN }
+
+/**
+ * Percentile lookup over an already-sorted ascending array. Returns `Infinity`
+ * for an empty pool so callers treat it as "no clipping".
+ */
+function percentileFromSorted(sorted: number[], clipPercentile: number): number {
+    if (!Array.isArray(sorted) || sorted.length === 0) return Infinity;
+    const idx = Math.min(Math.floor((100 - clipPercentile) / 100 * sorted.length), sorted.length - 1);
+    return sorted[idx];
+}
+
+/**
+ * Canonical AMA slope clip threshold used to bound `rawSlopeOffset` in
+ * `computeAmaSlopeWeights` — one logic path shared by the live market adapter
+ * service, the research runners, and the browser-embedded chart script.
+ *
+ * The threshold is the `(100 - clipPercentile)`-th percentile of
+ * `|average AMA slope %|` over the AMA history (skipping the ER + lookback
+ * warmup window). Returns `Infinity` when clipping is disabled or there is
+ * insufficient history.
+ *
+ * Embedding note: lives in this import-free module so fn.toString() injection
+ * into generated research charts stays valid after transpilation.
+ *
+ * For per-bar research loops prefer {@link createAmaSlopeClipTracker}, which
+ * yields identical thresholds while maintaining a single sorted pool
+ * incrementally (O(n) per push for the sorted insertion, O(n²) total) instead
+ * of re-deriving and re-sorting the whole slope history each bar.
+ *
+ * @param amaValues   Full AMA series for the cycle.
+ * @param erPeriod    AMA ER period (defines the warmup window with lookbackBars).
+ * @param lookbackBars Bars averaged per slope sample.
+ * @param clipPercentile Percentile to clip at (e.g. 10 → use 90th pct). 0 disables.
+ */
+function computeAmaSlopeClipThreshold(
+    amaValues: any,
+    erPeriod: number,
+    lookbackBars: number,
+    clipPercentile: number,
+): number {
+    if (!Number.isFinite(clipPercentile) || clipPercentile <= 0) return Infinity;
+    if (!Array.isArray(amaValues)) return Infinity;
+    const readyBars = Math.ceil(erPeriod) + lookbackBars;
+    if (amaValues.length <= readyBars) return Infinity;
+
+    const slopes: number[] = [];
+    for (let i = readyBars; i < amaValues.length; i++) {
+        const last = amaValues[i];
+        const past = amaValues[i - lookbackBars];
+        if (!Number.isFinite(last) || !Number.isFinite(past)) continue;
+        const s = computeAverageAmaSlopePct(last, past, lookbackBars);
+        if (Number.isFinite(s)) slopes.push(Math.abs(s as number));
+    }
+    if (slopes.length === 0) return Infinity;
+
+    const sorted = slopes.slice().sort((a, b) => a - b);
+    const idx = Math.min(Math.floor((100 - clipPercentile) / 100 * sorted.length), sorted.length - 1);
+    return sorted[idx];
+}
+
+/**
+ * Incremental equivalent of calling {@link computeAmaSlopeClipThreshold} on
+ * every growing prefix of the AMA series. Feed exactly one AMA value per bar
+ * via `push`; it returns the same threshold the batch function would return
+ * for `amaValues.slice(0, consumed)`, without re-deriving the whole slope pool
+ * each call. Maintains one sorted pool with binary-search insertion: O(log n)
+ * search + O(n) array shift per push, O(n²) total — a constant-factor win over
+ * the batch-per-bar loop's O(n² log n), and the same bound at research scale.
+ *
+ * Non-finite values keep their position in the sequence (they invalidate only
+ * the pairs they belong to), matching the batch function's per-pair guards.
+ */
+function createAmaSlopeClipTracker(erPeriod: number, lookbackBars: number, clipPercentile: number) {
+    const enabled = Number.isFinite(clipPercentile) && clipPercentile > 0;
+    const readyBars = Math.ceil(erPeriod) + lookbackBars;
+    const buffer: number[] = [];
+    const sorted: number[] = [];
+
+    return {
+        push(value: number): number {
+            buffer.push(value);
+            if (!enabled) return Infinity;
+            const i = buffer.length - 1;
+            if (i >= readyBars) {
+                const last = buffer[i];
+                const past = buffer[i - lookbackBars];
+                if (Number.isFinite(last) && Number.isFinite(past)) {
+                    const s = computeAverageAmaSlopePct(last, past, lookbackBars);
+                    if (Number.isFinite(s)) {
+                        const v = Math.abs(s as number);
+                        let lo = 0;
+                        let hi = sorted.length;
+                        while (lo < hi) {
+                            const mid = (lo + hi) >> 1;
+                            if (sorted[mid] < v) lo = mid + 1; else hi = mid;
+                        }
+                        sorted.splice(lo, 0, v);
+                    }
+                }
+            }
+            return percentileFromSorted(sorted, clipPercentile);
+        },
+    };
+}
+
+export {
+    computeAmaSlopeClipThreshold,
+    createAmaSlopeClipTracker,
+}

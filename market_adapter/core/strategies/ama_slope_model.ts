@@ -9,7 +9,11 @@ import {
 import { computeVolatilityShift } from './volatility_shift.js';
 // Canonical AMA slope % lives in dynamic_weight_series.ts (self-contained so the
 // chart generators can embed its exact source); re-exported here for compat.
-import { computeAverageAmaSlopePct } from './dynamic_weight_series.js';
+import {
+    computeAverageAmaSlopePct,
+    computeAmaSlopeClipThreshold,
+    createAmaSlopeClipTracker,
+} from './dynamic_weight_series.js';
 
 
 
@@ -137,5 +141,13 @@ function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any =
     };
 }
 
-export { computeAmaSlopeWeights, computeAverageAmaSlopePct }
+// computeAmaSlopeClipThreshold and createAmaSlopeClipTracker live in
+// dynamic_weight_series.ts (self-contained so the chart generators can embed
+// their exact source); re-exported here so Node callers keep this import path.
+export {
+    computeAmaSlopeWeights,
+    computeAverageAmaSlopePct,
+    computeAmaSlopeClipThreshold,
+    createAmaSlopeClipTracker,
+}
 

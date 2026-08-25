@@ -14,7 +14,7 @@ import { roundTo } from '../../modules/order/utils/math.js';
 
 import {
     computeAmaSlopeWeights,
-    computeAverageAmaSlopePct,
+    computeAmaSlopeClipThreshold,
 } from './strategies/ama_slope_model.js';
 import {
     normalizeAtrPeriod,
@@ -593,26 +593,8 @@ class MarketAdapterService {
         const volatilityScaleX = cfg.volatilityScaleX ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT;
 
         // Compute separate clip thresholds for AMA (slopes) and Kalman (velocities)
-        let amaClipThreshold = Infinity;
+        let amaClipThreshold = computeAmaSlopeClipThreshold(amaValues, botAma.erPeriod, lookbackBars, clipPercentile);
         let kalClipThreshold = Infinity;
-        const amaSlopeReadyBars = Math.ceil(botAma.erPeriod) + lookbackBars;
-
-        if (clipPercentile > 0 && amaValues.length > amaSlopeReadyBars) {
-            // AMA clip threshold from slope distribution — skip the ER window,
-            // but do not require the full convergence-retention window.
-            const amaSlopes: number[] = [];
-            for (let i = amaSlopeReadyBars; i < amaValues.length; i++) {
-                const last = amaValues[i];
-                const past = amaValues[i - lookbackBars];
-                const slopePct = computeAverageAmaSlopePct(last, past, lookbackBars);
-                if (Number.isFinite(slopePct)) amaSlopes.push(Math.abs(slopePct!));
-            }
-            if (amaSlopes.length > 0) {
-                const sorted = amaSlopes.sort((a, b) => a - b);
-                const idx = Math.min(Math.floor((100 - clipPercentile) / 100 * sorted.length), sorted.length - 1);
-                amaClipThreshold = sorted[idx];
-            }
-        }
 
         const slopeCfg = {
             ...(cfg.amaSlope || {}),

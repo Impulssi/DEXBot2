@@ -1,13 +1,16 @@
 
+import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
 import { sharedChartCSS } from '../chart_css.js';
 import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
 'use strict';
 
 
-const NEUTRAL_ZONE_PCT = 0.15;
-const MAX_SLOPE_PCT    = 3.0;
-const MAX_SLOPE_OFFSET = 0.5;
+// Kalman weight panel — production channel defaults (neutral zone, saturation
+// slope, clamp) so the displayed offset tracks the live kalmanOffsets shape.
+const NEUTRAL_ZONE_PCT = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT;
+const MAX_SLOPE_PCT    = MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_MAX_SLOPE_PCT;
+const MAX_SLOPE_OFFSET = MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
 
 function computeKalmanWeightOffset(velocityPct: any, isReady: any) {
     if (!isReady || velocityPct == null) return 0;

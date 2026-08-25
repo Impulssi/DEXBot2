@@ -18,7 +18,7 @@ import { HurstAnalyzer } from './trend_detection/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer.js';
 import { generateHTML } from './trend_detection/dynamic_weight_chart_generator.js';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
-import { computeAmaSlopeWeights } from '../market_adapter/core/strategies/ama_slope_model.js';
+import { computeAmaSlopeWeights, createAmaSlopeClipTracker } from '../market_adapter/core/strategies/ama_slope_model.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { PATHS } from '../modules/paths.js';
 import { writeChartFile } from './chart_utils.js';
@@ -149,15 +149,30 @@ async function main() {
         // ── AMA weight calculation ───────────────────────────────────────────
         const closes = candles.map(c => getCandleClose(c) ?? 0);
         const amaValues = calculateAMA(closes, AMA_CONFIG);
+        const lbBars = config.lookbackBars ?? AMA_WEIGHT_CONFIG.lookbackBars;
+        const clipPercentile = config.clipPct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE;
+
+        // Incremental percentile clip threshold (shared with the market adapter)
+        // so the research offset matches the live asymmetry. Feeding bar-by-bar
+        // keeps the pool prefix-only — no look-ahead, same thresholds the live
+        // service would have seen at each point in time.
+        const clipTracker = createAmaSlopeClipTracker(AMA_CONFIG.erPeriod, lbBars, clipPercentile);
+        // Minimal history window computeAmaSlopeWeights can act on (guard is
+        // erPeriod + lookbackBars + 1 and it only reads the last two sampled
+        // bars), so a rolling slice avoids O(n²) prefix copies.
+        const weightWindowBars = Math.ceil(AMA_CONFIG.erPeriod) + lbBars + 1;
+
         for (let i = 0; i < allResults.length; i++) {
             // The research chart keeps ATR out of the Kalman branch on purpose.
             // Production applies ATR later as a separate symmetric volatility penalty.
             const atr = 0;
             const weightVariance = 0;
+            const amaClipThreshold = clipTracker.push(amaValues[i] ?? NaN);
+            const slice = amaValues.slice(Math.max(0, i + 1 - weightWindowBars), i + 1);
 
-            const weights = computeAmaSlopeWeights(amaValues.slice(0, i + 1), weightVariance, {
+            const weights = computeAmaSlopeWeights(slice, weightVariance, {
                 erPeriod: AMA_CONFIG.erPeriod,
-                lookbackBars: config.lookbackBars ?? AMA_WEIGHT_CONFIG.lookbackBars,
+                lookbackBars: lbBars,
                 maxSlopePct: AMA_WEIGHT_CONFIG.amaMaxSlopePct,
                 neutralZonePct: AMA_WEIGHT_CONFIG.neutralZonePct,
                 volatilityExponent: AMA_WEIGHT_CONFIG.volatilityExponent,
@@ -165,6 +180,7 @@ async function main() {
                 volatilityThreshold: AMA_WEIGHT_CONFIG.volatilityThreshold,
                 maxSlopeOffset: AMA_WEIGHT_CONFIG.maxSlopeOffset,
                 maxVolatilityOffset: AMA_WEIGHT_CONFIG.maxVolatilityOffset,
+                clipThreshold: amaClipThreshold,
             });
 
             (allResults[i] as any).ama3Price = amaValues[i] ?? null;

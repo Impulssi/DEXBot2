@@ -22,6 +22,7 @@ import path from 'node:path';
 import { formatCurrency } from '../modules/order/format.js';
 import { resolveConfiguredPriceBound } from '../modules/order/utils/order.js';
 import { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } from '../modules/constants.js';
+import { applyAsymmetricBounds } from '../market_adapter/core/asymmetric_bounds.js';
 import { PATHS } from '../modules/paths.js';
 import { getWhitelistFlags } from '../modules/market_adapter_whitelist.js';
 import { getStorage } from '../modules/storage/index.js';
@@ -123,8 +124,10 @@ function readDynamicGridSnapshot(botKey: string): any {
 }
 
 /**
- * computeAsymmetricBoundsPrices: Mirror of applyAsymmetricBounds logic.
- * Computes the resolved min/max prices after grid range scaling adjustment.
+ * computeAsymmetricBoundsPrices: Delegates to the production applyAsymmetricBounds
+ * so the displayed resolved bounds stay in lockstep with live grid scaling.
+ * (appliedAsymmetryFactor is already the clamped live value, so it is fed back
+ * through the canonical function with maxSlopeOffset/maxAsymmetryFactor = 1.)
  */
 function computeAsymmetricBoundsPrices(centerPrice: number, minPrice: number, maxPrice: number, trend: string, appliedAsymmetryFactor: number): { resolvedMinPrice: number; resolvedMaxPrice: number } | null {
   if (!Number.isFinite(centerPrice) || centerPrice <= 0
@@ -134,17 +137,19 @@ function computeAsymmetricBoundsPrices(centerPrice: number, minPrice: number, ma
     || (trend !== 'UP' && trend !== 'DOWN')) {
     return null;
   }
-  const baseMinDiv = centerPrice / minPrice;
-  const baseMaxMult = maxPrice / centerPrice;
-  let resolvedMinPrice, resolvedMaxPrice;
-  if (trend === 'DOWN') {
-    resolvedMinPrice = centerPrice / (baseMinDiv * (1 + appliedAsymmetryFactor));
-    resolvedMaxPrice = centerPrice * (baseMaxMult * (1 - appliedAsymmetryFactor));
-  } else {
-    resolvedMinPrice = centerPrice / (baseMinDiv * (1 - appliedAsymmetryFactor));
-    resolvedMaxPrice = centerPrice * (baseMaxMult * (1 + appliedAsymmetryFactor));
+  const metrics = applyAsymmetricBounds({
+    centerPrice,
+    minPrice,
+    maxPrice,
+    trend,
+    slopeOffset: appliedAsymmetryFactor,
+    maxSlopeOffset: 1,
+    maxAsymmetryFactor: 1,
+  });
+  if (!Number.isFinite(metrics.resolvedMinPrice) || !Number.isFinite(metrics.resolvedMaxPrice)) {
+    return null;
   }
-  return { resolvedMinPrice, resolvedMaxPrice };
+  return { resolvedMinPrice: metrics.resolvedMinPrice, resolvedMaxPrice: metrics.resolvedMaxPrice };
 }
 
 /**

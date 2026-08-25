@@ -5,7 +5,7 @@ const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running ama_slope_model tests');
 
-const { computeAmaSlopeWeights } = require('../market_adapter/core/strategies/ama_slope_model');
+const { computeAmaSlopeWeights, computeAmaSlopeClipThreshold, createAmaSlopeClipTracker } = require('../market_adapter/core/strategies/ama_slope_model');
 const { calculateAMA, getAmaWarmupBars } = require('../market_adapter/core/strategies/ama');
 
 // Generate a series of N values with a given pattern
@@ -417,6 +417,123 @@ function testAmaWarmupBarsIncludeERSmoothingConvergence() {
     assert.strictEqual(smoothed - unsmoothed, 116, 'ER smoothing warmup should include its own EMA convergence bars');
 }
 
+// ─── AMA slope clip threshold (computeAmaSlopeClipThreshold / createAmaSlopeClipTracker) ──
+// Regression coverage for the canonical clip logic consolidated into
+// dynamic_weight_series.ts: batch/prefix parity, disabled + short-history edges,
+// and the exact percentile semantics that bound rawSlopeOffset.
+
+function seededSeries(n, seed = 12345) {
+    // Deterministic LCG walk of positive prices (never 0, so the past===0 path
+    // is exercised separately via the all-zero edge case).
+    let s = seed;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+        s = (s * 1103515245 + 12345) & 0x7fffffff;
+        out.push(50 + (s % 3000) / 10);
+    }
+    return out;
+}
+
+function testClipThresholdDisabledOrShortHistoryReturnsInfinity() {
+    const valid = [100, 110, 99, 121, 110, 132];
+    assert.strictEqual(computeAmaSlopeClipThreshold(valid, 1, 1, 0), Infinity, 'clip=0 disables');
+    assert.strictEqual(computeAmaSlopeClipThreshold(valid, 1, 1, -5), Infinity, 'negative clip disables');
+    assert.strictEqual(computeAmaSlopeClipThreshold(valid, 1, 1, NaN), Infinity, 'NaN clip disables');
+    assert.strictEqual(computeAmaSlopeClipThreshold(null, 1, 1, 10), Infinity, 'non-array input → Infinity');
+    assert.strictEqual(computeAmaSlopeClipThreshold([100, 100, 100], 5, 5, 10), Infinity, 'below ER+lookback warmup → Infinity');
+    assert.strictEqual(computeAmaSlopeClipThreshold([0, 0, 0, 0, 0, 0], 1, 1, 10), Infinity, 'empty slope pool (all zeros) → Infinity');
+}
+
+function testClipThresholdExactPercentile() {
+    // erPeriod=1, lookbackBars=1 → readyBars=2, slopes are per-bar % changes.
+    //   i=2: |(99-110)/110|*100      = 10
+    //   i=3: |(121-99)/99|*100       = 22.2222...
+    //   i=4: |(110-121)/121|*100     = 9.0909...
+    //   i=5: |(132-110)/110|*100     = 20
+    // sorted |slopes| = [9.0909..., 10, 20, 22.2222...]
+    const values = [100, 110, 99, 121, 110, 132];
+
+    const t90 = computeAmaSlopeClipThreshold(values, 1, 1, 90); // idx floor(0.1*4)=0
+    assert.ok(Math.abs(t90 - (11 / 121 * 100)) < 1e-9, `90th pct expected 9.0909%, got ${t90}`);
+
+    const t40 = computeAmaSlopeClipThreshold(values, 1, 1, 40); // idx floor(0.6*4)=2
+    assert.ok(Math.abs(t40 - 20) < 1e-9, `40th pct expected 20%, got ${t40}`);
+
+    const t20 = computeAmaSlopeClipThreshold(values, 1, 1, 20); // idx floor(0.8*4)=3
+    assert.ok(Math.abs(t20 - (22 / 99 * 100)) < 1e-9, `20th pct expected 22.2222%, got ${t20}`);
+}
+
+function testTrackerMatchesBatchAcrossPrefixes() {
+    // Core parity: every incremental tracker threshold must equal the batch
+    // function computed on the same prefix — including a NaN hole that
+    // invalidates only its own pairs.
+    const erPeriod = 10;
+    const lb = 9;
+    const series = seededSeries(500);
+    series[137] = NaN;
+
+    for (const pct of [0, 10, 25]) {
+        const tracker = createAmaSlopeClipTracker(erPeriod, lb, pct);
+        for (let k = 1; k <= series.length; k++) {
+            const batch = computeAmaSlopeClipThreshold(series.slice(0, k), erPeriod, lb, pct);
+            const track = tracker.push(series[k - 1]);
+            assert.strictEqual(track, batch, `pct=${pct} bar=${k}: tracker ${track} != batch ${batch}`);
+        }
+    }
+}
+
+function testTrackerDisabledReturnsInfinity() {
+    const tracker = createAmaSlopeClipTracker(5, 5, 0);
+    assert.strictEqual(tracker.push(100), Infinity, 'disabled tracker always returns Infinity');
+    assert.strictEqual(tracker.push(200), Infinity, 'disabled tracker always returns Infinity');
+}
+
+function testRollingWindowWeightsMatchFullPrefix() {
+    // The research runners feed computeAmaSlopeWeights a rolling
+    // ceil(erPeriod)+lookbackBars+1 window plus the prefix-only clip threshold.
+    // Since the model reads only the last two bars and the clip is injected,
+    // the rolling-window result must be identical to the full-prefix result.
+    const erPeriod = 10;
+    const lb = 9;
+    const series = seededSeries(300);
+    const windowBars = Math.ceil(erPeriod) + lb + 1;
+    const opts = {
+        erPeriod,
+        lookbackBars: lb,
+        maxSlopePct: 0.085,
+        neutralZonePct: 0,
+        volatilityExponent: 1,
+        volatilityScaleX: 10,
+        volatilityThreshold: 0.1,
+        maxSlopeOffset: 0.5,
+        maxVolatilityOffset: 0.5,
+    };
+
+    for (let k = 1; k <= series.length; k++) {
+        const prefix = series.slice(0, k);
+        const thresh = computeAmaSlopeClipThreshold(prefix, erPeriod, lb, 10);
+        const full = computeAmaSlopeWeights(prefix, 0, { ...opts, clipThreshold: thresh });
+        const slice = series.slice(Math.max(0, k - windowBars), k);
+        const win = computeAmaSlopeWeights(slice, 0, { ...opts, clipThreshold: thresh });
+        assert.strictEqual(win.isReady, full.isReady, `bar ${k}: readiness mismatch`);
+        assert.strictEqual(win.rawSlopeOffset, full.rawSlopeOffset, `bar ${k}: rolling ${win.rawSlopeOffset} != full ${full.rawSlopeOffset}`);
+    }
+}
+
+function testClipThresholdBindsSlopeOffset() {
+    // slopePct ≈ 100% per bar; without a clip it saturates at maxSlopeOffset.
+    const values = [100, 100, 100, 100, 100, 300];
+    const base = { erPeriod: 2, lookbackBars: 2, maxSlopePct: 3.0, neutralZonePct: 0, maxSlopeOffset: 0.5 };
+
+    const unclipped = computeAmaSlopeWeights(values, 0, base);
+    assert.strictEqual(unclipped.rawSlopeOffset, 0.5, 'no clip → saturates at maxSlopeOffset');
+
+    // clipThreshold=0.5 caps clippedSlopePct → slopeOffset = 0.5/3.0*0.5 = 1/12
+    const clipped = computeAmaSlopeWeights(values, 0, { ...base, clipThreshold: 0.5 });
+    assert.ok(Math.abs(clipped.rawSlopeOffset - (0.5 / 3.0 * 0.5)) < 1e-12, `got ${clipped.rawSlopeOffset}`);
+    assert.strictEqual(clipped.slopeOffset, Math.round((0.5 / 3.0 * 0.5) * 100) / 100);
+}
+
 // ─── Run ─────────────────────────────────────────────────────────────────────
 
 async function run() {
@@ -454,6 +571,12 @@ async function run() {
     testERaSmoothingRejectsSubUnitPeriods();
     testERaSmoothingProducesDifferentOutput();
     testAmaWarmupBarsIncludeERSmoothingConvergence();
+    testClipThresholdDisabledOrShortHistoryReturnsInfinity();
+    testClipThresholdExactPercentile();
+    testTrackerMatchesBatchAcrossPrefixes();
+    testTrackerDisabledReturnsInfinity();
+    testRollingWindowWeightsMatchFullPrefix();
+    testClipThresholdBindsSlopeOffset();
 }
 
 run()
