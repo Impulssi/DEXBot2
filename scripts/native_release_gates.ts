@@ -3,7 +3,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { PATHS } from '../modules/paths.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { Config } from '../modules/config.js';
 import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();

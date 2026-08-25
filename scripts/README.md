@@ -7,7 +7,7 @@ This guide provides a terminal-focused reference for the maintenance and diagnos
 ## 🛠️ CORE MAINTENANCE
 
 ### Update DEXBot2
-**File:** `update.ts`
+**File:** `update.ts` (shim: `update.js`)
 **Purpose:** Perform a safe, production-ready update.
 ```bash
 # Pull latest code, install deps, and restart PM2
@@ -174,6 +174,18 @@ LIVE_BOT_NAME=my-bot CALC_CYCLES=10 CALC_DELAY_MS=1000 node dist/scripts/runner.
 Useful for verifying config produces the expected grid, testing price derivation, and debugging fund allocation.
 Requires a live BitShares connection (asset metadata lookups and price derivation are on-chain).
 
+### Native Release Gates
+**File:** `native_release_gates.ts` (+ `generate_mainnet_corpus_report.ts`)
+**Purpose:** Prove the native serialization layer matches the chain byte-for-byte before release.
+```bash
+# Generate the mainnet corpus report (needs a live node + 50+ blocks)
+npm run native:corpus
+
+# Run serializer snapshots + ECC invariants and assert the corpus report
+npm run native:release-gates
+```
+The corpus report lands in `<profiles>/native_validation/mainnet_corpus_report.json`. The gates fail unless the report has `passed=true` and `transactionCount>=50`.
+
 ---
 
 ## 🔍 GIT & DEVELOPMENT WORKFLOW
@@ -209,7 +221,10 @@ Inside file viewer: `f` full file, `d` diff view, `q` back to search, `b` main m
 ## 💻 DEVELOPMENT UTILITIES
 
 ### Test Suite Setup
-Tests run with native Node `assert` — no test framework needed. See [tests/README.md](../tests/README.md) for details.
+Tests use native Node `assert` — no test framework needed. Sources compile to
+`dist/tests/` via `npm run build:tests`, and `npm test` runs them sequentially
+through `dist/scripts/run-tests.js` (with a per-test watchdog and diagnostics
+summary). See [tests/README.md](../tests/README.md) for details.
 
 ### Repository Statistics Analyzer
 **File:** `analyze-git.ts`
@@ -298,8 +313,8 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 | `scripts/bots` | `dexbot bots` | `./scripts/bots` |
 | `scripts/keys` | `dexbot keys` | `./scripts/keys` |
 | `scripts/dexbot` | `dexbot` | `./scripts/dexbot <cmd>` |
-| `scripts/unlock` | `unlock.ts` / `dist/unlock.js` | `./scripts/unlock` |
-| `scripts/pm2` | `pm2.ts` / `dist/pm2.js` | `./scripts/pm2` |
+| `scripts/unlock` | `dist/unlock.js` | `./scripts/unlock` |
+| `scripts/pm2` | `dist/pm2.js` | `./scripts/pm2` |
 
 ---
 
@@ -308,12 +323,15 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 ### Build & Test
 | Command | Purpose |
 |:---|:---|
-| `npm run build` | Clean + compile TypeScript |
+| `npm run build` | Compile TypeScript to `dist/` (plain node — no tsx) |
+| `npm run build:clean` | Remove stale `dist/` + tsbuildinfo caches, then build |
+| `npm run build:tests` | Compile `tests/` to `dist/tests/` (required by `npm test` and `native:*`) |
 | `npm run clean` | Remove compiled `dist/` output |
 | `npm run typecheck` | TypeScript type checking (`tsc --noEmit`) |
+| `npm run typecheck:tests` | Type check the test suite (`tsc -p tsconfig.tests.json --noEmit`) |
 | `npm run build:watch` | TypeScript incremental build watcher |
-| `npm test` | Run full test suite (excludes live-chain tests) |
-| `npm run test:live` | Run full test suite including live-chain tests |
+| `npm test` | Build + compile tests + run full suite (excludes live-chain tests) |
+| `npm run test:live` | Build + compile tests + run full suite including live-chain tests |
 
 ### Runtime
 | Command | Purpose |
@@ -350,6 +368,14 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 | `npm run lp:chart` | Generate uPlot LP chart |
 | `npm run test:credit-renewal` | Test credit offer renewal for a specific bot |
 | `npm run verify:browser-bundle` | Verify browser-safe surface bundles correctly |
+
+### Native Release Gates
+| Command | Purpose |
+|:---|:---|
+| `npm run native:corpus` | Build mainnet corpus report proving byte-for-byte native serialization parity |
+| `npm run native:serial-snapshots` | Run native serializer snapshot tests |
+| `npm run native:ecc-invariants` | Run native ECC key/sign/verify invariant tests |
+| `npm run native:release-gates` | Run serial + ECC gates and assert a valid mainnet corpus report |
 
 ---
 
