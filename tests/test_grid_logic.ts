@@ -509,6 +509,85 @@ async function runTests() {
         }
     }
 
+    console.log(' - Testing root-level asymmetricBounds clamp against rebuild geometry...');
+    {
+        const botKey = `test-grid-root-bounds-clamp-${process.pid}`;
+        const ordersDir = PATHS.ORDERS_DIR;
+        const amaFile = path.join(ordersDir, `${botKey}.dynamicgrid.json`);
+        const originalWhitelist = fs.existsSync(whitelistFile())
+            ? fs.readFileSync(whitelistFile(), 'utf8')
+            : null;
+
+        ensureDir(ordersDir);
+        writeJSON(whitelistFile(), {
+            whitelist: {
+                [botKey]: { ama: true, dynamicWeight: false, asymmetricBounds: true }
+            }
+        });
+        _resetBothWhitelistCaches();
+        // Persisted factor exceeds the geometric safe limit of the rebuild
+        // geometry: DOWN trend with maxPrice '2x' caps the applied factor at
+        // 1 - 1/2 = 0.5. The canonical applyAsymmetricBounds path must clamp
+        // it instead of applying the raw persisted 0.6 to both sides.
+        writeJSON(amaFile, {
+            centerPrice: 1000,
+            amaCenterPrice: 1000,
+            asymmetricBounds: {
+                rawAsymmetryFactor: 0.6,
+                appliedAsymmetryFactor: 0.6,
+                trend: 'DOWN',
+            },
+            updatedAt: new Date().toISOString(),
+        });
+
+        try {
+            delete require.cache[gridModulePath];
+            delete require.cache[managerModulePath];
+            const FreshGrid = require('../modules/order/grid');
+            const { OrderManager: FreshOrderManager } = require('../modules/order/manager');
+            const manager = new FreshOrderManager({
+                assetA: 'TESTA',
+                assetB: 'TESTB',
+                botKey,
+                startPrice: 100,
+                gridPrice: 'ama',
+                minPrice: '2x',
+                maxPrice: '2x',
+                incrementPercent: 1,
+                targetSpreadPercent: 2,
+                weightDistribution: { buy: 0.5, sell: 0.5 },
+                botFunds: { buy: '100%', sell: '100%' },
+                activeOrders: { buy: 6, sell: 6 }
+            });
+
+            manager.assets = {
+                assetA: { id: '1.3.1', symbol: 'TESTA', precision: 5 },
+                assetB: { id: '1.3.2', symbol: 'TESTB', precision: 5 }
+            };
+            await manager.setAccountTotals({ buy: 5000, sell: 5000, buyFree: 5000, sellFree: 5000 });
+
+            await FreshGrid.initializeGrid(manager);
+
+            // Clamped factor 0.5 widens min to 1000 / (2 * (1 + 0.5)) = 333.33...
+            // (the old inline copy applied 0.6 and produced 312.5).
+            assert(manager.orders.size > 0, 'initializeGrid should succeed with over-limit root-level factor');
+            assert(Math.abs(manager._lastGridPricingContext.rangeScalingFactor - 0.5) < 1e-12,
+                'root-level range-scaling factor should be clamped by the canonical safe limit');
+            assert(Math.abs(manager.config.minPrice - 333.3333333333333) < 1e-9,
+                'widened side should scale with the clamped factor, not the persisted over-limit value');
+            assert(manager.config.maxPrice >= 1000,
+                'tightened side must stay at or above the grid center after the narrowing-side guard');
+        } finally {
+            safeUnlink(amaFile)
+            if (originalWhitelist == null) {
+                safeUnlink(whitelistFile())
+            } else {
+                fs.writeFileSync(whitelistFile(), originalWhitelist, 'utf8');
+            }
+            _resetBothWhitelistCaches();
+        }
+    }
+
     console.log(' - Testing narrowing-side guard keeps a minimum number of order slots...');
     {
         const botKey = `test-grid-min-slots-${process.pid}`;

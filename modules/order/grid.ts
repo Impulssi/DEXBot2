@@ -934,7 +934,9 @@ export async function initializeGrid(manager: any): Promise<void> {
                     minPrice: minP,
                     maxPrice: maxP,
                     trend: dw?.trend,
-                    slopeOffset: dw?.slopeOffset,
+                    // Prefer the unrounded offset so the rebuild recomputation
+                    // matches computeAppliedAsymmetryMetrics in the adapter.
+                    slopeOffset: Number.isFinite(dw?.rawSlopeOffset) ? dw.rawSlopeOffset : dw?.slopeOffset,
                     maxSlopeOffset: dw?.maxSlopeOffset,
                     maxAsymmetryFactor,
                 });
@@ -956,15 +958,25 @@ export async function initializeGrid(manager: any): Promise<void> {
                 }
             } else if (rootBounds && Number.isFinite(rootBounds.appliedAsymmetryFactor)
                 && (rootBounds.trend === 'UP' || rootBounds.trend === 'DOWN')) {
-                const asymmetry = Number(rootBounds.appliedAsymmetryFactor);
+                // Persisted appliedAsymmetryFactor is already the clamped live
+                // value, so feed it back through the canonical function with
+                // neutral caps — same path the UI display uses. This keeps the
+                // geometric safe-clamp active against the rebuild geometry
+                // (the persisted factor was clamped at adapter time, possibly
+                // against a different center).
+                const adjustment = applyAsymmetricBounds({
+                    centerPrice: gp,
+                    minPrice: minP!,
+                    maxPrice: maxP!,
+                    trend: rootBounds.trend,
+                    slopeOffset: Number(rootBounds.appliedAsymmetryFactor),
+                    maxSlopeOffset: 1,
+                    maxAsymmetryFactor: 1,
+                });
+                const asymmetry = Number(adjustment.appliedAsymmetryFactor);
                 const rootTrend = rootBounds.trend;
-                if (rootTrend === 'DOWN') {
-                    resolvedMinP = gp / ((gp / minP!) * (1 + asymmetry));
-                    resolvedMaxP = gp * ((maxP! / gp) * (1 - asymmetry));
-                } else {
-                    resolvedMinP = gp / ((gp / minP!) * (1 - asymmetry));
-                    resolvedMaxP = gp * ((maxP! / gp) * (1 + asymmetry));
-                }
+                resolvedMinP = Number(adjustment.resolvedMinPrice);
+                resolvedMaxP = Number(adjustment.resolvedMaxPrice);
                 rangeScalingFactor = asymmetry;
                 appliedTrend = rootTrend;
                 minScaleSlots = resolveMinScaleSlots(manager.config.asymmetricBounds?.minScaleSlots, rootBounds.minScaleSlots);
