@@ -13,9 +13,6 @@ setCachedModule(
         setSuppressConnectionLog() {},
     }
 );
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
-const maintenanceRuntime = require('../modules/dexbot_maintenance_runtime');
 const DEXBot = require('../modules/dexbot_class').default;
 const { withDynamicWeightFiles } = require('./helpers/dynamic_weight_files');
 
@@ -48,9 +45,6 @@ async function runTests() {
 
     const originalSetInterval = global.setInterval;
     const originalClearInterval = global.clearInterval;
-    const originalReadOpenOrders = chainOrders.readOpenOrders;
-    const originalReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
-    const originalSyncMarketAdapterOnPeriodicConfigCheck = maintenanceRuntime.syncMarketAdapterOnPeriodicConfigCheck;
     const originalExistsSync = fs.existsSync;
     const originalReadFileSync = fs.readFileSync;
 
@@ -83,14 +77,6 @@ async function runTests() {
         }
         return originalReadFileSync(filePath, encoding);
     };
-    maintenanceRuntime.syncMarketAdapterOnPeriodicConfigCheck = async () => ({
-        changed: false,
-        required: false,
-        running: false,
-        started: false,
-        stopped: false,
-        mode: 'test',
-    });
     const weightFiles = withDynamicWeightFiles('test_periodic_sync_fill_rebalance');
 
     try {
@@ -182,8 +168,16 @@ async function runTests() {
             maintenanceCalls++;
         };
 
-        chainOrders.readOpenOrders = async () => [];
-        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+        // Compiled ESM exports cannot be patched; use bot-level seams.
+        bot._syncMarketAdapterHook = async () => ({
+            changed: false,
+            required: false,
+            running: false,
+            started: false,
+            stopped: false,
+            mode: 'test',
+        });
+        bot._readOpenOrdersHook = async () => [];
 
         bot._setupBlockchainFetchInterval();
         assert.strictEqual(typeof capturedCallback, 'function', 'Periodic interval callback should be registered');
@@ -205,9 +199,6 @@ async function runTests() {
         global.clearInterval = originalClearInterval;
         fs.existsSync = originalExistsSync;
         fs.readFileSync = originalReadFileSync;
-        chainOrders.readOpenOrders = originalReadOpenOrders;
-        chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
-        maintenanceRuntime.syncMarketAdapterOnPeriodicConfigCheck = originalSyncMarketAdapterOnPeriodicConfigCheck;
     }
 }
 

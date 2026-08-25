@@ -84,7 +84,7 @@ const launcherLogger = createPm2AwareLogger('bot.js');
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 
 // Get bot name from args or environment
-// Support both direct names (tsx bot.ts botname) and flag format (tsx bot.ts --botname)
+// Support both direct names (node dist/bot.js botname) and flag format (node dist/bot.js --botname)
 // Flag format is used by PM2 for consistency with other CLI tools
 let botNameArg = Config.ARGS[0];
 if (botNameArg && botNameArg.startsWith('--')) {

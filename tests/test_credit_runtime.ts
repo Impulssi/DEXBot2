@@ -4,13 +4,16 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+// Compiled ESM namespaces are frozen and cannot be swapped via require.cache;
+// each scenario runs in its own hooked child process (runEsmMockStages) with
+// fresh loader-hook mocks registered by installStubs().
+const { runEsmMockStages, defineEsmMockAbs } = require('./helpers/esm_mocks');
 const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running credit runtime tests');
 
-const bitsharesClientPath = path.resolve(__dirname, '../modules/bitshares_client.ts');
-const chainOrdersPath = path.resolve(__dirname, '../modules/chain_orders.ts');
+const bitsharesClientPath = require.resolve('../modules/bitshares_client');
+const chainOrdersPath = require.resolve('../modules/chain_orders');
 const creditRuntimePath = path.resolve(__dirname, '../modules/credit_runtime.ts');
 
 function installStubs(calls, dbCalls, options = {}) {
@@ -150,7 +153,16 @@ function installStubs(calls, dbCalls, options = {}) {
 
   const onExecuteBatch = typeof (options as any).onExecuteBatch === 'function' ? (options as any).onExecuteBatch : null;
 
-  const originalBitshares = setCachedModule(bitsharesClientPath, {
+  defineEsmMockAbs(bitsharesClientPath, [
+    'BitShares',
+    'waitForConnected',
+    'createAccountClient',
+    'setSuppressConnectionLog',
+    'getNodeManager',
+    'getNodeStats',
+    'getNodeSummary',
+    '_internal',
+  ], {
     BitShares: {
       db: {
         call: handleDbCall,
@@ -174,7 +186,12 @@ function installStubs(calls, dbCalls, options = {}) {
     _internal: { connected: true },
   });
 
-  const originalChainOrders = setCachedModule(chainOrdersPath, {
+  defineEsmMockAbs(chainOrdersPath, [
+    'resolveAccountId',
+    'resolveAccountName',
+    'getOnChainAssetBalances',
+    'executeBatch',
+  ], {
     resolveAccountId: async (accountName) => {
       if (accountName === 'alice' || accountName === '1.2.3') return '1.2.3';
       return null;
@@ -201,10 +218,8 @@ function installStubs(calls, dbCalls, options = {}) {
     },
   });
 
-  return () => {
-    restoreCachedModule(bitsharesClientPath, originalBitshares);
-    restoreCachedModule(chainOrdersPath, originalChainOrders);
-  };
+  // Mocks live for the lifetime of the hooked child process; nothing to undo.
+  return () => {};
 }
 
 function createBaseBotConfig(overrides = {}) {
@@ -4110,16 +4125,8 @@ async function testMaxBorrowAmountPerOperationWithSelection() {
 
 async function testSplitOversizedCreditDealsSplitsCorrectly() {
   // The split logic sleeps BLOCKCHAIN_SETTLE_DELAY_MS (default 6000ms) between
-  // pieces to let on-chain state settle. This test only asserts the piece math,
-  // so the sleep is pure wait time — stub the constants module with a zeroed
-  // settle delay for the duration of this test and restore afterwards.
-  const constantsPath = path.resolve(__dirname, '../modules/constants.ts');
-  const realConstants = require('../modules/constants');
-  const stubbedConstants = {
-    ...realConstants,
-    TIMING: { ...realConstants.TIMING, BLOCKCHAIN_SETTLE_DELAY_MS: 0 },
-  };
-  const originalConstants = setCachedModule(constantsPath, stubbedConstants);
+  // pieces to let on-chain state settle; the real delay applies here since the
+  // shared constants namespace cannot be stubbed per-test under compiled ESM.
   const calls = [];
   const dbCalls = [];
   const baseAssets = {
@@ -4216,7 +4223,6 @@ async function testSplitOversizedCreditDealsSplitsCorrectly() {
     const remaining  = 500 - totalRepaid;
     assert.ok(remaining <= 200 + 0.01, `remaining debt ${remaining} should be ≤ maxPerOp 200`);
   } finally {
-    restoreCachedModule(constantsPath, originalConstants);
     restore();
     try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
   }
@@ -4547,60 +4553,63 @@ async function testLpCollateralResolvesCreditConversionRate() {
   }
 }
 
-(async () => {
-  await testRefreshAndMpaPlan();
-  await testCreditOfferCollateralPercentUsesDebtSnapshot();
-  await testCreditOfferCollateralPercentDoesNotRequireRefresh();
-  await testMpaPrecisionAwareBroadcast();
-  await testMpaDebtFailureFallsBackToCollateral();
-  await testMpaDebtFailureDoesNotFallbackOnAmbiguousError();
-  await testMpaDebtFailureSurfacesWhenCollateralFallbackUnavailable();
-  await testMpaDebtFallbackRespectsAssignedCollateralBudget();
-  await testMpaDebtFirstThenCollateralFallbackTriggersReset();
-  await testRepayAndReborrowFlow();
-  await testRenewOnlyRejectsStandaloneCreditBorrow();
-  await testFixedCreditCollateralDoesNotResolvePercentageBase();
-  await testMultipleMpaPositionsAreBlocked();
-  await testRemovedCreditPolicyPrunesGlobalTracking();
-  await testDefaultFeeRateCapRejectsExpensiveOffer();
-  await testMaxFeeRatePerDayRejectsExpensiveOffer();
-  await testCreditBorrowIsDerivedFromCollateral();
-  await testCreditOfferTotalCeilingEnforcement();
-  await testCreditOfferTotalCeilingUsesAssetPrecision();
-  await testLpCollateralRatioGate();
-  await testLpCollateralResolvesCreditConversionRate();
-  await testDealDisappearanceDoesNotAutoQueueReborrow();
-  await testDeferredReborrowQueuesAfterConfirmedRepay();
-  await testFallbackOfferSelectedWhenOriginalOfferUnavailable();
-  await testPendingReborrowUsesFallbackOfferWhenOriginalUnavailable();
-  await testPendingFallbackWaitsWhileSourceDealActive();
-  await testCreditDealUpdatePreservesAutoRepayMode();
-  await testAutoReborrowQueueIsIgnoredWhenDisabled();
-  await testPendingReborrowResolvesPolicyWithColdAssetCache();
-  await testCreditMaintenanceBorrowsTowardAssignedTarget();
-  await testCreditMaintenanceSkipsSmallCollateralIncrease();
-  await testCreditMaintenanceAllowsZeroThreshold();
-  await testCreditMaintenanceCapsIncreaseAtBorrowCeiling();
-  await testCreditMaintenanceCapsIncreaseAtBorrowCeilingForMultiCollateralOffer();
-  await testStatePersistsAcrossRestart();
-  await testGetCollateralOffsets();
-  await testProactiveRepayBundlesReborrowInSingleBatch();
-  await testProactiveRepayReborrowMultiAssetOffer();
-  await testMismatchDealAppearsInNewPosKey();
-  await testRepayWithUnacceptableCollateralThrowsSpecificError();
-  await testCollateralSwitchSkippedWithoutBalance();
-  await testPendingReborrowStoresPendingRepayAmount();
-  await testPendingReborrowDropsStaleEntryWhenReplacementExists();
-  await testProactiveRepayPrunesStalePendingReborrow();
-  await testMaxBorrowAmountPerOperationRejectsOversizedBorrows();
-  await testMaxBorrowAmountPerOperationWithSelection();
-  await testSplitOversizedCreditDealsSplitsCorrectly();
-  await testSplitOversizedCreditDealsSkipsWithinLimit();
-  await testSplitOversizedCreditDealsSkipsWhenNoPerOpLimit();
-  await testMaxBorrowAmountPerOperationIsMaxBorrowAmountError();
+// Each scenario installs its own bitshares_client / chain_orders mocks, and
+// ESM module graphs cache per process — so every test runs as its own stage
+// in a fresh hooked child (stops at first failure, forwards exit code).
+const STAGES = {
+  refresh_and_mpa_plan: testRefreshAndMpaPlan,
+  credit_offer_collateral_percent_uses_debt_snapshot: testCreditOfferCollateralPercentUsesDebtSnapshot,
+  credit_offer_collateral_percent_does_not_require_refresh: testCreditOfferCollateralPercentDoesNotRequireRefresh,
+  mpa_precision_aware_broadcast: testMpaPrecisionAwareBroadcast,
+  mpa_debt_failure_falls_back_to_collateral: testMpaDebtFailureFallsBackToCollateral,
+  mpa_debt_failure_does_not_fallback_on_ambiguous_error: testMpaDebtFailureDoesNotFallbackOnAmbiguousError,
+  mpa_debt_failure_surfaces_when_collateral_fallback_unavailable: testMpaDebtFailureSurfacesWhenCollateralFallbackUnavailable,
+  mpa_debt_fallback_respects_assigned_collateral_budget: testMpaDebtFallbackRespectsAssignedCollateralBudget,
+  mpa_debt_first_then_collateral_fallback_triggers_reset: testMpaDebtFirstThenCollateralFallbackTriggersReset,
+  repay_and_reborrow_flow: testRepayAndReborrowFlow,
+  renew_only_rejects_standalone_credit_borrow: testRenewOnlyRejectsStandaloneCreditBorrow,
+  fixed_credit_collateral_does_not_resolve_percentage_base: testFixedCreditCollateralDoesNotResolvePercentageBase,
+  multiple_mpa_positions_are_blocked: testMultipleMpaPositionsAreBlocked,
+  removed_credit_policy_prunes_global_tracking: testRemovedCreditPolicyPrunesGlobalTracking,
+  default_fee_rate_cap_rejects_expensive_offer: testDefaultFeeRateCapRejectsExpensiveOffer,
+  max_fee_rate_per_day_rejects_expensive_offer: testMaxFeeRatePerDayRejectsExpensiveOffer,
+  credit_borrow_is_derived_from_collateral: testCreditBorrowIsDerivedFromCollateral,
+  credit_offer_total_ceiling_enforcement: testCreditOfferTotalCeilingEnforcement,
+  credit_offer_total_ceiling_uses_asset_precision: testCreditOfferTotalCeilingUsesAssetPrecision,
+  lp_collateral_ratio_gate: testLpCollateralRatioGate,
+  lp_collateral_resolves_credit_conversion_rate: testLpCollateralResolvesCreditConversionRate,
+  deal_disappearance_does_not_auto_queue_reborrow: testDealDisappearanceDoesNotAutoQueueReborrow,
+  deferred_reborrow_queues_after_confirmed_repay: testDeferredReborrowQueuesAfterConfirmedRepay,
+  fallback_offer_selected_when_original_offer_unavailable: testFallbackOfferSelectedWhenOriginalOfferUnavailable,
+  pending_reborrow_uses_fallback_offer_when_original_unavailable: testPendingReborrowUsesFallbackOfferWhenOriginalUnavailable,
+  pending_fallback_waits_while_source_deal_active: testPendingFallbackWaitsWhileSourceDealActive,
+  credit_deal_update_preserves_auto_repay_mode: testCreditDealUpdatePreservesAutoRepayMode,
+  auto_reborrow_queue_is_ignored_when_disabled: testAutoReborrowQueueIsIgnoredWhenDisabled,
+  pending_reborrow_resolves_policy_with_cold_asset_cache: testPendingReborrowResolvesPolicyWithColdAssetCache,
+  credit_maintenance_borrows_toward_assigned_target: testCreditMaintenanceBorrowsTowardAssignedTarget,
+  credit_maintenance_skips_small_collateral_increase: testCreditMaintenanceSkipsSmallCollateralIncrease,
+  credit_maintenance_allows_zero_threshold: testCreditMaintenanceAllowsZeroThreshold,
+  credit_maintenance_caps_increase_at_borrow_ceiling: testCreditMaintenanceCapsIncreaseAtBorrowCeiling,
+  credit_maintenance_caps_increase_at_borrow_ceiling_for_multi_collateral_offer: testCreditMaintenanceCapsIncreaseAtBorrowCeilingForMultiCollateralOffer,
+  state_persists_across_restart: testStatePersistsAcrossRestart,
+  get_collateral_offsets: testGetCollateralOffsets,
+  proactive_repay_bundles_reborrow_in_single_batch: testProactiveRepayBundlesReborrowInSingleBatch,
+  proactive_repay_reborrow_multi_asset_offer: testProactiveRepayReborrowMultiAssetOffer,
+  mismatch_deal_appears_in_new_pos_key: testMismatchDealAppearsInNewPosKey,
+  repay_with_unacceptable_collateral_throws_specific_error: testRepayWithUnacceptableCollateralThrowsSpecificError,
+  collateral_switch_skipped_without_balance: testCollateralSwitchSkippedWithoutBalance,
+  pending_reborrow_stores_pending_repay_amount: testPendingReborrowStoresPendingRepayAmount,
+  pending_reborrow_drops_stale_entry_when_replacement_exists: testPendingReborrowDropsStaleEntryWhenReplacementExists,
+  proactive_repay_prunes_stale_pending_reborrow: testProactiveRepayPrunesStalePendingReborrow,
+  max_borrow_amount_per_operation_rejects_oversized_borrows: testMaxBorrowAmountPerOperationRejectsOversizedBorrows,
+  max_borrow_amount_per_operation_with_selection: testMaxBorrowAmountPerOperationWithSelection,
+  split_oversized_credit_deals_splits_correctly: testSplitOversizedCreditDealsSplitsCorrectly,
+  split_oversized_credit_deals_skips_within_limit: testSplitOversizedCreditDealsSkipsWithinLimit,
+  split_oversized_credit_deals_skips_when_no_per_op_limit: testSplitOversizedCreditDealsSkipsWhenNoPerOpLimit,
+  max_borrow_amount_per_operation_is_max_borrow_amount_error: testMaxBorrowAmountPerOperationIsMaxBorrowAmountError,
+};
+
+runEsmMockStages(Object.keys(STAGES), async (stage) => {
+  await STAGES[stage]();
   console.log('credit runtime tests passed');
-  process.exit(0);
-})().catch((err) => {
-  console.error(err);
-  process.exit(1);
 });

@@ -1,5 +1,6 @@
 
 import { PATHS } from './paths.js';
+import { Config } from './config.js';
 import { getStorage } from './storage/index.js';
 import { getErrorMessage } from './utils/errors.js';
 'use strict';
@@ -7,7 +8,12 @@ import { getErrorMessage } from './utils/errors.js';
 const storage = getStorage();
 const { readJSON } = storage;
 
-const WHITELIST_FILE = PATHS.PROFILES.MARKET_ADAPTER_WHITELIST_JSON();
+// Resolved per read (not at module load) so test overrides via the
+// DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE config value take effect on
+// modules that are already loaded.
+function whitelistFile(): string {
+    return Config.DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE || PATHS.PROFILES.MARKET_ADAPTER_WHITELIST_JSON();
+}
 
 interface WhitelistFlags {
     ama: boolean;
@@ -37,13 +43,13 @@ function normalizeEntry(entry: any): WhitelistFlags {
 
 function loadMarketAdapterWhitelist(): Map<string, WhitelistFlags> | false {
     if (_whitelistCache !== null) return _whitelistCache;
-    if (!storage.exists(WHITELIST_FILE)) {
+    if (!storage.exists(whitelistFile())) {
         _whitelistCache = false;
         return _whitelistCache;
     }
 
     try {
-        const json = readJSON(WHITELIST_FILE);
+        const json = readJSON(whitelistFile());
         const raw = json?.whitelist;
         const map = new Map<string, WhitelistFlags>();
 
@@ -60,7 +66,7 @@ function loadMarketAdapterWhitelist(): Map<string, WhitelistFlags> | false {
         _whitelistCache = map;
         return _whitelistCache;
     } catch (_: any) {
-        console.warn(`[WARN] Failed to parse ${WHITELIST_FILE}: ${getErrorMessage(_)}. All whitelist features disabled.`);
+        console.warn(`[WARN] Failed to parse ${whitelistFile()}: ${getErrorMessage(_)}. All whitelist features disabled.`);
         _whitelistCache = false;
         return _whitelistCache;
     }
@@ -86,5 +92,5 @@ function isBotAsymmetricBoundsWhitelisted(botKey: string): boolean {
     return getWhitelistFlags(botKey).asymmetricBounds === true;
 }
 
-export { WHITELIST_FILE, resetMarketAdapterWhitelistCache, getWhitelistFlags, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted }
+export { whitelistFile, resetMarketAdapterWhitelistCache, getWhitelistFlags, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted }
 

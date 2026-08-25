@@ -910,10 +910,9 @@ async function handleCLICommands() {
             // help`...). Previously the subcommand was silently dropped and the
             // full-setup path ran, so `dexbot pm2 start X` started ALL bots and
             // `dexbot pm2 stop X` no-oped into a full setup.
-            // buildRuntimeScriptArgs resolves the pm2 entry point for both
-            // runtime layouts: dist/pm2.js when compiled, pm2.ts via tsx in
-            // source mode (a hard-coded dist path would silently fail to spawn
-            // under `tsx dexbot.ts pm2 ...`).
+            // buildRuntimeScriptArgs resolves the pm2 entry point under the
+            // dist-only runtime layout (dist/pm2.js); plain node executes
+            // compiled entries since the tsx removal.
             const pm2Args = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
                 scriptSegments: ['pm2'],
@@ -977,10 +976,10 @@ async function handleCLICommands() {
         }
         case 'unlock': {
             const { spawnSync } = require('child_process') as any as any;
-            // buildRuntimeScriptArgs resolves the unlock entry point for both
-            // runtime layouts: dist/unlock.js when compiled, unlock.ts via tsx
-            // in source mode. A hard-coded dist path silently no-ops under
-            // `tsx dexbot.ts start` (ENOENT -> exit 0), hiding the launcher.
+            // buildRuntimeScriptArgs resolves the unlock entry point for the
+            // active runtime layout: dist/unlock.js when compiled, unlock.ts
+            // in source layouts. A hard-coded dist path silently no-ops
+            // (ENOENT -> exit 0), hiding the launcher.
             const unlockArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
                 scriptSegments: ['unlock'],

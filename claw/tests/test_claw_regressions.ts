@@ -1,37 +1,45 @@
-const assert = require('assert');
-const Module = require('module');
-const path = require('path');
-const { setCachedModule, restoreCachedModule } = require('../../tests/helpers/module_cache_stub');
+'use strict';
 
-function clearModule(modulePath: string) {
-  delete require.cache[modulePath];
+const assert = require('assert');
+const path = require('path');
+const { runEsmMockStages, defineEsmMockAbs } = require('../../tests/helpers/esm_mocks');
+
+// Compiled ESM graphs cannot be mocked via require.cache; the helper installs
+// loader hooks (one child process per stage so fresh module instances load).
+function clearModule(_modulePath: string) {
+  /* no-op under ESM hooks */
+}
+
+function registerMock(modulePath: string, exports: any) {
+  defineEsmMockAbs(modulePath, Object.keys(exports), exports);
 }
 
 async function testClawBitsharesClientNativePathAndConnection() {
+  console.log('  bitshares_client native path and connection...');
+
   const clawBitsharesPath = require.resolve('../modules/bitshares_client');
+  clearModule(clawBitsharesPath);
 
-  try {
-    clearModule(clawBitsharesPath);
-    const clawBitshares = require('../modules/bitshares_client');
+  const clawBitshares = require('../modules/bitshares_client');
 
-    assert.strictEqual(clawBitshares.isConnected(), false, 'initial state should not be connected');
-    assert.strictEqual(typeof clawBitshares.BitShares, 'object', 'BitShares proxy should exist');
-    assert.strictEqual(typeof clawBitshares.createAccountClient, 'function');
-    await assert.rejects(() => clawBitshares.createAccountClient('', 'wif'), /accountName is required/);
-    await assert.rejects(() => clawBitshares.createAccountClient('alice', ''), /privateKey is required/);
-  } finally {
-    clearModule(clawBitsharesPath);
-  }
+  assert.strictEqual(clawBitshares.isConnected(), false, 'initial state should not be connected');
+  assert.strictEqual(typeof clawBitshares.BitShares, 'object', 'BitShares proxy should exist');
+  assert.strictEqual(typeof clawBitshares.createAccountClient, 'function');
+  await assert.rejects(() => clawBitshares.createAccountClient('', 'wif'), /accountName is required/);
+  await assert.rejects(() => clawBitshares.createAccountClient('alice', ''), /privateKey is required/);
+
+  console.log('    PASS');
 }
 
 async function testClawBitsharesClientWaitForConnectedTriggersNativeConnect() {
-  const clawBitsharesPath = require.resolve('../modules/bitshares_client');
+  console.log('  bitshares_client waitForConnected lazy connect...');
+
   const nativePath = require.resolve('../../modules/bitshares-native');
   let connectCalls = 0;
   let nodes: any[] = [];
   let connected = false;
 
-  const originalNativeEntry = setCachedModule(nativePath, {
+  registerMock(nativePath, {
     createChainClient: ({ onStatusChange }: any) => ({
       connect: async () => {
         connectCalls += 1;
@@ -55,24 +63,24 @@ async function testClawBitsharesClientWaitForConnectedTriggersNativeConnect() {
       subscribe: async () => () => {},
       unsubscribe: async () => {},
     }),
-  } as any);
+  });
 
-  try {
-    clearModule(clawBitsharesPath);
-    const clawBitshares = require('../modules/bitshares_client');
+  const clawBitsharesPath = require.resolve('../modules/bitshares_client');
+  clearModule(clawBitsharesPath);
+  const clawBitshares = require('../modules/bitshares_client');
 
-    await clawBitshares.waitForConnected(200);
+  await clawBitshares.waitForConnected(200);
 
-    assert.strictEqual(connectCalls, 1, 'waitForConnected should initiate a native connect when idle');
-    assert.strictEqual(clawBitshares.isConnected(), true, 'client should report connected after lazy connect');
-    assert.ok(Array.isArray(clawBitshares.BitShares.node) && clawBitshares.BitShares.node.length > 0, 'default node list should be populated');
-  } finally {
-    clearModule(clawBitsharesPath);
-    restoreCachedModule(nativePath, originalNativeEntry);
-  }
+  assert.strictEqual(connectCalls, 1, 'waitForConnected should initiate a native connect when idle');
+  assert.strictEqual(clawBitshares.isConnected(), true, 'client should report connected after lazy connect');
+  assert.ok(Array.isArray(clawBitshares.BitShares.node) && clawBitshares.BitShares.node.length > 0, 'default node list should be populated');
+
+  console.log('    PASS');
 }
 
 function testClawRootExportsAvoidSilentCollisions() {
+  console.log('  claw root exports...');
+
   const clawIndexPath = require.resolve('..');
   clearModule(clawIndexPath);
 
@@ -91,42 +99,20 @@ function testClawRootExportsAvoidSilentCollisions() {
   assert.strictEqual(hermesManifest.compatibility.name, 'Hermes');
   assert.strictEqual(openclawManifest.options.runtimeName, 'openclaw');
   assert.strictEqual(openclawManifest.compatibility.name, 'OpenClaw');
-  assert.strictEqual(openclawManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.ts')), true);
+  assert.strictEqual(openclawManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.js')), true);
   assert.strictEqual(openfangManifest.options.runtimeName, 'openfang');
-  assert.strictEqual(openfangManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(openfangManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
   assert.strictEqual(nullManifest.options.runtimeName, 'nullclaw');
-  assert.strictEqual(nullManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(nullManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
   assert.strictEqual(manifest.options.runtimeName, 'zeroclaw');
-  assert.strictEqual(manifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
-}
+  assert.strictEqual(manifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
 
-function testClawCommandInjectsRuntimeNameViaOption() {
-  const clawBridgePath = require.resolve('../modules/claw_bridge');
-  const clawInfraPath = require.resolve('../modules/claw_infra');
-
-  let capturedOptions: any = null;
-  const originalClawInfra = setCachedModule(clawInfraPath, {
-    createClawInfrastructure: (opts: any) => {
-      capturedOptions = opts;
-      return {
-        runtime: { name: opts.runtime?.name || 'claw-bridge', accountName: null },
-        profiles: {},
-        market: {}
-      };
-    }
-  } as any);
-
-  clearModule(clawBridgePath);
-  const { runClawCommand } = require('../modules/claw_bridge');
-
-  runClawCommand('runtime', { runtimeName: 'openfang' });
-  assert.strictEqual(capturedOptions.runtime.name, 'openfang', 'runtimeName option should propagate to runtime.name');
-
-  clearModule(clawBridgePath);
-  restoreCachedModule(clawInfraPath, originalClawInfra);
+  console.log('    PASS');
 }
 
 function testRuntimeSkillTomlQuotesPayloadPlaceholders() {
+  console.log('  runtime skill toml quoting...');
+
   const { buildRuntimeSkillToml } = require('../modules/claw_skill_md');
 
   const toml = buildRuntimeSkillToml(
@@ -143,9 +129,13 @@ function testRuntimeSkillTomlQuotesPayloadPlaceholders() {
     toml.includes("'--profile-root' '/tmp/profile root'"),
     'generated skill commands must shell-quote profile roots with spaces'
   );
+
+  console.log('    PASS');
 }
 
 function testLiquidityPoolWrapperInjectsSharedBitSharesClient() {
+  console.log('  liquidity_pools shared client injection...');
+
   const bitsharesPath = require.resolve('../modules/bitshares_client');
   const dexbotBridgePath = require.resolve('../modules/dexbot_bridge');
   const liquidityPoolsPath = require.resolve('../modules/liquidity_pools');
@@ -153,8 +143,8 @@ function testLiquidityPoolWrapperInjectsSharedBitSharesClient() {
   let capturedPoolArgs = null;
   let capturedPriceArgs = null;
 
-  const originalBitshares = setCachedModule(bitsharesPath, { BitShares: sharedBitShares } as any);
-  const originalDexbotBridge = setCachedModule(dexbotBridgePath, {
+  registerMock(bitsharesPath, { BitShares: sharedBitShares } as any);
+  registerMock(dexbotBridgePath, {
     getDexbot2Root: () => '/tmp',
     loadDexbotOrderSystemUtils: () => ({
       cloneMap: (value: any) => value,
@@ -190,12 +180,12 @@ function testLiquidityPoolWrapperInjectsSharedBitSharesClient() {
     'derivePrice wrapper must inject the shared BitShares client'
   );
 
-  clearModule(liquidityPoolsPath);
-  restoreCachedModule(dexbotBridgePath, originalDexbotBridge);
-  restoreCachedModule(bitsharesPath, originalBitshares);
+  console.log('    PASS');
 }
 
 async function testDecisionLoopReusesAnalyzerStateForDuplicateMarkets() {
+  console.log('  decision_loop analyzer state reuse...');
+
   const decisionLoopPath = require.resolve('../modules/decision_loop');
   const discoveryPath = require.resolve('../modules/position_discovery');
   const healthPath = require.resolve('../modules/position_health');
@@ -230,20 +220,20 @@ async function testDecisionLoopReusesAnalyzerStateForDuplicateMarkets() {
     }
   }
 
-  const originalDiscovery = setCachedModule(discoveryPath, {
+  registerMock(discoveryPath, {
     discoverPositions: async () => ([
       { id: 'pos-1', market: 'HONEST.USD/BTS', mpaSymbol: 'HONEST.USD', onChain: { debtAmount: 5 } },
       { id: 'pos-2', market: 'HONEST.USD/BTS', mpaSymbol: 'HONEST.USD', onChain: { debtAmount: 3 } }
     ])
   } as any);
-  const originalHealth = setCachedModule(healthPath, {
+  registerMock(healthPath, {
     assessPosition: (position: any, trendSignal: any) => ({
       actions: [],
       positionId: position.id,
       trend: trendSignal
     })
   } as any);
-  const originalFeedPriceSource = setCachedModule(feedPriceSourcePath, {
+  registerMock(feedPriceSourcePath, {
     fetchTrendInput: async () => {
       trendFetchCount += 1;
       return {
@@ -253,7 +243,7 @@ async function testDecisionLoopReusesAnalyzerStateForDuplicateMarkets() {
       };
     }
   } as any);
-  const originalTrendAnalyzer = setCachedModule(trendAnalyzerPath, { KalmanTrendAnalyzer: FakeTrendAnalyzer } as any);
+  registerMock(trendAnalyzerPath, { KalmanTrendAnalyzer: FakeTrendAnalyzer } as any);
   clearModule(decisionLoopPath);
 
   const { evaluate, resetAnalyzers } = require('../modules/decision_loop');
@@ -266,14 +256,13 @@ async function testDecisionLoopReusesAnalyzerStateForDuplicateMarkets() {
   assert.strictEqual(result.positions[1].trend.premium, -5, 'reused trend signal should come from cached analyzer state');
 
   resetAnalyzers();
-  clearModule(decisionLoopPath);
-  restoreCachedModule(trendAnalyzerPath, originalTrendAnalyzer);
-  restoreCachedModule(feedPriceSourcePath, originalFeedPriceSource);
-  restoreCachedModule(healthPath, originalHealth);
-  restoreCachedModule(discoveryPath, originalDiscovery);
+
+  console.log('    PASS');
 }
 
 async function testDecisionLoopReplacesAnalyzerOnConfigChange() {
+  console.log('  decision_loop analyzer config replacement...');
+
   const decisionLoopPath = require.resolve('../modules/decision_loop');
   const discoveryPath = require.resolve('../modules/position_discovery');
   const healthPath = require.resolve('../modules/position_health');
@@ -297,18 +286,18 @@ async function testDecisionLoopReplacesAnalyzerOnConfigChange() {
     }
   }
 
-  const originalDiscovery = setCachedModule(discoveryPath, {
+  registerMock(discoveryPath, {
     discoverPositions: async () => ([
       { id: 'pos-1', market: 'HONEST.USD/BTS', mpaSymbol: 'HONEST.USD', onChain: { debtAmount: 5 } }
     ])
   } as any);
-  const originalHealth = setCachedModule(healthPath, {
+  registerMock(healthPath, {
     assessPosition: (position: any, trendSignal: any) => ({ actions: [], positionId: position.id, trend: trendSignal })
   } as any);
-  const originalFeedPriceSource = setCachedModule(feedPriceSourcePath, {
+  registerMock(feedPriceSourcePath, {
     fetchTrendInput: async () => ({ feedPrice: 100, marketPrice: 95, premium: -5 })
   } as any);
-  const originalTrendAnalyzer = setCachedModule(trendAnalyzerPath, { KalmanTrendAnalyzer: ConfigTrackingAnalyzer } as any);
+  registerMock(trendAnalyzerPath, { KalmanTrendAnalyzer: ConfigTrackingAnalyzer } as any);
   clearModule(decisionLoopPath);
 
   const { evaluate, resetAnalyzers } = require('../modules/decision_loop');
@@ -323,18 +312,50 @@ async function testDecisionLoopReplacesAnalyzerOnConfigChange() {
   assert.strictEqual(constructionCount, 2, 'changed config should replace the analyzer');
 
   resetAnalyzers();
-  clearModule(decisionLoopPath);
-  restoreCachedModule(trendAnalyzerPath, originalTrendAnalyzer);
-  restoreCachedModule(feedPriceSourcePath, originalFeedPriceSource);
-  restoreCachedModule(healthPath, originalHealth);
-  restoreCachedModule(discoveryPath, originalDiscovery);
+
+  console.log('    PASS');
 }
 
 async function testPositionManagerEntryExposesSellPriceInBts() {
+  console.log('  position_manager entry sellPriceInBts...');
+
   const positionManagerPath = require.resolve('../modules/position_manager');
   const mpaUtilsPath = require.resolve('../modules/mpa_utils');
 
-  const originalMpaUtils = setCachedModule(mpaUtilsPath, {
+  // ESM hooks turn mock keys into synthetic named re-exports, so every name
+  // position_manager statically imports from mpa_utils must exist here. The
+  // two helpers beside requireBtsBackedMpa are minimal inline replicas of the
+  // real ones (requiring the real module would bypass the mock and poison
+  // the module cache with the real instance).
+  const blockchainToFloat = (amount: any, precision: any) => Number(amount) / (10 ** precision);
+  const computeBtsPerMpa = (settlementPrice: any, mpaAsset: any, backingAsset: any) => {
+    const base = settlementPrice?.base;
+    const quote = settlementPrice?.quote;
+    if (!base || !quote) return null;
+    const baseAmount = blockchainToFloat(base.amount, base.asset_id === mpaAsset.id ? mpaAsset.precision : backingAsset.precision);
+    const quoteAmount = blockchainToFloat(quote.amount, quote.asset_id === mpaAsset.id ? mpaAsset.precision : backingAsset.precision);
+    if (!baseAmount || !quoteAmount) return null;
+    if (base.asset_id === backingAsset.id && quote.asset_id === mpaAsset.id) return baseAmount / quoteAmount;
+    if (base.asset_id === mpaAsset.id && quote.asset_id === backingAsset.id) return quoteAmount / baseAmount;
+    return null;
+  };
+
+  registerMock(mpaUtilsPath, {
+    computeCallOrderAmounts: (callOrder: any, mpaAsset: any, backingAsset: any, bitassetData: any) => {
+      const debtAmount = blockchainToFloat(callOrder.debt, mpaAsset.precision);
+      const collateralAmount = blockchainToFloat(callOrder.collateral, backingAsset.precision);
+      const btsPerMpa = computeBtsPerMpa(bitassetData?.current_feed?.settlement_price, mpaAsset, backingAsset);
+      const debtValueInBts = debtAmount && btsPerMpa ? debtAmount * btsPerMpa : 0;
+      const collateralRatio = debtValueInBts > 0 ? collateralAmount / debtValueInBts : null;
+      return {
+        btsPerMpa,
+        collateralAmount: collateralAmount || 0,
+        collateralRatio,
+        debtAmount: debtAmount || 0,
+        debtValueInBts
+      };
+    },
+    getBlockchainToFloat: () => blockchainToFloat,
     requireBtsBackedMpa: async (sym: string) => ({
       backingAsset: { id: '1.3.0', symbol: 'BTS', precision: 5 },
       mpaAsset: { id: `1.3.${sym.length}`, symbol: sym, precision: 5, bitasset_data_id: '2.4.1' }
@@ -361,16 +382,17 @@ async function testPositionManagerEntryExposesSellPriceInBts() {
   assert.strictEqual(position.entry.sellPriceInBts, 1000, 'entry must expose sellPriceInBts for openShort');
   assert.strictEqual(position.entry.priceInBts, 1000, 'entry must also have generic priceInBts from createOrderTracking');
 
-  clearModule(positionManagerPath);
-  restoreCachedModule(mpaUtilsPath, originalMpaUtils);
+  console.log('    PASS');
 }
 
 function testClawBridgeRespectsRuntimeNameOption() {
+  console.log('  claw_bridge runtime name option...');
+
   const clawBridgePath = require.resolve('../modules/claw_bridge');
   const clawInfraPath = require.resolve('../modules/claw_infra');
 
   let capturedOptions: any = null;
-  const originalClawInfra = setCachedModule(clawInfraPath, {
+  registerMock(clawInfraPath, {
     createClawInfrastructure: (opts: any) => {
       capturedOptions = opts;
       return {
@@ -393,11 +415,12 @@ function testClawBridgeRespectsRuntimeNameOption() {
   createClawBridge({});
   assert.strictEqual(capturedOptions.runtime.name, 'claw-bridge', 'should fall back to claw-bridge');
 
-  clearModule(clawBridgePath);
-  restoreCachedModule(clawInfraPath, originalClawInfra);
+  console.log('    PASS');
 }
 
 function testClawBridgeScriptManifestUsesRuntimeSpecificDescriptors() {
+  console.log('  claw_bridge script manifest descriptors...');
+
   const scriptPath = require.resolve('../scripts/claw_bridge');
   clearModule(scriptPath);
 
@@ -405,48 +428,50 @@ function testClawBridgeScriptManifestUsesRuntimeSpecificDescriptors() {
 
   const hermesManifest = describeRuntimeManifest('hermes', {});
   assert.strictEqual(hermesManifest.compatibility.name, 'Hermes');
-  assert.strictEqual(hermesManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.ts')), true);
+  assert.strictEqual(hermesManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.js')), true);
 
   const openclawManifest = describeRuntimeManifest('openclaw', {});
   assert.strictEqual(openclawManifest.compatibility.name, 'OpenClaw');
-  assert.strictEqual(openclawManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.ts')), true);
+  assert.strictEqual(openclawManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.js')), true);
 
   const openfangManifest = describeRuntimeManifest('openfang', {});
   assert.strictEqual(openfangManifest.compatibility.name, 'OpenFang');
-  assert.strictEqual(openfangManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(openfangManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
 
   const nanoclawManifest = describeRuntimeManifest('nanoclaw', {});
   assert.strictEqual(nanoclawManifest.compatibility.name, 'NanoClaw');
-  assert.strictEqual(nanoclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(nanoclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
 
   const nullclawManifest = describeRuntimeManifest('nullclaw', {});
   assert.strictEqual(nullclawManifest.compatibility.name, 'NullClaw');
-  assert.strictEqual(nullclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(nullclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
 
   const zeroclawManifest = describeRuntimeManifest('zeroclaw', {});
   assert.strictEqual(zeroclawManifest.compatibility.name, 'ZeroClaw');
-  assert.strictEqual(zeroclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(zeroclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
 
   const genericManifest = describeRuntimeManifest(null, {});
   assert.strictEqual(genericManifest.compatibility.name, 'Claw');
-  assert.strictEqual(genericManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.ts')), true);
+  assert.strictEqual(genericManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.js')), true);
 
   const payloadSelectedManifest = describeRuntimeManifest(null, { runtimeName: 'openfang' });
   assert.strictEqual(payloadSelectedManifest.compatibility.name, 'OpenFang');
-  assert.strictEqual(payloadSelectedManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(payloadSelectedManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
 
   const normalizedPayloadManifest = describeRuntimeManifest(null, { runtimeName: ' OpenFang ' });
   assert.strictEqual(normalizedPayloadManifest.compatibility.name, 'OpenFang');
-  assert.strictEqual(normalizedPayloadManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(normalizedPayloadManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
 
   const hermesPayloadManifest = describeRuntimeManifest(null, { runtimeName: ' Hermes ' });
   assert.strictEqual(hermesPayloadManifest.compatibility.name, 'Hermes');
-  assert.strictEqual(hermesPayloadManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.ts')), true);
+  assert.strictEqual(hermesPayloadManifest.commandExamples.some((example: any) => example.includes('scripts/claw_bridge.js')), true);
 
-  clearModule(scriptPath);
+  console.log('    PASS');
 }
 
 async function testRuntimeCommandManifestUsesRuntimeSpecificDescriptors() {
+  console.log('  runClawCommand manifest descriptors...');
+
   const { runClawCommand } = require('../modules/claw_bridge');
 
   const hermesManifest = await runClawCommand('manifest', { runtimeName: 'hermes' });
@@ -456,22 +481,53 @@ async function testRuntimeCommandManifestUsesRuntimeSpecificDescriptors() {
 
   const openfangManifest = await runClawCommand('manifest', { runtimeName: 'openfang' });
   assert.strictEqual(openfangManifest.compatibility.name, 'OpenFang');
-  assert.strictEqual(openfangManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(openfangManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
 
   const nanoclawManifest = await runClawCommand('manifest', { runtimeName: 'nanoclaw' });
   assert.strictEqual(nanoclawManifest.compatibility.name, 'NanoClaw');
-  assert.strictEqual(nanoclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(nanoclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
 
   const nullclawManifest = await runClawCommand('manifest', { runtimeName: 'nullclaw' });
   assert.strictEqual(nullclawManifest.compatibility.name, 'NullClaw');
-  assert.strictEqual(nullclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(nullclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
 
   const zeroclawManifest = await runClawCommand('manifest', { runtimeName: 'zeroclaw' });
   assert.strictEqual(zeroclawManifest.compatibility.name, 'ZeroClaw');
-  assert.strictEqual(zeroclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')), true);
+  assert.strictEqual(zeroclawManifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')), true);
+
+  console.log('    PASS');
+}
+
+function testClawCommandInjectsRuntimeNameViaOption() {
+  console.log('  runClawCommand runtime name injection...');
+
+  const clawBridgePath = require.resolve('../modules/claw_bridge');
+  const clawInfraPath = require.resolve('../modules/claw_infra');
+
+  let capturedOptions: any = null;
+  registerMock(clawInfraPath, {
+    createClawInfrastructure: (opts: any) => {
+      capturedOptions = opts;
+      return {
+        runtime: { name: opts.runtime?.name || 'claw-bridge', accountName: null },
+        profiles: {},
+        market: {}
+      };
+    }
+  } as any);
+
+  clearModule(clawBridgePath);
+  const { runClawCommand } = require('../modules/claw_bridge');
+
+  runClawCommand('runtime', { runtimeName: 'openfang' });
+  assert.strictEqual(capturedOptions.runtime.name, 'openfang', 'runtimeName option should propagate to runtime.name');
+
+  console.log('    PASS');
 }
 
 function testAccountOrdersBotKeyFallsBackToAssetIds() {
+  console.log('  account_orders botKey fallback...');
+
   const { createBotKey } = require('../../modules/account_orders');
 
   const idOnlyBot = { assetAId: '1.3.1', assetBId: '1.3.0' };
@@ -489,11 +545,13 @@ function testAccountOrdersBotKeyFallsBackToAssetIds() {
   const clawProfiles = require('../modules/dexbot_profiles');
   const clawKey = clawProfiles.createBotKey(idOnlyBot, 0);
   assert.strictEqual(key, clawKey, `account_orders and claw botKey must match for same input, got: ${key} vs ${clawKey}`);
+
+  console.log('    PASS');
 }
 
-
-
 function testBuildQueryScopesAnyPoolByReceivedAsset() {
+  console.log('  kibana query pool scoping...');
+
   const { buildDirectionalDocumentQuery } = require('../../market_adapter/core/kibana_candles');
   const fieldMap = {
     soldAssetField: 'operation_history.op_object.amount_to_sell.asset_id.keyword',
@@ -540,10 +598,17 @@ function testBuildQueryScopesAnyPoolByReceivedAsset() {
     pairFilters.some((f: any) => f.term?.['operation_history.op_object.min_to_receive.asset_id.keyword'] === '1.3.1'),
     'any-pool query should filter by received asset ID'
   );
+
+  console.log('    PASS');
 }
 
 function testClawDefaultDataPathsStayInsideClawFolder() {
-  const clawDataDir = path.join(__dirname, '..', 'data');
+  console.log('  claw default data paths...');
+
+  // modules/paths.ts resolveClawDirs keeps claw state inside the repo's
+  // claw/ folder regardless of where the code runs from (dist or source),
+  // so anchor expectations to that folder rather than to this test file.
+  const clawDataDir = path.join(__dirname, '..', '..', '..', 'claw', 'data');
   const clawStateDir = path.join(clawDataDir, 'state');
   const clawInfra = require('../modules/claw_infra');
   const { DEFAULT_STATE_PATH } = require('../modules/position_manager');
@@ -558,28 +623,89 @@ function testClawDefaultDataPathsStayInsideClawFolder() {
 
   const stateStore = clawInfra.createStateStore();
   assert.strictEqual(stateStore.filePath, path.join(clawStateDir, 'claw-state.json'));
+
+  console.log('    PASS');
 }
 
-async function main() {
-  await testClawBitsharesClientNativePathAndConnection();
-  await testClawBitsharesClientWaitForConnectedTriggersNativeConnect();
-  testClawRootExportsAvoidSilentCollisions();
-  testRuntimeSkillTomlQuotesPayloadPlaceholders();
-  testLiquidityPoolWrapperInjectsSharedBitSharesClient();
-  await testDecisionLoopReusesAnalyzerStateForDuplicateMarkets();
-  await testDecisionLoopReplacesAnalyzerOnConfigChange();
-  await testPositionManagerEntryExposesSellPriceInBts();
-  testClawBridgeRespectsRuntimeNameOption();
-  testClawBridgeScriptManifestUsesRuntimeSpecificDescriptors();
-  await testRuntimeCommandManifestUsesRuntimeSpecificDescriptors();
-  testClawCommandInjectsRuntimeNameViaOption();
-  testAccountOrdersBotKeyFallsBackToAssetIds();
-  testBuildQueryScopesAnyPoolByReceivedAsset();
-  testClawDefaultDataPathsStayInsideClawFolder();
-  console.log('claw regression tests passed');
-}
-
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+runEsmMockStages(
+  [
+    'native-path',
+    'wait-connected',
+    'root-exports',
+    'skill-toml',
+    'liquidity-pools',
+    'analyzer-reuse',
+    'analyzer-replace',
+    'position-manager',
+    'bridge-runtime-name',
+    'script-manifest',
+    'runtime-manifest',
+    'command-runtime-name',
+    'account-orders-bot-key',
+    'kibana-query-scopes',
+    'default-data-paths'
+  ],
+  async (stage: string) => {
+    if (stage === 'native-path') {
+      await testClawBitsharesClientNativePathAndConnection();
+      return;
+    }
+    if (stage === 'wait-connected') {
+      await testClawBitsharesClientWaitForConnectedTriggersNativeConnect();
+      return;
+    }
+    if (stage === 'root-exports') {
+      testClawRootExportsAvoidSilentCollisions();
+      return;
+    }
+    if (stage === 'skill-toml') {
+      testRuntimeSkillTomlQuotesPayloadPlaceholders();
+      return;
+    }
+    if (stage === 'liquidity-pools') {
+      testLiquidityPoolWrapperInjectsSharedBitSharesClient();
+      return;
+    }
+    if (stage === 'analyzer-reuse') {
+      await testDecisionLoopReusesAnalyzerStateForDuplicateMarkets();
+      return;
+    }
+    if (stage === 'analyzer-replace') {
+      await testDecisionLoopReplacesAnalyzerOnConfigChange();
+      return;
+    }
+    if (stage === 'position-manager') {
+      await testPositionManagerEntryExposesSellPriceInBts();
+      return;
+    }
+    if (stage === 'bridge-runtime-name') {
+      testClawBridgeRespectsRuntimeNameOption();
+      return;
+    }
+    if (stage === 'script-manifest') {
+      testClawBridgeScriptManifestUsesRuntimeSpecificDescriptors();
+      return;
+    }
+    if (stage === 'runtime-manifest') {
+      await testRuntimeCommandManifestUsesRuntimeSpecificDescriptors();
+      return;
+    }
+    if (stage === 'command-runtime-name') {
+      testClawCommandInjectsRuntimeNameViaOption();
+      return;
+    }
+    if (stage === 'account-orders-bot-key') {
+      testAccountOrdersBotKeyFallsBackToAssetIds();
+      return;
+    }
+    if (stage === 'kibana-query-scopes') {
+      testBuildQueryScopesAnyPoolByReceivedAsset();
+      return;
+    }
+    if (stage === 'default-data-paths') {
+      testClawDefaultDataPathsStayInsideClawFolder();
+      return;
+    }
+    throw new Error(`Unknown stage: ${stage}`);
+  }
+);

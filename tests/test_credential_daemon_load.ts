@@ -16,7 +16,7 @@ console.log('Running credential daemon load regression test');
 // bootstrap after 60000ms" after a full 60s wait.
 //
 // The test spawns the daemon exactly as the launcher does
-// (node --import tsx credential-daemon.ts) with an isolated profile root and
+// (node dist/credential-daemon.js) with an isolated profile root and
 // a non-existent bootstrap path file.  A healthy daemon resolves the vault
 // secret via the bootstrap path, fails to read it, and exits 0 via the
 // "locked" path.  A module-load crash (TypeError) exits non-zero.
@@ -28,7 +28,7 @@ try {
     const runDir = path.join(tmp, 'run');
     fs.mkdirSync(runDir);
 
-    const run = spawnSync(process.execPath, ['--import', 'tsx', path.join(root, 'credential-daemon.ts')], {
+    const run = spawnSync(process.execPath, [path.join(root, 'credential-daemon.js')], {
         cwd: root,
         env: {
             ...process.env,

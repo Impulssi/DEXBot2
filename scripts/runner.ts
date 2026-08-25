@@ -41,11 +41,11 @@
  * USAGE:
  * Command line:
  *   node -e "require('./scripts/runner').runOrderManagerCalculation()"
- *   tsx scripts/runner.ts
+ *   node dist/scripts/runner.js
  *
  * With env vars:
  *   CALC_CYCLES=5 CALC_DELAY_MS=1000 node -e "require('./scripts/runner').runOrderManagerCalculation()"
- *   CALC_CYCLES=5 CALC_DELAY_MS=1000 tsx scripts/runner.ts
+ *   CALC_CYCLES=5 CALC_DELAY_MS=1000 node dist/scripts/runner.js
  *
  * From code:
  *   const { runOrderManagerCalculation } = require('./scripts/runner');

@@ -1,16 +1,11 @@
 const assert = require('assert');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
-const {
-    restoreCachedModule,
-    setCachedModule,
-} = require('./helpers/module_cache_stub');
 
 console.log('Running credential daemon tests');
 
-const { installChainKeysStub } = require('./helpers/chain_keys_stub');
-const { chainKeys } = installChainKeysStub();
 const {
     createCredentialDaemonController,
 } = require('../modules/launcher/credential_daemon');
@@ -20,51 +15,76 @@ const {
     fetchBootstrapPassword,
 } = require('../modules/launcher/credential_bootstrap');
 
-function loadCredentialSecretWithStubbedChainKeys(stubbedChainKeys) {
-    const credentialSecretPath = require.resolve('../modules/launcher/credential_secret');
-    const chainKeysPath = require.resolve('../modules/chain_keys');
-    const originalCredentialSecret = require.cache[credentialSecretPath];
-    const originalChainKeys = setCachedModule(chainKeysPath, stubbedChainKeys);
-
-    delete require.cache[credentialSecretPath];
-
-    try {
-        const credentialSecret = require('../modules/launcher/credential_secret');
-        return {
-            credentialSecret,
-            restore() {
-                restoreCachedModule(credentialSecretPath, originalCredentialSecret);
-                restoreCachedModule(chainKeysPath, originalChainKeys);
-            },
-        };
-    } catch (error) {
-        restoreCachedModule(credentialSecretPath, originalCredentialSecret);
-        restoreCachedModule(chainKeysPath, originalChainKeys);
-        throw error;
-    }
+async function listenFakeDaemon(socketPath) {
+    // Minimal stand-in for the credential daemon: a unix socket server that
+    // answers any request line, so the real isDaemonResponsive probe (used by
+    // waitForManagedDaemon through the controller's ready check) sees a live
+    // daemon without any stubbing of compiled ESM modules.
+    const server = net.createServer((socket) => {
+        socket.on('data', () => {
+            try { socket.write('{"ok":true}\n'); } catch (_) {}
+        });
+    });
+    await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(socketPath, () => resolve(undefined));
+    });
+    return server;
 }
 
 async function testWaitsForExistingDaemon() {
-    const originalIsDaemonResponsive = chainKeys.isDaemonResponsive;
-    let ready = true;
-    chainKeys.isDaemonResponsive = async () => ready;
+    const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-cred-daemon-test-'));
+    const socketPath = path.join(runtimeDir, 'dexbot-cred.sock');
+    const readyFilePath = path.join(runtimeDir, 'dexbot-cred.ready');
+
+    fs.writeFileSync(readyFilePath, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+    const server = await listenFakeDaemon(socketPath);
 
     try {
-        const controller = createCredentialDaemonController({ pollIntervalMs: 10 });
+        const controller = createCredentialDaemonController({
+            socketPath,
+            readyFilePath,
+            pollIntervalMs: 10,
+        });
         const startedAt = Date.now();
 
         setTimeout(() => {
-            ready = false;
-        }, 30);
+            // Simulate the daemon shutting down: drop the socket and the
+            // ready marker so the controller's readiness loop terminates.
+            server.close();
+            try { fs.rmSync(socketPath, { force: true }); } catch (_) {}
+            try { fs.rmSync(readyFilePath, { force: true }); } catch (_) {}
+        }, 40);
 
         const exitCode = await controller.waitForManagedDaemon();
         const elapsed = Date.now() - startedAt;
 
         assert.strictEqual(exitCode, 0, 'waitForManagedDaemon should resolve cleanly for an existing daemon');
         assert.ok(elapsed >= 20, `waitForManagedDaemon should wait for daemon shutdown, elapsed=${elapsed}ms`);
+        assert.ok(elapsed < 5000, `waitForManagedDaemon should not stall after shutdown, elapsed=${elapsed}ms`);
     } finally {
-        chainKeys.isDaemonResponsive = originalIsDaemonResponsive;
+        server.close();
+        fs.rmSync(runtimeDir, { recursive: true, force: true });
     }
+}
+
+function testNormalizeBootstrapCredentialKeepsDerivedSecret() {
+    // credential_secret statically imports chain_keys, so a require.cache
+    // entry cannot intercept its ESM import on compiled modules. The real
+    // isVaultSecret already recognizes derived vault secrets, so exercise the
+    // real module directly: a pre-derived secret must pass through by
+    // reference, and normalizeBootstrapCredential contains no unlock path at
+    // all (non-derived payloads are rejected outright).
+    const { normalizeBootstrapCredential } = require('../modules/launcher/credential_secret');
+    const secret = { kind: 'dexbot-vault-secret', vaultKeyHex: 'abc123' };
+
+    const normalized = normalizeBootstrapCredential(secret);
+    assert.strictEqual(normalized, secret, 'pre-derived bootstrap secrets should pass through unchanged');
+    assert.throws(
+        () => normalizeBootstrapCredential({ password: 'plaintext' }),
+        /Invalid bootstrap credential payload/,
+        'non-derived bootstrap payloads should be rejected instead of re-derived'
+    );
 }
 
 async function testBootstrapPasswordTransfer() {
@@ -155,26 +175,6 @@ async function testStaleBootstrapDirsAreCleanedBeforeNewServer() {
         for (const dir of [staleDir, freshDir, unrelatedDir]) {
             fs.rmSync(dir, { recursive: true, force: true });
         }
-    }
-}
-
-function testNormalizeBootstrapCredentialKeepsDerivedSecret() {
-    const secret = { kind: 'dexbot-vault-secret', vaultKeyHex: 'abc123' };
-    let unlockCalled = false;
-    const { credentialSecret, restore } = loadCredentialSecretWithStubbedChainKeys({
-        isVaultSecret: (value) => value === secret,
-        unlockWithPassword: () => {
-            unlockCalled = true;
-            return null;
-        },
-    });
-
-    try {
-        const normalized = credentialSecret.normalizeBootstrapCredential(secret);
-        assert.strictEqual(normalized, secret, 'pre-derived bootstrap secrets should pass through unchanged');
-        assert.strictEqual(unlockCalled, false, 'pre-derived bootstrap secrets should not be re-derived');
-    } finally {
-        restore();
     }
 }
 

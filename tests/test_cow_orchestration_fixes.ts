@@ -1,11 +1,75 @@
 const assert = require('assert');
-const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub');
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
 
-const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-installBitsharesClientStub(bitsharesClientPath);
+// Compiled ESM namespaces are frozen and require.cache injection cannot
+// intercept static ESM imports, so chain_orders is replaced via loader hooks
+// (same technique as test_cow_ops_per_broadcast). Swappable functions resolve
+// per-test overrides at CALL time: assignments mutate the override map through
+// the Proxy while consumers' captured named-export bindings stay valid.
+esmMockEntry();
 
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
+function makeSwappableModule(defaults: Record<string, any>) {
+    const overrides = new Map<string, any>();
+    const resolved = (key: string) => (overrides.has(key) ? overrides.get(key) : defaults[key]);
+    const target: Record<string, any> = {};
+    for (const key of Object.keys(defaults)) {
+        target[key] = typeof defaults[key] === 'function'
+            ? (...args: any[]) => resolved(key)(...args)
+            : defaults[key];
+    }
+    return new Proxy(target, {
+        set(_t: any, prop: string | symbol, value: any) {
+            const key = String(prop);
+            if (target[key] === value) {
+                overrides.delete(key);
+            } else {
+                overrides.set(key, value);
+            }
+            return true;
+        },
+    });
+}
+
+const { BroadcastUncertainError } = require('../modules/dexbot_credential_client');
+
+const chainOrders = makeSwappableModule({
+    BroadcastUncertainError,
+    selectAccount: async () => {},
+    setPreferredAccount: async () => {},
+    resolveAccountId: async () => null,
+    resolveAccountName: async () => null,
+    readOpenOrders: async () => [],
+    readOpenOrdersWithMeta: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersWithMetaSafe: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersGuarded: async () => [],
+    readSingleOrder: async () => null,
+    batchReadOrders: async () => [],
+    listenForFills: async () => () => {},
+    updateOrder: async () => { throw new Error('updateOrder not configured for this test'); },
+    createOrder: async () => { throw new Error('createOrder not configured for this test'); },
+    cancelOrder: async () => { throw new Error('cancelOrder not configured for this test'); },
+    getOnChainAssetBalances: async () => ({}),
+    getFillProcessingMode: async () => 'history',
+    buildUpdateOrderOp: async () => { throw new Error('buildUpdateOrderOp not configured for this test'); },
+    buildCreateOrderOp: async () => { throw new Error('buildCreateOrderOp not configured for this test'); },
+    buildCancelOrderOp: async () => { throw new Error('buildCancelOrderOp not configured for this test'); },
+    buildLiquidityPoolExchangeOp: async () => { throw new Error('buildLiquidityPoolExchangeOp not configured for this test'); },
+    executeBatch: async () => { throw new Error('executeBatch not configured for this test'); },
+    findOverReducingUpdateOpError: async () => null,
+    wasRecentlyOwnCancelled: () => false,
+    recordOwnCancel: () => {},
+    broadcastTxWithClassification: async () => ({})
+});
+defineEsmMockAbs(require.resolve('../modules/chain_orders'), [
+    'selectAccount', 'setPreferredAccount', 'resolveAccountId', 'resolveAccountName',
+    'readOpenOrders', 'readOpenOrdersWithMeta', 'readOpenOrdersWithMetaSafe', 'readOpenOrdersGuarded',
+    'readSingleOrder', 'batchReadOrders', 'listenForFills', 'updateOrder', 'createOrder', 'cancelOrder',
+    'getOnChainAssetBalances', 'getFillProcessingMode', 'buildUpdateOrderOp', 'buildCreateOrderOp',
+    'buildCancelOrderOp', 'buildLiquidityPoolExchangeOp', 'executeBatch',
+    'findOverReducingUpdateOpError', 'wasRecentlyOwnCancelled', 'recordOwnCancel',
+    'BroadcastUncertainError', 'broadcastTxWithClassification'
+], chainOrders);
+
 const DEXBot = require('../modules/dexbot_class').default;
 const { WorkingGrid } = require('../modules/order/working_grid');
 const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../modules/constants');

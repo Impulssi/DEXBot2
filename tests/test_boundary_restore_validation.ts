@@ -55,6 +55,7 @@ function buildFakeManager(config) {
     const manager = {
         config,
         logs: [],
+        logger: null,
         funds: { btsFeesOwed: 0 },
         orders: new Map(),
         _gridVersion: 0,

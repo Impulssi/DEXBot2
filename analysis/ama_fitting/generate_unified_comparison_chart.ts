@@ -22,8 +22,8 @@ import { PATHS } from '../../modules/paths.js';
  * No Kibana fetch, no market_adapter runtime deps beyond the core renderer.
  *
  * Usage:
- *   tsx analysis/ama_fitting/generate_unified_comparison_chart.ts --data <file.json>
- *   tsx analysis/ama_fitting/generate_unified_comparison_chart.ts  (auto-discovers newest lp_pool_*.json)
+ *   node dist/analysis/ama_fitting/generate_unified_comparison_chart.js --data <file.json>
+ *   node dist/analysis/ama_fitting/generate_unified_comparison_chart.js  (auto-discovers newest lp_pool_*.json)
  */
 
 
@@ -142,7 +142,7 @@ function showHelp() {
 Unified Comparison Chart Generator
 
 Usage:
-  tsx generate_unified_comparison_chart.ts [options]
+  node dist/analysis/ama_fitting/generate_unified_comparison_chart.js [options]
 
 Options:
   --data FILE     LP candle export JSON file

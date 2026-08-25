@@ -12,14 +12,11 @@ function normalizeClawRepoRoot(repoRoot: string) {
 }
 
 // Generated docs must reference scripts that actually exist. Claw tooling
-// lives in claw/scripts/ (shipped as source); prefer a compiled sibling when
-// present, otherwise fall back to the .ts source run through tsx.
+// ships compiled to dist/claw/scripts/ (npm run build); generated skill
+// files always reference the node + .js form so they work without any
+// TypeScript loader installed.
 function resolveScriptInvocation(repoRoot: string, name: string) {
-  const jsPath = path.join(repoRoot, 'claw', 'scripts', `${name}.js`);
-  if (storage.exists(jsPath)) {
-    return { command: 'node', script: jsPath };
-  }
-  return { command: 'npx tsx', script: path.join(repoRoot, 'claw', 'scripts', `${name}.ts`) };
+  return { command: 'node', script: path.join(repoRoot, 'dist', 'claw', 'scripts', `${name}.js`) };
 }
 
 function buildBridgeInvocation(repoRoot: string, profileRoot: string, command: string, extraArgs: any[] = []) {
@@ -49,8 +46,8 @@ function buildToolSummary(runtimeName: string) {
 
 function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) {
   const { command, script: mcpScriptPath } = resolveScriptInvocation(repoRoot, 'claw_mcp_server');
-  // command is 'node' or 'npx tsx'; split so the config blocks can set the
-  // executable and args correctly for both the built and source layouts.
+  // command is 'node'; split so the config blocks can set the
+  // executable and args correctly for the built layout.
   const runnerParts = command.split(' ');
   const mcpExec = runnerParts[0];
   const mcpArgs = `[${[...runnerParts.slice(1), mcpScriptPath, '--profile-root', profileRoot].map((part: any) => JSON.stringify(part)).join(', ')}]`;
@@ -209,7 +206,7 @@ function buildRuntimeSetup(runtime: any, repoRoot: string, profileRoot: string) 
         'Start the memU MCP server:',
         '',
         '```bash',
-        `tsx ${path.join(repoRoot, 'claw', 'scripts', 'memu_mcp_server.ts').replace(/\\/g, '/')} --memu-dir ${PATHS.CLAW.MEMU_DIR.replace(/\\/g, '/')}`,
+        `node ${path.join(repoRoot, 'dist', 'claw', 'scripts', 'memu_mcp_server.js').replace(/\\/g, '/')} --memu-dir ${PATHS.CLAW.MEMU_DIR.replace(/\\/g, '/')}`,
         '```',
         '',
         'Or use the npm script:',

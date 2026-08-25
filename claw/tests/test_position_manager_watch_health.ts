@@ -4,41 +4,24 @@ const assert = require('assert');
 const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
-const Module = require('module');
+const { runEsmMockStages, defineEsmMockAbs } = require('../../tests/helpers/esm_mocks');
 
-const originalLoad = Module._load;
-const watcherModulePath = require.resolve('../modules/position_manager_watch');
-const positionManagerPath = require.resolve('../modules/position_manager');
-const bitsharesClientPath = require.resolve('../modules/bitshares_client');
+// Compiled ESM graphs cannot be mocked via require.cache or Module._load; the
+// helper installs loader hooks so position_manager_watch links against the
+// mock exports instead of running real chain code.
+function clearModule(_modulePath: string) {
+  /* no-op under ESM hooks */
+}
 
-function loadWatcherModule(mockPositionManager: any, waitForConnected: any) {
-  delete require.cache[watcherModulePath];
-  delete require.cache[positionManagerPath];
-  delete require.cache[bitsharesClientPath];
-
-  Module._load = function(request: any, parent: any, isMain: any) {
-    if (['./position_manager', './position_manager.js'].includes(request) && parent?.filename === watcherModulePath) {
-      return {
-        DEFAULT_STATE_PATH: path.join(os.tmpdir(), 'unused-positions.json'),
-        PositionManager: mockPositionManager
-      };
-    }
-    if (['./bitshares_client', './bitshares_client.js'].includes(request) && parent?.filename === watcherModulePath) {
-      return {
-        waitForConnected
-      };
-    }
-    return originalLoad.call(this, request, parent, isMain);
-  };
-
-  try {
-    return require('../modules/position_manager_watch');
-  } finally {
-    Module._load = originalLoad;
-  }
+function registerMock(modulePath: string, exports: any) {
+  defineEsmMockAbs(modulePath, Object.keys(exports), exports);
 }
 
 async function testHealthWritesStayOrdered() {
+  const watcherModulePath = require.resolve('../modules/position_manager_watch');
+  const positionManagerPath = require.resolve('../modules/position_manager');
+  const bitsharesClientPath = require.resolve('../modules/bitshares_client');
+
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pm-watch-'));
   const healthPath = path.join(tmpDir, 'watcher-health.json');
 
@@ -63,7 +46,19 @@ async function testHealthWritesStayOrdered() {
     }
   }
 
-  const { createPositionManagerWatcher } = loadWatcherModule(MockPositionManager, async () => {});
+  // ESM hooks turn mock keys into synthetic named re-exports, so every name
+  // position_manager_watch statically imports must exist here.
+  registerMock(positionManagerPath, {
+    DEFAULT_STATE_PATH: path.join(os.tmpdir(), 'unused-positions.json'),
+    PositionManager: MockPositionManager
+  });
+
+  registerMock(bitsharesClientPath, {
+    waitForConnected: async () => {}
+  });
+
+  clearModule(watcherModulePath);
+  const { createPositionManagerWatcher } = require('../modules/position_manager_watch');
 
   try {
     const watcher = createPositionManagerWatcher({
@@ -87,18 +82,19 @@ async function testHealthWritesStayOrdered() {
     assert.strictEqual(health.consecutiveFailures, 0, 'health should reset after a later success');
     assert.ok(syncCount >= 3, 'test should exercise the initial sync plus failure and recovery');
   } finally {
-    delete require.cache[watcherModulePath];
-    delete require.cache[positionManagerPath];
-    delete require.cache[bitsharesClientPath];
+    clearModule(watcherModulePath);
+    clearModule(positionManagerPath);
+    clearModule(bitsharesClientPath);
   }
 }
 
-async function main() {
-  await testHealthWritesStayOrdered();
-  console.log('position manager watcher health tests passed');
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+runEsmMockStages(
+  ['health-writes-stay-ordered'],
+  async (stage: string) => {
+    if (stage === 'health-writes-stay-ordered') {
+      await testHealthWritesStayOrdered();
+      return;
+    }
+    throw new Error(`Unknown stage: ${stage}`);
+  }
+);

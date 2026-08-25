@@ -1553,8 +1553,8 @@ function main() {
   const rawArgs = process.argv.slice(2);
   const exportHtml = rawArgs.includes('--export');
   // Positional (non-flag) args are treated as bot key filters. Example:
-  //   tsx scripts/analyze-orders.ts xrp-bts
-  //   tsx scripts/analyze-orders.ts xrp-bts --export
+  //   node dist/scripts/analyze-orders.js xrp-bts
+  //   node dist/scripts/analyze-orders.js xrp-bts --export
   const botKeyFilter = rawArgs.find((arg) => !arg.startsWith('-'))?.trim().toLowerCase() || null;
 
   if (!exportHtml) {

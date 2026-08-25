@@ -16,22 +16,18 @@
  */
 
 
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-
 import { discoverPositions } from './position_discovery.js';
 import { assessPosition } from './position_health.js';
 import { fetchTrendInput } from './feed_price_source.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
+// Static import (previously a lazy createRequire fallback): lazy require()
+// bypasses the ESM loader hooks that compiled tests use for module mocking,
+// and the analyzer module carries no circular-import risk.
+import { KalmanTrendAnalyzer } from '../../market_adapter/core/signals/kalman_trend_analyzer.js';
 'use strict';
 
 
-// Lazy-load KalmanTrendAnalyzer to avoid circular dependency issues at startup
-let KalmanTrendAnalyzer: any = null;
 function getTrendAnalyzer() {
-  if (!KalmanTrendAnalyzer) {
-    KalmanTrendAnalyzer = require('../../market_adapter/core/signals/kalman_trend_analyzer').KalmanTrendAnalyzer;
-  }
   return KalmanTrendAnalyzer;
 }
 

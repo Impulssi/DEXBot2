@@ -50,7 +50,7 @@
  * ===============================================================================
  *
  * Direct:
- *   tsx credential-daemon.ts
+ *   node dist/credential-daemon.js
  *
  * Via PM2 (recommended):
  *   npm run unlock

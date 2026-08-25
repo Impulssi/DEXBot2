@@ -63,7 +63,7 @@ async function runTests() {
         const warns = [];
         bot.manager.checkGridHealth = async () => ({ buyDustOrders: [{ id: 'dust-1', orderId: '1.7.9001' }], sellDustOrders: [] });
         bot._cancelDustOrders = async () => { cancelCalls++; return { cancelledCount: 1, batchResult: null }; };
-        bot._warn = (m) => warns.push(String(m));
+        bot._warn = (m?: any) => { warns.push(String(m)); };
 
         await MaintenanceRuntime.runDustHealthCheck(bot);
         assert.strictEqual(cancelCalls, 0, 'dust cancel must be deferred, not run without the fill lock');

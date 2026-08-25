@@ -7,11 +7,11 @@
  * Trend is detected from SMA, MACD, and RSI only.
  *
  * Usage:
- *   tsx analysis/analyze_derivatives.ts \\
+ *   node dist/analysis/analyze_derivatives.js \\
  *     --source json \
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  *
- *   tsx analysis/analyze_derivatives.ts \\
+ *   node dist/analysis/analyze_derivatives.js \\
  *     --source market_adapter \
  *     --bot-key XRP-BTS
  *
@@ -134,7 +134,7 @@ Analyzes candle data using SMA, MACD, and RSI as trend signals.
 Generates an interactive HTML chart.
 
 Usage:
-  tsx analysis/analyze_derivatives.ts \\
+  node dist/analysis/analyze_derivatives.js \\
     --source <type> \\
     [--bot-key KEY] [--file PATH]
 

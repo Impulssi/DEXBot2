@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 
 // ---------------------------------------------------------------------------
@@ -154,6 +155,25 @@ function testClawManifest() {
 // dexbot_bridge — getDexbot2Root branching only
 // ---------------------------------------------------------------------------
 
+// Repo root located independently of the compiled layout: compiled tests run
+// from <repo>/dist/claw/tests, so a fixed __dirname offset would point at
+// dist/ instead of the repo. The repo root is the nearest ancestor holding
+// package.json plus both the modules/ and claw/ source trees.
+function findRepoRoot(startDir: string) {
+  let dir = startDir;
+  for (let i = 0; i < 10; i++) {
+    if (
+      fs.existsSync(path.join(dir, 'package.json')) &&
+      fs.existsSync(path.join(dir, 'modules')) &&
+      fs.existsSync(path.join(dir, 'claw'))
+    ) {
+      return dir;
+    }
+    dir = path.dirname(dir);
+  }
+  throw new Error('Unable to locate DEXBot2 repo root');
+}
+
 function testDexbotBridgeRootResolution() {
   const bridgePath = require.resolve('../modules/dexbot_bridge');
   const { Config } = require('../../modules/config');
@@ -173,14 +193,14 @@ function testDexbotBridgeRootResolution() {
   }
 
   // --- Branch 2: no DEXBOT2_ROOT, auto-detected local repo layout ---
-  // The test is already running inside the DEXBot2 repo, so the existsSync
-  // check for modules/order/index.ts should resolve to the repo root.
+  // The test runs inside the DEXBot2 repo, so the existsSync candidate check
+  // (dist/modules/order/index.js) should resolve to the repo root itself.
   delete require.cache[bridgePath];
   Config.DEXBOT2_ROOT = undefined;
   try {
     const bridge = require('../modules/dexbot_bridge');
     const root = bridge.getDexbot2Root();
-    const expectedRoot = path.resolve(__dirname, '..', '..');
+    const expectedRoot = findRepoRoot(__dirname);
     assert.strictEqual(root, expectedRoot);
   } finally {
     Config.DEXBOT2_ROOT = savedRoot;

@@ -6,7 +6,7 @@
  * adapter uses (reconnectForCycle → use → disconnectClient) and capture the
  * [ws] debug logs from handleConnectionStatus.
  *
- * Usage: tsx tests/diag_ws_lifecycle.ts [--cycles 3]
+ * Usage: node dist/tests/diag_ws_lifecycle.js [--cycles 3]
  */
 
 const { waitForConnected, disconnectClient, reconnectForCycle, getConnectionStatus } = require('../modules/bitshares_client');

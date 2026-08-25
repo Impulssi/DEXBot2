@@ -9,10 +9,11 @@
  */
 
 const assert = require('assert');
-const path = require('path');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
-
-const bitsharesClientPath = path.resolve(__dirname, '../modules/bitshares_client.ts');
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
+// Compiled ESM namespaces are frozen and chain_orders binds BitShares at
+// module load, so the transport is mocked via loader hooks (require.cache
+// injection cannot reach its static import).
+esmMockEntry();
 
 function makeGetObjectsMock() {
     const orders = new Map([
@@ -46,20 +47,35 @@ function makeUpdateOp(orderId: string, deltaAmount: number, sellAssetId = '1.3.1
 async function main() {
     console.log('\n[DRIFT-GUARD-01] findOverReducingUpdateOpError: over-reducing negative delta detected...');
 
-    const bsModule = require('../modules/bitshares_client');
     const getObjects = makeGetObjectsMock();
-    const stubbed = {
-        ...bsModule,
+    const bitsharesClientPath = require.resolve('../modules/bitshares_client');
+    defineEsmMockAbs(bitsharesClientPath, [
+        'BitShares', 'createAccountClient', 'waitForConnected', 'getConnectionStatus',
+        'disconnectClient', 'reconnectForCycle', 'setSuppressConnectionLog', 'onReconnect',
+        'withTimeout', '_assessFailover', 'getNodeManager', 'getNodeStats', 'getNodeSummary',
+        'getConnectionError', '_internal'
+    ], {
         BitShares: {
             assets: {},
-            db: { get_objects: getObjects.fn },
+            db: { get_objects: async (ids) => { getObjects.calls++; return getObjects.fn(ids); } },
         },
+        createAccountClient: () => ({ sign: () => {}, broadcast: async () => ({}) }),
         waitForConnected: async () => true,
-    };
-    const original = setCachedModule(bitsharesClientPath, stubbed);
+        getConnectionStatus: () => ({ connected: true }),
+        disconnectClient: async () => {},
+        reconnectForCycle: async () => {},
+        setSuppressConnectionLog: () => {},
+        onReconnect: () => () => {},
+        withTimeout: (p) => p,
+        _assessFailover: () => null,
+        getNodeManager: () => ({ getHealthyNodes: () => [] }),
+        getNodeStats: () => null,
+        getNodeSummary: () => null,
+        getConnectionError: () => null,
+        _internal: { get connected() { return false; } },
+    });
 
-    try {
-        const chainOrders = require('../modules/chain_orders');
+    const chainOrders = require('../modules/chain_orders');
 
         // ── over-reducing delta → error matching the chain message ────────────
         // Order 1.7.1001 has for_sale=500; a delta of -600 would drive the new
@@ -134,9 +150,6 @@ async function main() {
             'executeBatch must reject pre-broadcast on over-reducing deltas'
         );
         console.log('  ✓ executeBatch rejects over-reducing deltas before broadcast');
-    } finally {
-        restoreCachedModule(bitsharesClientPath, original);
-    }
 
     console.log('All pre-broadcast size-drift guard tests passed.');
 }

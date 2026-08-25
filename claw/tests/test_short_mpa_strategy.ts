@@ -1,18 +1,16 @@
 'use strict';
 
 const assert = require('assert');
+const { runEsmMockStages, defineEsmMockAbs } = require('../../tests/helpers/esm_mocks');
 
-function clearModule(modulePath: string) {
-  delete require.cache[modulePath];
+// Compiled ESM graphs cannot be mocked via require.cache; the helper installs
+// loader hooks (one child process per stage so fresh module instances load).
+function clearModule(_modulePath: string) {
+  /* no-op under ESM hooks */
 }
 
 function registerMock(modulePath: string, exports: any) {
-  require.cache[modulePath] = {
-    id: modulePath,
-    filename: modulePath,
-    loaded: true,
-    exports
-  } as any;
+  defineEsmMockAbs(modulePath, Object.keys(exports), exports);
 }
 
 function createStrategyHarness() {
@@ -218,12 +216,17 @@ async function testExecutionWrappersForwardPlanValues() {
   console.log('    PASS');
 }
 
-async function main() {
-  await testBuildPlans();
-  await testExecutionWrappersForwardPlanValues();
-}
-
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+runEsmMockStages(
+  ['build-plans', 'execution-wrappers-forward-plan-values'],
+  async (stage: string) => {
+    if (stage === 'build-plans') {
+      await testBuildPlans();
+      return;
+    }
+    if (stage === 'execution-wrappers-forward-plan-values') {
+      await testExecutionWrappersForwardPlanValues();
+      return;
+    }
+    throw new Error(`Unknown stage: ${stage}`);
+  }
+);

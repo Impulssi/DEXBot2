@@ -22,13 +22,14 @@
     "sourceMap": true,
     "moduleResolution": "node16",
     "allowJs": false,
-    "types": ["node"]
+    "types": ["node"],
+    "incremental": true,
+    "tsBuildInfoFile": "../node_modules/.cache/tsc-claw.tsbuildinfo"
   },
   "include": [
     "**/*.ts"
   ],
   "exclude": [
-    "node_modules",
-    "tests"
+    "node_modules"
   ]
 }

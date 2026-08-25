@@ -6,7 +6,7 @@
  * Analyzes git history and generates a chart showing:
  * - Lines added vs deleted by file
  *
- * Usage: tsx scripts/analyze-git.ts
+ * Usage: node dist/scripts/analyze-git.js
  */
 
 import { execSync } from 'node:child_process';

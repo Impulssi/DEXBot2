@@ -1,7 +1,12 @@
 process.env.DEXBOT_SKIP_PROFILE_VALIDATION = '1';
 const assert = require('assert');
 const fs = require('fs');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+const { runEsmMockStages } = require('./helpers/esm_mocks');
+// Compiled ESM namespaces are frozen and require.cache entries cannot force a
+// second evaluation of dist/dexbot.js, so the plain-output phase and the TTY
+// color phase each run in their own hooked child process with a fresh
+// `require('../dexbot')` evaluation. No module mocks are needed — only the
+// process isolation.
 
 console.log('Running dexbot startup output tests');
 
@@ -12,7 +17,6 @@ console.log('Running dexbot startup output tests');
 // exercises that command. Launching the real unlock.js here would block the
 // suite on live password prompts.
 
-const dexbotPath = require.resolve('../dexbot.js');
 const botSettingsPath = require.resolve('../modules/bot_settings');
 const dexbotClassPath = require.resolve('../modules/dexbot_class');
 const chainKeysPath = require.resolve('../modules/chain_keys');
@@ -21,14 +25,6 @@ const systemPath = require.resolve('../modules/order/utils/system');
 const accountBotsPath = require.resolve('../modules/account_bots');
 const bitsharesClientPath = require.resolve('../modules/bitshares_client');
 
-const originalDexbotModule = require.cache[dexbotPath];
-const originalBotSettings = require.cache[botSettingsPath];
-const originalDexbotClass = require.cache[dexbotClassPath];
-const originalChainKeys = require.cache[chainKeysPath];
-const originalGracefulShutdown = require.cache[gracefulShutdownPath];
-const originalSystem = require.cache[systemPath];
-const originalAccountBots = require.cache[accountBotsPath];
-const originalBitsharesClient = require.cache[bitsharesClientPath];
 const originalExistsSync = fs.existsSync;
 const originalArgv = process.argv.slice();
 const originalStdoutIsTTY = process.stdout.isTTY;
@@ -52,14 +48,14 @@ function setStdoutTTY(value) {
 }
 
 function installStubs() {
-    delete require.cache[dexbotPath];
-
     fs.existsSync = (filePath) => {
         if (String(filePath).endsWith('/profiles/bots.json')) {
             return true;
         }
         return originalExistsSync(filePath);
     };
+
+    const { setCachedModule } = require('./helpers/module_cache_stub');
 
     setCachedModule(botSettingsPath, {
         collectValidationIssues: () => ({ errors: [], warnings: [] }),
@@ -135,7 +131,7 @@ function installStubs() {
         waitForConnected: async () => {},
     });
 
-    process.argv = ['node', dexbotPath, 'test'];
+    process.argv = ['node', require.resolve('../dexbot.js'), 'test'];
 
     console.log = (...args) => {
         const line = args.map((part) => String(part)).join(' ').trim();
@@ -158,16 +154,14 @@ function restoreStubs() {
     console.warn = originalConsoleWarn;
     console.error = originalConsoleError;
 
-    restoreCachedModule(botSettingsPath, originalBotSettings);
-    restoreCachedModule(dexbotClassPath, originalDexbotClass);
-    restoreCachedModule(chainKeysPath, originalChainKeys);
-    restoreCachedModule(gracefulShutdownPath, originalGracefulShutdown);
-    restoreCachedModule(systemPath, originalSystem);
-    restoreCachedModule(accountBotsPath, originalAccountBots);
-    restoreCachedModule(bitsharesClientPath, originalBitsharesClient);
-
-    if (originalDexbotModule) require.cache[dexbotPath] = originalDexbotModule;
-    else delete require.cache[dexbotPath];
+    const { restoreCachedModule } = require('./helpers/module_cache_stub');
+    restoreCachedModule(botSettingsPath, null);
+    restoreCachedModule(dexbotClassPath, null);
+    restoreCachedModule(chainKeysPath, null);
+    restoreCachedModule(gracefulShutdownPath, null);
+    restoreCachedModule(systemPath, null);
+    restoreCachedModule(accountBotsPath, null);
+    restoreCachedModule(bitsharesClientPath, null);
 
     setStdoutTTY(originalStdoutIsTTY);
     if (originalNoColor === undefined) {
@@ -177,14 +171,15 @@ function restoreStubs() {
     }
 }
 
-async function runStartupColorTest() {
-    resetLogs();
-    setStdoutTTY(true);
-    delete process.env.NO_COLOR;
+function resetLogs() {
+    logs.length = 0;
+    warns.length = 0;
+    errors.length = 0;
+    suppressCalls.length = 0;
+    startCalled = false;
+}
 
-    installStubs();
-    require('../dexbot');
-
+async function waitForStartup() {
     await new Promise((resolve) => {
         const check = () => {
             if (startCalled) resolve(undefined);
@@ -194,7 +189,27 @@ async function runStartupColorTest() {
     });
 
     await new Promise((resolve) => setImmediate(resolve));
+}
 
+function assertPlainStartupOutput() {
+    assert.ok(suppressCalls.includes(true), 'dexbot test should suppress BitShares connection logs');
+    assert.ok(suppressCalls.includes(false), 'dexbot test should restore BitShares connection logs after startup');
+    assert.ok(logs.includes('DEXBot2 Start Launcher'), 'dexbot test should print a launcher title');
+    assert.ok(logs.includes('Starting all bots'), 'dexbot test should print the selected launch mode');
+    assert.ok(logs.includes('Connected to BitShares'), 'dexbot test should print BitShares connection status');
+    assert.ok(logs.includes('✓ Authentication successful'), 'dexbot test should confirm successful authentication');
+    assert.ok(logs.includes('Number active bots: 1'), 'dexbot test should print the active bot count');
+    assert.ok(logs.includes('Starting bot runtime...'), 'dexbot test should print the runtime transition');
+    assert.ok(logs.includes('DEXBot2 started successfully!'), 'dexbot test should print a success footer');
+    assert.ok(logs.includes('If the bots stop, rerun `dexbot start`.'), 'dexbot test should print the restart hint');
+    assert.deepStrictEqual(logs.filter((line) => line.startsWith('┌') || line.startsWith('│') || line.startsWith('├') || line.startsWith('└')), [], 'dexbot test should not emit PM2-style tables');
+    assert.ok(!logs.some((line) => line.includes('Connecting to BitShares...')), 'dexbot test should not print a separate connection banner');
+    assert.ok(!logs.some((line) => line.includes('Authenticating master password...')), 'dexbot test should not print an auth banner');
+    assert.deepStrictEqual(warns, [], 'dexbot test should not emit warnings');
+    assert.deepStrictEqual(errors, [], 'dexbot test should not emit errors');
+}
+
+function assertColorStartupOutput() {
     assert.ok(logs.includes('Active bots:'), 'dexbot test should print the active-bot summary header');
     assert.ok(
         logs.some((line) => line.includes('\x1b[1;92m') && line.includes('XRP-BTS')),
@@ -214,52 +229,45 @@ async function runStartupColorTest() {
     );
 }
 
-function resetLogs() {
-    logs.length = 0;
-    warns.length = 0;
-    errors.length = 0;
-    suppressCalls.length = 0;
-    startCalled = false;
-}
+const STAGES = {
+    plain_output: async () => {
+        resetLogs();
+        setStdoutTTY(false);
+        delete process.env.NO_COLOR;
 
-installStubs();
-require('../dexbot');
+        installStubs();
+        require('../dexbot');
 
-(async () => {
-    try {
-        await new Promise((resolve) => {
-            const check = () => {
-                if (startCalled) resolve(undefined);
-                else setImmediate(check);
-            };
-            check();
-        });
+        try {
+            await waitForStartup();
+            assertPlainStartupOutput();
+            restoreStubs();
+            originalConsoleLog('plain output stage passed');
+        } catch (err) {
+            restoreStubs();
+            throw err;
+        }
+    },
+    color_output: async () => {
+        resetLogs();
+        setStdoutTTY(true);
+        delete process.env.NO_COLOR;
 
-        await new Promise((resolve) => setImmediate(resolve));
+        installStubs();
+        require('../dexbot');
 
-        assert.ok(suppressCalls.includes(true), 'dexbot test should suppress BitShares connection logs');
-        assert.ok(suppressCalls.includes(false), 'dexbot test should restore BitShares connection logs after startup');
-        assert.ok(logs.includes('DEXBot2 Start Launcher'), 'dexbot test should print a launcher title');
-        assert.ok(logs.includes('Starting all bots'), 'dexbot test should print the selected launch mode');
-        assert.ok(logs.includes('Connected to BitShares'), 'dexbot test should print BitShares connection status');
-        assert.ok(logs.includes('✓ Authentication successful'), 'dexbot test should confirm successful authentication');
-        assert.ok(logs.includes('Number active bots: 1'), 'dexbot test should print the active bot count');
-        assert.ok(logs.includes('Starting bot runtime...'), 'dexbot test should print the runtime transition');
-        assert.ok(logs.includes('DEXBot2 started successfully!'), 'dexbot test should print a success footer');
-        assert.ok(logs.includes('If the bots stop, rerun `dexbot start`.'), 'dexbot test should print the restart hint');
-        assert.deepStrictEqual(logs.filter((line) => line.startsWith('┌') || line.startsWith('│') || line.startsWith('├') || line.startsWith('└')), [], 'dexbot test should not emit PM2-style tables');
-        assert.ok(!logs.some((line) => line.includes('Connecting to BitShares...')), 'dexbot test should not print a separate connection banner');
-        assert.ok(!logs.some((line) => line.includes('Authenticating master password...')), 'dexbot test should not print an auth banner');
-        assert.deepStrictEqual(warns, [], 'dexbot test should not emit warnings');
-        assert.deepStrictEqual(errors, [], 'dexbot test should not emit errors');
+        try {
+            await waitForStartup();
+            assertColorStartupOutput();
+            restoreStubs();
+            originalConsoleLog('color output stage passed');
+        } catch (err) {
+            restoreStubs();
+            throw err;
+        }
+    },
+};
 
-        await runStartupColorTest();
-        restoreStubs();
-        originalConsoleLog('dexbot startup output tests passed');
-        process.exit(0);
-    } catch (err) {
-        restoreStubs();
-        console.error(err);
-        process.exit(1);
-    }
-})();
+// Never returns: the parent forwards the first failing stage exit code and
+// each hooked child runs exactly one stage.
+runEsmMockStages(Object.keys(STAGES), (stage: string) => STAGES[stage]());

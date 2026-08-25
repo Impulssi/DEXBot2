@@ -1,8 +1,6 @@
 const assert = require('assert');
 
 async function main() {
-    const bsModule = require('../modules/bitshares_client');
-    const originalBS = bsModule.BitShares;
 
     const mock = { assets: {}, db: {} as any };
     const assetA = 'IOB.XRP';
@@ -35,8 +33,6 @@ async function main() {
         return { latest: null };
     };
 
-    bsModule.BitShares = mock;
-
     try {
         const { derivePoolPrice, deriveMarketPrice } = require('../modules/order/utils/system');
 
@@ -52,7 +48,6 @@ async function main() {
 
         console.log('Orientation test passed: swapping assets inverts the price (reciprocal).');
     } finally {
-        bsModule.BitShares = originalBS;
     }
 
     process.exit(0);

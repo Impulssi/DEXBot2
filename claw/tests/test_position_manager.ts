@@ -4,18 +4,16 @@ const assert = require('assert');
 const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
+const { runEsmMockStages, defineEsmMockAbs } = require('../../tests/helpers/esm_mocks');
 
-function clearModule(modulePath: string) {
-  delete require.cache[modulePath];
+// Compiled ESM graphs cannot be mocked via require.cache; the helper installs
+// loader hooks (one child process per stage so fresh module instances load).
+function clearModule(_modulePath: string) {
+  /* no-op under ESM hooks */
 }
 
 function registerMock(modulePath: string, exports: any) {
-  require.cache[modulePath] = {
-    id: modulePath,
-    filename: modulePath,
-    loaded: true,
-    exports
-  } as any;
+  defineEsmMockAbs(modulePath, Object.keys(exports), exports);
 }
 
 const { clone } = require('../modules/utils');
@@ -415,13 +413,17 @@ async function testPositionManagerExitFillAndSyncTransitions() {
   console.log('    PASS');
 }
 
-async function main() {
-  await testPositionManagerLifecycle();
-  await testPositionManagerExitFillAndSyncTransitions();
-  console.log('position_manager tests passed');
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+runEsmMockStages(
+  ['lifecycle', 'exit-fill-and-sync-transitions'],
+  async (stage: string) => {
+    if (stage === 'lifecycle') {
+      await testPositionManagerLifecycle();
+      return;
+    }
+    if (stage === 'exit-fill-and-sync-transitions') {
+      await testPositionManagerExitFillAndSyncTransitions();
+      return;
+    }
+    throw new Error(`Unknown stage: ${stage}`);
+  }
+);

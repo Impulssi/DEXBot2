@@ -9,8 +9,8 @@
  * (σ_ama_delta) for calibrating AMA_DELTA_THRESHOLD_PERCENT.
  *
  * Usage:
- *   tsx analysis/analyze_risk_profile.ts --source market_adapter --bot-key <key> [options]
- *   tsx analysis/analyze_risk_profile.ts --file <path_to_json> [options]
+ *   node dist/analysis/analyze_risk_profile.js --source market_adapter --bot-key <key> [options]
+ *   node dist/analysis/analyze_risk_profile.js --file <path_to_json> [options]
  */
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';

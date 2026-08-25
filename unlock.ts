@@ -41,12 +41,12 @@ const __dirname = _esmDirname(__filename);
 
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
+const childProcess = require('child_process');
 
 import { setUmask } from './modules/config.js';
 import fs from 'node:fs';
 import { path } from './modules/path_api.js';
 import { getStorage } from './modules/storage/index.js';
-import { spawn } from 'node:child_process';
 import { createCredentialDaemonController } from './modules/launcher/credential_daemon.js';
 import { buildScopedChildEnv } from './modules/launcher/child_env.js';
 import { parseUnlockArgs } from './modules/launcher/launch_modes.js';
@@ -319,7 +319,7 @@ async function launchDetachedSupervisor({ botName = null, credentialDaemonPid = 
     let child: any = null;
 
     try {
-        child = spawn(Config.EXEC_PATH, args, {
+        child = childProcess.spawn(Config.EXEC_PATH, args, {
             cwd: PATHS.PROJECT_ROOT,
             detached: true,
             env: buildScopedChildEnv({
@@ -537,7 +537,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                 throw _e;
             }
 
-            const child = spawn(Config.EXEC_PATH, [__filename, ...argv.slice(2)], {
+            const child = childProcess.spawn(Config.EXEC_PATH, [__filename, ...argv.slice(2)], {
                 cwd: PATHS.PROJECT_ROOT,
                 detached: true,
                 env: {
@@ -615,7 +615,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                 launchedBotNames = getLaunchedBotNames(effectiveBotName || botName);
                 const dexbotArgs = buildDexbotStartArgs(effectiveBotName || botName, dryrun);
 
-                const botProcess = spawn(Config.EXEC_PATH, dexbotArgs, {
+                const botProcess = childProcess.spawn(Config.EXEC_PATH, dexbotArgs, {
                     cwd: PATHS.PROJECT_ROOT,
                     env: process.env,
                     stdio: isMonolithicBgChild ? 'pipe' : 'inherit',

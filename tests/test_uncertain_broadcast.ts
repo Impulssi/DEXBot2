@@ -1,33 +1,129 @@
 const assert = require('assert');
 const { EventEmitter } = require('events');
 const net = require('net');
-const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub');
-
+const { runEsmMockStages, defineEsmMockAbs } = require('./helpers/esm_mocks');
 const { ensureFeeCache } = require('./helpers/fee_cache_init');
-ensureFeeCache();
 
-const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-installBitsharesClientStub(bitsharesClientPath);
+// Compiled ESM namespaces are frozen, so chain_orders / chain_keys /
+// bitshares_client are replaced via loader hooks. Swappable functions resolve
+// per-test overrides at CALL time (assignments mutate the override map — the
+// named-export bindings consumers captured stay valid), and restoring the
+// original wrapper clears the override.
+function makeSwappableModule(defaults: Record<string, any>) {
+    const overrides = new Map<string, any>();
+    const resolved = (key: string) => (overrides.has(key) ? overrides.get(key) : defaults[key]);
+    const target: Record<string, any> = {};
+    for (const key of Object.keys(defaults)) {
+        target[key] = typeof defaults[key] === 'function'
+            ? (...args: any[]) => resolved(key)(...args)
+            : defaults[key];
+    }
+    return new Proxy(target, {
+        set(_t: any, prop: string | symbol, value: any) {
+            const key = String(prop);
+            if (target[key] === value) {
+                overrides.delete(key);
+            } else {
+                overrides.set(key, value);
+            }
+            return true;
+        },
+    });
+}
 
-const { installChainKeysStub } = require('./helpers/chain_keys_stub');
-const { chainKeys } = installChainKeysStub();
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
-const { OrderManager } = require('../modules/order/manager');
-const { WorkingGrid } = require('../modules/order/working_grid');
-const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DAEMON_CODES, DAEMON_ERRORS } = require('../modules/constants');
-const {
-    BroadcastUncertainError,
-    executeOperationsViaCredentialDaemon
-} = require('../modules/dexbot_credential_client');
-const {
-    buildCreateOpFingerprint
-} = require('../modules/order/utils/order');
-const {
-    _createStartupOrderWithHandling
-} = require('../modules/order/grid_reconcile_internal');
+class MasterPasswordErrorStub extends Error {}
+
+const CHAIN_KEYS_DEFAULTS = {
+    MasterPasswordError: MasterPasswordErrorStub,
+    createDaemonSigningToken: (accountName: string, options: Record<string, any> = {}) => ({
+        kind: 'dexbot-daemon-signing-token',
+        accountName,
+        socketPath: options.socketPath || null,
+        sessionId: options.sessionId || null,
+        botHmacSecret: options.botHmacSecret || null,
+    }),
+    isDaemonSigningToken: (value: any) => !!(value && typeof value === 'object' && value.kind === 'dexbot-daemon-signing-token' && typeof value.accountName === 'string'),
+    isDaemonResponsive: async () => true,
+    isDaemonReady: async () => true,
+    waitForDaemon: async () => true,
+    pingDaemon: async () => true,
+    probeAccountInDaemon: async () => { throw new Error('probeAccountInDaemon not configured for this test'); },
+};
+
+const BITSHARES_CLIENT_NAMES = [
+    'BitShares', 'createAccountClient', 'waitForConnected', 'getConnectionStatus',
+    'disconnectClient', 'reconnectForCycle', 'setSuppressConnectionLog', 'onReconnect',
+    'withTimeout', '_assessFailover', 'getNodeManager', 'getNodeStats', 'getNodeSummary',
+    'getConnectionError', '_internal'
+];
+
+function makeBitsharesClientDefaults() {
+    return {
+        BitShares: { subscribe() {}, db: {} },
+        createAccountClient: () => ({ sign: () => {}, broadcast: async () => ({}) }),
+        waitForConnected: async () => {},
+        getConnectionStatus: () => ({ connected: true }),
+        disconnectClient: async () => {},
+        reconnectForCycle: async () => {},
+        setSuppressConnectionLog() {},
+        onReconnect: () => () => {},
+        withTimeout: (p: any) => p,
+        _assessFailover: () => null,
+        getNodeManager: () => ({
+            getHealthyNodes: () => [
+                'wss://primary.bitshares.org/ws',
+                'wss://alt-1.bitshares.org/ws',
+                'wss://alt-2.bitshares.org/ws',
+            ],
+        }),
+        getNodeStats: () => null,
+        getNodeSummary: () => null,
+        getConnectionError: () => null,
+        _internal: { get connected() { return false; } },
+    };
+}
+
+const CHAIN_ORDERS_NAMES = [
+    'selectAccount', 'setPreferredAccount', 'resolveAccountId', 'resolveAccountName',
+    'readOpenOrders', 'readOpenOrdersWithMeta', 'readOpenOrdersWithMetaSafe', 'readOpenOrdersGuarded',
+    'readSingleOrder', 'batchReadOrders', 'listenForFills', 'updateOrder', 'createOrder', 'cancelOrder',
+    'getOnChainAssetBalances', 'getFillProcessingMode', 'buildUpdateOrderOp', 'buildCreateOrderOp',
+    'buildCancelOrderOp', 'buildLiquidityPoolExchangeOp', 'executeBatch',
+    'findOverReducingUpdateOpError', 'wasRecentlyOwnCancelled', 'recordOwnCancel',
+    'BroadcastUncertainError', 'broadcastTxWithClassification'
+];
+
+async function readWithMetaSafe(mod: any, accountId: any, timeoutMs?: number, _suppressLog?: boolean) {
+    if (mod && typeof mod.readOpenOrdersWithMeta === 'function') {
+        return mod.readOpenOrdersWithMeta(accountId, timeoutMs);
+    }
+    return { orders: await mod.readOpenOrders(accountId, timeoutMs), truncated: false };
+}
+
+async function readGuarded(mod: any, accountId: any, options: any = {}) {
+    const read = await readWithMetaSafe(mod, accountId, options.timeoutMs);
+    const truncated = read?.truncated === true;
+    const orders = read?.orders;
+    const empty = !Array.isArray(orders) || orders.length === 0;
+    if (!truncated && !(options.deferEmpty && empty)) return Array.isArray(orders) ? orders : [];
+    return null;
+}
 
 let testsComplete = false;
+const { BroadcastUncertainError, executeOperationsViaCredentialDaemon } = require('../modules/dexbot_credential_client');
+const { buildCreateOpFingerprint } = require('../modules/order/utils/order');
+const { WorkingGrid } = require('../modules/order/working_grid');
+const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DAEMON_CODES, DAEMON_ERRORS } = require('../modules/constants');
+let chainOrders: any;
+let chainKeys: any;
+let _createStartupOrderWithHandling: any;
+
+// grid_reconcile_internal statically imports chain_orders/chain_keys, so it
+// may only be required after the loader-level mocks are registered (inside
+// the stage callbacks); everything else at the top is mock-free.
+function requireProdModules() {
+    ({ _createStartupOrderWithHandling } = require('../modules/order/grid_reconcile_internal'));
+}
 
 process.on('unhandledRejection', (reason) => {
     const isPostTestWsErrorEvent = testsComplete &&
@@ -925,17 +1021,17 @@ async function testAutoCancelPerCycleCap() {
         { id: '1.7.333', orderId: '1.7.333', reason: 'price-drift-orphan' }
     ];
 
-    // Stub cancelOrder so we can count calls.
+    // Stub cancelOrder so we can count calls (via the swappable stage mock —
+    // the compiled module namespace itself is frozen).
     let cancelCalls = 0;
-    const realChainOrders = require('../modules/chain_orders');
-    const origCancel = realChainOrders.cancelOrder;
-    realChainOrders.cancelOrder = async () => {
+    const origCancel = chainOrders.cancelOrder;
+    chainOrders.cancelOrder = async () => {
         cancelCalls++;
         return { success: true };
     };
     // Record-own-cancel stub
-    const origRecord = realChainOrders.recordOwnCancel;
-    realChainOrders.recordOwnCancel = () => {};
+    const origRecord = chainOrders.recordOwnCancel;
+    chainOrders.recordOwnCancel = () => {};
 
     try {
         const r1 = await bot._autoCancelOneUnmatchedOrphan();
@@ -954,8 +1050,8 @@ async function testAutoCancelPerCycleCap() {
         assert.strictEqual(r3.cancelled, true, 'new cycle should allow another cancel');
         assert.strictEqual(cancelCalls, 2, 'second cancel call expected in new cycle');
     } finally {
-        realChainOrders.cancelOrder = origCancel;
-        realChainOrders.recordOwnCancel = origRecord;
+        chainOrders.cancelOrder = origCancel;
+        chainOrders.recordOwnCancel = origRecord;
     }
     console.log('✓ UNC-009 passed');
 }
@@ -1691,9 +1787,6 @@ async function main() {
     await testCredentialClientFallbackSkipsPlainError();
     await testCredentialClientFallbackEmptyList();
     await testCredentialClientFallbackReportsFailedNode();
-    await testExecuteBatchDoesNotRetryUncertainDaemonBroadcast();
-    await testExecuteBatchRetriesExpiredDaemonSessionOnly();
-    await testExecuteBatchRetryPreservesUncertainBroadcastHandling();
     await testAutoCancelPerCycleCap();
     await testAutoCancelUsesSyncEngineChainOrderIdShape();
     await testAutoCancelSkipsWhenPendingBroadcasts();
@@ -1731,6 +1824,79 @@ async function main() {
     testsComplete = true;
     console.log('\nAll uncertain-broadcast tests passed (incl. retry + deadlock regression guards).');
 }
+
+// ── daemon-path direct executeBatch tests (real chain_orders orchestration) ─
+async function runDaemonStageTests() {
+    await testExecuteBatchDoesNotRetryUncertainDaemonBroadcast();
+    await testExecuteBatchRetriesExpiredDaemonSessionOnly();
+    await testExecuteBatchRetryPreservesUncertainBroadcastHandling();
+    testsComplete = true;
+    console.log('\nAll daemon executeBatch tests passed.');
+}
+
+function registerStageMocks(stage: string) {
+    defineEsmMockAbs(
+        require.resolve('../modules/bitshares_client'),
+        BITSHARES_CLIENT_NAMES,
+        makeBitsharesClientDefaults()
+    );
+    chainKeys = makeSwappableModule(CHAIN_KEYS_DEFAULTS);
+    defineEsmMockAbs(require.resolve('../modules/chain_keys'), [
+        'validatePrivateKey', 'loadAccounts', 'saveAccounts', 'checkKeysFileSecurity',
+        'encrypt', 'decrypt', 'deriveVaultKey', 'createDaemonSigningToken',
+        'createSessionSecret', 'createVaultSecret', 'isVaultSecret', 'isDaemonSigningToken',
+        'unlockWithPassword', 'main', 'authenticate', 'getPrivateKey', 'resolvePrivateKey',
+        'isMasterPasswordFailure', 'MasterPasswordError', 'isDaemonReady', 'isDaemonResponsive',
+        'waitForDaemon', 'probeAccountInDaemon', 'pingDaemon'
+    ], chainKeys);
+
+    if (stage === 'cow') {
+        // bot-level flows bind to this swappable stand-in; direct
+        // chain_orders.executeBatch coverage lives in the daemon stage.
+        chainOrders = makeSwappableModule({
+            BroadcastUncertainError,
+            selectAccount: async () => {},
+            setPreferredAccount: async () => {},
+            resolveAccountId: async () => null,
+            resolveAccountName: async () => null,
+            readOpenOrders: async () => [],
+            readOpenOrdersWithMeta: async () => ({ orders: [], truncated: false }),
+            readOpenOrdersWithMetaSafe: readWithMetaSafe,
+            readOpenOrdersGuarded: readGuarded,
+            readSingleOrder: async () => null,
+            batchReadOrders: async () => [],
+            listenForFills: async () => () => {},
+            updateOrder: async () => { throw new Error('updateOrder not configured for this test'); },
+            createOrder: async () => { throw new Error('createOrder not configured for this test'); },
+            cancelOrder: async () => { throw new Error('cancelOrder not configured for this test'); },
+            getOnChainAssetBalances: async () => ({}),
+            getFillProcessingMode: async () => 'history',
+            buildUpdateOrderOp: async () => { throw new Error('buildUpdateOrderOp not configured for this test'); },
+            buildCreateOrderOp: async () => { throw new Error('buildCreateOrderOp not configured for this test'); },
+            buildCancelOrderOp: async () => { throw new Error('buildCancelOrderOp not configured for this test'); },
+            buildLiquidityPoolExchangeOp: async () => { throw new Error('buildLiquidityPoolExchangeOp not configured for this test'); },
+            executeBatch: async () => { throw new Error('executeBatch not configured for this test'); },
+            findOverReducingUpdateOpError: async () => null,
+            wasRecentlyOwnCancelled: () => false,
+            recordOwnCancel: () => {},
+            broadcastTxWithClassification: async () => ({})
+        });
+        defineEsmMockAbs(require.resolve('../modules/chain_orders'), CHAIN_ORDERS_NAMES, chainOrders);
+    } else {
+        chainOrders = require('../modules/chain_orders');
+    }
+}
+
+runEsmMockStages(['cow', 'daemon'], async (stage) => {
+    ensureFeeCache();
+    registerStageMocks(stage);
+    requireProdModules();
+    if (stage === 'cow') {
+        await main();
+    } else {
+        await runDaemonStageTests();
+    }
+});
 
 // ── UPDATE→CREATE fallback: size-update branch ──────────────────────────
 async function testUpdateToCreateFallbackOnNotFound() {
@@ -2716,8 +2882,3 @@ async function testAdoptionZeroFeeFallbackWithoutFeeCache() {
     }
     console.log('✓ UNC-019 passed');
 }
-
-main().catch((err) => {
-    console.error('Uncertain-broadcast test suite failed:', err);
-    process.exit(1);
-});

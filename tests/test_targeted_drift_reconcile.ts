@@ -1,34 +1,30 @@
 const assert = require('assert');
 
 const MaintenanceRuntime = require('../modules/dexbot_maintenance_runtime');
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
-const grid = require('../modules/order/grid');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 async function runTests() {
     console.log('Running Targeted Drift Reconcile Tests...');
 
-    const originalReadOpenOrders = chainOrders.readOpenOrders;
-    const originalMonitorDivergence = grid.monitorDivergence;
-
-    try {
-        console.log(' - Testing active-order shortfall triggers open-order sync...');
-
-        let readOpenOrdersCalls = 0;
-        let synchronized = false;
-        const orders = new Map();
-
-        chainOrders.readOpenOrders = async (accountId) => {
+    // Compiled ESM namespaces are frozen and require.cache injection cannot
+    // intercept static ESM imports, so chainOrders/grid overrides are gone.
+    // The readOpenOrders mock lives on a local plain object — the production
+    // flow reaches it via ctx._syncOpenOrdersAndProcessFills (test-owned), and
+    // monitorDivergence runs REAL against a persisted grid seeded to match the
+    // live grid (loadGrid returns the same slots) so it computes no divergence.
+    const chainOrders = {
+        readOpenOrders: async (accountId) => {
             readOpenOrdersCalls++;
             assert.strictEqual(accountId, '1.2.345', 'targeted sync should read orders for the bot account');
             return [{ id: '1.7.9001' }];
-        };
-        grid.monitorDivergence = async () => ({
-            needsUpdate: false,
-            buy: { ratio: false, rms: false, metric: 0 },
-            sell: { ratio: false, rms: false, metric: 0 },
-        });
+        },
+    };
+
+    console.log(' - Testing active-order shortfall triggers open-order sync...');
+
+    let readOpenOrdersCalls = 0;
+    let synchronized = false;
+    const orders = new Map();
 
         const ctx = {
             accountId: '1.2.345',
@@ -69,7 +65,9 @@ async function runTests() {
                 checkSpreadCondition: async () => ({ ordersPlaced: 0 }),
             },
             accountOrders: {
-                loadGrid: () => [],
+                // Persisted grid mirrors the live grid so the REAL
+                // monitorDivergence/compareGrids computes zero divergence.
+                loadGrid: () => Array.from(orders.values()),
             },
             _targetedDriftSyncCooldownMs: 60_000,
             _lastTargetedDriftSyncAt: 0,
@@ -88,7 +86,7 @@ async function runTests() {
             _processFillsWithBatching: async () => ({ aborted: false }),
             _syncOpenOrdersAndProcessFills: async function (_tag) {
                 const openOrders = await chainOrders.readOpenOrders(this.accountId);
-                const syncResult = await this.manager.synchronizeWithChain(openOrders, 'readOpenOrders');
+                const syncResult = await (this.manager.synchronizeWithChain as any)(openOrders, 'readOpenOrders');
                 return { syncResult, aborted: false, hasUnmatched: 0 };
             },
             _executeBatchIfNeeded: async () => ({ executed: false }),
@@ -107,11 +105,7 @@ async function runTests() {
         assert.strictEqual(synchronized, true, 'shortfall should synchronize from chain truth');
         assert.strictEqual(orders.get('slot-1').orderId, '1.7.9001', 'sync should restore the live order into the grid');
 
-        console.log('✓ Targeted drift reconcile tests passed!');
-    } finally {
-        chainOrders.readOpenOrders = originalReadOpenOrders;
-        grid.monitorDivergence = originalMonitorDivergence;
-    }
+    console.log('✓ Targeted drift reconcile tests passed!');
 }
 
 runTests().catch(err => {

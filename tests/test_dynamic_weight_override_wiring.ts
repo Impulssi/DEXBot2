@@ -2,29 +2,18 @@
 
 const assert = require('assert');
 const fs = require('fs');
-const path = require('path');
-const { BUILD_DIR } = require('../modules/constants');
-const { isDistCodeRoot } = require('../modules/launcher/runtime_entry');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+const { runEsmMockStages } = require('./helpers/esm_mocks');
 
+// loadMarketAdapterSettings() caches parsed settings in module state for the
+// lifetime of the process, and compiled ESM graphs cannot be re-loaded via
+// require.cache tricks. Run every scenario in its own hooked child process
+// (runEsmMockStages) so each one observes its own settings fixture.
 console.log('Running dynamic weight override wiring tests');
 
-const _isDist = isDistCodeRoot(path.dirname(__dirname));
-const marketAdapterPath = _isDist
-  ? path.resolve(__dirname, '..', 'market_adapter', 'market_adapter.js')
-  : require.resolve('../market_adapter/market_adapter.ts');
-const distMarketAdapterPath = path.resolve(__dirname, '..', BUILD_DIR, 'market_adapter', 'market_adapter.js');
-const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-const originalMarketAdapter = require.cache[marketAdapterPath];
-const originalDistMarketAdapter = require.cache[distMarketAdapterPath];
-const originalBitsharesClient = require.cache[bitsharesClientPath];
 const originalExistsSync = fs.existsSync;
 const originalReadFileSync = fs.readFileSync;
 
-function installMarketAdapterStubs(settingsJson) {
-    delete require.cache[marketAdapterPath];
-    delete require.cache[distMarketAdapterPath];
-
+function installSettingsFixture(settingsJson) {
     fs.existsSync = (filePath) => {
         const text = String(filePath);
         if (text.endsWith('/profiles/market_adapter_settings.json')) return true;
@@ -38,18 +27,11 @@ function installMarketAdapterStubs(settingsJson) {
         }
         return originalReadFileSync(filePath, encoding);
     };
-
-    setCachedModule(bitsharesClientPath, {
-        waitForConnected: async () => {},
-    });
 }
 
-function restoreMarketAdapterStubs() {
+function restoreFs() {
     fs.existsSync = originalExistsSync;
     fs.readFileSync = originalReadFileSync;
-    restoreCachedModule(marketAdapterPath, originalMarketAdapter);
-    restoreCachedModule(distMarketAdapterPath, originalDistMarketAdapter);
-    restoreCachedModule(bitsharesClientPath, originalBitsharesClient);
 }
 
 function testResolveBotCfgWiresMissingPairAndBotOverrides() {
@@ -92,7 +74,7 @@ function testResolveBotCfgWiresMissingPairAndBotOverrides() {
         ],
     };
 
-    installMarketAdapterStubs(settingsJson);
+    installSettingsFixture(settingsJson);
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
 
     const bot = {
@@ -144,7 +126,7 @@ function testResolveBotCfgWiresMissingPairOverridesWithoutBotOverride() {
         ],
     };
 
-    installMarketAdapterStubs(settingsJson);
+    installSettingsFixture(settingsJson);
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
 
     const bot = {
@@ -197,7 +179,7 @@ function testResolveBotCfgPassesThroughUnmarkedAmaSlopePercents() {
         ],
     };
 
-    installMarketAdapterStubs(settingsJson);
+    installSettingsFixture(settingsJson);
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
 
     const bot = {
@@ -248,7 +230,7 @@ function testResolveBotCfgKeepsMarkedPerBarAmaSlopePercents() {
         ],
     };
 
-    installMarketAdapterStubs(settingsJson);
+    installSettingsFixture(settingsJson);
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
 
     const bot = {
@@ -311,7 +293,7 @@ function testResolveBotCfgSanitizesAtrPeriodAndVolatilityClampOverrides() {
         ],
     };
 
-    installMarketAdapterStubs(settingsJson);
+    installSettingsFixture(settingsJson);
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
     const { MARKET_ADAPTER } = require('../modules/constants');
 
@@ -360,7 +342,7 @@ function testResolveBotCfgDoesNotLeakNestedTopLevelOverridesAcrossBots() {
         ],
     };
 
-    installMarketAdapterStubs(settingsJson);
+    installSettingsFixture(settingsJson);
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
     const { MARKET_ADAPTER } = require('../modules/constants');
     const globalCfg = { ...DEFAULTS };
@@ -433,7 +415,7 @@ function testResolveBotCfgPrefersExactPairOverFlippedFallback() {
         ],
     };
 
-    installMarketAdapterStubs(settingsJson);
+    installSettingsFixture(settingsJson);
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
 
     const bot = {
@@ -448,37 +430,24 @@ function testResolveBotCfgPrefersExactPairOverFlippedFallback() {
     assert.strictEqual(merged.maxSlopeOffset, 0.22, 'exact pair orientation should win over a flipped fallback match');
 }
 
-async function main() {
+const STAGES = {
+    wires_missing_pair_and_bot_overrides: testResolveBotCfgWiresMissingPairAndBotOverrides,
+    wires_missing_pair_overrides_without_bot_override: testResolveBotCfgWiresMissingPairOverridesWithoutBotOverride,
+    passes_through_unmarked_ama_slope_percents: testResolveBotCfgPassesThroughUnmarkedAmaSlopePercents,
+    keeps_marked_per_bar_ama_slope_percents: testResolveBotCfgKeepsMarkedPerBarAmaSlopePercents,
+    bilinear_interpolate_uses_override_nodes: testBilinearInterpolateUsesOverrideNodes,
+    sanitizes_atr_period_and_volatility_clamp_overrides: testResolveBotCfgSanitizesAtrPeriodAndVolatilityClampOverrides,
+    does_not_leak_nested_top_level_overrides_across_bots: testResolveBotCfgDoesNotLeakNestedTopLevelOverridesAcrossBots,
+    prefers_exact_pair_over_flipped_fallback: testResolveBotCfgPrefersExactPairOverFlippedFallback,
+};
+
+runEsmMockStages(Object.keys(STAGES), (stage) => {
+    const fn = STAGES[stage];
+    assert.strictEqual(typeof fn, 'function', `unknown stage ${stage}`);
+    console.log(` - ${stage}`);
     try {
-        testResolveBotCfgWiresMissingPairAndBotOverrides();
-        restoreMarketAdapterStubs();
-
-        testResolveBotCfgWiresMissingPairOverridesWithoutBotOverride();
-        restoreMarketAdapterStubs();
-
-        testResolveBotCfgPassesThroughUnmarkedAmaSlopePercents();
-        restoreMarketAdapterStubs();
-
-        testResolveBotCfgKeepsMarkedPerBarAmaSlopePercents();
-        restoreMarketAdapterStubs();
-
-        testBilinearInterpolateUsesOverrideNodes();
-        restoreMarketAdapterStubs();
-
-        testResolveBotCfgSanitizesAtrPeriodAndVolatilityClampOverrides();
-        restoreMarketAdapterStubs();
-
-        testResolveBotCfgDoesNotLeakNestedTopLevelOverridesAcrossBots();
-        restoreMarketAdapterStubs();
-
-        testResolveBotCfgPrefersExactPairOverFlippedFallback();
-        console.log('dynamic weight override wiring tests passed');
+        fn();
     } finally {
-        restoreMarketAdapterStubs();
+        restoreFs();
     }
-}
-
-main().catch((err) => {
-    console.error(err);
-    process.exit(1);
 });

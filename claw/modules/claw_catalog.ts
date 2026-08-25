@@ -809,7 +809,7 @@ function getClawToolCatalog() {
   return CLAW_TOOL_CATALOG.map(cloneTool);
 }
 
-function buildClawCommandExamples(scriptPath = 'tsx claw/scripts/claw_bridge.ts') {
+function buildClawCommandExamples(scriptPath = 'node dist/claw/scripts/claw_bridge.js') {
   return CLAW_TOOL_CATALOG
     .filter((tool) => Array.isArray(tool.exampleArgs))
     .map((tool) => [

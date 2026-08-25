@@ -494,12 +494,12 @@ Stale-Plan & Stack Discipline Tests (v1.4.8):
 ## Appendix D: Validation Gates
 
 Run these tests before promotion:
-- `tsx tests/test_engine_integration.ts`
-- `tsx tests/test_sequential_multi_fill.ts`
-- `tsx tests/test_sync_logic.ts`
-- `tsx tests/test_ghost_order_fix.ts`
-- `tsx tests/test_working_grid.ts`
-- `tsx tests/test_cow_master_plan.ts`
-- `tsx tests/test_cow_commit_guards.ts`
-- `tsx tests/test_cow_concurrent_fills.ts`
-- `tsx tests/test_cow_divergence_correction.ts`
+- `node dist/tests/test_engine_integration.js`
+- `node dist/tests/test_sequential_multi_fill.js`
+- `node dist/tests/test_sync_logic.js`
+- `node dist/tests/test_ghost_order_fix.js`
+- `node dist/tests/test_working_grid.js`
+- `node dist/tests/test_cow_master_plan.js`
+- `node dist/tests/test_cow_commit_guards.js`
+- `node dist/tests/test_cow_concurrent_fills.js`
+- `node dist/tests/test_cow_divergence_correction.js`

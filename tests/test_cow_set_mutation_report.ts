@@ -11,7 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
-import { assertOrdersStructurallySound } from './helpers/order_test_helpers.js';
+const { assertOrdersStructurallySound } = require('./helpers/order_test_helpers');
 const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('=== COW Index Set Mutation Detection Report ===\n');

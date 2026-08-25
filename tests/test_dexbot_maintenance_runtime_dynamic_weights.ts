@@ -2,68 +2,194 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
-const { ensureDir, readJSON, writeJSON } = require('../modules/storage').getStorage();
-const { fixedTo } = require('../modules/order/utils/math');
+// Compiled ESM namespaces are frozen and cannot be swapped via require.cache;
+// every scenario runs in its own hooked child process (runEsmMockStages) and
+// registers its own loader-hook module mocks via defineEsmMockAbs().
+const { runEsmMockStages, defineEsmMockAbs } = require('./helpers/esm_mocks');
 
 console.log('Running dexbot maintenance runtime dynamic weight tests');
 
-const { isDistCodeRoot } = require('../modules/launcher/runtime_entry');
-const _isDist = isDistCodeRoot(path.dirname(__dirname));
-const _adapterSource = 'market_adapter/market_adapter' + (_isDist ? '.js' : '.ts');
-const runtimePath = require.resolve('../modules/dexbot_maintenance_runtime');
-const dexbotClassPath = require.resolve('../modules/dexbot_class');
-const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-const chainKeysPath = require.resolve('../modules/chain_keys');
-const credentialPolicyPath = require.resolve('../modules/credential_policy');
-const chainOrdersPath = require.resolve('../modules/chain_orders');
-const orderModulePath = require.resolve('../modules/order');
-const gridPath = require.resolve('../modules/order/grid');
-const constantsPath = require.resolve('../modules/constants');
-const systemPath = require.resolve('../modules/order/utils/system');
-const validatePath = require.resolve('../modules/order/utils/validate');
-const formatPath = require.resolve('../modules/order/format');
-const orderUtilsPath = require.resolve('../modules/order/utils/order');
-const mathPath = require.resolve('../modules/order/utils/math');
-const processedFillStorePath = require.resolve('../modules/order/processed_fill_store');
-const fillRuntimePath = require.resolve('../modules/dexbot_fill_runtime');
-const creditRuntimePath = require.resolve('../modules/credit_runtime');
-const startupReconcilePath = require.resolve('../modules/order/grid_reconcile');
-const accountOrdersPath = require.resolve('../modules/account_orders');
-const botSettingsPath = require.resolve('../modules/bot_settings');
-const accountBotsPath = require.resolve('../modules/account_bots');
-const marketAdapterRuntimePath = require.resolve('../modules/launcher/market_adapter_runtime');
+const _adapterSource = 'market_adapter/market_adapter.js';
 
-const originals = new Map([
-    [runtimePath, require.cache[runtimePath]],
-    [dexbotClassPath, require.cache[dexbotClassPath]],
-    [bitsharesClientPath, require.cache[bitsharesClientPath]],
-    [chainKeysPath, require.cache[chainKeysPath]],
-    [credentialPolicyPath, require.cache[credentialPolicyPath]],
-    [chainOrdersPath, require.cache[chainOrdersPath]],
-    [orderModulePath, require.cache[orderModulePath]],
-    [gridPath, require.cache[gridPath]],
-    [constantsPath, require.cache[constantsPath]],
-    [systemPath, require.cache[systemPath]],
-    [validatePath, require.cache[validatePath]],
-    [formatPath, require.cache[formatPath]],
-    [orderUtilsPath, require.cache[orderUtilsPath]],
-    [mathPath, require.cache[mathPath]],
-    [processedFillStorePath, require.cache[processedFillStorePath]],
-    [fillRuntimePath, require.cache[fillRuntimePath]],
-    [creditRuntimePath, require.cache[creditRuntimePath]],
-    [startupReconcilePath, require.cache[startupReconcilePath]],
-    [accountOrdersPath, require.cache[accountOrdersPath]],
-    [botSettingsPath, require.cache[botSettingsPath]],
-    [accountBotsPath, require.cache[accountBotsPath]],
-    [marketAdapterRuntimePath, require.cache[marketAdapterRuntimePath]],
-]);
+// Name unions: every name any compiled consumer statically imports from the
+// mocked modules. Supersets are safe (extra synthetic re-exports are unused);
+// missing names break ESM linking with SyntaxError.
+const NAMES = {
+    bitsharesClient: ['BitShares', 'onReconnect', 'waitForConnected'],
+    chainOrders: [
+        'readOpenOrdersGuarded', 'readOpenOrders', 'listenForFills',
+        'resolveAccountId', 'selectAccount', 'setPreferredAccount',
+        'executeBatch', 'cancelOrder',
+    ],
+    grid: [
+        'calculateCurrentSpread', 'calculateGapSlots', 'checkGridHealth',
+        'checkSpreadCondition', 'initializeGrid', 'recalculateGrid',
+        'monitorDivergence', 'updateGridFromBlockchainSnapshot',
+        'isGridBloated', 'isGridBloatGraceActive', 'clearGridBloatFlag',
+    ],
+    system: [
+        'cloneMap', 'deepFreeze', 'deriveLiquidityPoolTokenValue',
+        'deriveMarketPrice', 'derivePrice', 'ensureDir',
+        'ensureProfilesDirectory', 'loadAmaCenterPrice',
+        'loadAmaCenterSnapshot', 'lookupAsset', 'nowIso',
+        'parseJsonWithComments', 'persistGridSnapshot', 'readInput',
+        'readPassword', 'resolveAccountRef', 'resolveAssetByRef', 'sleep',
+        'withBlockchainRetry', 'retryPersistenceIfNeeded',
+        'applyGridDivergenceCorrections', 'initializeFeeCache',
+    ],
+    format: ['formatCurrency', 'formatMetric2', 'isValidNumber', 'toFiniteNumber', 'formatPrice6'],
+    orderUtils: [
+        'applyChainSizeToGridOrder', 'assignGridRoles', 'buildCreateOrderArgs',
+        'buildDelta', 'buildFillKey', 'buildIndexes',
+        'buildOutsideInPairGroups', 'calculateBudgetedSizes',
+        'calculateIdealBoundary', 'chainOrderMatchesSlot',
+        'checkSizesBeforeMinimum', 'checkSizeThreshold',
+        'clearDuplicateOrphanDetection', 'convertToSpreadPlaceholder',
+        'deriveTargetBoundary', 'duplicateOrphanLogInfo',
+        'extractBatchOperationResults', 'filterOrdersByType',
+        'findMatchingGridOrderByOpenOrder', 'getActiveOrdersTotal',
+        'getSideBudget', 'hasOnChainId', 'isEmptyGridSlot',
+        'isOrderGoneErrorMessage', 'isOrderHealthy', 'isOrderOnChain',
+        'isOrderPlaced', 'isOrderVirtual', 'isPhantomOrder',
+        'isSlotAvailable', 'parseChainOrder', 'parseSlotIndex',
+        'resolveConfiguredPriceBound', 'resolveOnChainRetypeType',
+        'resolveSpreadOrderSide', 'shouldFlagOutOfSpread', 'virtualizeOrder',
+        'formatUnmatchedChainOrder', 'correctAllPriceMismatches',
+        'getOrderTypeFromUpdatedFlags',
+    ],
+    validate: [
+        'buildAbortedResult', 'buildStateUpdates', 'buildSuccessResult',
+        'checkFundDrift', 'evaluateCommit', 'hasExecutableActions',
+        'optimizeRebalanceActions', 'projectTargetToWorkingGrid',
+        'reconcileGrid', 'validateGridForPersistence', 'validateOrder',
+        'validateWorkingGridFunds',
+    ],
+    math: [
+        'adjustBudgetForBtsFees', 'allocateFundsByWeights',
+        'blockchainToFloat', 'calculateAvailableFundsValue',
+        'calculateGapSlots', 'calculateGridSideDivergenceMetric',
+        'calculateOrderCreationFees', 'calculateOrderSizes',
+        'calculatePriceTolerance', 'calculateRotationOrderSizes',
+        'calculateSpreadFromOrders', 'clamp', 'computeChainFundTotals',
+        'countGapBandSpread', 'findPriceCollision', 'fixedTo',
+        'floatToBlockchainInt', 'getAssetFees', 'getAssetFeesSafe',
+        'getBtsSide', 'getDoubleDustThreshold', 'getGridBestPrices',
+        'getMinOrderSize', 'getPrecisionByOrderType',
+        'getPrecisionsForManager', 'getPrecisionSlack', 'getSellStartIdx',
+        'getSingleDustThreshold', 'hasValidAccountTotals',
+        'isExplicitZeroAllocation', 'isPercentageString', 'isPositiveInt',
+        'isPositiveNumber', 'isPositiveNumberOrPercent', 'isSlotInRail',
+        'normalizeInt', 'parsePercentageString', 'resolveConfigValue',
+        'resolveConfigValueWithRegistry', 'resolveGapBand',
+        'resolveGapSlots', 'resolveRelativePrice', 'roundTo',
+        'roundToDecimals', 'toDecimal', 'validateBoundaryCommit',
+        'validateOrderAmountsWithinLimits', 'validatePersistedBoundary',
+        'cloneWeightDistribution',
+    ],
+    processedFillStore: ['ProcessedFillStore', 'PROCESSED_FILL_PERSISTENCE_MODES', 'resolveProcessedFillPersistenceMode'],
+    startupReconcile: ['attemptResumePersistedGridByPriceMatch', 'decideStartupGridAction', 'reconcileGridOrders'],
+    accountOrders: ['AccountOrders', 'createBotKey', 'sanitizeKey'],
+    botSettings: [
+        'assertNoDuplicateBotKeys', 'loadSettingsFile', 'normalizeBotEntries',
+        'normalizeBotEntry', 'resolveRawBotEntries', 'saveSettingsFile',
+        'selectActiveBotEntries',
+    ],
+    marketAdapterRuntime: ['isLikelyMarketAdapterProcess', 'isLockStale', 'getSharedMarketAdapterRuntime'],
+    maintenanceRuntime: ['isOrderDoesNotExistError', 'usesAmaGridPrice'],
+};
 
-const originalExistsSync = fs.existsSync;
-const originalReadFileSync = fs.readFileSync;
-const originalUnlinkSync = fs.unlinkSync;
-let dynamicWeightSnapshotMode = 'live';
+function requireStorage() {
+    return require('../modules/storage').getStorage();
+}
+
+// Lazy requires for modules that must load AFTER per-stage env vars are set
+// (Config snapshots process.env at module-load time).
+function requirePaths() {
+    return require('../modules/paths').PATHS;
+}
+
+function makeTempWhitelist(flagsByBot) {
+    const wlPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-dw-wl-')), 'market_adapter_whitelist.json');
+    requireStorage().writeJSON(wlPath, { whitelist: flagsByBot });
+    // Must be set before Config first loads in this child process.
+    process.env.DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE = wlPath;
+    return {
+        update(flagsByBotUpdate) {
+            requireStorage().writeJSON(wlPath, { whitelist: flagsByBotUpdate });
+        },
+        cleanup() {
+            try { fs.rmSync(path.dirname(wlPath), { recursive: true, force: true }); } catch (_) {}
+            delete process.env.DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE;
+        },
+    };
+}
+
+function patchBotsJson(bots) {
+    const originalExistsSync = fs.existsSync;
+    const originalReadFileSync = fs.readFileSync;
+    const payload = JSON.stringify({ bots });
+    fs.existsSync = (filePath) => {
+        if (String(filePath).endsWith('/profiles/bots.json')) return true;
+        return originalExistsSync(filePath);
+    };
+    fs.readFileSync = (filePath, encoding) => {
+        if (String(filePath).endsWith('/profiles/bots.json')) return payload;
+        return originalReadFileSync(filePath, encoding);
+    };
+    return () => {
+        fs.existsSync = originalExistsSync;
+        fs.readFileSync = originalReadFileSync;
+    };
+}
+
+// Replica of the guarded open-orders read contract: clean array passes
+// through, null signals an ambiguous/truncated read.
+function guardedReadOpenOrdersReplica(chainOrdersModule: any, accountId: any, opts: any = {}) {
+    return (async () => {
+        try {
+            const orders = await chainOrdersModule.readOpenOrders(accountId);
+            return Array.isArray(orders) ? orders : [];
+        } catch (err: any) {
+            if (typeof opts.log === 'function') opts.log(`open-orders read failed: ${err?.message || err}`, 'warn');
+            return [];
+        }
+    })();
+}
+
+function installCoreResyncMocks({ snapshotMode = 'live' } = {}) {
+    defineEsmMockAbs(require.resolve('../modules/bitshares_client'), NAMES.bitsharesClient, {
+        BitShares: {},
+        waitForConnected: async () => {},
+        onReconnect: () => {},
+    });
+    defineEsmMockAbs(require.resolve('../modules/chain_orders'), NAMES.chainOrders, {
+        readOpenOrders: async () => [],
+        readOpenOrdersGuarded: (mod, accountId, opts) => guardedReadOpenOrdersReplica(mod, accountId, opts),
+        listenForFills: async () => async () => {},
+        executeBatch: async () => ({ tx_id: 'noop' }),
+    });
+    defineEsmMockAbs(require.resolve('../modules/order/utils/system'), NAMES.system, {
+        loadAmaCenterSnapshot: () => ({
+            centerPrice: 100,
+            dynamicWeights: {
+                isReady: snapshotMode !== 'stale',
+                trend: 'NEUTRAL',
+                confidence: 0,
+                effectiveWeights: { sell: 0.42, buy: 0.22 },
+                baseWeights: snapshotMode === 'base-changed'
+                    ? { sell: 0.8, buy: 0.2 }
+                    : { sell: 0.6, buy: 0.4 },
+            },
+        }),
+        parseJsonWithComments: (text) => JSON.parse(text),
+        nowIso: () => new Date().toISOString(),
+        retryPersistenceIfNeeded: async () => {},
+        applyGridDivergenceCorrections: async () => ({}),
+        sleep: async () => {},
+    });
+}
 
 async function testPerformGridResyncAppliesVolatilityOnlyDynamicWeights() {
     const logs = [];
@@ -72,43 +198,13 @@ async function testPerformGridResyncAppliesVolatilityOnlyDynamicWeights() {
     let startCalled = false;
     let finishCalled = false;
 
-    delete require.cache[runtimePath];
+    const restoreFs = patchBotsJson([
+        { name: 'Volatility Bot', weightDistribution: { sell: 0.6, buy: 0.4 } },
+    ]);
+    const wl = makeTempWhitelist({ 'volatility-bot-0': { ama: true, dynamicWeight: true } });
 
-    fs.existsSync = (filePath) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/bots.json')) return true;
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) return true;
-        if (text.endsWith('/tmp/nonexistent-dw.trigger')) return false;
-        return originalExistsSync(filePath);
-    };
-
-    fs.readFileSync = (filePath, encoding) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/bots.json')) {
-            return JSON.stringify({
-                bots: [
-                    {
-                        name: 'Volatility Bot',
-                        weightDistribution: { sell: 0.6, buy: 0.4 },
-                    },
-                ],
-            });
-        }
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) {
-            return JSON.stringify({
-                whitelist: {
-                    'volatility-bot-0': { ama: true, dynamicWeight: true },
-                },
-            });
-        }
-        return originalReadFileSync(filePath, encoding);
-    };
-
-    setCachedModule(bitsharesClientPath, { BitShares: {} });
-    setCachedModule(chainOrdersPath, {
-        readOpenOrders: async () => [],
-    });
-    setCachedModule(gridPath, {
+    installCoreResyncMocks({ snapshotMode: 'live' });
+    defineEsmMockAbs(require.resolve('../modules/order/grid'), NAMES.grid, {
         recalculateGrid: async (manager, opts) => {
             recalculateCalled = true;
             assert.deepStrictEqual(
@@ -123,49 +219,19 @@ async function testPerformGridResyncAppliesVolatilityOnlyDynamicWeights() {
             );
         },
     });
-    setCachedModule(constantsPath, {
-        ORDER_STATES: { ACTIVE: 'active', PARTIAL: 'partial' },
-        ORDER_TYPES: { BUY: 'buy', SELL: 'sell' },
-        TIMING: {},
-        MAINTENANCE: {},
-        GRID_LIMITS: {},
-        LOGGING_CONFIG: {},
-        FEE_PARAMETERS: { BTS_RESERVATION_MULTIPLIER: 5, BTS_FALLBACK_FEE: 100 },
-        BTS_PRECISION: 8,
-        NATIVE_CLIENT: {},
-    });
-    setCachedModule(systemPath, {
-        retryPersistenceIfNeeded: async () => {},
-        applyGridDivergenceCorrections: async (_1: any, _2: any, _3: any, _4: any, _5: any) => {},
-        loadAmaCenterSnapshot: () => ({
-            centerPrice: 100,
-            dynamicWeights: {
-                isReady: dynamicWeightSnapshotMode !== 'stale',
-                trend: 'NEUTRAL',
-                confidence: 0,
-                effectiveWeights: { sell: 0.42, buy: 0.22 },
-                baseWeights: dynamicWeightSnapshotMode === 'base-changed'
-                    ? { sell: 0.8, buy: 0.2 }
-                    : { sell: 0.6, buy: 0.4 },
-            },
-        }),
-        parseJsonWithComments: (text) => JSON.parse(text),
-        nowIso: () => new Date().toISOString(),
-    });
-    setCachedModule(formatPath, {});
-    setCachedModule(orderUtilsPath, {
+    defineEsmMockAbs(require.resolve('../modules/order/format'), NAMES.format, {});
+    defineEsmMockAbs(require.resolve('../modules/order/utils/order'), NAMES.orderUtils, {
         virtualizeOrder: (order) => order,
         convertToSpreadPlaceholder: (order) => ({ ...order, type: 'spread', size: 0, state: 'virtual', orderId: null }),
     });
-    setCachedModule(accountBotsPath, {});
-    setCachedModule(marketAdapterRuntimePath, {
+    defineEsmMockAbs(require.resolve('../modules/launcher/market_adapter_runtime'), NAMES.marketAdapterRuntime, {
         getSharedMarketAdapterRuntime: () => ({
             syncBot: async () => ({ running: false, started: false, stopped: false }),
             releaseBot: async () => ({ running: false, stopped: false }),
         }),
     });
 
-    const { performGridResync } = require(runtimePath);
+    const { performGridResync } = require('../modules/dexbot_maintenance_runtime');
 
     const self = {
         config: {
@@ -184,7 +250,7 @@ async function testPerformGridResyncAppliesVolatilityOnlyDynamicWeights() {
             funds: { btsFeesOwed: 5 },
             startBootstrap: () => { startCalled = true; },
             finishBootstrap: () => { finishCalled = true; },
-            _fundLock: { acquire: async (fn: any) => fn() },
+            _fundLock: { acquire: async (fn) => fn() },
             persistGrid: async () => { persistCalled = true; },
         },
         _log: (msg) => logs.push(msg),
@@ -211,15 +277,13 @@ async function testPerformGridResyncAppliesVolatilityOnlyDynamicWeights() {
             'resync should log that it applied the dynamic weights'
         );
     } finally {
-        fs.unlinkSync = originalUnlinkSync;
+        restoreFs();
+        wl.cleanup();
     }
 }
 
-function testRefreshDynamicWeightDistributionAppliesAndFallsBack() {
-    const { refreshDynamicWeightDistribution } = require(runtimePath);
-
-    dynamicWeightSnapshotMode = 'live';
-    const self = {
+function makeRefreshSelf(logs: any[] = []) {
+    return {
         config: {
             name: 'Volatility Bot',
             botKey: 'volatility-bot-0',
@@ -231,590 +295,97 @@ function testRefreshDynamicWeightDistributionAppliesAndFallsBack() {
                 weightDistribution: { sell: 0.6, buy: 0.4 },
             },
         },
-        _log: () => {},
+        _log: (msg) => { if (logs) logs.push(msg); },
     };
-
-    const applied = refreshDynamicWeightDistribution(self, 'unit-test-live');
-    assert.strictEqual(applied.applied, true, 'ready dynamic weights should be applied');
-    assert.deepStrictEqual(self.config.weightDistribution, { sell: 0.42, buy: 0.22 });
-    assert.deepStrictEqual(self.manager.config.weightDistribution, { sell: 0.42, buy: 0.22 });
-
-    dynamicWeightSnapshotMode = 'stale';
-    const reverted = refreshDynamicWeightDistribution(self, 'unit-test-stale');
-    assert.strictEqual(reverted.applied, false, 'stale dynamic weights should not be applied');
-    assert.deepStrictEqual(self.config.weightDistribution, { sell: 0.6, buy: 0.4 });
-    assert.deepStrictEqual(self.manager.config.weightDistribution, { sell: 0.6, buy: 0.4 });
 }
 
-function testRefreshDynamicWeightDistributionReloadsWhitelistFlags() {
-    const { refreshDynamicWeightDistribution } = require(runtimePath);
-
-    let whitelistEnabled = true;
-    fs.existsSync = (filePath) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) return true;
-        return originalExistsSync(filePath);
-    };
-    fs.readFileSync = (filePath, encoding) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) {
-            return JSON.stringify({
-                whitelist: {
-                    'volatility-bot-0': { ama: true, dynamicWeight: whitelistEnabled },
-                },
-            });
-        }
-        return originalReadFileSync(filePath, encoding);
-    };
-
-    dynamicWeightSnapshotMode = 'live';
-    const self = {
-        config: {
-            name: 'Volatility Bot',
-            botKey: 'volatility-bot-0',
-            weightDistribution: { sell: 0.6, buy: 0.4 },
-        },
-        _baseWeightDistribution: { sell: 0.6, buy: 0.4 },
-        manager: {
-            config: {
-                weightDistribution: { sell: 0.6, buy: 0.4 },
-            },
-        },
-        _log: () => {},
-    };
-
-    const applied = refreshDynamicWeightDistribution(self, 'unit-test-live-whitelist');
-    assert.strictEqual(applied.applied, true, 'whitelisted bot should apply live weights');
-    assert.deepStrictEqual(self.config.weightDistribution, { sell: 0.42, buy: 0.22 });
-    assert.deepStrictEqual(self.manager.config.weightDistribution, { sell: 0.42, buy: 0.22 });
-
-    whitelistEnabled = false;
-    const reverted = refreshDynamicWeightDistribution(self, 'unit-test-whitelist-removed');
-    assert.strictEqual(reverted.applied, false, 'refresh should pick up whitelist removal without restart');
-    assert.deepStrictEqual(self.config.weightDistribution, { sell: 0.6, buy: 0.4 });
-    assert.deepStrictEqual(self.manager.config.weightDistribution, { sell: 0.6, buy: 0.4 });
-}
-
-async function testManualTriggerResetRefreshesCenterPrice() {
-    const { handlePendingTriggerReset } = require(runtimePath);
-
-    const botKey = `manual-reset-${Date.now()}`;
-    const triggerFile = `/tmp/${botKey}.trigger`;
-    const snapshotFile = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
-
-    ensureDir(path.dirname(snapshotFile));
-    writeJSON(snapshotFile, {
-        centerPrice: 100,
-        amaCenterPrice: 123.45,
-        gridPriceOffsetPct: 0.8,
-        source: _adapterSource,
-        updatedAt: '2026-01-01T00:00:00Z',
-    });
-    fs.writeFileSync(triggerFile, '', 'utf8');
-
-    const previousExistsSync = fs.existsSync;
-    const previousReadFileSync = fs.readFileSync;
-    const logs = [];
-
-    fs.existsSync = (filePath) => {
-        const text = String(filePath);
-        if (text === triggerFile) return true;
-        return previousExistsSync(filePath);
-    };
-    fs.readFileSync = (filePath, encoding) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/bots.json')) {
-            return JSON.stringify({
-                bots: [
-                    {
-                        name: 'Manual Reset Bot',
-                        weightDistribution: { sell: 0.6, buy: 0.4 },
-                    },
-                ],
-            });
-        }
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) {
-            return JSON.stringify({
-                whitelist: {
-                    [botKey]: { ama: true, dynamicWeight: true },
-                },
-            });
-        }
-        return previousReadFileSync(filePath, encoding);
-    };
-
-    const self = {
-        config: {
-            name: 'Manual Reset Bot',
-            botKey,
-            botIndex: 0,
-            weightDistribution: { sell: 0.6, buy: 0.4 },
-        },
-        _baseWeightDistribution: { sell: 0.6, buy: 0.4 },
-        manager: {
-            config: {
-                name: 'Manual Reset Bot',
-                botKey,
-                botIndex: 0,
-                weightDistribution: { sell: 0.6, buy: 0.4 },
-            },
-            funds: { btsFeesOwed: 2 },
-            _fillProcessingLock: {
-                acquire: async (fn) => fn(),
-            },
-            _fundLock: { acquire: async (fn: any) => fn() },
-            startBootstrap: () => {},
-            finishBootstrap: () => {},
-            persistGrid: async () => {},
-        },
-        accountId: '1.2.345',
-        account: { id: '1.2.345' },
-        privateKey: 'test-key',
-        triggerFile,
-        _log: (msg) => logs.push(msg),
-        _warn: (msg) => logs.push(`WARN:${msg}`),
-        _performGridResync: async (options) => require(runtimePath).performGridResync(self, options),
-    };
+async function testRefreshDynamicWeightDistributionAppliesAndFallsBack() {
+    const wl = makeTempWhitelist({ 'volatility-bot-0': { ama: true, dynamicWeight: true } });
+    installCoreResyncMocks({ snapshotMode: 'live' });
+    const { refreshDynamicWeightDistribution } = require('../modules/dexbot_maintenance_runtime');
 
     try {
-        const ok = await handlePendingTriggerReset(self);
-        assert.strictEqual(ok, true, 'manual trigger reset should succeed');
+        const self = makeRefreshSelf();
+        const applied = refreshDynamicWeightDistribution(self, 'unit-test-live');
+        assert.strictEqual(applied.applied, true, 'ready dynamic weights should be applied');
+        assert.deepStrictEqual(self.config.weightDistribution, { sell: 0.42, buy: 0.22 });
+        assert.deepStrictEqual(self.manager.config.weightDistribution, { sell: 0.42, buy: 0.22 });
+    } finally {
+        wl.cleanup();
+    }
+}
 
-        const updated = readJSON(snapshotFile);
-        assert.strictEqual(updated.centerPrice, 123.45, 'manual reset should refresh centerPrice from amaCenterPrice');
-        assert.strictEqual(updated.gridPriceOffsetPct, 0.8, 'manual reset should preserve the AMA spread offset for the rebuild');
-        assert.strictEqual(updated.lastGridResetSource, 'manual_grid_resync', 'manual reset should record manual reset provenance');
+async function testRefreshDynamicWeightDistributionStaleFallback() {
+    const wl = makeTempWhitelist({ 'volatility-bot-0': { ama: true, dynamicWeight: true } });
+    installCoreResyncMocks({ snapshotMode: 'stale' });
+    const { refreshDynamicWeightDistribution } = require('../modules/dexbot_maintenance_runtime');
+
+    try {
+        const self = makeRefreshSelf();
+        const reverted = refreshDynamicWeightDistribution(self, 'unit-test-stale');
+        assert.strictEqual(reverted.applied, false, 'stale dynamic weights should not be applied');
+        assert.deepStrictEqual(self.config.weightDistribution, { sell: 0.6, buy: 0.4 });
+        assert.deepStrictEqual(self.manager.config.weightDistribution, { sell: 0.6, buy: 0.4 });
+    } finally {
+        wl.cleanup();
+    }
+}
+
+async function testRefreshDynamicWeightDistributionReloadsWhitelistFlags() {
+    const wl = makeTempWhitelist({ 'volatility-bot-0': { ama: true, dynamicWeight: true } });
+    installCoreResyncMocks({ snapshotMode: 'live' });
+    const { refreshDynamicWeightDistribution } = require('../modules/dexbot_maintenance_runtime');
+
+    try {
+        const self = makeRefreshSelf();
+        const applied = refreshDynamicWeightDistribution(self, 'unit-test-live-whitelist');
+        assert.strictEqual(applied.applied, true, 'whitelisted bot should apply live weights');
+        assert.deepStrictEqual(self.config.weightDistribution, { sell: 0.42, buy: 0.22 });
+        assert.deepStrictEqual(self.manager.config.weightDistribution, { sell: 0.42, buy: 0.22 });
+
+        wl.update({});
+        const reverted = refreshDynamicWeightDistribution(self, 'unit-test-whitelist-removed');
+        assert.strictEqual(reverted.applied, false, 'refresh should pick up whitelist removal without restart');
+        assert.deepStrictEqual(self.config.weightDistribution, { sell: 0.6, buy: 0.4 });
+        assert.deepStrictEqual(self.manager.config.weightDistribution, { sell: 0.6, buy: 0.4 });
+    } finally {
+        wl.cleanup();
+    }
+}
+
+async function testRefreshDynamicWeightDistributionRejectsStaleBaseWeights() {
+    const logs = [];
+    const wl = makeTempWhitelist({ 'volatility-bot-0': { ama: true, dynamicWeight: true } });
+    installCoreResyncMocks({ snapshotMode: 'base-changed' });
+    const { refreshDynamicWeightDistribution } = require('../modules/dexbot_maintenance_runtime');
+
+    try {
+        const self = makeRefreshSelf(logs);
+        const result = refreshDynamicWeightDistribution(self, 'unit-test-base-mismatch');
+        assert.strictEqual(result.applied, false, 'stale base weights should cause fallback to static');
+        assert.deepStrictEqual(self.config.weightDistribution, { sell: 0.6, buy: 0.4 });
+        assert.deepStrictEqual(self.manager.config.weightDistribution, { sell: 0.6, buy: 0.4 });
         assert.ok(
-            logs.some((msg) => String(msg).includes('Refreshed AMA center snapshot for manual grid reset.')),
-            'manual reset should log that the center snapshot was refreshed'
+            logs.some((msg) => String(msg).includes('Skipping stale dynamic weights')),
+            'should log a warning about stale dynamic weights'
+        );
+        assert.ok(
+            logs.some((msg) => String(msg).includes('snapshot base (sell=0.8, buy=0.2) != config (sell=0.6, buy=0.4)')),
+            'should log the mismatched base vs config values'
         );
     } finally {
-        fs.existsSync = previousExistsSync;
-        fs.readFileSync = previousReadFileSync;
-        try { originalUnlinkSync(triggerFile); } catch (_) {}
-        try { originalUnlinkSync(snapshotFile); } catch (_) {}
+        wl.cleanup();
     }
 }
 
-async function testManualTriggerResetKeepsOffsetWhenCenterAlreadyCurrent() {
-    const { handlePendingTriggerReset } = require(runtimePath);
+async function testUpdateBotGridResetMetadataRecordsActualReset() {
+    const PATHS = requirePaths();
+    const { ensureDir, readJSON, writeJSON } = requireStorage();
 
-    const botKey = `manual-reset-current-${Date.now()}`;
-    const triggerFile = `/tmp/${botKey}.trigger`;
-    const snapshotFile = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
-
-    ensureDir(path.dirname(snapshotFile));
-    writeJSON(snapshotFile, {
-        gridCenterPrice: 123.45,
-        centerPrice: 123.45,
-        amaCenterPrice: 123.45,
-        gridPriceOffsetPct: 0.8,
-        source: _adapterSource,
-        updatedAt: '2026-01-01T00:00:00Z',
-    });
-    fs.writeFileSync(triggerFile, '', 'utf8');
-
-    const previousExistsSync = fs.existsSync;
-    const previousReadFileSync = fs.readFileSync;
-
-    fs.existsSync = (filePath) => {
-        const text = String(filePath);
-        if (text === triggerFile) return true;
-        return previousExistsSync(filePath);
-    };
-    fs.readFileSync = (filePath, encoding) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/bots.json')) {
-            return JSON.stringify({
-                bots: [
-                    {
-                        name: 'Manual Reset Current Bot',
-                        weightDistribution: { sell: 0.6, buy: 0.4 },
-                    },
-                ],
-            });
-        }
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) {
-            return JSON.stringify({
-                whitelist: {
-                    [botKey]: { ama: true, dynamicWeight: true },
-                },
-            });
-        }
-        return previousReadFileSync(filePath, encoding);
-    };
-
-    const self = {
-        config: {
-            name: 'Manual Reset Current Bot',
-            botKey,
-            botIndex: 0,
-            weightDistribution: { sell: 0.6, buy: 0.4 },
-        },
-        _baseWeightDistribution: { sell: 0.6, buy: 0.4 },
-        manager: {
-            config: {
-                name: 'Manual Reset Current Bot',
-                botKey,
-                botIndex: 0,
-                weightDistribution: { sell: 0.6, buy: 0.4 },
-            },
-            funds: { btsFeesOwed: 2 },
-            _fillProcessingLock: {
-                acquire: async (fn) => fn(),
-            },
-            _fundLock: { acquire: async (fn: any) => fn() },
-            startBootstrap: () => {},
-            finishBootstrap: () => {},
-            persistGrid: async () => {},
-        },
-        accountId: '1.2.345',
-        account: { id: '1.2.345' },
-        privateKey: 'test-key',
-        triggerFile,
-        _log: () => {},
-        _warn: () => {},
-    };
-
-    try {
-        const ok = await handlePendingTriggerReset(self);
-        assert.strictEqual(ok, true, 'manual trigger reset should succeed when center already equals AMA');
-
-        const updated = readJSON(snapshotFile);
-        assert.strictEqual(updated.centerPrice, 123.45, 'manual reset should leave the current AMA center intact');
-        assert.strictEqual(updated.gridPriceOffsetPct, 0.8, 'manual reset should preserve the AMA spread offset when center is already current');
-    } finally {
-        fs.existsSync = previousExistsSync;
-        fs.readFileSync = previousReadFileSync;
-        try { originalUnlinkSync(triggerFile); } catch (_) {}
-        try { originalUnlinkSync(snapshotFile); } catch (_) {}
-    }
-}
-
-async function testMarketAdapterTriggerResetRefreshesAmaCenterPrice() {
-    const { handlePendingTriggerReset } = require(runtimePath);
-
-    const botKey = `market-adapter-reset-${Date.now()}`;
-    const triggerFile = `/tmp/${botKey}.trigger`;
-    const snapshotFile = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
-
-    ensureDir(path.dirname(snapshotFile));
-    writeJSON(snapshotFile, {
-        gridCenterPrice: 100,
-        centerPrice: 100,
-        amaCenterPrice: 123.45,
-        gridPriceOffsetPct: 0.8,
-        source: _adapterSource,
-        updatedAt: '2026-01-01T00:00:00Z',
-    });
-    writeJSON(triggerFile, {
-        source: _adapterSource,
-        reason: 'market_adapter_delta_threshold',
-        newCenterPrice: 100,
-        amaCenterPrice: 123.45,
-    });
-
-    const previousExistsSync = fs.existsSync;
-    const previousReadFileSync = fs.readFileSync;
-    const logs = [];
-
-    fs.existsSync = (filePath) => {
-        const text = String(filePath);
-        if (text === triggerFile) return true;
-        return previousExistsSync(filePath);
-    };
-    fs.readFileSync = (filePath, encoding) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/bots.json')) {
-            return JSON.stringify({
-                bots: [
-                    {
-                        name: 'Market Adapter Reset Bot',
-                        weightDistribution: { sell: 0.6, buy: 0.4 },
-                    },
-                ],
-            });
-        }
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) {
-            return JSON.stringify({
-                whitelist: {
-                    [botKey]: { ama: true, dynamicWeight: true },
-                },
-            });
-        }
-        return previousReadFileSync(filePath, encoding);
-    };
-
-    const self = {
-        config: {
-            name: 'Market Adapter Reset Bot',
-            botKey,
-            botIndex: 0,
-            weightDistribution: { sell: 0.6, buy: 0.4 },
-        },
-        _baseWeightDistribution: { sell: 0.6, buy: 0.4 },
-        manager: {
-            config: {
-                name: 'Market Adapter Reset Bot',
-                botKey,
-                botIndex: 0,
-                weightDistribution: { sell: 0.6, buy: 0.4 },
-            },
-            funds: { btsFeesOwed: 2 },
-            _fillProcessingLock: {
-                acquire: async (fn) => fn(),
-            },
-            _fundLock: { acquire: async (fn: any) => fn() },
-            startBootstrap: () => {},
-            finishBootstrap: () => {},
-            persistGrid: async () => {},
-        },
-        accountId: '1.2.345',
-        account: { id: '1.2.345' },
-        privateKey: 'test-key',
-        triggerFile,
-        _log: (msg) => logs.push(msg),
-        _warn: (msg) => logs.push(`WARN:${msg}`),
-        _performGridResync: async (options) => require(runtimePath).performGridResync(self, options),
-    };
-
-    try {
-        const ok = await handlePendingTriggerReset(self);
-        assert.strictEqual(ok, true, 'market-adapter trigger reset should succeed');
-
-        const updated = readJSON(snapshotFile);
-        assert.strictEqual(updated.centerPrice, 123.45, 'market-adapter reset should refresh centerPrice from latest amaCenterPrice');
-        assert.strictEqual(updated.amaCenterPrice, 123.45, 'market-adapter reset should preserve raw AMA diagnostics');
-        assert.strictEqual(updated.lastGridResetSource, 'market_adapter_delta_threshold', 'market-adapter reset should preserve the trigger reason as reset provenance');
-        assert.ok(
-            logs.some((msg) => String(msg).includes('AMA center grid reset')),
-            'market-adapter reset should log that the AMA center snapshot was refreshed'
-        );
-    } finally {
-        fs.existsSync = previousExistsSync;
-        fs.readFileSync = previousReadFileSync;
-        try { originalUnlinkSync(triggerFile); } catch (_) {}
-        try { originalUnlinkSync(snapshotFile); } catch (_) {}
-    }
-}
-
-async function testMarketAdapterBootstrapTriggerResetRecordsBootstrapSource() {
-    const { handlePendingTriggerReset } = require(runtimePath);
-
-    const botKey = `market-adapter-bootstrap-${Date.now()}`;
-    const triggerFile = `/tmp/${botKey}.trigger`;
-    const snapshotFile = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
-
-    ensureDir(path.dirname(snapshotFile));
-    writeJSON(snapshotFile, {
-        gridCenterPrice: 100,
-        centerPrice: 100,
-        amaCenterPrice: 123.45,
-        source: _adapterSource,
-        updatedAt: '2026-01-01T00:00:00Z',
-    });
-    writeJSON(triggerFile, {
-        source: _adapterSource,
-        reason: 'market_adapter_bootstrap',
-        newCenterPrice: 100,
-        amaCenterPrice: 123.45,
-    });
-
-    const previousExistsSync = fs.existsSync;
-    const previousReadFileSync = fs.readFileSync;
-    const logs = [];
-
-    fs.existsSync = (filePath) => {
-        const text = String(filePath);
-        if (text === triggerFile) return true;
-        return previousExistsSync(filePath);
-    };
-    fs.readFileSync = (filePath, encoding) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/bots.json')) {
-            return JSON.stringify({
-                bots: [
-                    {
-                        name: 'Market Adapter Bootstrap Bot',
-                        weightDistribution: { sell: 0.6, buy: 0.4 },
-                    },
-                ],
-            });
-        }
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) {
-            return JSON.stringify({
-                whitelist: {
-                    [botKey]: { ama: true, dynamicWeight: true },
-                },
-            });
-        }
-        return previousReadFileSync(filePath, encoding);
-    };
-
-    const self = {
-        config: {
-            name: 'Market Adapter Bootstrap Bot',
-            botKey,
-            botIndex: 0,
-            weightDistribution: { sell: 0.6, buy: 0.4 },
-        },
-        _baseWeightDistribution: { sell: 0.6, buy: 0.4 },
-        manager: {
-            config: {
-                name: 'Market Adapter Bootstrap Bot',
-                botKey,
-                botIndex: 0,
-                weightDistribution: { sell: 0.6, buy: 0.4 },
-            },
-            funds: { btsFeesOwed: 2 },
-            _fillProcessingLock: {
-                acquire: async (fn) => fn(),
-            },
-            _fundLock: { acquire: async (fn: any) => fn() },
-            startBootstrap: () => {},
-            finishBootstrap: () => {},
-            persistGrid: async () => {},
-        },
-        accountId: '1.2.345',
-        account: { id: '1.2.345' },
-        privateKey: 'test-key',
-        triggerFile,
-        _log: (msg) => logs.push(msg),
-        _warn: (msg) => logs.push(`WARN:${msg}`),
-        _performGridResync: async (options) => require(runtimePath).performGridResync(self, options),
-    };
-
-    try {
-        const ok = await handlePendingTriggerReset(self);
-        assert.strictEqual(ok, true, 'market-adapter bootstrap trigger reset should succeed');
-
-        const updated = readJSON(snapshotFile);
-        assert.strictEqual(updated.centerPrice, 123.45, 'market-adapter bootstrap reset should refresh centerPrice from latest amaCenterPrice');
-        assert.strictEqual(updated.amaCenterPrice, 123.45, 'market-adapter bootstrap reset should preserve raw AMA diagnostics');
-        assert.strictEqual(updated.lastGridResetSource, 'market_adapter_bootstrap', 'market-adapter bootstrap reset should preserve bootstrap provenance');
-        assert.ok(
-            logs.some((msg) => String(msg).includes('AMA bootstrap grid reset')),
-            'market-adapter bootstrap reset should log that the AMA center snapshot was refreshed'
-        );
-    } finally {
-        fs.existsSync = previousExistsSync;
-        fs.readFileSync = previousReadFileSync;
-        try { originalUnlinkSync(triggerFile); } catch (_) {}
-        try { originalUnlinkSync(snapshotFile); } catch (_) {}
-    }
-}
-
-async function testMarketAdapterSlopeTriggerResetRecordsSlopeSource() {
-    const { handlePendingTriggerReset } = require(runtimePath);
-
-    const botKey = `market-adapter-slope-${Date.now()}`;
-    const triggerFile = `/tmp/${botKey}.trigger`;
-    const snapshotFile = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
-
-    ensureDir(path.dirname(snapshotFile));
-    writeJSON(snapshotFile, {
-        gridCenterPrice: 100,
-        centerPrice: 100,
-        amaCenterPrice: 123.45,
-        source: _adapterSource,
-        updatedAt: '2026-01-01T00:00:00Z',
-    });
-    writeJSON(triggerFile, {
-        source: _adapterSource,
-        reason: 'market_adapter_ama_slope_delta_threshold',
-        newCenterPrice: 100,
-        amaCenterPrice: 123.45,
-    });
-
-    const previousExistsSync = fs.existsSync;
-    const previousReadFileSync = fs.readFileSync;
-    const logs = [];
-
-    fs.existsSync = (filePath) => {
-        const text = String(filePath);
-        if (text === triggerFile) return true;
-        return previousExistsSync(filePath);
-    };
-    fs.readFileSync = (filePath, encoding) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/bots.json')) {
-            return JSON.stringify({
-                bots: [
-                    {
-                        name: 'Market Adapter Slope Bot',
-                        weightDistribution: { sell: 0.6, buy: 0.4 },
-                    },
-                ],
-            });
-        }
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) {
-            return JSON.stringify({
-                whitelist: {
-                    [botKey]: { ama: true, dynamicWeight: true },
-                },
-            });
-        }
-        return previousReadFileSync(filePath, encoding);
-    };
-
-    const self = {
-        config: {
-            name: 'Market Adapter Slope Bot',
-            botKey,
-            botIndex: 0,
-            weightDistribution: { sell: 0.6, buy: 0.4 },
-        },
-        _baseWeightDistribution: { sell: 0.6, buy: 0.4 },
-        manager: {
-            config: {
-                name: 'Market Adapter Slope Bot',
-                botKey,
-                botIndex: 0,
-                weightDistribution: { sell: 0.6, buy: 0.4 },
-            },
-            funds: { btsFeesOwed: 2 },
-            _fillProcessingLock: {
-                acquire: async (fn) => fn(),
-            },
-            _fundLock: { acquire: async (fn: any) => fn() },
-            startBootstrap: () => {},
-            finishBootstrap: () => {},
-            persistGrid: async () => {},
-        },
-        accountId: '1.2.345',
-        account: { id: '1.2.345' },
-        privateKey: 'test-key',
-        triggerFile,
-        _log: (msg) => logs.push(msg),
-        _warn: (msg) => logs.push(`WARN:${msg}`),
-        _performGridResync: async (options) => require(runtimePath).performGridResync(self, options),
-    };
-
-    try {
-        const ok = await handlePendingTriggerReset(self);
-        assert.strictEqual(ok, true, 'market-adapter slope trigger reset should succeed');
-
-        const updated = readJSON(snapshotFile);
-        assert.strictEqual(updated.centerPrice, 123.45, 'market-adapter slope reset should refresh centerPrice from latest amaCenterPrice');
-        assert.strictEqual(updated.amaCenterPrice, 123.45, 'market-adapter slope reset should preserve raw AMA diagnostics');
-        assert.strictEqual(updated.lastGridResetSource, 'market_adapter_ama_slope_delta_threshold', 'market-adapter slope reset should preserve slope provenance');
-        assert.ok(
-            logs.some((msg) => String(msg).includes('AMA slope grid reset')),
-            'market-adapter slope reset should log that the AMA center snapshot was refreshed'
-        );
-    } finally {
-        fs.existsSync = previousExistsSync;
-        fs.readFileSync = previousReadFileSync;
-        try { originalUnlinkSync(triggerFile); } catch (_) {}
-        try { originalUnlinkSync(snapshotFile); } catch (_) {}
-    }
-}
-
-function testUpdateBotGridResetMetadataRecordsActualReset() {
-    const { updateBotGridResetMetadata } = require(runtimePath);
+    const { updateBotGridResetMetadata } = require('../modules/dexbot_maintenance_runtime');
 
     const botKey = `metadata-reset-${Date.now()}`;
-    const snapshotFile = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
+    const snapshotFile = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
     ensureDir(path.dirname(snapshotFile));
     writeJSON(snapshotFile, {
         gridCenterPrice: 123.45,
@@ -834,7 +405,7 @@ function testUpdateBotGridResetMetadataRecordsActualReset() {
             adapterStateReadCount += 1;
             throw new Error(`unexpected adapter state read: ${text}`);
         }
-        return originalReadFileSync(filePath, encoding);
+        return prevReadFileSync(filePath, encoding);
     };
 
     try {
@@ -855,15 +426,17 @@ function testUpdateBotGridResetMetadataRecordsActualReset() {
         assert.strictEqual(adapterStateReadCount, 0, 'metadata update should not touch adapter-owned state snapshots');
     } finally {
         fs.readFileSync = prevReadFileSync;
-        originalUnlinkSync(snapshotFile);
+        try { fs.unlinkSync(snapshotFile); } catch (_) {}
     }
 }
 
-function testUpdateBotGridResetMetadataRejectsInvalidSnapshot() {
-    const { updateBotGridResetMetadata } = require(runtimePath);
+async function testUpdateBotGridResetMetadataRejectsInvalidSnapshot() {
+    const PATHS = requirePaths();
+    const { ensureDir, readJSON, writeJSON } = requireStorage();
+    const { updateBotGridResetMetadata } = require('../modules/dexbot_maintenance_runtime');
 
     const botKey = `metadata-invalid-${Date.now()}`;
-    const snapshotFile = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
+    const snapshotFile = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
     ensureDir(path.dirname(snapshotFile));
     writeJSON(snapshotFile, {
         gridCenterPrice: 0,
@@ -884,217 +457,241 @@ function testUpdateBotGridResetMetadataRejectsInvalidSnapshot() {
         assert.strictEqual(updated.lastGridResetAt, undefined);
         assert.strictEqual(updated.lastGridResetSource, undefined);
     } finally {
-        originalUnlinkSync(snapshotFile);
+        try { fs.unlinkSync(snapshotFile); } catch (_) {}
     }
 }
 
-function testRefreshDynamicWeightDistributionRejectsStaleBaseWeights() {
-    const { refreshDynamicWeightDistribution } = require(runtimePath);
-
-    const prevExistsSync = fs.existsSync;
-    const prevReadFileSync = fs.readFileSync;
-
-    fs.existsSync = (filePath) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) return true;
-        return originalExistsSync(filePath);
-    };
-    fs.readFileSync = (filePath, encoding) => {
-        const text = String(filePath);
-        if (text.endsWith('/profiles/market_adapter_whitelist.json')) {
-            return JSON.stringify({
-                whitelist: {
-                    'volatility-bot-0': { ama: true, dynamicWeight: true },
-                },
-            });
-        }
-        return originalReadFileSync(filePath, encoding);
-    };
-
-    dynamicWeightSnapshotMode = 'base-changed';
-    const logs = [];
-    const self = {
-        config: {
-            name: 'Volatility Bot',
-            botKey: 'volatility-bot-0',
-            weightDistribution: { sell: 0.6, buy: 0.4 },
-        },
-        _baseWeightDistribution: { sell: 0.6, buy: 0.4 },
-        manager: {
-            config: {
-                weightDistribution: { sell: 0.6, buy: 0.4 },
-            },
-        },
-        _log: (msg) => logs.push(msg),
-    };
-
-    const result = refreshDynamicWeightDistribution(self, 'unit-test-base-mismatch');
-    assert.strictEqual(result.applied, false, 'stale base weights should cause fallback to static');
-    assert.deepStrictEqual(self.config.weightDistribution, { sell: 0.6, buy: 0.4 });
-    assert.deepStrictEqual(self.manager.config.weightDistribution, { sell: 0.6, buy: 0.4 });
-    assert.ok(
-        logs.some((msg) => String(msg).includes('Skipping stale dynamic weights')),
-        'should log a warning about stale dynamic weights'
-    );
-    assert.ok(
-        logs.some((msg) => String(msg).includes('snapshot base (sell=0.8, buy=0.2) != config (sell=0.6, buy=0.4)')),
-        'should log the mismatched base vs config values'
-    );
-
-    fs.existsSync = prevExistsSync;
-    fs.readFileSync = prevReadFileSync;
-    dynamicWeightSnapshotMode = 'live';
-}
-
-async function testRmsDivergenceRunsFullGridResync() {
-    delete require.cache[runtimePath];
-
-    let resyncOptions = null;
-    let correctionCalled = false;
-    let spreadChecked = false;
-    const logs = [];
-
-    setCachedModule(bitsharesClientPath, { BitShares: {} });
-    setCachedModule(constantsPath, {
-        ORDER_STATES: { ACTIVE: 'active', PARTIAL: 'partial' },
-        ORDER_TYPES: { BUY: 'buy', SELL: 'sell' },
-        TIMING: {},
-        MAINTENANCE: {},
-        GRID_LIMITS: {},
-        LOGGING_CONFIG: {},
+// Manual / market-adapter trigger resets drive the REAL performGridResync and
+// promoteAmaCenterSnapshotForGridReset against real snapshot files; only the
+// resync collaborators (grid recalculation, open-order reads, AMA snapshot
+// source) are mocked.
+function installTriggerResetMocks() {
+    installCoreResyncMocks({ snapshotMode: 'live' });
+    defineEsmMockAbs(require.resolve('../modules/order/grid'), NAMES.grid, {
+        recalculateGrid: async () => {},
     });
-    setCachedModule(systemPath, {
-        retryPersistenceIfNeeded: async () => {},
-        applyGridDivergenceCorrections: async (_1: any, _2: any, _3: any, _4: any, _5: any) => {
-            correctionCalled = true;
-        },
-        loadAmaCenterSnapshot: () => null,
-        parseJsonWithComments: (text) => JSON.parse(text),
-        nowIso: () => new Date().toISOString(),
-    });
-    setCachedModule(gridPath, {
-        monitorDivergence: async () => ({
-            needsUpdate: true,
-            buy: { ratio: false, rms: true, metric: 14.8 },
-            sell: { ratio: false, rms: false, metric: 0 },
-        }),
-    });
-    setCachedModule(formatPath, {
-        formatPrice6: (value) => fixedTo(value, 6),
-    });
-    setCachedModule(orderUtilsPath, {
-        virtualizeOrder: (order) => order,
-        convertToSpreadPlaceholder: (order) => ({ ...order, type: 'spread', size: 0, state: 'virtual', orderId: null }),
-    });
-    setCachedModule(accountBotsPath, {
-        isBotDynamicWeightWhitelisted: () => false,
-        resetMarketAdapterWhitelistCache: () => {},
-    });
-    setCachedModule(marketAdapterRuntimePath, {
+    defineEsmMockAbs(require.resolve('../modules/launcher/market_adapter_runtime'), NAMES.marketAdapterRuntime, {
         getSharedMarketAdapterRuntime: () => ({
             syncBot: async () => ({ running: false, started: false, stopped: false }),
             releaseBot: async () => ({ running: false, stopped: false }),
         }),
     });
+}
 
-    const { executeMaintenanceLogic } = require(runtimePath);
+async function runManualTriggerScenario({ botName, botKey, snapshotPayload, triggerPayload = null, assertUpdated }) {
+    const PATHS = requirePaths();
+    const { ensureDir, readJSON, writeJSON } = requireStorage();
+
+    const triggerFile = path.join(os.tmpdir(), `${botKey}.trigger`);
+    const snapshotFile = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
+
+    ensureDir(path.dirname(snapshotFile));
+    writeJSON(snapshotFile, snapshotPayload);
+    if (triggerPayload) {
+        writeJSON(triggerFile, triggerPayload);
+    } else {
+        fs.writeFileSync(triggerFile, '', 'utf8');
+    }
+
+    const wl = makeTempWhitelist({ [botKey]: { ama: true, dynamicWeight: true } });
+    const restoreFs = patchBotsJson([{ name: botName, weightDistribution: { sell: 0.6, buy: 0.4 } }]);
+    installTriggerResetMocks();
+    const logs = [];
+
     const self = {
         config: {
-            botKey: 'rms-reset-bot-0',
-            dryRun: true,
+            name: botName,
+            botKey,
+            botIndex: 0,
             weightDistribution: { sell: 0.6, buy: 0.4 },
         },
         _baseWeightDistribution: { sell: 0.6, buy: 0.4 },
-        _maintenanceCooldownCycles: 0,
-        _dustSinceMap: new Map(),
         manager: {
             config: {
+                name: botName,
+                botKey,
+                botIndex: 0,
                 weightDistribution: { sell: 0.6, buy: 0.4 },
             },
-            orders: new Map([
-                ['buy-0', { id: 'buy-0', type: 'buy', price: 1, size: 1 }],
-            ]),
-            recalculateFunds: async () => {},
-            _clearStaleBroadcastFlag: () => {},
-            clearStalePipelineOperations: () => {},
-            isPipelineEmpty: () => ({ isEmpty: true }),
-            checkGridHealth: async () => ({ buyDustOrders: [], sellDustOrders: [] }),
-            checkSpreadCondition: async () => {
-                spreadChecked = true;
-                return null;
-            },
+            funds: { btsFeesOwed: 2 },
+            _fillProcessingLock: { acquire: async (fn) => fn() },
+            _fundLock: { acquire: async (fn) => fn() },
+            startBootstrap: () => {},
+            finishBootstrap: () => {},
+            persistGrid: async () => {},
         },
-        accountOrders: {
-            loadGrid: () => [{ id: 'buy-0', type: 'buy', price: 1, size: 1 }],
-        },
-        _getPipelineSignals: () => ({}),
-        _cancelDustOrders: async () => ({ cancelledCount: 0, batchResult: null }),
-        _abortFlowIfIllegalState: async () => false,
-        _autoCancelOneUnmatchedOrphan: async () => ({ cancelled: false, reason: 'test-noop' }),
-        _performGridResync: async (options) => {
-            resyncOptions = options;
-            return true;
-        },
-        updateOrdersOnChainBatch: async () => {
-            throw new Error('correction batch should not run for RMS resync');
-        },
-        updateOrdersOnChainPlan: async () => {},
-        _persistAndRecoverIfNeeded: async () => {},
-        _log: (msg) => logs.push(String(msg)),
+        accountId: '1.2.345',
+        account: { id: '1.2.345' },
+        privateKey: 'test-key',
+        triggerFile,
+        _log: (msg) => logs.push(msg),
         _warn: (msg) => logs.push(`WARN:${msg}`),
     };
 
-    await executeMaintenanceLogic(self, 'unit-test-rms');
-
-    assert.deepStrictEqual(resyncOptions, {
-        refreshCenterPrice: true,
-        centerRefreshContext: 'RMS structural grid resync',
-        centerRefreshLabel: 'RMS structural grid resync',
-        resetSource: 'rms_structural_grid_resync',
-    }, 'RMS divergence should run full grid resync from the latest AMA center snapshot');
-    assert.strictEqual(correctionCalled, false, 'RMS divergence should not use correction-only path');
-    assert.strictEqual(spreadChecked, false, 'maintenance should stop after full RMS resync');
-    assert.ok(
-        logs.some((msg) => msg.includes('Grid update triggered by structural divergence during unit-test-rms')),
-        'RMS divergence should be logged'
-    );
+    try {
+        const { handlePendingTriggerReset } = require('../modules/dexbot_maintenance_runtime');
+        const ok = await handlePendingTriggerReset(self);
+        assert.strictEqual(ok, true, 'trigger reset should succeed');
+        await assertUpdated(readJSON(snapshotFile), logs);
+    } finally {
+        restoreFs();
+        wl.cleanup();
+        try { fs.unlinkSync(triggerFile); } catch (_) {}
+        try { fs.unlinkSync(snapshotFile); } catch (_) {}
+    }
 }
 
-function installSpreadTestModules(opts: {
-    divergence: any;
-    applyCorrections: any;
-}) {
-    setCachedModule(bitsharesClientPath, { BitShares: {} });
-    setCachedModule(constantsPath, {
-        ORDER_STATES: { ACTIVE: 'active', PARTIAL: 'partial' },
-        ORDER_TYPES: { BUY: 'buy', SELL: 'sell' },
-        TIMING: {},
-        MAINTENANCE: {},
-        GRID_LIMITS: {},
-        LOGGING_CONFIG: {},
+async function testManualTriggerResetRefreshesCenterPrice() {
+    await runManualTriggerScenario({
+        botName: 'Manual Reset Bot',
+        botKey: `manual-reset-${Date.now()}`,
+        snapshotPayload: {
+            centerPrice: 100,
+            amaCenterPrice: 123.45,
+            gridPriceOffsetPct: 0.8,
+            source: _adapterSource,
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
+        assertUpdated: async (updated, logs) => {
+            assert.strictEqual(updated.centerPrice, 123.45, 'manual reset should refresh centerPrice from amaCenterPrice');
+            assert.strictEqual(updated.gridPriceOffsetPct, 0.8, 'manual reset should preserve the AMA spread offset for the rebuild');
+            assert.strictEqual(updated.lastGridResetSource, 'manual_grid_resync', 'manual reset should record manual reset provenance');
+            assert.ok(
+                logs.some((msg) => String(msg).includes('Refreshed AMA center snapshot for manual grid reset.')),
+                'manual reset should log that the center snapshot was refreshed'
+            );
+        },
     });
-    setCachedModule(systemPath, {
+}
+
+async function testManualTriggerResetKeepsOffsetWhenCenterAlreadyCurrent() {
+    await runManualTriggerScenario({
+        botName: 'Manual Reset Current Bot',
+        botKey: `manual-reset-current-${Date.now()}`,
+        snapshotPayload: {
+            gridCenterPrice: 123.45,
+            centerPrice: 123.45,
+            amaCenterPrice: 123.45,
+            gridPriceOffsetPct: 0.8,
+            source: _adapterSource,
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
+        assertUpdated: async (updated) => {
+            assert.strictEqual(updated.centerPrice, 123.45, 'manual reset should leave the current AMA center intact');
+            assert.strictEqual(updated.gridPriceOffsetPct, 0.8, 'manual reset should preserve the AMA spread offset when center is already current');
+        },
+    });
+}
+
+async function testMarketAdapterTriggerResetRefreshesAmaCenterPrice() {
+    await runManualTriggerScenario({
+        botName: 'Market Adapter Reset Bot',
+        botKey: `market-adapter-reset-${Date.now()}`,
+        snapshotPayload: {
+            gridCenterPrice: 100,
+            centerPrice: 100,
+            amaCenterPrice: 123.45,
+            gridPriceOffsetPct: 0.8,
+            source: _adapterSource,
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
+        triggerPayload: {
+            source: _adapterSource,
+            reason: 'market_adapter_delta_threshold',
+            newCenterPrice: 100,
+            amaCenterPrice: 123.45,
+        },
+        assertUpdated: async (updated, logs) => {
+            assert.strictEqual(updated.centerPrice, 123.45, 'market-adapter reset should refresh centerPrice from latest amaCenterPrice');
+            assert.strictEqual(updated.amaCenterPrice, 123.45, 'market-adapter reset should preserve raw AMA diagnostics');
+            assert.strictEqual(updated.lastGridResetSource, 'market_adapter_delta_threshold', 'market-adapter reset should preserve the trigger reason as reset provenance');
+            assert.ok(
+                logs.some((msg) => String(msg).includes('AMA center grid reset')),
+                'market-adapter reset should log that the AMA center snapshot was refreshed'
+            );
+        },
+    });
+}
+
+async function testMarketAdapterBootstrapTriggerResetRecordsBootstrapSource() {
+    await runManualTriggerScenario({
+        botName: 'Market Adapter Bootstrap Bot',
+        botKey: `market-adapter-bootstrap-${Date.now()}`,
+        snapshotPayload: {
+            gridCenterPrice: 100,
+            centerPrice: 100,
+            amaCenterPrice: 123.45,
+            source: _adapterSource,
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
+        triggerPayload: {
+            source: _adapterSource,
+            reason: 'market_adapter_bootstrap',
+            newCenterPrice: 100,
+            amaCenterPrice: 123.45,
+        },
+        assertUpdated: async (updated, logs) => {
+            assert.strictEqual(updated.centerPrice, 123.45, 'market-adapter bootstrap reset should refresh centerPrice from latest amaCenterPrice');
+            assert.strictEqual(updated.amaCenterPrice, 123.45, 'market-adapter bootstrap reset should preserve raw AMA diagnostics');
+            assert.strictEqual(updated.lastGridResetSource, 'market_adapter_bootstrap', 'market-adapter bootstrap reset should preserve bootstrap provenance');
+            assert.ok(
+                logs.some((msg) => String(msg).includes('AMA bootstrap grid reset')),
+                'market-adapter bootstrap reset should log that the AMA center snapshot was refreshed'
+            );
+        },
+    });
+}
+
+async function testMarketAdapterSlopeTriggerResetRecordsSlopeSource() {
+    await runManualTriggerScenario({
+        botName: 'Market Adapter Slope Bot',
+        botKey: `market-adapter-slope-${Date.now()}`,
+        snapshotPayload: {
+            gridCenterPrice: 100,
+            centerPrice: 100,
+            amaCenterPrice: 123.45,
+            source: _adapterSource,
+            updatedAt: '2026-01-01T00:00:00Z',
+        },
+        triggerPayload: {
+            source: _adapterSource,
+            reason: 'market_adapter_ama_slope_delta_threshold',
+            newCenterPrice: 100,
+            amaCenterPrice: 123.45,
+        },
+        assertUpdated: async (updated, logs) => {
+            assert.strictEqual(updated.centerPrice, 123.45, 'market-adapter slope reset should refresh centerPrice from latest amaCenterPrice');
+            assert.strictEqual(updated.amaCenterPrice, 123.45, 'market-adapter slope reset should preserve raw AMA diagnostics');
+            assert.strictEqual(updated.lastGridResetSource, 'market_adapter_ama_slope_delta_threshold', 'market-adapter slope reset should preserve slope provenance');
+            assert.ok(
+                logs.some((msg) => String(msg).includes('AMA slope grid reset')),
+                'market-adapter slope reset should log that the AMA center snapshot was refreshed'
+            );
+        },
+    });
+}
+
+function installDivergenceMocks(opts) {
+    defineEsmMockAbs(require.resolve('../modules/bitshares_client'), NAMES.bitsharesClient, { BitShares: {}, waitForConnected: async () => {} });
+    defineEsmMockAbs(require.resolve('../modules/order/utils/system'), NAMES.system, {
         retryPersistenceIfNeeded: async () => {},
         applyGridDivergenceCorrections: opts.applyCorrections,
         loadAmaCenterSnapshot: () => null,
         parseJsonWithComments: (text) => JSON.parse(text),
         nowIso: () => new Date().toISOString(),
+        sleep: async () => {},
     });
-    setCachedModule(gridPath, {
+    defineEsmMockAbs(require.resolve('../modules/order/grid'), NAMES.grid, {
         monitorDivergence: async () => opts.divergence,
     });
-    setCachedModule(formatPath, {
-        formatPrice6: (value) => fixedTo(value, 6),
+    defineEsmMockAbs(require.resolve('../modules/order/format'), NAMES.format, {
+        formatPrice6: (value) => Number(value).toFixed(6),
     });
-    setCachedModule(orderUtilsPath, {
+    defineEsmMockAbs(require.resolve('../modules/order/utils/order'), NAMES.orderUtils, {
         virtualizeOrder: (order) => order,
         convertToSpreadPlaceholder: (order) => ({ ...order, type: 'spread', size: 0, state: 'virtual', orderId: null }),
     });
-    setCachedModule(accountBotsPath, {
-        isBotDynamicWeightWhitelisted: () => false,
-        resetMarketAdapterWhitelistCache: () => {},
-    });
-    setCachedModule(marketAdapterRuntimePath, {
+    defineEsmMockAbs(require.resolve('../modules/launcher/market_adapter_runtime'), NAMES.marketAdapterRuntime, {
         getSharedMarketAdapterRuntime: () => ({
             syncBot: async () => ({ running: false, started: false, stopped: false }),
             releaseBot: async () => ({ running: false, stopped: false }),
@@ -1102,12 +699,7 @@ function installSpreadTestModules(opts: {
     });
 }
 
-function makeSpreadTestSelf(opts: {
-    botKey: string;
-    logs: string[];
-    markSpreadChecked: () => void;
-    markResync?: () => void;
-}) {
+function makeDivergenceSelf(opts) {
     return {
         config: {
             botKey: opts.botKey,
@@ -1141,7 +733,7 @@ function makeSpreadTestSelf(opts: {
         _cancelDustOrders: async () => ({ cancelledCount: 0, batchResult: null }),
         _abortFlowIfIllegalState: async () => false,
         _autoCancelOneUnmatchedOrphan: async () => ({ cancelled: false, reason: 'test-noop' }),
-        _performGridResync: async () => {
+        _performGridResync: async (_options?: any) => {
             opts.markResync?.();
             return true;
         },
@@ -1153,18 +745,64 @@ function makeSpreadTestSelf(opts: {
     };
 }
 
-async function testSpreadCheckRunsWithoutDivergence() {
-    delete require.cache[runtimePath];
+async function testRmsDivergenceRunsFullGridResync() {
+    let resyncOptions = null;
+    let correctionCalled = false;
+    let spreadChecked = false;
+    const logs = [];
 
+    installDivergenceMocks({
+        applyCorrections: async () => {
+            correctionCalled = true;
+        },
+        divergence: {
+            needsUpdate: true,
+            buy: { ratio: false, rms: true, metric: 14.8 },
+            sell: { ratio: false, rms: false, metric: 0 },
+        },
+    });
+
+    const { executeMaintenanceLogic } = require('../modules/dexbot_maintenance_runtime');
+    const self = makeDivergenceSelf({
+        botKey: 'rms-reset-bot-0',
+        logs,
+        markSpreadChecked: () => { spreadChecked = true; },
+    });
+    self.updateOrdersOnChainBatch = async () => {
+        throw new Error('correction batch should not run for RMS resync');
+    };
+    self._performGridResync = async (options) => {
+        resyncOptions = options;
+        return true;
+    };
+
+    await executeMaintenanceLogic(self, 'unit-test-rms');
+
+    assert.deepStrictEqual(resyncOptions, {
+        refreshCenterPrice: true,
+        centerRefreshContext: 'RMS structural grid resync',
+        centerRefreshLabel: 'RMS structural grid resync',
+        resetSource: 'rms_structural_grid_resync',
+    }, 'RMS divergence should run full grid resync from the latest AMA center snapshot');
+    assert.strictEqual(correctionCalled, false, 'RMS divergence should not use correction-only path');
+    assert.strictEqual(spreadChecked, false, 'maintenance should stop after full RMS resync');
+    assert.ok(
+        logs.some((msg) => msg.includes('Grid update triggered by structural divergence during unit-test-rms')),
+        'RMS divergence should be logged'
+    );
+}
+
+async function testSpreadCheckRunsWithoutDivergence() {
     let spreadChecked = false;
     let correctionCalled = false;
     let resyncCalled = false;
+    const logs = [];
 
     // Incidents scenario: the grid is internally consistent (order count was
     // restored to 20/20) so divergence is NOT flagged, yet the realized spread
     // is wide. The spread check must still run on this pipeline-empty tick.
-    installSpreadTestModules({
-        applyCorrections: async (_1: any, _2: any, _3: any, _4: any, _5: any) => {
+    installDivergenceMocks({
+        applyCorrections: async () => {
             correctionCalled = true;
         },
         divergence: {
@@ -1174,11 +812,11 @@ async function testSpreadCheckRunsWithoutDivergence() {
         },
     });
 
-    const { executeMaintenanceLogic } = require(runtimePath);
+    const { executeMaintenanceLogic } = require('../modules/dexbot_maintenance_runtime');
     await executeMaintenanceLogic(
-        makeSpreadTestSelf({
+        makeDivergenceSelf({
             botKey: 'spread-no-divergence-bot-0',
-            logs: [],
+            logs,
             markSpreadChecked: () => { spreadChecked = true; },
             markResync: () => { resyncCalled = true; },
         }),
@@ -1193,11 +831,10 @@ async function testSpreadCheckRunsWithoutDivergence() {
 }
 
 async function testSpreadCheckSkippedOnPendingBoundaryShift() {
-    delete require.cache[runtimePath];
-
     let spreadChecked = false;
+    const logs = [];
 
-    installSpreadTestModules({
+    installDivergenceMocks({
         applyCorrections: async () => ({
             committed: false,
             boundaryChanged: true,
@@ -1210,11 +847,11 @@ async function testSpreadCheckSkippedOnPendingBoundaryShift() {
         },
     });
 
-    const { executeMaintenanceLogic } = require(runtimePath);
+    const { executeMaintenanceLogic } = require('../modules/dexbot_maintenance_runtime');
     await executeMaintenanceLogic(
-        makeSpreadTestSelf({
+        makeDivergenceSelf({
             botKey: 'spread-boundary-pending-bot-0',
-            logs: [],
+            logs,
             markSpreadChecked: () => { spreadChecked = true; },
         }),
         'unit-test-boundary-pending'
@@ -1226,34 +863,38 @@ async function testSpreadCheckSkippedOnPendingBoundaryShift() {
 }
 
 async function testDexbotClassPerformGridResyncForwardsOptions() {
-    delete require.cache[dexbotClassPath];
-
     let forwardedThis = null;
     let forwardedOptions = null;
-    setCachedModule(runtimePath, {
+
+    defineEsmMockAbs(require.resolve('../modules/dexbot_maintenance_runtime'), NAMES.maintenanceRuntime, {
+        isOrderDoesNotExistError: () => false,
+        usesAmaGridPrice: (bot) => /^ama(?:[1-4])?$/.test(String(bot?.gridPrice || '').trim().toLowerCase()),
         performGridResync(bot, options = {}) {
             forwardedThis = bot;
             forwardedOptions = options;
             return Promise.resolve('forwarded');
         },
     });
-    setCachedModule(bitsharesClientPath, { BitShares: {}, waitForConnected: async () => {} });
-    setCachedModule(chainKeysPath, {});
-    setCachedModule(credentialPolicyPath, {});
-    setCachedModule(chainOrdersPath, {});
-    setCachedModule(orderModulePath, { OrderManager: class {}, grid: {} });
-    setCachedModule(systemPath, {
+    defineEsmMockAbs(require.resolve('../modules/bitshares_client'), NAMES.bitsharesClient, {
+        BitShares: {},
+        waitForConnected: async () => {},
+        onReconnect: () => ({}),
+    });
+    defineEsmMockAbs(require.resolve('../modules/chain_orders'), NAMES.chainOrders, {});
+    defineEsmMockAbs(require.resolve('../modules/order'), [], { OrderManager: class {}, grid: {} });
+    defineEsmMockAbs(require.resolve('../modules/order/utils/system'), NAMES.system, {
         retryPersistenceIfNeeded: async () => {},
         initializeFeeCache: async () => {},
-        applyGridDivergenceCorrections: async (_1: any, _2: any, _3: any, _4: any, _5: any) => {},
+        applyGridDivergenceCorrections: async () => ({}),
         parseJsonWithComments: (text) => JSON.parse(text),
         nowIso: () => new Date().toISOString(),
+        sleep: async () => {},
     });
-    setCachedModule(validatePath, {
+    defineEsmMockAbs(require.resolve('../modules/order/utils/validate'), NAMES.validate, {
         hasExecutableActions: () => false,
         validateCreateTargetSlots: () => [],
     });
-    setCachedModule(orderUtilsPath, {
+    defineEsmMockAbs(require.resolve('../modules/order/utils/order'), NAMES.orderUtils, {
         buildCreateOrderArgs: () => null,
         getOrderTypeFromUpdatedFlags: () => null,
         virtualizeOrder: (order) => order,
@@ -1263,44 +904,34 @@ async function testDexbotClassPerformGridResyncForwardsOptions() {
         extractBatchOperationResults: () => [],
         buildFillKey: () => 'fill-key',
     });
-    setCachedModule(mathPath, {
+    defineEsmMockAbs(require.resolve('../modules/order/utils/math'), NAMES.math, {
         validateOrderSize: () => true,
         calculateRotationOrderSizes: () => ({}),
         cloneWeightDistribution: (weights, fallback) => weights || fallback || null,
     });
-    setCachedModule(processedFillStorePath, {
+    defineEsmMockAbs(require.resolve('../modules/order/processed_fill_store'), NAMES.processedFillStore, {
         ProcessedFillStore: class {},
         PROCESSED_FILL_PERSISTENCE_MODES: {},
     });
-    setCachedModule(fillRuntimePath, {});
-    setCachedModule(creditRuntimePath, class {});
-    setCachedModule(constantsPath, {
-        ORDER_STATES: { ACTIVE: 'active', PARTIAL: 'partial' },
-        ORDER_TYPES: { BUY: 'buy', SELL: 'sell' },
-        REBALANCE_STATES: {},
-        COW_ACTIONS: {},
-        TIMING: {},
-        MAINTENANCE: {},
-        GRID_LIMITS: {},
-        FILL_PROCESSING: {},
-        LOGGING_CONFIG: {},
-    });
-    setCachedModule(startupReconcilePath, {
+    defineEsmMockAbs(require.resolve('../modules/dexbot_fill_runtime'), ['processSweepOrphanFill'], {});
+    defineEsmMockAbs(require.resolve('../modules/credit_runtime'), [], class {});
+    defineEsmMockAbs(require.resolve('../modules/order/grid_reconcile'), NAMES.startupReconcile, {
         attemptResumePersistedGridByPriceMatch: async () => null,
         decideStartupGridAction: () => null,
         reconcileGridOrders: async () => null,
     });
-    setCachedModule(accountOrdersPath, {
+    defineEsmMockAbs(require.resolve('../modules/account_orders'), NAMES.accountOrders, {
         AccountOrders: class {},
         createBotKey: () => 'bot-key',
     });
-    setCachedModule(botSettingsPath, {
+    defineEsmMockAbs(require.resolve('../modules/bot_settings'), NAMES.botSettings, {
         normalizeBotEntry: (entry) => entry,
     });
-    setCachedModule(formatPath, {});
+    defineEsmMockAbs(require.resolve('../modules/order/format'), NAMES.format, {});
 
-    const DEXBot = require(dexbotClassPath).default;
+    const DEXBot = require('../modules/dexbot_class').default;
     const fakeBot = { config: { botKey: 'forward-bot' } };
+
     const options = {
         refreshCenterPrice: true,
         centerRefreshContext: 'RMS structural grid resync',
@@ -1314,35 +945,26 @@ async function testDexbotClassPerformGridResyncForwardsOptions() {
     assert.strictEqual(forwardedOptions, options, 'wrapper should forward resync options unchanged');
 }
 
-async function main() {
-    try {
-        await testPerformGridResyncAppliesVolatilityOnlyDynamicWeights();
-        testRefreshDynamicWeightDistributionAppliesAndFallsBack();
-        testRefreshDynamicWeightDistributionReloadsWhitelistFlags();
-        testRefreshDynamicWeightDistributionRejectsStaleBaseWeights();
-        testUpdateBotGridResetMetadataRecordsActualReset();
-        testUpdateBotGridResetMetadataRejectsInvalidSnapshot();
-        await testManualTriggerResetRefreshesCenterPrice();
-        await testManualTriggerResetKeepsOffsetWhenCenterAlreadyCurrent();
-        await testMarketAdapterTriggerResetRefreshesAmaCenterPrice();
-        await testMarketAdapterBootstrapTriggerResetRecordsBootstrapSource();
-        await testMarketAdapterSlopeTriggerResetRecordsSlopeSource();
-        await testRmsDivergenceRunsFullGridResync();
-        await testSpreadCheckRunsWithoutDivergence();
-        await testSpreadCheckSkippedOnPendingBoundaryShift();
-        await testDexbotClassPerformGridResyncForwardsOptions();
-        console.log('dexbot maintenance runtime dynamic weight tests passed');
-    } finally {
-        fs.existsSync = originalExistsSync;
-        fs.readFileSync = originalReadFileSync;
-        fs.unlinkSync = originalUnlinkSync;
-        for (const [modulePath, original] of originals.entries()) {
-            restoreCachedModule(modulePath, original);
-        }
-    }
-}
+const STAGES = {
+    resync_applies_volatility_weights: testPerformGridResyncAppliesVolatilityOnlyDynamicWeights,
+    refresh_applies_live_weights: testRefreshDynamicWeightDistributionAppliesAndFallsBack,
+    refresh_stale_fallback: testRefreshDynamicWeightDistributionStaleFallback,
+    refresh_reloads_whitelist_flags: testRefreshDynamicWeightDistributionReloadsWhitelistFlags,
+    refresh_rejects_stale_base_weights: testRefreshDynamicWeightDistributionRejectsStaleBaseWeights,
+    metadata_records_actual_reset: testUpdateBotGridResetMetadataRecordsActualReset,
+    metadata_rejects_invalid_snapshot: testUpdateBotGridResetMetadataRejectsInvalidSnapshot,
+    manual_trigger_reset_refreshes_center_price: testManualTriggerResetRefreshesCenterPrice,
+    manual_trigger_reset_keeps_offset_when_current: testManualTriggerResetKeepsOffsetWhenCenterAlreadyCurrent,
+    market_adapter_trigger_reset_refreshes_center: testMarketAdapterTriggerResetRefreshesAmaCenterPrice,
+    market_adapter_bootstrap_trigger_reset: testMarketAdapterBootstrapTriggerResetRecordsBootstrapSource,
+    market_adapter_slope_trigger_reset: testMarketAdapterSlopeTriggerResetRecordsSlopeSource,
+    rms_divergence_runs_full_grid_resync: testRmsDivergenceRunsFullGridResync,
+    spread_check_runs_without_divergence: testSpreadCheckRunsWithoutDivergence,
+    spread_check_skipped_on_pending_boundary_shift: testSpreadCheckSkippedOnPendingBoundaryShift,
+    dexbot_class_perform_grid_resync_forwards_options: testDexbotClassPerformGridResyncForwardsOptions,
+};
 
-main().catch((err) => {
-    console.error(err);
-    process.exit(1);
+runEsmMockStages(Object.keys(STAGES), async (stage) => {
+    await STAGES[stage]();
+    console.log(`  ✓ ${stage}`);
 });

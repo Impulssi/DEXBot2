@@ -1627,10 +1627,10 @@ The test suite validates the following fund-related behaviors:
 npm test
 
 # Specific logic area
-tsx tests/test_accounting_logic.ts
+node dist/tests/test_accounting_logic.js
 
 # Specific integration test
-tsx tests/test_fills.ts
+node dist/tests/test_fills.js
 ```
 
 ### Understanding Test Structure
@@ -1797,13 +1797,13 @@ The test suite provides comprehensive coverage of fund calculations and rebalanc
 **Running Tests**:
 ```bash
 # Test strategy rebalancing
-tsx tests/test_strategy_logic.ts
+node dist/tests/test_strategy_logic.js
 
 # Test grid divergence
-tsx tests/test_grid_logic.ts
+node dist/tests/test_grid_logic.js
 
 # Test accounting precision
-tsx tests/test_accounting_logic.ts
+node dist/tests/test_accounting_logic.js
 
 # Run full suite
 npm test
@@ -1858,7 +1858,7 @@ A: Check if it's locked (`isOrderLocked()`), in exclusion list, or below dust th
 A: Follow the "How to Add New Features" section above.
 
 **Q: Where are the tests?**  
-A: All tests are in the `tests/` directory. Run `npm test` for the full suite, or `tsx tests/<file>.ts` for individual test files.
+A: All tests are in the `tests/` directory. Run `npm test` for the full suite, or `npm run build:tests && node dist/tests/<file>.js` for individual test files.
 
 ---
 

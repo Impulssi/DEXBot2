@@ -66,7 +66,7 @@ async function testRuntimeSkillToml() {
     assert.ok(toml.includes('name = "bitshares-claw"'));
     const displayName = runtimeName.charAt(0).toUpperCase() + runtimeName.slice(1);
     assert.ok(toml.includes(`${displayName} bridge to the AI-Bot / DEXBot2 BitShares layer`));
-    assert.ok(toml.includes('claw_bridge.ts'));
+    assert.ok(toml.includes('claw_bridge.js'));
     assert.ok(toml.includes('--profile-root'));
     assert.ok(toml.includes('[[tools]]'));
 

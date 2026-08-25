@@ -19,7 +19,7 @@
     ]
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp tests/package.json ../dist/claw/tests/package.json",
     "example:connection": "npm run build && node ../dist/claw/examples/connection_test.js",
     "example:claw-infra": "npm run build && node ../dist/claw/examples/claw_infra_example.js",
     "example:claw-consumer": "npm run build && node ../dist/claw/examples/claw_consumer_example.js",
@@ -52,7 +52,7 @@
     "pm2:start": "npm run build && pm2 start ecosystem.config.cjs",
     "pm2:stop": "pm2 stop ecosystem.config.cjs",
     "report:honest-assets": "npm run build && node ../dist/claw/scripts/honest_assets_report.js",
-    "test": "npm run build && npx tsx tests/test_claw_regressions.ts && npx tsx tests/test_claw_state_store.ts && npx tsx tests/test_dexbot_profiles.ts && npx tsx tests/test_position_manager_watch_health.ts && npx tsx tests/test_claw_bridge.ts && npx tsx tests/test_memu_bridge.ts && npx tsx tests/test_short_mpa_strategy.ts && npx tsx tests/test_position_health.ts && npx tsx tests/test_claw_chain_layer.ts && npx tsx tests/test_claw_domain_logic.ts && npx tsx tests/test_claw_catalog_and_credentials.ts && npx tsx tests/test_claw_data_flow.ts && npx tsx tests/test_position_manager.ts && npx tsx tests/test_claw_skill_generation.ts && npx tsx tests/test_claw_manifest_and_matrix.ts && npx tsx tests/test_claw_mcp_transport.ts && npx tsx tests/test_nullclaw_tmp_integration.ts",
+    "test": "npm run build && node ../dist/claw/tests/test_claw_regressions.js && node ../dist/claw/tests/test_claw_state_store.js && node ../dist/claw/tests/test_dexbot_profiles.js && node ../dist/claw/tests/test_position_manager_watch_health.js && node ../dist/claw/tests/test_claw_bridge.js && node ../dist/claw/tests/test_memu_bridge.js && node ../dist/claw/tests/test_short_mpa_strategy.js && node ../dist/claw/tests/test_position_health.js && node ../dist/claw/tests/test_claw_chain_layer.js && node ../dist/claw/tests/test_claw_domain_logic.js && node ../dist/claw/tests/test_claw_catalog_and_credentials.js && node ../dist/claw/tests/test_claw_data_flow.js && node ../dist/claw/tests/test_position_manager.js && node ../dist/claw/tests/test_claw_skill_generation.js && node ../dist/claw/tests/test_claw_manifest_and_matrix.js && node ../dist/claw/tests/test_claw_mcp_transport.js && node ../dist/claw/tests/test_nullclaw_tmp_integration.js",
     "check": "npm run build && node --input-type=module -e \"await import('../dist/claw/index.js')\" && node -c ecosystem.config.cjs && node -c ../dist/claw/runtimes/openclaw-plugin/index.js"
   }
 }

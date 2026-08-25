@@ -93,7 +93,7 @@ import { parsePm2Args } from './modules/launcher/launch_modes.js';
 import { setupGracefulShutdown } from './modules/graceful_shutdown.js';
 import { UPDATER, TIMING } from './modules/constants.js';
 import { PATHS } from './modules/paths.js';
-import { isDistCodeRoot, buildRuntimeScriptPath } from './modules/launcher/runtime_entry.js';
+import { buildRuntimeScriptPath } from './modules/launcher/runtime_entry.js';
 import { Config } from './modules/config.js';
 import { waitForConnected } from './modules/bitshares_client.js';
 import * as readline from 'node:readline';
@@ -239,8 +239,7 @@ function buildEcosystemApps(bots: any, { includeUpdater = true }: { includeUpdat
             max_size: '100M',
             max_restarts: 13,
             min_uptime: 60000,
-            restart_delay: 3000,
-            ...(isDistCodeRoot(CODE_ROOT) ? {} : { node_args: ['--import', 'tsx'] })
+            restart_delay: 3000
         });
     }
 

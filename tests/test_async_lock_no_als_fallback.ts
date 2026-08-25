@@ -107,7 +107,7 @@ function runChild(disableAls) {
     try {
         const env = { ...process.env };
         if (disableAls) env.DEXBOT_DISABLE_ASYNC_LOCAL_STORAGE = '1';
-        return spawnSync(process.execPath, ['--import', 'tsx', tmpFile], {
+        return spawnSync(process.execPath, [tmpFile], {
             cwd: root,
             env,
             stdio: ['ignore', 'pipe', 'pipe'],

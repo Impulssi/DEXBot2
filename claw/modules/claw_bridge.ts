@@ -4,7 +4,7 @@ const require = createRequire(import.meta.url);
 
 import { createClawInfrastructure } from './claw_infra.js';
 import { describeClawBridge } from './claw_manifest.js';
-import { runMemuCommand } from './memu_bridge.js';
+import { describeMemuBridge, runMemuCommand } from './memu_bridge.js';
 import { clone } from './utils.js';
 import { adjustMpaCollateral, borrowMpa, cancelLimitOrder, createLimitOrder, executeBatch, getMpaPosition, getOpenOrders, repayMpaDebt, buildUpdateLimitOrderOperation, updateLimitOrder, settleMpa } from './chain_actions.js';
 import { buildCloseShortPlan, buildOpenShortPlan, buildTakeProfitPlan, closeShortOnBts, openShortOnBts, placeTakeProfitBuyOrderOnBts } from './short_mpa_strategy.js';
@@ -126,7 +126,7 @@ function describeRuntimeManifest(options: ClawBridgeOptions = {}): any {
 function describeCommandManifest(options: ClawBridgeOptions = {}): any {
   const runtimeName = options.runtimeName || options.runtime?.name || null;
   if (runtimeName && String(runtimeName).trim().toLowerCase() === 'memu') {
-    return require('./memu_bridge').describeMemuBridge(options);
+    return describeMemuBridge(options);
   }
   return describeClawBridge(options);
 }
@@ -373,7 +373,7 @@ async function runClawCommand(command: string, options: ClawBridgeOptions = {}):
       return launcherPm2Restart(safeOptions.botName || 'all', safeOptions);
 
     case 'memu-manifest':
-      return require('./memu_bridge').describeMemuBridge(safeOptions);
+      return describeMemuBridge(safeOptions);
 
     case 'memu-memorize':
     case 'memu-retrieve':

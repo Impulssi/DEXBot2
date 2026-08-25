@@ -59,6 +59,6 @@ const _default = {
   resolveSigningAccountName: chainBroadcast.resolveAccountName
 };
 export default _default;
-// CJS compatibility - tsx/require gets the object directly
+// CJS compatibility - require() gets the object directly
 
 

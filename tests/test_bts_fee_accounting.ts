@@ -5,27 +5,23 @@
  * UPDATED: Uses modern COW pipeline (performSafeRebalance).
  */
 
+// Seed the fee cache so getAssetFees resolves deterministically (frozen ESM
+// namespace — patching utils.getAssetFees is no longer possible).
 const utils = require('../modules/order/utils/math');
-utils.getAssetFees = (asset, amount, isMaker = true) => {
-     if (asset === 'BTS') {
-         const createFee = 0.01;
-         const updateFee = 0.0001;
-         const makerNetFee = createFee * 0.1;
-         const takerNetFee = createFee;
-         const netFee = isMaker ? makerNetFee : takerNetFee;
-         return {
-             total: netFee + updateFee,
-             createFee: createFee,
-             updateFee: updateFee,
-             makerNetFee: makerNetFee,
-             takerNetFee: takerNetFee,
-             netFee: netFee,
-             isMaker: isMaker
-         };
-     }
-     if (asset === 'USD') return amount;
-     return amount;
- };
+utils._setFeeCache({
+    BTS: {
+        limitOrderCreate: { bts: 0.01 },
+        limitOrderUpdate: { bts: 0.0001 },
+        limitOrderCancel: { bts: 0.0001 }
+    },
+    USD: {
+        assetId: '1.3.121',
+        chargesMarketFees: false,
+        marketFee: { percent: 0 },
+        takerFee: null,
+        maxMarketFee: { raw: 0, float: 0 }
+    }
+});
 
 const bsModule = require('../modules/bitshares_client');
 if (bsModule.setSuppressConnectionLog) {
@@ -86,13 +82,19 @@ async function testFeeAccounting() {
     console.log('\n  Simulating 1 fill...');
     const fill = { id: 'slot-6', type: ORDER_TYPES.SELL, price: 1.1, size: 10, isPartial: false };
     
-    // Initialize fee cache for strategy.processFillsOnly
+    // Initialize fee cache for strategy.processFillsOnly (fee values match the
+    // seeded cache: create 0.01 BTS = 1000 sats, update 0.0001 BTS = 10 sats)
     const { initializeFeeCache } = require('../modules/order/utils/system');
     const mockBitSharesForFees = {
         db: {
             getGlobalProperties: async () => ({
-                parameters: { current_fees: { parameters: [[1, { fee: 100000 }], [2, { fee: 10000 }], [77, { fee: 1000 }]] } }
-            })
+                parameters: { current_fees: { parameters: [[1, { fee: 1000 }], [2, { fee: 10 }], [77, { fee: 10 }]] } }
+            }),
+            lookup_asset_symbols: async (symbols) => symbols.map((s) => (
+                s === 'USD'
+                    ? { id: '1.3.121', symbol: 'USD', precision: 5, options: {} }
+                    : null
+            ))
         }
     };
     await initializeFeeCache(['BTS', 'USD'], mockBitSharesForFees);

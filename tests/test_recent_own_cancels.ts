@@ -1,5 +1,35 @@
 const assert = require('assert');
 
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
+// Compiled ESM namespaces are frozen: the bitshares_client transport is
+// mocked via loader hooks so the real chain_orders.executeBatch flow runs
+// against a controllable signing client.
+esmMockEntry();
+
+let createAccountClientImpl: any = () => { throw new Error('createAccountClient not configured for this test'); };
+defineEsmMockAbs(require.resolve('../modules/bitshares_client'), [
+    'BitShares', 'createAccountClient', 'waitForConnected', 'getConnectionStatus',
+    'disconnectClient', 'reconnectForCycle', 'setSuppressConnectionLog', 'onReconnect',
+    'withTimeout', '_assessFailover', 'getNodeManager', 'getNodeStats', 'getNodeSummary',
+    'getConnectionError', '_internal'
+], {
+    BitShares: { subscribe() {} },
+    createAccountClient: (...args: any[]) => createAccountClientImpl(...args),
+    waitForConnected: async () => {},
+    getConnectionStatus: () => ({ connected: true }),
+    disconnectClient: async () => {},
+    reconnectForCycle: async () => {},
+    setSuppressConnectionLog() {},
+    onReconnect: () => () => {},
+    withTimeout: (p: any) => p,
+    _assessFailover: () => null,
+    getNodeManager: () => null,
+    getNodeStats: () => null,
+    getNodeSummary: () => null,
+    getConnectionError: () => null,
+    _internal: { connected: true },
+});
+
 const chainOrders = require('../modules/chain_orders');
 const { NATIVE_CLIENT } = require('../modules/constants');
 const { setKeyStore, resetKeyStore } = require('../modules/key_store');
@@ -168,44 +198,25 @@ async function runTests() {
         const baseTime = realNow();
         const batchOrderId = uniqueId('batch-cancel');
 
-        const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-        const originalBitsharesCache = require.cache[bitsharesClientPath];
         const txBroadcasted = { count: 0 };
         const txOps = { last: null };
-        require.cache[bitsharesClientPath] = {
-            id: bitsharesClientPath,
-            filename: bitsharesClientPath,
-            loaded: true,
-            exports: {
-                BitShares: { subscribe() {} },
-                waitForConnected: async () => {},
-                createAccountClient: () => ({
-                    initPromise: Promise.resolve(),
-                    newTx: () => {
-                        const tx = {
-                            limit_order_cancel: (opData) => { txOps.last = opData; },
-                        };
-                        (tx as any).broadcast = async () => {
-                            txBroadcasted.count += 1;
-                            return [[1, '1.7.0']];
-                        };
-                        return tx;
-                    }
-                }),
-                setSuppressConnectionLog() {},
-                getNodeManager: () => null,
-                getNodeStats: () => null,
-                getNodeSummary: () => null,
-                _internal: { connected: true }
+        createAccountClientImpl = () => ({
+            initPromise: Promise.resolve(),
+            newTx: () => {
+                const tx = {
+                    limit_order_cancel: (opData) => { txOps.last = opData; },
+                };
+                (tx as any).broadcast = async () => {
+                    txBroadcasted.count += 1;
+                    return [[1, '1.7.0']];
+                };
+                return tx;
             }
-        } as any;
+        });
 
         try {
-            delete require.cache[require.resolve('../modules/chain_orders')];
-            const liveChainOrders = require('../modules/chain_orders');
-
             Date.now = () => baseTime;
-            await liveChainOrders.executeBatch('test-account', 'test-key', [{
+            await chainOrders.executeBatch('test-account', 'test-key', [{
                 op_name: 'limit_order_cancel',
                 op_data: { order: batchOrderId, fee: { amount: 0, asset_id: '1.3.0' } }
             }]);
@@ -213,20 +224,20 @@ async function runTests() {
             assert.strictEqual(txBroadcasted.count, 1, 'Transaction should have been broadcast once');
             assert.strictEqual(txOps.last && txOps.last.order, batchOrderId, 'Cancel op data should have been passed to tx builder');
             assert.strictEqual(
-                liveChainOrders.wasRecentlyOwnCancelled(batchOrderId),
+                chainOrders.wasRecentlyOwnCancelled(batchOrderId),
                 true,
                 'Batch cancel op must be recorded in recent-own-cancel buffer after successful broadcast'
             );
 
             withStubbedClock(baseTime + TTL_MS + 1, () => {
                 assert.strictEqual(
-                    liveChainOrders.wasRecentlyOwnCancelled(batchOrderId),
+                    chainOrders.wasRecentlyOwnCancelled(batchOrderId),
                     false,
                     'Batch cancel entry should expire after TTL'
                 );
             });
         } finally {
-            require.cache[bitsharesClientPath] = originalBitsharesCache;
+            createAccountClientImpl = () => { throw new Error('createAccountClient not configured for this test'); };
             Date.now = realNow;
         }
     }
@@ -237,43 +248,24 @@ async function runTests() {
         const baseTime = realNow();
         const failedOrderId = uniqueId('batch-fail');
 
-        const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-        const originalBitsharesCache = require.cache[bitsharesClientPath];
-        require.cache[bitsharesClientPath] = {
-            id: bitsharesClientPath,
-            filename: bitsharesClientPath,
-            loaded: true,
-            exports: {
-                BitShares: { subscribe() {} },
-                waitForConnected: async () => {},
-                createAccountClient: () => ({
-                    initPromise: Promise.resolve(),
-                    newTx: () => {
-                        const tx = {
-                            limit_order_cancel: () => {},
-                        };
-                        (tx as any).broadcast = async () => {
-                            throw new Error('simulated broadcast failure');
-                        };
-                        return tx;
-                    }
-                }),
-                setSuppressConnectionLog() {},
-                getNodeManager: () => null,
-                getNodeStats: () => null,
-                getNodeSummary: () => null,
-                _internal: { connected: true }
+        createAccountClientImpl = () => ({
+            initPromise: Promise.resolve(),
+            newTx: () => {
+                const tx = {
+                    limit_order_cancel: () => {},
+                };
+                (tx as any).broadcast = async () => {
+                    throw new Error('simulated broadcast failure');
+                };
+                return tx;
             }
-        } as any;
+        });
 
         try {
-            delete require.cache[require.resolve('../modules/chain_orders')];
-            const liveChainOrders = require('../modules/chain_orders');
-
             Date.now = () => baseTime;
             let threw = false;
             try {
-                await liveChainOrders.executeBatch('test-account', 'test-key', [{
+                await chainOrders.executeBatch('test-account', 'test-key', [{
                     op_name: 'limit_order_cancel',
                     op_data: { order: failedOrderId, fee: { amount: 0, asset_id: '1.3.0' } }
                 }]);
@@ -283,12 +275,12 @@ async function runTests() {
             assert.strictEqual(threw, true, 'executeBatch failure should propagate');
 
             assert.strictEqual(
-                liveChainOrders.wasRecentlyOwnCancelled(failedOrderId),
+                chainOrders.wasRecentlyOwnCancelled(failedOrderId),
                 false,
                 'Failed batch must NOT record own-cancel (no broadcast happened)'
             );
         } finally {
-            require.cache[bitsharesClientPath] = originalBitsharesCache;
+            createAccountClientImpl = () => { throw new Error('createAccountClient not configured for this test'); };
             Date.now = realNow;
         }
     }

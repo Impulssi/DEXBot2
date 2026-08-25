@@ -12,7 +12,7 @@
  *   - entropyDefect: penalty for being stuck in the "random" band (H 0.45–0.55)
  *
  * Usage:
- *   tsx analysis/analyze_regime_windows.ts \
+ *   node dist/analysis/analyze_regime_windows.js \
  *     --source json \
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */

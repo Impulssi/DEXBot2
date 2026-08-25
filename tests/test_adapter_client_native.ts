@@ -1,11 +1,19 @@
-const assert = require('assert');
-const { setCachedModule, restoreCachedModule } = require('./helpers/module_cache_stub');
+'use strict';
 
-const adapterPath = require.resolve('../market_adapter/utils/adapter_client');
-const nativePath = require.resolve('../modules/bitshares-native');
+const assert = require('assert');
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
+
+// Compiled ESM namespaces are frozen and require.cache injection cannot
+// intercept static imports, so mock the native client module through the
+// loader-hook harness before the adapter is loaded.
+esmMockEntry();
 
 async function main() {
-    const originalNativeEntry = setCachedModule(nativePath, {
+    const nativePath = require.resolve('../modules/bitshares-native/index');
+    let connectArg = null;
+    let disconnectCalls = 0;
+
+    defineEsmMockAbs(nativePath, ['createReadOnlyClient'], {
         createReadOnlyClient: () => ({
             connect: async (nodes) => {
                 connectArg = Array.isArray(nodes) ? nodes.slice() : nodes;
@@ -20,13 +28,9 @@ async function main() {
             setNodes: () => {},
             getNodes: () => [],
         }),
-    } as any);
-    const originalFlag = process.env.DEXBOT_NATIVE_CHAIN;
-    let connectArg = null;
-    let disconnectCalls = 0;
+    });
 
     process.env.DEXBOT_NATIVE_CHAIN = '1';
-    delete require.cache[adapterPath];
 
     try {
         const adapter = require('../market_adapter/utils/adapter_client');
@@ -40,13 +44,7 @@ async function main() {
 
         console.log('adapter client native tests passed');
     } finally {
-        delete require.cache[adapterPath];
-        restoreCachedModule(nativePath, originalNativeEntry);
-        if (originalFlag === undefined) {
-            delete process.env.DEXBOT_NATIVE_CHAIN;
-        } else {
-            process.env.DEXBOT_NATIVE_CHAIN = originalFlag;
-        }
+        delete process.env.DEXBOT_NATIVE_CHAIN;
     }
 }
 

@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { PATHS } = require('../modules/paths');;
 const fs = require('fs');
 const path = require('path');
 
@@ -27,7 +28,7 @@ const { getErrorMessage } = require('../modules/utils/errors');
 
 async function testWhitelistCache() {
     console.log(' - Testing isBotWhitelisted caching...');
-    const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
+    const PROFILES_DIR = PATHS.PROFILES_DIR;
     const WHITELIST_FILE = path.join(PROFILES_DIR, 'market_adapter_whitelist.json');
 
     let originalContent = null;
@@ -159,7 +160,7 @@ async function testWhitelistGenerationOptionDefaults() {
 
 async function testWhitelistLoaderPreservesExistingFileEntries() {
     console.log(' - Testing whitelist loader preserves existing file entries...');
-    const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
+    const PROFILES_DIR = PATHS.PROFILES_DIR;
     const WHITELIST_FILE = path.join(PROFILES_DIR, 'market_adapter_whitelist.json');
 
     let originalContent = null;

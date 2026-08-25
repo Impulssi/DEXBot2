@@ -1,7 +1,5 @@
 process.env.OPEN_ORDERS_SYNC_LOOP_MS = '20';
 const assert = require('assert');
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
 const DEXBot = require('../modules/dexbot_class').default;
 const { withDynamicWeightFiles } = require('./helpers/dynamic_weight_files');
 
@@ -33,7 +31,6 @@ async function runTests() {
     console.log('Running Main Loop Sync Fill Rebalance Test...');
 
     const originalLoopMs = process.env.OPEN_ORDERS_SYNC_LOOP_MS;
-    const originalReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
     const unhandledRejectionHandler = (reason) => {
         const isWsErrorEvent = reason &&
             (
@@ -127,7 +124,9 @@ async function runTests() {
             return { executed: false, hadRotation: false };
         };
 
-        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+        // Compiled ESM exports cannot be patched; the bot-level hook feeds
+        // the sync loop a clean (non-truncated) open-orders window.
+        bot._readOpenOrdersHook = async () => [];
 
         bot._startOpenOrdersSyncLoop();
         assert.strictEqual(
@@ -151,7 +150,9 @@ async function runTests() {
         processCalls = 0;
         batchCalls = 0;
         persistCalls = 0;
-        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: true });
+        // Hook returns null — the same defer signal the truncated-read guard
+        // produces — so the sync must never reach synchronizeWithChain.
+        bot._readOpenOrdersHook = async () => null;
         await new Promise((resolve) => setTimeout(resolve, 90));
         assert.strictEqual(syncCalls, 0, 'Truncated reads must never reach synchronizeWithChain');
         assert.strictEqual(processCalls, 0, 'Truncated reads must not trigger fill processing');
@@ -171,7 +172,6 @@ async function runTests() {
         } else {
             process.env.OPEN_ORDERS_SYNC_LOOP_MS = originalLoopMs;
         }
-        chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
     }
 }
 

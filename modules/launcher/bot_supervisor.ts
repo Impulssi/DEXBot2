@@ -20,7 +20,7 @@ import { sleep } from '../order/utils/system.js';
 import type { Socket } from 'net';
 const storage = getStorage();
 const { ensureDir, readJSON, unlink: safeUnlink } = storage;
-import { buildRuntimeScriptPath, isDistCodeRoot, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
+import { buildRuntimeScriptPath, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
 import { getErrorMessage } from '../utils/errors.js';
 import { usesAmaGridPrice } from '../dexbot_maintenance_runtime.js';
 
@@ -541,9 +541,7 @@ function createBotSupervisor({
             ...(isBot ? { LIVE_BOT_NAME: appName } : {}),
         };
 
-        const runtimeArgs = isDistCodeRoot(CODE_ROOT)
-            ? [app.script || BOT_SCRIPT, ...normalizeAppArgs(app.args)]
-            : ['--import', 'tsx', app.script || BOT_SCRIPT, ...normalizeAppArgs(app.args)];
+        const runtimeArgs = [app.script || BOT_SCRIPT, ...normalizeAppArgs(app.args)];
         const child = spawnFn(Config.EXEC_PATH, runtimeArgs, {
             cwd: app.cwd || PATHS.PROJECT_ROOT,
             env: buildEnv({ extra: extraEnv }),

@@ -7,8 +7,8 @@
  * a summed volume histogram with threshold annotations.
  *
  * Usage:
- *   tsx analysis/analyze_trade_heatmap.ts --source market_adapter --bot-key <key> [options]
- *   tsx analysis/analyze_trade_heatmap.ts --file <path> [options]
+ *   node dist/analysis/analyze_trade_heatmap.js --source market_adapter --bot-key <key> [options]
+ *   node dist/analysis/analyze_trade_heatmap.js --file <path> [options]
  *
  * Output:
  *   Self-contained HTML file with inline CSS (no JS dependencies).

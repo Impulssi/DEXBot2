@@ -6,26 +6,18 @@
  * UPDATED: Uses modern COW pipeline (performSafeRebalance).
  */
 
-const utils = require('../modules/order/utils/math');
-utils.getAssetFees = (asset, amount, isMaker = true) => {
-    if (asset === 'BTS') {
-        const createFee = 0.01;
-        const updateFee = 0.0001;
-        const makerNetFee = createFee * 0.1;
-        const takerNetFee = createFee;
-        const netFee = isMaker ? makerNetFee : takerNetFee;
-        return {
-            total: netFee + updateFee,
-            createFee: createFee,
-            updateFee: updateFee,
-            makerNetFee: makerNetFee,
-            takerNetFee: takerNetFee,
-            netFee: netFee,
-            isMaker: isMaker
-        };
-    }
-    return amount;
-};
+// Compiled ESM namespaces are frozen: seed the fee cache via the _setFeeCache
+// seam instead of patching OrderUtils.getAssetFees. Mirrors the old fixture
+// (createFee=0.01, updateFee=0.0001, maker net = 10% of base) deterministically.
+require('../modules/order/utils/math')._setFeeCache({
+    BTS: {
+        limitOrderCreate: { bts: 0.01 },
+        limitOrderUpdate: { bts: 0.0001 },
+        limitOrderCancel: { bts: 0 },
+        makerFeeDiscountPercent: 0.9,
+    },
+    USD: { chargesMarketFees: false },
+});
 
 const bsModule = require('../modules/bitshares_client');
 if (bsModule.setSuppressConnectionLog) {

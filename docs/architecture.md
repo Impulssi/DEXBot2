@@ -1239,15 +1239,15 @@ graph LR
 npm test
 
 # Specific logic area
-tsx tests/test_accounting_logic.ts
+node dist/tests/test_accounting_logic.js
 
 # Signal tests
-tsx tests/test_market_adapter_signal_gates.ts
-tsx tests/test_dynamic_weight_override_wiring.ts
+node dist/tests/test_market_adapter_signal_gates.js
+node dist/tests/test_dynamic_weight_override_wiring.js
 
 # Credit/debt tests
-tsx tests/test_cr_planner.ts
-tsx tests/test_dexbot_credit_wiring.ts
+node dist/tests/test_cr_planner.js
+node dist/tests/test_dexbot_credit_wiring.js
 ```
 
 ### Test Quality Metrics

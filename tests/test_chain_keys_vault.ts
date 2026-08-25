@@ -1,19 +1,32 @@
+'use strict';
+
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-// Lower scrypt cost for tests — chain_keys.ts reads this at module load, so it
-// must be set before the require() below (config caching trap).
+// Env must be set before any require(): Config snapshots process.env at load
+// and chain_keys resolves PROFILES_KEYS_FILE from Config at module load.
+// Redirecting the keys file keeps every scenario off the developer's real
+// profiles/keys.json vault.
 process.env.DEXBOT_VAULT_SCRYPT_N = '4096';
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
-const { Config } = require('../modules/config');
+const TEMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-chain-keys-'));
+process.env.DEXBOT_KEYS_FILE = path.join(TEMP_DIR, 'keys.json');
+
+const { runEsmMockStages, defineEsmMockAbs } = require('./helpers/esm_mocks');
 
 console.log('Running chain_keys vault tests');
 
-const chainKeys = require('../modules/chain_keys');
-const { readJSON, writeJSON } = require('../modules/storage').getStorage();
+function requireChainKeys() {
+    return require('../modules/chain_keys');
+}
+
+function requireStorage() {
+    return require('../modules/storage').getStorage();
+}
 
 function writeModernVault(keysFile, password, accounts = {}) {
+    const chainKeys = requireChainKeys();
+    const { writeJSON } = requireStorage();
     const vaultSalt = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
     const secret = chainKeys.createVaultSecret(chainKeys.deriveVaultKey(password, vaultSalt));
     const data = {
@@ -38,58 +51,12 @@ function writeModernVault(keysFile, password, accounts = {}) {
     return secret;
 }
 
-
-
-async function withTempKeysFile(runTest) {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-chain-keys-'));
-    const keysFile = path.join(tempDir, 'keys.json');
-    const originalKeysFile = process.env.DEXBOT_KEYS_FILE;
-    const originalConfigKeysFile = Config.DEXBOT_KEYS_FILE;
-
-    process.env.DEXBOT_KEYS_FILE = keysFile;
-    Config.DEXBOT_KEYS_FILE = keysFile;
-
-    try {
-        await runTest(keysFile);
-    } finally {
-        if (typeof originalKeysFile === 'string') {
-            process.env.DEXBOT_KEYS_FILE = originalKeysFile;
-        } else {
-            delete process.env.DEXBOT_KEYS_FILE;
-        }
-        Config.DEXBOT_KEYS_FILE = originalConfigKeysFile;
-        fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-}
-
-function loadIsolatedChainKeys({ readInput, readPassword }) {
-    const chainKeysPath = require.resolve('../modules/chain_keys');
-    const systemPath = require.resolve('../modules/order/utils/system');
-    const originalChainKeys = require.cache[chainKeysPath];
-    const originalSystem = setCachedModule(systemPath, {
-        readInput,
-        readPassword,
-    });
-
-    delete require.cache[chainKeysPath];
-
-    try {
-        const isolatedChainKeys = require('../modules/chain_keys');
-        return {
-            chainKeys: isolatedChainKeys,
-            restore() {
-                restoreCachedModule(chainKeysPath, originalChainKeys);
-                restoreCachedModule(systemPath, originalSystem);
-            },
-        };
-    } catch (error) {
-        restoreCachedModule(chainKeysPath, originalChainKeys);
-        restoreCachedModule(systemPath, originalSystem);
-        throw error;
-    }
+function keysFile() {
+    return process.env.DEXBOT_KEYS_FILE;
 }
 
 function testDerivedVaultRoundtrip() {
+    const chainKeys = requireChainKeys();
     const password = 'correct horse battery staple';
     const vaultSalt = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
     const vaultKey1 = chainKeys.deriveVaultKey(password, vaultSalt);
@@ -129,6 +96,7 @@ function testDerivedVaultRoundtrip() {
 }
 
 function testLegacyPayloadRejected() {
+    const chainKeys = requireChainKeys();
     assert.throws(
         () => chainKeys.decrypt('abcd:abcd:abcd:abcd', { kind: 'dexbot-vault-secret', vaultKeyHex: '00' }),
         /Unsupported encrypted payload version/,
@@ -137,6 +105,7 @@ function testLegacyPayloadRejected() {
 }
 
 function testLegacyVaultRejected() {
+    const chainKeys = requireChainKeys();
     assert.throws(
         () => chainKeys.unlockWithPassword('any-password', { accounts: { alice: { encryptedKey: 'x:x:x:x' } } }),
         /Unsupported key vault format/,
@@ -144,122 +113,107 @@ function testLegacyVaultRejected() {
     );
 }
 
-
-
 async function testUnlockWithPasswordOnModernVault() {
-    await withTempKeysFile(async (keysFile) => {
-        writeModernVault(keysFile, 'modern-password', { alice: 'a'.repeat(64) });
-        const { chainKeys: isolatedChainKeys, restore } = loadIsolatedChainKeys({
-            readInput: async () => '',
-            readPassword: async () => '',
-        });
+    writeModernVault(keysFile(), 'modern-password', { alice: 'a'.repeat(64) });
+    const chainKeys = requireChainKeys();
 
-        try {
-            const secret = isolatedChainKeys.unlockWithPassword('modern-password');
+    // unlockWithPassword defaults to loadAccounts(), which reads the env-directed
+    // temp keys file — no stdin interaction involved.
+    const secret = chainKeys.unlockWithPassword('modern-password');
 
-            assert.strictEqual(
-                isolatedChainKeys.getPrivateKey('alice', secret),
-                'a'.repeat(64),
-                'raw password unlock helper should return a usable derived secret'
-            );
-        } finally {
-            restore();
-        }
+    assert.strictEqual(
+        chainKeys.getPrivateKey('alice', secret),
+        'a'.repeat(64),
+        'raw password unlock helper should return a usable derived secret'
+    );
+}
+
+// Interactive scenarios prompt through modules/order/utils/system; compiled
+// ESM namespaces are frozen, so stub them via the loader-hook harness. Each
+// stage runs in its own child with its own response script.
+function installPromptMocks({ readInputResponses, readPasswordResponses }) {
+    const prompts = [];
+    defineEsmMockAbs(require.resolve('../modules/order/utils/system'), ['readInput', 'readPassword', 'sleep'], {
+        readInput: async (prompt) => {
+            prompts.push(prompt);
+            return readInputResponses.shift() ?? '';
+        },
+        readPassword: async (prompt) => {
+            prompts.push(prompt);
+            return readPasswordResponses.shift() ?? '';
+        },
+        sleep: async () => {},
     });
+    return prompts;
 }
 
 async function testInteractiveSessionPersistsModernState() {
-    await withTempKeysFile(async (keysFile) => {
-        const password = 'modern-password';
-        const initialPrivateKey = 'b'.repeat(64);
-        const addedPrivateKey = 'a'.repeat(64);
-        writeModernVault(keysFile, password, { alice: initialPrivateKey });
+    const password = 'modern-password';
+    const initialPrivateKey = 'b'.repeat(64);
+    const addedPrivateKey = 'a'.repeat(64);
+    writeModernVault(keysFile(), password, { alice: initialPrivateKey });
 
-        const readInputResponses = ['1', 'bob', ''];
-        const readPasswordResponses = [password, addedPrivateKey];
-        const prompts = [];
-        const { chainKeys: isolatedChainKeys, restore } = loadIsolatedChainKeys({
-            readInput: async (prompt) => {
-                prompts.push(prompt);
-                return readInputResponses.shift() ?? '';
-            },
-            readPassword: async (prompt) => {
-                prompts.push(prompt);
-                return readPasswordResponses.shift() ?? '';
-            },
-        });
+    const readInputResponses = ['1', 'bob', ''];
+    const readPasswordResponses = [password, addedPrivateKey];
+    const prompts = installPromptMocks({ readInputResponses, readPasswordResponses });
 
-        try {
-            await isolatedChainKeys.main();
+    const chainKeys = requireChainKeys();
+    await chainKeys.main();
 
-            const persisted = readJSON(keysFile);
-            assert.strictEqual(persisted.vaultVersion, 2, 'interactive session should keep modern vault metadata');
-            assert.ok(persisted.accounts.alice.encryptedKey.startsWith('v2:'), 'existing records should stay in v2 format');
-            assert.ok(persisted.accounts.bob.encryptedKey.startsWith('v2:'), 'new records should use v2 encryption');
+    const persisted = requireStorage().readJSON(keysFile());
+    assert.strictEqual(persisted.vaultVersion, 2, 'interactive session should keep modern vault metadata');
+    assert.ok(persisted.accounts.alice.encryptedKey.startsWith('v2:'), 'existing records should stay in v2 format');
+    assert.ok(persisted.accounts.bob.encryptedKey.startsWith('v2:'), 'new records should use v2 encryption');
 
-            const secret = isolatedChainKeys.unlockWithPassword(password);
-            assert.strictEqual(isolatedChainKeys.getPrivateKey('alice', secret), initialPrivateKey, 'existing keys should remain decryptable');
-            assert.strictEqual(isolatedChainKeys.getPrivateKey('bob', secret), addedPrivateKey, 'new keys should remain decryptable');
-            assert.ok(prompts.includes('Enter account name: '), 'test should drive the add-key flow after authentication');
-        } finally {
-            restore();
-        }
-    });
+    const secret = chainKeys.unlockWithPassword(password);
+    assert.strictEqual(chainKeys.getPrivateKey('alice', secret), initialPrivateKey, 'existing keys should remain decryptable');
+    assert.strictEqual(chainKeys.getPrivateKey('bob', secret), addedPrivateKey, 'new keys should remain decryptable');
+    assert.ok(prompts.includes('Enter account name: '), 'test should drive the add-key flow after authentication');
 }
 
 async function testChangePasswordRequiresCurrentPasswordPrompt() {
-    await withTempKeysFile(async (keysFile) => {
-        const password = 'modern-password';
-        const privateKey = 'c'.repeat(64);
-        writeModernVault(keysFile, password, { alice: privateKey });
+    const password = 'modern-password';
+    const privateKey = 'c'.repeat(64);
+    writeModernVault(keysFile(), password, { alice: privateKey });
 
-        const readInputResponses = ['6', ''];
-        const readPasswordResponses = [password, 'wrong-current-password', 'new-password', 'new-password'];
-        const prompts = [];
-        const { chainKeys: isolatedChainKeys, restore } = loadIsolatedChainKeys({
-            readInput: async (prompt) => {
-                prompts.push(prompt);
-                return readInputResponses.shift() ?? '';
-            },
-            readPassword: async (prompt) => {
-                prompts.push(prompt);
-                return readPasswordResponses.shift() ?? '';
-            },
-        });
+    const readInputResponses = ['6', ''];
+    const readPasswordResponses = [password, 'wrong-current-password', 'new-password', 'new-password'];
+    const prompts = installPromptMocks({ readInputResponses, readPasswordResponses });
 
-        try {
-            await isolatedChainKeys.main();
+    const chainKeys = requireChainKeys();
+    await chainKeys.main();
 
-            assert.strictEqual(
-                prompts.filter((prompt) => prompt === 'Enter current master password: ').length,
-                1,
-                'changing the master password should always require the current password'
-            );
+    assert.strictEqual(
+        prompts.filter((prompt) => prompt === 'Enter current master password: ').length,
+        1,
+        'changing the master password should always require the current password'
+    );
 
-            const secret = isolatedChainKeys.unlockWithPassword(password);
-            assert.strictEqual(
-                isolatedChainKeys.getPrivateKey('alice', secret),
-                privateKey,
-                'failed password change should leave the stored key readable with the original password'
-            );
-        } finally {
-            restore();
-        }
-    });
+    const secret = chainKeys.unlockWithPassword(password);
+    assert.strictEqual(
+        chainKeys.getPrivateKey('alice', secret),
+        privateKey,
+        'failed password change should leave the stored key readable with the original password'
+    );
 }
 
-testDerivedVaultRoundtrip();
-testLegacyPayloadRejected();
-testLegacyVaultRejected();
-Promise.resolve()
-    .then(testUnlockWithPasswordOnModernVault)
-    .then(testInteractiveSessionPersistsModernState)
-    .then(testChangePasswordRequiresCurrentPasswordPrompt)
-    .then(() => {
-        console.log('chain_keys vault tests passed');
-        process.exit(0);
-    })
-    .catch((error) => {
-        console.error(error);
-        process.exit(1);
-    });
+const STAGES = {
+    pure_and_unlock: async () => {
+        testDerivedVaultRoundtrip();
+        testLegacyPayloadRejected();
+        testLegacyVaultRejected();
+        await testUnlockWithPasswordOnModernVault();
+    },
+    interactive_session_persists_modern_state: async () => {
+        await testInteractiveSessionPersistsModernState();
+    },
+    change_password_requires_current_password_prompt: async () => {
+        await testChangePasswordRequiresCurrentPasswordPrompt();
+    },
+};
+
+try {
+    runEsmMockStages(Object.keys(STAGES), (stage) => STAGES[stage]());
+} finally {
+    fs.rmSync(TEMP_DIR, { recursive: true, force: true });
+}

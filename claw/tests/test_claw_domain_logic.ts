@@ -4,18 +4,16 @@ const assert = require('assert');
 const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
+const { runEsmMockStages, defineEsmMockAbs } = require('../../tests/helpers/esm_mocks');
 
-function clearModule(modulePath: string) {
-  delete require.cache[modulePath];
+// Compiled ESM graphs cannot be mocked via require.cache; the helper installs
+// loader hooks (one child process per stage so fresh module instances load).
+function clearModule(_modulePath: string) {
+  /* no-op under ESM hooks */
 }
 
 function registerMock(modulePath: string, exports: any) {
-  require.cache[modulePath] = {
-    id: modulePath,
-    filename: modulePath,
-    loaded: true,
-    exports
-  } as any;
+  defineEsmMockAbs(modulePath, Object.keys(exports), exports);
 }
 
 const { clone } = require('../modules/utils');
@@ -98,6 +96,7 @@ function createHonestHarness(options: any = {}) {
       calls.getCallOrders.push({ assetId, limit });
       return [{ id: `${assetId}-call-1` }];
     },
+    getObjects: async () => [],
     listAssets: async (lowerBound: string, limit: any) => {
       calls.listAssets.push({ lowerBound, limit });
       return listAssetPages.shift() || [];
@@ -452,14 +451,21 @@ async function testPositionManager() {
   console.log('    PASS');
 }
 
-async function main() {
-  await testHonestEcosystem();
-  await testHonestEcosystemPaginationAndUnresolvedPair();
-  await testPositionManager();
-  console.log('claw domain logic tests passed');
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+runEsmMockStages(
+  ['honest', 'honest-pagination', 'position-manager'],
+  async (stage: string) => {
+    if (stage === 'honest') {
+      await testHonestEcosystem();
+      return;
+    }
+    if (stage === 'honest-pagination') {
+      await testHonestEcosystemPaginationAndUnresolvedPair();
+      return;
+    }
+    if (stage === 'position-manager') {
+      await testPositionManager();
+      return;
+    }
+    throw new Error(`Unknown stage: ${stage}`);
+  }
+);

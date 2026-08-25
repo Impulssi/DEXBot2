@@ -112,8 +112,8 @@ const { createCredentialDaemonController } = require('../modules/launcher/creden
         assert.strictEqual(spawnCount, 1, 'controller should spawn the daemon once');
         assert.deepStrictEqual(
             spawnCalls[0].args,
-            ['--import', 'tsx', require('path').resolve(__dirname, '..', 'credential-daemon.ts')],
-            'controller should launch the source credential daemon through tsx'
+            [require('path').resolve(__dirname, '..', 'credential-daemon.js')],
+            'controller should launch the compiled credential daemon directly'
         );
         assert.deepStrictEqual(logs, [], 'controller startup should not emit info logs');
         assert.deepStrictEqual(warns, [], 'controller startup should not emit warnings');

@@ -75,7 +75,7 @@ function loadRuntimeWithStubs({ marketAdapterRuntimeStub }: any = {}) {
 }
 
 async function testSnapshotReaderDetectsAMAConfig() {
-    const botsFile = require('path').join(__dirname, '..', 'profiles', 'bots.json');
+    const botsFile = require('../modules/paths').PATHS.PROFILES.BOTS_JSON;
 
     fs.existsSync = (filePath) => String(filePath) === botsFile;
     fs.readFileSync = (filePath, encoding) => {

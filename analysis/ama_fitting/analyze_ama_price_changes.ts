@@ -16,7 +16,7 @@ import { MARKET_ADAPTER } from '../../modules/constants.js';
  * (modules/constants.ts).
  *
  * Usage:
- *   tsx analysis/ama_fitting/analyze_ama_price_changes.ts --data <path-to-lp-candles.json> --results <path-to-optimization-results.json>
+ *   node dist/analysis/ama_fitting/analyze_ama_price_changes.js --data <path-to-lp-candles.json> --results <path-to-optimization-results.json>
  */
 const REPOS_THRESHOLD_PCT = MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT;
 

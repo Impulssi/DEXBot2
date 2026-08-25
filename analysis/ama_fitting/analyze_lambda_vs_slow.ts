@@ -27,7 +27,7 @@ import { getErrorMessage } from '../../modules/utils/errors.js';
  * Defaults: ER/Fast from MARKET_ADAPTER.AMAS.AMA1 (constants.ts).
  *
  * Usage:
- *   tsx analysis/ama_fitting/analyze_lambda_vs_slow.ts \
+ *   node dist/analysis/ama_fitting/analyze_lambda_vs_slow.js \
  *     --data market_adapter/data/lp/1_3_5537_1_3_0/lp_pool_133_1h_3y.json \
  *     --maxSlow 1000 --lambdaEnd 0.0045 --lambdaSteps 50
  */
@@ -81,7 +81,7 @@ Lambda vs Slow Analysis
   Start lambda derived from --maxSlow; only --lambdaEnd is the upper bound.
 
 Usage:
-  tsx analysis/ama_fitting/analyze_lambda_vs_slow.ts --data <lp-file.json> [options]
+  node dist/analysis/ama_fitting/analyze_lambda_vs_slow.js --data <lp-file.json> [options]
 
 Options:
   --data FILE          LP candle JSON file (required)

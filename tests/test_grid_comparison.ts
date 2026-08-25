@@ -310,7 +310,7 @@ console.log('  - promille = 0.01 × 1000 = 10 promille');
 console.log('  - Exceeds default threshold (1 promille) → triggers update\n');
 
 console.log('Run: npm test -- tests/test_grid_comparison.ts');
-console.log('Or: tsx tests/test_grid_comparison.ts\n');
+console.log('Or: node dist/tests/test_grid_comparison.js\n');
 
 })().catch(err => {
     console.error('Test execution error:', err);

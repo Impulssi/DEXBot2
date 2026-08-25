@@ -1,9 +1,11 @@
 const { EventEmitter } = require('events');
-const path = require('path');
+const { PATHS } = require('../../modules/paths');
 const { loadSettingsFile, resolveRawBotEntries } = require('../../modules/bot_settings');
 
-const profilesDir = path.resolve(__dirname, '..', '..', 'profiles');
-const botsFile = path.join(profilesDir, 'bots.json');
+// Resolve through PATHS so the bots fixture is found from both the source
+// tree (tsx era) and dist/tests when compiled (__dirname arithmetic would
+// point at dist/profiles otherwise).
+const botsFile = PATHS.PROFILES.BOTS_JSON;
 
 export function getActiveBotNames() {
     const { config } = loadSettingsFile(botsFile, { silent: true, exitOnError: false });

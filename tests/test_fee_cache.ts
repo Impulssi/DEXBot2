@@ -6,7 +6,7 @@
  * - getAssetFees(): Returns maker/taker/market fees for a given asset and amount
  *
  * Usage:
- *   tsx tests/test_fee_cache.ts
+ *   node dist/tests/test_fee_cache.js
  */
 
 const { BitShares } = require('../modules/bitshares_client');

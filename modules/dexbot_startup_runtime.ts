@@ -30,6 +30,21 @@ function reconcileGridOrders(...args: any) { return require('./order/grid_reconc
 function botRetryLogger(bot: any): { log: Function } {
     return { log: (msg: any) => bot._log(msg) };
 }
+
+// Test seams: compiled ESM exports cannot be monkey-patched, so tests may
+// substitute grid/reconcile modules and chain reads at the bot level.
+function botGridModule(bot: any) {
+    return (bot._gridModule && typeof bot._gridModule === 'object') ? bot._gridModule : Grid;
+}
+function botReconcileModule(bot: any) {
+    return (bot._gridReconcileModule && typeof bot._gridReconcileModule === 'object')
+        ? bot._gridReconcileModule
+        : { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileGridOrders };
+}
+async function botGuardedOpenOrdersRead(bot: any, opts: any) {
+    if (typeof bot._readOpenOrdersHook === 'function') return await bot._readOpenOrdersHook();
+    return await readOpenOrdersGuarded(chainOrders, bot.accountId, opts);
+}
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 
 /**
@@ -140,7 +155,9 @@ async function finishStartupSequence(bot: any, startupState: any) {
         if (typeof bot._fillsUnsubscribe === 'function') {
             await bot._fillsUnsubscribe().catch(() => { });
         }
-        bot._fillsUnsubscribe = await chainOrders.listenForFills(bot.account || undefined, bot._createFillCallback(chainOrders));
+        bot._fillsUnsubscribe = (typeof bot._listenForFillsHook === 'function')
+            ? await bot._listenForFillsHook()
+            : await chainOrders.listenForFills(bot.account || undefined, bot._createFillCallback(chainOrders));
         if (typeof bot._fillsUnsubscribe !== 'function') {
             bot._warn('Fill listener did not provide an unsubscribe handler. Shutdown cleanup may be incomplete.');
             bot._fillsUnsubscribe = null;
@@ -159,7 +176,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             // Truncated-read guard: the safety-net sync makes
                             // absence decisions (phantom cleanup); a partial
                             // get_full_accounts window must defer instead.
-                            const chainOpenOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                            const chainOpenOrders = await botGuardedOpenOrdersRead(bot, {
                                 log: (message: string, level: any) => bot._log(message, level),
                                 label: 'RECONNECT-SYNC',
                             });
@@ -294,7 +311,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         // get_full_accounts window would virtualize live ACTIVE
                         // slots (pass-1 phantom cleanup). Defer — the guarded
                         // pre-spread sync below picks up on a clean read.
-                        const postResetChainOpenOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                        const postResetChainOpenOrders = await botGuardedOpenOrdersRead(bot, {
                             log: (message: string, level: any) => bot._log(message, level),
                             label: 'POST-RESET',
                             detail: 'open-orders fallback',
@@ -397,7 +414,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
 
         const guardedChainOrders = bot.config.dryRun
             ? []
-            : await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+            : await botGuardedOpenOrdersRead(bot, {
                 log: (message: string, level: any) => bot._log(message, level),
                 label: 'STARTUP',
             });
@@ -407,13 +424,14 @@ async function finishStartupSequence(bot: any, startupState: any) {
         const chainReadTruncated = guardedChainOrders === null;
         const chainOpenOrders = guardedChainOrders === null ? [] : guardedChainOrders;
 
+        const reconcileMod = botReconcileModule(bot);
         let shouldRegenerate = false;
         if (!persistedGrid || persistedGrid.length === 0) {
             shouldRegenerate = true;
             bot._log('No persisted grid found. Generating new grid.');
         } else {
             await bot.manager._initializeAssets();
-            const decision = await decideStartupGridAction({
+            const decision = await reconcileMod.decideStartupGridAction({
                 persistedGrid,
                 chainOpenOrders,
                 manager: bot.manager,
@@ -422,7 +440,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     await bot.manager.persistGrid(orders);
                 },
                 boundaryIdx: persistedBoundaryIdx,
-                attemptResumeFn: attemptResumePersistedGridByPriceMatch,
+                attemptResumeFn: reconcileMod.attemptResumePersistedGridByPriceMatch,
             });
             shouldRegenerate = decision.shouldRegenerate;
 
@@ -462,9 +480,9 @@ async function finishStartupSequence(bot: any, startupState: any) {
 
                     if (!chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
                         bot._log('Generating new grid and syncing with existing on-chain orders...');
-                        await Grid.initializeGrid(bot.manager);
+                        await botGridModule(bot).initializeGrid(bot.manager);
                         await bot.manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true });
-                        const rebalanceResult = await reconcileGridOrders({
+                        const rebalanceResult = await reconcileMod.reconcileGridOrders({
                             manager: bot.manager,
                             config: bot.config,
                             account: bot.account,
@@ -487,7 +505,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     await bot._persistAndRecoverIfNeeded();
                 } else {
                     bot._log('Found active session. Loading and syncing existing grid.');
-                    await Grid.loadGrid(bot.manager, persistedGrid, persistedBoundaryIdx);
+                    await botGridModule(bot).loadGrid(bot.manager, persistedGrid, persistedBoundaryIdx);
                     let startupChainOpenOrders = chainOpenOrders;
                     if (chainReadTruncated) {
                         // Sync on a partial window would virtualize live ACTIVE
@@ -511,7 +529,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             );
 
                             if (!batchResult?.aborted) {
-                                const reReadOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                                const reReadOrders = await botGuardedOpenOrdersRead(bot, {
                                     log: (message: string, level: any) => bot._log(message, level),
                                     label: 'STARTUP',
                                     detail: 'post-fill re-read',
@@ -529,7 +547,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         // cancel/adopt against an incomplete view of the chain.
                         bot._log('[STARTUP] Skipping startup reconcile: truncated snapshot — deferring to the sync loop', 'warn');
                     } else {
-                        const rebalanceResult = await reconcileGridOrders({
+                        const rebalanceResult = await reconcileMod.reconcileGridOrders({
                             manager: bot.manager,
                             config: bot.config,
                             account: bot.account,
@@ -637,7 +655,7 @@ async function placeInitialOrdersImpl(bot: any) {
             bot._warn(`Could not fetch account totals before initializing grid: ${errFetch && getErrorMessage(errFetch) ? getErrorMessage(errFetch) : errFetch}`);
         }
 
-        await Grid.initializeGrid(bot.manager);
+        await botGridModule(bot).initializeGrid(bot.manager);
 
         if (bot.config.dryRun) {
             bot.manager.logger.log('Dry run enabled, skipping on-chain order placement.', 'info');

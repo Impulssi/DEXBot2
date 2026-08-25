@@ -31,7 +31,7 @@
  * - 0: Update completed successfully (or already up-to-date)
  * - 1: Update failed (with error details printed)
  *
- * Usage: tsx scripts/update.ts
+ * Usage: node dist/scripts/update.js
  */
 
 import { execSync } from 'node:child_process';

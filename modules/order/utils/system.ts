@@ -367,12 +367,23 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
  * Attempts pool or market derivation based on mode, with fallback chain.
  * 
  * @param {Object} BitShares - BitShares client instance
- * @param {string} symA - First asset symbol
- * @param {string} symB - Second asset symbol
- * @param {string} [mode='auto'] - Derivation mode: "pool", "book", or "auto" (pool → book).
- * @returns {Promise<number|null>} Derived price or null if all methods fail
- */
-export const derivePrice = async (BitShares: any, symA: string, symB: string, mode: string = 'auto'): Promise<number | null> => {
+  * @param {string} symA - First asset symbol
+  * @param {string} symB - Second asset symbol
+  * @param {string} [mode='auto'] - Derivation mode: "pool", "book", or "auto" (pool → book).
+  * @returns {Promise<number|null>} Derived price or null if all methods fail
+  */
+ let _derivePriceTestHook: ((...args: any[]) => any) | null = null;
+
+ /**
+  * Test-only seam: compiled ESM exports cannot be monkey-patched, so tests
+  * install a hook here to short-circuit price derivation (offline runs).
+  */
+ export const setDerivePriceTestHook = (fn: ((...args: any[]) => any) | null): void => {
+     _derivePriceTestHook = fn;
+ };
+
+ export const derivePrice = async (BitShares: any, symA: string, symB: string, mode: string = 'auto'): Promise<number | null> => {
+    if (_derivePriceTestHook) return await _derivePriceTestHook(BitShares, symA, symB, mode);
     mode = String(mode).toLowerCase();
     const validModes = new Set(['pool', 'book', 'auto']);
 

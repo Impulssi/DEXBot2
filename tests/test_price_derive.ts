@@ -6,8 +6,6 @@
 const assert = require('assert');
 
 async function main() {
-    const bsModule = require('../modules/bitshares_client');
-    const originalBS = bsModule.BitShares;
 
     const mock = { assets: {}, db: {} as any };
     const assetA = 'IOB.XRP';
@@ -36,8 +34,6 @@ async function main() {
 
     mock.db.get_order_book = async (a, b, limit) => ({ bids: [{ price: 0.0014, size: 5 }], asks: [{ price: 0.0016, size: 3 }] });
     mock.db.get_ticker = async () => ({ latest: 0.0015 });
-
-    bsModule.BitShares = mock;
 
     try {
         const { derivePoolPrice, deriveMarketPrice } = require('../modules/order/utils/system');
@@ -162,7 +158,6 @@ async function main() {
         console.log('✓ 0-precision asset handling: poolPZeroPrecision=', poolPZeroPrecision);
 
     } finally {
-        bsModule.BitShares = originalBS;
     }
 
     process.exit(0);

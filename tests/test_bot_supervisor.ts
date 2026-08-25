@@ -11,6 +11,17 @@ function getScriptArg(args) {
     return args.find((arg) => /\.(?:ts|js)$/.test(String(arg))) || '';
 }
 
+// Production contract: the supervisor always spawns `[node, <dist entry>, ...]`
+// — the compiled script path must be referenced directly, never a tsx-era
+// source `.ts` entry or tsx loader invocation.
+function assertCompiledNodeInvocation(call) {
+    assert.strictEqual(call.command, process.execPath, 'supervised children should be spawned with plain node');
+    assert.ok(
+        call.args.every((arg) => !String(arg).endsWith('.ts') && !String(arg).includes('tsx')),
+        'supervisor args must reference compiled entries without any tsx remnant'
+    );
+}
+
 function createChild({ closeOnKill = true } = {}) {
     const child = new EventEmitter();
     child.pid = 12345;
@@ -51,12 +62,13 @@ async function testAmaBotsStartAdapterService() {
     await new Promise((resolve) => setTimeout(resolve, 20));
     await supervisor.shutdown();
 
+    for (const call of calls) assertCompiledNodeInvocation(call);
     assert.ok(
-        calls.some((call) => getScriptArg(call.args).endsWith('market_adapter.ts')),
+        calls.some((call) => getScriptArg(call.args).endsWith('market_adapter.js')),
         'AMA isolated mode should supervise dexbot-adapter like PM2'
     );
     assert.ok(
-        calls.some((call) => getScriptArg(call.args).endsWith('bot.ts') && call.args.includes('AMA-BOT')),
+        calls.some((call) => getScriptArg(call.args).endsWith('bot.js') && call.args.includes('AMA-BOT')),
         'isolated mode should still supervise the selected bot process'
     );
 }
@@ -81,7 +93,7 @@ async function testMemoryLimitRestartsProcess() {
     await new Promise((resolve) => setTimeout(resolve, 40));
     await supervisor.shutdown();
 
-    const botStarts = calls.filter((call) => getScriptArg(call.args).endsWith('bot.ts') && call.args.includes('MEM-BOT'));
+    const botStarts = calls.filter((call) => getScriptArg(call.args).endsWith('bot.js') && call.args.includes('MEM-BOT'));
     assert.ok(botStarts.length >= 2, 'memory limit should restart the bot instead of leaving it stopped');
 }
 
@@ -96,7 +108,7 @@ async function testRestartControlsExcludeUpdaterJob() {
         spawnFn: (command, args, options) => {
             calls.push({ command, args, options });
             const child = createChild();
-            if (getScriptArg(args).endsWith('update.ts')) {
+            if (getScriptArg(args).endsWith('update.js')) {
                 setImmediate(() => child.emit('close', 0));
             }
             return child;
@@ -117,8 +129,9 @@ async function testRestartControlsExcludeUpdaterJob() {
     await new Promise((resolve) => setTimeout(resolve, 20));
     await supervisor.shutdown();
 
-    const updaterStarts = calls.filter((call) => getScriptArg(call.args).endsWith('update.ts'));
-    const botStarts = calls.filter((call) => getScriptArg(call.args).endsWith('bot.ts') && call.args.includes('CTRL-BOT'));
+    for (const call of calls) assertCompiledNodeInvocation(call);
+    const updaterStarts = calls.filter((call) => getScriptArg(call.args).endsWith('update.js'));
+    const botStarts = calls.filter((call) => getScriptArg(call.args).endsWith('bot.js') && call.args.includes('CTRL-BOT'));
 
     assert.strictEqual(updaterStarts.length, 1, 'restart controls should not relaunch the one-shot updater job');
     assert.ok(botStarts.length >= 3, 'restart controls should still restart the managed bot runtime');
@@ -138,7 +151,7 @@ async function testAdapterRestartDoesNotKillReplacementChild() {
         spawnFn: (command, args) => {
             const child = createChild();
             child.pid = nextPid++;
-            if (getScriptArg(args).endsWith('market_adapter.ts')) {
+            if (getScriptArg(args).endsWith('market_adapter.js')) {
                 if (!originalAdapter) {
                     originalAdapter = child;
                 } else {

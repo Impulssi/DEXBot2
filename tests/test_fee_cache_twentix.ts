@@ -5,7 +5,7 @@
  * Shows how the fee cache system handles assets with both market fees and taker fees
  *
  * Usage:
- *   npx tsx tests/test_fee_cache_twentix.ts
+ *   npx node dist/tests/test_fee_cache_twentix.js
  */
 
 const { BitShares } = require('../modules/bitshares_client');

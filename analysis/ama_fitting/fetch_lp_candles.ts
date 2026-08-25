@@ -18,7 +18,7 @@ import { getErrorMessage } from '../../modules/utils/errors.js';
  * the full uncut dataset (no pruning) for optimizer use.
  *
  * Usage:
- *   tsx analysis/ama_fitting/fetch_lp_candles.ts \
+ *   node dist/analysis/ama_fitting/fetch_lp_candles.js \
  *     --pool 1.19.133 \
  *     --assetA IOB.XRP --assetAId 1.3.3926 --assetAPrecision 4 \
  *     --assetB BTS     --assetBId 1.3.0    --assetBPrecision 5 \
@@ -91,7 +91,7 @@ function printHelp() {
     console.log('fetch_lp_candles.ts — fetch LP pool candles from Kibana for AMA optimizer');
     console.log('');
     console.log('Usage:');
-    console.log('  tsx fetch_lp_candles.ts --pool 1.19.133 \\');
+    console.log('  node dist/analysis/ama_fitting/fetch_lp_candles.js --pool 1.19.133 \\');
     console.log('    --assetA IOB.XRP --assetAId 1.3.3926 --assetAPrecision 4 \\');
     console.log('    --assetB BTS     --assetBId 1.3.0    --assetBPrecision 5');
     console.log('');

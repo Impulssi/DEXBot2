@@ -114,8 +114,7 @@ function createMarketAdapterRuntime({
             return { running: true, owned: false, external: true, started: false };
         }
 
-        const nodeArgs = script.endsWith('.ts') ? ['--import', 'tsx', script] : [script];
-        const spawnedChild = spawnFn(Config.EXEC_PATH, nodeArgs, {
+        const spawnedChild = spawnFn(Config.EXEC_PATH, [script], {
             cwd: root,
             env: buildEnv(),
             stdio: 'ignore',

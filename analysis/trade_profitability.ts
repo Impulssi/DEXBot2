@@ -16,15 +16,15 @@ const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = KC;
  * FIFO or sequential (LIFO) inventory tracking per asset pair.
  *
  * Usage:
- *   tsx analysis/trade_profitability.ts 1.2.3 --start 2025-01-01 --end 2025-06-01
- *   tsx analysis/trade_profitability.ts 1.2.3 --hours 720
- *   tsx analysis/trade_profitability.ts 1.2.3 --start 2025-01-01T00:00:00Z --end 2025-06-01T00:00:00Z
- *   tsx analysis/trade_profitability.ts 1.2.3 --hours 168 --asset 1.3.113
- *   tsx analysis/trade_profitability.ts 1.2.3 --hours 168 --csv trades.csv
- *   tsx analysis/trade_profitability.ts 1.2.3 --hours 168 --json results.json
- *   tsx analysis/trade_profitability.ts "account-name" --lookup
- *   tsx analysis/trade_profitability.ts 1.2.3 --hours 168 --trades
- *   tsx analysis/trade_profitability.ts 1.2.3 --hours 168 --match-mode fifo
+ *   node dist/analysis/trade_profitability.js 1.2.3 --start 2025-01-01 --end 2025-06-01
+ *   node dist/analysis/trade_profitability.js 1.2.3 --hours 720
+ *   node dist/analysis/trade_profitability.js 1.2.3 --start 2025-01-01T00:00:00Z --end 2025-06-01T00:00:00Z
+ *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --asset 1.3.113
+ *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --csv trades.csv
+ *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --json results.json
+ *   node dist/analysis/trade_profitability.js "account-name" --lookup
+ *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --trades
+ *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --match-mode fifo
  */
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ interface PairAnalysis {
 
 function printHelp() {
     console.log(`\
-Usage: tsx analysis/trade_profitability.ts <accountId> [options]
+Usage: node dist/analysis/trade_profitability.js <accountId> [options]
 
 Analyzes filled orders for a BitShares account, computing realized PnL
 via FIFO or sequential (LIFO) inventory tracking.
@@ -212,11 +212,11 @@ Options:
   --help, -h             Show this help
 
 Examples:
-  tsx analysis/trade_profitability.ts 1.2.123456 --hours 720
-  tsx analysis/trade_profitability.ts 1.2.123456 --start 2025-01-01 --end 2025-06-01
-  tsx analysis/trade_profitability.ts "my-bot-account" --lookup --hours 168
-  tsx analysis/trade_profitability.ts 1.2.123456 --hours 720 --asset 1.3.113 --csv trades.csv
-  tsx analysis/trade_profitability.ts 1.2.123456 --hours 720 --match-mode sequential`);
+  node dist/analysis/trade_profitability.js 1.2.123456 --hours 720
+  node dist/analysis/trade_profitability.js 1.2.123456 --start 2025-01-01 --end 2025-06-01
+  node dist/analysis/trade_profitability.js "my-bot-account" --lookup --hours 168
+  node dist/analysis/trade_profitability.js 1.2.123456 --hours 720 --asset 1.3.113 --csv trades.csv
+  node dist/analysis/trade_profitability.js 1.2.123456 --hours 720 --match-mode sequential`);
 }
 
 function parseArgs() {

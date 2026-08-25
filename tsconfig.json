@@ -19,7 +19,9 @@
     "sourceMap": true,
     "moduleResolution": "node16",
     "types": ["node"],
-    "allowJs": false
+    "allowJs": false,
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsc-prod.tsbuildinfo"
   },
   "include": [
     "modules/**/*.ts",
@@ -32,7 +34,7 @@
   "exclude": [
     "node_modules",
     "dist",
-    "tests",
-    "profiles"
+    "profiles",
+    "tests"
   ]
 }

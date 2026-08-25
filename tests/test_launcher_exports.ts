@@ -128,31 +128,31 @@ assert.deepStrictEqual(
     { command: 'restart', target: 'all', clawOnly: false, ...PM2_BASE },
     'pm2 parser should accept restart commands'
 );
-const expectedDexbotPath = path.join(__dirname, '..', 'dexbot.ts');
+const expectedDexbotPath = path.join(__dirname, '..', 'dexbot.js');
 assert.deepStrictEqual(
     unlock.buildDexbotStartArgs('XRP-BTS'),
-    ['--import', 'tsx', expectedDexbotPath, 'test', 'XRP-BTS'],
+    [expectedDexbotPath, 'test', 'XRP-BTS'],
     'launcher should append the requested bot name'
 );
 assert.deepStrictEqual(
     unlock.buildDexbotStartArgs(null),
-    ['--import', 'tsx', expectedDexbotPath, 'test'],
+    [expectedDexbotPath, 'test'],
     'launcher should omit the bot arg when starting all bots'
 );
 assert.deepStrictEqual(
     unlock.buildDexbotStartArgs('XRP-BTS', true),
-    ['--import', 'tsx', expectedDexbotPath, 'drystart', 'XRP-BTS'],
+    [expectedDexbotPath, 'drystart', 'XRP-BTS'],
     'launcher should pass drystart when dryrun is true'
 );
 assert.deepStrictEqual(
     unlock.buildDexbotStartArgs(null, true),
-    ['--import', 'tsx', expectedDexbotPath, 'drystart'],
+    [expectedDexbotPath, 'drystart'],
     'launcher should pass drystart with no bot name'
 );
 assert.strictEqual(
     buildRuntimeScriptPath(path.join(__dirname, '..'), ['dexbot']),
     expectedDexbotPath,
-    'runtime helper should resolve source entrypoints to .ts paths'
+    'runtime helper should resolve entrypoints under the runtime root'
 );
 assert.deepStrictEqual(
     buildRuntimeScriptArgs({
@@ -161,7 +161,7 @@ assert.deepStrictEqual(
         scriptArgs: ['start'],
     }),
     [path.join(__dirname, '..', BUILD_DIR, 'dexbot.js'), 'start'],
-    'runtime helper should resolve dist entrypoints to .js paths without tsx'
+    'runtime helper should resolve dist entrypoints to plain node args'
 );
 
 for (const entry of [

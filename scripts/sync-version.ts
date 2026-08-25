@@ -7,8 +7,8 @@
  * a literal JSON version field.
  *
  * Usage:
- *   npx tsx scripts/sync-version.ts           # write changes
- *   npx tsx scripts/sync-version.ts --check    # exit 1 if any mismatch
+ *   node dist/scripts/sync-version.js           # write changes
+ *   node dist/scripts/sync-version.js --check    # exit 1 if any mismatch
  */
 
 import { createRequire } from 'node:module';

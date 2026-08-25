@@ -1,7 +1,95 @@
 const assert = require('assert');
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
 
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
+// Compiled ESM namespaces are frozen and require.cache injection cannot
+// intercept static ESM imports, so chain_orders is replaced via loader hooks
+// (same technique as test_cow_ops_per_broadcast). Swappable functions resolve
+// per-test overrides at CALL time: assignments mutate the override map through
+// the Proxy while consumers' captured named-export bindings stay valid.
+esmMockEntry();
+
+function makeSwappableModule(defaults: Record<string, any>) {
+    const overrides = new Map<string, any>();
+    const resolved = (key: string) => (overrides.has(key) ? overrides.get(key) : defaults[key]);
+    const target: Record<string, any> = {};
+    for (const key of Object.keys(defaults)) {
+        target[key] = typeof defaults[key] === 'function'
+            ? (...args: any[]) => resolved(key)(...args)
+            : defaults[key];
+    }
+    return new Proxy(target, {
+        set(_t: any, prop: string | symbol, value: any) {
+            const key = String(prop);
+            if (target[key] === value) {
+                overrides.delete(key);
+            } else {
+                overrides.set(key, value);
+            }
+            return true;
+        },
+    });
+}
+
+const { BroadcastUncertainError } = require('../modules/dexbot_credential_client');
+
+// Faithful replicas of the real chain_orders guarded-read helpers (same as
+// tests/test_uncertain_broadcast.ts): they delegate to the (possibly
+// overridden) readOpenOrdersWithMeta/readOpenOrders on the module object so
+// per-test fixtures drive the production guard logic.
+async function readWithMetaSafe(mod: any, accountId: any, timeoutMs?: number, _suppressLog?: boolean) {
+    if (mod && typeof mod.readOpenOrdersWithMeta === 'function') {
+        return mod.readOpenOrdersWithMeta(accountId, timeoutMs);
+    }
+    return { orders: await mod.readOpenOrders(accountId, timeoutMs), truncated: false };
+}
+
+async function readGuarded(mod: any, accountId: any, options: any = {}) {
+    const read = await readWithMetaSafe(mod, accountId, options.timeoutMs);
+    const truncated = read?.truncated === true;
+    const orders = read?.orders;
+    const empty = !Array.isArray(orders) || orders.length === 0;
+    if (!truncated && !(options.deferEmpty && empty)) return Array.isArray(orders) ? orders : [];
+    return null;
+}
+
+const chainOrders = makeSwappableModule({
+    BroadcastUncertainError,
+    selectAccount: async () => {},
+    setPreferredAccount: async () => {},
+    resolveAccountId: async () => null,
+    resolveAccountName: async () => null,
+    readOpenOrders: async () => [],
+    readOpenOrdersWithMeta: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersWithMetaSafe: readWithMetaSafe,
+    readOpenOrdersGuarded: readGuarded,
+    readSingleOrder: async () => null,
+    batchReadOrders: async () => [],
+    listenForFills: async () => () => {},
+    updateOrder: async () => { throw new Error('updateOrder not configured for this test'); },
+    createOrder: async () => { throw new Error('createOrder not configured for this test'); },
+    cancelOrder: async () => { throw new Error('cancelOrder not configured for this test'); },
+    getOnChainAssetBalances: async () => ({}),
+    getFillProcessingMode: async () => 'history',
+    buildUpdateOrderOp: async () => { throw new Error('buildUpdateOrderOp not configured for this test'); },
+    buildCreateOrderOp: async () => { throw new Error('buildCreateOrderOp not configured for this test'); },
+    buildCancelOrderOp: async () => ({ op_name: 'limit_order_cancel', op_data: {} }),
+    buildLiquidityPoolExchangeOp: async () => { throw new Error('buildLiquidityPoolExchangeOp not configured for this test'); },
+    executeBatch: async () => ({ success: true, operation_results: [] }),
+    findOverReducingUpdateOpError: async () => null,
+    wasRecentlyOwnCancelled: () => false,
+    recordOwnCancel: () => {},
+    broadcastTxWithClassification: async () => ({})
+});
+defineEsmMockAbs(require.resolve('../modules/chain_orders'), [
+    'selectAccount', 'setPreferredAccount', 'resolveAccountId', 'resolveAccountName',
+    'readOpenOrders', 'readOpenOrdersWithMeta', 'readOpenOrdersWithMetaSafe', 'readOpenOrdersGuarded',
+    'readSingleOrder', 'batchReadOrders', 'listenForFills', 'updateOrder', 'createOrder', 'cancelOrder',
+    'getOnChainAssetBalances', 'getFillProcessingMode', 'buildUpdateOrderOp', 'buildCreateOrderOp',
+    'buildCancelOrderOp', 'buildLiquidityPoolExchangeOp', 'executeBatch',
+    'findOverReducingUpdateOpError', 'wasRecentlyOwnCancelled', 'recordOwnCancel',
+    'BroadcastUncertainError', 'broadcastTxWithClassification'
+], chainOrders);
+
 const DEXBot = require('../modules/dexbot_class').default;
 const { OrderManager } = require('../modules/order').default;
 const { ORDER_STATES, ORDER_TYPES, TIMING, DAEMON_CODES } = require('../modules/constants');

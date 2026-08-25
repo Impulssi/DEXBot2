@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { PATHS } = require('../modules/paths');;
 const fs = require('fs');
 const path = require('path');
 const { MARKET_ADAPTER } = require('../modules/constants');
@@ -26,7 +27,7 @@ const { MarketAdapterService } = require('../market_adapter/core/market_adapter_
 const { loadStrategiesFromProfiles } = require('../market_adapter/lp_chart_strategy_loader');
 const { ensureDir, writeJSON } = require('../modules/storage').getStorage();
 
-const MARKET_PROFILES_FILE = path.join(__dirname, '..', 'profiles', 'market_profiles.json');
+const MARKET_PROFILES_FILE = PATHS.PROFILES.MARKET_PROFILES_JSON;
 
 // Threshold behavior
 assert.strictEqual(

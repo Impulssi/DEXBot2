@@ -155,7 +155,7 @@ async function runTests() {
         let savedData = null;
         const mock = {
             _persistenceLock: { acquire: async (fn: () => Promise<void>) => { await fn(); } },
-            data: { grid: [] },
+            data: { grid: [], recentFillKeys: null },
             _loadData: () => ({ grid: [], recentFillKeys: {} }),
             storeMasterGrid: async function (o, b, i, a, d, rfk) {
                 await this._persistenceLock.acquire(async () => {
@@ -193,8 +193,8 @@ async function runTests() {
     console.log(' - [F7-T9] loadRecentFillKeys returns null when empty...');
     {
         const mock = {
-            data: {},
-            _loadData: () => ({}),
+            data: { recentFillKeys: null },
+            _loadData: () => ({ recentFillKeys: null }),
             loadRecentFillKeys: function (force = false) {
                 if (force) this.data = this._loadData();
                 if (this.data?.recentFillKeys) return this.data.recentFillKeys;

@@ -54,8 +54,8 @@ function testClawCatalog() {
   catalogCopy[0].command = 'mutated';
   assert.notStrictEqual(catalog.getClawToolCatalog()[0].command, 'mutated');
 
-  const examples = catalog.buildClawCommandExamples('tsx scripts/claw_bridge.ts');
-  assert.ok(examples.some((line: any) => line.startsWith('tsx scripts/claw_bridge.ts manifest')));
+  const examples = catalog.buildClawCommandExamples('node dist/claw/scripts/claw_bridge.js');
+  assert.ok(examples.some((line: any) => line.startsWith('node dist/claw/scripts/claw_bridge.js manifest')));
   assert.ok(examples.some((line: any) => line.includes('bot-settings-apply')));
 }
 
@@ -134,9 +134,13 @@ async function testCredentialDaemonClient() {
 
 function testDexbotBridgeRootResolution() {
   const bridge = require('../modules/dexbot_bridge');
-  const expectedRoot = path.resolve(__dirname, '..', '..');
+  const root = bridge.getDexbot2Root();
 
-  assert.strictEqual(bridge.getDexbot2Root(), expectedRoot);
+  // The resolved root must be a real DEXBot2 checkout that contains this
+  // test's compiled location and the module tree the bridge resolves against.
+  const rel = path.relative(root, __dirname);
+  assert.ok(!rel.startsWith('..') && !path.isAbsolute(rel), 'resolved DEXBot2 root must contain this test');
+  assert.ok(fs.existsSync(path.join(root, 'package.json')), 'resolved DEXBot2 root must contain package.json');
 }
 
 async function main() {

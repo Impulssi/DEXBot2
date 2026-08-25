@@ -58,7 +58,7 @@ setTimeout(() => {
     // contains `market_adapter/market_adapter.ts`, which the production lock heuristic
     // in market_adapter/utils/file_lock.ts (isLikelyMarketAdapterProcess) uses to
     // decide whether the existing lock holder is a real market-adapter process.
-    const childArgs = ['--import', 'tsx', '-e', childCode, lockPath, readyPath, 'market_adapter/market_adapter.ts'];
+    const childArgs = ['-e', childCode, lockPath, readyPath, 'market_adapter/market_adapter.ts'];
     const child = spawn(process.execPath, childArgs, {
         cwd: root,
         stdio: ['ignore', 'pipe', 'pipe'],

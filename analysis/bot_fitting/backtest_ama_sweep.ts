@@ -22,8 +22,8 @@ const { readJSON, writeJSON } = getStorage();
  *   - Three weight profiles: valley, neutral, mountain (symmetric buy/sell)
  *
  * Usage:
- *   tsx analysis/bot_fitting/backtest_ama_sweep.ts --data <path-to-lp-candles.json>
- *   tsx analysis/bot_fitting/backtest_ama_sweep.ts --data <path-to-lp-candles.json> --spread 4:16:1 --increment 0.5:4:0.25
+ *   node dist/analysis/bot_fitting/backtest_ama_sweep.js --data <path-to-lp-candles.json>
+ *   node dist/analysis/bot_fitting/backtest_ama_sweep.js --data <path-to-lp-candles.json> --spread 4:16:1 --increment 0.5:4:0.25
  */
 
 

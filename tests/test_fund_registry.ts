@@ -5,10 +5,9 @@ const path = require('path');
 
 console.log('Running fund registry tests');
 
-const fundRegistryPath = path.resolve(__dirname, '../modules/fund_registry.ts');
-
-// Clear module cache to get a fresh registry instance for testing
-delete require.cache[fundRegistryPath];
+// Compiled ESM: require the built module (require(esm)); the ESM instance
+// cache is per-process, so a fresh run always gets a fresh registry.
+const fundRegistryPath = path.resolve(__dirname, '../modules/fund_registry.js');
 const fundRegistry = require(fundRegistryPath);
 
 // Helper: in-memory test helper to avoid file-system cross-contamination

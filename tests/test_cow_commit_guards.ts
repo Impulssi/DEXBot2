@@ -1,12 +1,103 @@
 const assert = require('assert');
-const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub');
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
 
-const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-installBitsharesClientStub(bitsharesClientPath);
+// Compiled ESM namespaces are frozen and require.cache injection cannot
+// intercept static ESM imports, so chain_orders / chain_keys are replaced via
+// loader hooks (same technique as test_uncertain_broadcast). Swappable
+// functions resolve per-test overrides at CALL time: assignments mutate the
+// override map through the Proxy while consumers' captured named-export
+// bindings stay valid.
+esmMockEntry();
 
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
-const chainKeys = require('../modules/chain_keys');
+function makeSwappableModule(defaults: Record<string, any>) {
+    const overrides = new Map<string, any>();
+    const resolved = (key: string) => (overrides.has(key) ? overrides.get(key) : defaults[key]);
+    const target: Record<string, any> = {};
+    for (const key of Object.keys(defaults)) {
+        target[key] = typeof defaults[key] === 'function'
+            ? (...args: any[]) => resolved(key)(...args)
+            : defaults[key];
+    }
+    return new Proxy(target, {
+        set(_t: any, prop: string | symbol, value: any) {
+            const key = String(prop);
+            if (target[key] === value) {
+                overrides.delete(key);
+            } else {
+                overrides.set(key, value);
+            }
+            return true;
+        },
+    });
+}
+
+const { BroadcastUncertainError } = require('../modules/dexbot_credential_client');
+
+const chainOrders = makeSwappableModule({
+    BroadcastUncertainError,
+    selectAccount: async () => {},
+    setPreferredAccount: async () => {},
+    resolveAccountId: async () => null,
+    resolveAccountName: async () => null,
+    readOpenOrders: async () => [],
+    readOpenOrdersWithMeta: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersWithMetaSafe: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersGuarded: async () => [],
+    readSingleOrder: async () => null,
+    batchReadOrders: async () => [],
+    listenForFills: async () => () => {},
+    updateOrder: async () => { throw new Error('updateOrder not configured for this test'); },
+    createOrder: async () => { throw new Error('createOrder not configured for this test'); },
+    cancelOrder: async () => { throw new Error('cancelOrder not configured for this test'); },
+    getOnChainAssetBalances: async () => ({}),
+    getFillProcessingMode: async () => 'history',
+    buildUpdateOrderOp: async () => { throw new Error('buildUpdateOrderOp not configured for this test'); },
+    buildCreateOrderOp: async () => { throw new Error('buildCreateOrderOp not configured for this test'); },
+    buildCancelOrderOp: async () => { throw new Error('buildCancelOrderOp not configured for this test'); },
+    buildLiquidityPoolExchangeOp: async () => { throw new Error('buildLiquidityPoolExchangeOp not configured for this test'); },
+    executeBatch: async () => ({ success: true, operation_results: [] }),
+    findOverReducingUpdateOpError: async () => null,
+    wasRecentlyOwnCancelled: () => false,
+    recordOwnCancel: () => {},
+    broadcastTxWithClassification: async () => ({})
+});
+defineEsmMockAbs(require.resolve('../modules/chain_orders'), [
+    'selectAccount', 'setPreferredAccount', 'resolveAccountId', 'resolveAccountName',
+    'readOpenOrders', 'readOpenOrdersWithMeta', 'readOpenOrdersWithMetaSafe', 'readOpenOrdersGuarded',
+    'readSingleOrder', 'batchReadOrders', 'listenForFills', 'updateOrder', 'createOrder', 'cancelOrder',
+    'getOnChainAssetBalances', 'getFillProcessingMode', 'buildUpdateOrderOp', 'buildCreateOrderOp',
+    'buildCancelOrderOp', 'buildLiquidityPoolExchangeOp', 'executeBatch',
+    'findOverReducingUpdateOpError', 'wasRecentlyOwnCancelled', 'recordOwnCancel',
+    'BroadcastUncertainError', 'broadcastTxWithClassification'
+], chainOrders);
+
+class MasterPasswordErrorStub extends Error {}
+
+const chainKeys = makeSwappableModule({
+    MasterPasswordError: MasterPasswordErrorStub,
+    createDaemonSigningToken: (accountName: string, options: Record<string, any> = {}) => ({
+        kind: 'dexbot-daemon-signing-token',
+        accountName,
+        socketPath: options.socketPath || null,
+        sessionId: options.sessionId || null,
+        botHmacSecret: options.botHmacSecret || null,
+    }),
+    isDaemonSigningToken: (value: any) => !!(value && typeof value === 'object' && value.kind === 'dexbot-daemon-signing-token' && typeof value.accountName === 'string'),
+    isDaemonResponsive: async () => true,
+    isDaemonReady: async () => true,
+    waitForDaemon: async () => true,
+    pingDaemon: async () => true,
+    probeAccountInDaemon: async () => { throw new Error('probeAccountInDaemon not configured for this test'); },
+});
+defineEsmMockAbs(require.resolve('../modules/chain_keys'), [
+    'validatePrivateKey', 'loadAccounts', 'saveAccounts', 'checkKeysFileSecurity',
+    'encrypt', 'decrypt', 'deriveVaultKey', 'createDaemonSigningToken',
+    'createSessionSecret', 'createVaultSecret', 'isVaultSecret', 'isDaemonSigningToken',
+    'unlockWithPassword', 'main', 'authenticate', 'getPrivateKey', 'resolvePrivateKey',
+    'isMasterPasswordFailure', 'MasterPasswordError', 'isDaemonReady', 'isDaemonResponsive',
+    'waitForDaemon', 'probeAccountInDaemon', 'pingDaemon'
+], chainKeys);
+
 const DEXBot = require('../modules/dexbot_class').default;
 const { OrderManager } = require('../modules/order/manager');
 const { WorkingGrid } = require('../modules/order/working_grid');
@@ -738,14 +829,16 @@ async function testCredentialDaemonPreflightBlocksBroadcast() {
     workingGrid.set('slot-new', order);
 
     const originalBuildCreate = chainOrders.buildCreateOrderOp;
-    const originalProbe = chainKeys.probeAccountInDaemon;
+    // The pre-write probe (_ensureCredentialDaemonWritable) pings the daemon
+    // when the signing key is a daemon token — simulate the outage there.
+    const originalPing = chainKeys.pingDaemon;
     let executeCalls = 0;
 
     chainOrders.buildCreateOrderOp = async () => ({
         op: { op_name: 'limit_order_create', op_data: {} },
         finalInts: null
     });
-    chainKeys.probeAccountInDaemon = async () => {
+    chainKeys.pingDaemon = async () => {
         throw new Error('Daemon connection failed: ENOENT');
     };
 
@@ -761,7 +854,7 @@ async function testCredentialDaemonPreflightBlocksBroadcast() {
         );
     } finally {
         chainOrders.buildCreateOrderOp = originalBuildCreate;
-        chainKeys.probeAccountInDaemon = originalProbe;
+        chainKeys.pingDaemon = originalPing;
     }
 
     assert.strictEqual(executeCalls, 0, 'Credential outage must abort before broadcast execution');

@@ -1,15 +1,16 @@
 # DEXBot2 Test Suite
 
-Tests live as standalone `.ts` files in this directory. Each file is runnable directly via `tsx`. The suite uses Node's native `assert` — no test framework dependency.
+Tests live as standalone `.ts` files in this directory. They are compiled to `dist/tests/` by the build and run from there with plain `node` — no test framework, no TypeScript loader. The suite uses Node's native `assert`.
 
 ## Quick Start
 
 ```bash
-# Run all tests
+# Run all tests (builds production code + tests first)
 npm test
 
 # Run a single test file
-node --import tsx tests/<file>.ts
+npm run build:tests
+node dist/tests/<file>.js
 ```
 
 ## Directory Layout

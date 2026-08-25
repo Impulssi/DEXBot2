@@ -14,17 +14,37 @@
 
 const assert = require('assert');
 
-const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub');
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
+// Compiled ESM namespaces are frozen: chain_orders is mocked via loader hooks
+// so dexbot_cow_runtime's static import binds to this plain object and the
+// per-test executeBatch/readOpenOrdersWithMeta assignments take effect.
+esmMockEntry();
+
 const { ensureFeeCache } = require('./helpers/fee_cache_init');
 ensureFeeCache();
 
-const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-installBitsharesClientStub(bitsharesClientPath);
-
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
 const { BroadcastUncertainError } = require('../modules/dexbot_credential_client');
 const { COW_PERFORMANCE } = require('../modules/constants');
+
+const chainOrdersPath = require.resolve('../modules/chain_orders');
+// Consumers capture named-export bindings at link time, so executeBatch is a
+// fixed wrapper dispatching to the current per-test implementation.
+let executeBatchImpl: any = async () => { throw new Error('executeBatch not configured for this test'); };
+const chainOrders = defineEsmMockAbs(chainOrdersPath, [
+    'selectAccount', 'setPreferredAccount', 'resolveAccountId', 'resolveAccountName',
+    'readOpenOrders', 'readOpenOrdersWithMeta', 'readOpenOrdersWithMetaSafe', 'readOpenOrdersGuarded',
+    'readSingleOrder', 'batchReadOrders', 'listenForFills', 'updateOrder', 'createOrder', 'cancelOrder',
+    'getOnChainAssetBalances', 'getFillProcessingMode', 'buildUpdateOrderOp', 'buildCreateOrderOp',
+    'buildCancelOrderOp', 'buildLiquidityPoolExchangeOp', 'executeBatch',
+    'findOverReducingUpdateOpError', 'wasRecentlyOwnCancelled', 'recordOwnCancel',
+    'BroadcastUncertainError', 'broadcastTxWithClassification'
+], {
+    BroadcastUncertainError,
+    readOpenOrdersWithMeta: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersWithMetaSafe: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersGuarded: async () => [],
+    executeBatch: (...args: any[]) => executeBatchImpl(...args),
+});
 
 const DEFAULT_MAX_OPS = COW_PERFORMANCE.MAX_OPS_PER_BROADCAST;
 
@@ -96,27 +116,21 @@ function makeBot(opts: { maxOps?: number } = {}) {
 async function testSingleBroadcastAtOrBelowCap() {
     console.log('[OPSCAP-001] Batch at/below cap → single broadcast (no chunking)...');
     const bot = makeBot({ maxOps: 4 });
-    const origExecuteBatch = chainOrders.executeBatch;
-    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
     let callCount = 0;
 
-    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+    executeBatchImpl = async (account: any, key: any, ops: any) => {
         callCount++;
         assert.strictEqual(ops.length, 4, 'must be a single broadcast of 4 ops');
         return makeResult(ops);
     };
-    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
-    try {
+    {
         const { operations, opContexts } = makeOps(4);
         const result = await bot._executeChunkedWithRetryOnUncertain(operations, opContexts);
         assert.strictEqual(callCount, 1, 'single broadcast expected at/below cap');
         assert.strictEqual(result.opContexts.length, 4, 'all contexts returned');
         assert.ok(Array.isArray(result.result.operation_results), 'operation_results must be an array');
         assert.strictEqual(result.result.operation_results.length, 4, 'operation_results aligned with contexts');
-    } finally {
-        chainOrders.executeBatch = origExecuteBatch;
-        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
     }
     console.log('✓ OPSCAP-001 passed');
 }
@@ -124,17 +138,14 @@ async function testSingleBroadcastAtOrBelowCap() {
 async function testChunkedSplitAndAlignment() {
     console.log('[OPSCAP-002] 10 ops with cap 4 → 3 broadcasts (4+4+2), merged results aligned...');
     const bot = makeBot({ maxOps: 4 });
-    const origExecuteBatch = chainOrders.executeBatch;
-    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
     const broadcastSizes: number[] = [];
 
-    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+    executeBatchImpl = async (account: any, key: any, ops: any) => {
         broadcastSizes.push(ops.length);
         return makeResult(ops);
     };
-    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
-    try {
+    {
         const { operations, opContexts } = makeOps(10);
         const result = await bot._executeChunkedWithRetryOnUncertain(operations, opContexts);
         assert.deepStrictEqual(broadcastSizes, [4, 4, 2], 'must broadcast 4+4+2');
@@ -143,9 +154,6 @@ async function testChunkedSplitAndAlignment() {
         assert.strictEqual(result.result.raw.grouped, true, 'merged result marked grouped');
         assert.strictEqual(result.result.raw.groupsExecuted, 3, '3 chunks executed');
         assert.strictEqual(result.result.raw.groupResults.length, 3, '3 raw group results');
-    } finally {
-        chainOrders.executeBatch = origExecuteBatch;
-        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
     }
     console.log('✓ OPSCAP-002 passed');
 }
@@ -153,22 +161,19 @@ async function testChunkedSplitAndAlignment() {
 async function testFailedChunkDoesNotSwallowRemaining() {
     console.log('[OPSCAP-003] Middle chunk fails (both retry attempts) → later chunks still broadcast, first failure re-thrown with partialOnChainState...');
     const bot = makeBot({ maxOps: 4 });
-    const origExecuteBatch = chainOrders.executeBatch;
-    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
     const broadcastSizes: number[] = [];
 
     // Chunk 2 carries testMarker 4..7; fail it. No retry fires because the
     // empty chain read cannot verify absence (deferred), so it fails once.
-    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+    executeBatchImpl = async (account: any, key: any, ops: any) => {
         broadcastSizes.push(ops.length);
         if (ops[0]?.op_data?.testMarker === 4) {
             throw new BroadcastUncertainError('opscap-003-uncertain', { batchId: 'opscap-003', timeoutMs: 30000 });
         }
         return makeResult(ops);
     };
-    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
-    try {
+    {
         const { operations, opContexts } = makeOps(10);
         await assert.rejects(
             () => bot._executeChunkedWithRetryOnUncertain(operations, opContexts),
@@ -184,9 +189,6 @@ async function testFailedChunkDoesNotSwallowRemaining() {
         );
         // Chunk 1 lands (4), chunk 2 fails once (no verified absence → no blind retry), chunk 3 lands (2).
         assert.deepStrictEqual(broadcastSizes, [4, 4, 2], 'failed chunk does not swallow the remaining chunk (no orders dropped)');
-    } finally {
-        chainOrders.executeBatch = origExecuteBatch;
-        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
     }
     console.log('✓ OPSCAP-003 passed');
 }
@@ -245,24 +247,18 @@ async function testNonNumericCapFallsBackToMin() {
     // NaN/string maxOps even if the accessor is bypassed (e.g. fake bot).
     const botStr = makeBot();
     botStr._getMaxOpsPerBroadcast = () => ('abc' as any);
-    const origExecuteBatch = chainOrders.executeBatch;
-    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
     const broadcastSizes: number[] = [];
 
-    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+    executeBatchImpl = async (account: any, key: any, ops: any) => {
         broadcastSizes.push(ops.length);
         return makeResult(ops);
     };
-    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
-    try {
+    {
         const { operations, opContexts } = makeOps(6);
         const result = await botStr._executeChunkedWithRetryOnUncertain(operations, opContexts);
         assert.deepStrictEqual(broadcastSizes, [1, 1, 1, 1, 1, 1], 'each op broadcast in its own chunk, no hang');
         assert.strictEqual(result.opContexts.length, 6, 'all contexts returned');
-    } finally {
-        chainOrders.executeBatch = origExecuteBatch;
-        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
     }
     console.log('✓ OPSCAP-006 passed');
 }
@@ -270,21 +266,18 @@ async function testNonNumericCapFallsBackToMin() {
 async function testDefinitiveFailureAbortsRemaining() {
     console.log('[OPSCAP-008] Definitive (non-uncertain) chunk failure → remaining chunks aborted (no burned broadcasts), partial state preserved...');
     const bot = makeBot({ maxOps: 4 });
-    const origExecuteBatch = chainOrders.executeBatch;
-    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
     const broadcastSizes: number[] = [];
 
     // Chunk 2 (marker 4..7) fails definitively; chunk 3 must NOT be broadcast.
-    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+    executeBatchImpl = async (account: any, key: any, ops: any) => {
         broadcastSizes.push(ops.length);
         if (ops[0]?.op_data?.testMarker === 4) {
             throw new Error('opscap-008-insufficient-funds');
         }
         return makeResult(ops);
     };
-    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
-    try {
+    {
         const { operations, opContexts } = makeOps(10);
         await assert.rejects(
             () => bot._executeChunkedWithRetryOnUncertain(operations, opContexts),
@@ -313,9 +306,6 @@ async function testDefinitiveFailureAbortsRemaining() {
             '1/3 chunks broadcast',
             'aborted chunk must NOT count as broadcast (only chunk 1 fully executed)'
         );
-    } finally {
-        chainOrders.executeBatch = origExecuteBatch;
-        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
     }
     console.log('✓ OPSCAP-008 passed');
 }
@@ -323,15 +313,13 @@ async function testDefinitiveFailureAbortsRemaining() {
 async function testPairModePartialNotDowngraded() {
     console.log('[OPSCAP-009] Failing chunk already carrying partialOnChainState (pair-mode landed groups) is NOT downgraded...');
     const bot = makeBot({ maxOps: 4 });
-    const origExecuteBatch = chainOrders.executeBatch;
-    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
 
     // 10 ops -> 3 chunks. Chunk 1 (marker 0..3) fails mid-pair-groups after
     // landing 1 group; chunk 2 (marker 4..7) fails definitively (-> abort).
     // No chunk fully succeeds, so mergedContexts stays 0. Without the fix,
     // `mergedContexts.length > 0` (0) would downgrade partialOnChainState
     // true->false, skipping the forensic log and resetting the op count.
-    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+    executeBatchImpl = async (account: any, key: any, ops: any) => {
         if (ops[0]?.op_data?.testMarker === 0) {
             const err: any = new BroadcastUncertainError('opscap-009-group-fail', { batchId: 'opscap-009', timeoutMs: 30000 });
             err.partialOnChainState = true;
@@ -345,9 +333,8 @@ async function testPairModePartialNotDowngraded() {
         }
         return makeResult(ops);
     };
-    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
-    try {
+    {
         const { operations, opContexts } = makeOps(10);
         await assert.rejects(
             () => bot._executeChunkedWithRetryOnUncertain(operations, opContexts),
@@ -361,9 +348,6 @@ async function testPairModePartialNotDowngraded() {
                 return true;
             }
         );
-    } finally {
-        chainOrders.executeBatch = origExecuteBatch;
-        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
     }
     console.log('✓ OPSCAP-009 passed');
 }
@@ -371,15 +355,13 @@ async function testPairModePartialNotDowngraded() {
 async function testLaterChunkPartialMarkersAccumulate() {
     console.log('[OPSCAP-010] Non-first failing chunk internal partial markers accumulate into the re-thrown error...');
     const bot = makeBot({ maxOps: 4 });
-    const origExecuteBatch = chainOrders.executeBatch;
-    const origReadWithMeta = chainOrders.readOpenOrdersWithMeta;
 
     // 10 ops -> 3 chunks. Chunk 1 (marker 0..3) succeeds. Chunk 2 (marker
     // 4..7) fails uncertain mid-pair-groups after landing 2 ops (carries its
     // own partialOnChainState=true / broadcastedOperationCount=2). Chunk 3
     // (marker 8..9) succeeds. The re-thrown error must count chunk 1 (4) +
     // chunk 3 (2) fully-executed + chunk 2's 2 landed ops = 8.
-    chainOrders.executeBatch = async (account: any, key: any, ops: any) => {
+    executeBatchImpl = async (account: any, key: any, ops: any) => {
         if (ops[0]?.op_data?.testMarker === 4) {
             const err: any = new BroadcastUncertainError('opscap-010-group-fail', { batchId: 'opscap-010', timeoutMs: 30000 });
             err.partialOnChainState = true;
@@ -390,9 +372,8 @@ async function testLaterChunkPartialMarkersAccumulate() {
         }
         return makeResult(ops);
     };
-    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
-    try {
+    {
         const { operations, opContexts } = makeOps(10);
         await assert.rejects(
             () => bot._executeChunkedWithRetryOnUncertain(operations, opContexts),
@@ -406,9 +387,6 @@ async function testLaterChunkPartialMarkersAccumulate() {
                 return true;
             }
         );
-    } finally {
-        chainOrders.executeBatch = origExecuteBatch;
-        chainOrders.readOpenOrdersWithMeta = origReadWithMeta;
     }
     console.log('✓ OPSCAP-010 passed');
 }

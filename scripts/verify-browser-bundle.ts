@@ -15,7 +15,7 @@
  * Node-only entries are tested WITHOUT externalizing Node built-ins, so they
  * correctly fail with "Could not resolve 'fs'" / 'net' / 'https' etc.
  *
- * Usage: npx tsx scripts/verify-browser-bundle.ts
+ * Usage: node dist/scripts/verify-browser-bundle.js
  * Invoked by: npm run verify:browser-bundle
  */
 

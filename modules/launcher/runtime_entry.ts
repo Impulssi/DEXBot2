@@ -21,7 +21,9 @@ function buildRuntimeScriptPath(codeRoot: string, scriptSegments: string[]) {
         throw new Error('scriptSegments must contain at least one path segment');
     }
 
-    const scriptExt = isDistCodeRoot(codeRoot) ? '.js' : '.ts';
+    // Runtime is dist-only since the tsx removal: plain node executes the
+    // compiled entries, so entrypoints always resolve to .js.
+    const scriptExt = '.js';
     const normalizedSegments = [...scriptSegments];
     const lastSegment = normalizedSegments.pop() as string;
     normalizedSegments.push(`${stripKnownExtension(lastSegment)}${scriptExt}`);
@@ -38,10 +40,7 @@ function buildRuntimeScriptArgs({
     scriptArgs?: string[];
 }) {
     const scriptPath = buildRuntimeScriptPath(codeRoot, scriptSegments);
-    if (isDistCodeRoot(codeRoot)) {
-        return [scriptPath, ...scriptArgs];
-    }
-    return ['--import', 'tsx', scriptPath, ...scriptArgs];
+    return [scriptPath, ...scriptArgs];
 }
 
 export { buildRuntimeScriptArgs, buildRuntimeScriptPath, isDistCodeRoot, SCRIPTS_ROOT }

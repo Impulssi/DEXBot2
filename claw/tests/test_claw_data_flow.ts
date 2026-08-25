@@ -2,18 +2,16 @@
 
 const assert = require('assert');
 const Module = require('module');
+const { runEsmMockStages, defineEsmMockAbs } = require('../../tests/helpers/esm_mocks');
 
-function clearModule(modulePath: string) {
-  delete require.cache[modulePath];
+// Compiled ESM graphs cannot be mocked via require.cache; the helper installs
+// loader hooks (one child process per stage so fresh module instances load).
+function clearModule(_modulePath: string) {
+  /* no-op under ESM hooks */
 }
 
 function registerMock(modulePath: string, exports: any) {
-  require.cache[modulePath] = {
-    id: modulePath,
-    filename: modulePath,
-    loaded: true,
-    exports
-  } as any;
+  defineEsmMockAbs(modulePath, Object.keys(exports), exports);
 }
 
 const { clone } = require('../modules/utils');
@@ -503,15 +501,25 @@ function testLiquidityPoolsWrapper() {
   console.log('    PASS');
 }
 
-async function main() {
-  await testPositionDiscoveryAndFeedSource();
-  await testDecisionLoop();
-  await testKibanaPriceSource();
-  testLiquidityPoolsWrapper();
-  console.log('claw data flow tests passed');
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+runEsmMockStages(
+  ['discovery-feed', 'decision-loop', 'kibana', 'liquidity-pools'],
+  async (stage: string) => {
+    if (stage === 'discovery-feed') {
+      await testPositionDiscoveryAndFeedSource();
+      return;
+    }
+    if (stage === 'decision-loop') {
+      await testDecisionLoop();
+      return;
+    }
+    if (stage === 'kibana') {
+      await testKibanaPriceSource();
+      return;
+    }
+    if (stage === 'liquidity-pools') {
+      testLiquidityPoolsWrapper();
+      return;
+    }
+    throw new Error(`Unknown stage: ${stage}`);
+  }
+);

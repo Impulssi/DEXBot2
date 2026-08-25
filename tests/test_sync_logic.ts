@@ -25,15 +25,16 @@ const { OrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
 
-// Mock getAssetFees
-const OrderUtils = require('../modules/order/utils/math');
-const originalGetAssetFees = OrderUtils.getAssetFees;
-OrderUtils.getAssetFees = (asset) => {
-    if (asset === 'BTS') {
-        return { total: 0.011, createFee: 0.1, updateFee: 0.001, makerNetFee: 0.01, takerNetFee: 0.1, netFee: 0.01, isMaker: true };
+// Seed the fee cache so getAssetFees resolves deterministically (frozen ESM
+// namespace — patching OrderUtils.getAssetFees is no longer possible).
+const { _setFeeCache } = require('../modules/order/utils/math');
+_setFeeCache({
+    BTS: {
+        limitOrderCreate: { bts: 0.1 },
+        limitOrderUpdate: { bts: 0.001 },
+        limitOrderCancel: { bts: 0 }
     }
-    return 1.0;
-};
+});
 
 async function runTests() {
     console.log('Running Sync Logic Tests...');
@@ -444,7 +445,6 @@ async function runTests() {
         assert.strictEqual(slot.orderId, null, 'Full fill must clear the orderId (no ghost preservation)');
     }
 
-    OrderUtils.getAssetFees = originalGetAssetFees;
     console.log(' - Testing Large Orphan At Adjacent Price Is Not Misflagged As Duplicate...');
     {
         const manager = await createManager();

@@ -7,16 +7,17 @@ const path = require('path');
 const { Config } = require('../modules/config');
 
 const { ensureDir, writeJSON } = require('../modules/storage').getStorage();
-const ORDERS_DIR = path.join(__dirname, '..', 'profiles', 'orders');
-const ANALYZER_PATH = path.resolve(__dirname, '..', 'scripts', 'analyze-orders.ts');
-const WHITELIST_MODULE_PATH = path.resolve(__dirname, '..', 'modules', 'market_adapter_whitelist.ts');
+const { PATHS } = require('../modules/paths');
+const ORDERS_DIR = PATHS.ORDERS_DIR;
+const ANALYZER_PATH = path.resolve(__dirname, '..', 'scripts', 'analyze-orders.js');
+const { resetMarketAdapterWhitelistCache } = require('../modules/market_adapter_whitelist');
 const TEST_WHITELIST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-analyze-whitelist-'));
 const TEST_WHITELIST_PATH = path.join(TEST_WHITELIST_DIR, 'market_adapter_whitelist.json');
 
 function loadAnalyzer() {
   delete require.cache[ANALYZER_PATH];
-  // tsx is registered as a Node loader by the test runner; require() then
-  // transpiles the .ts file on the fly.
+  // The analyzer is compiled to dist by the build; require() loads the
+  // compiled .js module directly.
   return require(ANALYZER_PATH);
 }
 
@@ -44,8 +45,9 @@ function withWhitelist(entries, fn) {
   writeJSON(TEST_WHITELIST_PATH, { whitelist: entries });
   process.env.DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE = TEST_WHITELIST_PATH;
   Config.DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE = TEST_WHITELIST_PATH;
-  delete require.cache[WHITELIST_MODULE_PATH];
-  delete require.cache[ANALYZER_PATH];
+  // The whitelist module caches per load; reset so the override file is
+  // re-read (require.cache deletion no longer works for compiled ESM).
+  resetMarketAdapterWhitelistCache();
   try {
     return fn();
   } finally {
@@ -58,8 +60,7 @@ function withWhitelist(entries, fn) {
     if (fs.existsSync(TEST_WHITELIST_PATH)) {
       fs.unlinkSync(TEST_WHITELIST_PATH);
     }
-    delete require.cache[WHITELIST_MODULE_PATH];
-    delete require.cache[ANALYZER_PATH];
+    resetMarketAdapterWhitelistCache();
   }
 }
 

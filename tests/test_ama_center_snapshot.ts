@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('assert');
+const { PATHS } = require('../modules/paths');;
 const fs = require('fs/promises');
 const fsSync = require('fs');
 const path = require('path');
@@ -20,7 +21,7 @@ const {
 
 async function testSnapshotReaderExposesCenterOnly() {
   const botKey = `snapshot-${Date.now()}`;
-  const filePath = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
+  const filePath = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
 
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify({
@@ -71,7 +72,7 @@ async function testSnapshotReaderExposesCenterOnly() {
 
 async function testSnapshotReaderRejectsLegacyEffectiveCenterOnly() {
   const botKey = `snapshot-legacy-${Date.now()}`;
-  const filePath = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
+  const filePath = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
 
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify({
@@ -200,7 +201,7 @@ async function testAdapterStateMergePreservesBotResetMetadata() {
   delete require.cache[marketAdapterPath];
 
   const botKey = `adapter-merge-${Date.now()}`;
-  const filePath = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
+  const filePath = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
 
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify({
@@ -242,7 +243,7 @@ async function testDynamicGridWritePreservesExistingResetMetadata() {
   delete require.cache[marketAdapterPath];
 
   const botKey = `adapter-existing-reset-${Date.now()}`;
-  const filePath = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
+  const filePath = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
 
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify({
@@ -276,7 +277,7 @@ async function testDynamicGridWritePreservesNewerResetCenterWhenAdapterStateIsSt
   delete require.cache[marketAdapterPath];
 
   const botKey = `adapter-stale-reset-${Date.now()}`;
-  const filePath = path.join(__dirname, '..', 'profiles', 'orders', `${botKey}.dynamicgrid.json`);
+  const filePath = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
 
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify({

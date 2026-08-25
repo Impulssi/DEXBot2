@@ -2,16 +2,16 @@
 
 const assert = require('assert');
 const fs = require('fs');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+// Compiled ESM namespaces are frozen; stub bitshares_client through the
+// loader-hook harness before credential_policy is loaded.
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
+
+esmMockEntry();
 
 console.log('Running credential debt-policy constraint tests');
 
-const credentialPolicyPath = require.resolve('../modules/credential_policy');
-const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-
-function loadPolicyWithAssetStub(assetsBySymbol = {}) {
-    const originalPolicy = require.cache[credentialPolicyPath];
-    const originalBitshares = setCachedModule(bitsharesClientPath, {
+function installAssetStub(assetsBySymbol = {}) {
+    defineEsmMockAbs(require.resolve('../modules/bitshares_client'), ['BitShares'], {
         BitShares: {
             db: {
                 lookup_asset_symbols: async (symbols) => {
@@ -26,31 +26,16 @@ function loadPolicyWithAssetStub(assetsBySymbol = {}) {
             },
         },
     });
-
-    delete require.cache[credentialPolicyPath];
-
-    try {
-        return {
-            policy: require('../modules/credential_policy'),
-            restore() {
-                restoreCachedModule(credentialPolicyPath, originalPolicy);
-                restoreCachedModule(bitsharesClientPath, originalBitshares);
-            },
-        };
-    } catch (error) {
-        restoreCachedModule(credentialPolicyPath, originalPolicy);
-        restoreCachedModule(bitsharesClientPath, originalBitshares);
-        throw error;
-    }
 }
 
 async function testWrappedCommentedBotsJsonResolvesDebtConstraints() {
     const originalExistsSync = fs.existsSync;
     const originalReadFileSync = fs.readFileSync;
-    const { policy, restore } = loadPolicyWithAssetStub({
+    installAssetStub({
         'HONEST.USD': { id: '1.3.10', symbol: 'HONEST.USD' },
         BTS: { id: '1.3.0', symbol: 'BTS' },
     });
+    const policy = require('../modules/credential_policy');
 
     try {
         fs.existsSync = (targetPath) => {
@@ -156,7 +141,6 @@ async function testWrappedCommentedBotsJsonResolvesDebtConstraints() {
     } finally {
         fs.existsSync = originalExistsSync;
         fs.readFileSync = originalReadFileSync;
-        restore();
     }
 }
 

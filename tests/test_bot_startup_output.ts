@@ -13,7 +13,6 @@ const gracefulShutdownPath = require.resolve('../modules/graceful_shutdown');
 const systemPath = require.resolve('../modules/order/utils/system');
 const accountBotsPath = require.resolve('../modules/account_bots');
 const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-
 const originalBotModule = require.cache[botPath];
 const originalBotSettings = require.cache[botSettingsPath];
 const originalDexbotClass = require.cache[dexbotClassPath];
@@ -146,6 +145,19 @@ function restoreStubs() {
 }
 
 installStubs();
+
+// bot.js resolves the signing key through getKeyStore().resolveSigningKey().
+// The real DaemonKeyStore statically imports chain_keys, so the cache stub
+// above cannot intercept its interactive prompt ("Enter master password:").
+// Use the production setKeyStore seam to keep startup hermetic and feed the
+// expected private key straight into startWithPrivateKey.
+const keyStoreModule = require('../modules/key_store');
+keyStoreModule.setKeyStore({
+    resolveSigningKey: async () => 'private-key',
+    isDaemonSigningKey: () => false,
+    executeOperations: async () => ({ success: true }),
+});
+
 require('../bot');
 
 (async () => {

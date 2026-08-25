@@ -8,20 +8,27 @@ console.log('Running market_adapter smoke tests');
 
 const { BUILD_DIR } = require('../modules/constants');
 const { isDistCodeRoot } = require('../modules/launcher/runtime_entry');
-const root = path.join(__dirname, '..');
+// Resolve the real checkout root (works from both the source tree and the
+// compiled dist/tests location) so spawned script paths stay repo-relative.
+let projectRoot = path.join(__dirname, '..');
+while (!fs.existsSync(path.join(projectRoot, 'package.json'))) {
+    const parent = path.dirname(projectRoot);
+    if (parent === projectRoot) throw new Error('Unable to locate DEXBot2 checkout root');
+    projectRoot = parent;
+}
+const root = projectRoot;
 const lockPath = path.join(root, 'market_adapter', 'state', 'market_adapter.lock');
 
 const _isDist = isDistCodeRoot(path.dirname(__dirname));
 const _adapterScript = _isDist ? `${BUILD_DIR}/market_adapter/market_adapter.js` : 'market_adapter/market_adapter.ts';
 const _signalRunnerScript = _isDist ? `${BUILD_DIR}/market_adapter/ama_signal_runner.js` : 'market_adapter/ama_signal_runner.ts';
-const _spawnArgs = _isDist ? [] : ['--import', 'tsx'];
 
 {
     if (fs.existsSync(lockPath)) {
         fs.unlinkSync(lockPath);
     }
 
-    const res = spawnSync('node', [..._spawnArgs, _adapterScript, '--once', '--dryRun', '--quiet'], {
+    const res = spawnSync('node', [_adapterScript, '--once', '--dryRun', '--quiet'], {
         cwd: root,
         encoding: 'utf8',
     });
@@ -30,7 +37,7 @@ const _spawnArgs = _isDist ? [] : ['--import', 'tsx'];
 }
 
 {
-    const res = spawnSync('node', [..._spawnArgs, _adapterScript, '--whitelist-all', '--once', '--dryRun', '--quiet'], {
+    const res = spawnSync('node', [_adapterScript, '--whitelist-all', '--once', '--dryRun', '--quiet'], {
         cwd: root,
         encoding: 'utf8',
     });
@@ -68,7 +75,7 @@ const _spawnArgs = _isDist ? [] : ['--import', 'tsx'];
         ],
     };
 
-    const res = spawnSync('node', [..._spawnArgs, _signalRunnerScript, '--compact'], {
+    const res = spawnSync('node', [_signalRunnerScript, '--compact'], {
         cwd: root,
         encoding: 'utf8',
         env: {

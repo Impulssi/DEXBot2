@@ -1,0 +1,25 @@
+{
+  // Lenient compile profile for the test suite. Tests are legacy CJS-flavored
+  // fixtures (require()/__dirname) written before strict-mode adoption; they
+  // compile into dist/tests next to the production output and run via plain
+  // node (see package.json `build:tests`). Only checker strictness is relaxed
+  // here — emit options stay in sync with tsconfig.json so a tests build can
+  // never leave a hybrid dist.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsc-tests.tsbuildinfo"
+  },
+  "include": [
+    "tests/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "profiles"
+  ]
+}

@@ -18,6 +18,6 @@ Use this reference for DEXBot2 startup and PM2 orchestration work.
 
 ## Validation
 
-- `node --import tsx tests/test_launcher_exports.ts`
-- `node --import tsx tests/test_pm2_logic.ts`
+- `node dist/tests/test_launcher_exports.js`
+- `node dist/tests/test_pm2_logic.js`
 - `npm test`

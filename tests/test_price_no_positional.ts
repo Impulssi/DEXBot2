@@ -1,8 +1,6 @@
 const assert = require('assert');
 
 async function main() {
-    const bsModule = require('../modules/bitshares_client');
-    const originalBS = bsModule.BitShares;
 
     const mock = { assets: {}, db: {} as any };
     const assetA = 'IOB.XRP';
@@ -24,15 +22,12 @@ async function main() {
         return [];
     };
 
-    bsModule.BitShares = mock;
-
     try {
         const { derivePoolPrice } = require('../modules/order/utils/system');
         const p = await derivePoolPrice(mock, assetA, assetB);
         assert(p === null, 'derivePoolPrice should return null when pool reserves lack asset_id and no named reserve fields');
         console.log('derivePoolPrice returned null as expected (no positional fallback)');
     } finally {
-        bsModule.BitShares = originalBS;
     }
     process.exit(0);
 }

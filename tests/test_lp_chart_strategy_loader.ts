@@ -4,6 +4,12 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { ensureDir, unlink: safeUnlink, writeJSON } = require('../modules/storage').getStorage();
+const { PATHS } = require('../modules/paths');
+
+// The loader resolves optimizer results against the runtime PROJECT_ROOT and
+// latest LP data against the resolved LP data dir — write fixtures there.
+const ANALYSIS_AMA_FITTING_DIR = path.join(PATHS.PROJECT_ROOT, 'analysis', 'ama_fitting');
+const LP_DATA_DIR = PATHS.MARKET_ADAPTER.LP_DATA_DIR;
 
 const {
     findLatestLpData,
@@ -30,20 +36,12 @@ function makeAmaConfig(name, erPeriod, fastPeriod, slowPeriod) {
 function testLoaderFindsOptimizerResultsFromAnalysisDir() {
     const suffix = `${Date.now()}-${process.pid}`;
     const dataFile = path.join(
-        __dirname,
-        '..',
-        'market_adapter',
-        'inputs',
-        'data',
-        'lp',
+        LP_DATA_DIR,
         `test_pair_${suffix}`,
         `lp_pool_${suffix}_1h.json`
     );
     const resultsFile = path.join(
-        __dirname,
-        '..',
-        'analysis',
-        'ama_fitting',
+        ANALYSIS_AMA_FITTING_DIR,
         `optimization_results_lp_pool_${suffix}_1h.json`
     );
 
@@ -126,20 +124,12 @@ function testProfilesMatchByIntervalLabelFallback() {
 function testLatestLpDataPrefersNewerFile() {
     const suffix = `${Date.now()}-${process.pid}`;
     const olderFile = path.join(
-        __dirname,
-        '..',
-        'market_adapter',
-        'data',
-        'lp',
+        LP_DATA_DIR,
         `older_pair_${suffix}`,
         `lp_pool_${suffix}_older.json`
     );
     const dataFile = path.join(
-        __dirname,
-        '..',
-        'market_adapter',
-        'data',
-        'lp',
+        LP_DATA_DIR,
         `newer_pair_${suffix}`,
         `lp_pool_${suffix}_data.json`
     );

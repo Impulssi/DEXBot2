@@ -41,13 +41,13 @@ function getDexbot2Root() {
 function resolveDexbot2Path(relativePath: string) {
   const root = getDexbot2Root();
   const normalizedPath = String(relativePath || '');
-  const candidates = [path.join(root, normalizedPath)];
 
-  if (normalizedPath.endsWith('.js')) {
-    candidates.push(path.join(root, normalizedPath.replace(/\.js$/, '.ts')));
-  }
-
-  candidates.push(path.join(root, BUILD_DIR, normalizedPath));
+  // Compiled build first: under plain node there is no tsx-style .js→.ts
+  // interception, so resolving to the source tree would break require().
+  const candidates = [
+    path.join(root, BUILD_DIR, normalizedPath),
+    path.join(root, normalizedPath),
+  ];
 
   for (const candidate of candidates) {
     if (candidateExists(candidate)) {
@@ -55,7 +55,7 @@ function resolveDexbot2Path(relativePath: string) {
     }
   }
 
-  return candidates[candidates.length - 1];
+  return candidates[0];
 }
 
 function requireDexbot2Module(relativePath: string) {

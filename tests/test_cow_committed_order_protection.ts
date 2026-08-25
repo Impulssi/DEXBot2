@@ -3,14 +3,17 @@ const { OrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
 
-const OrderUtils = require('../modules/order/utils/math');
-const originalGetAssetFees = OrderUtils.getAssetFees;
-OrderUtils.getAssetFees = (asset) => {
-    if (asset === 'BTS') {
-        return { total: 0.011, createFee: 0.1, updateFee: 0.001, makerNetFee: 0.01, takerNetFee: 0.1, netFee: 0.01, isMaker: true };
-    }
-    return 1.0;
-};
+// Compiled ESM namespaces are frozen: seed the fee cache via the _setFeeCache
+// seam instead of patching OrderUtils.getAssetFees (createFee=0.1, updateFee=0.001).
+require('../modules/order/utils/math')._setFeeCache({
+    BTS: {
+        limitOrderCreate: { bts: 0.1 },
+        limitOrderUpdate: { bts: 0.001 },
+        limitOrderCancel: { bts: 0 },
+        makerFeeDiscountPercent: 0.9,
+    },
+    TEST: { chargesMarketFees: false },
+});
 
 async function runTests() {
     console.log('Running Committed Order Protection Tests...');

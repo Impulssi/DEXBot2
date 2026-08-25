@@ -329,9 +329,26 @@ function testDynamicWeightChartShowsOutputClampGuide() {
         'output clamp constant should be declared before recalcInputs uses it');
 }
 
+// Source-level assertions must read the TypeScript sources, not the compiled
+// output; locate the repo checkout by walking up from dist/tests.
+function findRepoRoot(startDir: string): string {
+    let dir = path.resolve(startDir);
+    for (;;) {
+        if (fs.existsSync(path.join(dir, 'package.json'))
+            && fs.existsSync(path.join(dir, 'market_adapter', 'core', 'market_adapter_service.ts'))) {
+            return dir;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) throw new Error(`repo root with market_adapter sources not found above ${startDir}`);
+        dir = parent;
+    }
+}
+
+const SRC_ROOT = findRepoRoot(__dirname);
+
 function testLiveServiceMatchesChartGainStructure() {
     const serviceSource = fs.readFileSync(
-        path.join(__dirname, '..', 'market_adapter', 'core', 'market_adapter_service.ts'),
+        path.join(SRC_ROOT, 'market_adapter', 'core', 'market_adapter_service.ts'),
         'utf8'
     );
 
@@ -369,7 +386,7 @@ function testLiveServiceMatchesChartGainStructure() {
     // The gain / dead-band / clamp semantics that used to live inline in the
     // service are now canonical in the shared per-bar pipeline module.
     const seriesSource = fs.readFileSync(
-        path.join(__dirname, '..', 'market_adapter', 'core', 'strategies', 'dynamic_weight_series.ts'),
+        path.join(SRC_ROOT, 'market_adapter', 'core', 'strategies', 'dynamic_weight_series.ts'),
         'utf8'
     );
     assert.match(

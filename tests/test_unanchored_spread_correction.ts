@@ -1,20 +1,11 @@
 const assert = require('assert');
-const mathUtils = require('../modules/order/utils/math');
-const { applyGridDivergenceCorrections } = require('../modules/order/utils/system');
+const { applyGridDivergenceCorrections, setDerivePriceTestHook } = require('../modules/order/utils/system');
 const { updateGridFromBlockchainSnapshot } = require('../modules/order/grid');
 
-// Mock derivePrice to simulate market movement
-mathUtils.derivePrice = async () => 150; 
-
-// Mock lookupAsset to avoid blockchain connection
-mathUtils.lookupAsset = async (_BitShares, sym) => {
-    if (sym === 'BASE') return { id: '1.3.1', symbol: 'BASE', precision: 5 };
-    if (sym === 'QUOTE') return { id: '1.3.2', symbol: 'QUOTE', precision: 5 };
-    return null;
-};
-
-// Also mock derivePoolPrice just in case, although derivePrice is the one called directly now
-mathUtils.derivePoolPrice = async () => 150; 
+// Compiled ESM namespaces are frozen: route price derivation through the
+// setDerivePriceTestHook seam (derivePrice delegates to it first) instead of
+// patching mathUtils.derivePrice / derivePoolPrice.
+setDerivePriceTestHook(async () => 150);
 
 const { OrderManager } = require('../modules/order/manager');
 

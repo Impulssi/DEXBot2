@@ -7,6 +7,7 @@
  */
 
 const assert = require('assert');
+const { PATHS } = require('../modules/paths');;
 const fs = require('fs');
 const path = require('path');
 const { calculateGapSlots, getSizingContext, createOrderGrid, initializeGrid, checkAndUpdateGridIfNeeded, hasAnyDust } = require('../modules/order/grid');
@@ -14,12 +15,10 @@ const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, BUILD_DIR } = re
 const { OrderManager } = require('../modules/order/manager');
 const { allocateFundsByWeights, getSingleDustThreshold } = require('../modules/order/utils/math');
 const { shouldFlagOutOfSpread, assignGridRoles } = require('../modules/order/utils/order');
-const { WHITELIST_FILE, resetMarketAdapterWhitelistCache } = require('../modules/market_adapter_whitelist');
+const { whitelistFile, resetMarketAdapterWhitelistCache } = require('../modules/market_adapter_whitelist');
 const { ensureDir, unlink: safeUnlink, writeJSON } = require('../modules/storage').getStorage();
-const _distWhitelist = require(`../${BUILD_DIR}/modules/market_adapter_whitelist.js`);
 const _resetBothWhitelistCaches = () => {
     resetMarketAdapterWhitelistCache();
-    _distWhitelist.resetMarketAdapterWhitelistCache();
 };
 const gridModulePath = require.resolve('../modules/order/grid');
 const managerModulePath = require.resolve('../modules/order/manager');
@@ -240,7 +239,7 @@ async function runTests() {
     console.log(' - Testing initializeGrid with case-insensitive AMA mode and out-of-bounds startPrice...');
     {
         const botKey = `test-grid-ama-${process.pid}-case`;
-        const ordersDir = path.join(__dirname, '..', 'profiles', 'orders');
+        const ordersDir = PATHS.ORDERS_DIR;
         const amaFile = path.join(ordersDir, `${botKey}.dynamicgrid.json`);
 
         ensureDir(ordersDir);
@@ -285,14 +284,14 @@ async function runTests() {
     console.log(' - Testing AMA gridPrice uses the persisted center price...');
     {
         const botKey = `test-grid-ama-center-${process.pid}`;
-        const ordersDir = path.join(__dirname, '..', 'profiles', 'orders');
+        const ordersDir = PATHS.ORDERS_DIR;
         const amaFile = path.join(ordersDir, `${botKey}.dynamicgrid.json`);
-        const originalWhitelist = fs.existsSync(WHITELIST_FILE)
-            ? fs.readFileSync(WHITELIST_FILE, 'utf8')
+        const originalWhitelist = fs.existsSync(whitelistFile())
+            ? fs.readFileSync(whitelistFile(), 'utf8')
             : null;
 
         ensureDir(ordersDir);
-        writeJSON(WHITELIST_FILE, {
+        writeJSON(whitelistFile(), {
             whitelist: {
                 [botKey]: { ama: true, dynamicWeight: true, asymmetricBounds: true }
             }
@@ -355,9 +354,9 @@ async function runTests() {
         } finally {
             safeUnlink(amaFile)
             if (originalWhitelist == null) {
-                safeUnlink(WHITELIST_FILE)
+                safeUnlink(whitelistFile())
             } else {
-                fs.writeFileSync(WHITELIST_FILE, originalWhitelist, 'utf8');
+                fs.writeFileSync(whitelistFile(), originalWhitelist, 'utf8');
             }
             _resetBothWhitelistCaches();
         }
@@ -366,14 +365,14 @@ async function runTests() {
     console.log(' - Testing AMA gridPrice keeps the persisted center while offsetting market placement price...');
     {
         const botKey = `test-grid-ama-offset-${process.pid}`;
-        const ordersDir = path.join(__dirname, '..', 'profiles', 'orders');
+        const ordersDir = PATHS.ORDERS_DIR;
         const amaFile = path.join(ordersDir, `${botKey}.dynamicgrid.json`);
-        const originalWhitelist = fs.existsSync(WHITELIST_FILE)
-            ? fs.readFileSync(WHITELIST_FILE, 'utf8')
+        const originalWhitelist = fs.existsSync(whitelistFile())
+            ? fs.readFileSync(whitelistFile(), 'utf8')
             : null;
 
         ensureDir(ordersDir);
-        writeJSON(WHITELIST_FILE, {
+        writeJSON(whitelistFile(), {
             whitelist: {
                 [botKey]: { ama: true, dynamicWeight: true, asymmetricBounds: true }
             }
@@ -423,9 +422,9 @@ async function runTests() {
         } finally {
             safeUnlink(amaFile)
             if (originalWhitelist == null) {
-                safeUnlink(WHITELIST_FILE)
+                safeUnlink(whitelistFile())
             } else {
-                fs.writeFileSync(WHITELIST_FILE, originalWhitelist, 'utf8');
+                fs.writeFileSync(whitelistFile(), originalWhitelist, 'utf8');
             }
             _resetBothWhitelistCaches();
         }
@@ -434,14 +433,14 @@ async function runTests() {
     console.log(' - Testing initializeGrid applies asymmetric bounds from root-level data without dynamicWeights...');
     {
         const botKey = `test-grid-root-bounds-${process.pid}`;
-        const ordersDir = path.join(__dirname, '..', 'profiles', 'orders');
+        const ordersDir = PATHS.ORDERS_DIR;
         const amaFile = path.join(ordersDir, `${botKey}.dynamicgrid.json`);
-        const originalWhitelist = fs.existsSync(WHITELIST_FILE)
-            ? fs.readFileSync(WHITELIST_FILE, 'utf8')
+        const originalWhitelist = fs.existsSync(whitelistFile())
+            ? fs.readFileSync(whitelistFile(), 'utf8')
             : null;
 
         ensureDir(ordersDir);
-        writeJSON(WHITELIST_FILE, {
+        writeJSON(whitelistFile(), {
             whitelist: {
                 [botKey]: { ama: true, dynamicWeight: false, asymmetricBounds: true }
             }
@@ -502,9 +501,9 @@ async function runTests() {
         } finally {
             safeUnlink(amaFile)
             if (originalWhitelist == null) {
-                safeUnlink(WHITELIST_FILE)
+                safeUnlink(whitelistFile())
             } else {
-                fs.writeFileSync(WHITELIST_FILE, originalWhitelist, 'utf8');
+                fs.writeFileSync(whitelistFile(), originalWhitelist, 'utf8');
             }
             _resetBothWhitelistCaches();
         }
@@ -513,14 +512,14 @@ async function runTests() {
     console.log(' - Testing narrowing-side guard keeps a minimum number of order slots...');
     {
         const botKey = `test-grid-min-slots-${process.pid}`;
-        const ordersDir = path.join(__dirname, '..', 'profiles', 'orders');
+        const ordersDir = PATHS.ORDERS_DIR;
         const amaFile = path.join(ordersDir, `${botKey}.dynamicgrid.json`);
-        const originalWhitelist = fs.existsSync(WHITELIST_FILE)
-            ? fs.readFileSync(WHITELIST_FILE, 'utf8')
+        const originalWhitelist = fs.existsSync(whitelistFile())
+            ? fs.readFileSync(whitelistFile(), 'utf8')
             : null;
 
         ensureDir(ordersDir);
-        writeJSON(WHITELIST_FILE, {
+        writeJSON(whitelistFile(), {
             whitelist: {
                 [botKey]: { ama: true, dynamicWeight: false, asymmetricBounds: true }
             }
@@ -577,9 +576,9 @@ async function runTests() {
         } finally {
             safeUnlink(amaFile)
             if (originalWhitelist == null) {
-                safeUnlink(WHITELIST_FILE)
+                safeUnlink(whitelistFile())
             } else {
-                fs.writeFileSync(WHITELIST_FILE, originalWhitelist, 'utf8');
+                fs.writeFileSync(whitelistFile(), originalWhitelist, 'utf8');
             }
             _resetBothWhitelistCaches();
         }
@@ -588,14 +587,14 @@ async function runTests() {
     console.log(' - Testing AMA gridPrice ignores spread offset without grid range scaling whitelist...');
     {
         const botKey = `test-grid-ama-offset-disabled-${process.pid}`;
-        const ordersDir = path.join(__dirname, '..', 'profiles', 'orders');
+        const ordersDir = PATHS.ORDERS_DIR;
         const amaFile = path.join(ordersDir, `${botKey}.dynamicgrid.json`);
-        const originalWhitelist = fs.existsSync(WHITELIST_FILE)
-            ? fs.readFileSync(WHITELIST_FILE, 'utf8')
+        const originalWhitelist = fs.existsSync(whitelistFile())
+            ? fs.readFileSync(whitelistFile(), 'utf8')
             : null;
 
         ensureDir(ordersDir);
-        writeJSON(WHITELIST_FILE, {
+        writeJSON(whitelistFile(), {
             whitelist: {
                 [botKey]: { ama: true, dynamicWeight: true, asymmetricBounds: false }
             }
@@ -651,9 +650,9 @@ async function runTests() {
         } finally {
             safeUnlink(amaFile)
             if (originalWhitelist == null) {
-                safeUnlink(WHITELIST_FILE)
+                safeUnlink(whitelistFile())
             } else {
-                fs.writeFileSync(WHITELIST_FILE, originalWhitelist, 'utf8');
+                fs.writeFileSync(whitelistFile(), originalWhitelist, 'utf8');
             }
             _resetBothWhitelistCaches();
         }
@@ -662,21 +661,15 @@ async function runTests() {
     console.log(' - Testing pool gridPrice ignores the persisted AMA spread offset...');
     {
         const botKey = `test-grid-pool-no-offset-${process.pid}`;
-        const ordersDir = path.join(__dirname, '..', 'profiles', 'orders');
+        const ordersDir = PATHS.ORDERS_DIR;
         const amaFile = path.join(ordersDir, `${botKey}.dynamicgrid.json`);
-        const originalWhitelist = fs.existsSync(WHITELIST_FILE)
-            ? fs.readFileSync(WHITELIST_FILE, 'utf8')
+        const originalWhitelist = fs.existsSync(whitelistFile())
+            ? fs.readFileSync(whitelistFile(), 'utf8')
             : null;
         const systemModule = require('../modules/order/utils/system');
-        const distSystemModule = require(`../${BUILD_DIR}/modules/order/utils/system.js`);
-        const originalDerivePrice = systemModule.derivePrice;
-        const originalDistDerivePrice = distSystemModule.derivePrice;
-        const originalGridModule = require.cache[gridModulePath];
-        const distGridPath = require.resolve(`../${BUILD_DIR}/modules/order/grid.js`);
-        const originalDistGridModule = require.cache[distGridPath];
 
         ensureDir(ordersDir);
-        writeJSON(WHITELIST_FILE, {
+        writeJSON(whitelistFile(), {
             whitelist: {
                 [botKey]: { ama: true, dynamicWeight: true, asymmetricBounds: true }
             }
@@ -691,10 +684,10 @@ async function runTests() {
         });
 
         try {
-            systemModule.derivePrice = async () => 1000;
-            distSystemModule.derivePrice = async () => 1000;
-            delete require.cache[gridModulePath];
-            delete require.cache[distGridPath];
+            // Compiled ESM exports cannot be monkey-patched; use the test
+            // hook to make pool derivation fail fast so the startPrice
+            // fallback path runs offline.
+            systemModule.setDerivePriceTestHook(async () => null);
             const GridFresh = require('../modules/order/grid');
 
             const manager = new OrderManager({
@@ -726,17 +719,12 @@ async function runTests() {
             assert(Math.abs(manager._lastGridPricingContext.gridPrice - 100) < 1e-9, 'pool gridPrice fallback should use configured startPrice (100)');
             assert(Math.abs(manager._lastGridPricingContext.startPrice - 100) < 1e-9, 'pool gridPrice fallback should use configured startPrice (100)');
         } finally {
-            systemModule.derivePrice = originalDerivePrice;
-            distSystemModule.derivePrice = originalDistDerivePrice;
-            if (originalGridModule) require.cache[gridModulePath] = originalGridModule;
-            else delete require.cache[gridModulePath];
-            if (originalDistGridModule) require.cache[distGridPath] = originalDistGridModule;
-            else delete require.cache[distGridPath];
+            systemModule.setDerivePriceTestHook(null);
             safeUnlink(amaFile)
             if (originalWhitelist == null) {
-                safeUnlink(WHITELIST_FILE)
+                safeUnlink(whitelistFile())
             } else {
-                fs.writeFileSync(WHITELIST_FILE, originalWhitelist, 'utf8');
+                fs.writeFileSync(whitelistFile(), originalWhitelist, 'utf8');
             }
             _resetBothWhitelistCaches();
         }

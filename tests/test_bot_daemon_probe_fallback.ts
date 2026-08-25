@@ -6,51 +6,35 @@ process.env.DEXBOT_SKIP_PROFILE_VALIDATION = '1';
 process.env.BOT_NAME = 'XRP-BTS';
 const assert = require('assert');
 const fs = require('fs');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+const { setCachedModule } = require('./helpers/module_cache_stub');
+const { runEsmMockStages, defineEsmMockAbs } = require('./helpers/esm_mocks');
 const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running bot daemon probe fallback tests');
 
-const botPath = require.resolve('../bot.js');
+// The signing-key resolution now lives in DaemonKeyStore.resolveSigningKey
+// (modules/key_store), which statically imports chain_keys — a compiled ESM
+// namespace that cannot be patched via require.cache. The chain_keys mock is
+// therefore installed through the loader-hook harness; every other consumer
+// here is reached through lazy requires, so plain cache stubs still work.
+
 const botSettingsPath = require.resolve('../modules/bot_settings');
 const dexbotClassPath = require.resolve('../modules/dexbot_class');
-const chainKeysPath = require.resolve('../modules/chain_keys');
 const gracefulShutdownPath = require.resolve('../modules/graceful_shutdown');
 const systemPath = require.resolve('../modules/order/utils/system');
 const accountBotsPath = require.resolve('../modules/account_bots');
 const bitsharesClientPath = require.resolve('../modules/bitshares_client');
 
-const originalBotModule = require.cache[botPath];
-const originalBotSettings = require.cache[botSettingsPath];
-const originalDexbotClass = require.cache[dexbotClassPath];
-const originalChainKeys = require.cache[chainKeysPath];
-const originalGracefulShutdown = require.cache[gracefulShutdownPath];
-const originalSystem = require.cache[systemPath];
-const originalAccountBots = require.cache[accountBotsPath];
-const originalBitsharesClient = require.cache[bitsharesClientPath];
 const originalExistsSync = fs.existsSync;
 const originalArgv = process.argv.slice();
 const originalConsoleLog = console.log;
 const originalConsoleWarn = console.warn;
 const originalConsoleError = console.error;
 
-// Pre-emptively handle unhandled rejections from the bot.ts IIFE or any
-// stubbed async path so a silent process.exit(1) does not hide the error.
-process.on('unhandledRejection', (reason) => {
-    // Restore stubs first so the error is visible on stderr.
-    if (typeof originalConsoleError === 'function') {
-        console.error = originalConsoleError;
-    }
-    if (typeof originalConsoleLog === 'function') {
-        console.log = originalConsoleLog;
-    }
-    console.error('Unhandled rejection in test_bot_daemon_probe_fallback:', reason);
-    process.exit(1);
-});
-
 const logs: any[] = [];
 const warns: any[] = [];
 const errors: any[] = [];
+
 const state = {
     daemonProbeCalls: 0,
     startArgs: null,
@@ -59,8 +43,6 @@ const state = {
 };
 
 function installStubs() {
-    delete require.cache[botPath];
-
     fs.existsSync = (filePath) => {
         if (String(filePath).endsWith('/profiles/bots.json')) {
             return true;
@@ -106,28 +88,6 @@ function installStubs() {
     });
 
     setCachedModule(dexbotClassPath, { default: StubDEXBot });
-    setCachedModule(chainKeysPath, {
-        authenticate: async () => {
-            state.authCalls += 1;
-            return 'fallback-password';
-        },
-        resolvePrivateKey: (accountName, masterPassword) => {
-            state.getKeyCalls += 1;
-            assert.strictEqual(accountName, 'xrp-account', 'bot should request the configured preferred account');
-            assert.strictEqual(masterPassword, 'fallback-password', 'bot should use the interactive master password after daemon probing fails');
-            return 'fallback-private-key';
-        },
-        probeAccountInDaemon: async () => {
-            state.daemonProbeCalls += 1;
-            throw new Error('daemon unavailable');
-        },
-        createDaemonSigningToken: () => {
-            throw new Error('bot should not create a daemon signing token after a failed probe');
-        },
-        isDaemonReady: () => true,
-        isDaemonResponsive: async () => true,
-        isMasterPasswordFailure: () => false,
-    });
     setCachedModule(gracefulShutdownPath, {
         setupGracefulShutdown: () => {},
         registerCleanup: () => {},
@@ -147,7 +107,7 @@ function installStubs() {
         waitForConnected: async () => {},
     });
 
-    process.argv = ['node', botPath, 'XRP-BTS'];
+    process.argv = ['node', require.resolve('../bot.js'), 'XRP-BTS'];
     const { Config } = require('../modules/config');
     Config.ARGS = ['XRP-BTS'];
     Config.BOT_NAME = 'XRP-BTS';
@@ -166,52 +126,94 @@ function installStubs() {
     };
 }
 
-function restoreStubs() {
+function installChainKeysMock() {
+    // Mock names must cover every statically imported member used by
+    // key_store (resolveSigningKey path) and bot.js (lazy require).
+    defineEsmMockAbs(require.resolve('../modules/chain_keys'), [
+        'checkKeysFileSecurity',
+        'isDaemonReady',
+        'isDaemonResponsive',
+        'probeAccountInDaemon',
+        'createDaemonSigningToken',
+        'isDaemonSigningToken',
+        'authenticate',
+        'resolvePrivateKey',
+        'isMasterPasswordFailure',
+        'waitForDaemon',
+    ], {
+        checkKeysFileSecurity: () => {},
+        isDaemonReady: () => true,
+        isDaemonResponsive: async () => true,
+        probeAccountInDaemon: async () => {
+            state.daemonProbeCalls += 1;
+            throw new Error('daemon unavailable');
+        },
+        createDaemonSigningToken: () => {
+            throw new Error('bot should not create a daemon signing token after a failed probe');
+        },
+        authenticate: async () => {
+            state.authCalls += 1;
+            return 'fallback-password';
+        },
+        resolvePrivateKey: (accountName, masterPassword) => {
+            state.getKeyCalls += 1;
+            assert.strictEqual(accountName, 'xrp-account', 'bot should request the configured preferred account');
+            assert.strictEqual(masterPassword, 'fallback-password', 'bot should use the interactive master password after daemon probing fails');
+            return 'fallback-private-key';
+        },
+        isMasterPasswordFailure: () => false,
+        waitForDaemon: async () => {},
+    });
+}
+
+async function runProbeFallbackStage() {
+    // The chain_keys mock MUST be registered before anything else runs: any
+    // earlier require of a module that transitively loads the real
+    // modules/chain_keys poisons the ESM cache and the loader hook would
+    // never be consulted for it. Force-load key_store afterwards so both are
+    // cached in their mocked form.
+    installChainKeysMock();
+    require('../modules/key_store');
+    require('../modules/chain_keys');
+
+    installStubs();
+
+    process.on('unhandledRejection', (reason) => {
+        console.log = originalConsoleLog;
+        console.error = originalConsoleError;
+        console.error('Unhandled rejection in test_bot_daemon_probe_fallback:', reason);
+        process.exit(1);
+    });
+
+    require('../bot');
+
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(state.daemonProbeCalls, 1, 'bot should probe the daemon once before falling back');
+    assert.strictEqual(state.authCalls, 1, 'bot should fall back to interactive authentication');
+    assert.strictEqual(state.getKeyCalls, 1, 'bot should derive the private key after interactive authentication');
+    assert.deepStrictEqual(state.startArgs, 'fallback-private-key', 'bot should continue using the raw private key after fallback');
+    assert.deepStrictEqual(logs, [], 'bot daemon fallback should not emit info logs');
+    assert.deepStrictEqual(warns, [], 'bot daemon fallback should not emit warnings');
+    assert.deepStrictEqual(errors, [], 'bot daemon fallback should not emit errors');
+
     fs.existsSync = originalExistsSync;
     process.argv = originalArgv;
     console.log = originalConsoleLog;
     console.warn = originalConsoleWarn;
     console.error = originalConsoleError;
 
-    restoreCachedModule(botSettingsPath, originalBotSettings);
-    restoreCachedModule(dexbotClassPath, originalDexbotClass);
-    restoreCachedModule(chainKeysPath, originalChainKeys);
-    restoreCachedModule(gracefulShutdownPath, originalGracefulShutdown);
-    restoreCachedModule(systemPath, originalSystem);
-    restoreCachedModule(accountBotsPath, originalAccountBots);
-    restoreCachedModule(bitsharesClientPath, originalBitsharesClient);
-
-    if (originalBotModule) require.cache[botPath] = originalBotModule;
-    else delete require.cache[botPath];
+    originalConsoleLog('bot daemon probe fallback tests passed');
 }
 
-installStubs();
-require('../bot');
-
-(async () => {
+runEsmMockStages(['probe_fallback'], async () => {
     try {
-        await new Promise((resolve) => setImmediate(resolve));
-        await new Promise((resolve) => setImmediate(resolve));
-
-        assert.strictEqual(state.daemonProbeCalls, 1, 'bot should probe the daemon once before falling back');
-        assert.strictEqual(state.authCalls, 1, 'bot should fall back to interactive authentication');
-        assert.strictEqual(state.getKeyCalls, 1, 'bot should derive the private key after interactive authentication');
-        assert.deepStrictEqual(state.startArgs, 'fallback-private-key', 'bot should continue using the raw private key after fallback');
-        assert.deepStrictEqual(logs, [], 'bot daemon fallback should not emit info logs');
-        assert.deepStrictEqual(warns, [], 'bot daemon fallback should not emit warnings');
-        assert.deepStrictEqual(errors, [], 'bot daemon fallback should not emit errors');
-
-        restoreStubs();
-        originalConsoleLog('bot daemon probe fallback tests passed');
-        process.exit(0);
+        await runProbeFallbackStage();
     } catch (err) {
-        // Restore stubs first, then ensure the error is visible regardless
-        // of stub state. The second process.stderr.write is a belt-and-suspenders
-        // in case the original console.error itself was captured by something
-        // before the test saved originalConsoleError.
-        restoreStubs();
+        console.log = originalConsoleLog;
         console.error(err);
         process.stderr.write((err && ((err as any).stack || getErrorMessage(err) || String(err))) + '\n');
         process.exit(1);
     }
-})();
+});

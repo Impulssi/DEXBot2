@@ -1,18 +1,16 @@
 'use strict';
 
 const assert = require('assert');
+const { runEsmMockStages, defineEsmMockAbs } = require('../../tests/helpers/esm_mocks');
 
-function clearModule(modulePath: string) {
-  delete require.cache[modulePath];
+// Compiled ESM graphs cannot be mocked via require.cache; the helper installs
+// loader hooks (one child process per stage so fresh module instances load).
+function clearModule(_modulePath: string) {
+  /* no-op under ESM hooks */
 }
 
 function registerMock(modulePath: string, exports: any) {
-  require.cache[modulePath] = {
-    id: modulePath,
-    filename: modulePath,
-    loaded: true,
-    exports
-  } as any;
+  defineEsmMockAbs(modulePath, Object.keys(exports), exports);
 }
 
 const { clone } = require('../modules/utils');
@@ -254,7 +252,22 @@ function createBroadcastHarness() {
     }
   });
 
+  // ESM hooks turn mock keys into synthetic named re-exports, so every name
+  // chain_broadcast statically imports must exist here. The error class is a
+  // minimal inline replica of the real one (requiring the real module would
+  // poison the module cache and bypass the mock).
+  class BroadcastUncertainError extends Error {
+    code: string;
+    constructor(message: string) {
+      super(message);
+      this.name = 'BroadcastUncertainError';
+      this.code = 'BROADCAST_UNCERTAIN';
+    }
+  }
+
   registerMock(credentialClientPath, {
+    BroadcastUncertainError,
+    DEFAULT_BROADCAST_TIMEOUT_MS: 30000,
     isCredentialDaemonReady: () => calls.daemonReady,
     broadcastOperationViaCredentialDaemon: async (accountName: any, operation: any, options: any) => {
       calls.daemon.broadcast.push({ accountName, operation, options });
@@ -706,14 +719,21 @@ async function testChainActions() {
   console.log('    PASS');
 }
 
-async function main() {
-  await testChainQueries();
-  await testChainBroadcast();
-  await testChainActions();
-  console.log('claw chain layer tests passed');
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+runEsmMockStages(
+  ['chain-queries', 'chain-broadcast', 'chain-actions'],
+  async (stage: string) => {
+    if (stage === 'chain-queries') {
+      await testChainQueries();
+      return;
+    }
+    if (stage === 'chain-broadcast') {
+      await testChainBroadcast();
+      return;
+    }
+    if (stage === 'chain-actions') {
+      await testChainActions();
+      return;
+    }
+    throw new Error(`Unknown stage: ${stage}`);
+  }
+);

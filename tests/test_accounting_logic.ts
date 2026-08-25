@@ -3,36 +3,37 @@
  *
  * Comprehensive unit tests for accounting.ts - Fund tracking and calculations
  * Uses native assert to avoid Jest dependency.
+ *
+ * Runs as two esm-mock stages: 'core' exercises in-memory accounting, while
+ * 'recovery-reads' mocks the bitshares_client transport via loader hooks so
+ * _performStateRecovery runs against the real chain_orders guarded read
+ * (the compiled chain_orders namespace itself cannot be patched).
  */
 
 const assert = require('assert');
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
-const { OrderManager } = require('../modules/order/index').default;
-const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
-const { createSilentLogger } = require('./helpers/silent_logger');
-const { getErrorMessage } = require('../modules/utils/errors');
+const { runEsmMockStages } = require('./helpers/esm_mocks');
 
-// Mock getAssetFees to prevent crashes during recalculateFunds
-const OrderUtils = require('../modules/order/utils/math');
-const originalGetAssetFees = OrderUtils.getAssetFees;
+function seedFeeCache() {
+    // Fee cache seam: getAssetFees computes deterministic fees from these
+    // fixtures (createFee 0.1 → netFee 0.01, updateFee 0.001) instead of the
+    // old frozen-namespace OrderUtils.getAssetFees patch.
+    const { _setFeeCache } = require('../modules/order/utils/math');
+    _setFeeCache({
+        BTS: {
+            limitOrderCreate: { bts: 0.1 },
+            limitOrderUpdate: { bts: 0.001 },
+            limitOrderCancel: { bts: 0 }
+        }
+    });
+}
 
-OrderUtils.getAssetFees = (asset) => {
-    if (asset === 'BTS') {
-        return {
-            total: 0.011,
-            createFee: 0.1,
-            updateFee: 0.001,
-            makerNetFee: 0.01,
-            takerNetFee: 0.1,
-            netFee: 0.01,
-            isMaker: true
-        };
-    }
-    return 1.0;
-};
+async function runCoreTests() {
+    seedFeeCache();
+    const { OrderManager } = require('../modules/order/index').default;
+    const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
+    const { createSilentLogger } = require('./helpers/silent_logger');
+    const { getErrorMessage } = require('../modules/utils/errors');
 
-async function runTests() {
      console.log('Running Accountant Logic Tests...');
 
      const createManager = async () => {
@@ -386,20 +387,69 @@ async function runTests() {
         manager.accountant._performStateRecovery = originalRecovery;
     }
 
-    // Test: Recovery sync must not re-apply optimistic accounting deltas
-    console.log(' - Testing recovery sync uses skipAccounting=true...');
+    console.log('✓ Accountant logic tests passed!');
+}
+
+async function runRecoveryReadTests() {
+    // The recovery read goes through chain_orders' frozen ESM namespace, so
+    // the bitshares_client transport is mocked at the loader level and the
+    // real readOpenOrdersGuarded logic drives _performStateRecovery.
+    const { defineEsmMockAbs } = require('./helpers/esm_mocks');
+
+    let fullAccountsResponse: any = null;
+    const bitsharesClientPath = require.resolve('../modules/bitshares_client');
+    const bitsharesClientMock: Record<string, unknown> = {
+        BitShares: {
+            db: {
+                get_full_accounts: async () => fullAccountsResponse,
+            },
+        },
+        createAccountClient: () => ({ sign: () => {}, broadcast: async () => ({}) }),
+        waitForConnected: async () => {},
+        getConnectionStatus: () => ({ connected: true }),
+        disconnectClient: async () => {},
+        reconnectForCycle: async () => {},
+        setSuppressConnectionLog: () => {},
+        onReconnect: () => () => {},
+        withTimeout: (p: any) => p,
+        _assessFailover: () => null,
+        getNodeManager: () => ({ getHealthyNodes: () => [] }),
+        getNodeStats: () => null,
+        getNodeSummary: () => null,
+        getConnectionError: () => null,
+        _internal: { get connected() { return false; } },
+    };
+    defineEsmMockAbs(bitsharesClientPath, Object.keys(bitsharesClientMock), bitsharesClientMock);
+
+    seedFeeCache();
+    const { OrderManager } = require('../modules/order/index').default;
+    const { createSilentLogger } = require('./helpers/silent_logger');
+
+    const createManager = async () => {
+        const mgr = new OrderManager({
+            market: 'TEST/BTS',
+            assetA: 'TEST',
+            assetB: 'BTS',
+            weightDistribution: { sell: 0.5, buy: 0.5 },
+            activeOrders: { buy: 5, sell: 5 }
+        });
+        mgr.logger = createSilentLogger();
+        await mgr.setAccountTotals({
+            buy: 10000,
+            sell: 100,
+            buyFree: 10000,
+            sellFree: 100
+        });
+        return mgr;
+    };
+
+    console.log(' - [recovery-reads] Testing recovery sync uses skipAccounting=true...');
     {
         const manager = await createManager();
         manager.accountId = '1.2.345';
 
-        const originalFetchTotals = manager.fetchAccountTotals;
-        const originalSyncFromOpenOrders = manager.syncFromOpenOrders;
-        const chainOrders = require('../modules/chain_orders');
-        const originalRead = chainOrders.readOpenOrders;
-        const originalReadMeta = chainOrders.readOpenOrdersWithMeta;
         const stubOrders = [{ id: '1.7.1', sell_price: { base: { amount: 100, asset_id: '1.3.0' }, quote: { amount: 100, asset_id: '1.3.121' } }, for_sale: 100, expiration: '2099-01-01T00:00:00' }];
-        chainOrders.readOpenOrders = async () => stubOrders;
-        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: stubOrders, truncated: false });
+        fullAccountsResponse = [['1.2.345', { limit_orders: stubOrders, more_data_available: { limit_orders: false } }]];
 
         let capturedSyncOptions = null;
         manager.fetchAccountTotals = async () => { };
@@ -408,59 +458,36 @@ async function runTests() {
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
         };
 
-        try {
-            const result = await manager.accountant._performStateRecovery(manager);
-            assert.strictEqual(typeof result.isValid, 'boolean', 'Recovery should return validation result');
-            assert.strictEqual(capturedSyncOptions?.skipAccounting, true,
-                'Recovery sync must use skipAccounting=true to avoid double-counting');
-        } finally {
-            manager.fetchAccountTotals = originalFetchTotals;
-            manager.syncFromOpenOrders = originalSyncFromOpenOrders;
-            chainOrders.readOpenOrders = originalRead;
-            chainOrders.readOpenOrdersWithMeta = originalReadMeta;
-        }
+        const result = await manager.accountant._performStateRecovery(manager);
+        assert.strictEqual(typeof result.isValid, 'boolean', 'Recovery should return validation result');
+        assert.strictEqual(capturedSyncOptions?.skipAccounting, true,
+            'Recovery sync must use skipAccounting=true to avoid double-counting');
     }
 
-    console.log(' - Testing recovery skips sync on empty/truncated read...');
+    console.log(' - [recovery-reads] Testing recovery skips sync on empty/truncated read...');
     {
         const manager = await createManager();
         manager.accountId = '1.2.345';
 
-        const originalFetchTotals = manager.fetchAccountTotals;
-        const originalSyncFromOpenOrders = manager.syncFromOpenOrders;
-        const chainOrders = require('../modules/chain_orders');
-        const originalRead = chainOrders.readOpenOrders;
-        const originalReadMeta = chainOrders.readOpenOrdersWithMeta;
-        chainOrders.readOpenOrders = async () => [];
-        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
+        fullAccountsResponse = [['1.2.345', { limit_orders: [], more_data_available: { limit_orders: false } }]];
 
         let syncCalled = false;
         manager.fetchAccountTotals = async () => { };
         manager.syncFromOpenOrders = async () => { syncCalled = true; };
 
-        try {
-            const result = await manager.accountant._performStateRecovery(manager);
-            assert.strictEqual(syncCalled, false,
-                'Empty read is ambiguous — recovery sync must be skipped (node may be lagging; pass-1 phantom cleanup would virtualize live slots)');
-            assert.strictEqual(result.isValid, false, 'Skipped recovery must report an invalid/deferred validation result');
-        } finally {
-            manager.fetchAccountTotals = originalFetchTotals;
-            manager.syncFromOpenOrders = originalSyncFromOpenOrders;
-            chainOrders.readOpenOrders = originalRead;
-            chainOrders.readOpenOrdersWithMeta = originalReadMeta;
-        }
+        const result = await manager.accountant._performStateRecovery(manager);
+        assert.strictEqual(syncCalled, false,
+            'Empty read is ambiguous — recovery sync must be skipped (node may be lagging; pass-1 phantom cleanup would virtualize live slots)');
+        assert.strictEqual(result.isValid, false, 'Skipped recovery must report an invalid/deferred validation result');
     }
 
-
-    // Restore original
-    OrderUtils.getAssetFees = originalGetAssetFees;
-
-    console.log('✓ Accountant logic tests passed!');
-    process.exit(0);
+    console.log('✓ Recovery read tests passed!');
 }
 
-runTests().catch(err => {
-    console.error('✗ Tests failed!');
-    console.error(err);
-    process.exit(1);
+runEsmMockStages(['core', 'recovery-reads'], async (stage) => {
+    if (stage === 'core') {
+        await runCoreTests();
+    } else {
+        await runRecoveryReadTests();
+    }
 });

@@ -7,7 +7,7 @@
  * interactive HTML chart for researching dynamic weight parameters.
  *
  * Usage:
- *   tsx analysis/analyze_dynamic_weight.ts \
+ *   node dist/analysis/analyze_dynamic_weight.js \
  *     --source json \
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */

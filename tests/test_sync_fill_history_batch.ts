@@ -24,8 +24,36 @@
 
 const assert = require('assert');
 
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
+// Compiled ESM namespaces are frozen: chain_orders is mocked via loader hooks
+// so sync_engine's static import resolves to this plain object and per-test
+// batchReadOrders/readSingleOrder behavior can be swapped through the
+// delegating bindings.
+esmMockEntry();
+
+let readSingleOrderImpl: any = async () => null;
+let batchReadOrdersImpl: any = async () => [];
+defineEsmMockAbs(require.resolve('../modules/chain_orders'), [
+    'selectAccount', 'setPreferredAccount', 'resolveAccountId', 'resolveAccountName',
+    'readOpenOrders', 'readOpenOrdersWithMeta', 'readOpenOrdersWithMetaSafe', 'readOpenOrdersGuarded',
+    'readSingleOrder', 'batchReadOrders', 'listenForFills', 'updateOrder', 'createOrder', 'cancelOrder',
+    'getOnChainAssetBalances', 'getFillProcessingMode', 'buildUpdateOrderOp', 'buildCreateOrderOp',
+    'buildCancelOrderOp', 'buildLiquidityPoolExchangeOp', 'executeBatch',
+    'findOverReducingUpdateOpError', 'wasRecentlyOwnCancelled', 'recordOwnCancel',
+    'BroadcastUncertainError', 'broadcastTxWithClassification'
+], {
+    BroadcastUncertainError: require('../modules/dexbot_credential_client').BroadcastUncertainError,
+    readSingleOrder: (...args: any[]) => readSingleOrderImpl(...args),
+    batchReadOrders: (...args: any[]) => batchReadOrdersImpl(...args),
+    readOpenOrders: async () => [],
+    readOpenOrdersWithMeta: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersWithMetaSafe: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersGuarded: async () => [],
+    getOnChainAssetBalances: async () => ({}),
+    getFillProcessingMode: async () => 'history',
+    wasRecentlyOwnCancelled: () => false,
+    recordOwnCancel: () => {},
+});
 
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
@@ -83,15 +111,15 @@ function _makeBuyFillEvent(orderId, amountBts, blockNum = 12346, historyId = '1.
 }
 
 function installBatchReadOrdersMock(_mgr, mockImpl) {
-    const original = chainOrders.batchReadOrders;
-    chainOrders.batchReadOrders = mockImpl;
-    return () => { chainOrders.batchReadOrders = original; };
+    const original = batchReadOrdersImpl;
+    batchReadOrdersImpl = mockImpl;
+    return () => { batchReadOrdersImpl = original; };
 }
 
 function installReadSingleOrderMock(_mgr, mockImpl) {
-    const original = chainOrders.readSingleOrder;
-    chainOrders.readSingleOrder = mockImpl;
-    return () => { chainOrders.readSingleOrder = original; };
+    const original = readSingleOrderImpl;
+    readSingleOrderImpl = mockImpl;
+    return () => { readSingleOrderImpl = original; };
 }
 
 // The sub-dust fill path now verifies the chain for a real residual before

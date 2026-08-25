@@ -37,7 +37,6 @@ function isGridBloatGraceActive(...args: any) { return (grid.isGridBloatGraceAct
 function clearGridBloatFlag(...args: any) { return (grid.clearGridBloatFlag as any)(...args); }
 function recalculateGrid(...args: any) { return (grid.recalculateGrid as any)(...args); }
 function buildRuntimeScriptPath(...args: any) { return require('./launcher/runtime_entry').buildRuntimeScriptPath(...args); }
-function isDistCodeRoot(...args: any) { return require('./launcher/runtime_entry').isDistCodeRoot(...args); }
 function applyGridDivergenceCorrections(...args: any) { return require('./order/utils/system').applyGridDivergenceCorrections(...args); }
 function updateGridFromBlockchainSnapshot(...args: any) { return require('./order/grid').updateGridFromBlockchainSnapshot(...args); }
 function loadAmaCenterSnapshot(...args: any) { return require('./order/utils/system').loadAmaCenterSnapshot(...args); }
@@ -70,7 +69,7 @@ const MARKET_ADAPTER_APP_NAME = 'dexbot-adapter';
 const MARKET_ADAPTER_SCRIPT = buildRuntimeScriptPath(CODE_ROOT, ['market_adapter', 'market_adapter']);
 const MARKET_ADAPTER_ERROR_FILE = path.join(LOGS_DIR, 'dexbot-adapter-error.log');
 const MARKET_ADAPTER_OUT_FILE = path.join(LOGS_DIR, 'dexbot-adapter.log');
-const MARKET_ADAPTER_TRIGGER_SOURCE = 'market_adapter/market_adapter' + (isDistCodeRoot(CODE_ROOT) ? '.js' : '.ts');
+const MARKET_ADAPTER_TRIGGER_SOURCE = 'market_adapter/market_adapter.js';
 const MANUAL_TRIGGER_METADATA = {
     shouldRefreshCenterPrice: true,
     centerRefreshContext: 'manual grid resync',
@@ -388,9 +387,6 @@ async function startMarketAdapterPm2() {
         'start',
         MARKET_ADAPTER_SCRIPT,
     ];
-    if (!isDistCodeRoot(CODE_ROOT)) {
-        pm2Args.push('--node-args', '--import', '--node-args', 'tsx');
-    }
     pm2Args.push(
         '--name',
         MARKET_ADAPTER_APP_NAME,
@@ -424,6 +420,10 @@ async function stopMarketAdapterPm2() {
  * @returns {Promise<any>}
  */
 async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = 'periodic') {
+    // Test seam: compiled ESM exports cannot be monkey-patched.
+    if (typeof bot._syncMarketAdapterHook === 'function') {
+        return await bot._syncMarketAdapterHook(context);
+    }
     if (bot._marketAdapterWatchdogInFlight) {
         return { skipped: true, reason: 'in-flight' };
     }
@@ -1101,10 +1101,12 @@ function startOpenOrdersSyncLoop(bot: any) {
                             // re-create them as duplicates. Defer to a clean
                             // read — fill subscription events keep the bot
                             // responsive in the meantime.
-                            const chainOpenOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
-                                log: (message: string, level: any) => bot._log(message, level),
-                                label: 'OPEN-ORDERS-SYNC',
-                            });
+                            const chainOpenOrders = (typeof bot._readOpenOrdersHook === 'function')
+                                ? await bot._readOpenOrdersHook()
+                                : await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                                    log: (message: string, level: any) => bot._log(message, level),
+                                    label: 'OPEN-ORDERS-SYNC',
+                                });
                             if (chainOpenOrders !== null) {
                                 const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
@@ -1239,10 +1241,12 @@ function setupBlockchainFetchInterval(bot: any) {
                             // from the window (then re-create them as duplicates).
                             // Defer the sync to a clean read; fills are still
                             // caught by subscription events and the next cycle.
-                            chainOpenOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
-                                log: (message: string, level: any) => bot._log(message, level),
-                                label: 'PERIODIC-SYNC',
-                            });
+                            chainOpenOrders = (typeof bot._readOpenOrdersHook === 'function')
+                                ? await bot._readOpenOrdersHook()
+                                : await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                                    log: (message: string, level: any) => bot._log(message, level),
+                                    label: 'PERIODIC-SYNC',
+                                });
                             if (chainOpenOrders !== null) {
                                 const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'periodicBlockchainFetch');
 
@@ -1754,6 +1758,11 @@ async function executeMaintenanceLogic(bot: any, context: any) {
  */
 async function cancelOrderDeferredOnUncertain(bot: any, order: any) {
     try {
+        // Test seam: compiled ESM exports cannot be monkey-patched, so tests
+        // may override cancellation through this bot-level hook.
+        if (typeof bot._submitCancelOrder === 'function') {
+            return await bot._submitCancelOrder(order.orderId);
+        }
         return await chainOrders.cancelOrder(bot.account, bot.privateKey, order.orderId);
     } catch (err) {
         if (err instanceof BroadcastUncertainError) {

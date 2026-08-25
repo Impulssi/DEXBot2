@@ -10,7 +10,23 @@ const { spawnSync } = require('child_process');
 
 console.log('Running shell script path tests');
 
-const REPO_ROOT = path.resolve(__dirname, '..');
+// Compiled tests live in dist/tests; the shipped scripts stay at the repo
+// root. Locate the checkout by walking up until package.json + scripts land
+// in the same directory.
+function findRepoRoot(startDir: string): string {
+    let dir = path.resolve(startDir);
+    for (;;) {
+        if (fs.existsSync(path.join(dir, 'package.json'))
+            && fs.existsSync(path.join(dir, 'scripts', 'clear-all.sh'))) {
+            return dir;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) throw new Error(`repo root with scripts/ not found above ${startDir}`);
+        dir = parent;
+    }
+}
+
+const REPO_ROOT = findRepoRoot(__dirname);
 const SCRIPTS_DIR = path.join(REPO_ROOT, 'scripts');
 const SHIPPED = ['clear-all.sh', 'clear-logs.sh', 'clear-orders.sh', 'clear-market-adapter.sh', 'create-bot-symlinks.sh', 'reset-settings.sh'];
 const NEUTRAL_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-shell-neutral-'));

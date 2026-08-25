@@ -1,51 +1,18 @@
 'use strict';
 
 const assert = require('assert');
-const path = require('path');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
 const { withDynamicWeightFiles } = require('./helpers/dynamic_weight_files');
 
 console.log('Running dexbot startup dynamic weight wiring tests');
 
-const bitsharesClientPath = path.resolve(__dirname, '../modules/bitshares_client.ts');
-const startupReconcilePath = path.resolve(__dirname, '../modules/order/grid_reconcile.ts');
-const dexbotClassPath = path.resolve(__dirname, '../modules/dexbot_class.ts');
-
-const originalBitsharesClient = require.cache[bitsharesClientPath];
-const originalStartupReconcile = require.cache[startupReconcilePath];
-const originalDexbotClass = require.cache[dexbotClassPath];
-
-setCachedModule(bitsharesClientPath, {
-    BitShares: { db: { call: async () => [] }, subscribe() {} },
-    waitForConnected: async () => {},
-    createAccountClient: () => ({}),
-    setSuppressConnectionLog() {},
-    getNodeManager: () => null,
-    getNodeStats: () => null,
-    getNodeSummary: () => null,
-    _internal: { connected: true },
-    onReconnect: () => () => {},
-});
-
-setCachedModule(startupReconcilePath, {
-    attemptResumePersistedGridByPriceMatch: async () => ({ resumed: false }),
-    decideStartupGridAction: async () => ({ shouldRegenerate: false }),
-    reconcileGridOrders: async () => ({ actions: [] }),
-});
-
-const gridModulePath = require.resolve('../modules/order/grid');
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
-const realGrid = require('../modules/order/grid');
-const gridStub = Object.assign({}, realGrid);
-setCachedModule(gridModulePath, gridStub);
-delete require.cache[dexbotClassPath];
+// Compiled ESM exports cannot be monkey-patched or swapped via require.cache;
+// startup seams are bot-level: _gridModule, _gridReconcileModule,
+// _listenForFillsHook and _readOpenOrdersHook.
 const DEXBot = require('../modules/dexbot_class').default;
 
 async function testPlaceInitialOrdersRefreshesAndFallsBack() {
     const botKey = 'test_startup_dynamic_weight_initial';
     const weightFiles = withDynamicWeightFiles(botKey);
-    const originalInitializeGrid = gridStub.initializeGrid;
 
     try {
         const observedWeights = [];
@@ -54,8 +21,10 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
             effectiveWeights: { sell: 0.45, buy: 0.25 },
         });
 
-        gridStub.initializeGrid = async (manager) => {
-            observedWeights.push({ ...manager.config.weightDistribution });
+        const gridModule = {
+            initializeGrid: async (manager) => {
+                observedWeights.push({ ...manager.config.weightDistribution });
+            },
         };
 
         const bot = new DEXBot({
@@ -82,6 +51,7 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
             startBootstrap: () => {},
             finishBootstrap: () => {},
         };
+        bot._gridModule = gridModule;
 
         // Simulate the startup refresh that normally precedes initial order placement
         bot._refreshDynamicWeightDistribution('startup');
@@ -118,7 +88,6 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
         );
         assert.strictEqual(persistCalls, 2, 'dry-run placement should persist grid each time');
     } finally {
-        gridStub.initializeGrid = originalInitializeGrid;
         weightFiles.cleanup();
     }
 }
@@ -126,10 +95,6 @@ async function testPlaceInitialOrdersRefreshesAndFallsBack() {
 async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance() {
     const botKey = 'test_startup_dynamic_weight_loaded';
     const weightFiles = withDynamicWeightFiles(botKey);
-    const originalListenForFills = chainOrders.listenForFills;
-    const originalReadOpenOrders = chainOrders.readOpenOrders;
-    const originalReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
-    const originalLoadGrid = gridStub.loadGrid;
 
     try {
         weightFiles.writeSnapshot({
@@ -141,11 +106,15 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
         let loadGridCalls = 0;
         let finishBootstrapCalls = 0;
 
-        chainOrders.listenForFills = async () => async () => {};
-        chainOrders.readOpenOrders = async () => [];
-        chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
-        gridStub.loadGrid = async () => {
-            loadGridCalls++;
+        const gridModule = {
+            loadGrid: async () => {
+                loadGridCalls++;
+            },
+        };
+        const reconcileModule = {
+            attemptResumePersistedGridByPriceMatch: async () => ({ resumed: false }),
+            decideStartupGridAction: async () => ({ shouldRegenerate: false }),
+            reconcileGridOrders: async () => ({ actions: [] }),
         };
 
         const bot = new DEXBot({
@@ -195,6 +164,12 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
             return { aborted: false };
         };
         bot.shutdown = async () => {};
+        bot._gridModule = gridModule;
+        bot._gridReconcileModule = reconcileModule;
+        // Compiled ESM exports cannot be patched; the hooks keep the startup
+        // sequence offline (clean, non-truncated read; no fill subscription).
+        bot._listenForFillsHook = async () => async () => {};
+        bot._readOpenOrdersHook = async () => [];
 
         bot.manager = {
             config: {
@@ -235,10 +210,6 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
         assert.strictEqual(processCalls, 1, 'startup should process the detected fill once');
         assert(finishBootstrapCalls >= 1, 'startup should still finalize bootstrap');
     } finally {
-        chainOrders.listenForFills = originalListenForFills;
-        chainOrders.readOpenOrders = originalReadOpenOrders;
-        chainOrders.readOpenOrdersWithMeta = originalReadOpenOrdersWithMeta;
-        gridStub.loadGrid = originalLoadGrid;
         weightFiles.cleanup();
     }
 }
@@ -265,9 +236,6 @@ async function main() {
         console.log('dexbot startup dynamic weight wiring tests passed');
     } finally {
         process.off('unhandledRejection', unhandledRejectionHandler);
-        restoreCachedModule(bitsharesClientPath, originalBitsharesClient);
-        restoreCachedModule(startupReconcilePath, originalStartupReconcile);
-        restoreCachedModule(dexbotClassPath, originalDexbotClass);
     }
 }
 

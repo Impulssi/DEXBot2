@@ -1,132 +1,128 @@
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { EventEmitter } = require('events');
-const childProcess = require('child_process');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+const { runEsmMockStages, defineEsmMockAbs } = require('./helpers/esm_mocks');
+const { installPm2PathShim } = require('./helpers/pm2_path_shim');
 
 console.log('Running PM2 startup order tests');
 
-const pm2Path = require.resolve('../pm2');
-const chainKeysPath = require.resolve('../modules/chain_keys');
+// pm2.ts imports `spawn` and chain_keys/credential_bootstrap statically, so
+// neither childProcess.spawn replacement nor require.cache entries can
+// intercept them on compiled ESM. The chain_keys and bootstrap modules are
+// mocked through the loader-hook harness, and the `pm2` binary is replaced by
+// a recording PATH shim so spawned commands stay hermetic while still being
+// assertable (args + scrubbed child env).
 
-const originalPm2Module = require.cache[pm2Path];
-const originalChainKeys = require.cache[chainKeysPath];
-const originalSpawn = childProcess.spawn;
-const originalConsoleError = console.error;
-const originalTestSecret = process.env.TEST_PM2_SECRET;
-
-const events: any[] = [];
-const spawnCalls: any[] = [];
-const consoleErrors: any[] = [];
-const originalWriteFileSync = fs.writeFileSync;
-
-function installStubs() {
-    delete require.cache[pm2Path];
-    setCachedModule(chainKeysPath, {
-        waitForDaemon: async () => {
-            events.push('wait-ready-start');
-            await new Promise((resolve) => setTimeout(resolve, 20));
-            events.push('wait-ready-done');
-        },
-    });
-
-    fs.writeFileSync = (filePath, data, options) => {
-        if (String(filePath).includes('.dexbot-cred-bootstrap-path')) {
-            events.push('write-bootstrap-path');
-            return;
-        }
-        return originalWriteFileSync(filePath, data, options);
-    };
-
-    childProcess.spawn = (command, args, options) => {
-        spawnCalls.push({ command, args, options });
-        if (args[0] === 'start' && String(args[1]).includes('credential-daemon.js')) {
-            events.push('spawn-cred');
-        } else if (args[0] === 'start') {
-            events.push('spawn-apps');
-        } else if (args[0] === 'delete') {
-            events.push('delete-cred');
-        }
-
-        const child = new EventEmitter();
-        child.stdout = new EventEmitter();
-        child.stderr = new EventEmitter();
-        child.killed = false;
-        child.kill = () => {
-            child.killed = true;
-        };
-        process.nextTick(() => {
-            if (args[0] === 'delete') {
-                child.stderr.emit('data', 'Process or Namespace dexbot-cred not found');
-                child.emit('close', 1);
-                return;
-            }
-            child.emit('close', 0);
-        });
-        return child;
-    };
-}
-
-function restoreStubs() {
-    childProcess.spawn = originalSpawn;
-    fs.writeFileSync = originalWriteFileSync;
-    console.error = originalConsoleError;
-    if (originalTestSecret === undefined) delete process.env.TEST_PM2_SECRET;
-    else process.env.TEST_PM2_SECRET = originalTestSecret;
-
-    restoreCachedModule(chainKeysPath, originalChainKeys);
-
-    if (originalPm2Module) require.cache[pm2Path] = originalPm2Module;
-    else delete require.cache[pm2Path];
-}
-
-installStubs();
-console.error = (...args) => {
-    consoleErrors.push(args.join(' '));
-};
 process.env.TEST_PM2_SECRET = 'should-not-leak';
+const TEMP_PROFILE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-pm2-order-'));
+process.env.DEXBOT_PROFILE_ROOT = TEMP_PROFILE_ROOT;
 
-const { startManagedRuntimePM2 } = require('../pm2');
+function writeBotsFixture() {
+    fs.writeFileSync(path.join(TEMP_PROFILE_ROOT, 'bots.json'), JSON.stringify({
+        bots: [{ name: 'XRP-BTS', active: true }],
+    }));
+}
 
-(async () => {
+function installModuleMocks({ shim }) {
+    defineEsmMockAbs(require.resolve('../modules/chain_keys'), [
+        'checkKeysFileSecurity',
+        'isDaemonReady',
+        'isDaemonResponsive',
+        'authenticate',
+        'unlockWithPassword',
+        'waitForDaemon',
+    ], {
+        checkKeysFileSecurity: () => {},
+        isDaemonReady: () => false,
+        isDaemonResponsive: async () => false,
+        authenticate: async () => 'test-password',
+        unlockWithPassword: () => 'test-password',
+        waitForDaemon: () => shim.appendMarker('wait-ready-done'),
+    });
+}
+
+function installPathShim() {
+    return installPm2PathShim({
+        rules: [
+            // `pm2 delete dexbot-cred` before a fresh start reports "not found".
+            { action: 'delete', stderr: ['Process or Namespace dexbot-cred not found'], code: 1 },
+        ],
+    });
+}
+
+async function runStartupOrderStage() {
+    writeBotsFixture();
+
+    // startManagedRuntimePM2 writes the bootstrap path file next to the
+    // credential socket; the real flow creates that runtime dir earlier in
+    // ensureCredentialDaemonPM2, which this direct call bypasses.
+    const { getCredentialSocketPath } = require('../modules/credential_runtime');
+    fs.mkdirSync(path.dirname(getCredentialSocketPath()), { recursive: true });
+
+    const shim = installPathShim();
     try {
-        const bootstrapSocketPath = '/tmp/test-bootstrap.sock';
-        const bootstrap = {
-            socketPath: bootstrapSocketPath,
-            waitForTransfer: async () => {
-                events.push('wait-transfer-start');
-                await new Promise((resolve) => setTimeout(resolve, 10));
-                events.push('wait-transfer-done');
-            },
+        installModuleMocks({ shim });
+
+        const consoleErrors: any[] = [];
+        const originalConsoleError = console.error;
+        console.error = (...args) => {
+            consoleErrors.push(args.join(' '));
         };
+
+        const { startManagedRuntimePM2 } = require('../pm2');
 
         await startManagedRuntimePM2({
             apps: [{ name: 'XRP-BTS' }],
-            bootstrap,
+            bootstrap: {
+                socketPath: '/tmp/test-bootstrap.sock',
+                waitForTransfer: () => shim.appendMarker('wait-transfer-done'),
+            },
         });
 
-        const appStartIndex = events.indexOf('spawn-apps');
-        const credSpawn = spawnCalls.find((call) => call.args[0] === 'start' && String(call.args[1]).includes('credential-daemon.js'));
-        const appSpawn = spawnCalls.find((call) => call.args[0] === 'start' && String(call.args[1]).includes('ecosystem.config.cjs'));
-        assert.ok(appStartIndex !== -1, 'managed apps should be started');
-        assert.ok(appStartIndex > events.indexOf('wait-transfer-done'), 'apps should start after password transfer completes');
-        assert.ok(appStartIndex > events.indexOf('wait-ready-done'), 'apps should start after daemon readiness completes');
-        assert.strictEqual(credSpawn.options.env.TEST_PM2_SECRET, undefined, 'credential daemon PM2 launch should not inherit arbitrary parent secrets');
-        assert.strictEqual(credSpawn.options.env.DEXBOT_CRED_BOOTSTRAP_SOCKET, undefined, 'credential daemon PM2 launch should not receive bootstrap socket env');
-        assert.strictEqual(appSpawn.options.env.TEST_PM2_SECRET, undefined, 'ecosystem PM2 launch should not inherit arbitrary parent secrets');
-        assert.strictEqual(appSpawn.options.env.DEXBOT_CRED_BOOTSTRAP_SOCKET, undefined, 'ecosystem PM2 launch should not receive bootstrap env');
+        console.error = originalConsoleError;
+
+        const calls = shim.readCalls();
+        // Entries are either spawn records ({args,...}) or timeline markers;
+        // every index below is taken against the same full timeline array.
+        const spawned = calls.filter((call) => call.args);
+        const indexInCalls = (predicate) => calls.findIndex(predicate);
+        const deleteIndex = indexInCalls((call) => call.args && call.args[0] === 'delete');
+        const credSpawn = spawned.find((call) => call.args[0] === 'start' && String(call.args[1]).includes('credential-daemon.js'));
+        const appSpawn = spawned.find((call) => call.args[0] === 'start' && String(call.args[1]).includes('ecosystem.config.cjs'));
+        const credIndex = indexInCalls((call) => call === credSpawn);
+        const transferDoneIndex = indexInCalls((call) => call.marker === 'wait-transfer-done');
+        const readyDoneIndex = indexInCalls((call) => call.marker === 'wait-ready-done');
+        const appStartIndex = indexInCalls((call) => call === appSpawn);
+
+        assert.ok(credSpawn, 'managed runtime should start the credential daemon via pm2');
+        assert.ok(appSpawn, 'managed apps should be started via pm2');
+        assert.ok(deleteIndex !== -1 && deleteIndex < credIndex, 'stale dexbot-cred entries should be deleted before the fresh start');
+        assert.ok(transferDoneIndex !== -1, 'password transfer should complete');
+        assert.ok(readyDoneIndex !== -1, 'daemon readiness wait should complete');
+        assert.ok(appStartIndex > transferDoneIndex, 'apps should start after password transfer completes');
+        assert.ok(appStartIndex > readyDoneIndex, 'apps should start after daemon readiness completes');
+        assert.strictEqual(credSpawn.env.TEST_PM2_SECRET, 'unset', 'credential daemon PM2 launch should not inherit arbitrary parent secrets');
+        assert.strictEqual(credSpawn.env.DEXBOT_CRED_BOOTSTRAP_SOCKET, 'unset', 'credential daemon PM2 launch should not receive bootstrap socket env');
+        assert.strictEqual(appSpawn.env.TEST_PM2_SECRET, 'unset', 'ecosystem PM2 launch should not inherit arbitrary parent secrets');
+        assert.strictEqual(appSpawn.env.DEXBOT_CRED_BOOTSTRAP_SOCKET, 'unset', 'ecosystem PM2 launch should not receive bootstrap env');
         assert.ok(
             !consoleErrors.some((line) => line.includes('Process or Namespace dexbot-cred not found')),
             'missing dexbot-cred should be ignored without logging a PM2 error'
         );
 
-        console.log('PM2 startup order tests passed');
-        process.exit(0);
+        originalConsoleError('PM2 startup order tests passed');
+    } finally {
+        shim.restore();
+        fs.rmSync(TEMP_PROFILE_ROOT, { recursive: true, force: true });
+    }
+}
+
+runEsmMockStages(['startup_order'], async () => {
+    try {
+        await runStartupOrderStage();
     } catch (err) {
         console.error(err);
         process.exit(1);
-    } finally {
-        restoreStubs();
     }
-})();
+});

@@ -1,25 +1,23 @@
 const assert = require('assert');
-const Module = require('module');
-const { EventEmitter } = require('events');
-const childProcess = require('child_process');
-const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { runEsmMockStages, defineEsmMockAbs } = require('./helpers/esm_mocks');
+const { installPm2PathShim } = require('./helpers/pm2_path_shim');
 
 console.log('Running PM2 main output tests');
 
-const pm2Path = require.resolve('../pm2');
-const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-const chainKeysPath = require.resolve('../modules/chain_keys');
-const bootstrapPath = require.resolve('../modules/launcher/credential_bootstrap');
-const botSettingsPath = require.resolve('../modules/bot_settings');
+// pm2.ts imports spawn/execSync and chain_keys/credential_bootstrap/
+// bitshares_client/bot_settings statically, so neither childProcess.spawn
+// replacement nor require.cache entries can intercept them on compiled ESM.
+// The network/auth/settings modules are mocked through the loader-hook
+// harness, and the `pm2` binary is replaced by a recording PATH shim that
+// replays the canned PM2 output, keeping the whole run offline.
 
-const originalResolveFilename = Module._resolveFilename;
-const originalPm2Module = require.cache[pm2Path];
-const originalBitsharesClient = require.cache[bitsharesClientPath];
-const originalChainKeys = require.cache[chainKeysPath];
-const originalBootstrap = require.cache[bootstrapPath];
-const originalBotSettings = require.cache[botSettingsPath];
-const originalSpawn = childProcess.spawn;
-const originalProcessExit = process.exit;
+process.env.TEST_PM2_SECRET = 'should-not-leak';
+const TEMP_PROFILE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-pm2-main-'));
+process.env.DEXBOT_PROFILE_ROOT = TEMP_PROFILE_ROOT;
+
 const originalConsoleLog = console.log;
 const originalConsoleError = console.error;
 const originalStdoutIsTTY = process.stdout.isTTY;
@@ -27,7 +25,6 @@ const originalNoColor = process.env.NO_COLOR;
 
 const logs: any[] = [];
 const errors: any[] = [];
-const spawnCalls: any[] = [];
 
 function setStdoutTTY(value) {
     Object.defineProperty(process.stdout, 'isTTY', {
@@ -37,42 +34,44 @@ function setStdoutTTY(value) {
     });
 }
 
-function resetState() {
-    logs.length = 0;
-    errors.length = 0;
-    spawnCalls.length = 0;
+function writeBotsFixture() {
+    // generateEcosystemConfig checks existence of bots.json at the storage
+    // level before the (mocked) settings loader runs.
+    fs.writeFileSync(path.join(TEMP_PROFILE_ROOT, 'bots.json'), JSON.stringify({
+        bots: [
+            { name: 'XRP-BTS', active: true },
+            { name: 'H-BTS', active: true },
+            { name: 'T-BTS', active: true },
+        ],
+    }));
 }
 
-function stripAnsi(text) {
-    return String(text).replace(/\x1b\[[0-9;]*m/g, '');
-}
-
-function logsIncludePlain(expected) {
-    return logs.some((line) => stripAnsi(line) === expected);
-}
-
-function installStubs() {
-    delete require.cache[pm2Path];
-
-    Module._resolveFilename = function patchedResolveFilename(request, parent, isMain, options) {
-        if (request === 'pm2') {
-            return '/virtual/pm2.js';
-        }
-        return originalResolveFilename.call(this, request, parent, isMain, options);
-    };
-
-    setCachedModule(bitsharesClientPath, {
+function installModuleMocks() {
+    defineEsmMockAbs(require.resolve('../modules/bitshares_client'), [
+        'waitForConnected',
+    ], {
         waitForConnected: async () => {},
     });
 
-    setCachedModule(chainKeysPath, {
-        authenticate: async () => 'test-password',
+    defineEsmMockAbs(require.resolve('../modules/chain_keys'), [
+        'checkKeysFileSecurity',
+        'isDaemonReady',
+        'isDaemonResponsive',
+        'authenticate',
+        'unlockWithPassword',
+        'waitForDaemon',
+    ], {
+        checkKeysFileSecurity: () => {},
         isDaemonReady: () => false,
         isDaemonResponsive: async () => false,
+        authenticate: async () => 'test-password',
+        unlockWithPassword: () => 'test-password',
         waitForDaemon: async () => {},
     });
 
-    setCachedModule(bootstrapPath, {
+    defineEsmMockAbs(require.resolve('../modules/launcher/credential_bootstrap'), [
+        'createPasswordBootstrapServer',
+    ], {
         createPasswordBootstrapServer: async () => ({
             socketPath: '/tmp/bootstrap.sock',
             close() {},
@@ -80,7 +79,10 @@ function installStubs() {
         }),
     });
 
-    setCachedModule(botSettingsPath, {
+    defineEsmMockAbs(require.resolve('../modules/bot_settings'), [
+        'loadSettingsFile',
+        'selectActiveBotEntries',
+    ], {
         loadSettingsFile: () => ({
             config: {
                 bots: [
@@ -92,33 +94,17 @@ function installStubs() {
         }),
         selectActiveBotEntries: (config) => (config && Array.isArray(config.bots) ? config.bots.filter((bot) => bot.active !== false) : []),
     });
+}
 
-    childProcess.spawn = (command, args, options) => {
-        spawnCalls.push({ command, args, options });
-
-        const child = new EventEmitter();
-        child.stdout = new EventEmitter();
-        child.stderr = new EventEmitter();
-        child.kill = () => {};
-
-        const emitStdout = (lines) => {
-            process.nextTick(() => {
-                for (const line of lines) {
-                    child.stdout.emit('data', `${line}\n`);
-                }
-                child.emit('close', 0);
-            });
-        };
-
-        process.nextTick(() => {
-            if (args[0] === 'delete') {
-                child.stderr.emit('data', 'Process or Namespace dexbot-cred not found');
-                child.emit('close', 1);
-                return;
-            }
-
-            if (args[0] === 'start' && String(args[1]).includes('credential-daemon.js')) {
-                emitStdout([
+function installPathShim() {
+    return installPm2PathShim({
+        rules: [
+            // `pm2 delete dexbot-cred` before the fresh start reports "not found".
+            { action: 'delete', stderr: ['Process or Namespace dexbot-cred not found'], code: 1 },
+            {
+                action: 'start',
+                targetIncludes: 'credential-daemon.js',
+                stdout: [
                     '[PM2] Starting /root/DEXBot2/credential-daemon.js in fork_mode (1 instance)',
                     '[PM2] Done.',
                     '┌────┬────────────────────┬──────────┬──────┬───────────┬──────────┬──────────┐',
@@ -126,12 +112,12 @@ function installStubs() {
                     '├────┼────────────────────┼──────────┼──────┼───────────┼──────────┼──────────┤',
                     '│ 57 │ dexbot-cred        │ fork     │ 0    │ online    │ 0%       │ 60.7mb   │',
                     '└────┴────────────────────┴──────────┴──────┴───────────┴──────────┴──────────┘',
-                ]);
-                return;
-            }
-
-            if (args[0] === 'start' && String(args[1]).includes('ecosystem.config.cjs')) {
-                emitStdout([
+                ],
+            },
+            {
+                action: 'start',
+                targetIncludes: 'ecosystem.config.cjs',
+                stdout: [
                     '[PM2] cron restart at 0 0 * * *',
                     '[PM2][WARN] Applications XRP-BTS, H-BTS, T-BTS, dexbot-update not running, starting...',
                     '[PM2] App [XRP-BTS] launched (1 instances)',
@@ -146,64 +132,43 @@ function installStubs() {
                     '│ 60 │ T-BTS              │ fork     │ 0    │ online    │ 0%       │ 21.9mb   │',
                     '│ 61 │ dexbot-update      │ fork     │ 0    │ online    │ 0%       │ 26.6mb   │',
                     '└────┴────────────────────┴──────────┴──────┴───────────┴──────────┴──────────┘',
-                ]);
-                return;
-            }
-
-            emitStdout([]);
-        });
-
-        return child;
-    };
-
-    console.log = (...args) => {
-        const line = args.map((part) => String(part)).join(' ');
-        if (line.trim()) logs.push(line.trim());
-    };
-
-    console.error = (...args) => {
-        const line = args.map((part) => String(part)).join(' ');
-        if (line.trim()) errors.push(line.trim());
-    };
-
-    process.exit = (code = 0) => {
-        const err = new Error(`process.exit(${code})`);
-        (err as any).code = 'TEST_PROCESS_EXIT';
-        (err as any).exitCode = code;
-        throw err;
-    };
+                ],
+            },
+        ],
+    });
 }
 
-function restoreStubs() {
-    Module._resolveFilename = originalResolveFilename;
-    childProcess.spawn = originalSpawn;
-    process.exit = originalProcessExit;
-    console.log = originalConsoleLog;
-    console.error = originalConsoleError;
-    setStdoutTTY(originalStdoutIsTTY);
-    if (originalNoColor === undefined) {
-        delete process.env.NO_COLOR;
-    } else {
-        process.env.NO_COLOR = originalNoColor;
-    }
-
-    restoreCachedModule(bitsharesClientPath, originalBitsharesClient);
-    restoreCachedModule(chainKeysPath, originalChainKeys);
-    restoreCachedModule(bootstrapPath, originalBootstrap);
-    restoreCachedModule(botSettingsPath, originalBotSettings);
-
-    if (originalPm2Module) require.cache[pm2Path] = originalPm2Module;
-    else delete require.cache[pm2Path];
+function stripAnsi(text) {
+    return String(text).replace(/\x1b\[[0-9;]*m/g, '');
 }
 
-installStubs();
+function logsIncludePlain(expected) {
+    return logs.some((line) => stripAnsi(line) === expected);
+}
 
-const { main } = require('../pm2');
+async function runMainOutputStage() {
+    writeBotsFixture();
 
-(async () => {
+    const shim = installPathShim();
     try {
+        installModuleMocks();
+
         setStdoutTTY(true);
         delete process.env.NO_COLOR;
+
+        console.log = (...args) => {
+            const line = args.map((part) => String(part)).join(' ');
+            if (line.trim()) logs.push(line.trim());
+        };
+        console.error = (...args) => {
+            const line = args.map((part) => String(part)).join(' ');
+            if (line.trim()) errors.push(line.trim());
+        };
+
+        const { PATHS } = require('../modules/paths');
+        const ecosystemConfigPath = PATHS.PROFILES.ECOSYSTEM_CONFIG_JS;
+        const { main } = require('../pm2');
+
         await main();
 
         assert.ok(logsIncludePlain('Connected to BitShares'), 'launcher should still report BitShares connectivity');
@@ -228,7 +193,16 @@ const { main } = require('../pm2');
         assert.ok(logs.includes('[PM2] App [dexbot-update] launched'), 'launcher should keep the app launch line without the instance count');
         assert.ok(!logs.some((line) => line.startsWith('┌') || line.startsWith('│') || line.startsWith('├') || line.startsWith('└')), 'launcher should strip PM2 table output');
         assert.deepStrictEqual(errors, [], 'launcher should not emit console errors during a normal start');
-        assert.ok(spawnCalls.some((call) => call.args[0] === 'start' && String(call.args[1]).includes('ecosystem.config.cjs')), 'launcher should still start the PM2 ecosystem');
+
+        const calls = shim.readCalls();
+        const credSpawn = calls.find((call) => call.args[0] === 'start' && String(call.args[1]).includes('credential-daemon.js'));
+        const appSpawn = calls.find((call) => call.args[0] === 'start' && String(call.args[1]).includes('ecosystem.config.cjs'));
+        assert.ok(credSpawn, 'launcher should still start the credential daemon via pm2');
+        assert.ok(appSpawn, 'launcher should still start the PM2 ecosystem');
+        assert.strictEqual(credSpawn.env.TEST_PM2_SECRET, 'unset', 'credential daemon PM2 launch should not inherit arbitrary parent secrets');
+        assert.strictEqual(credSpawn.env.DEXBOT_CRED_BOOTSTRAP_SOCKET, 'unset', 'credential daemon PM2 launch should not receive bootstrap socket env');
+        assert.strictEqual(appSpawn.env.TEST_PM2_SECRET, 'unset', 'ecosystem PM2 launch should not inherit arbitrary parent secrets');
+        assert.strictEqual(appSpawn.env.DEXBOT_CRED_BOOTSTRAP_SOCKET, 'unset', 'ecosystem PM2 launch should not receive bootstrap env');
 
         assert.ok(
             logs.some((line) => line.includes('\x1b[1;92m') && line.includes('Connected to BitShares')),
@@ -243,12 +217,30 @@ const { main } = require('../pm2');
             'PM2 launcher should color the final success banner green'
         );
 
-        restoreStubs();
-        process.stdout.write('PM2 main output tests passed\n');
-        process.exit(0);
-    } catch (err) {
-        restoreStubs();
-        console.error(err);
-        process.exit(1);
+        console.log = originalConsoleLog;
+        console.error = originalConsoleError;
+        originalConsoleLog('PM2 main output tests passed');
+    } finally {
+        shim.restore();
+        console.log = originalConsoleLog;
+        console.error = originalConsoleError;
+        setStdoutTTY(originalStdoutIsTTY);
+        if (originalNoColor === undefined) {
+            delete process.env.NO_COLOR;
+        } else {
+            process.env.NO_COLOR = originalNoColor;
+        }
+        fs.rmSync(TEMP_PROFILE_ROOT, { recursive: true, force: true });
     }
-})();
+}
+
+runEsmMockStages(['main_output'], async () => {
+    let exitCode = 0;
+    try {
+        await runMainOutputStage();
+    } catch (err) {
+        console.error(err);
+        exitCode = 1;
+    }
+    process.exit(exitCode);
+});

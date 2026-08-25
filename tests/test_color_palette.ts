@@ -1,6 +1,6 @@
 /**
  * Visual color palette comparison — shows every changed color side by side.
- * Run: npx tsx tests/test_color_palette.ts
+ * Run: npx node dist/tests/test_color_palette.js
  */
 
 const O = '\x1b[0m';

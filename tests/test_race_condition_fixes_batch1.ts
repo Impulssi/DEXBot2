@@ -45,10 +45,115 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
 const { setCachedModule, restoreCachedModule } = require('./helpers/module_cache_stub');
 const { writeJsonFileAtomic, writeBotsFileWithLock } = require('../modules/bots_file_lock');
 const { readJSON } = require('../modules/storage').getStorage();
 const AsyncLock = require('../modules/order/async_lock').default;
+
+// Compiled ESM namespaces are frozen and Module._load / require.cache
+// injection cannot reach static ESM imports, so the modules consumed by
+// credit_runtime and the claw watcher are replaced via loader hooks (same
+// technique as tests/test_uncertain_broadcast.ts).
+esmMockEntry();
+
+// Offline stand-in for the shared bitshares client: without this the real
+// client connects to a public wss node during the CreditRuntime tests and the
+// lingering TLSSocket keeps the process alive after completion.
+defineEsmMockAbs(require.resolve('../modules/bitshares_client'), [
+    'BitShares', 'createAccountClient', 'waitForConnected', 'getConnectionStatus',
+    'disconnectClient', 'reconnectForCycle', 'setSuppressConnectionLog', 'onReconnect',
+    'withTimeout', '_assessFailover', 'getNodeManager', 'getNodeStats', 'getNodeSummary',
+    'getConnectionError', '_internal'
+], {
+    BitShares: {
+        subscribe() {},
+        db: {
+            call: async () => [],
+            lookup_asset_symbols: async () => [],
+            get_assets: async () => [],
+            get_objects: async () => [],
+            get_liquidity_pools_by_share_asset: async () => [],
+            get_liquidity_pools_by_both_assets: async () => [],
+            get_credit_deals_by_borrower: async () => [],
+            get_credit_offers_by_owner: async () => [],
+            get_credit_offers_by_asset: async () => [],
+            get_on_chain_asset_balances: async () => ({}),
+        },
+    },
+    createAccountClient: () => ({ sign: () => {}, broadcast: async () => ({}) }),
+    waitForConnected: async () => {},
+    getConnectionStatus: () => ({ connected: true }),
+    disconnectClient: async () => {},
+    reconnectForCycle: async () => {},
+    setSuppressConnectionLog() {},
+    onReconnect: () => () => {},
+    withTimeout: (p: any) => p,
+    _assessFailover: () => null,
+    getNodeManager: () => null,
+    getNodeStats: () => null,
+    getNodeSummary: () => null,
+    getConnectionError: () => null,
+    _internal: { connected: true },
+});
+
+// chain_orders stand-in covering every function credit_runtime / sync_engine /
+// order/accounting use on the credit-runtime paths exercised below.
+defineEsmMockAbs(require.resolve('../modules/chain_orders'), [
+    'selectAccount', 'setPreferredAccount', 'resolveAccountId', 'resolveAccountName',
+    'readOpenOrders', 'readOpenOrdersWithMeta', 'readOpenOrdersWithMetaSafe', 'readOpenOrdersGuarded',
+    'readSingleOrder', 'batchReadOrders', 'listenForFills', 'updateOrder', 'createOrder', 'cancelOrder',
+    'getOnChainAssetBalances', 'getFillProcessingMode', 'buildUpdateOrderOp', 'buildCreateOrderOp',
+    'buildCancelOrderOp', 'buildLiquidityPoolExchangeOp', 'executeBatch',
+    'findOverReducingUpdateOpError', 'wasRecentlyOwnCancelled', 'recordOwnCancel',
+    'BroadcastUncertainError', 'broadcastTxWithClassification'
+], {
+    selectAccount: async () => ({}),
+    setPreferredAccount: async () => {},
+    resolveAccountId: async () => '1.2.3',
+    resolveAccountName: async () => 'alice',
+    readOpenOrders: async () => [],
+    readOpenOrdersWithMeta: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersWithMetaSafe: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersGuarded: async () => [],
+    readSingleOrder: async () => null,
+    batchReadOrders: async () => [],
+    listenForFills: async () => () => {},
+    updateOrder: async () => ({}),
+    createOrder: async () => ({}),
+    cancelOrder: async () => ({}),
+    getOnChainAssetBalances: async () => ({}),
+    getFillProcessingMode: async () => 'history',
+    buildUpdateOrderOp: async () => ({}),
+    buildCreateOrderOp: async () => ({}),
+    buildCancelOrderOp: async () => ({}),
+    buildLiquidityPoolExchangeOp: async () => ({}),
+    executeBatch: async () => ({ tx_id: 'tx-0', operation_results: [] }),
+    findOverReducingUpdateOpError: async () => null,
+    wasRecentlyOwnCancelled: () => false,
+    recordOwnCancel: () => {},
+    broadcastTxWithClassification: async () => ({})
+});
+
+// The claw watcher's dependencies: each test installs its own PositionManager
+// mock before the first require of the watcher module.
+const clawWatcherMocks: any = {
+    PositionManager: null,
+    waitForConnected: async () => {},
+};
+
+defineEsmMockAbs(require.resolve('../claw/modules/position_manager'), [
+    'PositionManager', 'DEFAULT_STATE_PATH',
+], {
+    DEFAULT_STATE_PATH: path.join(os.tmpdir(), 'unused-positions.json'),
+    get PositionManager() { return clawWatcherMocks.PositionManager; },
+});
+
+defineEsmMockAbs(require.resolve('../claw/modules/bitshares_client'), [
+    'waitForConnected',
+], {
+    get waitForConnected() { return clawWatcherMocks.waitForConnected; },
+});
 
 const creditRuntimePath = path.resolve(__dirname, '../modules/credit_runtime.ts');
 const bitsharesClientPath = path.resolve(__dirname, '../modules/bitshares_client.ts');
@@ -331,40 +436,17 @@ async function testPersistGridSnapshotDoesNotSwapManagerOrders() {
 // RC-4: position_manager_watch in-flight guard + unref
 // ---------------------------------------------------------------------------
 //
-// Following the pattern in claw/tests/test_position_manager_watch_health.ts,
-// intercept Module._load to inject a mock PositionManager so the watcher's
-// start() does not need a real BitShares connection.
-
-const Module = require('module');
+// The watcher's PositionManager / bitshares_client dependencies are replaced
+// via ESM loader hooks (registered above), so start() runs without a real
+// BitShares connection. Each test installs its own mock class before the
+// first require of the watcher module.
 
 function loadWatcherWithMockedDeps(mockPositionManager, waitForConnected) {
-    const watcherModulePath = require.resolve('../claw/modules/position_manager_watch');
-    const positionManagerPath = require.resolve('../claw/modules/position_manager');
-    const bitsharesClientPath = require.resolve('../claw/modules/bitshares_client');
-
-    delete require.cache[watcherModulePath];
-    delete require.cache[positionManagerPath];
-    delete require.cache[bitsharesClientPath];
-
-    const originalLoad = Module._load;
-    Module._load = function (request, parent, isMain) {
-        if (['./position_manager', './position_manager.js'].includes(request) && parent?.filename === watcherModulePath) {
-            return {
-                DEFAULT_STATE_PATH: path.join(os.tmpdir(), 'unused-positions.json'),
-                PositionManager: mockPositionManager,
-            };
-        }
-        if (['./bitshares_client', './bitshares_client.js'].includes(request) && parent?.filename === watcherModulePath) {
-            return { waitForConnected };
-        }
-        return originalLoad.call(this, request, parent, isMain);
-    };
-
-    try {
-        return require('../claw/modules/position_manager_watch');
-    } finally {
-        Module._load = originalLoad;
+    clawWatcherMocks.PositionManager = mockPositionManager;
+    if (typeof waitForConnected === 'function') {
+        clawWatcherMocks.waitForConnected = waitForConnected;
     }
+    return require('../claw/modules/position_manager_watch');
 }
 
 async function testPositionManagerWatchInFlightGuard() {
@@ -693,4 +775,8 @@ async function run() {
 run().catch((err) => {
     console.error('Test failed:', err && err.stack ? err.stack : err);
     process.exit(1);
+}).finally(() => {
+    // House-style forced exit (see test_cow_commit_guards): benign handles
+    // must never keep a passing run alive.
+    setTimeout(() => process.exit(process.exitCode || 0), 20);
 });

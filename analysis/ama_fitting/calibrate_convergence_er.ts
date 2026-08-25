@@ -22,9 +22,9 @@ import { roundTo } from '../../modules/order/utils/math.js';
  * the recommended constant for modules/constants.ts.
  *
  * Usage:
- *   tsx analysis/ama_fitting/calibrate_convergence_er.ts
- *   tsx analysis/ama_fitting/calibrate_convergence_er.ts --data <lp-file.json>
- *   tsx analysis/ama_fitting/calibrate_convergence_er.ts --data <lp-file.json> --amas AMA3
+ *   node dist/analysis/ama_fitting/calibrate_convergence_er.js
+ *   node dist/analysis/ama_fitting/calibrate_convergence_er.js --data <lp-file.json>
+ *   node dist/analysis/ama_fitting/calibrate_convergence_er.js --data <lp-file.json> --amas AMA3
  */
 const DEFAULT_DATA = path.join(PATHS.MARKET_ADAPTER.LP_DATA_DIR,
     '1_3_5537_1_3_0', 'lp_pool_133_1h.json');

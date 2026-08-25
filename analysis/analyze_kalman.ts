@@ -6,7 +6,7 @@
  * Runs KalmanTrendAnalyzer over candle data and generates an interactive HTML chart.
  *
  * Usage:
- *   tsx analysis/analyze_kalman.ts \
+ *   node dist/analysis/analyze_kalman.js \
  *     --source json \
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */

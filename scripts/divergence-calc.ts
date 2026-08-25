@@ -19,7 +19,7 @@
  * - 'virtual': Simulated orders
  * - 'partial': Temporarily filled orders (excluded from calculation)
  *
- * Usage: tsx scripts/divergence-calc.ts [file] or pipe: cat orders.txt | tsx scripts/divergence-calc.ts
+ * Usage: node dist/scripts/divergence-calc.js [file] or pipe: cat orders.txt | node dist/scripts/divergence-calc.js
  * Exit code: 0 on success, 1 on error
  */
 
@@ -35,8 +35,8 @@ const { getErrorMessage } = require('../modules/utils/errors');
  * readData: Read order data from file or stdin
  *
  * Supports two input modes:
- * 1. File argument: tsx divergence-calc.ts /path/to/file
- * 2. Stdin: cat file | tsx divergence-calc.ts or tsx divergence-calc.ts -
+ * 1. File argument: node dist/scripts/divergence-calc.js /path/to/file
+ * 2. Stdin: cat file | node dist/scripts/divergence-calc.js or node dist/scripts/divergence-calc.js -
  *
  * @returns {string} Raw order data lines
  * @throws {Error} If file cannot be read

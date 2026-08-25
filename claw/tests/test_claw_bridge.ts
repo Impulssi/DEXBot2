@@ -1,18 +1,16 @@
 'use strict';
 
 const assert = require('assert');
+const { runEsmMockStages, defineEsmMockAbs } = require('../../tests/helpers/esm_mocks');
 
-function clearModule(modulePath: string) {
-  delete require.cache[modulePath];
+// Compiled ESM graphs cannot be mocked via require.cache; the helper installs
+// loader hooks (one child process per stage so fresh module instances load).
+function clearModule(_modulePath: string) {
+  /* no-op under ESM hooks */
 }
 
 function registerMock(modulePath: string, exports: any) {
-  require.cache[modulePath] = {
-    id: modulePath,
-    filename: modulePath,
-    loaded: true,
-    exports
-  } as any;
+  defineEsmMockAbs(modulePath, Object.keys(exports), exports);
 }
 
 function createBridgeHarness() {
@@ -225,9 +223,30 @@ function createBridgeHarness() {
     }
   });
 
-  // Snapshot the real validator before the mock replaces the module: claw
-  // bridge delegates memu-* argument validation to it.
-  const realMemuBridge = require(memuBridgePath);
+  // The mock replicates the real validator's required-args table: under ESM
+  // hooks the real module cannot be require()d here (that would bypass the
+  // mock and poison the module cache with the real instance).
+  const memuRequiredArgs = {
+    'memorize': { groups: [['resourceUrl'], ['modality']], message: 'memorize requires resourceUrl and modality' },
+    'retrieve': { groups: [['queries']], message: 'retrieve requires queries' },
+    'create-item': { groups: [['categoryId', 'categoryName', 'category'], ['summary']], message: 'create-item requires categoryId or categoryName, plus summary' },
+    'update-item': { groups: [['itemId'], ['updates']], message: 'update-item requires itemId and updates' },
+    'delete-item': { groups: [['itemId']], message: 'delete-item requires itemId' },
+    'memorize-conversation': { groups: [['messages']], message: 'memorize-conversation requires messages array' },
+    'memorize-trading-context': { groups: [['context']], message: 'memorize-trading-context requires context' },
+    'retrieve-trading-context': { groups: [['query']], message: 'retrieve-trading-context requires query' }
+  };
+  function validateMemuCommandArgs(command: string, options: any) {
+    const spec = (memuRequiredArgs as any)[command];
+    if (!spec) return;
+    const satisfied = spec.groups.every(
+      (group: string[]) => group.some((field) => options[field])
+    );
+    if (!satisfied) {
+      throw new Error(spec.message);
+    }
+  }
+
   registerMock(memuBridgePath, {
     describeMemuBridge: (options: any) => ({
       options,
@@ -242,7 +261,7 @@ function createBridgeHarness() {
         source: 'memu'
       };
     },
-    validateMemuCommandArgs: realMemuBridge.validateMemuCommandArgs
+    validateMemuCommandArgs
   });
 
   clearModule(bridgePath);
@@ -535,12 +554,17 @@ async function testRunClawCommandDispatchMatrix() {
   console.log('    PASS');
 }
 
-async function main() {
-  await testCreateClawBridgeSanitizesPrivateKey();
-  await testRunClawCommandDispatchMatrix();
-}
-
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+runEsmMockStages(
+  ['sanitizes-private-key', 'dispatch-matrix'],
+  async (stage: string) => {
+    if (stage === 'sanitizes-private-key') {
+      await testCreateClawBridgeSanitizesPrivateKey();
+      return;
+    }
+    if (stage === 'dispatch-matrix') {
+      await testRunClawCommandDispatchMatrix();
+      return;
+    }
+    throw new Error(`Unknown stage: ${stage}`);
+  }
+);

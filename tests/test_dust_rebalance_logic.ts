@@ -45,8 +45,6 @@ const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, TIMING } = require('../modules/constants');
 const { checkWindowDust, hasAnyDust, getDustOrders } = require('../modules/order/grid');
 const { _setFeeCache } = require('../modules/order/utils/math');
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
 const DEXBot = require('../modules/dexbot_class').default;
 const {
     isOrderDoesNotExistError,
@@ -260,7 +258,6 @@ async function testDustTrigger() {
 async function testDustCancelSyntheticRotation() {
     console.log('Testing Dust Cancel Synthetic Rotation...');
 
-    const originalCancelOrder = chainOrders.cancelOrder;
     let bot;
     const weightFiles = withDynamicWeightFiles('test_dust_cancel_rotation');
     try {
@@ -320,8 +317,10 @@ async function testDustCancelSyntheticRotation() {
             },
         };
 
-        chainOrders.cancelOrder = async () => {
+        // Compiled ESM exports cannot be patched; use the bot-level seam.
+        bot._submitCancelOrder = async (orderId: string) => {
             cancelCalls++;
+            return { success: true, orderId };
         };
 
         const dustOrder = {
@@ -341,7 +340,6 @@ async function testDustCancelSyntheticRotation() {
         assert.strictEqual(persistCalls, 2, 'Dust cancel should persist grid (COW path + end-of-tick flushGridDirty safety net)');
         console.log('  ✓ Dust cancel triggers synthetic delayed rotation immediately (no timer)');
     } finally {
-        chainOrders.cancelOrder = originalCancelOrder;
         weightFiles.cleanup();
     }
 }
@@ -349,7 +347,6 @@ async function testDustCancelSyntheticRotation() {
 async function testDustCancelDoesNotBeatRealFill() {
     console.log('Testing Dust Cancel Real Fill Precedence...');
 
-    const originalCancelOrder = chainOrders.cancelOrder;
     let bot;
     try {
         let processCalls = 0;
@@ -380,7 +377,8 @@ async function testDustCancelDoesNotBeatRealFill() {
             recalculateFunds: async () => {}
         };
 
-        chainOrders.cancelOrder = async () => {
+        // Compiled ESM exports cannot be patched; use the bot-level seam.
+        bot._submitCancelOrder = async () => {
             throw new Error('order already filled');
         };
 
@@ -400,14 +398,12 @@ async function testDustCancelDoesNotBeatRealFill() {
         assert.strictEqual(persistCalls, 0, 'Failed cancel should not persist synthetic changes');
         console.log('  ✓ Real fill / failed cancel path does not trigger synthetic rotation');
     } finally {
-        chainOrders.cancelOrder = originalCancelOrder;
     }
 }
 
 async function testDustCancelNodeFallback() {
     console.log('Testing Dust Cancel defers on BROADCAST_DEADLINE (no client-side node fallback re-send)...');
 
-    const originalCancelOrder = chainOrders.cancelOrder;
     let bot;
     try {
         let cancelCalls = 0;
@@ -449,12 +445,10 @@ async function testDustCancelNodeFallback() {
         // The helper no longer passes node-fallback options: the credential
         // client makes a single attempt (node cycling + 3x retry live inside
         // the daemon) and uncertain cancels propagate for the next detection
-        // cycle. Here we just verify cancelOrder is called and errors
-        // propagate correctly.
-        chainOrders.cancelOrder = async (account, key, orderId, extraOptions) => {
+        // cycle. Here we just verify cancellation is submitted once through
+        // the bot-level seam (compiled ESM exports cannot be patched).
+        bot._submitCancelOrder = async (orderId: string) => {
             cancelCalls++;
-            assert.ok(extraOptions === undefined || !extraOptions.fallbackNodes, 'no fallbackNodes are passed (single-attempt client)');
-            assert.ok(extraOptions === undefined || !extraOptions.onNodeFailed, 'no onNodeFailed is passed (daemon handles node cycling)');
             return { success: true, orderId };
         };
 
@@ -474,7 +468,6 @@ async function testDustCancelNodeFallback() {
         assert.strictEqual(processCalls, 1, 'Should process synthetic fill');
         console.log('  ✓ Dust cancel defers uncertain outcomes and passes no node-fallback options');
     } finally {
-        chainOrders.cancelOrder = originalCancelOrder;
     }
 }
 

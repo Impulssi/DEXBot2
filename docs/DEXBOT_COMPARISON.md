@@ -731,7 +731,7 @@ Where:
 | Metric | DEXBot | DEXBot2 |
 |---|---|---|
 | **Production Packages** | ~15-20 | 0 |
-| **Dev Packages** | ~5-8 | 3 (TypeScript, tsx, @types/node) |
+| **Dev Packages** | ~5-8 | 2 (TypeScript, @types/node) |
 | **GUI Framework** | PyQt5 (~80MB) | None |
 | **Database ORM** | SQLAlchemy | None |
 | **External Price APIs** | CoinGecko, CCXT, Waves | None (runtime dep); optional CEX seed generator for adapter bootstrap |

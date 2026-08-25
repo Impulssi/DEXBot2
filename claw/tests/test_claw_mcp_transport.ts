@@ -6,7 +6,6 @@ const os = require('os');
 const { getErrorMessage } = require('../../modules/utils/errors');
 const { spawnSync } = require('child_process');
 const path = require('path');
-const { isDistCodeRoot } = require('../../modules/launcher/runtime_entry');
 const mcpServer = require('../scripts/claw_mcp_server');
 
 function encodeNewlineMessage(message: any) {
@@ -143,10 +142,17 @@ async function testHandleRequestEmitsNewlineJson() {
 }
 
 function runServerProcess(input: any) {
-  const repoRoot = path.resolve(__dirname, '..', '..');
+  // Resolve the real checkout root (works from both the source tree and the
+  // compiled dist/claw/tests location) and prefer the compiled server script.
+  let repoRoot = path.resolve(__dirname, '..', '..');
+  while (!fs.existsSync(path.join(repoRoot, 'package.json'))) {
+    const parent = path.dirname(repoRoot);
+    if (parent === repoRoot) throw new Error('Unable to locate DEXBot2 checkout root');
+    repoRoot = parent;
+  }
   const clawRoot = path.resolve(__dirname, '..');
-  const _isDist = isDistCodeRoot(path.dirname(__dirname));
-  const scriptPath = path.join(clawRoot, 'scripts', 'claw_mcp_server' + (_isDist ? '.js' : '.ts'));
+  const scriptBase = path.join(clawRoot, 'scripts', 'claw_mcp_server');
+  const scriptPath = fs.existsSync(`${scriptBase}.js`) ? `${scriptBase}.js` : `${scriptBase}.ts`;
   const scriptRel = path.relative(repoRoot, scriptPath);
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'claw-mcp-transport-'));
@@ -155,8 +161,7 @@ function runServerProcess(input: any) {
   fs.writeFileSync(inputPath, input, 'utf8');
 
   try {
-    const loaderArgs = _isDist ? '' : '--import tsx ';
-    const shellCommand = `cat ${shellQuote(inputPath)} | ${shellQuote(process.execPath)} --no-warnings ${loaderArgs}${shellQuote(scriptRel)} --profile-root ${shellQuote(repoRoot)} > ${shellQuote(outputPath)}`;
+    const shellCommand = `cat ${shellQuote(inputPath)} | ${shellQuote(process.execPath)} --no-warnings ${shellQuote(scriptRel)} --profile-root ${shellQuote(repoRoot)} > ${shellQuote(outputPath)}`;
     const run = spawnSync('/bin/sh', ['-lc', shellCommand], {
       cwd: repoRoot,
       encoding: 'utf8'

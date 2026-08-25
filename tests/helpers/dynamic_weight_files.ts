@@ -4,10 +4,11 @@ const fs = require('fs');
 const path = require('path');
 const { ensureDir, writeJSON } = require('../../modules/storage').getStorage();
 
-const PROFILES_DIR = path.resolve(__dirname, '..', '..', 'profiles');
-const ORDERS_DIR = path.join(PROFILES_DIR, 'orders');
+const { PATHS } = require('../../modules/paths');
+const PROFILES_DIR = PATHS.PROFILES_DIR;
+const ORDERS_DIR = PATHS.ORDERS_DIR;
 const {
-    WHITELIST_FILE,
+    whitelistFile,
 } = require('../../modules/market_adapter_whitelist');
 
 function readOptionalFile(filePath) {
@@ -32,12 +33,12 @@ function restoreOptionalFile(filePath, original) {
 
 function withDynamicWeightFiles(botKey) {
     const snapshotFile = path.join(ORDERS_DIR, `${botKey}.dynamicgrid.json`);
-    const originalWhitelist = readOptionalFile(WHITELIST_FILE);
+    const originalWhitelist = readOptionalFile(whitelistFile());
     const originalSnapshot = readOptionalFile(snapshotFile);
 
     ensureDir(ORDERS_DIR);
     fs.writeFileSync(
-        WHITELIST_FILE,
+        whitelistFile(),
         JSON.stringify({
             whitelist: {
                 [botKey]: { ama: true, dynamicWeight: true },
@@ -66,7 +67,7 @@ function withDynamicWeightFiles(botKey) {
         },
         cleanup() {
             restoreOptionalFile(snapshotFile, originalSnapshot);
-            restoreOptionalFile(WHITELIST_FILE, originalWhitelist);
+            restoreOptionalFile(whitelistFile(), originalWhitelist);
         },
     };
 }

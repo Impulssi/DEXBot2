@@ -21,27 +21,27 @@ if (process.env.DEXBOT_SUPPRESS_WARNINGS === '1' && !process.env.NODE_OPTIONS.in
 // Tests that require RUN_LIVE_BITSHARES_TESTS=1 (live blockchain connection).
 // They are excluded from `npm test` and run only when the env var is set.
 const liveTestFiles = new Set([
-    'tests/test_any_pair.ts',
-    'tests/test_blockchain_fill_history.ts',
-    'tests/test_market_book_xaut.ts',
-    'tests/test_market_price.ts',
-    'tests/test_trade_history.ts',
-    'tests/test_connection_trace.ts',
-    'tests/test_unlock_foreign_cred_daemon_live.ts',
+    'dist/tests/test_any_pair.js',
+    'dist/tests/test_blockchain_fill_history.js',
+    'dist/tests/test_market_book_xaut.js',
+    'dist/tests/test_market_price.js',
+    'dist/tests/test_trade_history.js',
+    'dist/tests/test_connection_trace.js',
+    'dist/tests/test_unlock_foreign_cred_daemon_live.js',
     // Diagnostic / live-chain scripts with no offline-relevant assertions.
     // They connect to the real BitShares node (or exit(0) vacuously when
     // offline), so they must not count as passing unit tests under `npm test`.
-    'tests/test_open_orders.ts',
-    'tests/test_debug_orderbook.ts',
-    'tests/test_twentix_only.ts',
-    'tests/test_fee_cache.ts',
-    'tests/test_fee_cache_twentix.ts',
-    'tests/test_subscriptions.ts',
-    'tests/test_fills.ts',
-    'tests/test_funds.ts',
+    'dist/tests/test_open_orders.js',
+    'dist/tests/test_debug_orderbook.js',
+    'dist/tests/test_twentix_only.js',
+    'dist/tests/test_fee_cache.js',
+    'dist/tests/test_fee_cache_twentix.js',
+    'dist/tests/test_subscriptions.js',
+    'dist/tests/test_fills.js',
+    'dist/tests/test_funds.js',
 ]);
 
-const testFiles = globSync(['tests/test_*.ts', 'claw/tests/test_*.ts']).sort();
+const testFiles = globSync(['dist/tests/test_*.js', 'dist/claw/tests/test_*.js']).sort();
 
 const runLiveTests = process.env.RUN_LIVE_BITSHARES_TESTS === '1';
 let skippedLive = 0;
@@ -88,16 +88,32 @@ interface TestResult {
     status: number | null;
     signal: string | null;
     failed: boolean;
+    timedOut?: boolean;
 }
+
+// Per-test watchdog: a test that neither exits nor errors would otherwise
+// stall the whole sequential run. Override with DEXBOT_TEST_TIMEOUT_MS.
+const TEST_TIMEOUT_MS = Number(process.env.DEXBOT_TEST_TIMEOUT_MS || 240000);
 
 function runOne(testFile: string): Promise<TestResult> {
     return new Promise((resolve) => {
         const start = performance.now();
-        const child = spawn(process.execPath, ['--import', 'tsx', testFile], {
+        const child = spawn(process.execPath, [testFile], {
             stdio: ['inherit', 'pipe', 'pipe'],
             cwd: process.cwd(),
             env: process.env,
         });
+        let timedOut = false;
+
+        const killTimer = setTimeout(() => {
+            timedOut = true;
+            footer(`--- [TIMEOUT] ${testFile} exceeded ${TEST_TIMEOUT_MS} ms — killing`);
+            child.kill('SIGTERM');
+            setTimeout(() => {
+                try { child.kill('SIGKILL'); } catch { /* already gone */ }
+            }, 5000);
+        }, TEST_TIMEOUT_MS);
+        killTimer.unref?.();
 
         // Capture + echo + log the child output while buffering for scans.
         let buffer = '';
@@ -110,6 +126,7 @@ function runOne(testFile: string): Promise<TestResult> {
         child.stderr.on('data', accumulate);
 
         child.on('close', (code, signal) => {
+            clearTimeout(killTimer);
             // Slice the buffered output into lines and scan for diagnostics.
             const seenForTest = new Set<string>();
             for (const line of buffer.split(/\r?\n/)) {
@@ -130,11 +147,13 @@ function runOne(testFile: string): Promise<TestResult> {
                 elapsedMs: performance.now() - start,
                 status: code,
                 signal,
-                failed: code !== 0 || signal !== null,
+                failed: timedOut || code !== 0 || signal !== null,
+                timedOut,
             });
         });
 
         child.on('error', (err) => {
+            clearTimeout(killTimer);
             resolve({
                 test: testFile,
                 elapsedMs: performance.now() - start,
@@ -161,7 +180,7 @@ async function main() {
         footer(`\n=== [TEST] ${testFile} ===`);
         const r = await runOne(testFile);
         results.push(r);
-        const statusTag = r.failed ? 'FAIL' : 'PASS';
+        const statusTag = r.timedOut ? 'TIMEOUT' : (r.failed ? 'FAIL' : 'PASS');
         footer(`--- [${statusTag}] ${testFile}  ${r.elapsedMs.toFixed(0)} ms${r.signal ? ` (signal ${r.signal})` : ''}`);
     }
 

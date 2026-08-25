@@ -31,8 +31,35 @@
  */
 
 const assert = require('assert');
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders } = installChainOrdersStub();
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
+// Compiled ESM namespaces are frozen: chain_orders is mocked via loader hooks
+// so sync_engine's static import resolves to this plain object and per-test
+// readSingleOrder behavior can be swapped through the delegating binding.
+esmMockEntry();
+
+let readSingleOrderImpl: any = async () => null;
+defineEsmMockAbs(require.resolve('../modules/chain_orders'), [
+    'selectAccount', 'setPreferredAccount', 'resolveAccountId', 'resolveAccountName',
+    'readOpenOrders', 'readOpenOrdersWithMeta', 'readOpenOrdersWithMetaSafe', 'readOpenOrdersGuarded',
+    'readSingleOrder', 'batchReadOrders', 'listenForFills', 'updateOrder', 'createOrder', 'cancelOrder',
+    'getOnChainAssetBalances', 'getFillProcessingMode', 'buildUpdateOrderOp', 'buildCreateOrderOp',
+    'buildCancelOrderOp', 'buildLiquidityPoolExchangeOp', 'executeBatch',
+    'findOverReducingUpdateOpError', 'wasRecentlyOwnCancelled', 'recordOwnCancel',
+    'BroadcastUncertainError', 'broadcastTxWithClassification'
+], {
+    BroadcastUncertainError: require('../modules/dexbot_credential_client').BroadcastUncertainError,
+    readSingleOrder: (...args: any[]) => readSingleOrderImpl(...args),
+    readOpenOrders: async () => [],
+    readOpenOrdersWithMeta: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersWithMetaSafe: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersGuarded: async () => [],
+    batchReadOrders: async () => [],
+    getOnChainAssetBalances: async () => ({}),
+    getFillProcessingMode: async () => 'history',
+    wasRecentlyOwnCancelled: () => false,
+    recordOwnCancel: () => {},
+});
+
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { _setFeeCache } = require('../modules/order/utils/math');
@@ -76,9 +103,9 @@ function makeSellFillEvent(orderId, amountXrp) {
 }
 
 function installReadSingleOrderMock(_mgr, mockImpl) {
-    const original = chainOrders.readSingleOrder;
-    chainOrders.readSingleOrder = mockImpl;
-    return () => { chainOrders.readSingleOrder = original; };
+    const original = readSingleOrderImpl;
+    readSingleOrderImpl = mockImpl;
+    return () => { readSingleOrderImpl = original; };
 }
 
 async function testDriftTriggersRefetch() {

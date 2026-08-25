@@ -13,7 +13,7 @@
  *   Norm. PE > 0.85 = noise                 → no exploitable structure
  *
  * Usage:
- *   tsx analysis/analyze_regime.ts \
+ *   node dist/analysis/analyze_regime.js \
  *     --source json \
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */

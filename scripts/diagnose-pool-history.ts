@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url);
 /**
  * Diagnostic: Inspect raw BitShares pool history API responses for pool 1.19.133.
  *
- * Usage: tsx scripts/diagnose-pool-history.ts [--pool <id>] [--limit <n>] [--hours <n>] [--maxPages <n>]
+ * Usage: node dist/scripts/diagnose-pool-history.js [--pool <id>] [--limit <n>] [--hours <n>] [--maxPages <n>]
  */
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');

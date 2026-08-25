@@ -27,7 +27,7 @@ async function main() {
   assert.ok(skillText.includes('name = "bitshares-claw"'));
   assert.ok(skillText.includes('NullClaw bridge to the AI-Bot / DEXBot2 BitShares layer'));
   assert.ok(skillText.includes('nullclaw'));
-  assert.ok(skillText.includes('claw_bridge.ts'));
+  assert.ok(skillText.includes('claw_bridge.js'));
 
   const bridge = createClawBridge({
     runtime: {
@@ -42,7 +42,7 @@ async function main() {
   assert.strictEqual(manifest.options.runtimeName, 'nullclaw');
   assert.strictEqual(manifest.options.profileRoot, dexbotRoot);
   assert.strictEqual(manifest.compatibility.recommendedTransport, 'skill-toml-or-mcp');
-  assert.ok(manifest.commandExamples.some((example: any) => example.includes('claw_bridge.ts')));
+  assert.ok(manifest.commandExamples.some((example: any) => example.includes('claw_bridge.js')));
   assert.ok(Array.isArray(manifest.tools.catalog));
   assert.strictEqual(runtime.name, 'nullclaw');
   assert.strictEqual(runtime.profileRoot, dexbotRoot);
@@ -55,4 +55,3 @@ main().catch((err) => {
   console.error(err && err.stack ? err.stack : getErrorMessage(err));
   process.exit(1);
 });
-export {};
