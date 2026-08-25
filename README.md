@@ -255,7 +255,7 @@ dexbot enable {all|<bot>}  # Enable bot in config
 
 dexbot stat                # Runtime status (unlock or PM2)
 dexbot order [<bot>]       # Analyze order grids
-dexbot order --export      # Export as HTML to root folder
+dexbot order --export      # Export as HTML to analysis/charts/
 
 dexbot update              # Update DEXBot2
 dexbot clear               # Clear log files

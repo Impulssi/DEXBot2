@@ -1546,7 +1546,22 @@ function generateHtmlReport(analyses: any[]) {
 
   const outPath = path.join(PATHS.ANALYSIS.CHARTS_DIR, 'order-analysis.html');
   fs.writeFileSync(outPath, html, 'utf-8');
-  console.log(`\n📄 Order Analysis: ${outPath}`);
+  console.log(`\n📄 Order Analysis: ${formatClickablePath(outPath)}`);
+}
+
+/**
+ * formatClickablePath: Render an absolute path as a terminal hyperlink.
+ *
+ * Uses the OSC 8 escape sequence so supporting terminals (GNOME Terminal,
+ * iTerm2, Kitty, WezTerm, Windows Terminal, ...) render the path as a
+ * clickable link targeting the file:// URL. Non-TTY output (pipes, logs)
+ * falls back to the plain file:// URL, which most terminals also auto-link
+ * and which stays copy-paste friendly.
+ */
+function formatClickablePath(filePath: string): string {
+  const url = `file://${filePath}`;
+  if (!process.stdout.isTTY) return url;
+  return `\x1b]8;;${url}\x1b\\${filePath}\x1b]8;;\x1b\\`;
 }
 
 function main() {
