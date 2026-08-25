@@ -1,3 +1,4 @@
+'use strict';
 /**
  * Feed Price Source
  *
@@ -12,7 +13,6 @@
 import { getAsset, getBackingAsset, getBitassetData, dbCall } from './chain_queries.js';
 import { computeBtsPerMpa } from './mpa_utils.js';
 import { roundTo } from '../../modules/order/utils/math.js';
-'use strict';
 
 
 /**

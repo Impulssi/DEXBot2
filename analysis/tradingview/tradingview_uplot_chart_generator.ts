@@ -1,3 +1,4 @@
+'use strict';
 
 import fs from 'node:fs';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
@@ -7,7 +8,6 @@ import { PATHS } from '../../modules/paths.js';
 import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { getErrorMessage } from '../../modules/utils/errors.js';
-'use strict';
 
 
 function inferBaseIntervalSeconds(candles: any[], fallback: any = 3600) {

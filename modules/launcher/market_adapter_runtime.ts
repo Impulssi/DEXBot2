@@ -1,13 +1,13 @@
+'use strict';
 
 import { buildScopedChildEnv } from './child_env.js';
 import { Config } from '../config.js';
 import { LAUNCHER } from '../constants.js';
 import { PATHS } from '../paths.js';
-import { getProcessDiscovery } from '../process_discovery.js';
 import { withTimeout } from '../order/utils/timeout.js';
 import { spawn } from 'node:child_process';
 import { getStorage } from '../storage/index.js';
-'use strict';
+import { isLikelyMarketAdapterProcess } from '../../market_adapter/utils/file_lock.js';
 
 const storage = getStorage();
 const { readJSON, unlink: safeUnlink } = storage;
@@ -22,14 +22,6 @@ function loadLockInfo(lockPath: string): any {
     } catch (_: any) {
         return {};
     }
-}
-
-function isLikelyMarketAdapterProcess(pid: number): boolean {
-    if (!Number.isInteger(pid) || pid <= 0) return false;
-    if (!getProcessDiscovery().isAlive(pid)) return false;
-    const cmdline = getProcessDiscovery().readCmdline(pid);
-    if (!cmdline) return false;
-    return cmdline.includes('node') && /market_adapter\/market_adapter\.(?:js|ts)\b/.test(cmdline);
 }
 
 function isLockStale(

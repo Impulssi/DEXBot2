@@ -1,7 +1,7 @@
+'use strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
-'use strict';
 
 import { API_LIMITS } from '../../modules/constants.js';
 
@@ -189,7 +189,6 @@ async function resolveBotContext(bot: any) {
             assetB,
             poolId: null,
             marketSource: null,
-            priceMode: 'fixed',
         };
     }
 
@@ -202,7 +201,7 @@ async function resolveBotContext(bot: any) {
             : normalizePoolId((await findPoolByAssets(assetA.id, assetB.id)).id);
     }
 
-    return { assetA, assetB, poolId, marketSource, priceMode: 'book' };
+    return { assetA, assetB, poolId, marketSource };
 }
 
 export { resolveAsset, findPoolByAssets, normalizeAssetSymbol, normalizeMarketSource, normalizePoolId, hasNumericStartPrice, resolveMarketSourceForBot, resolveBotContext, isExactPair, isSamePair, isExactPairIds, isSamePairIds, getBitsharesClient, setBitsharesClientForTests }

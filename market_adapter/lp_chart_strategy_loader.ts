@@ -1,10 +1,10 @@
+'use strict';
 
 import { path } from '../modules/path_api.js';
 import { getStorage } from '../modules/storage/index.js';
 import { normalizeAssetSymbol, isExactPair, isSamePair } from './utils/chain.js';
 import { toIntervalLabel } from './interval_utils.js';
 import { PATHS } from '../modules/paths.js';
-'use strict';
 
 const storage = getStorage();
 const { readJSON } = storage;

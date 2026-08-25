@@ -1,3 +1,4 @@
+'use strict';
 
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -8,7 +9,6 @@ import { dirname as _esmDirname } from 'node:path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = _esmDirname(__filename);
 const require = createRequire(import.meta.url);
-'use strict';
 
 /**
  * Centralized configuration — populated once at module load time from process.env.

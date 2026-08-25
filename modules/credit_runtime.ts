@@ -1,3 +1,4 @@
+'use strict';
 
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
@@ -20,7 +21,6 @@ import {
     deriveLiquidityPoolTokenValue,
     ensureDir as ensureDirSync,
 } from './order/utils/system.js';
-'use strict';
 
 const storage = getStorage();
 import {

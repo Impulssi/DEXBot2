@@ -1,9 +1,9 @@
+'use strict';
 
 import { path } from '../../modules/path_api.js';
 import { getStorage } from '../../modules/storage/index.js';
 import { BUILD_DIR } from '../../modules/constants.js';
 import { PATHS } from '../../modules/paths.js';
-'use strict';
 
 const storage = getStorage();
 

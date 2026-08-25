@@ -1,3 +1,4 @@
+'use strict';
 /**
  * modules/socket_json_client.ts - Newline-delimited JSON socket client
  *
@@ -16,7 +17,6 @@
  *    timer), 'connection' (socket error), 'closed' (socket ended before a
  *    complete line), 'invalid' (a response line was not JSON).
  */
-'use strict';
 
 import { createRequire } from 'node:module';
 const _require = createRequire(import.meta.url);

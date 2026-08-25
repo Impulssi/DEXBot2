@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 
 /**
  * KALMAN TREND ANALYSIS RUNNER
@@ -22,7 +23,6 @@ import { writeChartFile } from './chart_utils.js';
 import { PATHS } from '../modules/paths.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
-'use strict';
 
 
 function parseArgs() {

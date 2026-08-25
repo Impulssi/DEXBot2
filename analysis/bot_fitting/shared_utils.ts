@@ -1,7 +1,7 @@
+'use strict';
 
 import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
-'use strict';
 
 /**
  * Shared utilities for bot-fitting scripts.

@@ -1,9 +1,9 @@
+'use strict';
 
 import { toFiniteNumber } from './order/format.js';
 import { resolveConfigValue, isPercentageString } from './order/utils/math.js';
 import { DEFAULT_TARGET_CR } from './constants.js';
 import { roundToDecimals } from './order/utils/math.js';
-'use strict';
 
 
 interface CrPolicy {

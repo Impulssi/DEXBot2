@@ -1,3 +1,4 @@
+'use strict';
 /**
  * modules/broadcast_failure.ts - Broadcast failure classification
  *
@@ -11,7 +12,6 @@
  * Mirrors the failure modes produced by modules/bitshares-native/transport.ts
  * call() and the signing client (modules/bitshares-native/signing_client.ts).
  */
-'use strict';
 
 export type BroadcastFailureClass = 'retryable' | 'uncertain' | 'definite';
 

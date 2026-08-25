@@ -118,7 +118,11 @@ function computeDynamicWeightSeries(inputs: any) {
         const sp = computeAverageAmaSlopePct(last, past, lookbackBars);
         if (sp == null) continue;
         const csp = Math.max(-amaClipThreshold, Math.min(amaClipThreshold, sp));
-        if (Math.abs(csp) < neutralZonePct) continue;
+        // Inclusive dead-band boundary (matches computeAmaSlopeWeights): a
+        // slope exactly at neutralZonePct counts as neutral. With the default
+        // neutralZonePct of 0 this also keeps exact-zero slopes out of the
+        // offset channel.
+        if (Math.abs(csp) <= neutralZonePct) continue;
         amaOffsets[i] = Math.max(-offsetClamp, Math.min(offsetClamp, (csp / amaMaxSlopePct) * offsetClamp));
     }
 
@@ -162,11 +166,14 @@ function computeDynamicWeightSeries(inputs: any) {
 
 /**
  * Percentile lookup over an already-sorted ascending array. Returns `Infinity`
- * for an empty pool so callers treat it as "no clipping".
+ * for an empty pool so callers treat it as "no clipping". Both the percentile
+ * and the resulting index are clamped so a misconfigured clipPercentile above
+ * 100 cannot select a negative (undefined) entry.
  */
 function percentileFromSorted(sorted: number[], clipPercentile: number): number {
     if (!Array.isArray(sorted) || sorted.length === 0) return Infinity;
-    const idx = Math.min(Math.floor((100 - clipPercentile) / 100 * sorted.length), sorted.length - 1);
+    const pct = Math.min(clipPercentile, 100);
+    const idx = Math.max(0, Math.min(Math.floor((100 - pct) / 100 * sorted.length), sorted.length - 1));
     return sorted[idx];
 }
 
@@ -215,7 +222,10 @@ function computeAmaSlopeClipThreshold(
     if (slopes.length === 0) return Infinity;
 
     const sorted = slopes.slice().sort((a, b) => a - b);
-    const idx = Math.min(Math.floor((100 - clipPercentile) / 100 * sorted.length), sorted.length - 1);
+    // Clamp both the percentile and index: values above 100 would otherwise
+    // produce a negative index (undefined threshold -> NaN clip bounds).
+    const pct = Math.min(clipPercentile, 100);
+    const idx = Math.max(0, Math.min(Math.floor((100 - pct) / 100 * sorted.length), sorted.length - 1));
     return sorted[idx];
 }
 

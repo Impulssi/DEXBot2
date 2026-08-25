@@ -1,3 +1,4 @@
+'use strict';
 /**
  * KIBANA MARKET CANDLES
  *
@@ -28,7 +29,6 @@
 
 
 import { fetchKibanaCandles, fetchKibanaClosePrices } from './kibana_candles.js';
-'use strict';
 
 
 const OP_FILL_ORDER = 4;

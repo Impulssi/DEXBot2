@@ -1,9 +1,9 @@
+'use strict';
 
 import { createTransport, ConnectionError } from './transport.js';
 import { GRAPHENE_CHAIN_ID, GRAPHENE_ADDRESS_PREFIX } from './serial/chain_constants.js';
 import { NATIVE_CLIENT } from '../constants.js';
 import { getErrorMessage } from '../utils/errors.js';
-'use strict';
 
 const { CHAIN } = NATIVE_CLIENT;
 

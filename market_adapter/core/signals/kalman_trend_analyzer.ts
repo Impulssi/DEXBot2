@@ -1,5 +1,6 @@
 'use strict';
 
+import { MARKET_ADAPTER } from '../../../modules/constants.js';
 import { smoothKalmanVelocityPoint } from './kalman_velocity_smoothing.js';
 import { roundTo } from '../../../modules/order/utils/math.js';
 
@@ -174,23 +175,41 @@ function safePct(numerator: any, denominator: any) {
 
 class KalmanTrendAnalyzer {
     config: KalmanTrendConfig;
-    tacticalKf: KalmanFilter;
-    modalKf: KalmanFilter;
+    tacticalKf!: KalmanFilter;
+    modalKf!: KalmanFilter;
     beams: Beam[];
     maxBeams: number;
     warmupBars: number;
     updateCount: number;
     currPrice: number | null;
-    tactical: { x: number; v: number };
-    modal: { x: number; v: number };
+    tactical!: { x: number; v: number };
+    modal!: { x: number; v: number };
     velocityFilteredPct: number | null;
 
     constructor(config: KalmanTrendConfig = {}) {
         this.config = { ...config };
-        const rNoise = config.rNoise ?? 0.05;
-        const qTactical = config.qTactical ?? config.qNoise ?? 0.01;
-        const qModal = config.qModal ?? config.qNoise ?? 0.0001;
-        const _dt = config.dt;
+        this._initState();
+        this.beams = [];
+        this.maxBeams = config.beamCount ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_BEAM_COUNT_DEFAULT;
+        const wb = config.warmupBars;
+        this.warmupBars = wb != null && Number.isInteger(wb) && wb >= 0
+            ? wb
+            : MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_WARMUP_BARS_DEFAULT;
+        this.updateCount = 0;
+
+        this.currPrice = null;
+        this.velocityFilteredPct = null;
+    }
+
+    /**
+     * Shared constructor/reset wiring so tuning defaults live in exactly one
+     * place (MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_*_DEFAULT).
+     */
+    _initState() {
+        const rNoise = this.config.rNoise ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_R_NOISE_DEFAULT;
+        const qTactical = this.config.qTactical ?? this.config.qNoise ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_Q_TACTICAL_DEFAULT;
+        const qModal = this.config.qModal ?? this.config.qNoise ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_Q_MODAL_DEFAULT;
+        const _dt = this.config.dt;
         const dt = _dt != null && Number.isFinite(_dt) && _dt > 0 ? _dt : 1;
 
         // Tactical Filter: For short-term heading and inflections
@@ -207,18 +226,8 @@ class KalmanTrendAnalyzer {
             dt
         });
 
-        this.beams = [];
-        this.maxBeams = config.beamCount ?? 100;
-        const wb = config.warmupBars;
-        this.warmupBars = wb != null && Number.isInteger(wb) && wb >= 0
-            ? wb
-            : 20;
-        this.updateCount = 0;
-
-        this.currPrice = null;
         this.tactical = { x: 0, v: 0 };
         this.modal = { x: 0, v: 0 };
-        this.velocityFilteredPct = null;
     }
 
     /**
@@ -266,7 +275,7 @@ class KalmanTrendAnalyzer {
     }
 
     getAnalysis(): TrendAnalysis {
-        const displacement = this.currPrice! - this.modal.x;
+        const displacement = (this.currPrice ?? 0) - this.modal.x;
         const displacementPct = safePct(displacement, this.modal.x);
         const rawVelocityPct = safePct(this.tactical.v, this.modal.x);
 
@@ -302,7 +311,7 @@ class KalmanTrendAnalyzer {
             trend,
             confidence,
             updateCount: this.updateCount,
-            beams: this.beams,
+            beams: this.beams.slice(),
             projections: {
                 modal: this.modal.x + (this.modal.v * 50),
                 tactical: this.tactical.x + (this.tactical.v * 50)
@@ -311,18 +320,10 @@ class KalmanTrendAnalyzer {
     }
 
     reset(): void {
-        const rNoise = this.config.rNoise ?? 0.05;
-        const qTactical = this.config.qTactical ?? this.config.qNoise ?? 0.01;
-        const qModal = this.config.qModal ?? this.config.qNoise ?? 0.0001;
-        const _resetDt = this.config.dt;
-        const dt = _resetDt != null && Number.isFinite(_resetDt) && _resetDt > 0 ? _resetDt : 1;
-        this.tacticalKf = new KalmanFilter({ R: rNoise, Q: qTactical, dt });
-        this.modalKf = new KalmanFilter({ R: rNoise, Q: qModal, dt });
+        this._initState();
         this.beams = [];
         this.updateCount = 0;
         this.currPrice = null;
-        this.tactical = { x: 0, v: 0 };
-        this.modal = { x: 0, v: 0 };
         this.velocityFilteredPct = null;
     }
 }

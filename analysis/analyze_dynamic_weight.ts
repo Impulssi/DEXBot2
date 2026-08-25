@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 
 /**
  * DYNAMIC WEIGHT RESEARCH TOOL
@@ -25,7 +26,6 @@ import { writeChartFile } from './chart_utils.js';
 import { getCandleClose } from './math_utils.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
-'use strict';
 
 // AMA Slope weight calculation config — use DEFAULTS from market adapter
 const AMA_WEIGHT_CONFIG = {

@@ -1,8 +1,8 @@
+'use strict';
 
 import { PATHS } from '../../modules/paths.js';
 import CreditRuntime from '../../modules/credit_runtime.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
-'use strict';
 
 
 function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {}) {

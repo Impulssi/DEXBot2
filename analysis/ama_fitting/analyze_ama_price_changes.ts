@@ -1,11 +1,11 @@
 #!/usr/bin/env node
+'use strict';
 import path from 'node:path';
 import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
 import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 
-'use strict';
 /**
  * AMA REPOSITION FREQUENCY ANALYSIS
  *

@@ -1,3 +1,4 @@
+'use strict';
 
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -7,7 +8,6 @@ import { PATHS } from '../paths.js';
 import { isLikelyMarketAdapterProcess, isLockStale } from './market_adapter_runtime.js';
 import { readProcMemMB, readProcUptime } from './status_reporting.js';
 import { getActiveAmaBotFingerprint } from './monolithic_runtime.js';
-'use strict';
 
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry.js';
 import { getErrorMessage } from '../utils/errors.js';

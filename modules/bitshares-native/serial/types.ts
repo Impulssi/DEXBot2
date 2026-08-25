@@ -1,9 +1,9 @@
+'use strict';
 
 import { createRequire } from 'node:module';
 import * as CC from './chain_constants.js';
 import { BufferWriter } from './serializer.js';
 import { OBJECT_TYPE } from './chain_constants.js';
-'use strict';
 
 const _require = createRequire(import.meta.url);
 let _Buffer: any;

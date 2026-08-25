@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 
 import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
@@ -56,7 +57,6 @@ import {
     buildAsymmetricBoundsLog,
     buildStartupDefaultsLog,
 } from './log_format.js';
-'use strict';
 
 /**
  * PRICE ADAPTER — standalone or auto-launched by dexbot runtime.

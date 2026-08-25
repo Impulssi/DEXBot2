@@ -1,3 +1,4 @@
+'use strict';
 
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { computeATRSeries } from '../../market_adapter/core/strategies/atr/calculator.js';
@@ -5,7 +6,6 @@ import { computeVolatilityShift } from '../../market_adapter/core/strategies/vol
 import { embedFunctionSources, escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
 import { sharedChartCSS } from '../chart_css.js';
 import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
-'use strict';
 
 const EMBEDDED_SHARED_FUNCS = embedFunctionSources([computeATRSeries, computeVolatilityShift]);
 

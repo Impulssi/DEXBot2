@@ -1,6 +1,6 @@
+'use strict';
 
 import { roundTo } from '../../modules/order/utils/math.js';
-'use strict';
 
 /**
  * Derivative Analyzer

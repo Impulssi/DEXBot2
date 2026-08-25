@@ -64,9 +64,26 @@ class PermutationEntropyAnalyzer {
      * @param {number} config.window - Rolling window of ordinal patterns (default 100)
      */
     constructor(config: Record<string, number> = {}) {
-        this.m      = config.m      ?? 5;
-        this.delay  = config.delay  ?? 1;
-        this.window = config.window ?? 100;
+        // Validate embedding parameters against MARKET_ADAPTER.PE_ANALYZER_LIMITS:
+        // out-of-range values silently produce degenerate output (ambiguous
+        // ordinal keys, collapsed patterns -> permanent 'STRUCTURED', or too
+        // few pattern samples for a meaningful entropy estimate).
+        const limits = MARKET_ADAPTER.PE_ANALYZER_LIMITS;
+        const m = Math.round(Number(config.m ?? 5));
+        if (!Number.isFinite(m) || m < limits.M_MIN || m > limits.M_MAX) {
+            throw new Error(`PermutationEntropyAnalyzer: m must be an integer in [${limits.M_MIN}, ${limits.M_MAX}] (got ${config.m})`);
+        }
+        const delay = Math.round(Number(config.delay ?? 1));
+        if (!Number.isFinite(delay) || delay < limits.DELAY_MIN) {
+            throw new Error(`PermutationEntropyAnalyzer: delay must be an integer >= ${limits.DELAY_MIN} (got ${config.delay})`);
+        }
+        const window = Math.round(Number(config.window ?? 100));
+        if (!Number.isFinite(window) || window < limits.WINDOW_MIN) {
+            throw new Error(`PermutationEntropyAnalyzer: window must be an integer >= ${limits.WINDOW_MIN} (got ${config.window})`);
+        }
+        this.m      = m;
+        this.delay  = delay;
+        this.window = window;
 
         // Buffer must hold `window` patterns; each pattern spans (m-1)*delay+1 prices.
         this._bufSize = this.window + (this.m - 1) * this.delay;

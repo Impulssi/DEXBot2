@@ -1,3 +1,4 @@
+'use strict';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,7 +8,6 @@ import { PATHS } from '../modules/paths.js';
 import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors.js';
-'use strict';
 
 /**
  * Price Source Abstraction

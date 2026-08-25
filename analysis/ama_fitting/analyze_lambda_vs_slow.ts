@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,7 +10,6 @@ import { ensureDir } from '../../modules/order/utils/system.js';
 import { PATHS } from '../../modules/paths.js';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
-'use strict';
 
 /**
  * LAMBDA vs SLOW ANALYSIS

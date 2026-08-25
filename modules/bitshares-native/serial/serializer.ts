@@ -1,6 +1,6 @@
+'use strict';
 
 import { createRequire } from 'node:module';
-'use strict';
 
 const _require = createRequire(import.meta.url);
 let _Buffer: any;

@@ -1,3 +1,4 @@
+'use strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
@@ -7,7 +8,6 @@ import { getStorage } from '../../modules/storage/index.js';
 import { PATHS } from '../../modules/paths.js';
 const { ensureDir, readJSON, writeJSON } = getStorage();
 
-'use strict';
 
 const DEFAULT_ACTIVE_ORDERS = 5;
 const DEFAULT_FEE_ROUNDTRIP_PCT = 0.20;

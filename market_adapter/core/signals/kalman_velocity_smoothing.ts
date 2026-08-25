@@ -1,5 +1,5 @@
-
 'use strict';
+
 
 import { MARKET_ADAPTER } from '../../../modules/constants.js';
 
@@ -135,10 +135,14 @@ function computeAbsolutePercentileThreshold(series: (number | null | undefined)[
     if (magnitudes.length === 0) return fallback;
 
     magnitudes.sort((a, b) => a - b);
-    const idx = Math.min(
-        Math.floor((100 - clipPercentile) / 100 * magnitudes.length),
+    // Clamp both the percentile and the resulting index: a misconfigured
+    // clipPercentile above 100 would otherwise produce a negative index
+    // (undefined threshold -> NaN propagation into offsets).
+    const pct = Math.min(clipPercentile, 100);
+    const idx = Math.max(0, Math.min(
+        Math.floor((100 - pct) / 100 * magnitudes.length),
         magnitudes.length - 1
-    );
+    ));
     return magnitudes[idx];
 }
 

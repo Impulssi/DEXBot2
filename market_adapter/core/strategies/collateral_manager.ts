@@ -1,6 +1,12 @@
+'use strict';
 
 import { roundTo, roundToDecimals } from '../../../modules/order/utils/math.js';
-'use strict';
+
+/**
+ * Minimum |adjustment| (in CR units) before an INCREASE/DECREASE action is
+ * reported instead of HOLD — below this the move is considered noise.
+ */
+const MIN_ACTION_ADJUSTMENT = 0.01;
 
 /**
  * Collateral Ratio Recommendation Service
@@ -49,13 +55,13 @@ function adjustCollateralRatio(trendData: any, minRatio = 1.5, maxRatio = 2.0) {
         case 'UP':
             // Price rising → less risk → can run with lower collateral
             targetRatio = midpoint - scale;
-            action = scale > 0.01 ? 'DECREASE' : 'HOLD';
+            action = scale > MIN_ACTION_ADJUSTMENT ? 'DECREASE' : 'HOLD';
             break;
 
         case 'DOWN':
             // Price falling → more risk → increase collateral cushion
             targetRatio = midpoint + scale;
-            action = scale > 0.01 ? 'INCREASE' : 'HOLD';
+            action = scale > MIN_ACTION_ADJUSTMENT ? 'INCREASE' : 'HOLD';
             break;
 
         default: // NEUTRAL

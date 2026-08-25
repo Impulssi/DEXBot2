@@ -1,7 +1,7 @@
+'use strict';
 
 import net from 'node:net';
 import { SOCKET_PATH } from './bot_supervisor.js';
-'use strict';
 
 
 function sendControlCommand(cmd: any) {

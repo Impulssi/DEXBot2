@@ -1,6 +1,6 @@
+'use strict';
 
 import { NATIVE_CLIENT } from '../constants.js';
-'use strict';
 
 const { RESOLVERS } = NATIVE_CLIENT;
 

@@ -1,3 +1,4 @@
+'use strict';
 
 import path from 'node:path';
 import os from 'node:os';
@@ -9,7 +10,6 @@ import { parseListOrRange, loadLpData, fmt } from './shared_utils.js';
 import { getStorage } from '../../modules/storage/index.js';
 import { PATHS } from '../../modules/paths.js';
 const { readJSON, writeJSON } = getStorage();
-'use strict';
 
 /**
  * AMA SWEEP BACKTEST — persistent grid simulation

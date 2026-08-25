@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+'use strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
-'use strict';
 
 import { getStorage } from '../../modules/storage/index.js';
 const { writeJSON } = getStorage();

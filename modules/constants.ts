@@ -1,3 +1,4 @@
+'use strict';
 /**
  * modules/constants.ts - Configuration and Constants
  *
@@ -863,7 +864,7 @@ let MARKET_ADAPTER = {
         bootstrapLookbackHours: 720,
         nativeBackfillHours: 6,
         maxStaleHours: 6,
-        sourceRetries: 3,
+        sourceRetries: 4,
         retryDelayMs: 800,
         maxPages: 80,
         pageLimit: 100,
@@ -883,6 +884,13 @@ let MARKET_ADAPTER = {
         restartExhaustionResetMs: PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS,
     },
 
+    // FILE_LOCK_HEARTBEAT_*_MS: Bounds for the lock-heartbeat interval derived
+    // in market_adapter/utils/file_lock.ts. The beat is clamp(staleMs / 2) so it
+    // always fires strictly inside the holder's staleness window; without it a
+    // live-held lock would look stale between beats and be stealable.
+    FILE_LOCK_HEARTBEAT_MIN_MS: 1000,
+    FILE_LOCK_HEARTBEAT_MAX_MS: 30000,
+
     // KIBANA_REQUEST_TIMEOUT_MS: Shared per-request timeout for Kibana-backed candle fetches.
     // Used by both the standalone LP history fetcher and the live market adapter's
     // bootstrap / repair / backfill calls so long-running scans share one ceiling.
@@ -892,9 +900,22 @@ let MARKET_ADAPTER = {
     // LP fetcher when it splits long requests into sequential sub-requests.
     KIBANA_FETCH_CHUNK_MONTHS: 3,
 
+    // LP_FETCH_RETRY_BACKOFF_BASE_MS: Linear backoff base for the standalone LP
+    // fetcher's per-chunk retries (delay before attempt N = base × (N - 1)), so
+    // consecutive failures do not hammer Kibana back-to-back.
+    LP_FETCH_RETRY_BACKOFF_BASE_MS: 1000,
+
     // CEX_API_DELAY_MS: Minimum delay between paginated CEX API requests to avoid
     // rate limiting. Applied between candle-fetch pages during synthetic data seeding.
     CEX_API_DELAY_MS: 500,
+
+    // CEX_PAGE_LIMIT_CAPS: Hard per-request kline page caps enforced by each
+    // exchange's API. The synthetic-data seeder clamps its effective page limit
+    // to these so requests are not rejected mid-backfill.
+    CEX_PAGE_LIMIT_CAPS: {
+        okx: 300,   // /api/v5/market/candles
+        mexc: 500,  // /api/v3/klines
+    },
 
     // AMA_DELTA_THRESHOLD_PERCENT: Percentage change in AMA center price that triggers a grid reset.
     //   - When AMA price moves ±AMA_DELTA_THRESHOLD_PERCENT from the last recorded center,
@@ -1017,6 +1038,9 @@ let MARKET_ADAPTER = {
     DYNAMIC_WEIGHT_KALMAN_R_NOISE_DEFAULT: 0.05,
     DYNAMIC_WEIGHT_KALMAN_Q_TACTICAL_DEFAULT: 0.01,
     DYNAMIC_WEIGHT_KALMAN_Q_MODAL_DEFAULT: 0.0001,
+    // Warmup bars before the Kalman trend analyzer reports isReady.
+    DYNAMIC_WEIGHT_KALMAN_WARMUP_BARS_DEFAULT: 20,
+    DYNAMIC_WEIGHT_KALMAN_BEAM_COUNT_DEFAULT: 100,
     DYNAMIC_WEIGHT_KALMAN_SMOOTH_PCT_DEFAULT: 100,
     DYNAMIC_WEIGHT_KALMAN_DISP_SCALE_MULT_DEFAULT: 1.8,
     DYNAMIC_WEIGHT_KALMAN_DISP_THRESHOLD_MULT_DEFAULT: 1.5,
@@ -1042,20 +1066,28 @@ let MARKET_ADAPTER = {
     // DYNAMIC_WEIGHT_VOLATILITY_EXPONENT: Controls how quickly the volatility penalty ramps up.
     // Higher values delay the penalty in calm markets and make it matter more in higher volatility.
     // Lower values make the penalty start affecting weights earlier.
+    // Effective range is clamped to [0.5, 1.0]; values outside are normalized to the
+    // nearest bound before use so config and applied values always agree.
     // Overridable per market pair or per bot via market_adapter_settings.json.
     // ⚠ Mirrored inline in market_adapter/core/strategies/volatility_shift.ts (browser-embedded
     //   copies stay import-free); update BOTH when changing this value.
     DYNAMIC_WEIGHT_VOLATILITY_EXPONENT: 1.0,
+    DYNAMIC_WEIGHT_VOLATILITY_EXPONENT_MIN: 0.5,
+    DYNAMIC_WEIGHT_VOLATILITY_EXPONENT_MAX: 1.0,
 
     // DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT: Overall strength multiplier of the ATR-based
     // volatility penalty. Higher = more aggressive shrinking of unused inventory.
-    // 1-100 range; 10.0 is a recommended start that leaves orders on the book during
+    // Effective range is clamped to [1, 100]; values outside are normalized to the
+    // nearest bound before use so config and applied values always agree.
+    // 10.0 is a recommended start that leaves orders on the book during
     // mild volatility. Increase to 20-30 if you want the bot to pull orders more
     // aggressively during volatile periods.
     // Overridable per market pair or per bot via market_adapter_settings.json.
     // ⚠ Mirrored inline in market_adapter/core/strategies/volatility_shift.ts (browser-embedded
     //   copies stay import-free); update BOTH when changing this value.
     DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT: 10.0,
+    DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_MIN: 1.0,
+    DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_MAX: 100.0,
 
     // ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR: Maximum ratio tilt applied to min/max
     // grid bounds when the AMA slope indicates a strong trend. At full slope strength:
@@ -1087,11 +1119,27 @@ let MARKET_ADAPTER = {
         scales: [8, 16, 32, 64],
     },
 
+    // HURST_STRENGTH_NORMALIZER: Divisor that maps Hurst distance beyond the
+    // zone band to a 0..1 regime strength (|H ∓ (0.5 ± band)| / normalizer).
+    HURST_STRENGTH_NORMALIZER: 0.25,
+
     // PE_CONFIG: Standard parameters for Permutation Entropy calculation.
     PE_CONFIG: {
         m:      5,
         delay:  1,
         window: 54,
+    },
+
+    // PE_ANALYZER_LIMITS: Validation bounds for PermutationEntropyAnalyzer
+    // constructor arguments. Outside these ranges output degrades silently:
+    // m ≥ 8 makes digit-concatenation ordinal keys ambiguous; delay = 0
+    // collapses all patterns into one key (permanent STRUCTURED); tiny windows
+    // have too few pattern samples for a meaningful entropy estimate.
+    PE_ANALYZER_LIMITS: {
+        M_MIN:      3,
+        M_MAX:      7,
+        DELAY_MIN:  1,
+        WINDOW_MIN: 10,
     },
 
     // HURST_ZONE_BAND: Width of the neutral Hurst zone between trending and mean-reverting regimes.

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+'use strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
-'use strict';
 
 /**
  * Probe public CEX APIs for a base/quote cross and synthesize candles from
@@ -502,7 +502,8 @@ const EXCHANGES: Record<string, any> = {
         },
         marketsUrl: 'https://api.htx.com/v1/common/symbols',
         candlesUrl: ({ id, interval, limit, sinceMs, untilMs }: any) => {
-            const url = new URL('https://api.htx.com/market/history/candles');
+            // Official Huobi/HTX spot historical kline endpoint is /market/history/kline
+            const url = new URL('https://api.htx.com/market/history/kline');
             url.searchParams.set('symbol', id);
             url.searchParams.set('period', interval);
             url.searchParams.set('size', String(limit));
@@ -605,6 +606,8 @@ const EXCHANGES: Record<string, any> = {
     },
     okx: {
         name: 'OKX',
+        // /api/v5/market/candles caps limit at CEX_PAGE_LIMIT_CAPS.okx per request
+        maxLimit: MARKET_ADAPTER.CEX_PAGE_LIMIT_CAPS.okx,
         formatInterval: (interval: any) => {
             const map: Record<string, any> = {
                 '1m': '1',
@@ -656,6 +659,8 @@ const EXCHANGES: Record<string, any> = {
     },
     mexc: {
         name: 'MEXC',
+        // /api/v3/klines caps limit at CEX_PAGE_LIMIT_CAPS.mexc per request
+        maxLimit: MARKET_ADAPTER.CEX_PAGE_LIMIT_CAPS.mexc,
         formatInterval: (interval: any) => {
             const map: Record<string, any> = {
                 '1m': '1m',
@@ -664,8 +669,11 @@ const EXCHANGES: Record<string, any> = {
                 '30m': '30m',
                 '1h': '60m',
                 '4h': '4h',
+                '6h': '6h',
+                '12h': '12h',
                 '1d': '1d',
-                '1w': '1w',
+                // MEXC interval enums are case-sensitive
+                '1w': '1W',
             };
             return map[lower(interval)] || interval;
         },
@@ -835,7 +843,8 @@ function printHelp() {
 
 Options:
   --exchange <name|auto>   Exchange to use or comma-separated preference list
-  --interval <label>       Candle interval, default ${DEFAULT_INTERVAL}
+  --interval <label>       Candle interval (1m|5m|15m|30m|1h|4h|6h|12h|1d|1w, or bare
+                           minutes like \`90\` = 90m), default ${DEFAULT_INTERVAL}
   --limit <n>              Number of candles to fetch from each leg, default ${DEFAULT_LIMIT}
   --lookback-hours <n>     Probe depth in hours; default is the adapter seed requirement
   --base <asset>           Base asset, default ${DEFAULT_BASE}
@@ -869,19 +878,30 @@ function findMarketId(markets: any, base: any, quote: any) {
 }
 
 function buildSyntheticCandle(left: any, right: any) {
+    // Guard against degenerate zero/negative leg prices: dividing by them
+    // would produce Infinity/NaN OHLC rows in the seed file.
+    const leftPrices = [left[1], left[2], left[3], left[4]];
+    const rightPrices = [right[1], right[2], right[3], right[4]];
+    if (!leftPrices.every((v: any) => Number.isFinite(v) && v > 0)
+        || !rightPrices.every((v: any) => Number.isFinite(v) && v > 0)) {
+        return null;
+    }
     const open = left[1] / right[1];
     const close = left[4] / right[4];
     const high = Math.max(left[2] / right[3], open, close);
     const low = Math.min(left[3] / right[2], open, close);
+    if (![open, high, low, close].every(Number.isFinite)) return null;
     const volume = Number(left[5] || 0);
     return [left[0], open, high, low, close, Number.isFinite(volume) ? volume : 0];
 }
 
-function synthesizeCrossCandles(leftCandles: any[], rightCandles: any[]) {
+function synthesizeCrossCandles(leftCandles: any[], rightCandles: any[]): any[] {
     const leftMap = new Map<number, any[]>(leftCandles.map((row: any) => [row[0], row]));
     const rightMap = new Map<number, any[]>(rightCandles.map((row: any) => [row[0], row]));
     const timestamps = Array.from(leftMap.keys()).filter((ts: number) => rightMap.has(ts)).sort((a: number, b: number) => a - b);
-    return timestamps.map((ts: any) => buildSyntheticCandle(leftMap.get(ts), rightMap.get(ts)));
+    return timestamps
+        .map((ts: any) => buildSyntheticCandle(leftMap.get(ts), rightMap.get(ts)))
+        .filter((row: any): row is any[] => row != null);
 }
 
 function chooseOutputPath(config: any, intervalLabel: any) {
@@ -907,21 +927,23 @@ function dedupeCandles(candles: any) {
 
 async function fetchHistoricalCandles(def: any, marketId: any, interval: any, intervalSeconds: any, lookbackHours: any, pageLimit: any) {
     const apiInterval = def.formatInterval ? def.formatInterval(interval) : interval;
+    // Respect the exchange's per-request page cap (e.g. OKX 300, MEXC 500)
+    const effectivePageLimit = Math.max(1, Math.min(Number(pageLimit) || DEFAULT_LIMIT, Number(def.maxLimit) || Infinity));
     const intervalMs = Math.max(1, Number(intervalSeconds || 3600)) * 1000;
     const endMs = Math.floor(Date.now() / intervalMs) * intervalMs;
     const lookbackMs = Math.max(1, Number(lookbackHours || DEFAULT_BOOTSTRAP_LOOKBACK_HOURS)) * 3600 * 1000;
     const startMs = Math.max(0, endMs - lookbackMs);
-    const maxIterations = Math.ceil(lookbackMs / Math.max(intervalMs, pageLimit * intervalMs * 0.8)) + 8;
+    const maxIterations = Math.ceil(lookbackMs / Math.max(intervalMs, effectivePageLimit * intervalMs * 0.8)) + 8;
     let cursor = startMs;
     let collected: any[] = [];
 
     for (let i = 0; i < maxIterations && cursor <= endMs; i++) {
-        const pageEnd = Math.min(endMs, cursor + intervalMs * Math.max(1, pageLimit - 1));
+        const pageEnd = Math.min(endMs, cursor + intervalMs * Math.max(1, effectivePageLimit - 1));
         const res = await fetchJson(def.candlesUrl({
             id: marketId,
             interval: apiInterval,
             intervalSeconds,
-            limit: pageLimit,
+            limit: effectivePageLimit,
             sinceMs: cursor,
             untilMs: pageEnd,
         }));
@@ -984,7 +1006,6 @@ async function probeExchange(exchangeId: any, base: any, quote: any, commonQuote
             nativeCross: any;
             baseCandles: any[];
             quoteCandles: any[];
-            nativeCrossCandles: any[];
             requiredCandles: any;
             probeLookbackHours: any;
             probeCandles: number;
@@ -1003,7 +1024,6 @@ async function probeExchange(exchangeId: any, base: any, quote: any, commonQuote
             nativeCross,
             baseCandles: [],
             quoteCandles: [],
-            nativeCrossCandles: [],
             requiredCandles,
             probeLookbackHours,
             probeCandles: lookbackHoursToCandles(probeLookbackHours, intervalSeconds),
@@ -1018,19 +1038,6 @@ async function probeExchange(exchangeId: any, base: any, quote: any, commonQuote
             result.quoteRange = measureCandles(result.quoteCandles, intervalSeconds);
             result.availableCandles = Math.min(result.baseRange.count, result.quoteRange.count);
             result.availableLookbackHours = Math.min(result.baseRange.spanHours, result.quoteRange.spanHours);
-        }
-
-        if (nativeCross) {
-            const sampleLimit = Math.min(3, Math.max(1, Number(pageLimit) || DEFAULT_LIMIT));
-            const nativeCandlesRes = await fetchJson(def.candlesUrl({
-                id: nativeCross.id,
-                interval: def.formatInterval ? def.formatInterval(interval) : interval,
-                intervalSeconds,
-                limit: sampleLimit,
-            }));
-            if (nativeCandlesRes.ok && nativeCandlesRes.json) {
-                result.nativeCrossCandles = def.parseCandles(nativeCandlesRes.json);
-            }
         }
 
         return result;
@@ -1107,16 +1114,18 @@ function printSummary(probes: any, base: any, quote: any, commonQuote: any) {
 
 async function main() {
     const parsedConfig = parseArgs();
+    // Handle --help before bot-derived resolution so a typo'd --bot-name does
+    // not crash instead of printing usage.
+    if (parsedConfig.config.help) {
+        printHelp();
+        return;
+    }
     const {
         config,
         botContext,
         botCfg,
         botAma,
     } = applyBotDerivedConfig(parsedConfig);
-    if (config.help) {
-        printHelp();
-        return;
-    }
 
     const { seconds: intervalSeconds, label: intervalLabel } = parseInterval(config.interval);
     const requiredCandles = computeRequiredCandles(botAma, botCfg);

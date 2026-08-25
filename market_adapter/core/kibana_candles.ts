@@ -1,7 +1,7 @@
+'use strict';
 
 import { fillCandleGaps, tradesToCandles } from '../candle_utils.js';
 import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from './kibana_client.js';
-'use strict';
 
 const DEFAULT_CONFIG = {
     ...BASE_CONFIG,

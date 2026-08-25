@@ -1,10 +1,10 @@
+'use strict';
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { getStorage } from '../modules/storage/index.js';
 import { PATHS } from '../modules/paths.js';
 const { ensureDir } = getStorage();
-'use strict';
 
 /**
  * Chart utilities for analysis HTML generators.

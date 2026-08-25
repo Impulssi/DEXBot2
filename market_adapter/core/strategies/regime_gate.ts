@@ -1,18 +1,13 @@
+'use strict';
 
-import { HurstAnalyzer } from '../signals/hurst_analyzer.js';
+import { HurstAnalyzer, classifyHurst } from '../signals/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer } from '../signals/permutation_entropy_analyzer.js';
 import { MARKET_ADAPTER } from '../../../modules/constants.js';
 import { roundTo } from '../../../modules/order/utils/math.js';
 import { bilinearInterpolate } from './regime_interp.js';
-'use strict';
 
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
 const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
-
-function resolveHNodes(hurstZoneBand = null) {
-    const band = Number.isFinite(hurstZoneBand) ? hurstZoneBand : MARKET_ADAPTER.HURST_ZONE_BAND;
-    return [0.5 + band!, 0.5, 0.5 - band!];
-}
 
 function resolvePeNodes(peNodes: any = null) {
     if (Array.isArray(peNodes) && peNodes.length === 3 && peNodes.every(Number.isFinite)) {
@@ -21,11 +16,17 @@ function resolvePeNodes(peNodes: any = null) {
     return MARKET_ADAPTER.PE_NODES;
 }
 
-function classifyHurstRegime(h: any, hurstZoneBand: any = null) {
-    const [upper, , lower] = resolveHNodes(hurstZoneBand);
-    if (h >= upper) return 'TRENDING';
-    if (h <= lower) return 'MEAN_REVERTING';
-    return 'RANDOM';
+/**
+ * A regime table must be a 3x3 matrix of finite numbers — bilinear
+ * interpolation indexes it blindly, and a malformed custom table would
+ * otherwise produce NaN multipliers that propagate silently into weights.
+ */
+function isValidRegimeTable(table: any): boolean {
+    return Array.isArray(table)
+        && table.length === 3
+        && table.every((row: any) => Array.isArray(row)
+            && row.length === 3
+            && row.every((v: any) => Number.isFinite(v)));
 }
 
 function classifyPeRegime(pe: any, peNodes: any = null) {
@@ -61,10 +62,21 @@ function classifyPeRegime(pe: any, peNodes: any = null) {
 function computeRegimeMultiplier(closes: any, opts: any = {}) {
     const sensitivity = Number.isFinite(opts.regimeSensitivity) ? opts.regimeSensitivity : 1.0;
     const regimeTable = opts.regimeTable ?? MARKET_ADAPTER.REGIME_TABLE;
+    // Fail loudly on a malformed custom table instead of silently producing
+    // NaN multipliers downstream.
+    if (!isValidRegimeTable(regimeTable)) {
+        throw new Error('regimeTable must be a 3x3 matrix of finite numbers');
+    }
     const hurstZoneBand = Number.isFinite(opts.hurstZoneBand) ? opts.hurstZoneBand : MARKET_ADAPTER.HURST_ZONE_BAND;
     const peNodes = Array.isArray(opts.peNodes) ? opts.peNodes : MARKET_ADAPTER.PE_NODES;
     const hurstCfg = opts.hurstConfig ?? HURST_CONFIG;
     const peCfg    = opts.peConfig    ?? PE_CONFIG;
+
+    // Clamp to 1.0 max: regime only dampens, never amplifies. The
+    // sensitivity exponent is applied in one place for both the per-bar
+    // series and the final value.
+    const applySensitivityAndClamp = (baseMult: number) =>
+        Math.min(sensitivity === 1.0 ? baseMult : Math.pow(baseMult, sensitivity), 1.0);
 
     const notReady = {
         multiplier: 1.0,
@@ -95,11 +107,10 @@ function computeRegimeMultiplier(closes: any, opts: any = {}) {
                 const h  = hurstResult.hurst;
                 const ne = peResult.normalizedEntropy;
                 const baseMult = bilinearInterpolate(h, ne, regimeTable, { hurstZoneBand, peNodes });
-                const rawMult = sensitivity === 1.0 ? baseMult : Math.pow(baseMult, sensitivity);
-                series[i] = Math.min(rawMult, 1.0);
+                series[i] = applySensitivityAndClamp(baseMult);
             }
         } catch (_: any) {
-            // skip invalid prices
+            // skip invalid prices (analyzers throw only on non-positive prices)
         }
     }
 
@@ -109,15 +120,13 @@ function computeRegimeMultiplier(closes: any, opts: any = {}) {
     const ne = peResult.normalizedEntropy;
 
     const baseMult  = bilinearInterpolate(h, ne, regimeTable, { hurstZoneBand, peNodes });
-    // Clamp to 1.0 max: regime only dampens, never amplifies
-    const rawMult   = sensitivity === 1.0 ? baseMult : Math.pow(baseMult, sensitivity);
-    const finalMult = Math.min(rawMult, 1.0);
+    const finalMult = applySensitivityAndClamp(baseMult);
 
     return {
         multiplier:  roundTo(finalMult, 1000),
         hurst:       h,
         pe:          roundTo(ne, 10000),
-        hurstRegime: classifyHurstRegime(h, hurstZoneBand),
+        hurstRegime: classifyHurst(h, hurstZoneBand).regime,
         peRegime:    classifyPeRegime(ne, peNodes),
         isReady:     true,
         series:      series.map((value) => roundTo(value, 1000)),

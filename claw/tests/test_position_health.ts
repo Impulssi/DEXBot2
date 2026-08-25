@@ -1,10 +1,10 @@
+'use strict';
 /**
  * Tests for position_health.ts
  *
  * Validates the 3-zone CR classification and two-layer action system.
  */
 
-'use strict';
 
 const assert = require('assert');
 const {

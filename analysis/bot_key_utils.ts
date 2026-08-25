@@ -1,3 +1,4 @@
+'use strict';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,7 +8,9 @@ const { readJSON } = getStorage();
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { loadMarketProfiles } from './tradingview/tradingview_uplot_chart_generator.js';
 import { sanitizeKey } from '../modules/utils/sanitize_key.js';
-'use strict';
+// Single source of truth for bot keys (named AND unnamed bots) so analysis
+// tools resolve the same files production writes.
+import { createBotKey } from '../modules/account_orders.js';
 
 
 const DEFAULT_AMA_KEY = String(MARKET_ADAPTER.DEFAULT_AMA_KEY).toUpperCase();
@@ -24,10 +27,11 @@ function loadBotSettings(filePath = PATHS.PROFILES.BOTS_JSON) {
 }
 
 function computeBotKey(bot: any, index: number) {
-    if (bot && bot.name) {
-        return sanitizeKey(bot.name);
-    }
-    return `${sanitizeKey(bot?.name || `bot-${index}`)}-${index}`;
+    // Delegate to the production key generator (modules/account_orders.ts):
+    // named bots → sanitized name; unnamed bots → sanitized asset pair + index.
+    // The previous local fallback produced `bot-<idx>-<idx>` keys that could
+    // never match what the bot runtime actually wrote to disk.
+    return createBotKey(bot, index);
 }
 
 function resolveBotKey(botName: any, filePath = PATHS.PROFILES.BOTS_JSON) {

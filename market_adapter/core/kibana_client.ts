@@ -1,3 +1,4 @@
+'use strict';
 /**
  * KIBANA ELASTICSEARCH CLIENT
  *
@@ -17,7 +18,6 @@
 import { createRequire } from 'node:module';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
-'use strict';
 
 const _require = createRequire(import.meta.url);
 let _https: any;
@@ -78,6 +78,9 @@ function doKibanaRequest(cfg: any, esQuery: any, resolve: any, reject: any, redi
   }, (res: any) => {
     // Follow a single redirect (common with auth or load-balancer rewrites)
     if (redirectCount === 0 && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+      // Consume/destroy the 3xx body so the socket is released instead of
+      // being held open until timeout.
+      res.resume();
       const redirectUrl = new URL(res.headers.location, cfg.kibanaUrl);
       return doKibanaRequest({ ...cfg, kibanaUrl: redirectUrl.href }, esQuery, resolve, reject, redirectCount + 1);
     }

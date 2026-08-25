@@ -1,3 +1,4 @@
+'use strict';
 
 import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants.js';
 import { getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
@@ -12,7 +13,6 @@ import {
 import { embedFunctionSources, escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
 import { sharedChartCSS } from '../chart_css.js';
 import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
-'use strict';
 
 // Browser-embedded shared functions — the interactive chart runs the exact same
 // pure logic as the live market adapter service instead of a hand-copied copy.

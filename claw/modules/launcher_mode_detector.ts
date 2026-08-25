@@ -1,9 +1,9 @@
+'use strict';
 
 import { path } from '../../modules/path_api.js';
 import { getStorage } from '../../modules/storage/index.js';
 import { loadSettingsFile, resolveRawBotEntries } from '../../modules/bot_settings.js';
 import { normalizeProfileDir } from './launcher_paths.js';
-'use strict';
 
 const storage = getStorage();
 const { ensureDir, readJSON, writeJSON } = storage;

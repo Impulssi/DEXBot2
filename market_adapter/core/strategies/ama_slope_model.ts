@@ -1,3 +1,4 @@
+'use strict';
 
 import { clamp } from '../../../modules/order/utils/math.js';
 import { MARKET_ADAPTER } from '../../../modules/constants.js';
@@ -54,7 +55,12 @@ function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any =
     const erPeriod = Number.isFinite(opts.erPeriod) && opts.erPeriod > 0
         ? Math.ceil(opts.erPeriod)
         : DEFAULT_ER_PERIOD;
-    const maxSlopeOffset = opts.maxSlopeOffset ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
+    // Reject negative caps outright (a negative cap would silently invert the
+    // trend-bias sign); fall back to the default like other invalid values.
+    const rawMaxSlopeOffset = opts.maxSlopeOffset ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
+    const maxSlopeOffset = Number.isFinite(rawMaxSlopeOffset) && rawMaxSlopeOffset >= 0
+        ? rawMaxSlopeOffset
+        : MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
     const maxVolatilityOffset = normalizeMaxVolatilityOffset(opts.maxVolatilityOffset);
     const clipThreshold = opts.clipThreshold ?? Infinity;
     const hasDirectionalOffset = Number.isFinite(maxSlopeOffset) && maxSlopeOffset > 0;
@@ -100,7 +106,10 @@ function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any =
     // 2b. Percentile clip — symmetric clip on slope magnitude
     const clippedSlopePct = Math.max(-(clipThreshold as number), Math.min((clipThreshold as number), slopePct as number));
 
-    // 3. Slope offset (asymmetric) — based on clipped slope
+    // 3. Slope offset (asymmetric) — based on clipped slope.
+    //    Inclusive boundary (<=) matches the canonical per-bar series in
+    //    dynamic_weight_series.ts, and with the default neutralZonePct of 0
+    //    it keeps exact-zero slopes NEUTRAL instead of flipping to DOWN.
     let slopeOffset;
     let trend;
     if (Math.abs(clippedSlopePct) <= neutralZonePct) {

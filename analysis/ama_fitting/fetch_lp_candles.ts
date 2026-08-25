@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { normalizePoolId } from '../../market_adapter/utils/chain.js';
@@ -10,7 +11,6 @@ import { getStorage } from '../../modules/storage/index.js';
 const { ensureDir, writeJSON } = getStorage();
 import { getErrorMessage } from '../../modules/utils/errors.js';
 
-'use strict';
 /**
  * Fetch LP pool candles from Kibana for AMA optimizer input.
  *

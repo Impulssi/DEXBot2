@@ -1,10 +1,10 @@
+'use strict';
 
 import { path } from '../../modules/path_api.js';
 import { writeJsonAtomic } from './atomic_write.js';
 import { acquirePathLockSync, releaseFileLockSync } from './file_lock.js';
 import { getStorage } from '../../modules/storage/index.js';
 const { ensureDir, readJSON } = getStorage();
-'use strict';
 
 
 function readJsonOrNull(filePath: any) {
@@ -13,10 +13,6 @@ function readJsonOrNull(filePath: any) {
     } catch (_: any) {
         return null;
     }
-}
-
-function writeJsonAtomicSync(filePath: any, payload: any) {
-    writeJsonAtomic(filePath, payload);
 }
 
 function updateDynamicGridSnapshotSync(filePath: any, mutator: any, options: any = {}) {
@@ -48,7 +44,7 @@ function updateDynamicGridSnapshotSync(filePath: any, mutator: any, options: any
             };
         }
 
-        writeJsonAtomicSync(filePath, snapshot);
+        writeJsonAtomic(filePath, snapshot);
         return {
             ok: true,
             written: true,

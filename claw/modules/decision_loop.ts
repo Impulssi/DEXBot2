@@ -1,3 +1,4 @@
+'use strict';
 /**
  * Decision Loop
  *
@@ -24,7 +25,6 @@ import { getErrorMessage } from '../../modules/utils/errors.js';
 // bypasses the ESM loader hooks that compiled tests use for module mocking,
 // and the analyzer module carries no circular-import risk.
 import { KalmanTrendAnalyzer } from '../../market_adapter/core/signals/kalman_trend_analyzer.js';
-'use strict';
 
 
 function getTrendAnalyzer() {

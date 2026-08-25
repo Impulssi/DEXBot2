@@ -1,3 +1,4 @@
+'use strict';
 
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
@@ -5,7 +6,6 @@ const require = createRequire(import.meta.url);
 import { NATIVE_CLIENT } from '../constants.js';
 import Logger from '../order/logger.js';
 import { getErrorMessage } from '../utils/errors.js';
-'use strict';
 
 // Native WebSocket only — Node >= 22 provides globalThis.WebSocket. No fallback package.
 type WebSocketLike = WebSocket;

@@ -1,3 +1,4 @@
+'use strict';
 /**
  * Position Health Assessment
  *
@@ -9,7 +10,6 @@
 
 import { CR_ZONES } from '../../modules/constants.js';
 import { roundToDecimals } from '../../modules/order/utils/math.js';
-'use strict';
 
 
 const DEFAULT_PRICE_RANGE_RATIO = 3.0;

@@ -1,10 +1,10 @@
+'use strict';
 import assert from 'node:assert';
 import {
     buildKalmanVelocitySeries,
     smoothKalmanVelocityPoint,
 } from '../kalman_velocity_smoothing.js';
 
-'use strict';
 
 const baseline = smoothKalmanVelocityPoint(
     0,

@@ -63,6 +63,29 @@ function computeRS(returns: number[]): number {
     return S > 0 ? R / S : 0;
 }
 
+/**
+ * Shared Hurst zone classification used by both HurstAnalyzer.getAnalysis()
+ * and the regime gate, so the zone boundaries live in exactly one place.
+ * Strength normalization uses MARKET_ADAPTER.HURST_STRENGTH_NORMALIZER.
+ */
+function classifyHurst(h: number, band = MARKET_ADAPTER.HURST_ZONE_BAND) {
+    const H_UPPER = 0.5 + band;
+    const H_LOWER = 0.5 - band;
+
+    let regime, regimeStrength;
+    if (h >= H_UPPER) {
+        regime = 'TRENDING';
+        regimeStrength = Math.min(1, (h - H_UPPER) / MARKET_ADAPTER.HURST_STRENGTH_NORMALIZER);
+    } else if (h <= H_LOWER) {
+        regime = 'MEAN_REVERTING';
+        regimeStrength = Math.min(1, (H_LOWER - h) / MARKET_ADAPTER.HURST_STRENGTH_NORMALIZER);
+    } else {
+        regime = 'RANDOM';
+        regimeStrength = 0;
+    }
+    return { regime, regimeStrength };
+}
+
 class HurstAnalyzer {
     private _w: number;
     window: number;
@@ -98,7 +121,9 @@ class HurstAnalyzer {
             throw new Error('price must be a positive finite number');
         }
         this._prices.push(price);
-        if (this._prices.length > this.window + 2) this._prices.shift();
+        // Keep exactly window+1 prices so returns span [0..window] and always
+        // include the newest bar (a window+2 cap would permanently exclude it).
+        if (this._prices.length > this.window + 1) this._prices.shift();
         this._updateCount++;
 
         if (this._prices.length < this.window + 1) {
@@ -140,20 +165,7 @@ class HurstAnalyzer {
 
     getAnalysis(): { isReady: boolean; hurst: number; regime: string; regimeStrength: number; updateCount: number } {
         const h = this.hurst;
-        const H_UPPER = 0.5 + MARKET_ADAPTER.HURST_ZONE_BAND;
-        const H_LOWER = 0.5 - MARKET_ADAPTER.HURST_ZONE_BAND;
-
-        let regime, regimeStrength;
-        if (h >= H_UPPER) {
-            regime = 'TRENDING';
-            regimeStrength = Math.min(1, (h - H_UPPER) / 0.25);
-        } else if (h <= H_LOWER) {
-            regime = 'MEAN_REVERTING';
-            regimeStrength = Math.min(1, (H_LOWER - h) / 0.25);
-        } else {
-            regime = 'RANDOM';
-            regimeStrength = 0;
-        }
+        const { regime, regimeStrength } = classifyHurst(h);
 
         return {
             isReady: this.isReady,
@@ -165,4 +177,4 @@ class HurstAnalyzer {
     }
 }
 
-export { HurstAnalyzer }
+export { HurstAnalyzer, classifyHurst }

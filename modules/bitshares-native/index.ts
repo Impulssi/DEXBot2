@@ -1,3 +1,4 @@
+'use strict';
 
 import { createTransport, ConnectionError, AllNodesFailed, RpcError, RpcTimeoutError } from './transport.js';
 import { createChainClient, createReadOnlyClient, ChainConfigError } from './chain_client.js';
@@ -8,7 +9,6 @@ import * as serial from './serial/index.js';
 import getEcc from './crypto/ecc_selector.js';
 import * as tx from './tx/builder.js';
 import { GRAPHENE_CHAIN_ID, GRAPHENE_ADDRESS_PREFIX, GRAPHENE_BLOCKCHAIN_PRECISION } from './serial/chain_constants.js';
-'use strict';
 
 const ecc = getEcc();
 

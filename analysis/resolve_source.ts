@@ -1,3 +1,4 @@
+'use strict';
 
 import path from 'node:path';
 import { PATHS } from '../modules/paths.js';
@@ -5,7 +6,6 @@ import { MARKET_ADAPTER } from '../modules/constants.js';
 import { createSource } from './price_sources.js';
 import { resolveCandleFile, resolveAmaConfig, resolveAmaKey, loadBotSettings, computeBotKey } from './bot_key_utils.js';
 import { findLatestLpData } from '../market_adapter/utils/data_discovery.js';
-'use strict';
 
 const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 

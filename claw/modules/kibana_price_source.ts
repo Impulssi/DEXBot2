@@ -1,3 +1,4 @@
+'use strict';
 /**
  * Kibana Price Source
  *
@@ -16,7 +17,6 @@
 import { getMarketCandles, getMarketClosePrices } from '../../market_adapter/core/kibana_market_candles.js';
 import { getLpCandlesForPool, getLpClosePricesForPool, discoverPoolAssets } from '../../market_adapter/inputs/kibana_source.js';
 import { getAsset } from './chain_queries.js';
-'use strict';
 
 
 /**

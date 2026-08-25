@@ -1,8 +1,8 @@
+'use strict';
 
 import { toIntervalLabel } from './interval_utils.js';
 import { escapeHtml, serializeJsonForScript } from '../analysis/chart_utils.js';
 import { fixedTo, roundTo, roundToDecimals } from '../modules/order/utils/math.js';
-'use strict';
 
 
 function formatPct(v: any) {

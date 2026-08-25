@@ -1,8 +1,8 @@
+'use strict';
 
 import { path } from '../../modules/path_api.js';
 import { getStorage } from '../../modules/storage/index.js';
 import { PATHS } from '../../modules/paths.js';
-'use strict';
 
 const storage = getStorage();
 
@@ -14,16 +14,30 @@ function findLatestLpData(options: any = {}) {
     const stack: string[] = [dataDir];
     while (stack.length > 0) {
         const dir = stack.pop()!;
-        const entries = storage.readdir(dir).map((name: any) => { return { name, isDirectory: () => storage.stat(path.join(dir, name)).isDirectory(), isFile: () => storage.stat(path.join(dir, name)).isFile() }; });
-        for (const entry of entries) {
-            const full = path.join(dir, entry.name);
-            if (entry.isDirectory()) {
+        let names: string[] = [];
+        try {
+            names = storage.readdir(dir);
+        } catch (_: any) {
+            // Directory vanished or is unreadable — skip it instead of
+            // aborting the whole scan.
+            continue;
+        }
+        for (const name of names) {
+            const full = path.join(dir, name);
+            let stat: any = null;
+            try {
+                stat = storage.stat(full);
+            } catch (_: any) {
+                // Dangling symlink or race-deleted entry — skip the entry.
+                continue;
+            }
+            if (stat.isDirectory()) {
                 stack.push(full);
                 continue;
             }
-            if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-            if (!entry.name.startsWith('lp_pool_')) continue;
-            out.push({ path: full, mtime: storage.stat(full).mtimeMs });
+            if (!stat.isFile() || !name.endsWith('.json')) continue;
+            if (!name.startsWith('lp_pool_')) continue;
+            out.push({ path: full, mtime: stat.mtimeMs });
         }
     }
 

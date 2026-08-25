@@ -1,3 +1,4 @@
+'use strict';
 /**
  * modules/daemon_node_health.ts - Credential daemon node health ledger
  *
@@ -31,7 +32,6 @@
  * The ledger is in-memory (resets on daemon restart); the health-cache
  * exclusion persists until a health check re-adds the node.
  */
-'use strict';
 
 import { NODE_MANAGEMENT } from './constants.js';
 import { createFailureLedger } from './node_failure_ledger.js';

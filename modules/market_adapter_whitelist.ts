@@ -1,9 +1,9 @@
+'use strict';
 
 import { PATHS } from './paths.js';
 import { Config } from './config.js';
 import { getStorage } from './storage/index.js';
 import { getErrorMessage } from './utils/errors.js';
-'use strict';
 
 const storage = getStorage();
 const { readJSON } = storage;

@@ -1,3 +1,4 @@
+'use strict';
 
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
@@ -8,7 +9,6 @@ import { loadSettingsFile, resolveRawBotEntries, saveSettingsFile, normalizeBotE
 import { normalizeMode, detectMode, setPreferredMode, describeModeChoice } from './launcher_mode_detector.js';
 import { normalizeRoot, resolveRuntimeScript, normalizeProfileDir } from './launcher_paths.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
-'use strict';
 
 const storage = getStorage();
 

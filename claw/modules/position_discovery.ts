@@ -1,3 +1,4 @@
+'use strict';
 /**
  * Position Discovery
  *
@@ -10,7 +11,6 @@
 
 
 import { roundTo } from '../../modules/order/utils/math.js';
-'use strict';
 
 import { getAsset, getBackingAsset, getBitassetData, getFullAccount } from './chain_queries.js';
 import { computeCallOrderAmounts } from './mpa_utils.js';

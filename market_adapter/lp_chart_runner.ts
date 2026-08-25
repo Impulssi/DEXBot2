@@ -1,3 +1,4 @@
+'use strict';
 
 import { path } from '../modules/path_api.js';
 import { getStorage } from '../modules/storage/index.js';
@@ -9,7 +10,6 @@ import { generateHTML } from './lp_chart_core.js';
 import { loadStrategiesForLpChart } from './lp_chart_strategy_loader.js';
 import { findLatestLpData } from './utils/data_discovery.js';
 import { PATHS } from '../modules/paths.js';
-'use strict';
 
 /**
  * LP CHART RUNNER — Shared LP chart orchestration

@@ -1,9 +1,13 @@
+'use strict';
 
 import { MARKET_ADAPTER } from '../../modules/constants.js';
-'use strict';
 
 
 function normalizeAtrPeriod(period: any, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_DEFAULT) {
+    // Treat null/undefined/empty as "not provided" BEFORE Number() coercion:
+    // Number(null) === 0 would otherwise turn explicit JSON null into a
+    // fallback hit instead of using the default.
+    if (period == null || period === '') return defaultValue;
     const value = Number(period);
     if (!Number.isFinite(value) || value <= 0) return defaultValue;
 
@@ -12,12 +16,14 @@ function normalizeAtrPeriod(period: any, defaultValue = MARKET_ADAPTER.DYNAMIC_W
 }
 
 function normalizeMaxVolatilityOffset(value: any, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP) {
+    if (value == null || value === '') return defaultValue;
     const numeric = Number(value);
     // Allow 0 to explicitly disable volatility shift
     return Number.isFinite(numeric) && numeric >= 0 ? numeric : defaultValue;
 }
 
 function normalizeVolatilityThreshold(value: any, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_THRESHOLD) {
+    if (value == null || value === '') return defaultValue;
     const numeric = Number(value);
     return Number.isFinite(numeric) && numeric >= 0 ? numeric : defaultValue;
 }

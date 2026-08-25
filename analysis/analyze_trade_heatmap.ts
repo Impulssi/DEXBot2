@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 /**
  * TRADE HEATMAP ANALYZER
  *
@@ -20,7 +21,6 @@ import { calcStdDev, getCandleClose } from './math_utils.js';
 import { writeChartFile } from './chart_utils.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
-'use strict';
 
 function parseArgs() {
     const args = process.argv.slice(2);

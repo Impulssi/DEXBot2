@@ -1,5 +1,6 @@
 // @ts-nocheck — TypeScript Uint8Array generic parameter quirks are
 // not relevant for this browser-targeted file.
+'use strict';
 /**
  * Browser-portable ECC — pure-JS secp256k1 operations.
  * Drop-in replacement for ecc.ts in browser contexts.
@@ -15,7 +16,6 @@
 
 import { getCrypto } from '../../crypto/index.js';
 import * as pureSecp from '../../crypto/pure_secp256k1.js';
-'use strict';
 
 import type { EcPoint } from '../../crypto/provider.js';
 

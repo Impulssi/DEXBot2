@@ -1,3 +1,4 @@
+'use strict';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,7 +11,6 @@ import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { getStorage } from '../../modules/storage/index.js';
 const { ensureDir } = getStorage();
 import { PATHS } from '../../modules/paths.js';
-'use strict';
 
 /**
  * UNIFIED COMPARISON CHART GENERATOR — Self-contained analysis chart

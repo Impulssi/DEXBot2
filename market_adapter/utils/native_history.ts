@@ -1,6 +1,6 @@
+'use strict';
 
 import { blockchainToFloat } from '../../modules/order/utils/math.js';
-'use strict';
 
 /**
  * Native BitShares market history parsing utilities.
@@ -31,6 +31,9 @@ function parseNativeMarketHistoryTimestamp(entry: any) {
         }
         let candidateStr = String(candidate);
         if (/^\d{10}$/.test(candidateStr)) return Number(candidateStr) * 1000;
+        // 13-digit epoch-ms strings: Date.parse returns NaN for digit-only
+        // strings in V8, so handle them explicitly (mirrors the numeric path).
+        if (/^\d{13}$/.test(candidateStr)) return Number(candidateStr);
         const match = candidateStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
         if (match) {
             const [_, y, m, d, hh, mm, ss] = match.map(Number);

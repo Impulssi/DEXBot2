@@ -1,3 +1,7 @@
+'use strict';
+
+import { normalizeAtrPeriod } from '../../config_normalizers.js';
+
 /**
  * Average True Range (ATR) Service
  * Computes market volatility for symmetrical weight shifts.
@@ -9,16 +13,14 @@
  * production edge-case guards on top of the same series.
  */
 
-import { normalizeAtrPeriod } from '../../config_normalizers.js';
-'use strict';
-
 
 /**
  * ATR series over candles (High, Low, Close).
  *
- * Chain-breaking semantics: an invalid row resets the previous-close reference so
- * a single bad candle never synthesizes a multi-bar gap into the next true range.
- * Positions before `period` valid true ranges resolve to 0 (insufficient data).
+ * Chain-breaking semantics: an invalid row resets the previous-close reference
+ * and re-arms warmup, so a single bad candle never synthesizes a multi-bar gap
+ * into the next true range. Positions before `period` valid true ranges within
+ * the current chain segment resolve to 0 (insufficient data).
  *
  * Candles may be rows ([timestamp, open, high, low, close, volume]) or objects
  * ({ open, high, low, close, ... }); the getter logic is inlined so the function
@@ -41,6 +43,7 @@ function computeATRSeries(candles: any, period = 14, stats: any = null) {
     const safePeriod = Math.max(1, Math.round(period));
     let trSum = 0;
     let trCount = 0;
+    let segmentTrCount = 0;
     let prevClose: number | null = null;
     let atrVal = 0;
 
@@ -53,21 +56,27 @@ function computeATRSeries(candles: any, period = 14, stats: any = null) {
             // Break the ATR chain across missing/invalid rows so a single bad
             // candle does not synthesize a multi-bar gap into the next valid true range.
             prevClose = null;
+            segmentTrCount = 0;
+            trSum = 0;
             atrs.push(0);
             continue;
         }
         if (prevClose != null) {
             const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
             trCount++;
-            if (trCount <= safePeriod) {
+            segmentTrCount++;
+            if (segmentTrCount <= safePeriod) {
+                // SMA warmup within the current chain segment
                 trSum += tr;
-                atrVal = trSum / trCount;
+                atrVal = trSum / segmentTrCount;
             } else {
                 atrVal = (atrVal * (safePeriod - 1) + tr) / safePeriod;
             }
         }
         prevClose = close;
-        atrs.push(trCount < safePeriod ? 0 : atrVal);
+        // Stay at 0 until the CURRENT segment has enough valid ranges — a
+        // post-break row must not emit the stale pre-break ATR.
+        atrs.push(segmentTrCount < safePeriod ? 0 : atrVal);
     }
 
     if (stats && typeof stats === 'object') {

@@ -1,7 +1,7 @@
+'use strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
-'use strict';
 
 import { isBrowser } from './env.js';
 

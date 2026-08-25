@@ -1,3 +1,4 @@
+'use strict';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,7 +13,6 @@ import { ensureDir } from '../../modules/order/utils/system.js';
 import { range } from '../math_utils.js';
 import { getStorage } from '../../modules/storage/index.js';
 const { readJSON, writeJSON } = getStorage();
-'use strict';
 
 import {
     loadLpDataFile,

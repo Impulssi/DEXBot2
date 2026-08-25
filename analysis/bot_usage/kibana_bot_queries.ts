@@ -1,3 +1,4 @@
+'use strict';
 /**
  * KIBANA BOT QUERIES
  *
@@ -35,7 +36,6 @@
 
 
 import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from '../../market_adapter/core/kibana_client.js';
-'use strict';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

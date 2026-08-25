@@ -1,3 +1,4 @@
+'use strict';
 
 import { getStorage } from './storage/index.js';
 const storage = getStorage();
@@ -5,7 +6,6 @@ const { readJSON } = storage;
 import { PATHS } from './paths.js';
 import { normalizeBotEntry } from './bot_settings.js';
 import { getErrorMessage } from './utils/errors.js';
-'use strict';
 
 
 interface ValidationProblem {

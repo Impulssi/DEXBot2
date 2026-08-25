@@ -1,6 +1,6 @@
+'use strict';
 
 import { getStorage } from '../../modules/storage/index.js';
-'use strict';
 
 const storage = getStorage();
 

@@ -1,3 +1,4 @@
+'use strict';
 /**
  * modules/node_failure_ledger.ts - Shared node failure counting ledger
  *
@@ -21,7 +22,6 @@
  *    already-blacklisted node, and restarts counting from 0 when a previous
  *    blacklist's cooldown expired.
  */
-'use strict';
 
 export interface FailureLedgerEntry {
     failureCount: number;

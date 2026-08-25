@@ -1,6 +1,6 @@
+'use strict';
 
 import { Serializer } from './serializer.js';
-'use strict';
 
 import {
     uint8, uint16, uint32, int64, uint64,

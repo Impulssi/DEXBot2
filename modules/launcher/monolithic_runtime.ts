@@ -1,3 +1,4 @@
+'use strict';
 
 import { path } from '../path_api.js';
 import { getStorage } from '../storage/index.js';
@@ -13,7 +14,6 @@ import { getCredentialReadyFilePath, getCredentialSocketPath } from '../credenti
 import { resolveRawBotEntries, loadSettingsFile } from '../bot_settings.js';
 import { sleep } from '../order/utils/system.js';
 import * as chainKeys from '../chain_keys.js';
-'use strict';
 
 const storage = getStorage();
 const { unlink: safeUnlink } = storage;

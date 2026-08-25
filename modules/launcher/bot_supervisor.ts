@@ -1,3 +1,4 @@
+'use strict';
 
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
@@ -15,7 +16,6 @@ import { Config } from '../config.js';
 import { getProcessDiscovery, formatUptime } from '../process_discovery.js';
 import { runtime } from '../runtime.js';
 import { sleep } from '../order/utils/system.js';
-'use strict';
 
 import type { Socket } from 'net';
 const storage = getStorage();

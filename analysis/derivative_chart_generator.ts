@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,7 +10,6 @@ const { ensureDir, readJSON } = getStorage();
 import { fixedTo } from '../modules/order/utils/math.js';
 import { bindHoverStateFn, zoomResetScript } from './chart_ui.js';
 import { PATHS } from '../modules/paths.js';
-'use strict';
 function parseArgs(argv = process.argv.slice(2)) {
     const cfg: { inputFile: string | null; outputFile: string; title: string; quiet: boolean } = {
         inputFile: null,

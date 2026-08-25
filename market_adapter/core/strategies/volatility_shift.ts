@@ -30,6 +30,9 @@ function computeVolatilityShift(weightVariance: any, opts: any = {}) {
     const safeScaleX = Number.isFinite(scaleX) && scaleX >= 0 ? scaleX : 10.0;
     const safeThreshold = Number.isFinite(threshold) && threshold >= 0 ? threshold : 0.1;
     const safeClamp = Number.isFinite(clampValue) && clampValue >= 0 ? clampValue : 0.5;
+    // Effective ranges (mirrors MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_*_MIN/MAX
+    // in modules/constants.ts; the live service normalizes to these same bounds
+    // at its config read point, so this is a safety net for direct callers).
     const effectiveExponent = Math.max(0.5, Math.min(1.0, safeExponent));
     const effectiveScaleX = Math.max(1.0, Math.min(100.0, safeScaleX));
 

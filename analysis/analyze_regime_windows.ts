@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 
 /**
  * REGIME WINDOW OPTIMIZER
@@ -30,7 +31,6 @@ import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_s
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
 const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
 
-'use strict';
 
 const HURST_CENTER   = HURST_CONFIG.window;
 const PE_CENTER      = PE_CONFIG.window;

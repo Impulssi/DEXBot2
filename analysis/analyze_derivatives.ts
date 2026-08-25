@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 
 /**
  * DERIVATIVE TREND ANALYSIS
@@ -27,7 +28,6 @@ import { generateHTML } from './derivative_chart_generator.js';
 import { writeChartFile } from './chart_utils.js';
 import { PATHS } from '../modules/paths.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
-'use strict';
 
 
 interface CliConfig {

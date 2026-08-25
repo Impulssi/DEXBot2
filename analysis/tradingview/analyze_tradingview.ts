@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 
 
 import fs from 'node:fs';
@@ -12,7 +13,6 @@ import { loadBotMeta } from '../bot_key_utils.js';
 import { resolveSource, listAvailableBots } from '../resolve_source.js';
 import { writeChartFile } from '../chart_utils.js';
 import { PATHS } from '../../modules/paths.js';
-'use strict';
 
 
 const DEFAULT_CHART_DIR = PATHS.ANALYSIS.CHARTS_DIR;

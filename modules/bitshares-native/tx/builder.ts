@@ -1,3 +1,4 @@
+'use strict';
 
 import { NATIVE_CLIENT } from '../../constants.js';
 import { ops as serialOps } from '../serial/index.js';
@@ -5,7 +6,6 @@ import getEcc from '../crypto/ecc_selector.js';
 import Logger from '../../order/logger.js';
 import * as txCache from './tx_cache.js';
 import { getErrorMessage } from '../../utils/errors.js';
-'use strict';
 
 const { TRANSACTION, CHAIN, OPERATIONS } = NATIVE_CLIENT;
 const { sha256, sign } = getEcc();

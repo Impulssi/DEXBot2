@@ -1,3 +1,4 @@
+'use strict';
 /**
  * FETCH LP PRICE DATA FROM KIBANA — Pool-centric
  *
@@ -39,7 +40,6 @@ import { PATHS } from '../../modules/paths.js';
 import * as bitsharesClient from '../../modules/bitshares_client.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
 import { pathToFileURL } from 'node:url';
-'use strict';
 
 const storage = getStorage();
 const { readJSON } = storage;
@@ -62,6 +62,7 @@ const DEFAULT_CONFIG: {
 
 const FETCH_TIMEOUT_MS = MARKET_ADAPTER.KIBANA_REQUEST_TIMEOUT_MS;
 const FETCH_MAX_ATTEMPTS = MARKET_ADAPTER.RUNTIME_DEFAULTS.sourceRetries;
+const FETCH_RETRY_BACKOFF_BASE_MS = MARKET_ADAPTER.LP_FETCH_RETRY_BACKOFF_BASE_MS;
 const FETCH_MANIFEST_VERSION = 1;
 
 const BOTS_JSON = PATHS.PROFILES.BOTS_JSON;
@@ -76,7 +77,14 @@ function parseArgs() {
     let precA: number | null = null;   // null = auto from blockchain
     let precB: number | null = null;
 
-    const intervalMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
+    // Supported interval labels; a bare numeric value is interpreted as
+    // SECONDS (e.g. `--interval 1800` = 30m). Note the CEX synthetic tool
+    // interprets bare numbers as MINUTES — prefer explicit suffixes.
+    const intervalMap: Record<string, number> = {
+        '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
+        '1h': 3600, '2h': 7200, '4h': 14400, '6h': 21600, '12h': 43200,
+        '1d': 86400, '1w': 604800, '7d': 604800,
+    };
 
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -85,8 +93,25 @@ function parseArgs() {
         switch (arg) {
             case '--bot':      botName                = val; i++; break;
             case '--pool':     poolId                 = val; i++; break;
-            case '--interval': config.intervalSeconds = (intervalMap as Record<string, number>)[val] ?? parseInt(val, 10); i++; break;
-            case '--lookback': config.lookbackHours   = parseInt(val.replace('h', ''), 10); i++; break;
+            case '--interval': {
+                let seconds = (intervalMap as Record<string, number>)[val];
+                if (seconds == null) seconds = parseInt(val, 10);
+                if (!Number.isFinite(seconds) || seconds <= 0) {
+                    throw new Error(`--interval: unsupported value "${val}" (use ${Object.keys(intervalMap).join(', ')} or seconds)`);
+                }
+                config.intervalSeconds = seconds;
+                i++;
+                break;
+            }
+            case '--lookback': {
+                const hours = parseInt(String(val).replace('h', ''), 10);
+                if (!Number.isFinite(hours) || hours <= 0) {
+                    throw new Error(`--lookback: invalid value "${val}" (expected hours, e.g. 48 or 48h)`);
+                }
+                config.lookbackHours = hours;
+                i++;
+                break;
+            }
             case '--chunkMonths': config.chunkMonths  = parseInt(val, 10); i++; break;
             case '--precA':    precA                  = parseInt(val, 10); i++; break;
             case '--precB':    precB                  = parseInt(val, 10); i++; break;
@@ -457,7 +482,14 @@ async function fetchWindowCandles(fullPoolId: any, assetA: any, assetB: any, con
             return candles;
         } catch (err: any) {
             lastErr = err;
-            console.warn(`    retrying after failure: ${getErrorMessage(err)}`);
+            if (attempt < FETCH_MAX_ATTEMPTS) {
+                // Linear backoff so consecutive failures do not hammer Kibana
+                const backoffMs = FETCH_RETRY_BACKOFF_BASE_MS * attempt;
+                console.warn(`    retrying in ${backoffMs}ms after failure: ${getErrorMessage(err)}`);
+                await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            } else {
+                console.warn(`    giving up after failure: ${getErrorMessage(err)}`);
+            }
         }
     }
 
@@ -732,7 +764,10 @@ async function run() {
         : outputPath(fullPoolId, config.intervalSeconds, assetA, assetB);
 
     // ── Fetch full history ────────────────────────────────────────────────────
-    console.log(`\n[${stepFetch}/4] Fetching full history (${config.lookbackHours}h, ${bucketLabel} buckets)...`);
+    const fetchModeLabel = config.timeRange
+        ? `${config.timeRange.gte ?? '…'} → ${config.timeRange.lte ?? '…'}`
+        : `${config.lookbackHours}h`;
+    console.log(`\n[${stepFetch}/4] Fetching full history (${fetchModeLabel}, ${bucketLabel} buckets)...`);
     let candles;
     try {
         candles = await fetchCandlesSequentially(fullPoolId, assetA, assetB, config, outPath);

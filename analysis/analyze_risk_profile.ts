@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 /**
  * RISK PROFILE ANALYZER
  *
@@ -19,7 +20,6 @@ import { calcStdDev, getCandleClose } from './math_utils.js';
 import { writeChartFile } from './chart_utils.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
-'use strict';
 
 function normSInv(p: number) {
     if (p <= 0 || p >= 1) return p <= 0 ? -Infinity : Infinity;

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 
 /**
  * REGIME ANALYSIS TOOL
@@ -32,7 +33,6 @@ import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_s
 const HURST_CONFIG = MARKET_ADAPTER.HURST_CONFIG;
 const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
 
-'use strict';
 
 function parseArgs() {
     const args = process.argv.slice(2);

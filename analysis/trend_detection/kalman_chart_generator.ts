@@ -1,9 +1,9 @@
+'use strict';
 
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
 import { sharedChartCSS } from '../chart_css.js';
 import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
-'use strict';
 
 
 // Kalman weight panel — production channel defaults (neutral zone, saturation

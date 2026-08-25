@@ -1,7 +1,7 @@
+'use strict';
 
 import { NODE_MANAGEMENT, TIMING } from '../../modules/constants.js';
 import { createReadOnlyClient } from '../../modules/bitshares-native/index.js';
-'use strict';
 
 /**
  * market_adapter/utils/adapter_client.ts — Singleton BitShares WS client
