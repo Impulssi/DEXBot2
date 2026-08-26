@@ -20,8 +20,8 @@ function panelsCSS(headerHeight = 45): string {
     return `#panels { display: flex; flex-direction: column; height: calc(100vh - ${headerHeight}px); width: 100vw; }`;
 }
 
-function uplotBgCSS(): string {
-    return `.uplot { background: #0b0e14; }`;
+function uplotBgCSS(bgColor = '#0b0e14'): string {
+    return `.uplot { background: ${bgColor}; }`;
 }
 
 function dotCSS(): string {
@@ -56,4 +56,7 @@ function sharedChartCSS(): string {
     ].join('\n        ');
 }
 
-export { sharedChartCSS, baseResetCSS, headerCSS, panelsCSS, uplotBgCSS, dotCSS, cursorCSS, sectionLabelCSS, legendCSS }
+// Only the composed sheet and the single fragments with external consumers are
+// exported; page-specific generators interpolate these inside their own
+// <style> blocks while keeping their layout rules inline.
+export { sharedChartCSS, uplotBgCSS, cursorCSS }

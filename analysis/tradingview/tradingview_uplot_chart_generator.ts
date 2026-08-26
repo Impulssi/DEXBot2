@@ -2,8 +2,9 @@
 
 import fs from 'node:fs';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
-import { escapeHtml, serializeJsonForScript } from '../chart_utils.js';
-import { cursorCSS } from '../chart_css.js';
+import { escapeHtml, serializeJsonForScript, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
+import { cursorCSS, uplotBgCSS } from '../chart_css.js';
+import { zoomResetScript } from '../chart_ui.js';
 import { normalizeCandle } from '../math_utils.js';
 import { PATHS } from '../../modules/paths.js';
 import { getStorage } from '../../modules/storage/index.js';
@@ -394,7 +395,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         .legend-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #eef4fb; font-weight: 700; }
         .status { display: inline-flex; align-items: center; gap: 8px; font-size: 10px; color: #8290a2; text-transform: uppercase; letter-spacing: 0.5px; }
         .pill { border: 1px solid rgba(255,255,255,0.06); border-radius: 999px; padding: 4px 8px; background: rgba(255,255,255,0.03); }
-        .uplot { background: #0b0f14; }
+        ${uplotBgCSS('#0b0f14')}
         ${cursorCSS()}
         @media (max-width: 980px) {
             #topbar { flex-direction: column; align-items: flex-start; }
@@ -557,6 +558,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         let chartEventsBound = false;
         let pendingRange = null;
         let pendingRangeRaf = 0;
+        let xMin = 0;
+        let xMax = 0;
         let smaWorker = null;
         let smaWorkerJob = null;
         let smaWorkerStartRaf = 0;
@@ -567,6 +570,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         const amaCache = new Map();
         const vwapCache = new Map();
         const seriesCache = new Map();
+
+        ${UPLOT_SHARED_SCRIPT}
 
         function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
         function fmtPrice(v) {
@@ -1263,6 +1268,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             currentSeriesCloseValues = currentSeriesState.closeValues;
             const aggregated = aggregateCandles(currentSeriesCandles, tf?.seconds || 3600);
             currentCandles = aggregated.candles;
+            if (currentCandles.length) {
+                xMin = currentCandles[0].time;
+                xMax = currentCandles[currentCandles.length - 1].time;
+            }
             currentDisplayCandles = deriveDisplayCandles(currentCandles);
             currentOpen = currentDisplayCandles.map((c) => c.open);
             currentHigh = currentCandles.map((c) => c.high);
@@ -1416,90 +1425,6 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             lastRenderedPriceScale = currentPriceScale;
             return priceChart;
         }
-        function clampRange(min, max) {
-            if (!currentCandles.length || !Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
-            const first = currentCandles[0].time;
-            const last = currentCandles[currentCandles.length - 1].time;
-            let lo = min;
-            let hi = max;
-            if (lo < first) { hi += first - lo; lo = first; }
-            if (hi > last) { lo -= hi - last; hi = last; }
-            if (lo < first) lo = first;
-            if (hi > last) hi = last;
-            if (hi <= lo) return null;
-            return { min: lo, max: hi };
-        }
-        function syncXRange(min, max) {
-            pendingRange = clampRange(min, max);
-            if (pendingRangeRaf) return;
-            pendingRangeRaf = requestAnimationFrame(() => {
-                const next = pendingRange;
-                pendingRange = null;
-                pendingRangeRaf = 0;
-                if (!next || charts.length === 0) return;
-                charts.forEach((chart) => chart.batch(() => chart.setScale('x', next)));
-            });
-        }
-        function bindWheelZoom(chart) {
-            chart.root.addEventListener('wheel', (e) => {
-                if (e.ctrlKey || e.metaKey || e.altKey) return;
-                e.preventDefault();
-                const rect = chart.root.getBoundingClientRect();
-                const center = chart.posToVal(e.clientX - rect.left, 'x');
-                const s = chart.scales.x || {};
-                const currMin = Number.isFinite(s.min) ? s.min : currentCandles[0].time;
-                const currMax = Number.isFinite(s.max) ? s.max : currentCandles[currentCandles.length - 1].time;
-                const span = currMax - currMin;
-                const first = currentCandles[0]?.time;
-                const last = currentCandles[currentCandles.length - 1]?.time;
-                const fullSpan = Number.isFinite(first) && Number.isFinite(last) ? Math.max(1, last - first) : span;
-                if (!Number.isFinite(span) || span <= 0) return;
-                const factor = e.deltaY < 0 ? 0.85 : 1.15;
-                const nextSpan = Math.max(1, Math.min(fullSpan, span * factor));
-                const ratio = (center - currMin) / span;
-                syncXRange(center - nextSpan * ratio, center - nextSpan * ratio + nextSpan);
-            }, { passive: false });
-        }
-        function bindPan(chart) {
-            let dragging = false;
-            let startClientX = 0;
-            let startClientY = 0;
-            let startMin = 0;
-            let startMax = 0;
-            const onMove = (e) => {
-                if (!dragging) return;
-                // Ignore vertical-dominant movement (likely page scrolling) —
-                // same guard as the shared bindPan in chart_utils.ts.
-                if (Math.abs(e.clientY - startClientY) > 20) return;
-                e.preventDefault();
-                const rect = chart.root.getBoundingClientRect();
-                const delta = chart.posToVal(e.clientX - rect.left, 'x') - chart.posToVal(startClientX - rect.left, 'x');
-                syncXRange(startMin - delta, startMax - delta);
-            };
-            const endDrag = () => {
-                if (!dragging) return;
-                dragging = false;
-                document.body.style.cursor = '';
-                window.removeEventListener('mousemove', onMove);
-                window.removeEventListener('mouseup', endDrag);
-            };
-            chart.root.addEventListener('mousedown', (e) => {
-                if (!e || e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey) return;
-                const rect = chart.root.getBoundingClientRect();
-                if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
-                e.preventDefault();
-                e.stopPropagation();
-                dragging = true;
-                startClientX = e.clientX;
-                startClientY = e.clientY;
-                const s = chart.scales.x || {};
-                startMin = Number.isFinite(s.min) ? s.min : currentCandles[0].time;
-                startMax = Number.isFinite(s.max) ? s.max : currentCandles[currentCandles.length - 1].time;
-                document.body.style.cursor = 'grabbing';
-                window.addEventListener('mousemove', onMove);
-                window.addEventListener('mouseup', endDrag, { once: true });
-            });
-        }
         function refreshLegend() {
             updateLegend(Math.max(0, currentCandles.length - 1));
         }
@@ -1555,7 +1480,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 chartEventsBound = true;
             }
             if (oldRange && Number.isFinite(oldRange.min) && Number.isFinite(oldRange.max)) {
-                const next = clampRange(oldRange.min, oldRange.max);
+                const next = clampXRange(oldRange.min, oldRange.max);
                 if (next) charts.forEach((chart) => chart.batch(() => chart.setScale('x', next)));
             }
             refreshLegend();
@@ -1705,13 +1630,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             });
         });
 
-        window.addEventListener('keydown', (e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === '0' && charts.length) {
-                const first = currentCandles[0]?.time;
-                const last = currentCandles[currentCandles.length - 1]?.time;
-                if (Number.isFinite(first) && Number.isFinite(last)) syncXRange(first, last);
-            }
-        });
+        ${zoomResetScript()}
     })();
     </script>
 </body>
