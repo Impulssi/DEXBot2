@@ -642,6 +642,48 @@ function testAnalyzeOrderOmitsDynamicWeightForNonAma() {
   assert.strictEqual(analysis.dynamicWeight, null, 'non-AMA bot should have null dynamicWeight');
 }
 
+function testAnalyzeOrderFormatsNumericBotFunds() {
+  const { analyzeOrder, formatAnalysis } = loadAnalyzer();
+  const botData = {
+    meta: { assetA: 'XRP', assetB: 'BTS', updatedAt: new Date().toISOString() },
+    boundaryIdx: 0,
+    grid: [
+      { type: 'buy', state: 'active', orderId: 'a', price: 100, size: 1 },
+      { type: 'sell', state: 'active', orderId: 'b', price: 110, size: 1 },
+    ],
+  };
+  // bots.json documents botFunds as either percentage strings ("90%") or
+  // absolute numbers. A numeric value used to crash formatAnalysis with
+  // "str.replace is not a function" because the Funds display path calls
+  // string methods on the raw config values.
+  const config = {
+    gridPrice: 'fixed',
+    targetSpreadPercent: 1.5,
+    incrementPercent: 0.5,
+    activeOrders: { buy: 1, sell: 1 },
+    botFunds: { buy: 35, sell: 90 },
+    weightDistribution: { buy: 0.5, sell: 0.5 },
+  };
+  const analysis = analyzeOrder(botData, config, 'numeric-funds-bot');
+  assert.strictEqual(analysis.botFunds.buy, '35', 'numeric botFunds.buy should be normalized to a string');
+  assert.strictEqual(analysis.botFunds.sell, '90', 'numeric botFunds.sell should be normalized to a string');
+
+  // The original crash: formatAnalysis renders the Funds line with
+  // padEnd/stripColorCodes on these values.
+  let output;
+  assert.doesNotThrow(() => { output = formatAnalysis(analysis); }, 'formatAnalysis must survive numeric botFunds configs');
+  const fundsLine = stripColorCodes(String(output)).split('\n').find((l) => l.includes('Funds:'));
+  assert.ok(fundsLine, 'Funds line should be rendered');
+  assert.ok(fundsLine.includes('35'), 'Funds line should show the numeric buy value');
+  assert.ok(fundsLine.includes('90'), 'Funds line should show the numeric sell value');
+
+  // Percentage strings must keep their exact form.
+  const analysisPct = analyzeOrder(botData, { ...config, botFunds: { buy: '35%', sell: '90%' } }, 'pct-funds-bot');
+  assert.strictEqual(analysisPct.botFunds.buy, '35%', 'percentage botFunds.buy should pass through unchanged');
+  assert.strictEqual(analysisPct.botFunds.sell, '90%', 'percentage botFunds.sell should pass through unchanged');
+  assert.doesNotThrow(() => { formatAnalysis(analysisPct); }, 'formatAnalysis must survive percentage botFunds configs');
+}
+
 function testResolveAmaKey() {
   const { resolveAmaKey } = loadAnalyzer();
   assert.strictEqual(resolveAmaKey({ gridPrice: 'ama' }), 'AMA3', 'ama resolves to AMA3 (default)');
@@ -782,6 +824,7 @@ async function main() {
   testFormatWeightLineNullWeights();
   testAnalyzeOrderIncludesDynamicWeightForAma();
   testAnalyzeOrderOmitsDynamicWeightForNonAma();
+  testAnalyzeOrderFormatsNumericBotFunds();
   console.log('analyze-orders dynamic weight tests passed');
 }
 
