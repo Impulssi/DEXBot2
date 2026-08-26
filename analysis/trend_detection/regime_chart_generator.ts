@@ -1,8 +1,21 @@
 'use strict';
 
+import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
 import { sharedChartCSS } from '../chart_css.js';
 import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn, fmtDateFn } from '../chart_ui.js';
+
+// Zone boundaries sourced from MARKET_ADAPTER (single source of truth shared
+// with the live adapter) instead of hardcoded copies. Hurst classification
+// uses inclusive >=/<= bounds matching market_adapter/core/signals/hurst_analyzer.ts.
+const HURST_WINDOW_DEFAULT = MARKET_ADAPTER.HURST_CONFIG.window;
+const HURST_SCALES_DEFAULT = MARKET_ADAPTER.HURST_CONFIG.scales;
+const PE_M_DEFAULT = MARKET_ADAPTER.PE_CONFIG.m;
+const PE_WINDOW_DEFAULT = MARKET_ADAPTER.PE_CONFIG.window;
+const H_UPPER = 0.5 + MARKET_ADAPTER.HURST_ZONE_BAND;
+const H_LOWER = 0.5 - MARKET_ADAPTER.HURST_ZONE_BAND;
+const PE_STRUCTURED = MARKET_ADAPTER.PE_NODES[0];
+const PE_NOISE = MARKET_ADAPTER.PE_NODES[MARKET_ADAPTER.PE_NODES.length - 1];
 
 
 /**
@@ -61,16 +74,16 @@ function generateRegimeHTML(data: any, title = 'Regime Analysis') {
     }
 
     // Background shading segments (server-side, passed to browser via JSON payload)
-    const hurstSegments = buildSegments(hurstArr.slice(0, realBarCount), (v: any) => v > 0.55, (v: any) => v < 0.45);
-    const peSegments    = buildSegments(peArr.slice(0, realBarCount),    (v: any) => v < 0.60, (v: any) => v > 0.85);
+    const hurstSegments = buildSegments(hurstArr.slice(0, realBarCount), (v: any) => v >= H_UPPER, (v: any) => v <= H_LOWER);
+    const peSegments    = buildSegments(peArr.slice(0, realBarCount),    (v: any) => v < PE_STRUCTURED, (v: any) => v > PE_NOISE);
 
     const payload = {
         dates, prices, ama3Prices, hurstArr, peArr,
         hurstSegments, peSegments,
         realBarCount,
-        hurstWindow: hurstConfig.window ?? 128,
-        peM:         peConfig.m         ?? 5,
-        peWindow:    peConfig.window    ?? 100,
+        hurstWindow: hurstConfig.window ?? HURST_WINDOW_DEFAULT,
+        peM:         peConfig.m         ?? PE_M_DEFAULT,
+        peWindow:    peConfig.window    ?? PE_WINDOW_DEFAULT,
     };
 
     return `<!DOCTYPE html>
@@ -96,12 +109,12 @@ function generateRegimeHTML(data: any, title = 'Regime Analysis') {
         <div style="font-weight:bold;color:#fff;">${escapeHtml(title)}</div>
         <div style="display:flex;align-items:center;gap:16px;">
             <span style="font-size:10px;color:#8b949e;font-family:monospace;">
-                Hurst: window=${escapeHtml(String(hurstConfig.window ?? 128))}&thinsp;bars &middot; scales=[${escapeHtml((hurstConfig.scales ?? [8,16,32,64]).join(','))}]
+                Hurst: window=${escapeHtml(String(hurstConfig.window ?? HURST_WINDOW_DEFAULT))}&thinsp;bars &middot; scales=[${escapeHtml((hurstConfig.scales ?? HURST_SCALES_DEFAULT).join(','))}]
                 &nbsp;&nbsp;|&nbsp;&nbsp;
-                PE: m=${escapeHtml(String(peConfig.m ?? 5))} &middot; window=${escapeHtml(String(peConfig.window ?? 100))}&thinsp;bars
+                PE: m=${escapeHtml(String(peConfig.m ?? PE_M_DEFAULT))} &middot; window=${escapeHtml(String(peConfig.window ?? PE_WINDOW_DEFAULT))}&thinsp;bars
             </span>
             <span style="font-size:11px;color:#adbac7;text-transform:uppercase;">
-                H&gt;0.55=trend &middot; H&lt;0.45=revert &middot; PE&lt;0.60=structured &middot; PE&gt;0.85=noise
+                H&ge;${H_UPPER.toFixed(2)}=trend &middot; H&le;${H_LOWER.toFixed(2)}=revert &middot; PE&lt;${PE_STRUCTURED.toFixed(2)}=structured &middot; PE&gt;${PE_NOISE.toFixed(2)}=noise
                 &nbsp;&nbsp;|&nbsp;&nbsp; Scroll &middot; Drag &middot; Ctrl+0
             </span>
         </div>
@@ -122,7 +135,7 @@ function generateRegimeHTML(data: any, title = 'Regime Analysis') {
             <div class="legend">
                 <div class="legend-item"><div class="dot" style="background:#4dc3ff;"></div>H: <span id="l-hurst" style="font-weight:bold;color:#4dc3ff;">-</span></div>
                 <div class="legend-item">Regime: <span id="l-hurst-regime" style="font-weight:bold;">-</span></div>
-                <div class="legend-item" style="color:#555;font-size:10px;">window=${escapeHtml(String(hurstConfig.window ?? 128))} bars</div>
+                <div class="legend-item" style="color:#555;font-size:10px;">window=${escapeHtml(String(hurstConfig.window ?? HURST_WINDOW_DEFAULT))} bars</div>
             </div>
             <div id="hurst-chart"></div>
         </div>
@@ -131,7 +144,7 @@ function generateRegimeHTML(data: any, title = 'Regime Analysis') {
             <div class="legend">
                 <div class="legend-item"><div class="dot" style="background:#d2a8ff;"></div>PE: <span id="l-pe" style="font-weight:bold;color:#d2a8ff;">-</span></div>
                 <div class="legend-item">Regime: <span id="l-pe-regime" style="font-weight:bold;">-</span></div>
-                <div class="legend-item" style="color:#555;font-size:10px;">m=${escapeHtml(String(peConfig.m ?? 5))}, window=${escapeHtml(String(peConfig.window ?? 100))} bars</div>
+                <div class="legend-item" style="color:#555;font-size:10px;">m=${escapeHtml(String(peConfig.m ?? PE_M_DEFAULT))}, window=${escapeHtml(String(peConfig.window ?? PE_WINDOW_DEFAULT))} bars</div>
             </div>
             <div id="pe-chart"></div>
         </div>
@@ -156,16 +169,23 @@ function generateRegimeHTML(data: any, title = 'Regime Analysis') {
         ${fmtDateFn()}
         ${bindHoverStateFn()}
 
+        // Inclusive zone boundaries — same semantics as the live classifier
+        // (market_adapter/core/signals/hurst_analyzer.ts classifyHurst).
+        const H_UPPER = ${JSON.stringify(H_UPPER)};
+        const H_LOWER = ${JSON.stringify(H_LOWER)};
+        const PE_STRUCTURED = ${JSON.stringify(PE_STRUCTURED)};
+        const PE_NOISE = ${JSON.stringify(PE_NOISE)};
+
         function hurstRegimeLabel(v) {
             if (v == null) return '<span class="badge badge-grey">-</span>';
-            if (v > 0.55) return '<span class="badge badge-green">TRENDING</span>';
-            if (v < 0.45) return '<span class="badge badge-red">MEAN REV</span>';
+            if (v >= H_UPPER) return '<span class="badge badge-green">TRENDING</span>';
+            if (v <= H_LOWER) return '<span class="badge badge-red">MEAN REV</span>';
             return '<span class="badge badge-grey">RANDOM</span>';
         }
         function peRegimeLabel(v) {
             if (v == null) return '<span class="badge badge-grey">-</span>';
-            if (v < 0.60) return '<span class="badge badge-green">STRUCTURED</span>';
-            if (v > 0.85) return '<span class="badge badge-red">NOISE</span>';
+            if (v < PE_STRUCTURED) return '<span class="badge badge-green">STRUCTURED</span>';
+            if (v > PE_NOISE) return '<span class="badge badge-red">NOISE</span>';
             return '<span class="badge badge-grey">MIXED</span>';
         }
 
@@ -218,13 +238,13 @@ function generateRegimeHTML(data: any, title = 'Regime Analysis') {
         // ── chart instances ──────────────────────────────────────────────────
 
         const hurstRefLines = [
-            { y: 0.55, color: 'rgba(46,160,67,0.5)'   },
+            { y: H_UPPER, color: 'rgba(46,160,67,0.5)'   },
             { y: 0.50, color: 'rgba(110,118,129,0.3)'  },
-            { y: 0.45, color: 'rgba(248,81,73,0.5)'    },
+            { y: H_LOWER, color: 'rgba(248,81,73,0.5)'    },
         ];
         const peRefLines = [
-            { y: 0.85, color: 'rgba(248,81,73,0.5)'  },
-            { y: 0.60, color: 'rgba(46,160,67,0.5)'  },
+            { y: PE_NOISE, color: 'rgba(248,81,73,0.5)'  },
+            { y: PE_STRUCTURED, color: 'rgba(46,160,67,0.5)'  },
         ];
 
         const hurstBgFn = makeBgHook(data.hurstSegments, hurstRefLines, 'h');

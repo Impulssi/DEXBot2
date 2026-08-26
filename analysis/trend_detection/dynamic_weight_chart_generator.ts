@@ -205,10 +205,14 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         const sorted: number[] = [];
         for (let i = safeStartIndex; i < realBarCount; i++) { if (arr[i] != null) sorted.push(Math.abs(arr[i])); }
         sorted.sort((a, b) => a - b);
+        // Empty pool → Infinity: the live percentile lookup treats an empty
+        // history as "no clipping" (percentileFromSorted returns Infinity);
+        // collapsing to 0 here would clip every slope to ±0 instead.
+        if (sorted.length === 0) return new Array(101).fill(Infinity);
         const pcts: number[] = [];
         for (let p = 0; p <= 100; p++) {
             const idx = Math.min(Math.floor(sorted.length * p / 100), sorted.length - 1);
-            pcts.push(sorted[idx] || 0);
+            pcts.push(sorted[idx]);
         }
         return pcts;
     }
@@ -438,8 +442,11 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         const gainValToSlider = (val) => Math.round((Math.log(Math.max(Math.exp(GAIN_LOG_MIN), val)) - GAIN_LOG_MIN) / (GAIN_LOG_MAX - GAIN_LOG_MIN) * 1000);
 
         let currentClipPct = data.clipPct ?? ${JSON.stringify(defaultClipPct)};
+        // Only the clipPct===0 branch value is ever read (recalcWeights reads
+        // currentAmaClipThreshold solely when clipping is disabled; otherwise
+        // it uses the canonical dynamicClipThreshold from computeAmaSlopeClipThreshold).
         const maxAmaSlope = data.amaPercentiles[data.amaPercentiles.length - 1];
-        let currentAmaClipThreshold = currentClipPct === 0 ? maxAmaSlope : data.amaPercentiles[100 - currentClipPct];
+        let currentAmaClipThreshold = currentClipPct === 0 ? maxAmaSlope : Infinity;
         let currentKalClipThreshold = currentClipPct === 0 ? Infinity : data.kalPercentiles[100 - currentClipPct];
 
         // Regime table and axis nodes from payload — sourced from MARKET_ADAPTER in constants.ts
@@ -780,7 +787,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             const cRaw = combinedOff[idx];
             const cRawEl = document.getElementById('l-combined-raw');
             if (cRaw == null) { cRawEl.textContent = '-'; cRawEl.style.color = '#8b949e'; }
-            else { cRawEl.textContent = (cRaw >= 0 ? '+' : '') + cRaw.toFixed(3); cRawEl.style.color = cRaw > 0.01 ? '#8b949e' : cRaw < -0.01 ? '#8b949e' : '#8b949e'; }
+            else { cRawEl.textContent = (cRaw >= 0 ? '+' : '') + cRaw.toFixed(3); cRawEl.style.color = '#8b949e'; }
 
             const cEcho = echoCombinedOff[idx];
             const cEchoEl = document.getElementById('l-combined-echo');
@@ -1008,7 +1015,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
                 ],
                 axes: [
                     makeTimeAxis(false),
-                    { scale: 'p', stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30303d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
+                    { scale: 'p', stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
                       values: (u, v) => v.map(x => x != null ? (x >= 0 ? '+' : '') + (x * 10).toFixed(2) + '‰' : '') }
                 ],
                 cursor: cursorCfg,
@@ -1026,7 +1033,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
                 ],
                 axes: [
                     makeTimeAxis(false),
-                    { scale: 'v', stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30303d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
+                    { scale: 'v', stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
                       values: (u, v) => v.map(x => x != null ? (x >= 0 ? '+' : '') + x.toFixed(1) + '%' : '') }
                 ],
                 cursor: cursorCfg,
@@ -1051,7 +1058,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
                 ],
                 axes: [
                     makeTimeAxis(true),
-                    { scale: 'ow', stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30303d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
+                    { scale: 'ow', stroke: '#ffffff', grid: { stroke: '#1c2128', dash: [4, 4] }, ticks: { stroke: '#30363d', width: 1 }, size: Y_AXIS_SIZE, font: '11px Segoe UI, sans-serif',
                       values: (u, v) => v.map(x => x != null ? (x >= 0 ? '+' : '') + x.toFixed(2) : ''),
                       splits: () => { const m = Math.max(0.5, currentOutputAxisMax || 0.5); return [-m, -m/2, 0, m/2, m]; } }
                 ],
@@ -1153,7 +1160,9 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
                     currentAmaClipThreshold = data.amaPercentiles[data.amaPercentiles.length - 1];
                     currentKalClipThreshold = Infinity;
                 } else {
-                    currentAmaClipThreshold = data.amaPercentiles[100 - currentClipPct];
+                    // AMA clip threshold for clipPct>0 comes from the canonical
+                    // computeAmaSlopeClipThreshold inside recalcInputs() —
+                    // no percentile-table store needed here.
                     recalcKalmanClipThreshold();
                 }
                 document.getElementById('clip-value').textContent = currentClipPct + '%';
@@ -1250,7 +1259,6 @@ function applyParams(p, btn) {
                         currentAmaClipThreshold = data.amaPercentiles[data.amaPercentiles.length - 1];
                         currentKalClipThreshold = Infinity;
                     } else {
-                        currentAmaClipThreshold = data.amaPercentiles[100 - currentClipPct];
                         recalcKalmanClipThreshold();
                     }
                 }

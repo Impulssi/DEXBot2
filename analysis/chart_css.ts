@@ -56,4 +56,4 @@ function sharedChartCSS(): string {
     ].join('\n        ');
 }
 
-export { sharedChartCSS }
+export { sharedChartCSS, baseResetCSS, headerCSS, panelsCSS, uplotBgCSS, dotCSS, cursorCSS, sectionLabelCSS, legendCSS }

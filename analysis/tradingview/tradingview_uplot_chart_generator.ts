@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { escapeHtml, serializeJsonForScript } from '../chart_utils.js';
+import { cursorCSS } from '../chart_css.js';
 import { normalizeCandle } from '../math_utils.js';
 import { PATHS } from '../../modules/paths.js';
 import { getStorage } from '../../modules/storage/index.js';
@@ -394,9 +395,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         .status { display: inline-flex; align-items: center; gap: 8px; font-size: 10px; color: #8290a2; text-transform: uppercase; letter-spacing: 0.5px; }
         .pill { border: 1px solid rgba(255,255,255,0.06); border-radius: 999px; padding: 4px 8px; background: rgba(255,255,255,0.03); }
         .uplot { background: #0b0f14; }
-        .u-cursor-x { border-left: 1px dashed rgba(255,255,255,0.3) !important; }
-        .u-cursor-y { border-top: 1px dashed rgba(255,255,255,0.3) !important; display: none; }
-        .is-hovered .u-cursor-y { display: block; }
+        ${cursorCSS()}
         @media (max-width: 980px) {
             #topbar { flex-direction: column; align-items: flex-start; }
             #toolbar { justify-content: flex-start; }
@@ -1464,10 +1463,14 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         function bindPan(chart) {
             let dragging = false;
             let startClientX = 0;
+            let startClientY = 0;
             let startMin = 0;
             let startMax = 0;
             const onMove = (e) => {
                 if (!dragging) return;
+                // Ignore vertical-dominant movement (likely page scrolling) —
+                // same guard as the shared bindPan in chart_utils.ts.
+                if (Math.abs(e.clientY - startClientY) > 20) return;
                 e.preventDefault();
                 const rect = chart.root.getBoundingClientRect();
                 const delta = chart.posToVal(e.clientX - rect.left, 'x') - chart.posToVal(startClientX - rect.left, 'x');
@@ -1488,6 +1491,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 e.stopPropagation();
                 dragging = true;
                 startClientX = e.clientX;
+                startClientY = e.clientY;
                 const s = chart.scales.x || {};
                 startMin = Number.isFinite(s.min) ? s.min : currentCandles[0].time;
                 startMax = Number.isFinite(s.max) ? s.max : currentCandles[currentCandles.length - 1].time;

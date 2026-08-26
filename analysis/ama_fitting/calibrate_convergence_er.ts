@@ -6,6 +6,7 @@ import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { PATHS } from '../../modules/paths.js';
 import { roundTo } from '../../modules/order/utils/math.js';
+import { getCandleClose } from '../math_utils.js';
 
 /**
  * AMA CONVERGENCE ER CALIBRATION
@@ -93,7 +94,8 @@ function main() {
         }
         process.exit(1);
     }
-    const closes = (data.candles || []).map((c: any) => Number(c[4]))
+    // Canonical candle accessor (handles array rows and object candles alike).
+    const closes = (data.candles || []).map((c: any) => Number(getCandleClose(c)))
         .filter((v: any) => Number.isFinite(v) && v > 0);
     if (closes.length < 100) {
         console.error(`Not enough candles (need > 100, got ${closes.length})`);

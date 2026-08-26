@@ -3,9 +3,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
-import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
+import { calculateAMA, getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
 import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
 import { generateHTML } from '../../market_adapter/lp_chart_core.js';
 import { PATHS } from '../../modules/paths.js';
@@ -354,8 +354,15 @@ function updateAmaProfilesFile({ dataFile, meta, winners, sourceResultsFile }: {
     writeJSON(AMA_PROFILES_FILE, payload);
 }
 
-function calcTotalAmaMovement(amaValues: number[], erPeriod: number): number {
-    const skip = erPeriod + 1;
+// Warmup skips through the full production AMA seeding + convergence window
+// (getAmaWarmupBars) rather than just the ER seed boundary (erPeriod + 1), so
+// objective metrics are never measured on SMA-warmup or unconverged values.
+function amaWarmupSkip(erPeriod: number, fastPeriod: number, slowPeriod: number): number {
+    return getAmaWarmupBars(erPeriod, slowPeriod, 0, fastPeriod);
+}
+
+function calcTotalAmaMovement(amaValues: number[], erPeriod: number, fastPeriod: number, slowPeriod: number): number {
+    const skip = amaWarmupSkip(erPeriod, fastPeriod, slowPeriod);
     let total = 0;
     for (let i = skip + 1; i < amaValues.length; i++) {
         total += Math.abs(amaValues[i] - amaValues[i - 1]) / amaValues[i - 1];
@@ -365,8 +372,8 @@ function calcTotalAmaMovement(amaValues: number[], erPeriod: number): number {
 
 // ── Informational: area above/below AMA ──────────────────────────────────────
 
-function calcArea(amaValues: number[], candles: any[], erPeriod: number) {
-    const skip = erPeriod + 1;
+function calcArea(amaValues: number[], candles: any[], erPeriod: number, fastPeriod: number, slowPeriod: number) {
+    const skip = amaWarmupSkip(erPeriod, fastPeriod, slowPeriod);
     let above = 0, below = 0, maxUp = 0, maxDown = 0;
     for (let i = skip; i < candles.length; i++) {
         const ama = amaValues[i];
@@ -386,8 +393,8 @@ function calcArea(amaValues: number[], candles: any[], erPeriod: number) {
     return { above, below, total, maxUp, maxDown, maxDist };
 }
 
-function calcTotalRelativeDistance(amaValues: number[], candles: any[], erPeriod: number): number {
-    const skip = erPeriod + 1;
+function calcTotalRelativeDistance(amaValues: number[], candles: any[], erPeriod: number, fastPeriod: number, slowPeriod: number): number {
+    const skip = amaWarmupSkip(erPeriod, fastPeriod, slowPeriod);
     let total = 0;
     for (let i = skip; i < candles.length; i++) {
         const ama = amaValues[i];
@@ -428,9 +435,9 @@ function runSearchShard(payload: any, onProgress: ((msg: any) => void) | null = 
                 valid++;
 
                 const ama = calculateAMA(closes, { erPeriod: er, fastPeriod: fast, slowPeriod: slow });
-                const area = calcArea(ama, candles, er);
-                const amaMovementTotal = calcTotalAmaMovement(ama, er);
-                const distanceTotal = calcTotalRelativeDistance(ama, candles, er);
+                const area = calcArea(ama, candles, er, fast, slow);
+                const amaMovementTotal = calcTotalAmaMovement(ama, er, fast, slow);
+                const distanceTotal = calcTotalRelativeDistance(ama, candles, er, fast, slow);
                 const bandFactorPct = area.maxDist * 200;
                 const entry = {
                     er, fast, slow,
@@ -454,7 +461,9 @@ function runSearchShard(payload: any, onProgress: ((msg: any) => void) | null = 
 
 function spawnShardWorker(payload: any, onProgress: ((msg: any) => void) | null): Promise<any> {
     return new Promise((resolve, reject) => {
-        const worker = new Worker(__filename, { workerData: { type: 'search_shard', payload } });
+        // ESM: resolve this module's path from import.meta.url
+        // (__filename is undefined in ES modules).
+        const worker = new Worker(fileURLToPath(import.meta.url), { workerData: { type: 'search_shard', payload } });
         worker.on('message', (msg) => {
             if (!msg || typeof msg !== 'object') return;
             if (msg.type === 'progress') {

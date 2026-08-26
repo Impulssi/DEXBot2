@@ -1,23 +1,12 @@
 'use strict';
 
 import { MARKET_ADAPTER } from '../../modules/constants.js';
+import { computeDynamicWeightSeries } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
+import { computeAbsolutePercentileThreshold } from '../../market_adapter/core/signals/kalman_velocity_smoothing.js';
 import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
 import { sharedChartCSS } from '../chart_css.js';
 import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
 
-
-// Kalman weight panel — production channel defaults (neutral zone, saturation
-// slope, clamp) so the displayed offset tracks the live kalmanOffsets shape.
-const NEUTRAL_ZONE_PCT = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT;
-const MAX_SLOPE_PCT    = MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_MAX_SLOPE_PCT;
-const MAX_SLOPE_OFFSET = MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
-
-function computeKalmanWeightOffset(velocityPct: any, isReady: any) {
-    if (!isReady || velocityPct == null) return 0;
-    if (Math.abs(velocityPct) < NEUTRAL_ZONE_PCT) return 0;
-    return Math.max(-MAX_SLOPE_OFFSET, Math.min(MAX_SLOPE_OFFSET,
-        (velocityPct / MAX_SLOPE_PCT) * MAX_SLOPE_OFFSET));
-}
 
 function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
     const results = data.allResults || [];
@@ -34,7 +23,43 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
     const trendUp        = results.map((r: any) =>
         r.kalmanPrice != null && r.modalPrice != null ? r.kalmanPrice > r.modalPrice : null
     );
-    const kalmanWeights  = results.map((r: any) => computeKalmanWeightOffset(r.velocityFilteredPct ?? r.velocityPct, r.isReady));
+
+    // Kalman weight channel — canonical implementation shared with the live
+    // market adapter (computeDynamicWeightSeries), including the percentile
+    // clip threshold and the displacement-confidence/momentum-alignment
+    // composite the previous hand-rolled copy omitted.
+    const amaLb           = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS;
+    const defaultAmaKey   = MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS;
+    const amaErPeriod     = data.amaConfig?.erPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].erPeriod;
+    const clipPct         = data.clipPct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE;
+    const velocityPct     = results.map((r: any) => r.velocityFilteredPct ?? r.velocityPct ?? null);
+    const displacementPct = results.map((r: any) => r.displacementRawPct ?? r.displacementPct ?? null);
+    const isReady         = results.map((r: any) => !!r.isReady);
+    const kalClipThreshold = clipPct > 0
+        ? computeAbsolutePercentileThreshold(velocityPct, clipPct, Infinity)
+        : Infinity;
+    const dwSeries = computeDynamicWeightSeries({
+        amaValues: prices, // AMA channel unused here; length driver only
+        kalmanVelocityPct: velocityPct,
+        kalmanDisplacementPct: displacementPct,
+        kalmanIsReady: isReady,
+        regimeMultipliers: undefined,
+        lookbackBars: amaLb,
+        amaErPeriod,
+        amaClipThreshold: Infinity,
+        kalClipThreshold,
+        neutralZonePct: MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT,
+        amaMaxSlopePct: MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT,
+        kalmanMaxSlopePct: MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_MAX_SLOPE_PCT,
+        offsetClamp: MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP,
+        dispScaleMinPct: MARKET_ADAPTER.DYNAMIC_WEIGHT_DISP_SCALE_MIN_PCT,
+        alpha: MARKET_ADAPTER.DYNAMIC_WEIGHT_ALPHA,
+        dw: MARKET_ADAPTER.DYNAMIC_WEIGHT_DW,
+        gain: MARKET_ADAPTER.DYNAMIC_WEIGHT_GAIN,
+        minOutputThreshold: MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_TREND_THRESHOLD,
+        signalConfirmBars: MARKET_ADAPTER.DYNAMIC_WEIGHT_SIGNAL_CONFIRM_BARS_DEFAULT,
+    });
+    const kalmanWeights  = dwSeries.kalmanOffsets;
     const amaWeights     = results.map((r: any) => r.amaWeightOffset ?? null);
 
     // Future Projection (150 bars)
@@ -104,7 +129,7 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
         <div id="ama-panel">
             <div class="legend">
                 <div class="legend-item"><div class="dot" style="background:linear-gradient(to bottom,#f0a000,#4a90d9);"></div>AMA Weight: <span id="l-ama-w" style="font-weight:bold;">-</span></div>
-                <span style="color:#8b949e;font-size:10px;">lookback 72 bars &nbsp;·&nbsp; er10/2/30</span>
+                <span style="color:#8b949e;font-size:10px;">lookback ${amaLb} bars &nbsp;·&nbsp; er${escapeHtml(String(data.amaConfig?.erPeriod ?? amaErPeriod))}/${escapeHtml(String(data.amaConfig?.fastPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].fastPeriod))}/${escapeHtml(String(data.amaConfig?.slowPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].slowPeriod))}</span>
             </div>
             <div id="ama-chart"></div>
         </div>

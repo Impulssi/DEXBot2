@@ -5,8 +5,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
 import { generateHTML } from '../../market_adapter/lp_chart_core.js';
+import { calculateMetrics } from '../../market_adapter/lp_chart_runner.js';
+import { findLatestLpData } from '../../market_adapter/utils/data_discovery.js';
 import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
-import { loadCandleFile } from '../math_utils.js';
+import { loadCandleFile, normalizeCandle } from '../math_utils.js';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { getStorage } from '../../modules/storage/index.js';
 const { ensureDir } = getStorage();
@@ -19,7 +21,10 @@ import { PATHS } from '../../modules/paths.js';
  * or {data: [...]}), computes AMA series, and writes an interactive HTML chart
  * via the shared lp_chart_core renderer.
  *
- * No Kibana fetch, no market_adapter runtime deps beyond the core renderer.
+ * No Kibana fetch. Candle normalization, LP data discovery, and drift metrics
+ * are imported from the canonical implementations (math_utils →
+ * market_adapter/candle_utils, market_adapter/utils/data_discovery,
+ * lp_chart_runner.calculateMetrics) instead of local copies.
  *
  * Usage:
  *   node dist/analysis/ama_fitting/generate_unified_comparison_chart.js --data <file.json>
@@ -30,7 +35,6 @@ import { PATHS } from '../../modules/paths.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
-const LP_DATA_DIR = PATHS.MARKET_ADAPTER.LP_DATA_DIR;
 const CHARTS_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 
 const DEFAULT_COLORS = ['#26a69a', '#fb8c00', '#5c9ee6', '#ef5350'];
@@ -50,41 +54,7 @@ function buildDefaultStrategies() {
 
 const DEFAULT_STRATEGIES = buildDefaultStrategies();
 
-// ── Data loading (self-contained, no lp_chart_runner dep) ──────────────────────
-
-function findLatestLpDataFile() {
-    if (!fs.existsSync(LP_DATA_DIR)) return null;
-    const stack = [LP_DATA_DIR];
-    const matches: { path: string; mtime: number }[] = [];
-    while (stack.length > 0) {
-        const dir = stack.pop();
-        if (!dir) continue;
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-            const full = path.join(dir, entry.name);
-            if (entry.isDirectory()) { stack.push(full); continue; }
-            if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-            if (!entry.name.startsWith('lp_pool_')) continue;
-            matches.push({ path: full, mtime: fs.statSync(full).mtimeMs });
-        }
-    }
-    matches.sort((a, b) => b.mtime - a.mtime);
-    return matches.length > 0 ? matches[0].path : null;
-}
-
-function normalizeCandle(c: any, index: any) {
-    if (Array.isArray(c)) {
-        if (c.length < 5) throw new Error(`Invalid candle at index ${index}: need at least 5 entries`);
-        return { timestamp: c[0], open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5] ?? 0 };
-    }
-    if (c && typeof c === 'object') {
-        const { timestamp, open, high, low, close, volume = 0 } = c;
-        if ([timestamp, open, high, low, close].some(v => v == null)) {
-            throw new Error(`Invalid candle object at index ${index}`);
-        }
-        return { timestamp, open, high, low, close, volume };
-    }
-    throw new Error(`Unsupported candle format at index ${index}`);
-}
+// ── Data loading (canonical implementations, no local copies) ────────────────
 
 function loadCandles(dataFile: any) {
     const resolved = path.resolve(dataFile);
@@ -96,31 +66,24 @@ function loadCandles(dataFile: any) {
         throw new Error('No candles found in file');
     }
 
-    const candleObjects = candles.map((c, i) => normalizeCandle(c, i));
-    const candleArrays = candleObjects.map(c => [c.timestamp, c.open, c.high, c.low, c.close, c.volume]);
+    // normalizeCandle is the canonical accessor transform (market_adapter/
+    // candle_utils.ts via math_utils re-export); it returns seconds-based time.
+    const normalized = candles.map((c: any, i: number) => {
+        const nc = normalizeCandle(c);
+        if (!nc) throw new Error(`Invalid candle at index ${i}`);
+        return nc;
+    });
+    const candleObjects = normalized.map(c => ({
+        timestamp: c.time * 1000,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+    }));
+    const candleArrays = normalized.map(c => [c.time * 1000, c.open, c.high, c.low, c.close, c.volume]);
 
     return { dataFile: resolved, meta, candleObjects, candleArrays };
-}
-
-// ── Metrics ────────────────────────────────────────────────────────────────────
-
-function calculateMetrics(amaValues: any, candles: any) {
-    let maxDriftUp = 0, maxDriftDown = 0, areaAbove = 0, areaBelow = 0;
-    const skip = Math.max(20, Math.floor(candles.length * 0.1));
-    for (let i = skip; i < candles.length; i++) {
-        const ama = amaValues[i];
-        const driftUp = (candles[i].high - ama) / ama;
-        const driftDown = (ama - candles[i].low) / ama;
-        if (driftUp > maxDriftUp) maxDriftUp = driftUp;
-        if (driftDown > maxDriftDown) maxDriftDown = driftDown;
-        if (candles[i].high > ama) areaAbove += driftUp;
-        if (candles[i].low < ama) areaBelow += driftDown;
-    }
-    return {
-        maxDriftUp, maxDriftDown, areaAbove, areaBelow,
-        totalArea: areaAbove + areaBelow,
-        maxDistance: Math.max(maxDriftUp, maxDriftDown),
-    };
 }
 
 // ── Output path ────────────────────────────────────────────────────────────────
@@ -187,7 +150,7 @@ function generateChart(options = {} as Record<string, any>) {
 
     const dataFile = options.dataFile
         ? path.resolve(options.dataFile)
-        : findLatestLpDataFile();
+        : findLatestLpData();
     if (!dataFile) {
         throw new Error(`No LP data file found. Use --data <path> or run fetch_lp_candles.ts first.`);
     }
@@ -217,7 +180,7 @@ function generateChart(options = {} as Record<string, any>) {
         amaResults.push({ ...strategy, lineWidth: index === 0 ? 2 : 1.5, values });
 
         logger.log(`${strategy.name}`);
-        logger.log(`   ├─ Total Area:     ${metrics.totalArea.toFixed(2)}%`);
+        logger.log(`   ├─ Total Area:     ${metrics.totalDeviation.toFixed(2)}%`);
         logger.log(`   ├─ Max UP:         ${(metrics.maxDriftUp * 100).toFixed(2)}%`);
         logger.log(`   ├─ Max DOWN:       ${(metrics.maxDriftDown * 100).toFixed(2)}%`);
         logger.log(`   └─ Band Factor:    ${(metrics.maxDistance * 200).toFixed(2)}%\n`);

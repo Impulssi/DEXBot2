@@ -4,6 +4,7 @@ import path from 'node:path';
 import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
 import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
+import { normalizeCandle } from '../math_utils.js';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 
 /**
@@ -55,7 +56,10 @@ function loadData(filePath: any) {
     const json    = readJSON(filePath);
     const candles = json.candles ?? json;
     return {
-        candles: candles.map((c: any) => ({ timestamp: c[0], close: c[4] })),
+        candles: candles
+            .map((c: any) => normalizeCandle(c))
+            .filter(Boolean)
+            .map((c: any) => ({ timestamp: c.time * 1000, close: c.close })),
         meta: json.meta ?? null,
     };
 }

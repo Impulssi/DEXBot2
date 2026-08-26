@@ -429,5 +429,5 @@ function generateLpChartBundle(options: BundleChartOptions = {}): { dataFile: st
     };
 }
 
-export { DEFAULT_COMPARISON_STRATEGIES, defaultMarketChartPath, findLatestLpData, generateComparisonLpChart, generateLpChartBundle, generateMarketLpChart, loadLpDataFile, parseLpChartCliArgs }
+export { DEFAULT_COMPARISON_STRATEGIES, calculateMetrics, defaultMarketChartPath, findLatestLpData, generateComparisonLpChart, generateLpChartBundle, generateMarketLpChart, loadLpDataFile, parseLpChartCliArgs }
 
