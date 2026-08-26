@@ -2,13 +2,18 @@
 
 import path from 'node:path';
 import os from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
-import { calculateAMA } from '../../market_adapter/core/strategies/ama.js';
+import { calculateAMA, getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
+import { computeAverageAmaSlopePct } from '../../market_adapter/core/strategies/ama_slope_model.js';
 import { range } from '../math_utils.js';
 import { parseListOrRange, loadLpData, fmt } from './shared_utils.js';
 import { getStorage } from '../../modules/storage/index.js';
 import { PATHS } from '../../modules/paths.js';
+import { GRID_LIMITS, MARKET_ADAPTER } from '../../modules/constants.js';
+// Production grid geometry + slope-ratio offset — shared with bot_fitting so
+// both tools build byte-identical grids for identical params (#12).
+import { buildProductionGrid, computeGridPriceOffsetPct } from './backtest_bot_fitting.js';
 const { readJSON, writeJSON } = getStorage();
 
 /**
@@ -16,8 +21,12 @@ const { readJSON, writeJSON } = getStorage();
  *
  * Models the real bot mechanics:
  *   - Orders sit at FIXED chain prices until canceled or filled
- *   - When AMA drifts past reposition threshold, grid re-centers
- *   - Grid compression: AMA shift pushes one side's orders closer to market
+ *   - Slot rotation: a filled buy re-offers its base ONE RAIL STEP UP; when
+ *     that refill sells, one increment (minus fees) is booked and the freed
+ *     quote re-bids one rail step down — anchor-&-refill cycling
+ *   - Unlinked (initial-grid) sells execute only against held inventory;
+ *     bought-and-held base carries across resets as a weighted-average-entry
+ *     position whose final mark is reported informationally, not scored
  *   - Order sizing depends on capital, ratio (range width), and weight profile
  *   - Three weight profiles: valley, neutral, mountain (symmetric buy/sell)
  *
@@ -26,10 +35,10 @@ const { readJSON, writeJSON } = getStorage();
  *   node dist/analysis/bot_fitting/backtest_ama_sweep.js --data <path-to-lp-candles.json> --spread 4:16:1 --increment 0.5:4:0.25
  */
 
-
-const DEFAULT_MAX_ORDERS = 20; // matches bot default activeOrders per side
+const DEFAULT_MAX_ORDERS = 20; // weight-profile sizing cap per side (search abstraction)
 const DEFAULT_FEE_ROUNDTRIP_PCT = 0.20;
-const DEFAULT_MIN_SPREAD_FACTOR = 2.1;
+// Canonical spread floor from production grid limits (modules/constants.ts).
+const DEFAULT_MIN_SPREAD_FACTOR = GRID_LIMITS.MIN_SPREAD_FACTOR;
 const DEFAULT_CAPITAL = 10000; // notional units per side
 const DEFAULT_BTS_CREATE_FEE = 0.48260;
 const DEFAULT_BTS_CANCEL_FEE = 0.00482;
@@ -47,13 +56,21 @@ const WEIGHT_PROFILES = {
 };
 
 // Search grid defaults — centered around bot defaults (spread=2%, increment=0.5%)
-// Spread = distance from center to first order on each side (half the bid-ask gap)
-// Increment = distance between successive orders on the same side
+// Spread = targetSpreadPercent for the gapSlots spread zone (production
+// semantics, matching bot_fitting — the legacy half-spread dead zone is gone).
+// Increment = geometric rail step between successive orders on the same side.
 const DEFAULT_SPREAD_VALUES = [...range(0.5, 4, 0.25), ...range(5, 12, 1)];
 const DEFAULT_INCREMENT_VALUES = [...range(0.2, 2, 0.1), ...range(2.5, 8, 0.5)];
 const DEFAULT_RATIO_VALUES = [1.05, 1.1, 1.15, 1.2, 1.3, 1.5, 2, 3, 5, 10];
-// Reposition threshold: AMA must move this fraction from last grid center to trigger re-center
-const DEFAULT_REPOSITION_PCT = 2.5;
+// Reposition threshold: production default (MARKET_ADAPTER
+// AMA_DELTA_THRESHOLD_PERCENT = 1%); --reposition overrides.
+const DEFAULT_REPOSITION_PCT = MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT;
+
+// Trigger B / grid-price offset (asymmetricBounds whitelist) — same constants
+// as bot_fitting, shared semantics with the live adapter.
+const SLOPE_TRIGGER_FACTOR = MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT;
+const SLOPE_MAX_PCT = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT;
+const SLOPE_LOOKBACK_BARS = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS;
 
 
 function parseArgs() {
@@ -69,6 +86,7 @@ function parseArgs() {
         minSpreadFactor: number;
         capital: number;
         repositionPct: number;
+        asymmetricBounds: boolean;
         btsCreateFee: number;
         btsCancelFee: number;
         makerCreateFactor: number;
@@ -85,6 +103,7 @@ function parseArgs() {
         minSpreadFactor: DEFAULT_MIN_SPREAD_FACTOR,
         capital: DEFAULT_CAPITAL,
         repositionPct: DEFAULT_REPOSITION_PCT,
+        asymmetricBounds: false,
         btsCreateFee: DEFAULT_BTS_CREATE_FEE,
         btsCancelFee: DEFAULT_BTS_CANCEL_FEE,
         makerCreateFactor: DEFAULT_BTS_MAKER_CREATE_FACTOR,
@@ -94,6 +113,7 @@ function parseArgs() {
 
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
+        if (arg === '--asymmetric-bounds') { out.asymmetricBounds = true; continue; }
         const val = args[i + 1];
         if (arg === '--help' || arg === '-h') { printHelp(); process.exit(0); }
         if (!val) continue;
@@ -133,14 +153,15 @@ function printHelp() {
     console.log('Options:');
     console.log('  --data <path>           LP candle JSON');
     console.log('  --results <path>        AMA optimizer results JSON');
-    console.log('  --spread <spec>         Spread values (% ): 1:10:0.5 or 2,4,8');
+    console.log('  --spread <spec>         Target spread % (gapSlots zone): 1:10:0.5 or 2,4,8');
     console.log('  --increment <spec>      Increment values (%): 0.5:5:0.5 or 1,2,3');
     console.log('  --ratio <spec>          Max/min ratio: 1.5,2,3,5');
-    console.log('  --max-orders <n>        Max orders per side (default: 20, actual limited by ratio+increment)');
+    console.log('  --max-orders <n>        Size cap per side (default: 20)');
     console.log('  --fee <pct>             Round-trip fee % (default: 0.20)');
     console.log('  --min-spread-factor <n> Spread >= factor * increment (default: 2.1)');
     console.log('  --capital <n>           Notional capital per side (default: 10000)');
-    console.log('  --reposition <pct>      AMA drift % to trigger re-center (default: 2.5)');
+    console.log('  --reposition <pct>      AMA drift % to trigger re-center (default: 1.00, production)');
+    console.log('  --asymmetric-bounds     Enable slope-delta reset (B) + grid price offset (whitelist semantics)');
     console.log('  --bts-create-fee <n>    BTS create fee (default: 0.48260)');
     console.log('  --bts-cancel-fee <n>    BTS cancel fee (default: 0.00482)');
     console.log('  --maker-create-factor   Maker share of create fee (default: 0.10)');
@@ -203,119 +224,135 @@ function allocateFundsByWeights(totalFunds: number, n: number, weight: number, i
 // ── Persistent grid simulation ───────────────────────────────────────────────
 
 /**
- * Build a fresh grid centered at `center`.
- *
- * Grid placement (matches real bot):
- *   Level k (1-based):
- *     offset_k = spreadPct/2/100 + (k-1) * incrementPct
- *     buyPrice  = center * (1 - offset_k)
- *     sellPrice = center * (1 + offset_k)
- *
- * So spread controls the dead zone around center (no orders within spread/2),
- * and increment is the gap between successive orders on the same side.
+ * Build a fresh grid centered at `center` using the SHARED production
+ * geometry (buildProductionGrid from backtest_bot_fitting — createOrderGrid
+ * port): master rail at √(1±inc) offsets bounded by [center/ratio,
+ * center*ratio] with a calculateGapSlots spread zone. This guarantees the
+ * sweep and bot_fitting build byte-identical grids for identical params
+ * (#12). Weight-profile sizing is applied over the capped nearest-to-gap
+ * levels, index 0 = closest to the gap.
  *
  * Returns arrays of buy and sell order objects with fixed chain prices and sizes.
  */
 function buildGrid(center: number, params: any, capitalPerSide: number, weightFactor: number) {
     const { incrementPct, maxMinRatio, maxOrders, spreadPct } = params;
-    const minBound = center / maxMinRatio;
-    const maxBound = center * maxMinRatio;
-    const halfSpread = spreadPct / 200; // as fraction
+    const built = buildProductionGrid(center, spreadPct, incrementPct, maxMinRatio, maxOrders);
 
-    const buys: any[] = [];
-    const sells: any[] = [];
+    const buySizes = allocateFundsByWeights(capitalPerSide, built.buys.length, weightFactor, incrementPct);
+    const sellSizes = allocateFundsByWeights(capitalPerSide, built.sells.length, weightFactor, incrementPct);
 
-    // Fill as many levels as fit within ratio bounds (up to maxOrders cap)
-    for (let k = 1; k <= maxOrders; k++) {
-        const offset = halfSpread + (k - 1) * incrementPct;
-        if (offset >= 0.95) continue;
-        const buyPrice = center * (1 - offset);
-        const sellPrice = center * (1 + offset);
-
-        // Bounds check — skip levels outside ratio range
-        if (buyPrice < minBound || sellPrice > maxBound) continue;
-
-        buys.push({ level: k, price: buyPrice, filledBar: -1, size: 0 });
-        sells.push({ level: k, price: sellPrice, filledBar: -1, size: 0 });
-    }
-
-    // Size allocation — index 0 = closest to center
-    const buySizes = allocateFundsByWeights(capitalPerSide, buys.length, weightFactor, incrementPct);
-    const sellSizes = allocateFundsByWeights(capitalPerSide, sells.length, weightFactor, incrementPct);
-    buys.forEach((o, i) => { o.size = buySizes[i] || 0; });
-    sells.forEach((o, i) => { o.size = sellSizes[i] || 0; });
-
-    return { buys, sells };
+    // Level k = k-th slot from the gap on each side. Each placed slot also
+    // carries its MASTER-RAIL index so rotation hops land on adjacent rail
+    // nodes (live anchor-&-refill hop) instead of a flat ×(1+inc).
+    const buys: any[] = built.buys.map((price: number, i: number) => {
+        const k = built.buys.length - i;
+        return { level: k, price, railIdx: built.buySliceStart + i, cooldownUntil: -1, size: buySizes[k - 1] || 0 };
+    });
+    const sells: any[] = built.sells.map((price: number, i: number) => ({
+        level: i + 1, price, railIdx: built.sellStartIdx + i, cooldownUntil: -1, size: sellSizes[i] || 0,
+    }));
+    return { buys, sells, rail: built.rail };
 }
 
-function closeFilledInventoryAtPrice(openBuys: Map<any, any>, openSells: Map<any, any>, exitPrice: number, feeRoundtripPct: number) {
-    if (!Number.isFinite(exitPrice) || exitPrice <= 0) {
-        return { grossUnits: 0, profitUnits: 0, closedOrders: 0 };
+/**
+ * Mark the held inventory position to `markPrice` in capital units.
+ *
+ * Carried bags are a REAL risk the drawdown tracker should see bar-by-bar,
+ * but their mark is informational for scoring: realized rotation profit plus
+ * op fees drive netProfit, and the end-of-run position is reported separately
+ * instead of being dumped into totals.
+ */
+function markInventoryAtPrice(inventory: { units: number; cost: number }, exitPrice: number, feeRoundtripPct: number) {
+    if (!Number.isFinite(exitPrice) || exitPrice <= 0 || inventory.units <= 0) {
+        return { grossUnits: 0, profitUnits: 0 };
     }
-
-    let grossUnits = 0;
-    let profitUnits = 0;
-    let closedOrders = 0;
-
-    for (const order of openBuys.values()) {
-        if (!order?.filled || !Number.isFinite(order.price) || order.price <= 0) continue;
-        if (!Number.isFinite(order.size) || order.size <= 0) continue;
-        const grossPct = (exitPrice / order.price - 1) * 100;
-        const netPct = grossPct - feeRoundtripPct;
-        grossUnits += order.size * (grossPct / 100);
-        profitUnits += order.size * (netPct / 100);
-        closedOrders++;
-    }
-
-    for (const order of openSells.values()) {
-        if (!order?.filled || !Number.isFinite(order.price) || order.price <= 0) continue;
-        if (!Number.isFinite(order.size) || order.size <= 0) continue;
-        const grossPct = (order.price / exitPrice - 1) * 100;
-        const netPct = grossPct - feeRoundtripPct;
-        grossUnits += order.size * (grossPct / 100);
-        profitUnits += order.size * (netPct / 100);
-        closedOrders++;
-    }
-
-    return { grossUnits, profitUnits, closedOrders };
-}
-
-function countCancelableOrders(openBuys: Map<any, any>, openSells: Map<any, any>): number {
-    let count = 0;
-    for (const order of openBuys.values()) {
-        if (!order?.filled) count++;
-    }
-    for (const order of openSells.values()) {
-        if (!order?.filled) count++;
-    }
-    return count;
+    const avgEntry = inventory.cost / inventory.units;
+    const grossUnits = (exitPrice - avgEntry) * inventory.units;
+    const feeUnits = avgEntry * inventory.units * ((feeRoundtripPct / 2) / 100);
+    return { grossUnits, profitUnits: grossUnits - feeUnits };
 }
 
 function simulatePersistentGrid(candles: any[], amaValues: number[], params: any, weightName: string, weightFactor: number) {
-    const { spreadPct, incrementPct, maxMinRatio, maxOrders, feeRoundtripPct,
-            capital, repositionThreshold, btsCreateFee, btsCancelFee,
+    const { spreadPct, incrementPct, maxMinRatio, feeRoundtripPct,
+            capital, repositionThreshold, asymmetricBounds, btsCreateFee, btsCancelFee,
             makerCreateFactor, txFeePrice } = params;
-    const skip = Math.max(20, Math.floor(candles.length * 0.1));
+    // Warmup follows production AMA seeding/convergence (getAmaWarmupBars,
+    // passed via params.warmupBars from sweepOneAma) instead of an arbitrary
+    // fraction of the dataset. Direct callers that omit warmupBars fall back
+    // to the legacy 10% cut.
+    const warmupParam = Number.isFinite(params.warmupBars)
+        ? params.warmupBars
+        : Math.max(20, Math.floor(candles.length * 0.1));
+    const skip = Math.min(warmupParam, Math.max(0, candles.length - 2));
     const capitalPerSide = capital;
+    const makerCreateFeeBts = btsCreateFee * makerCreateFactor;
+    const slopeDeltaThresholdPct = (SLOPE_TRIGGER_FACTOR / 100) * SLOPE_MAX_PCT;
 
-    // State
-    let gridCenter = amaValues[skip];
-    let grid = buildGrid(gridCenter, params, capitalPerSide, weightFactor);
-    let lastRepositionBar = skip;
+    // First tradable bar: need a finite positive AMA to anchor the grid.
+    let startIdx = Math.min(skip, candles.length - 1);
+    let gridCenter = Number.NaN;
+    for (let j = startIdx; j < candles.length; j++) {
+        const v = amaValues[j];
+        if (Number.isFinite(v) && v > 0) { gridCenter = v; startIdx = j; break; }
+    }
 
-    // Open orders: maps level -> { price, size, bar, side }
-    const openBuys = new Map();
-    const openSells = new Map();
-    // Place initial orders
-    for (const o of grid.buys) openBuys.set(o.level, { price: o.price, size: o.size, bar: skip });
-    for (const o of grid.sells) openSells.set(o.level, { price: o.price, size: o.size, bar: skip });
+    // Production AMA slope series (%/bar averaged over the lookback window) —
+    // feeds trigger B and the grid price offset when asymmetricBounds is on.
+    const slopeAt: (number | null)[] = new Array(candles.length).fill(null);
+    for (let j = SLOPE_LOOKBACK_BARS; j < candles.length; j++) {
+        const s = computeAverageAmaSlopePct(amaValues[j], amaValues[j - SLOPE_LOOKBACK_BARS], SLOPE_LOOKBACK_BARS);
+        if (s != null && Number.isFinite(s)) slopeAt[j] = s;
+    }
+
+    // State — slot-rotation engine (mirrors simulateForParams in
+    // backtest_bot_fitting, with weight-profile sized orders):
+    // orders: id -> { side, price, size, linkedBuyPrice, linkedEntryBar,
+    //                 cooldownUntil }. linkedBuyPrice != null marks an armed
+    // refill sell created by a specific filled buy (one-increment rotation).
+    const orders = new Map<number, any>();
+    let nextOrderId = 0;
+    // Bought-and-held base across the whole run (weighted-average entry pool).
+    // Never negative — unfundable sells stay pending instead of shorting.
+    const inventory = { units: 0, cost: 0 };
+    const stepUpFrac = 1 + incrementPct; // one-rail-step rotation distance
+
+    let btsFeesBts = 0;
+    let offsetAppliedCount = 0;
+    // Master rail of the CURRENT epoch — rotation hops read adjacent nodes.
+    let activeRail: number[] = [];
+
+    const placeInitialGrid = (center: number, slopePct: number | null) => {
+        const offsetPct = (asymmetricBounds && slopePct != null)
+            ? computeGridPriceOffsetPct(slopePct, spreadPct)
+            : 0;
+        if (offsetPct !== 0) offsetAppliedCount++;
+        const effCenter = center * (1 + offsetPct / 100);
+        const grid = buildGrid(effCenter, params, capitalPerSide, weightFactor);
+        activeRail = grid.rail;
+        orders.clear();
+        for (const o of grid.buys) {
+            orders.set(nextOrderId++, { side: 'buy', price: o.price, size: o.size, railIdx: o.railIdx, linkedBuyPrice: null, linkedEntryBar: -1, cooldownUntil: -1 });
+        }
+        for (const o of grid.sells) {
+            orders.set(nextOrderId++, { side: 'sell', price: o.price, size: o.size, railIdx: o.railIdx, linkedBuyPrice: null, linkedEntryBar: -1, cooldownUntil: -1 });
+        }
+        btsFeesBts += (grid.buys.length + grid.sells.length) * makerCreateFeeBts;
+    };
+
+    if (Number.isFinite(gridCenter)) placeInitialGrid(gridCenter, slopeAt[startIdx]);
+    let lastRepositionBar = startIdx;
 
     let matchedPairs = 0;
-    let totalProfitUnits = 0; // profit in capital units (size * netPct)
+    let cyclesTotal = 0;
+    let rotationCount = 0;       // linked ping-pong rotations (buy → refill sell)
+    let inventorySaleCount = 0;  // unlinked sells executed against held bags
+    let totalProfitUnits = 0; // REALIZED profit in capital units (size * netPct)
     let totalGrossUnits = 0;
     let touchedOrders = 0;
     let canceledOnReposition = 0;
     let repositionCount = 0;
+    let driftTriggerCount = 0;
+    let slopeTriggerCount = 0;
     let peakOpenOrders = 0;
     let imbalanceSum = 0;
     let imbalanceSamples = 0;
@@ -329,22 +366,30 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
     let runningProfit = 0;
     let peakEquityProfit = 0;
     let maxDrawdown = 0;
-    // Track inventory risk: net exposure from filled-but-unmatched orders
-    let inventoryExposure = 0; // positive = long (bought), negative = short (sold)
+    // Track inventory risk: bought-and-held base, carried across resets —
+    // resets never realize inventory (#4). Long-only (no unfunded shorts).
+    let inventoryExposure = 0; // held base units (long-only, ≥ 0)
     let maxInventoryExposure = 0;
 
-    const liveBars = candles.length - skip - 1;
-    const ordersPerSide = grid.buys.length; // actual orders placed per side (clipped by ratio)
-    const makerCreateFeeBts = btsCreateFee * makerCreateFactor;
-    const newOrdersPerReposition = ordersPerSide * 2;
+    const invAvgEntry = () => (inventory.units > 0 ? inventory.cost / inventory.units : 0);
+    const liveBars = candles.length - startIdx - 1;
+    const ordersPerSide = [...orders.values()].filter((o) => o.side === 'buy').length;
 
-    for (let i = skip + 1; i < candles.length; i++) {
+    // Slope-delta baseline: mirrors botState.gridRangeScalingAmaSlope —
+    // seeded at bootstrap and re-seeded on every reset.
+    let slopeBaseline: number | null = null;
+    for (let j = startIdx + 1; j < candles.length; j++) {
+        if (slopeAt[j] != null) { slopeBaseline = slopeAt[j]; break; }
+    }
+
+    for (let i = startIdx + 1; i < candles.length; i++) {
         const ama = amaValues[i];
         const hi = candles[i].high;
         const lo = candles[i].low;
         const gridAgeBars = i - lastRepositionBar;
 
-        // ── Reposition check: AMA drifted too far from grid center ──────
+        // ── Reposition check: trigger A (AMA drift, ratchet) or trigger B
+        //    (slope delta, only under the asymmetricBounds whitelist gate).
         const drift = Math.abs(ama - gridCenter) / gridCenter;
         const driftPct = drift * 100;
         centerDriftSumPct += driftPct;
@@ -352,106 +397,151 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
         gridAgeSumBars += gridAgeBars;
         if (gridAgeBars > maxGridAgeBars) maxGridAgeBars = gridAgeBars;
         if (drift >= repositionThreshold * 0.5) nearThresholdBars++;
-        if (drift >= repositionThreshold) {
-            triggerDriftSumPct += driftPct;
-            canceledOnReposition += countCancelableOrders(openBuys, openSells);
-            repositionCount++;
-            const exitPrice = Number.isFinite(ama) && ama > 0 ? ama : candles[i].close;
-            const forcedClose = closeFilledInventoryAtPrice(openBuys, openSells, exitPrice, feeRoundtripPct);
-            totalGrossUnits += forcedClose.grossUnits;
-            totalProfitUnits += forcedClose.profitUnits;
-            runningProfit += forcedClose.profitUnits;
-            // Unmatched inventory is realized on reposition (position closed at market)
-            inventoryExposure = 0;
-            openBuys.clear();
-            openSells.clear();
 
+        let shouldReposition = drift >= repositionThreshold;
+        if (shouldReposition) { triggerDriftSumPct += driftPct; driftTriggerCount++; }
+        if (!shouldReposition && asymmetricBounds && slopeBaseline != null && slopeAt[i] != null) {
+            const slopeDeltaPct = Math.abs(slopeAt[i]! - slopeBaseline);
+            if (slopeDeltaPct >= slopeDeltaThresholdPct) { shouldReposition = true; slopeTriggerCount++; }
+        }
+
+        if (shouldReposition && Number.isFinite(ama) && ama > 0) {
+            canceledOnReposition += orders.size;
+            btsFeesBts += orders.size * btsCancelFee;
+            orders.clear(); // inventory survives — resync never market-sells
+            repositionCount++;
             // Re-center grid
             gridCenter = ama;
-            grid = buildGrid(gridCenter, params, capitalPerSide, weightFactor);
+            if (slopeAt[i] != null) slopeBaseline = slopeAt[i];
+            placeInitialGrid(gridCenter, slopeAt[i]);
             lastRepositionBar = i;
-
-            for (const o of grid.buys) openBuys.set(o.level, { price: o.price, size: o.size, bar: i });
-            for (const o of grid.sells) openSells.set(o.level, { price: o.price, size: o.size, bar: i });
         }
 
         // ── Track imbalance & peak ──────────────────────────────────────
-        const currentOpen = openBuys.size + openSells.size;
+        const currentOpen = orders.size;
         if (currentOpen > peakOpenOrders) peakOpenOrders = currentOpen;
-        imbalanceSum += Math.abs(openBuys.size - openSells.size);
+        let buyCountNow = 0;
+        for (const [, o] of orders) { if (o.side === 'buy') buyCountNow++; }
+        imbalanceSum += Math.abs(buyCountNow - (orders.size - buyCountNow));
         imbalanceSamples++;
 
-        // ── Check fills on PERSISTENT orders (fixed chain prices) ───────
-        // Only check UNFILLED orders (skip already-filled pending match)
-        const filledBuysThisBar: any[] = [];
-        const filledSellsThisBar: any[] = [];
-
-        for (const [lvl, order] of openBuys) {
-            if (!order.filled && lo <= order.price) {
-                filledBuysThisBar.push({ lvl, order });
-            }
+        // ── Fill detection against FIXED chain prices ───────────────────
+        const filledBuysThisBar: { id: number; order: any }[] = [];
+        const filledSellsThisBar: { id: number; order: any }[] = [];
+        for (const [id, o] of orders) {
+            if (i < o.cooldownUntil || !(o.size > 0)) continue;
+            if (o.side === 'buy' && lo <= o.price) filledBuysThisBar.push({ id, order: o });
+            else if (o.side === 'sell' && hi >= o.price) filledSellsThisBar.push({ id, order: o });
         }
-        for (const [lvl, order] of openSells) {
-            if (!order.filled && hi >= order.price) {
-                filledSellsThisBar.push({ lvl, order });
-            }
-        }
+        touchedOrders += filledBuysThisBar.length + filledSellsThisBar.length;
+        // Base held BEFORE this bar's intakes — unlinked sells may only
+        // dispose against pre-existing funds (same-bar funding not assumed).
+        const disposablesAtBarStart = inventory.units;
 
-        // Process buy fills
+        // ── Buy intakes first: base enters the inventory pool, refill armed
+        //    at the ADJACENT MASTER-RAIL NODE above (cooldown blocks same-bar).
         for (const fb of filledBuysThisBar) {
-            touchedOrders++;
-            inventoryExposure += fb.order.size; // bought → long exposure
-            // Mark as filled, waiting for paired sell at same level
-            openBuys.set(fb.lvl, { ...fb.order, filled: true, filledBar: i, side: 'buy' });
+            orders.delete(fb.id);
+            inventory.units += fb.order.size;
+            inventory.cost += fb.order.price * fb.order.size;
+            const upIdx = (fb.order.railIdx ?? -1) + 1;
+            const refillPrice = activeRail[upIdx] ?? fb.order.price * stepUpFrac;
+            orders.set(nextOrderId++, {
+                side: 'sell',
+                price: refillPrice,
+                size: fb.order.size,
+                railIdx: upIdx,
+                linkedBuyPrice: fb.order.price,
+                linkedEntryBar: i,
+                cooldownUntil: i + 1,
+            });
+            btsFeesBts += makerCreateFeeBts;
         }
 
-        // Process sell fills
+        // ── Sell disposals: linked refills book the one-rail-hop rotation;
+        //     unlinked sells need held inventory. Linked resolve FIRST.
+        filledSellsThisBar.sort((a, b) => ((a.order.linkedBuyPrice != null ? 0 : 1) - (b.order.linkedBuyPrice != null ? 0 : 1)));
+        let disposables = disposablesAtBarStart;
         for (const fs of filledSellsThisBar) {
-            touchedOrders++;
-            inventoryExposure -= fs.order.size; // sold → short exposure
-            // Mark as filled, waiting for paired buy at same level
-            openSells.set(fs.lvl, { ...fs.order, filled: true, filledBar: i, side: 'sell' });
+            const order = fs.order;
+            const size = order.size;
+            if (order.linkedBuyPrice != null) {
+                const grossPct = (order.price / order.linkedBuyPrice - 1) * 100;
+                const netPct = grossPct - feeRoundtripPct;
+                totalGrossUnits += size * (grossPct / 100);
+                totalProfitUnits += size * (netPct / 100);
+                runningProfit += size * (netPct / 100);
+                cyclesTotal++;
+                rotationCount++;
+                matchedPairs++;
+                matchedOpenDurationBars += Math.abs(i - order.linkedEntryBar);
+                // Dispose the base this rotation bought (at pool-average cost).
+                const applied = Math.min(size, inventory.units);
+                inventory.cost -= applied * invAvgEntry();
+                inventory.units -= applied;
+                // Its disposal also drains the pre-bar funding budget —
+                // otherwise later unlinked sales could overspend stock.
+                disposables -= applied;
+                // Freed quote re-bids the ADJACENT RAIL NODE below.
+                const downIdx = (order.railIdx ?? 0) - 1;
+                const rebidPrice = activeRail[downIdx] ?? order.price / stepUpFrac;
+                orders.delete(fs.id);
+                orders.set(nextOrderId++, {
+                    side: 'buy',
+                    price: rebidPrice,
+                    size,
+                    railIdx: downIdx,
+                    linkedBuyPrice: null,
+                    linkedEntryBar: -1,
+                    cooldownUntil: i + 1,
+                });
+                btsFeesBts += makerCreateFeeBts;
+            } else if (disposables >= size - 1e-12) {
+                const avgEntry = invAvgEntry();
+                const grossPct = (order.price / avgEntry - 1) * 100;
+                const netPct = grossPct - feeRoundtripPct;
+                totalGrossUnits += size * (grossPct / 100);
+                totalProfitUnits += size * (netPct / 100);
+                runningProfit += size * (netPct / 100);
+                cyclesTotal++;
+                inventorySaleCount++;
+                matchedPairs++;
+                inventory.cost -= avgEntry * size;
+                inventory.units -= size;
+                disposables -= size;
+                orders.delete(fs.id); // sold bag is gone; slot not re-armed
+            } else {
+                // Unfundable (not enough base): stays open, retries next bar.
+                order.cooldownUntil = i + 1;
+            }
         }
 
-        // Match completed pairs: both buy AND sell at same level are filled
-        for (let k = 1; k <= maxOrders; k++) {
-            const buyEntry = openBuys.get(k);
-            const sellEntry = openSells.get(k);
-            if (!buyEntry?.filled || !sellEntry?.filled) continue;
-
-            // Matched pair!
-            openBuys.delete(k);
-            openSells.delete(k);
-            matchedPairs++;
-            const duration = Math.abs(sellEntry.filledBar - buyEntry.filledBar);
-            matchedOpenDurationBars += duration;
-            const avgSize = (buyEntry.size + sellEntry.size) / 2;
-            const pairGrossPct = (sellEntry.price / buyEntry.price - 1) * 100;
-            const pairNetPct = pairGrossPct - feeRoundtripPct;
-            const profitUnits = avgSize * (pairNetPct / 100);
-            totalGrossUnits += avgSize * (pairGrossPct / 100);
-            totalProfitUnits += profitUnits;
-            runningProfit += profitUnits;
-        }
-
-        // Track max inventory exposure
-        const absExposure = Math.abs(inventoryExposure);
-        if (absExposure > maxInventoryExposure) maxInventoryExposure = absExposure;
+        // Track max inventory exposure (long-only)
+        if (inventory.units > maxInventoryExposure) maxInventoryExposure = inventory.units;
 
         // ── Drawdown tracking ───────────────────────────────────────────
-        const markPrice = Number.isFinite(candles[i].close) && candles[i].close > 0
-            ? candles[i].close
-            : ((Number.isFinite(ama) && ama > 0) ? ama : gridCenter);
-        const unrealized = closeFilledInventoryAtPrice(openBuys, openSells, markPrice, feeRoundtripPct).profitUnits;
-        const equityProfit = runningProfit + unrealized;
+        // Realized equity only: carried bags are reported informationally and
+        // excluded from scoring, so their (unbounded, balance-free) marks must
+        // not distort the risk term either. Bag risk stays visible via
+        // finalInventoryUnits / finalInventoryMarkUnits.
+        const equityProfit = runningProfit;
         if (equityProfit > peakEquityProfit) peakEquityProfit = equityProfit;
         const dd = peakEquityProfit - equityProfit;
         if (dd > maxDrawdown) maxDrawdown = dd;
     }
 
-    const fillEfficiency = touchedOrders > 0 ? (matchedPairs / touchedOrders) * 100 : 0;
+    // ── End-of-run inventory mark (informational, NOT in profit) ────────
+    // Bought-and-held base is real carried risk but unrealized bag marks are
+    // excluded from netProfit/scoring so trend combos can't dump phantom
+    // paper profit into the objective. Drawdown likewise tracks REALIZED
+    // equity only; bag risk stays visible through these info fields.
+    inventoryExposure = inventory.units;
+    const lastClose = candles.length > 0 ? candles[candles.length - 1].close : NaN;
+    const finalInventoryMark = markInventoryAtPrice(inventory, lastClose, feeRoundtripPct);
+
+    const fillEfficiency = touchedOrders > 0 ? (cyclesTotal / touchedOrders) * 100 : 0;
     const pairsPerDay = liveBars > 0 ? matchedPairs / (liveBars / 24) : 0;
-    const avgOpenDurationBars = matchedPairs > 0 ? matchedOpenDurationBars / matchedPairs : 0;
+    const avgOpenDurationBars = rotationCount > 0 ? matchedOpenDurationBars / rotationCount : 0;
     const avgImbalance = imbalanceSamples > 0 ? imbalanceSum / imbalanceSamples : 0;
     const avgProfitPerPair = matchedPairs > 0 ? totalProfitUnits / matchedPairs : 0;
     const profitPerCapital = capital > 0 ? totalProfitUnits / (capital * 2) : 0; // total capital = 2 sides
@@ -461,9 +551,11 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
     const nearThresholdBarsPct = liveBars > 0 ? (nearThresholdBars / liveBars) * 100 : 0;
     const avgTriggerDriftPct = repositionCount > 0 ? triggerDriftSumPct / repositionCount : 0;
     const avgCancelOrdersPerReposition = repositionCount > 0 ? canceledOnReposition / repositionCount : 0;
-    const estimatedFeePerRepositionBts = newOrdersPerReposition * makerCreateFeeBts + avgCancelOrdersPerReposition * btsCancelFee;
-    const totalRepositionFeesBts = repositionCount * estimatedFeePerRepositionBts;
+    // Exact BTS fee totals (creates + cancels + per-cycle refills), not an
+    // estimate — the live bot pays the same per-op fees.
+    const totalRepositionFeesBts = btsFeesBts;
     const feePerDayBts = liveBars > 0 ? totalRepositionFeesBts / (liveBars / 24) : 0;
+    const estimatedFeePerRepositionBts = repositionCount > 0 ? totalRepositionFeesBts / repositionCount : 0;
     const totalRepositionFeeUnits = totalRepositionFeesBts * txFeePrice;
     const netProfitUnits = totalProfitUnits - totalRepositionFeeUnits;
     const netProfitPerCapital = capital > 0 ? netProfitUnits / (capital * 2) : 0;
@@ -480,10 +572,16 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
         incrementPct: incrementPct * 100, // store as %
         maxMinRatio,
         matchedPairs,
+        cyclesTotal,
+        rotationCount,
+        inventorySaleCount,
         touchedOrders,
         fillEfficiency,
         totalProfitUnits,
         totalGrossUnits,
+        finalInventoryUnits: inventoryExposure,
+        finalInventoryAvgEntry: inventory.units > 0 ? inventory.cost / inventory.units : 0,
+        finalInventoryMarkUnits: finalInventoryMark.profitUnits, // informational
         profitPerCapital,
         pairsPerDay,
         avgOpenDurationBars,
@@ -492,6 +590,8 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
         avgImbalance,
         canceledOnReposition,
         repositionCount,
+        driftTriggerCount,
+        slopeTriggerCount,
         maxDrawdown,
         maxDrawdownPct,
         maxInventoryExposure,
@@ -501,6 +601,7 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
         maxCenterDriftPct,
         nearThresholdBarsPct,
         avgTriggerDriftPct,
+        offsetAppliedCount,
         makerCreateFeeBts,
         btsCancelFee,
         avgCancelOrdersPerReposition,
@@ -520,6 +621,8 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
 
 function sweepOneAma(strategy: any, candles: any[], closes: number[], weightEntries: [string, number][], cfg: any) {
     const amaValues = calculateAMA(closes, { erPeriod: strategy.er, fastPeriod: strategy.fast, slowPeriod: strategy.slow });
+    // Production-aligned warmup: ER window + convergence (getAmaWarmupBars).
+    const warmupBars = getAmaWarmupBars(strategy.er, strategy.slow, 0, strategy.fast);
     let best: any = null;
     const top5: any[] = [];
     const allSims: any[] = [];
@@ -541,10 +644,12 @@ function sweepOneAma(strategy: any, candles: any[], closes: number[], weightEntr
                         feeRoundtripPct: cfg.feeRoundtripPct,
                         capital: cfg.capital,
                         repositionThreshold: cfg.repositionPct / 100,
+                        asymmetricBounds: cfg.asymmetricBounds,
                         btsCreateFee: cfg.btsCreateFee,
                         btsCancelFee: cfg.btsCancelFee,
                         makerCreateFactor: cfg.makerCreateFactor,
                         txFeePrice: cfg.txFeePrice,
+                        warmupBars,
                     }, weightName, weightFactor);
 
                     if (!best || sim.score > best.score) best = sim;
@@ -573,8 +678,10 @@ function sweepOneAma(strategy: any, candles: any[], closes: number[], weightEntr
 if (!isMainThread) {
     const { strategy, candles, closes, weightEntries, cfg } = workerData;
     const result = sweepOneAma(strategy, candles, closes, weightEntries, cfg);
-        parentPort!.postMessage(result);
-    process.exit(0);
+    parentPort!.postMessage(result);
+    // Exit naturally: an explicit process.exit(0) here can race the
+    // postMessage flush and silently drop the result (same pattern as
+    // optimizer_high_resolution.ts workers, which exit on their own).
 }
 
 // ── Parallel dispatch (main thread) ─────────────────────────────────────────
@@ -585,7 +692,9 @@ function runParallel(strategies: any[], candles: any[], closes: number[], weight
 
     return Promise.all(strategies.map((strategy) => {
         return new Promise((resolve, reject) => {
-            const worker = new Worker(__filename, {
+            // ESM: resolve this module's path from import.meta.url
+            // (__filename is undefined in ES modules).
+            const worker = new Worker(fileURLToPath(import.meta.url), {
                 workerData: { strategy, candles, closes, weightEntries, cfg },
             });
             worker.on('message', resolve);
@@ -620,9 +729,11 @@ async function run() {
     console.log(`  Spread:       ${cfg.spreadValues[0]}..${cfg.spreadValues[cfg.spreadValues.length - 1]}% (${cfg.spreadValues.length})`);
     console.log(`  Increment:    ${cfg.incrementValues[0]}..${cfg.incrementValues[cfg.incrementValues.length - 1]}% (${cfg.incrementValues.length})`);
     console.log(`  Ratio:        ${cfg.ratioValues[0]}..${cfg.ratioValues[cfg.ratioValues.length - 1]} (${cfg.ratioValues.length})`);
-    console.log(`  Max orders:   ${cfg.maxOrders}/side (actual count from ratio+increment) | Capital: ${cfg.capital}/side | Fee: ${cfg.feeRoundtripPct}%`);
+    console.log(`  Max orders:   ${cfg.maxOrders}/side (size cap) | Capital: ${cfg.capital}/side | Fee: ${cfg.feeRoundtripPct}%`);
     console.log(`  Spread floor: > fee (${cfg.feeRoundtripPct}%)`);
-    console.log(`  Reposition:   ${cfg.repositionPct}% AMA drift from grid center`);
+    console.log(`  Reset (A):    ${cfg.repositionPct}% AMA drift from grid center (ratchet)`);
+    console.log(`  Asym. bounds: ${cfg.asymmetricBounds ? 'ON — slope reset (B) + grid price offset enabled (whitelist semantics)' : 'OFF — typical non-whitelisted bot (production default)'}`);
+    console.log(`  Reset (B):    |slope - slope@lastReset| >= ${fmt((SLOPE_TRIGGER_FACTOR / 100) * SLOPE_MAX_PCT, 4)}% (lookback ${SLOPE_LOOKBACK_BARS})${cfg.asymmetricBounds ? '' : ' [gated off]'}`);
     console.log(`  Tx model:     create=${fmt(cfg.btsCreateFee, 5)} BTS, cancel=${fmt(cfg.btsCancelFee, 5)} BTS, maker=${fmt(cfg.makerCreateFactor * 100, 1)}%, 1 BTS=${fmt(cfg.txFeePrice, 2)} units`);
     console.log(`  Combos/AMA:   ${totalCombos}  |  Total: ${totalCombos * strategies.length}\n`);
 
@@ -755,7 +866,9 @@ async function run() {
     console.log(`  Repositions: ${winner.sim.repositionCount}`);
     console.log(`  Grid age:    avg ${fmt(winner.sim.avgGridAgeBars, 1)} bars | max ${fmt(winner.sim.maxGridAgeBars, 0)} bars`);
     console.log(`  Drift:       avg ${fmt(winner.sim.avgCenterDriftPct, 2)}% | max ${fmt(winner.sim.maxCenterDriftPct, 2)}% | near-threshold ${fmt(winner.sim.nearThresholdBarsPct, 1)}%`);
-    console.log(`  Tx burn:     ${fmt(winner.sim.estimatedFeePerRepositionBts, 4)} BTS/reposition | ${fmt(winner.sim.feePerDayBts, 2)} BTS/day`);
+    console.log(`  Tx burn:     ${fmt(winner.sim.estimatedFeePerRepositionBts, 4)} BTS/reposition | ${fmt(winner.sim.feePerDayBts, 2)} BTS/day (exact per-op totals)`);
+    console.log(`  Cycles:      ${winner.sim.cyclesTotal} rotations (${winner.sim.rotationCount} rail-step + ${winner.sim.inventorySaleCount} inventory sales)`);
+    console.log(`  Carried:     ${fmt(winner.sim.finalInventoryUnits, 4)} base @ ${fmt(winner.sim.finalInventoryAvgEntry, 6)} avg (mark ${fmt(winner.sim.finalInventoryMarkUnits, 2)} units — info only, not scored)`);
     console.log(`  Score:       ${fmt(winner.sim.score, 2)}`);
 
     // ── Save JSON ───────────────────────────────────────────────────────────
@@ -772,6 +885,7 @@ async function run() {
             capitalPerSide: cfg.capital,
             feeRoundtripPct: cfg.feeRoundtripPct,
             repositionPct: cfg.repositionPct,
+            asymmetricBounds: cfg.asymmetricBounds,
             btsCreateFee: cfg.btsCreateFee,
             btsCancelFee: cfg.btsCancelFee,
             makerCreateFactor: cfg.makerCreateFactor,
@@ -786,6 +900,7 @@ async function run() {
                 totalCombos: totalCombos * strategies.length,
             },
             scoring: 'netProfitPerCapital * 100 * log10(max(1, matchedPairs)) - maxDrawdownPct * 0.5',
+            gridModel: 'production createOrderGrid port (shared with bot_fitting): master rail sqrt(1±inc) + gapSlots spread zone; slot rotation (filled buy re-offers one rail step up, freed quote re-bids one step down, ~increment% per completed rotation); unlinked sells execute only against held inventory at weighted-average entry; bought base carries across resets and the end-of-run inventory mark is informational (excluded from scoring); exact per-op BTS fees',
         },
         strategies,
         perAma: byAma.map((row) => ({
@@ -809,9 +924,11 @@ async function run() {
     console.log(`\nSaved: ${path.relative(process.cwd(), outPath)}`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Main-thread only: workers inherit process.argv[1], so the entry guard alone
+// would also match inside workers and re-run main() there.
+if (isMainThread && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     run().catch((err) => { console.error(err); process.exit(1); });
 }
 
-export { WEIGHT_PROFILES, allocateFundsByWeights, buildGrid, closeFilledInventoryAtPrice, countCancelableOrders, simulatePersistentGrid, sweepOneAma }
+export { WEIGHT_PROFILES, allocateFundsByWeights, buildGrid, markInventoryAtPrice, simulatePersistentGrid, sweepOneAma }
 

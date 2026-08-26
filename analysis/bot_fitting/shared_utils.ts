@@ -2,6 +2,7 @@
 
 import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
+import { normalizeCandle } from '../math_utils.js';
 
 /**
  * Shared utilities for bot-fitting scripts.
@@ -9,14 +10,19 @@ const { readJSON } = getStorage();
 
 
 function toCandles(arr: any[]) {
-    return arr.map((c: any) => ({
-        timestamp: c[0],
-        open: c[1],
-        high: c[2],
-        low: c[3],
-        close: c[4],
-        volume: c[5],
-    }));
+    // Canonical accessor transform (market_adapter/candle_utils via math_utils)
+    // instead of hand-rolled array indexing.
+    return arr
+        .map((c: any) => normalizeCandle(c))
+        .filter(Boolean)
+        .map((c: any) => ({
+            timestamp: c.time * 1000,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: c.volume,
+        }));
 }
 
 function parseListOrRange(spec: any, fallback: any) {
