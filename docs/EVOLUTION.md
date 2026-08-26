@@ -8,7 +8,7 @@ DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares 
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 2,073 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
-- **Stability**: Progression from manual testing to a suite of 237 automated test files
+- **Stability**: Progression from manual testing to a suite of 238 automated test files
 - **Releases**: 99 release entries (v0.1.0 to v1.4.22)
 
 ---
@@ -61,7 +61,7 @@ v1.4.12 completed the module transition to native ES modules (root + claw `"type
 
 ### Phase 9: Post-ESM Cleanup, Consolidation & Hardening (August 2026)
 
-The post-ESM releases consolidated state, code, and tooling while hardening the grid engine. **State & packaging** (v1.4.14–v1.4.17): all user/runtime state centralized on a resolver-derived profiles dir (`~/.config/dexbot2/profiles`) safe from re-clones, read-only prefixes, and npm wipes; divergence surplus/hole pairs became in-place order rotations; npm auto-update shipped; duplicated EC-crypto/settings/asset-resolution code collapsed; dead exports purged; analysis tooling moved under strict TypeScript. **Grid hardening** (v1.4.19–v1.4.21): COW broadcasts capped at `MAX_OPS_PER_BROADCAST` (4) with chunked retry-on-uncertain; boundary promotion and persisted-boundary restore gated against gap-floor overrun poison behind a shared sell-rail ceiling enforced at commit and restore time; spread-collapse fixed via the shared `isSlotInRail` filter; silent-failure runtime defects from a modules-wide audit fixed (NaN fund-invariant tolerance, always-flush fill store, double-decremented fill guard). **Tooling & UX** (v1.4.20–v1.4.22): live/research clip parity with centralized chart sliders and analysis outputs on the central path resolver; claw logic deduplicated with hardened error paths; browser storage adapter persists deletions; editor green/red input feedback extended to funds and prices; compile-first runtime completed — tsx removed entirely, every entry point and the test suite running compiled dist under plain node through frozen-ESM-safe seams, plus exact AMA cold-start bootstrap sizing and research tools unified onto production slope/bounds math.
+The post-ESM releases consolidated state, code, and tooling while hardening the grid engine. **State & packaging** (v1.4.14–v1.4.17): all user/runtime state centralized on a resolver-derived profiles dir (`~/.config/dexbot2/profiles`) safe from re-clones, read-only prefixes, and npm wipes; divergence surplus/hole pairs became in-place order rotations; npm auto-update shipped; duplicated EC-crypto/settings/asset-resolution code collapsed; dead exports purged; analysis tooling moved under strict TypeScript. **Grid hardening** (v1.4.19–v1.4.21): COW broadcasts capped at `MAX_OPS_PER_BROADCAST` (4) with chunked retry-on-uncertain; boundary promotion and persisted-boundary restore gated against gap-floor overrun poison behind a shared sell-rail ceiling enforced at commit and restore time; spread-collapse fixed via the shared `isSlotInRail` filter; silent-failure runtime defects from a modules-wide audit fixed (NaN fund-invariant tolerance, always-flush fill store, double-decremented fill guard). **Tooling & UX** (v1.4.20–v1.4.22): live/research clip parity with centralized chart sliders and analysis outputs on the central path resolver; claw logic deduplicated with hardened error paths; browser storage adapter persists deletions; editor green/red input feedback extended to funds and prices; compile-first runtime completed — tsx removed entirely, every entry point and the test suite running compiled dist under plain node through frozen-ESM-safe seams, plus exact AMA cold-start bootstrap sizing and research tools unified onto production slope/bounds math. Post-v1.4.22 work followed the same themes: bot-fitting backtests re-modeled on the production grid lifecycle (slot rotation with realized-only scoring), analysis tooling consolidated onto market_adapter sources with folder-audit bug fixes, a Kibana client hardened against proxy connection resets, and TradingView-style price-axis interaction added to the chart exporter.
 
 ---
 
@@ -110,7 +110,7 @@ Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CH
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 25, 2026 (v1.4.22)
-**Total Commits**: 2,073
-**Date Range**: December 2, 2025 – August 25, 2026
+**Last Updated**: August 26, 2026
+**Total Commits**: 2,084
+**Date Range**: December 2, 2025 – August 26, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
