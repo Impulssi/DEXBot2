@@ -72,7 +72,10 @@ function loadBotMeta(botKey: any, filePath = PATHS.PROFILES.BOTS_JSON) {
 
 function resolveAmaConfig(botKey: any) {
     const botMeta = loadBotMeta(botKey);
-    if (!botMeta) return { ...MARKET_ADAPTER.AMAS.AMA3, erSmoothPeriod: 0 };
+    // Unknown bot key: fall back to the global erSmoothPeriod default (same
+    // resolution path production uses) instead of forcing 0 — a typo'd
+    // --bot-key must not silently research with different ER smoothing.
+    if (!botMeta) return { ...MARKET_ADAPTER.AMAS.AMA3, erSmoothPeriod: Number(MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD) };
 
     const rawGridPrice = String(botMeta?.gridPrice || '').trim().toLowerCase();
     const isAmaKeyword = AMA_KEYWORDS.has(rawGridPrice);

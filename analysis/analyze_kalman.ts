@@ -29,15 +29,22 @@ function parseArgs() {
     const args = process.argv.slice(2);
     const config: {
         source: { type: string; config: SourceConfig };
-        rNoise: number;
-        qNoise: number;
+        rNoise: number | null;
+        qTactical: number | null;
+        qModal: number | null;
+        qNoise: number | null;
         chartFile: string;
         quiet: boolean;
         listBots: boolean;
     } = {
         source: { type: 'market_adapter', config: { botKey: '' } },
-        rNoise: 0.05,
-        qNoise: 0.005,
+        // Defaults resolve to the live MARKET_ADAPTER Kalman constants so
+        // runs are directly comparable with production (qTactical 0.01,
+        // qModal 0.0001 — NOT a single shared Q for both filters).
+        rNoise: null,
+        qTactical: null,
+        qModal: null,
+        qNoise: null,
         chartFile: path.join(PATHS.ANALYSIS.CHARTS_DIR, 'kalman_chart.html'),
         quiet: false,
         listBots: false,
@@ -53,6 +60,8 @@ function parseArgs() {
         }
         else if (arg === '--r') config.rNoise = parseFloat(args[++i]);
         else if (arg === '--q') config.qNoise = parseFloat(args[++i]);
+        else if (arg === '--q-tactical') config.qTactical = parseFloat(args[++i]);
+        else if (arg === '--q-modal') config.qModal = parseFloat(args[++i]);
         else if (arg === '--chart') config.chartFile = args[++i];
         else if (arg === '--list-bots') config.listBots = true;
         else if (arg === '--quiet') config.quiet = true;
@@ -79,9 +88,15 @@ async function main() {
         }
 
         // ── Kalman analysis ──────────────────────────────────────────────────
+        // Unset flags fall through to the live KalmanTrendAnalyzer defaults
+        // (MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_*_DEFAULT). --q still maps to
+        // both filters for quick what-ifs, but per-filter overrides
+        // (--q-tactical / --q-modal) exist so runs can mirror production
+        // exactly: Q = (0.01 tactical, 0.0001 modal).
         const analyzer = new KalmanTrendAnalyzer({
-            rNoise: config.rNoise,
-            qNoise: config.qNoise
+            rNoise: config.rNoise ?? undefined,
+            qTactical: config.qTactical ?? config.qNoise ?? undefined,
+            qModal: config.qModal ?? config.qNoise ?? undefined,
         });
 
         const allResults: any[] = [];
@@ -129,7 +144,7 @@ async function main() {
         }
 
         // ── Generate chart ───────────────────────────────────────────────────
-        const html = generateHTML({ allResults }, 'Kalman Trend Analysis');
+        const html = generateHTML({ allResults, amaConfig, clipPct: MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE }, 'Kalman Trend Analysis');
         writeChartFile(config.chartFile, html);
 
         if (!config.quiet) console.log(`[Kalman] ✓ Chart saved to ${config.chartFile}`);

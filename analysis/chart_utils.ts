@@ -58,7 +58,16 @@ function writeChartFile(filePath: any, html: any) {
     const chartDir = path.dirname(filePath);
     if (!fs.existsSync(chartDir)) ensureDir(chartDir);
     ensureSiblingUplotAssets(chartDir);
-    fs.writeFileSync(filePath, html, 'utf8');
+    // Atomic write (tmp + rename, matching the production storage adapter
+    // pattern) so a crash mid-write can never leave a truncated chart file.
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+    try {
+        fs.writeFileSync(tmpPath, html, 'utf8');
+        fs.renameSync(tmpPath, filePath);
+    } catch (err) {
+        try { fs.unlinkSync(tmpPath); } catch (_) { /* best-effort cleanup */ }
+        throw err;
+    }
 }
 
 /**

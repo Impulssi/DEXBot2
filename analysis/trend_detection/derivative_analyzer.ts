@@ -235,6 +235,10 @@ class DerivativeAnalyzer {
     rsiBullThreshold: number;
     rsiBearThreshold: number;
     macdMinHist: number;
+    // Resolved threshold for the MACD-line gates: falls back to the historical
+    // 0.02 default only when unset/NaN, so an explicit 0 (strict sign test)
+    // stays expressible via the API.
+    macdLineGateThreshold: number;
     fastSmaCommitmentBars: number;
     trendFilterEnabled: boolean;
     trendFilterMinBars: number;
@@ -311,6 +315,11 @@ class DerivativeAnalyzer {
         this.rsiBullThreshold    = config.rsiBullThreshold   ?? 55;
         this.rsiBearThreshold    = config.rsiBearThreshold   ?? 45;
         this.macdMinHist         = config.macdMinHist        ?? 0;
+        // Unset/NaN → historical 0.02 gate default; explicit 0 → strict sign test.
+        // (`this.macdMinHist || 0.02` at the gates made explicit 0 unreachable.)
+        this.macdLineGateThreshold = config.macdMinHist != null && Number.isFinite(config.macdMinHist)
+            ? config.macdMinHist
+            : 0.02;
         this.fastSmaCommitmentBars = config.fastSmaCommitmentBars ?? 2;
         this.trendFilterEnabled  = config.trendFilterEnabled ?? false;
         this.trendFilterMinBars  = config.trendFilterMinBars ?? 3;
@@ -421,7 +430,7 @@ class DerivativeAnalyzer {
             // This ignores marginal crossings at ~0 and ensures signals only start when
             // momentum is clearly confirmed.
             if (this.macd && this.currMacd !== null) {
-                const threshold = this.macdMinHist || 0.02;
+                const threshold = this.macdLineGateThreshold;
                 if ((rawInterp === 'BEAR' || rawInterp === 'BEAR_WEAK') && this.currMacd.macd > -threshold)
                     rawInterp = 'NEUTRAL';
                 if ((rawInterp === 'BULL' || rawInterp === 'BULL_WEAK') && this.currMacd.macd < threshold)
@@ -744,7 +753,7 @@ class DerivativeAnalyzer {
         if (interp !== 'BULL' && interp !== 'BEAR') return false;
 
         if (this.macd && this.currMacd !== null) {
-            const threshold = this.macdMinHist || 0.02;
+            const threshold = this.macdLineGateThreshold;
             if (interp === 'BULL' && this.currMacd.macd < threshold) return true;
             if (interp === 'BEAR' && this.currMacd.macd > -threshold) return true;
         }

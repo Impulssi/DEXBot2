@@ -19,7 +19,7 @@
  */
 
 import path from 'node:path';
-import { HurstAnalyzer }              from './trend_detection/hurst_analyzer.js';
+import { HurstAnalyzer, classifyHurst }  from './trend_detection/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { PATHS } from '../modules/paths.js';
@@ -48,9 +48,9 @@ function geoRange(center: number, factor: number, n: number) {
 
 const HURST_WINDOWS  = geoRange(HURST_CENTER, RANGE_FACTOR, N_POINTS);
 const PE_WINDOWS     = geoRange(PE_CENTER, RANGE_FACTOR, N_POINTS);
-const HURST_SCALES   = [8, 16, 32, 64];
-const PE_M           = 5;
-const PE_DELAY       = 1;
+const HURST_SCALES   = HURST_CONFIG.scales;
+const PE_M           = PE_CONFIG.m;
+const PE_DELAY       = PE_CONFIG.delay;
 
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -82,14 +82,16 @@ function parseArgs() {
     return config;
 }
 
-const H_UPPER = 0.5 + MARKET_ADAPTER.HURST_ZONE_BAND;
-const H_LOWER = 0.5 - MARKET_ADAPTER.HURST_ZONE_BAND;
+// Signal-quality bands from MARKET_ADAPTER.PE_NODES (structured / mixed / noise).
+const PE_STRUCTURED = MARKET_ADAPTER.PE_NODES[0];
+const PE_NOISE = MARKET_ADAPTER.PE_NODES[MARKET_ADAPTER.PE_NODES.length - 1];
 
+// Hurst band classification delegates to the production classifyHurst
+// (market_adapter/core/signals/hurst_analyzer.ts) so boundary semantics
+// (inclusive >=/<=) and zone width stay on one logic path.
 function regimeBand(H: number | null): string {
     if (H === null) return 'RANDOM';
-    if (H > H_UPPER) return 'TRENDING';
-    if (H < H_LOWER) return 'MEAN_REVERTING';
-    return 'RANDOM';
+    return classifyHurst(H).regime;
 }
 
 function rankNormalize(arr: number[]) {
@@ -119,14 +121,20 @@ function scoreWindowPair(prices: number[], hurstWindow: number, peWindow: number
     const firstReady = hArr.findIndex(v => v !== null);
     if (firstReady < 0) return null;
 
-    const readyH = hArr.slice(firstReady);
-    const readyP = pArr.slice(firstReady).filter((v): v is number => v !== null);
-    const m = readyH.length;
+    // ── Regime sequences ──────────────────────────────────────────────────
+    // Pair H and PE strictly per bar: both analyzers become ready on different
+    // schedules (PE window vs Hurst window), so slicing from Hurst readiness
+    // and independently null-filtering PE would index-shift the pairing.
+    const hBands: string[] = [];
+    const pBands: string[] = [];
+    for (let i = 0; i < n; i++) {
+        if (hArr[i] === null || pArr[i] === null) continue;
+        hBands.push(regimeBand(hArr[i]));
+        pBands.push(pArr[i]! < PE_STRUCTURED ? 'STRUCTURED' : pArr[i]! > PE_NOISE ? 'NOISE' : 'MIXED');
+    }
+    const m = hBands.length;
     if (m < 50) return null;
 
-    // ── Regime sequences ──────────────────────────────────────────────────
-    const hBands = readyH.map(regimeBand);
-    const pBands = readyP.map(v => v < 0.60 ? 'STRUCTURED' : v > 0.85 ? 'NOISE' : 'MIXED');
     const combined = hBands.map((h, i) => `${h}|${pBands[i]}`);
 
     // ── Stability: mean run-length of combined regime ───────────────────
@@ -397,8 +405,8 @@ noise=${(r.entropyDefect*100).toFixed(1)}%">
         <table class="params-table">
             <tr><td>Hurst range</td><td>${Math.round(hurstVals[0])} – ${Math.round(hurstVals[hurstVals.length-1])} (center=${defaultH})</td></tr>
             <tr><td>PE range</td><td>${Math.round(peVals[0])} – ${Math.round(peVals[peVals.length-1])} (center=${defaultP})</td></tr>
-            <tr><td>Hurst scales</td><td>[8, 16, 32, 64]</td></tr>
-            <tr><td>PE embedding</td><td>m=5, delay=1</td></tr>
+            <tr><td>Hurst scales</td><td>[${HURST_SCALES.join(', ')}]</td></tr>
+            <tr><td>PE embedding</td><td>m=${PE_M}, delay=${PE_DELAY}</td></tr>
             <tr><td>Spacing</td><td>geometric (ratio=${geoRatio.toFixed(3)})</td></tr>
         </table>
     </div>

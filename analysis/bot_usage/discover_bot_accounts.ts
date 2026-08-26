@@ -53,6 +53,7 @@ import {
     buildTopFilledAccountsQuery,
     DEFAULT_CONFIG,
 } from './kibana_bot_queries.js';
+import { NODE_MANAGEMENT } from '../../modules/constants.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -83,7 +84,8 @@ interface CandidateInfo {
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-const BTS_NODE    = 'wss://dex.iobanker.com/ws';
+// Node pool from central node management (failover-capable) instead of a
+// single hardcoded WSS endpoint.
 const KIBANA_CFG  = { ...DEFAULT_CONFIG, timeout: 30000 };
 
 const ASSET_PRECISION = {
@@ -269,7 +271,7 @@ function dexScore(creates: number, fills: number, _cancels: number, gridScore: n
 
 async function resolveNames(ids: string[]): Promise<Record<string, string>> {
     const { createReadOnlyClient } = require('../../modules/bitshares-native');
-    const client = createReadOnlyClient({ nodes: [BTS_NODE] });
+    const client = createReadOnlyClient({ nodes: NODE_MANAGEMENT.DEFAULT_NODES });
 
     const map: Record<string, any> = {};
     try {

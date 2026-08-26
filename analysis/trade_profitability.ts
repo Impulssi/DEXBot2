@@ -239,7 +239,7 @@ function parseArgs() {
         matchMode: 'sequential',
         showPnlDetail: false,
         verbose: false,
-        feePerOrder: BLOCKCHAIN_FEE_PER_FILL,
+        feePerOrder: null as number | null,
     };
 
     for (let i = 1; i < args.length; i++) {
@@ -423,6 +423,16 @@ async function fetchAllFills(config: any, accountId: string, gte: string, lte: s
 
 // ─── Fill Classification ─────────────────────────────────────────────────────
 
+/**
+ * A fill needs strictly positive, finite amounts on both legs. A zero base
+ * amount would produce an infinite price (quoteAmount / 0) that poisons
+ * downstream inventory lots and PnL aggregates.
+ */
+function isValidFillAmounts(baseAmount: number, quoteAmount: number): boolean {
+    return Number.isFinite(baseAmount) && Number.isFinite(quoteAmount)
+        && baseAmount > 0 && quoteAmount > 0;
+}
+
 function classifyFills(fills: FillRecord[], filterAsset: string | null): { trades: TradeFill[]; pairs: Set<string> } {
     const trades: TradeFill[] = [];
     const pairs = new Set<string>();
@@ -450,7 +460,7 @@ function classifyFills(fills: FillRecord[], filterAsset: string | null): { trade
             quoteAsset = BTS_ID;
             baseAmount = toReal(f.receives.amount, rAsset);
             quoteAmount = toReal(f.pays.amount, BTS_ID);
-            if (isNaN(baseAmount) || isNaN(quoteAmount)) { skipped++; continue; }
+            if (!isValidFillAmounts(baseAmount, quoteAmount)) { skipped++; continue; }
             price = quoteAmount / baseAmount;
             marketFeeReal = feeReal;
             marketFeeAsset = f.fee.asset_id;
@@ -460,7 +470,7 @@ function classifyFills(fills: FillRecord[], filterAsset: string | null): { trade
             quoteAsset = BTS_ID;
             baseAmount = toReal(f.pays.amount, pAsset);
             quoteAmount = toReal(f.receives.amount, BTS_ID);
-            if (isNaN(baseAmount) || isNaN(quoteAmount)) { skipped++; continue; }
+            if (!isValidFillAmounts(baseAmount, quoteAmount)) { skipped++; continue; }
             price = quoteAmount / baseAmount;
             marketFeeReal = feeReal;
             marketFeeAsset = f.fee.asset_id;
@@ -476,7 +486,7 @@ function classifyFills(fills: FillRecord[], filterAsset: string | null): { trade
             quoteAsset = isSell ? rAsset : pAsset;
             baseAmount = toReal(isSell ? f.pays.amount : f.receives.amount, baseAsset);
             quoteAmount = toReal(isSell ? f.receives.amount : f.pays.amount, quoteAsset);
-            if (isNaN(baseAmount) || isNaN(quoteAmount)) { skipped++; continue; }
+            if (!isValidFillAmounts(baseAmount, quoteAmount)) { skipped++; continue; }
             price = quoteAmount / baseAmount;
             marketFeeReal = feeReal;
             marketFeeAsset = f.fee.asset_id;
@@ -1295,6 +1305,26 @@ function exportJson(accountId: string, start: string, end: string, pairs: PairAn
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+/**
+ * Normalize a user-supplied time bound into an ES-compatible ISO string.
+ *
+ * Parsing goes through `new Date()` so offset-bearing ISO strings
+ * (e.g. 2026-07-07T12:00:00+02:00) are honored instead of being corrupted by a
+ * blind 'Z' append (+02:00Z). A date-only --end expands to the end of that UTC
+ * day (T23:59:59.999Z) — treating it as midnight silently dropped the final day.
+ */
+function normalizeTimeBound(raw: string, isEnd: boolean): string {
+    const parsed = new Date(raw);
+    if (isNaN(parsed.getTime())) {
+        throw new Error(`Invalid ${isEnd ? '--end' : '--start'} time: ${raw}`);
+    }
+    let ms = parsed.getTime();
+    if (isEnd && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) {
+        ms += 24 * 3600 * 1000 - 1;
+    }
+    return new Date(ms).toISOString();
+}
+
 async function run() {
     const opts = parseArgs();
     let accountId = opts.accountId;
@@ -1313,10 +1343,10 @@ async function run() {
     let gte: string, lte: string;
 
     if (opts.start && opts.end) {
-        gte = opts.start;
-        lte = opts.end;
+        gte = normalizeTimeBound(opts.start, false);
+        lte = normalizeTimeBound(opts.end, true);
     } else if (opts.start) {
-        gte = opts.start;
+        gte = normalizeTimeBound(opts.start, false);
         lte = now.toISOString();
     } else {
         const hours = opts.hours || 168;
@@ -1324,10 +1354,6 @@ async function run() {
         gte = start.toISOString();
         lte = now.toISOString();
     }
-
-    // Ensure times end with Z for ES
-    if (!gte.endsWith('Z')) gte += gte.includes('T') ? 'Z' : 'T00:00:00Z';
-    if (!lte.endsWith('Z')) lte += lte.includes('T') ? 'Z' : 'T00:00:00Z';
 
     const KIBANA_CFG = { timeout: 60000 };
 
@@ -1358,8 +1384,15 @@ async function run() {
     }
     console.log('');
 
-    // Override blockchain fee from CLI if provided
-    if (opts.feePerOrder) BLOCKCHAIN_FEE_PER_FILL = opts.feePerOrder;
+    // Override blockchain fee from CLI if provided. Explicit --fee-per-order 0
+    // is valid (free-fee account) and must not be dropped by a falsy check.
+    if (opts.feePerOrder != null) {
+        if (!Number.isFinite(opts.feePerOrder) || opts.feePerOrder < 0) {
+            console.error(`Invalid --fee-per-order: ${opts.feePerOrder}`);
+            process.exit(1);
+        }
+        BLOCKCHAIN_FEE_PER_FILL = opts.feePerOrder;
+    }
 
     // Analyze each pair
     const pairMap = new Map<string, TradeFill[]>();

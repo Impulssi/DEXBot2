@@ -70,17 +70,23 @@ interface MarketAdapterConfig {
 
 class MarketAdapterSource {
     stateDir: string;
+    centersFile: string;
     botKey: string;
     name: string;
 
     constructor(config: MarketAdapterConfig) {
         this.stateDir = config.stateDir || PATHS.MARKET_ADAPTER.STATE_DIR;
+        // Canonical filename from modules/paths.ts when using the default
+        // state dir; custom state dirs keep the sibling-file layout.
+        this.centersFile = config.stateDir
+            ? path.join(this.stateDir, 'market_adapter_centers.json')
+            : PATHS.MARKET_ADAPTER.CENTERS_FILE;
         this.botKey = config.botKey;
         this.name = `market_adapter:${this.botKey}`;
     }
 
     async fetchCandles(): Promise<any[]> {
-        const centersFile = path.join(this.stateDir, 'market_adapter_centers.json');
+        const centersFile = this.centersFile;
         if (!fs.existsSync(centersFile)) {
             throw new Error(`[MarketAdapterSource] Centers file not found: ${centersFile}`);
         }

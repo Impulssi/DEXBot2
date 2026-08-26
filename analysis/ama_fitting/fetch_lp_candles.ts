@@ -114,6 +114,11 @@ function validateArgs(args: Record<string, any>) {
     if (!args.assetBId)        throw new Error('--assetBId is required');
     if (!Number.isFinite(args.assetBPrecision)) throw new Error('--assetBPrecision is required');
     if (!Number.isFinite(args.hours) || args.hours <= 0) throw new Error('--hours must be > 0');
+    // Reject unknown/NaN intervals here instead of letting NaN flow silently
+    // into Kibana range queries (production throws on unsupported intervals).
+    if (!Number.isFinite(args.intervalSeconds) || args.intervalSeconds <= 0) {
+        throw new Error('Unsupported --interval: use one of 1m, 5m, 15m, 1h, 4h, 1d or a positive number of seconds');
+    }
 }
 async function main() {
     const args = parseArgs();
