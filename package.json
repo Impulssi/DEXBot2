@@ -170,7 +170,14 @@
     "./dist/modules/order/utils/system.js": false,
     "./dist/market_adapter/market_adapter.js": false,
     "./dist/market_adapter/lp_chart_runner.js": false,
-    "./dist/market_adapter/ama_signal_runner.js": false
+    "./dist/market_adapter/ama_signal_runner.js": false,
+    "./dist/modules/runtime_settings.js": false,
+    "./dist/modules/bitshares-native/transport.js": false,
+    "./dist/modules/bitshares-native/signing_client.js": false,
+    "./dist/modules/bitshares-native/subscriptions.js": false,
+    "./dist/modules/bitshares-native/tx/builder.js": false,
+    "./dist/modules/bitshares-native/tx/tx_cache.js": false,
+    "./dist/market_adapter/utils/chain.js": false
   },
   "bugs": {
     "url": "https://github.com/froooze/DEXBot2/issues"

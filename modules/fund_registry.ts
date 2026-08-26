@@ -12,6 +12,16 @@ const REGISTRY_FILE = PATHS.PROFILES.FUND_REGISTRY_JSON;
 
 const _lock = new AsyncLock();
 let _registry: any = null;
+let _registryMtimeMs: number | null = null;
+
+function _statMtimeMs(filePath: string): number | null {
+    try {
+        const fs = require('node:fs');
+        return fs.statSync(filePath).mtimeMs;
+    } catch {
+        return null;
+    }
+}
 
 /**
  * Parse a percentage value (number, percentage string, or numeric string) to a decimal.
@@ -24,6 +34,12 @@ function _parsePercentage(value: any) {
 }
 
 function _loadRegistry(): any {
+    if (_registry !== null) {
+        const mtime = _statMtimeMs(REGISTRY_FILE);
+        if (mtime !== null && mtime !== _registryMtimeMs) {
+            _registry = null;
+        }
+    }
     if (_registry !== null) return _registry;
     try {
         if (storage.exists(REGISTRY_FILE)) {
@@ -39,11 +55,13 @@ function _loadRegistry(): any {
         );
         _registry = {};
     }
+    _registryMtimeMs = _statMtimeMs(REGISTRY_FILE);
     return _registry;
 }
 
 function _saveRegistry(): void {
     writeJSON(REGISTRY_FILE, _registry);
+    _registryMtimeMs = _statMtimeMs(REGISTRY_FILE);
 }
 
 function _ensureAccount(registry: any, account: string): any {
@@ -207,10 +225,7 @@ async function releaseAllocation(account: string, botName: string): Promise<void
                     for (const assetId of Object.keys(collEntry)) {
                         const pct = _parsePercentage(collEntry[assetId]);
                         if (acc.totalAllocatedCollateralPct) {
-                            acc.totalAllocatedCollateralPct[assetId] = (acc.totalAllocatedCollateralPct[assetId] || 0) - pct;
-                            if (acc.totalAllocatedCollateralPct[assetId] <= 0) {
-                                delete acc.totalAllocatedCollateralPct[assetId];
-                            }
+                            acc.totalAllocatedCollateralPct[assetId] = Math.max(0, (acc.totalAllocatedCollateralPct[assetId] || 0) - pct);
                         }
                     }
                 }

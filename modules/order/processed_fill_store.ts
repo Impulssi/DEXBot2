@@ -288,10 +288,15 @@ class ProcessedFillStore {
     _schedule(): void {
         if (this._persistTimer || this._shuttingDown || this.pendingWrites.size === 0) return;
 
-        this._persistTimer = setTimeout(() => {
-            this._persistTimer = null;
+        const batchMs = Number(this._batchMs);
+        if (Number.isFinite(batchMs)) {
+            this._persistTimer = setTimeout(() => {
+                this._persistTimer = null;
+                void this.flush('timer');
+            }, batchMs);
+        } else {
             void this.flush('timer');
-        }, this._batchMs);
+        }
     }
 }
 

@@ -1314,8 +1314,7 @@ function ordersEqual(a: any, b: any, options: { precisions?: { buyPrecision?: nu
            a.state === b.state &&
            nearlyEqualAbsolute(a.price, b.price, priceTolerance) &&
            nearlyEqualRelative(getOrderSize(a), getOrderSize(b), { precision: sizePrecision ?? undefined }) &&
-           a.orderId === b.orderId &&
-           a.gridIndex === b.gridIndex;
+           a.orderId === b.orderId;
 }
 
 /**

@@ -150,7 +150,7 @@ export async function decideStartupGridAction({
  * @param {string} params.privateKey - Active/owner private key
  * @param {Function} params.chainOrders - Chain order query function
  * @param {Array<Object>} params.chainOpenOrders - On-chain open orders
- * @returns {Promise<Object>} Reconciliation result
+ * @returns {Promise<Object|null>} Reconciliation result, or null when reconciliation completes without a summary object
  */
 export async function reconcileGridOrders({
     manager,

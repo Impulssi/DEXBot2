@@ -752,7 +752,6 @@ let NODE_MANAGEMENT = {
     STARTUP_RETRY_INITIAL_DELAY_MS: 500,
     STARTUP_RETRY_MAX_DELAY_MS: 5000,
     STARTUP_REFRESH_INTERVAL_MS: 30000,
-    STARTUP_CONNECT_TIMEOUT_MS: 5000,
 
     // Cooldown window between successive failover assessments (ms).
     // Kept above the native transport close-coalesce window so cascading
@@ -1377,7 +1376,6 @@ let LAUNCHER = {
         RESTART_DELAY_MS: 3000,
         SHUTDOWN_TIMEOUT_MS: 5000,
         STAGGER_DELAY_MS: 500,
-        MAX_MEMORY_MB: 250,
         MEMORY_CHECK_INTERVAL_MS: 60000,
         STATUS_LOG_INTERVAL_MS: 300000,
         MAX_CRON_LOOKAHEAD_MINUTES: 366 * 24 * 60,
@@ -1448,15 +1446,6 @@ let NATIVE_CLIENT = {
         // All on-chain amounts are integers; divide by this for human-readable display.
         PRECISION: 100000,
 
-        // Maximum serialized transaction size allowed by the Graphene protocol (bytes).
-        // Transactions exceeding this are rejected by the network. Distinct from the
-        // smaller MAX_TX_SIZE soft limit used by the transaction builder.
-        MAX_TRANSACTION_SIZE: 262144,
-
-        // Maximum time until transaction expiration (seconds, 24 hours).
-        // Transactions expire after this if not included in a block.
-        MAX_TIME_UNTIL_EXPIRATION: 86400,
-
         // Human-readable address prefix for public keys (BTS = BitShares mainnet).
         ADDRESS_PREFIX: 'BTS',
 
@@ -1465,10 +1454,9 @@ let NATIVE_CLIENT = {
         // duplicating the same hex literal across two locations.
         CHAIN_ID: NODE_MANAGEMENT.EXPECTED_CHAIN_ID,
 
-        // 100% and 1% in Graphene basis points (bps).
+        // 100% in Graphene basis points (bps).
         // Used for fee calculations, credit-offer rates, and collateral ratio checks.
         PERCENT_100: 10000,
-        PERCENT_1:   100,
 
         // Core (fee) asset object ID. Always BTS on mainnet (1.3.0).
         // Used as default fee payment asset for transaction preparation.
@@ -1517,11 +1505,12 @@ let NATIVE_CLIENT = {
         WORKER:                14,
         BALANCE:               15,
         HTLC:                  16,
-        TICKET:                17,
-        LIQUIDITY_POOL:        18,
-        SAMET_FUND:            19,
-        CREDIT_OFFER:          20,
-        CREDIT_DEAL:           21,
+        CUSTOM_AUTHORITY:      17,
+        TICKET:                18,
+        LIQUIDITY_POOL:        19,
+        SAMET_FUND:            20,
+        CREDIT_OFFER:          21,
+        CREDIT_DEAL:           22,
     },
 
     // -------------------------------------------------------------------------
@@ -1642,10 +1631,6 @@ let NATIVE_CLIENT = {
         // per notice. Set to 0 to disable coalescing.
         NOTICE_COALESCE_MS: 250,
 
-        // Subscription health watchdog — no longer triggers resubscribe.
-        // Retained only as a reference value for notice frequency tracking.
-        SUBSCRIPTION_SILENT_THRESHOLD_MS: 120000,
-
         // Fill polling interval (ms): how often to scan account history for
         // fills via get_account_history instead of relying on push notifications.
         // Push notifications (handleNotice) are still received when available,
@@ -1697,44 +1682,6 @@ let NATIVE_CLIENT = {
         FEE_CACHE_TTL_MS: 86_400_000,     // 24 hours
     },
 
-    // -------------------------------------------------------------------------
-    // ECC — Cryptographic constants (crypto/ecc.js, reference only)
-    // -------------------------------------------------------------------------
-    // These are protocol-level constants that MUST NOT be changed.
-    // Included here for completeness; the native ECC module uses its own copies.
-    ECC: {
-        // Compact signature length (bytes): 1-byte recovery ID + 32-byte r + 32-byte s.
-        SIGNATURE_LENGTH: 65,
-
-        // Recovery ID offset for BitShares: 27 (Bitcoin standard) + 4 (Graphene offset).
-        // Used when encoding compact [rec|r|s] signatures for broadcast.
-        RECOVERY_OFFSET: 31,
-
-        // Checksum length for base58check-encoded keys and addresses (bytes).
-        // Uses double-SHA256 for WIF/base58check, ripemd160 for address hashes.
-        CHECKSUM_BYTES: 4,
-
-        // Wallet Import Format (WIF) magic bytes.
-        // 0x80 = WIF mainnet version prefix (prepended before the private key bytes).
-        // 0x01 = compressed public key indicator (appended after private key bytes).
-        WIF_VERSION_BYTE:    0x80,
-        WIF_COMPRESSED_FLAG: 0x01,
-
-        // Public key encoding constants.
-        // 0x02/0x03 = compressed (even/odd y), 0x04 = uncompressed prefix.
-        // Valid key lengths: 33 (compressed), 64 (raw xy), 65 (uncompressed).
-        PUBKEY_COMPRESSED_EVEN:  0x02,
-        PUBKEY_COMPRESSED_ODD:   0x03,
-        PUBKEY_UNCOMPRESSED_PREF: 0x04,
-        PUBKEY_LEN_COMPRESSED:   33,
-        PUBKEY_LEN_RAW_XY:       64,
-        PUBKEY_LEN_UNCOMPRESSED: 65,
-
-        // Deterministic K (RFC 6979) initial HMAC seeds.
-        // K = hmac-sha256(Buffer.alloc(32, 0x00), Buffer.alloc(32, 0x01)).
-        // Only relevant for signature generation internally.
-        DETERMINISTIC_K_SEED: '00-filled + 01-filled 32-byte buffers',
-    },
 };
 
 // --- LOCAL SETTINGS OVERRIDES ---
@@ -1823,7 +1770,6 @@ Object.freeze(NATIVE_CLIENT.TRANSPORT);
 Object.freeze(NATIVE_CLIENT.SUBSCRIPTIONS);
 Object.freeze(NATIVE_CLIENT.RESOLVERS);
 Object.freeze(NATIVE_CLIENT.TX_BUILDER);
-Object.freeze(NATIVE_CLIENT.ECC);
 Object.freeze(NATIVE_CLIENT);
 Object.freeze(MARKET_ADAPTER.RUNTIME_DEFAULTS);
 Object.freeze(MARKET_ADAPTER.WATCHDOG_DEFAULTS);

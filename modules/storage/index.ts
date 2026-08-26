@@ -13,7 +13,7 @@
  * Browser: in-memory Map backed by IndexedDB (call flush() to persist).
  *
  * Adapter selection:
- *   - If `globalThis.window !== undefined` → BrowserStorageAdapter
+ *   - If `isBrowser()` (modules/env.ts) → BrowserStorageAdapter
  *   - Otherwise → NodeStorageAdapter
  *   - Explicit override via `setAdapter(adapter)` for DI/testing.
  */

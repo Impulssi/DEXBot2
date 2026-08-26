@@ -137,22 +137,6 @@ export class DaemonKeyStore implements KeyStore {
     }
 }
 
-export class DirectKeyStore implements KeyStore {
-    async resolveSigningKey(accountName: string, vaultSecret?: any, chainClient?: any): Promise<any> {
-        if (vaultSecret) {
-            return chainKeys.resolvePrivateKey(accountName, vaultSecret, chainClient);
-        }
-        const unlockSecret = await chainKeys.authenticate();
-        return chainKeys.resolvePrivateKey(accountName, unlockSecret, chainClient);
-    }
-
-    isDaemonSigningKey(_key: any): boolean { return false; }
-
-    async executeOperations(accountName: string, operations: any[], signingKey: any): Promise<SigningResult> {
-        return broadcastViaChainOrders(accountName, operations, signingKey);
-    }
-}
-
 let _instance: KeyStore | null = null;
 
 export function setKeyStore(impl: KeyStore | null): void {

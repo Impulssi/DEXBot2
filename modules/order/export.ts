@@ -40,7 +40,7 @@
  *
  *   6. parseFeeLine(line) - Parse fee information from log line
  *      Expected format: [TIMESTAMP] [INFO] [FEES] N maker fills @ FEE ASSET = TOTAL
- *      Returns: { count, fee_per_fill, fee_asset, total_fee } or null
+ *      Returns: { timestamp, count, fee_per_fill, fee_asset, total_fee } or null
  *
  *   7. linkFillWithFee(fills, fees) - Match and link most recent fill with fee
  *      Checks timestamp proximity (within 5 seconds) to associate fill with fee
@@ -125,16 +125,16 @@ function parseFillLine(line: string): FillEntry | null {
  * @returns {Object|null} Parsed fee object or null on no match
  */
 function parseFeeLine(line: string): FeeEntry | null {
-    const feeMatch = line.match(/\[FEES\].*?(\d+)\s+maker\s+fills\s+@\s+([\d.]+)\s+(\w+)\s*=\s*([\d.]+)\s+\w+/);
+    const feeMatch = line.match(/\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\].*\[FEES\].*?(\d+)\s+maker\s+fills\s+@\s+([\d.]+)\s+(\w+)\s*=\s*([\d.]+)\s+\w+/);
 
     if (!feeMatch) return null;
 
     return {
-        count: parseInt(feeMatch[1]),
-        fee_per_fill: parseFloat(feeMatch[2]),
-        fee_asset: feeMatch[3],
-        total_fee: parseFloat(feeMatch[4]),
-        timestamp: 0
+        count: parseInt(feeMatch[2]),
+        fee_per_fill: parseFloat(feeMatch[3]),
+        fee_asset: feeMatch[4],
+        total_fee: parseFloat(feeMatch[5]),
+        timestamp: new Date(feeMatch[1]).getTime() / TIMING.MILLISECONDS_PER_SECOND
     };
 }
 
@@ -187,7 +187,6 @@ async function parseLogFile(logFilePath: any) {
             // Parse fee lines
             const fee = parseFeeLine(line);
             if (fee) {
-                fee.timestamp = Date.now() / TIMING.MILLISECONDS_PER_SECOND;  // Approximate timestamp (seconds)
                 fees.push(fee);
                 linkFillWithFee(fills, fees);
                 continue;
@@ -237,8 +236,9 @@ async function writeTradesCSV(trades: any, outputPath: any) {
         // Combine and write
         const csv = [headers, ...rows]
             .map((row: any) => row.map((val: any) => {
-                // Escape quotes and wrap in quotes if contains comma
-                if (typeof val === 'string' && val.includes(',')) {
+                // Wrap in quotes when the value contains a comma, double-quote,
+                // or newline; escape embedded quotes by doubling them
+                if (typeof val === 'string' && (val.includes(',') || val.includes('"') || val.includes('\n'))) {
                     return `"${val.replace(/"/g, '""')}"`;
                 }
                 return val;

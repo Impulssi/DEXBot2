@@ -211,7 +211,9 @@ function isValidNumber(value: any): boolean {
  * IMPORTANT: passing `undefined` as defaultValue triggers the TS default of 0.
  * Pass `null` explicitly to get `null` back for non-finite values.
  */
-function toFiniteNumber(value: any, defaultValue: number = 0): number {
+function toFiniteNumber(value: any, defaultValue?: number): number;
+function toFiniteNumber(value: any, defaultValue: number | null): number | null;
+function toFiniteNumber(value: any, defaultValue: number | null = 0): number | null {
 	const num = Number(value);
 	return Number.isFinite(num) ? num : defaultValue;
 }

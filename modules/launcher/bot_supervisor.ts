@@ -329,20 +329,13 @@ async function stopMarketAdapterFromLock(timeoutMs: any = 5000) {
         return { pid, stopped: false };
     }
 
-    try {
-        runtime.kill(pid, 'SIGTERM');
-        let stopped = await waitForPidExit(pid, timeoutMs);
-        if (!stopped && isNodeProcessWithExactScript(pid, ['market_adapter', 'market_adapter'])) {
-            runtime.kill(pid, 'SIGKILL');
-            stopped = await waitForPidExit(pid, 2000);
-        }
-        return { pid, stopped };
-    } catch (err: any) {
-        if (err.code === 'ESRCH') {
-            return { pid, stopped: true };
-        }
-        throw err;
+    runtime.kill(pid, 'SIGTERM');
+    let stopped = await waitForPidExit(pid, timeoutMs);
+    if (!stopped && isNodeProcessWithExactScript(pid, ['market_adapter', 'market_adapter'])) {
+        runtime.kill(pid, 'SIGKILL');
+        stopped = await waitForPidExit(pid, 2000);
     }
+    return { pid, stopped };
 }
 
 function getChildRSS(child: any) {

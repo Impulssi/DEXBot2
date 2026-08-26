@@ -295,6 +295,7 @@ class OrderManager {
     sync: any;
     _rebalanceState: string;
     _bootstrapping: number;
+    _endOfBootstrapValidationDone: boolean;
     _broadcastingFlag: number;
     _broadcastingStartedAt: number;
     _illegalStateSignal: any;
@@ -436,6 +437,7 @@ class OrderManager {
 
         this._rebalanceState = REBALANCE_STATES.NORMAL;
         this._bootstrapping = 0;
+        this._endOfBootstrapValidationDone = false;
         this._broadcastingFlag = 0;
         this._broadcastingStartedAt = 0;
         this._illegalStateSignal = null;
@@ -675,6 +677,7 @@ class OrderManager {
     startBootstrap() {
         if (this._bootstrapping === 0) {
             this.logger?.log('[BOOTSTRAP] Started', 'debug');
+            this._endOfBootstrapValidationDone = false;
         }
         this._bootstrapping++;
     }
@@ -689,7 +692,8 @@ class OrderManager {
             this._bootstrapping--;
         }
 
-        if (this._bootstrapping === 0) {
+        if (this._bootstrapping === 0 && !this._endOfBootstrapValidationDone) {
+            this._endOfBootstrapValidationDone = true;
             this.logger?.log('[BOOTSTRAP] Finished', 'debug');
 
             // Validate fund state at bootstrap completion - if drift exists here,
@@ -1484,23 +1488,35 @@ class OrderManager {
         const minSellSizeInt = floatToBlockchainInt(minSellSize, sellPrecision);
         const minBuySizeInt = floatToBlockchainInt(minBuySize, buyPrecision);
 
-        // Get closest virtual sells (lowest prices first = closest to market), limit to sellCount
-        const vSells = this.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL)
-            .sort((a: any, b: any) => a.price - b.price)
-            .slice(0, sellCount);
-        // Filter by minimum size, then reverse for placement order (highest first)
-        const validSells = vSells
-            .filter((o: any) => floatToBlockchainInt(o.size, sellPrecision) >= minSellSizeInt)
-            .sort((a: any, b: any) => b.price - a.price);
-
-        // Get closest virtual buys (highest prices first = closest to market), limit to buyCount
-        const vBuys = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
-            .sort((a: any, b: any) => b.price - a.price)
-            .slice(0, buyCount);
-        // Filter by minimum size, then reverse for placement order (lowest first)
-        const validBuys = vBuys
-            .filter((o: any) => floatToBlockchainInt(o.size, buyPrecision) >= minBuySizeInt)
+        // Get closest virtual sells (lowest prices first = closest to market),
+        // selecting up to sellCount orders that pass the minimum-size filter.
+        // Scan the full sorted rail instead of slicing first so sub-min slots
+        // don't consume activation budget (mirrors _pickVirtualSlotsToActivate).
+        const sellsClosestFirst = this.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL)
             .sort((a: any, b: any) => a.price - b.price);
+        const validSells: any[] = [];
+        for (const o of sellsClosestFirst) {
+            if (validSells.length >= sellCount) break;
+            if (floatToBlockchainInt(o.size, sellPrecision) >= minSellSizeInt) {
+                validSells.push(o);
+            }
+        }
+        // Reverse for placement order (highest first)
+        validSells.sort((a: any, b: any) => b.price - a.price);
+
+        // Get closest virtual buys (highest prices first = closest to market),
+        // selecting up to buyCount orders that pass the minimum-size filter.
+        const buysClosestFirst = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
+            .sort((a: any, b: any) => b.price - a.price);
+        const validBuys: any[] = [];
+        for (const o of buysClosestFirst) {
+            if (validBuys.length >= buyCount) break;
+            if (floatToBlockchainInt(o.size, buyPrecision) >= minBuySizeInt) {
+                validBuys.push(o);
+            }
+        }
+        // Reverse for placement order (lowest first)
+        validBuys.sort((a: any, b: any) => a.price - b.price);
 
         return [...validSells, ...validBuys];
     }
@@ -2087,24 +2103,6 @@ class OrderManager {
         }
 
         return validation;
-    }
-
-    /**
-     * @returns {any}
-     */
-    getMetrics() {
-        return {
-            ...this._metrics,
-            state: {
-                rebalance: { state: this._rebalanceState, currentWorkingGrid: null },
-                recovery: { ...this._recoveryStateValue },
-                gridRegen: { ...this._gridRegenStateValue },
-                bootstrap: { isBootstrapping: this._bootstrapping },
-                broadcast: { isBroadcasting: this._broadcastingFlag, startedAt: this._broadcastingStartedAt },
-                pipeline: { blockedSince: this._pipelineBlockedSince, recoveryAttempted: this._recoveryAttempted }
-            },
-            currentTime: Date.now()
-        };
     }
 
     get _lastIllegalState() {

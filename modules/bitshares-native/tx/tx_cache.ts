@@ -34,13 +34,16 @@ function _ensureFeeCache(): any {
 
 /**
  * Build a fee cache key from serialized operations and the fee asset ID.
- * Includes the full op data to avoid stale fees when the same op type
- * has different parameters (e.g. different amounts or extensions).
+ * Includes the full op data (minus the mutable `fee` field, which
+ * setRequiredFees writes back onto the ops) to avoid stale fees when the
+ * same op type has different parameters (e.g. different amounts or extensions).
  */
 function buildFeeCacheKey(opList: Array<[number, any]>, feeAssetId: string): string {
     const parts: string[] = [];
     for (const [typeId, params] of opList) {
-        parts.push(`${typeId}:${JSON.stringify(params)}`);
+        const keyParams: any = { ...(params || {}) };
+        delete keyParams.fee;
+        parts.push(`${typeId}:${JSON.stringify(keyParams)}`);
     }
     return parts.join('|') + ':' + feeAssetId;
 }

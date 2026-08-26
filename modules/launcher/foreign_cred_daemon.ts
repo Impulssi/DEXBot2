@@ -55,11 +55,7 @@ function readOwnedCredentialDaemonPid(pidFile: any, isLikelyProcess: any) {
 
 async function stopPid(pid: any, timeoutMs: any = 5000) {
     if (!isPidAlive(pid)) return true;
-    try {
-        runtime.kill(pid, 'SIGTERM');
-    } catch (e: any) {
-        if (e.code !== 'ESRCH') throw e;
-    }
+    runtime.kill(pid, 'SIGTERM');
 
     const startedAt = Date.now();
     while ((Date.now() - startedAt) < timeoutMs) {
@@ -67,11 +63,7 @@ async function stopPid(pid: any, timeoutMs: any = 5000) {
         await sleep(100);
     }
 
-    try {
-        runtime.kill(pid, 'SIGKILL');
-    } catch (e: any) {
-        if (e.code !== 'ESRCH') throw e;
-    }
+    runtime.kill(pid, 'SIGKILL');
 
     const killSettledAt = Date.now();
     while ((Date.now() - killSettledAt) < timeoutMs) {

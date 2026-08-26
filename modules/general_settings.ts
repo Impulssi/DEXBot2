@@ -12,7 +12,6 @@ import { writeJsonFileAtomic } from './bots_file_lock.js';
 import { getErrorMessage } from './utils/errors.js';
 const storage = getStorage();
 
-const PROFILES_DIR = PATHS.PROFILES_DIR;
 const SETTINGS_FILE = PATHS.PROFILES.GENERAL_SETTINGS_JSON;
 
 /**
@@ -56,5 +55,5 @@ function writeGeneralSettings(settings: any): void {
     writeJsonFileAtomic(SETTINGS_FILE, settings);
 }
 
-export { PROFILES_DIR, SETTINGS_FILE, readGeneralSettings, writeGeneralSettings }
+export { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings }
 

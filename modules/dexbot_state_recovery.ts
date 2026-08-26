@@ -92,6 +92,11 @@ async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery 
         // recoverBatchSizeDrift) where broadcasting a fresh COW batch would race
         // the batch's own finally cleanup, and from flows holding the fill lock.
         _schedulePostRecoveryRebalance(bot, `state recovery sync (${reason})`);
+    } catch (err: any) {
+        bot.manager.logger.log(
+            `[RECOVERY] State recovery sync (${reason}) failed: ${getErrorMessage(err)}. Preserving current state; the next sync cycle will retry.`,
+            'error'
+        );
     } finally {
         bot._recoverySyncInFlight--;
     }
@@ -130,13 +135,6 @@ async function handleBatchHardAbort(bot: any, err: any, phase: any = 'batch proc
     const baseResult = { executed: false, hadRotation: false };
     const opsInfo = opsCount > 0 ? ` with ${opsCount} ops` : '';
 
-    if (err?.code === 'ILLEGAL_ORDER_STATE') {
-        const illegalSignal = bot.manager.consumeIllegalStateSignal?.();
-        await bot._triggerStateRecoverySync(illegalSignal?.message || `illegal order state during ${phase}${opsInfo}`);
-        bot._maintenanceCooldownCycles = Math.max(bot._maintenanceCooldownCycles, 1);
-        return { ...baseResult, abortedForIllegalState: true };
-    }
-
     if (err?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
         const accountingSignal = bot.manager.consumeAccountingFailureSignal?.();
         const reason = accountingSignal
@@ -145,6 +143,13 @@ async function handleBatchHardAbort(bot: any, err: any, phase: any = 'batch proc
         await bot._triggerStateRecoverySync(reason);
         bot._maintenanceCooldownCycles = Math.max(bot._maintenanceCooldownCycles, 1);
         return { ...baseResult, abortedForAccountingFailure: true };
+    }
+
+    const illegalSignal = bot.manager.consumeIllegalStateSignal?.();
+    if (illegalSignal) {
+        await bot._triggerStateRecoverySync(illegalSignal.message || `illegal order state during ${phase}${opsInfo}`);
+        bot._maintenanceCooldownCycles = Math.max(bot._maintenanceCooldownCycles, 1);
+        return { ...baseResult, abortedForIllegalState: true };
     }
 
     return null;

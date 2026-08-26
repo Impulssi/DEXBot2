@@ -56,15 +56,19 @@ function filterCommentKeys(obj: Record<string, any>): Record<string, any> {
     );
 }
 
+const UNSAFE_MERGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 /**
  * Deep recursive merge: source values override target values at any depth.
  * Plain objects are merged recursively; arrays and primitives are replaced.
  * Comment/metadata keys (prefixed with _) and `undefined` source values are skipped.
+ * Prototype-dangerous own keys from JSON-parsed sources ('__proto__' et al) are
+ * skipped so crafted config files cannot pollute Object.prototype.
  */
 function deepMerge(target: any, source: any): any {
     const result = { ...target };
     for (const key of Object.keys(source)) {
-        if (key.startsWith('_')) continue;
+        if (key.startsWith('_') || UNSAFE_MERGE_KEYS.has(key)) continue;
         const sv = source[key];
         if (sv === undefined) continue;
         if (sv !== null && typeof sv === 'object' && !Array.isArray(sv)) {
@@ -249,7 +253,14 @@ function mergeSettings(raw: any, defaults: Record<string, any>): Record<string, 
     if (raw.EXPERT && typeof raw.EXPERT === 'object') {
         if (raw.EXPERT.GRID_LIMITS && typeof raw.EXPERT.GRID_LIMITS === 'object') {
             const expertGrid = filterCommentKeys(raw.EXPERT.GRID_LIMITS);
-            result.GRID_LIMITS = { ...result.GRID_LIMITS, ...expertGrid };
+            const priorComparison = result.GRID_LIMITS && result.GRID_LIMITS.GRID_COMPARISON;
+            const { GRID_COMPARISON: expertComparison, ...expertRest } = expertGrid;
+            result.GRID_LIMITS = { ...result.GRID_LIMITS, ...expertRest };
+            if (expertComparison && typeof expertComparison === 'object') {
+                result.GRID_LIMITS.GRID_COMPARISON = { ...(priorComparison || {}), ...expertComparison };
+            } else if (expertComparison !== undefined && priorComparison) {
+                result.GRID_LIMITS.GRID_COMPARISON = priorComparison;
+            }
         }
         if (raw.EXPERT.TIMING && typeof raw.EXPERT.TIMING === 'object') {
             const expertTiming = filterCommentKeys(raw.EXPERT.TIMING);
@@ -260,5 +271,5 @@ function mergeSettings(raw: any, defaults: Record<string, any>): Record<string, 
     return result;
 }
 
-export { deepMerge, mergeSettings }
+export { deepMerge, mergeSettings, MERGE_STRATEGIES }
 

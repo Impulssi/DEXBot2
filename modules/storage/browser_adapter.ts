@@ -59,8 +59,9 @@ function createBrowserStorageAdapter() {
       });
       // Load window over — ingest can no longer clobber local state.
       localMutations.clear();
-    } catch {
-      // IndexedDB unavailable — MemoryMap mode
+    } catch (err: any) {
+      // IndexedDB unavailable — memory-only mode
+      console.warn(`BrowserStorageAdapter: IndexedDB load failed (${err?.message || err}); falling back to memory-only mode`);
     } finally {
       if (db) db.close();
     }
@@ -86,8 +87,9 @@ function createBrowserStorageAdapter() {
         tx.onerror = () => reject(tx.error);
       });
       tombstones.clear();
-    } catch {
+    } catch (err: any) {
       // MemoryMap mode — nothing to flush
+      console.warn(`BrowserStorageAdapter: IndexedDB flush failed (${err?.message || err}); changes remain memory-only`);
     } finally {
       if (db) db.close();
     }

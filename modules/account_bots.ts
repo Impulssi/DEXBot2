@@ -156,7 +156,7 @@ function saveBotsConfig(config: any, filePath: string): void {
 function loadGeneralSettings() {
     const defaults = {
         LOG_LEVEL: LOG_LEVEL,
-        GRID_LIMITS: { ...GRID_LIMITS },
+        GRID_LIMITS: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },
         TIMING: { ...TIMING },
         UPDATER: { ...UPDATER },
         MARKET_ADAPTER: { ...MARKET_ADAPTER },

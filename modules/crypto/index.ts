@@ -6,8 +6,6 @@ import type { CryptoProvider } from './provider.js';
 import { isBrowser } from '../env.js';
 import { BrowserCryptoProvider } from './browser_provider.js';
 export { BrowserCryptoProvider } from './browser_provider.js';
-export { ripemd160 as pureRipemd160 } from './pure_ripemd160.js';
-export { scrypt as pureScrypt } from './pure_scrypt.js';
 export {
     secp256k1,
     privateKeyToPublicKey as pureSecp256k1Pubkey,

@@ -44,7 +44,16 @@ export function sendSocketJsonRequest(options: SocketJsonRequestOptions): Promis
     return new Promise((resolve: any, reject: any) => {
         let settled = false;
         const socket = net.createConnection(socketPath, () => {
-            writePayload(socket);
+            try {
+                writePayload(socket);
+            } catch (error: any) {
+                socket.destroy();
+                clearTimeout(timer);
+                if (!settled) {
+                    settled = true;
+                    reject(buildError('connection', error));
+                }
+            }
         });
 
         let responseBuffer = '';

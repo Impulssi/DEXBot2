@@ -12,7 +12,7 @@
 // ============================================================
 
 export type OrderType = 'sell' | 'buy' | 'spread';
-export type OrderState = 'virtual' | 'active' | 'partial' | 'filled';
+export type OrderState = 'virtual' | 'active' | 'partial';
 
 // ============================================================
 // DOMAIN: ORDER (DISCRIMINATED UNION)

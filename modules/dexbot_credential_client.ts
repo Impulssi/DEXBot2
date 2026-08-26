@@ -137,7 +137,7 @@ function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs
             // truncated stream, or outer timeout). Use a typed error so the
             // recovery path can detect this case explicitly. Non-broadcast
             // requests stay on the plain Error path.
-            if (kind === 'invalid') {
+            if (kind === 'invalid' && !isBroadcast) {
                 return new Error('Invalid credential daemon response');
             }
             const message = kind === 'timeout'

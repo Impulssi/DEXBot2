@@ -693,12 +693,11 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
 
                 let allFilledOrders: any[] = [];
                 let ordersNeedingCorrection: any[] = [];
-                const fillMode = chainOrders.getFillProcessingMode();
                 const residualCancels: any[] = [];
 
                 const processValidFills = async (fillsToSync: any) => {
                     let resolvedOrders: any[] = [];
-                    if (fillMode === FILL_PROCESSING.MODE) {
+                    {
                         bot.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (history mode)`, 'info');
 
                         if (fillsToSync.length >= 2) {
@@ -751,13 +750,11 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                         }
                     }
 
-                    if (fillMode !== FILL_PROCESSING.MODE || requiresOpenOrdersSync) {
-                        if (fillMode === FILL_PROCESSING.MODE && requiresOpenOrdersSync) {
-                            bot.manager.logger.log(
-                                'Falling back to open-orders sync for fill(s) missing replay-safe history identifiers',
-                                'warn'
-                            );
-                        }
+                    if (requiresOpenOrdersSync) {
+                        bot.manager.logger.log(
+                            'Falling back to open-orders sync for fill(s) missing replay-safe history identifiers',
+                            'warn'
+                        );
                         bot.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (open orders mode)`, 'info');
                         // Truncated-read guard: syncing on a partial
                         // get_full_accounts window would virtualize live ACTIVE

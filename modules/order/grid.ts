@@ -12,12 +12,11 @@
  * - Detects and flags out-of-spread conditions
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Grid Functions (28 exported functions)
+ * TABLE OF CONTENTS - Grid Functions (27 exported functions)
  * ===============================================================================
  *
- * CONFIGURATION & CALCULATION (2 methods)
+ * CONFIGURATION & CALCULATION (1 method)
  *   1. calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate spread gap size
- *   2. getSizingContext(manager, side) - Get budget and sizing parameters (public wrapper)
  *
  * GRID SIZING & CONTEXT (1 method)
  *   3. _getSizingContext(manager, side) - Get budget and sizing parameters (internal)
@@ -261,18 +260,6 @@ export function isGridBloatGraceActive(manager: any): any {
      */
 export function clearGridBloatFlag(manager: any): void {
         delete manager._gridBloatDetectedAt;
-    }
-
-    /**
-     * Public wrapper for side sizing context.
-     * Keeps StrategyEngine decoupled from Grid private internals.
-     *
-     * @param {import('./types').OrderManager} manager
-     * @param {'buy'|'sell'} side
-     * @returns {Promise<any|null>}
-     */
-export async function getSizingContext(manager: any, side: any): Promise<any> {
-        return await _getSizingContext(manager, side);
     }
 
     /**

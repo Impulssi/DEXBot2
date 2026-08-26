@@ -330,5 +330,5 @@ function getRecalculateTriggerFile(botKey: string): string {
   return path.join(PATHS.PROFILES_DIR, `recalculate.${botKey}.trigger`);
 }
 
-export { PATHS, HOME_CONFIG_DIR, HOME_PROFILES_DIR, resolveProfilesDir, resolveMarketAdapterDirs, resolveClawDirs, resolveAnalysisDirs, isGlobalNpmPackageDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile, computeRelocationNotices }
+export { PATHS, HOME_PROFILES_DIR, resolveProfilesDir, resolveMarketAdapterDirs, resolveClawDirs, resolveAnalysisDirs, isGlobalNpmPackageDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile, computeRelocationNotices }
 

@@ -66,6 +66,9 @@
 import Logger from './order/logger.js';
 import { runtime } from './runtime.js';
 import { getErrorMessage } from './utils/errors.js';
+import { withTimeout } from './order/utils/timeout.js';
+
+const CLEANUP_HANDLER_TIMEOUT_MS = 10000;
 let cleanupHandlers: any[] = [];
 let shutdownInProgress = false;
 const shutdownLogger = new Logger('Shutdown');
@@ -128,7 +131,18 @@ async function executeCleanup() {
             const result = handler();
             // Handle both async and sync handlers
             if (result && typeof result.then === 'function') {
-                await result;
+                await withTimeout(
+                    Promise.resolve(result).catch(() => {}),
+                    CLEANUP_HANDLER_TIMEOUT_MS,
+                    {
+                        onTimeout: 'resolve',
+                        defaultValue: undefined as any,
+                        label: `cleanup:${name}`,
+                        onTimeoutCallback: () => {
+                            shutdownLogger.error(`✗ Cleanup timed out after ${CLEANUP_HANDLER_TIMEOUT_MS}ms: ${name} (handler still running in background)`);
+                        },
+                    }
+                );
             }
             shutdownLogger.info(`✓ ${name}`);
         } catch (err: any) {

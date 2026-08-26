@@ -271,7 +271,6 @@ async function resolveAccountName(accountRef: any) {
         } catch (err: any) {
             // ignore resolution failures
         }
-        _accountResolutionCache.set(cacheKey, null);
         return null;
     });
 }
@@ -309,7 +308,6 @@ async function resolveAccountId(accountName: any) {
         } catch (err: any) {
             // ignore resolution failures
         }
-        _accountResolutionCache.set(cacheKey, null);
         return null;
     });
 }
@@ -709,16 +707,20 @@ async function listenForFills(accountRef: any, callback: any) {
     if (!accountName && pref.id) {
         accountName = await resolveAccountName(pref.id);
     }
-    if (!accountName && accountToken) {
-        accountName = await resolveAccountName(accountToken);
-    }
 
     if (!accountName) {
         chainOrdersLogger.error('listenForFills requires an account name or a preferredAccount to be set');
         return () => { };
     }
 
-    let accountId = /^1\.2\./.test(accountToken || '') ? accountToken : pref.id;
+    let accountId = null;
+    if (/^1\.2\./.test(accountToken || '')) {
+        accountId = accountToken;
+    } else if (/^1\.2\./.test(accountName || '')) {
+        accountId = accountName;
+    } else if (!accountToken && pref.id) {
+        accountId = pref.id;
+    }
     if (!accountId) {
         accountId = await resolveAccountId(accountName);
     }
@@ -1395,17 +1397,11 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
     if (!accountRef) return {};
     try {
         await waitForConnected();
-        // Resolve account id if name provided
-        let accountId = accountRef;
-        if (typeof accountRef === 'string' && !/^1\.2\./.test(accountRef)) {
-            const full = await BitShares.db.get_full_accounts([accountRef], false);
-            if (Array.isArray(full) && full[0] && full[0][0]) accountId = full[0][0];
-        }
-
-        // Fetch full account data so we have balances and limit_orders
-        const full = await BitShares.db.get_full_accounts([accountId], false);
+        const needsResolve = typeof accountRef === 'string' && !/^1\.2\./.test(accountRef);
+        const full = await BitShares.db.get_full_accounts([accountRef], false);
         if (!Array.isArray(full) || !full[0] || !full[0][1]) return {};
         const accountData = full[0][1] || {};
+        const accountId = needsResolve ? (accountData.account?.id || accountRef) : accountRef;
         const balances = accountData.balances || [];
         const limitOrders = accountData.limit_orders || [];
 
@@ -1435,9 +1431,9 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
                 if (Array.isArray(deals) && deals.length > 0) {
                     for (const deal of deals) {
                         if (!deal) continue;
-                        const collateralAssetId = String(deal.collateralAssetId || deal.collateral_asset_id || '');
+                        const collateralAssetId = String(deal.collateralAssetId || deal.collateral_asset || '');
                         if (!collateralAssetId) continue;
-                        const collateralRaw = toFiniteNumber(deal.collateralAmount || deal.amount || 0);
+                        const collateralRaw = toFiniteNumber(deal.collateralAmount ?? deal.collateral_amount, 0);
                         if (collateralRaw <= 0) continue;
                         // Subtract collateral from free (it's not spendable by limit orders)
                         // The credit runtime accounts for this as committed credit collateral.

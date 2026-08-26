@@ -368,6 +368,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
             await bot._setupTriggerFileDetection();
             await bot._setupCreditRuntime();
             await bot._refreshAndSyncCreditRuntime();
+            await bot._runCreditRuntimeMaintenance('startup');
             bot._setupBlockchainFetchInterval();
             bot._setupCreditWatchdogInterval();
             bot._setupCredentialDaemonWatchdogInterval();
@@ -387,9 +388,6 @@ async function finishStartupSequence(bot: any, startupState: any) {
 
         await bot.manager._fundLock.acquire(async () => {
             await bot.manager.resetFunds();
-            if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
-                bot.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
-            }
         });
         if (bot.config.assetA !== 'BTS' && bot.config.assetB !== 'BTS') {
             if (persistedBtsBalance && typeof persistedBtsBalance === 'object') {

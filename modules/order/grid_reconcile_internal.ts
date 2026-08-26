@@ -707,7 +707,7 @@ async function _finalizeStartupUpdate({ manager, preparedUpdate }: { manager: an
     // deferred_fee from chain is in raw satoshis (BTS precision 5).
     // The fee lifecycle operates in float BTS units, so convert here.
     const rawDeferredFee = plan.chainOrderObj?.deferred_fee != null
-        ? Format.toFiniteNumber(plan.chainOrderObj?.deferred_fee, undefined)
+        ? Format.toFiniteNumber(plan.chainOrderObj?.deferred_fee, null)
         : null;
     const deferredFeeFloat = rawDeferredFee !== null ? blockchainToFloat(rawDeferredFee, BTS_PRECISION) : null;
 

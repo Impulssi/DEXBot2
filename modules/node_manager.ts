@@ -623,13 +623,14 @@ class NodeManager {
         const isHealthCheck = source === 'health-check';
 
         const result = this.failureLedger.recordFailure(nodeUrl);
-        if (result.outcome === 'rate-limited' || result.outcome === 'skipped-blacklisted') {
-            return;
-        }
 
         stats.failureCount = result.failureCount;
         stats.lastCheckTime = nowIso();
         if (errorMessage) stats.lastErrorMessage = errorMessage;
+
+        if (result.outcome === 'rate-limited' || result.outcome === 'skipped-blacklisted') {
+            return;
+        }
 
         if (result.outcome === 'blacklisted') {
             stats.status = 'blacklisted';

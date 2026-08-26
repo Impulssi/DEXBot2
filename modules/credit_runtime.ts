@@ -8,14 +8,13 @@ import { getStorage } from './storage/index.js';
 import * as client from './bitshares_client.js';
 const { BitShares, waitForConnected } = client;
 import * as chainOrders from './chain_orders.js';
-import { blockchainToFloat, floatToBlockchainInt, resolveConfigValue, isPercentageString, parsePercentageString } from './order/utils/math.js';
+import { blockchainToFloat, floatToBlockchainInt, resolveConfigValue, isPercentageString, parsePercentageString, roundToDecimals } from './order/utils/math.js';
 import { toFiniteNumber } from './order/format.js';
 import { createBotKey } from './account_orders.js';
 import * as fundRegistry from './fund_registry.js';
 import { writeJsonFileAtomic } from './bots_file_lock.js';
 import { resolveAssetByRef, nowIso } from './order/utils/system.js';
 import { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING, NATIVE_CLIENT } from './constants.js';
-import { roundToDecimals } from './order/utils/math.js';
 import { PATHS } from './paths.js';
 import {
     deriveLiquidityPoolTokenValue,
@@ -202,9 +201,9 @@ function parseFullAccount(fullAccountResult: any): any {
     if (!Array.isArray(fullAccountResult) || fullAccountResult.length === 0) return null;
     const entry = fullAccountResult[0];
     if (Array.isArray(entry) && entry.length >= 2) {
-        return entry[1]?.account || entry[1] || null;
+        return entry[1] || null;
     }
-    return entry?.account || entry || null;
+    return entry || null;
 }
 
 function parseCallOrders(accountObj: any): any[] {
@@ -591,7 +590,7 @@ class CreditRuntime {
                 }
                 const balances = await chainOrders.getOnChainAssetBalances(accountRef, [asset.id]);
                 const balance = (balances as Record<string, any>)?.[String(asset.id)] || (balances as Record<string, any>)?.[String(asset.symbol)] || null;
-                total = toFiniteNumber(balance?.[balanceField], undefined);
+                total = toFiniteNumber(balance?.[balanceField], NaN);
                 if (!Number.isFinite(total) || total < 0) {
                     throw new Error(`Unable to resolve ${referenceLabel} for ${asset.id}`);
                 }
@@ -822,10 +821,15 @@ class CreditRuntime {
         }
 
         const validAssetIds = new Set();
+        let allGroupsResolved = true;
 
         for (const [collateralRef, items] of groups) {
             const collateralAsset = await this._resolveAsset(collateralRef);
-            if (!collateralAsset) continue;
+            if (!collateralAsset) {
+                this.warn(`credit runtime: unable to resolve collateral asset ${String(collateralRef)}; keeping existing position state for this group`);
+                allGroupsResolved = false;
+                continue;
+            }
 
             const totalCollateralAvailable = await this._getCollateralPercentageBase(accountRef, collateralAsset.id);
             const totalMaxCollateral = resolveConfigValue(dp.maxCollateralAmount ?? '100%', totalCollateralAvailable);
@@ -903,7 +907,11 @@ class CreditRuntime {
             }
 
             const totalWeight = weightEntries.reduce((sum, e) => sum + e.weight, 0);
-            if (totalWeight === 0) continue;
+            if (totalWeight === 0) {
+                this.warn(`credit runtime: collateral group ${collateralAsset.id} has zero total weight; keeping existing position state for this group`);
+                allGroupsResolved = false;
+                continue;
+            }
 
             for (const { weight, assetId } of weightEntries) {
                 if (!assetId || !collateralAsset.id) continue;
@@ -914,6 +922,8 @@ class CreditRuntime {
                 this.state.positions[posKey].assignedCollateralBudget = C_i;
             }
         }
+
+        if (!allGroupsResolved) return;
 
         for (const key of Object.keys(this.state.positions)) {
             if (!validAssetIds.has(key)) {
@@ -1005,7 +1015,7 @@ class CreditRuntime {
         ]);
 
         const balance = (balances as Record<string, any>)?.[String(assetId)] || (balances as Record<string, any>)?.[String(asset.symbol)] || null;
-        const onChainTotal = toFiniteNumber(balance?.total, undefined);
+        const onChainTotal = toFiniteNumber(balance?.total, NaN);
         if (!Number.isFinite(onChainTotal)) {
             return null;
         }
@@ -1731,7 +1741,7 @@ class CreditRuntime {
             pendingReleaseCollateralAmount,
         });
 
-        const minDealAmount = toFiniteNumber(offerObj?.min_deal_amount, undefined);
+        const minDealAmount = toFiniteNumber(offerObj?.min_deal_amount, null);
         if (minDealAmount !== null && borrowInt < minDealAmount) {
             throw new Error(`borrowAmount ${borrowInt} is below min_deal_amount ${minDealAmount}`);
         }
@@ -1772,9 +1782,7 @@ class CreditRuntime {
                 : 'Unable to determine collateral value for credit offer');
         }
 
-        const collateralRatio = collateralAsset?.for_liquidity_pool
-            ? collateralValueInDebtAsset / offerCollateralValueInDebtAsset
-            : collateralValueInDebtAsset / borrowAmountFloat;
+        const collateralRatio = collateralValueInDebtAsset / borrowAmountFloat;
         if (collateralRatio > maxCollateralRatioValue) {
             throw new Error(`collateral ratio ${collateralRatio} exceeds maxCollateralRatio ${maxCollateralRatioValue}`);
         }
@@ -1940,34 +1948,6 @@ class CreditRuntime {
         }
     }
 
-    async openCreditPosition({ offer, borrowAmount, collateralAmount, autoRepay = false, reason = 'credit borrow' }: any = {}): Promise<any> {
-        const offerObj = typeof offer === 'object' ? offer : await this._getOfferById(offer);
-        let resolvedCollateral = collateralAmount;
-        if (resolvedCollateral !== null && resolvedCollateral !== undefined && offerObj) {
-            const isBare = typeof resolvedCollateral === 'number'
-                || (typeof resolvedCollateral === 'object' && resolvedCollateral.assetId == null);
-            if (isBare) {
-                const collateralMap = normalizeCollateralMap(offerObj.acceptable_collateral);
-                if (collateralMap.size === 1) {
-                    const amountVal = typeof resolvedCollateral === 'number'
-                        ? resolvedCollateral
-                        : (resolvedCollateral.amount ?? null);
-                    resolvedCollateral = { amount: amountVal, assetId: collateralMap.keys().next().value };
-                }
-            }
-        }
-        const acceptOp = await this.buildCreditOfferAcceptOperation({
-            offer: offerObj,
-            borrowAmount,
-            collateralAmount: resolvedCollateral,
-            autoRepay,
-        });
-        const result = await this.executeOperations([acceptOp], reason);
-        await this.refreshState();
-        await this._checkGridMaintenanceAfterCreditUpdate('credit capital update');
-        await this.persistState(reason);
-        return result;
-    }
 
     async repayCreditDeal(deal: any, repayAmount: any, options: Record<string, any> = {}): Promise<any> {
         const dealSummary = typeof deal === 'object' ? parseDealSummary(deal) : await this._getDealById(deal);
@@ -2541,7 +2521,7 @@ class CreditRuntime {
             // and re-fetches from chain once the cached offer expires, so a mid-split
             // min_deal_amount change is picked up on the next re-fetch.
             const dealOffer = await this._getOfferById(parseDealSummary(currentDeal)?.offerId);
-            const minDealAmount = toFiniteNumber(dealOffer?.min_deal_amount, undefined);
+            const minDealAmount = toFiniteNumber(dealOffer?.min_deal_amount, null);
             const numPieces = Math.ceil((dealDebt as number) / maxPerOp);
             const pieceAmount = roundToDecimals((dealDebt as number) / numPieces, debtAsset.precision);
             if (minDealAmount !== null && pieceAmount < blockchainToFloat(minDealAmount, debtAsset.precision)) {
@@ -2709,7 +2689,6 @@ class CreditRuntime {
                             borrowAmount: request.borrowAmount,
                             collateralAmount: effectiveCollateralAmount,
                             autoRepay: request.autoRepay ?? false,
-                            pendingRepayAmount: request.pendingRepayAmount ?? null,
                             pendingReleaseCollateralAmount: request.pendingReleaseCollateralAmount,
                             excludeOfferId: request.offerId,
                         })
@@ -2737,7 +2716,6 @@ class CreditRuntime {
                         collateralAmount: effectiveCollateralAmount,
                         autoRepay: request.autoRepay ?? false,
                         specificPolicy: request.specificPolicy || requestPolicy,
-                        pendingRepayAmount: request.pendingRepayAmount ?? null,
                         pendingReleaseCollateralAmount: request.pendingReleaseCollateralAmount,
                     });
                     await this.executeOperations([acceptOp], 'credit reborrow');
@@ -2875,7 +2853,7 @@ class CreditRuntime {
         const posKey = configuredCollateralAssetId ? this._positionKey(assetId, configuredCollateralAssetId) : assetId;
 
         // Phase 1: Proactively repay deals nearing expiration before processing reborrows
-        const expiryThresholdHours = this.bot?.config?.TIMING?.CREDIT_DEAL_EXPIRY_THRESHOLD_HOURS ?? 12;
+        const expiryThresholdHours = this.bot?.config?.timing?.CREDIT_DEAL_EXPIRY_THRESHOLD_HOURS ?? TIMING.CREDIT_DEAL_EXPIRY_THRESHOLD_HOURS;
         const expiryThresholdMs = expiryThresholdHours * 60 * 60 * 1000;
 
         const posState = this.state.positions[posKey];
@@ -3124,21 +3102,6 @@ class CreditRuntime {
         }
     }
 
-    /**
-     * Get total collateral (MPA + credit deals) per asset from the debt snapshot.
-     * @param {Array<string>} assetIds - Asset IDs to look up
-     * @returns {Object} mapping assetId -> total collateral float
-     */
-    getCollateralOffsets(assetIds: any) {
-        const snapshot: Record<string, any> = this.state?.debtSnapshot?.assets || {};
-        const result: Record<string, any> = {};
-        for (const assetId of assetIds) {
-            const key = String(assetId);
-            const entry = snapshot[key];
-            result[key] = toFiniteNumber(entry?.totalCollateral, 0);
-        }
-        return result;
-    }
 
     getStateSnapshot(): any {
         return deepClone(this.state);

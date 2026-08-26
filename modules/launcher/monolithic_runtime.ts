@@ -143,12 +143,7 @@ async function stopCredentialDaemonPid(pid: string | number) {
         return;
     }
 
-    try {
-        runtime.kill(daemonPid, 'SIGTERM');
-    } catch (e: any) {
-        if (e.code !== 'ESRCH') throw e;
-        return;
-    }
+    runtime.kill(daemonPid, 'SIGTERM');
 
     const startedAt = Date.now();
     while ((Date.now() - startedAt) < 5000) {
@@ -168,13 +163,7 @@ async function stopCredentialDaemonPid(pid: string | number) {
 
     const SIGKILL_DEADLINE_MS = LAUNCHER.MONOLITHIC.DAEMON_SIGKILL_DEADLINE_MS;
     const sigkillStartedAt = Date.now();
-    let sigkillSent = false;
-    try {
-        sigkillSent = runtime.kill(daemonPid, 'SIGKILL');
-    } catch (e: any) {
-        if (e.code !== 'ESRCH') throw e;
-        return;
-    }
+    const sigkillSent = runtime.kill(daemonPid, 'SIGKILL');
     if (sigkillSent) {
         while ((Date.now() - sigkillStartedAt) < SIGKILL_DEADLINE_MS) {
             if (!isPidAlive(daemonPid)) {
@@ -271,7 +260,7 @@ function buildDexbotStartArgs(botName: any, dryrun: any = false) {
 
 // ── Update scheduler ───────────────────────────────────────────────
 
-function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProcessRef?: { current: any }; log?: (...data: any[]) => void; warn?: (...data: any[]) => void } = {}) {
+function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProcessRef?: { current: any }; warn?: (...data: any[]) => void } = {}) {
     let _updateTimer: any = null;
     let _pendingRestart = false;
     let cancelled = false;

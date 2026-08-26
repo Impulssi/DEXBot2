@@ -476,11 +476,10 @@ async function testIllegalBatchAbortArmsMaintenanceCooldown() {
             }
         });
 
-        chainOrders.executeBatch = async () => {
-            const err = new Error('simulated illegal state');
-            (err as any).code = 'ILLEGAL_ORDER_STATE';
-            throw err;
-        };
+    chainOrders.executeBatch = async () => {
+        const err = new Error('simulated illegal state');
+        throw err;
+    };
 
         const result = await bot.updateOrdersOnChainPlan({
             ordersToPlace: [{ id: 'slot-new', type: ORDER_TYPES.BUY, size: 1, price: 99 }],

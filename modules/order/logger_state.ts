@@ -7,11 +7,10 @@
  * Exports a single LoggerState class that enables smart logging by detecting state changes.
  *
  * Purpose:
- * - Track previous state across multiple categories (funds, orders, fills, boundary, errors)
+ * - Track previous funds state across state transitions
  * - Detect and report what changed between state transitions
  * - Determine if logging is needed (only log when values change)
  * - Maintain audit history of state changes
- * - Calculate significance of numeric changes against thresholds
  *
  * Used by Logger to:
  * - Skip redundant logging when nothing changed
@@ -19,12 +18,12 @@
  * - Maintain audit trail for debugging
  *
  * ===============================================================================
- * TABLE OF CONTENTS - LoggerState Class (3 methods)
+ * TABLE OF CONTENTS - LoggerState Class (2 methods)
  * ===============================================================================
  *
  * INITIALIZATION (1 method)
  *   1. constructor() - Create new LoggerState with empty previousState
- *      Initializes tracking for: funds, orders, fills, boundary, errors
+ *      Initializes tracking for: funds
  *
  * CHANGE DETECTION (1 method)
  *   2. detectChanges(category, current) - Detect changes between previous and current state
@@ -39,10 +38,6 @@
  *
  * STATE CATEGORIES:
  * - funds: Available, committed, total, cache, and fee tracking
- * - orders: Order counts, states, and type distributions
- * - fills: Fill operations and trade history
- * - boundary: Grid boundary positions and movements
- * - errors: Error conditions and recovery attempts
  *
  * CHANGE DETECTION ALGORITHM:
  * 1. First call: Returns { isNew: true, changes: current } and stores state
@@ -60,17 +55,13 @@ class LoggerState {
 
     constructor() {
         this.previousState = {
-            funds: null,
-            orders: null,
-            fills: null,
-            boundary: null,
-            errors: null
+            funds: null
         };
     }
 
     /**
      * Detect what changed between previous and current state
-     * @param {string} category - Category name (funds, orders, fills, etc.)
+     * @param {string} category - Category name (funds)
      * @param {Object} current - Current state object
      * @returns {Object} { isNew: boolean, changes: Object }
      */
@@ -116,4 +107,3 @@ class LoggerState {
 }
 
 export default LoggerState
-

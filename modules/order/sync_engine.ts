@@ -919,7 +919,7 @@ class SyncEngine {
                 // deletes btsFeeState when nextDeferred is 0, so setting it to 0 here
                 // would be an unnecessary set-then-delete cycle.
                 if (bestMatch.rawOnChain) {
-                    const rawDeferredFee = toFiniteNumber(bestMatch.rawOnChain.deferred_fee, undefined);
+                    const rawDeferredFee = toFiniteNumber(bestMatch.rawOnChain.deferred_fee, null);
                     if (rawDeferredFee !== null && rawDeferredFee > 0) {
                         bestMatch.btsFeeState = { deferredFee: blockchainToFloat(rawDeferredFee, BTS_PRECISION) };
                     } else if (wasVirtual && rawDeferredFee !== null && rawDeferredFee <= 0 && bestMatch.rawOnChain.for_sale > 0) {
@@ -1017,7 +1017,7 @@ class SyncEngine {
                     const adoptedRaw = rawChainOrders.get(chainOrderId);
                     const adoptedState = chainInt > 0 ? ORDER_STATES.PARTIAL : ORDER_STATES.VIRTUAL;
                     const adoptedBtsFeeState = (adoptedRaw) ? (() => {
-                        const rawFee = toFiniteNumber(adoptedRaw.deferred_fee, undefined);
+                        const rawFee = toFiniteNumber(adoptedRaw.deferred_fee, null);
                         return rawFee !== null && rawFee > 0 ? { deferredFee: blockchainToFloat(rawFee, BTS_PRECISION) } : undefined;
                     })() : undefined;
                     const adoptedOrder = {
@@ -1202,7 +1202,7 @@ class SyncEngine {
                 } else {
                     try {
                         const residualOrder = await chainOrders.readSingleOrder(matchedGridOrder.orderId, 3000);
-                        residualForSale = residualOrder ? toFiniteNumber(residualOrder.for_sale, undefined) : null;
+                        residualForSale = residualOrder ? toFiniteNumber(residualOrder.for_sale, null) : null;
                     } catch (residualErr: any) {
                         // The read is best-effort: if it fails, fall back to the old
                         // behavior (rely on reconciliation) rather than blocking the
@@ -1376,8 +1376,8 @@ class SyncEngine {
                         try {
                             const fresh = await chainOrders.readSingleOrder(orderId, 3000);
                             if (fresh) {
-                                const freshForSale = toFiniteNumber(fresh.for_sale, undefined);
-                                if (Number.isFinite(freshForSale)) {
+                                const freshForSale = toFiniteNumber(fresh.for_sale, null);
+                                if (freshForSale !== null && Number.isFinite(freshForSale)) {
                                     effectiveRawForSale = freshForSale;
                                     chainRefetched = true;
                                     mgr.logger.log(
@@ -1615,8 +1615,8 @@ class SyncEngine {
                             const batchResults = await chainOrders.batchReadOrders([...driftOrderIds], 3000);
                             for (const [orderId, freshOrder] of batchResults) {
                                 if (freshOrder) {
-                                    const freshForSale = toFiniteNumber(freshOrder.for_sale, undefined);
-                                    if (Number.isFinite(freshForSale)) {
+                                    const freshForSale = toFiniteNumber(freshOrder.for_sale, null);
+                                    if (freshForSale !== null && Number.isFinite(freshForSale)) {
                                         refetchMap.set(orderId, {
                                             chainConfirmsEmpty: Math.round(freshForSale) <= 0,
                                             chainRefetched: true,

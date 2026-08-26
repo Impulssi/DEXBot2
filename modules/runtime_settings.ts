@@ -85,7 +85,7 @@ export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRu
     if (botConfig.apiLimits) result.apiLimits = _deepMerge(result.apiLimits, botConfig.apiLimits);
     if (botConfig.logging) {
         if (botConfig.logging.level) result.logging.level = botConfig.logging.level;
-        if (botConfig.logging.config) result.logging.config = _deepMerge(result.logging.config, botConfig.logging.config);
+        if (botConfig.logging.config) result.logging.config = deepMerge(result.logging.config, botConfig.logging.config);
     }
 
     return result;

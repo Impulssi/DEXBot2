@@ -1379,7 +1379,7 @@ class Accountant {
         // Fail-safe: if fee cache is missing/stale, do not crash fill processing.
         try {
             const feeInfo = getAssetFees(assetSymbol, rawAmount, isMaker);
-            const netProceeds = toFiniteNumber(feeInfo?.netProceeds, undefined);
+            const netProceeds = toFiniteNumber(feeInfo?.netProceeds, null);
             if (netProceeds === null) {
                 throw new Error('netProceeds is not finite');
             }

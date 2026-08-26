@@ -238,6 +238,18 @@ export class NullProcessDiscovery implements ProcessDiscovery {
     listAllPids(): number[] { return []; }
 }
 
+export class FallbackProcessDiscovery extends NullProcessDiscovery {
+    isAlive(pid: number): boolean {
+        if (!Number.isInteger(pid) || pid <= 0) return false;
+        try {
+            return runtime.kill(pid, 0);
+        } catch (err: any) {
+            if (err && err.code === 'EPERM') return true;
+            return false;
+        }
+    }
+}
+
 let _instance: ProcessDiscovery | null = null;
 
 export function setProcessDiscovery(impl: ProcessDiscovery | null): void {
@@ -252,7 +264,7 @@ export function getProcessDiscovery(): ProcessDiscovery {
     if (!_instance) {
         _instance = runtime.platform === 'linux'
             ? new LinuxProcessDiscovery()
-            : new NullProcessDiscovery();
+            : new FallbackProcessDiscovery();
     }
     return _instance;
 }

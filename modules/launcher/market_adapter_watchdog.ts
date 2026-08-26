@@ -6,6 +6,7 @@ import { LAUNCHER, MARKET_ADAPTER } from '../constants.js';
 import { Config } from '../config.js';
 import { PATHS } from '../paths.js';
 import { isLikelyMarketAdapterProcess, isLockStale } from './market_adapter_runtime.js';
+import { buildScopedChildEnv } from './child_env.js';
 import { readProcMemMB, readProcUptime } from './status_reporting.js';
 import { getActiveAmaBotFingerprint } from './monolithic_runtime.js';
 
@@ -90,7 +91,7 @@ function createMarketAdapterWatchdog({
         const args = buildRuntimeScriptArgs({ codeRoot, scriptSegments: ['market_adapter', 'market_adapter'] });
         const child = spawn(Config.EXEC_PATH, args, {
             cwd: root,
-            env: process.env,
+            env: buildScopedChildEnv(),
             stdio: ['ignore', 'ignore', 'pipe'],
         });
         const childLogStreams: any[] = [];

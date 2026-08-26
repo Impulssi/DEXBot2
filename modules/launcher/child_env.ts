@@ -77,5 +77,5 @@ function buildScopedChildEnv({ extra = {} }: { extra?: Record<string, string> } 
     return { ...env, ...extra };
 }
 
-export { SAFE_CHILD_ENV_KEYS, buildScopedChildEnv }
+export { buildScopedChildEnv }
 

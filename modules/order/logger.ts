@@ -44,6 +44,7 @@ class Logger {
     _maxLogFiles: number;
     _jsonOutput: boolean;
     _flushResolve: (() => void) | null;
+    _flushPromise: Promise<void> | null;
     _lastFileErrorTime: number;
 
     /**
@@ -103,6 +104,7 @@ class Logger {
         this._maxLogFiles = this.config.rotation?.maxFiles || 10;
         this._jsonOutput = this.config.json?.enabled ?? false;
         this._flushResolve = null;
+        this._flushPromise = null;
         this._lastFileErrorTime = 0;
     }
 
@@ -283,21 +285,28 @@ class Logger {
     /**
      * Wait until the write queue is empty.
      * Call during shutdown to guarantee all pending lines are flushed.
+     * Concurrent callers share the in-flight flush promise instead of
+     * replacing each other's resolver.
      */
     flush(timeoutMs: number = 15000): Promise<void> {
-        const inner = new Promise<void>((resolve) => {
-            if (this._writeQueue.length === 0 && !this._draining) {
-                resolve();
-                return;
-            }
-            this._flushResolve = resolve;
-            if (this._writeTimer) {
-                clearTimeout(this._writeTimer);
-                this._writeTimer = null;
-            }
-            this._drainQueue();
-        });
-        return withTimeout(inner, timeoutMs, { onTimeout: 'resolve', defaultValue: undefined as any });
+        if (!this._flushPromise) {
+            const inner = new Promise<void>((resolve) => {
+                if (this._writeQueue.length === 0 && !this._draining) {
+                    resolve();
+                    return;
+                }
+                this._flushResolve = resolve;
+                if (this._writeTimer) {
+                    clearTimeout(this._writeTimer);
+                    this._writeTimer = null;
+                }
+                this._drainQueue();
+            });
+            this._flushPromise = inner.finally(() => {
+                this._flushPromise = null;
+            });
+        }
+        return withTimeout(this._flushPromise, timeoutMs, { onTimeout: 'resolve', defaultValue: undefined as any });
     }
 
     /**

@@ -6,6 +6,7 @@ const { readJSON } = storage;
 import { PATHS } from './paths.js';
 import { normalizeBotEntry } from './bot_settings.js';
 import { getErrorMessage } from './utils/errors.js';
+import { MERGE_STRATEGIES } from './settings_merge.js';
 
 
 interface ValidationProblem {
@@ -28,12 +29,9 @@ const PROFILE_AMA_KNOWN_FIELDS = new Set([
 ]);
 
 const GENERAL_SETTINGS_KNOWN_FIELDS = new Set([
-    'LOG_LEVEL', 'NODES', 'GRID_LIMITS', 'TIMING', 'UPDATER',
-    'MARKET_ADAPTER', 'DEFAULT_CONFIG', 'FILL_PROCESSING',
-    'PIPELINE_TIMING', 'LAUNCHER', 'CREDENTIAL_PROMPTS',
-    'NATIVE_CLIENT', 'LOGGING_CONFIG', 'MAINTENANCE',
-    'COW_PERFORMANCE', 'INCREMENT_BOUNDS', 'FEE_PARAMETERS',
-    'API_LIMITS', 'NODE_MANAGEMENT', 'EXPERT',
+    ...Object.keys(MERGE_STRATEGIES),
+    'NODES',
+    'EXPERT',
 ]);
 
 const WHITELIST_KNOWN_FLAGS = new Set([
@@ -62,7 +60,7 @@ function loadJsonFile(filePath: string): { data: any; ok: boolean; error?: strin
         return { data, ok: true };
     } catch (err: any) {
         if (err?.code === 'ENOENT') return { data: null, ok: true };
-        if (err instanceof SyntaxError) return { data: null, ok: true };
+        if (err instanceof SyntaxError) return { data: null, ok: false, error: `${filePath}: invalid JSON (${getErrorMessage(err)})` };
         return { data: null, ok: false, error: `${filePath}: ${getErrorMessage(err)}` };
     }
 }

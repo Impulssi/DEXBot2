@@ -5,7 +5,6 @@
  * Validates the 3-zone CR classification and two-layer action system.
  */
 
-
 const assert = require('assert');
 const {
   CR_ZONES,
@@ -191,76 +190,6 @@ function testAssessTrendLowConfidence() {
 
 // --- collateral calculations ---
 
-function testCollateralForTargetCr() {
-  console.log('  collateralForTargetCr...');
-
-  // 100 MPA debt * 50 BTS/MPA * 2.0 CR = 10000 BTS
-  assert.strictEqual(sharedPlanner.collateralForTargetCr(100, 50, 2.0), 10000);
-  assert.strictEqual(sharedPlanner.collateralForTargetCr(100, 50, 2.5), 12500);
-  assert.strictEqual(sharedPlanner.collateralForTargetCr(0, 50, 2.0), 0);
-  assert.strictEqual(sharedPlanner.collateralForTargetCr(-1, 50, 2.0), 0);
-
-  console.log('    PASS');
-}
-
-function testCollateralDelta() {
-  console.log('  collateralDeltaForTargetCr...');
-
-  // Need 10000, have 8000 → add 2000
-  assert.strictEqual(sharedPlanner.collateralDeltaForTargetCr(8000, 100, 50, 2.0), 2000);
-  // Need 10000, have 12000 → remove 2000
-  assert.strictEqual(sharedPlanner.collateralDeltaForTargetCr(12000, 100, 50, 2.0), -2000);
-  // Need 10000, have 10000 → no change
-  assert.strictEqual(sharedPlanner.collateralDeltaForTargetCr(10000, 100, 50, 2.0), 0);
-
-  console.log('    PASS');
-}
-
-function testDebtForTargetCr() {
-  console.log('  debtForTargetCr...');
-
-  assert.strictEqual(sharedPlanner.debtForTargetCr(10000, 50, 2.0), 100);
-  assert.strictEqual(sharedPlanner.debtForTargetCr(12000, 50, 2.0), 120);
-  assert.strictEqual(sharedPlanner.debtForTargetCr(0, 50, 2.0), 0);
-  assert.strictEqual(sharedPlanner.debtForTargetCr(10000, 0, 2.0), 0);
-
-  console.log('    PASS');
-}
-
-function testDebtDeltaForTargetCr() {
-  console.log('  debtDeltaForTargetCr...');
-
-  assert.strictEqual(sharedPlanner.debtDeltaForTargetCr(8000, 100, 50, 2.0), -20);
-  assert.strictEqual(sharedPlanner.debtDeltaForTargetCr(12000, 100, 50, 2.0), 20);
-  assert.strictEqual(sharedPlanner.debtDeltaForTargetCr(10000, 100, 50, 2.0), 0);
-
-  console.log('    PASS');
-}
-
-function testPlanCrAdjustment() {
-  console.log('  planCrAdjustment...');
-
-  const lowCr = sharedPlanner.planCrAdjustment(8000, 100, 50, 2.0);
-  assert.strictEqual(lowCr.primaryAction, 'reduce_debt');
-  assert.strictEqual(lowCr.fallbackAction, 'add_collateral');
-  assert.strictEqual(lowCr.debtDelta, -20);
-  assert.strictEqual(lowCr.collateralDelta, 2000);
-
-  const highCr = sharedPlanner.planCrAdjustment(12000, 100, 50, 2.0);
-  assert.strictEqual(highCr.primaryAction, 'increase_debt');
-  assert.strictEqual(highCr.fallbackAction, 'withdraw_collateral');
-  assert.strictEqual(highCr.debtDelta, 20);
-  assert.strictEqual(highCr.collateralDelta, -2000);
-
-  const onTarget = sharedPlanner.planCrAdjustment(10000, 100, 50, 2.0);
-  assert.strictEqual(onTarget.primaryAction, 'hold');
-  assert.strictEqual(onTarget.fallbackAction, 'hold');
-  assert.strictEqual(onTarget.debtDelta, 0);
-  assert.strictEqual(onTarget.collateralDelta, 0);
-
-  console.log('    PASS');
-}
-
 // --- CR_ZONES constant ---
 
 function testCrZonesConstant() {
@@ -402,11 +331,6 @@ function main() {
   testAssessTrendOpposed();
   testAssessTrendAligned();
   testAssessTrendLowConfidence();
-  testCollateralForTargetCr();
-  testCollateralDelta();
-  testDebtForTargetCr();
-  testDebtDeltaForTargetCr();
-  testPlanCrAdjustment();
   testTrendWeight();
   testCrWeight();
   testComputeOrderWeightBias();

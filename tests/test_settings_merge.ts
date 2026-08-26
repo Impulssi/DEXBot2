@@ -157,6 +157,44 @@ const DEFAULTS = Object.freeze({
     assert.strictEqual(r.GRID_LIMITS.GRID_COMPARISON._note, undefined);
 })();
 
+(function testExpertGridComparisonSubMergePreservesPrior() {
+    // EXPERT.GRID_LIMITS replaces the section shallowly; a partial
+    // GRID_COMPARISON override must deep-merge over the prior subtree
+    // instead of dropping untouched comparison keys.
+    const r = mergeSettings({
+        EXPERT: { GRID_LIMITS: { MIN_ORDER_COUNT: 7, GRID_COMPARISON: { RMS_PERCENTAGE: 77 } } }
+    }, DEFAULTS);
+    assert.strictEqual(r.GRID_LIMITS.MIN_ORDER_COUNT, 7);
+    assert.strictEqual(r.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE, 77);
+    assert.strictEqual(r.GRID_LIMITS.GRID_COMPARISON.MEAN_PERCENTAGE, 10, 'prior comparison keys must survive an expert partial override');
+})();
+
+(function testExpertGridComparisonScalarOverrideIgnored() {
+    // A scalar GRID_COMPARISON inside EXPERT.GRID_LIMITS must not wipe the
+    // prior comparison subtree with char-indexed spread garbage.
+    const r = mergeSettings({
+        EXPERT: { GRID_LIMITS: { GRID_COMPARISON: 42 } }
+    }, DEFAULTS);
+    assert.strictEqual(r.GRID_LIMITS.GRID_COMPARISON.MEAN_PERCENTAGE, 10);
+    assert.strictEqual(r.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE, DEFAULTS.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE);
+})();
+
+(function testDeepMergeRejectsProtoPollution() {
+    // A crafted config file with prototype-dangerous own keys (as JSON.parse
+    // produces them) must be skipped by the deep merge at every level instead
+    // of being assigned onto the result and polluting Object.prototype.
+    const evil = JSON.parse('{"LOGGING_CONFIG":{"__proto__":{"polluted":true},"rotation":{"__proto__":{"nestedPolluted":true},"enabled":false}}}');
+    const r = mergeSettings(evil, DEFAULTS);
+
+    const probe: any = {};
+    assert.strictEqual(probe.polluted, undefined, "top-level '__proto__' key must not pollute Object.prototype");
+    assert.strictEqual(probe.nestedPolluted, undefined, "nested '__proto__' key must not pollute Object.prototype");
+
+    assert.strictEqual(r.LOGGING_CONFIG.rotation.enabled, false, 'legitimate sibling keys still merge');
+    assert.strictEqual(r.LOGGING_CONFIG.rotation.maxSize, 1e6, 'untouched default siblings survive');
+    assert.ok(!Object.keys(r.LOGGING_CONFIG).includes('__proto__'), 'result carries no own __proto__ key');
+})();
+
 // =============================================================================
 // 6. NODES → NODE_MANAGEMENT mapping
 // =============================================================================

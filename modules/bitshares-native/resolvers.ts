@@ -116,12 +116,23 @@ function createResolvers(chainClient: ChainClient) {
     }
 
     function invalidateAsset(assetId: string): void {
+        const cached = assetCache.get(`asset:${assetId}`);
+        if (cached?.symbol) assetCache.delete(`asset:${cached.symbol}`);
+        if (cached?.id) assetCache.delete(`asset:${cached.id}`);
         assetCache.delete(`asset:${assetId}`);
     }
 
     function invalidateAccount(accountId: string): void {
+        const cached = accountCache.get(`account:${accountId}`);
+        if (cached?.name) accountCache.delete(`account:${cached.name}`);
+        if (cached?.id) accountCache.delete(`account:${cached.id}`);
         accountCache.delete(`account:${accountId}`);
-        accountIdCache.delete(`name:${accountId}`);
+
+        const isChainId = /^1\.2\./.test(String(accountId));
+        const resolvedId = cached?.id || (isChainId ? accountId : null);
+        const resolvedName = cached?.name || (isChainId ? null : accountId);
+        if (resolvedId) accountIdCache.delete(`name:${resolvedId}`);
+        if (resolvedName) accountIdCache.delete(`id:${resolvedName}`);
     }
 
     return {
@@ -131,8 +142,6 @@ function createResolvers(chainClient: ChainClient) {
         resolveAccountName,
         invalidateAsset,
         invalidateAccount,
-        getAssetCacheSize: () => assetCache.size,
-        getAccountCacheSize: () => accountCache.size,
     };
 }
 

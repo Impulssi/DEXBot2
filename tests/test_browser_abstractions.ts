@@ -1070,11 +1070,6 @@ async function testKeyStore() {
     assert.strictEqual(typeof store.isDaemonSigningKey, 'function');
     assert.strictEqual(typeof store.executeOperations, 'function');
 
-    // DirectKeyStore
-    const { DirectKeyStore } = ks;
-    const direct = new DirectKeyStore();
-    assert.strictEqual(direct.isDaemonSigningKey({}), false);
-
     // setKeyStore / resetKeyStore
     let customCalled = false;
     ks.setKeyStore({ isDaemonSigningKey: () => { customCalled = true; return true; } } as any);

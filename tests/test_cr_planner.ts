@@ -4,20 +4,8 @@ const assert = require('assert');
 const {
   buildDebtFirstCrPlan,
   buildCollateralFallbackPlan,
-  collateralDeltaForTargetCr,
-  collateralForTargetCr,
-  debtDeltaForTargetCr,
-  debtForTargetCr,
-  planCrAdjustment,
   resolveMinCollateralIncreaseThreshold,
 } = require('../modules/cr_planner');
-
-function testSharedFormulas() {
-  assert.strictEqual(collateralForTargetCr(100, 50, 2.0), 10000);
-  assert.strictEqual(collateralDeltaForTargetCr(8000, 100, 50, 2.0), 2000);
-  assert.strictEqual(debtForTargetCr(10000, 50, 2.0), 100);
-  assert.strictEqual(debtDeltaForTargetCr(8000, 100, 50, 2.0), -20);
-}
 
 function testDebtFirstPlanner() {
   const plan = buildDebtFirstCrPlan({
@@ -206,13 +194,6 @@ function testCollateralFallbackPlannerUsesReferenceAmount() {
   assert.strictEqual(plan.collateralDelta, 200, 'percentage collateral ceiling should use the supplied total reference');
 }
 
-function testCompatibilityPlanner() {
-  const plan = planCrAdjustment(250, 100, 2, 2.2);
-  assert(plan, 'compatibility planner should return a plan');
-  assert.strictEqual(plan.primaryAction, 'reduce_debt');
-  assert.strictEqual(plan.needsGridReset, true);
-}
-
 function testDebtOnlyWithLowCr() {
   const plan = buildDebtFirstCrPlan({
     currentCollateralAmount: 250,
@@ -252,7 +233,6 @@ function testDebtOnlyWithHighCr() {
   assert.strictEqual(plan.collateralDelta, 0, 'debtOnly should keep collateral constant');
 }
 
-testSharedFormulas();
 testDebtFirstPlanner();
 testDebtCeilingOnIncrease();
 testMinCollateralIncreaseThresholdSkipsSmallIncrease();
@@ -265,7 +245,6 @@ testCollateralFallbackPlanner();
 testCollateralFallbackPlannerClamped();
 testCollateralFallbackPlannerAtCeiling();
 testCollateralFallbackPlannerUsesReferenceAmount();
-testCompatibilityPlanner();
 testDebtOnlyWithLowCr();
 testDebtOnlyWithHighCr();
 

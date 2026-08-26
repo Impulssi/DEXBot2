@@ -328,7 +328,6 @@ function createSubscriptionManager(chainClient: any): any {
             // Coalesce: no-fill notices are just trigger signals. Schedule one
             // history scan per subscription for the coalesce window instead of
             // running one RPC per notice.
-            const stampNow = Date.now();
             for (const sub of eligible) {
                 // Stamp eligible subs as alive — the notice arrived and a scan
                 // will follow. We can't route non-fill objects per-account, so
@@ -341,7 +340,7 @@ function createSubscriptionManager(chainClient: any): any {
                 // fetches fill history per-account via direct RPC, so no fills
                 // are actually lost — they're just discovered on the next scan
                 // instead of via push notification.
-                sub.lastNoticeAt = stampNow;
+                sub.lastNoticeAt = now;
 
                 // Re-entrancy guard: if _processingHistory is true, a history scan
                 // for this subscription is already in flight. Skip this notice — the
@@ -352,16 +351,6 @@ function createSubscriptionManager(chainClient: any): any {
                 if (sub._processingHistory) continue;
                 sub._processingHistory = true;
 
-                const existing = pendingScans.get(sub);
-                if (existing) {
-                    if ((now - existing.lastNoticeAt) < noticeCoalesceMs) {
-                        existing.lastNoticeAt = now;
-                        sub._processingHistory = false;
-                        continue;
-                    }
-                    clearTimeout(existing.timer);
-                    pendingScans.delete(sub);
-                }
                 if (noticeCoalesceMs > 0) {
                     const entry = { timer: null as any, lastNoticeAt: now };
                     entry.timer = setTimeout(() => {
@@ -823,6 +812,7 @@ function createSubscriptionManager(chainClient: any): any {
             if (pending) {
                 if (pending.timer) clearTimeout(pending.timer);
                 pendingScans.delete(entry);
+                entry._processingHistory = false;
             }
             subscriptions.delete(accountName);
 
@@ -836,8 +826,9 @@ function createSubscriptionManager(chainClient: any): any {
     async function resubscribeAll() {
         // Drop any coalesced scans scheduled before the reconnect. They reference
         // a pre-reconnect cursor and would race with the catch-up scan below.
-        for (const [, pending] of pendingScans) {
+        for (const [sub, pending] of pendingScans) {
             if (pending.timer) clearTimeout(pending.timer);
+            sub._processingHistory = false;
         }
         pendingScans.clear();
 

@@ -368,6 +368,12 @@ class AsyncLock {
      * prevents a new acquirer from entering while the stale callback
      * is still running, preserving mutual exclusion.
      *
+     * REPEATED CALLS: While an orphan release is pending (_orphaned),
+     * the deferred unlock is owned by the stale callback's finally
+     * block; a repeated forceRelease clears the queue and bumps the
+     * generation but leaves _locked untouched so it cannot break
+     * exclusion by releasing the lock ahead of that pending orphan.
+     *
      * @returns {number} Count of cleared items
      */
     forceRelease(): number {
@@ -382,6 +388,11 @@ class AsyncLock {
             const { reject, timer } = this._queue.shift()!;
             if (timer) clearTimeout(timer);
             reject(new Error('Lock force-released'));
+        }
+        if (this._orphaned) {
+            // An earlier forceRelease already deferred the unlock to an
+            // orphaned callback's finally block — do not clear _locked here.
+            return count;
         }
         if (wasHolding) {
             // A callback is currently executing — defer lock release to

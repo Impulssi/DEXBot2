@@ -160,7 +160,7 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
             initPromise: _initPromise,
             newTx,
             broadcast,
-            accountId: _accountId,
+            get accountId() { return _accountId; },
             accountName,
         },
         newTx,

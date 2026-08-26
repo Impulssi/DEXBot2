@@ -691,6 +691,36 @@ async function testResidualCancelRequestedWhenChainStillHoldsOrder() {
     console.log('  PASS');
 }
 
+async function testFillGuardSingleDecrementOnDeferral() {
+    console.log('\n - Deferred fill decrements _fillBatchInFlight exactly once (concurrent holder preserved)...');
+    const mgr = createManager();
+
+    // Force the stale-totals gate so the individual path returns early,
+    // before the inner finally that lowers the guard for real.
+    mgr.refreshAccountTotalsIfStale = async () => ({ ok: false });
+
+    // Simulate a concurrent batch already holding the guard at 2.
+    mgr._fillBatchInFlight = 2;
+
+    const orderId = '1.7.700001';
+    await mgr._updateOrder({
+        id: 'slot-0', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SELL,
+        size: 1.0, price: 0.0001, orderId: orderId,
+        rawOnChain: { for_sale: String(Math.round(1.0 * 10000)), fetchedAt: Date.now() }
+    });
+
+    const fill = makeSellFillEvent(orderId, 1.0, 700, '1.11.7001');
+    const result = await mgr.syncFromFillHistoryBatch([fill], { persistenceMode: 'batched' });
+
+    assert.strictEqual(result.deferred, true, 'Fill must be deferred by the stale-totals gate');
+    assert.strictEqual(mgr._fillBatchInFlight, 2,
+        'Deferral must restore the exact pre-call guard count: no leak on early return, and a concurrent batch holding the guard must not be zeroed');
+
+    // Cleanup so later tests start from a clean guard state.
+    mgr._fillBatchInFlight = 0;
+    console.log('  PASS');
+}
+
 async function runTests() {
     suppressNoise();
 
@@ -713,6 +743,7 @@ async function runTests() {
         await testSpreadSlotPartialFillResolvesBuySide();
         await testPostBatchReanchorAndInvariantGuard();
         await testResidualCancelRequestedWhenChainStillHoldsOrder();
+        await testFillGuardSingleDecrementOnDeferral();
     } finally {
         restoreReadGone();
     }

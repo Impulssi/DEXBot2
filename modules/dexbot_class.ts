@@ -146,6 +146,7 @@ class DEXBot {
     _batchInFlight: number;
     _cowBroadcastInFlight: boolean;
     _recoverySyncInFlight: number;
+    _postRecoveryRebalanceTimer: any;
     _lastTargetedDriftSyncAt: number;
     _lightweightSyncCheckAt: number;
     _targetedDriftSyncCooldownMs: number;
@@ -255,6 +256,7 @@ class DEXBot {
         // placed orders and produce orphan fills).
         this._cowBroadcastInFlight = false;
         this._recoverySyncInFlight = 0;
+        this._postRecoveryRebalanceTimer = null;
         this._lastTargetedDriftSyncAt = 0;
         this._lightweightSyncCheckAt = 0;
         this._targetedDriftSyncCooldownMs = this.config.timing.TARGETED_DRIFT_SYNC_COOLDOWN_MS;
@@ -456,16 +458,6 @@ class DEXBot {
      */
     async _recoverBatchSizeDrift(err: any, opContexts: any = []) {
         return DexbotStateRecovery.recoverBatchSizeDrift(this, err, opContexts);
-    }
-
-    /**
-     * Extract chain order IDs from opContexts for operations that could
-     * trigger a size-drift error (size-update and rotation update).
-     * @param {Array<Object>} opContexts
-     * @returns {string[]} Unique chain order IDs
-     */
-    _extractSizeDriftOrderIds(opContexts: any) {
-        return DexbotStateRecovery.extractSizeDriftOrderIds(opContexts);
     }
 
     /**
@@ -674,12 +666,11 @@ class DEXBot {
     }
 
     /**
-     * Compute the backoff delay for fill-consumer retries after the failure
-     * budget (MAX_CONSECUTIVE_CONSUMER_FAILURES) is exhausted. Each retry
-     * doubles the previous delay, capped at CONSUMER_BACKOFF_MAX_MS. The
-     * consumer NEVER permanently stops re-scheduling — it just slows down.
-     * @param {number} failures The current consecutive-failure count.
-     * @returns {number} Delay in milliseconds before the next retry.
+     * Schedule the fill-consumer restart after the failure budget
+     * (MAX_CONSECUTIVE_CONSUMER_FAILURES) is exhausted, applying exponential
+     * backoff capped at CONSUMER_BACKOFF_MAX_MS. The consumer NEVER
+     * permanently stops re-scheduling — it just slows down.
+     * @param {Object} chainOrders - Chain orders module for blockchain operations
      * @private
      */
     _scheduleFillConsumerRestart(chainOrders: any) {
@@ -847,53 +838,6 @@ class DEXBot {
     }
 
     /**
-     * Extract operation results from a batch transaction result.
-     * @param {Object|Array|null} result - Transaction result from executeBatch
-     * @param {string} [warnContext=''] - Context for warning messages
-     * @returns {Array} Array of operation result entries
-     */
-    _extractOperationResults(result: any, warnContext: any = '') {
-        return cowRuntime.extractOperationResults(result, warnContext, this.manager?.logger?.log?.bind(this.manager?.logger));
-    }
-
-    /**
-     * Find CREATE operation contexts whose broadcast result did not include a chain order id.
-     *
-     * @param {Array} operationResults - operation_results aligned with opContexts.
-     * @param {Array<Object>} opContexts - Operation context metadata aligned with operations.
-     * @returns {Array<{index:number, ctx:Object}>} Missing create result contexts.
-     */
-    _findMissingCreateResultContexts(operationResults: any, opContexts: any) {
-        return cowRuntime.findMissingCreateResultContexts(operationResults, opContexts);
-    }
-
-    /**
-     * Run an immediate chain sync after a successful CREATE broadcast returned incomplete ids.
-     *
-     * Missing-create blockers are intentionally preserved if the recovery snapshot does not
-     * account for the affected local slot. The sync engine owns normal clearing of
-     * _lastUnmatchedChainOrders after a successful clean snapshot; this method prevents a
-     * lagging empty snapshot from clearing blockers that were just created by this flow.
-     *
-     * @param {string} [reason] - Human-readable recovery context for logs.
-     * @returns {Promise<void>}
-     */
-    async _recoverAfterMissingCreateResults(reason: any = 'missing create operation results') {
-        return cowRuntime.recoverAfterMissingCreateResults(this, reason);
-    }
-
-    /**
-     * Restore unresolved missing-create blockers after recovery if sync did not adopt them.
-     *
-     * @param {Array<Object>} blockers - Pre-recovery missing-create blockers.
-     * @param {Object} recoveryResult - Result returned by manager.syncFromOpenOrders.
-     * @returns {void}
-     */
-    _preserveMissingCreateBlockersAfterRecovery(blockers: any, recoveryResult: any) {
-        return cowRuntime.preserveMissingCreateBlockersAfterRecovery(this, blockers, recoveryResult);
-    }
-
-    /**
      * Merge missing CREATE result contexts into manager._lastUnmatchedChainOrders.
      *
      * The sync engine sets and clears _lastUnmatchedChainOrders on full sync snapshots.
@@ -952,33 +896,6 @@ class DEXBot {
      */
     _clearPendingBroadcasts() {
         return cowRuntime.clearPendingBroadcasts(this.manager?._pendingBroadcasts);
-    }
-
-    /**
-     * Build a fingerprint for an on-chain order so it can be matched against
-     * the pending-broadcast cache.
-     *
-     * @param {Object} chainOrder - Parsed chain order (id, sell, receive, sellAssetId, receiveAssetId, ...)
-     * @param {string} slotId - The grid slot id (order.id) we expect this chain order to belong to
-     * @returns {string|null} Fingerprint or null on bad input
-     */
-    _buildChainOrderFingerprint(chainOrder: any, slotId: any) {
-        return cowRuntime.buildChainOrderFingerprint(this, chainOrder, slotId);
-    }
-
-    /**
-     * Normalize raw BitShares limit_order_object data into the integer tuple
-     * used by pending-broadcast recovery.
-     *
-     * readOpenOrders() returns raw orders with sell_price/for_sale, not the
-     * parsed DEXBot fields type/sellInt/receiveInt. Test fixtures may still
-     * pass the parsed shape, so this helper accepts both.
-     *
-     * @param {Object} chainOrder
-     * @returns {{side: string, assetA: string, assetB: string, sellInt: number, receiveInt: number}|null}
-     */
-    _normalizeChainOrderForPendingMatch(chainOrder: any) {
-        return cowRuntime.normalizeChainOrderForPendingMatch(this, chainOrder);
     }
 
     /**
@@ -1059,17 +976,6 @@ class DEXBot {
         return cowRuntime.autoCancelOneUnmatchedOrphan(this);
     }
 
-    // Pair mode applies only when create contexts include both BUY and SELL.
-    // Single-side create batches intentionally remain a single executeBatch.
-    /**
-     * Check whether to execute creates in outside-in pair mode (mixed BUY/SELL operations).
-     * @param {Array<Object>} opContexts - Operation contexts array
-     * @returns {boolean} True if pair mode should be used
-     */
-    _shouldExecuteCreatePairMode(opContexts: any) {
-        return cowRuntime.shouldExecuteCreatePairMode(this, opContexts);
-    }
-
     /**
      * Execute operations with retry on BroadcastUncertainError.
      * The daemon already retries internally against a 25s deadline. If it
@@ -1108,41 +1014,6 @@ class DEXBot {
      */
     async _executeOperationsWithStrategy(operations: any, opContexts: any) {
         return cowRuntime.executeOperationsWithStrategy(this, operations, opContexts);
-    }
-
-    /**
-     * Validate that operations can be executed with available funds before broadcasting.
-     * Checks sufficient available funds for all operations.
-     * @param {Array} operations - Operations to validate
-     * @param {Object} assetA - Asset A metadata (id, precision, symbol)
-     * @param {Object} assetB - Asset B metadata (id, precision, symbol)
-     * @returns {Object} { isValid: boolean, summary: string }
-     * @private
-     */
-    _validateOperationFunds(operations: any, assetA: any, assetB: any) {
-        return cowRuntime.validateOperationFunds(this, operations, assetA, assetB);
-    }
-
-    /**
-     * Resolve the ideal size from an order-like object with fallback.
-     * @param {Object|null} orderLike - Order-like object with optional idealSize/size nested properties
-     * @param {number|null} [fallbackSize=null] - Fallback size if none found
-     * @returns {number|null} Resolved size or null
-     */
-    _resolveIdealSizeForValidation(orderLike: any, fallbackSize: any = null) {
-        return cowRuntime.resolveIdealSizeForValidation(this, orderLike, fallbackSize);
-    }
-
-    /**
-     * Validate that an order size is safe to execute (above minimum dust thresholds).
-     * @param {number} size - Order size to validate
-     * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
-     * @param {Object|null} [orderLike=null] - Optional order-like object for ideal size comparison
-     * @param {number|null} [fallbackSize=null] - Fallback ideal size
-     * @returns {any}
-     */
-    _validateOrderSizeForExecution(size: any, type: any, orderLike: any = null, fallbackSize: any = null) {
-        return cowRuntime.validateOrderSizeForExecution(this, size, type, orderLike, fallbackSize);
     }
 
     /**
@@ -1546,32 +1417,12 @@ class DEXBot {
     }
 
     /**
-     * Build COW actions array from a simple plan object or array of ordersToPlace.
-     * @param {Object|Array} plan - Plan object with ordersToPlace/ordersToRotate/ordersToUpdate/ordersToCancel, or array of ordersToPlace
-     * @returns {Array<{type: string, id: string, order?: Object, orderId?: string, newSize?: number, newPrice?: number, newGridId?: string}>}
-     */
-    _buildActionsFromPlan(plan: any) {
-        return cowRuntime.buildActionsFromPlan(this, plan);
-    }
-
-    /**
      * Build a COW result object (workingGrid + actions) from a simple plan.
      * @param {Object|Array} plan - Plan object or array of ordersToPlace
      * @returns {{workingGrid: any, workingIndexes: Object, workingBoundary: number, actions: Array}}
      */
     _buildCowResultFromPlan(plan: any) {
         return cowRuntime.buildCowResultFromPlan(this, plan);
-    }
-
-    /**
-     * Restore skipped update slots in the working grid to master state.
-     * @param {any} workingGrid - Working grid to restore slots into
-     * @param {Set<string>} skippedSlotIds - Set of slot IDs that were skipped
-     * @param {number} [skippedCount=0] - Count of skipped actions for logging
-     * @returns {void}
-     */
-    _restoreSkippedUpdateSlotsInWorkingGrid(workingGrid: any, skippedSlotIds: any, skippedCount: any = 0) {
-        return cowRuntime.restoreSkippedUpdateSlotsInWorkingGrid(this, workingGrid, skippedSlotIds, skippedCount);
     }
 
     /**
@@ -1808,7 +1659,7 @@ class DEXBot {
         if (!runtime) {
             return;
         }
-        const intervalMin = Number(this.config?.TIMING?.CREDIT_DEAL_CHECK_INTERVAL_MIN ?? TIMING.CREDIT_DEAL_CHECK_INTERVAL_MIN);
+        const intervalMin = Number(this.config?.timing?.CREDIT_DEAL_CHECK_INTERVAL_MIN ?? TIMING.CREDIT_DEAL_CHECK_INTERVAL_MIN);
         if (!Number.isFinite(intervalMin) || intervalMin <= 0) {
             this._log('Credit deal watchdog disabled by configuration (TIMING.CREDIT_DEAL_CHECK_INTERVAL_MIN <= 0)');
             return;
@@ -2012,6 +1863,11 @@ class DEXBot {
             this._dustHealthCheckTimer = null;
         }
 
+        if (this._postRecoveryRebalanceTimer) {
+            clearTimeout(this._postRecoveryRebalanceTimer);
+            this._postRecoveryRebalanceTimer = null;
+        }
+
         this._stopCreditWatchdogInterval();
         this._stopCredentialDaemonWatchdogInterval();
 
@@ -2069,81 +1925,44 @@ class DEXBot {
             } else {
                 const shutdownLockTimeoutMs = this.config?.timing?.SYNC_LOCK_TIMEOUT_MS;
                 let shutdownLockTimer: any;
-                // AsyncLock starts the callback as soon as the lock is available,
-                // which can be a few ms after the timeout fires. Without this
-                // claim flag, the lock callback and the fallback path would both
-                // run their own _flushProcessedFillPersistence + persistGrid,
-                // racing on the same persistence targets. Set the flag the moment
-                // the timeout fires (and at the top of the lock callback) so
-                // exactly one path performs the flush.
-                let flushClaimed = false;
-                const lockResult = await Promise.race([
-                    this.manager._fillProcessingLock.acquire(async () => {
-                        if (flushClaimed) {
-                            this._log('Shutdown: fallback flush already ran, skipping lock-protected flush');
-                            return;
-                        }
-                        flushClaimed = true;
-                        this._log('Fill processing lock acquired for shutdown');
-
-                        // Log any remaining queued fills
+                let finalFlushPromise: Promise<void> | null = null;
+                const startFinalFlush = (label: string): Promise<void> => {
+                    if (finalFlushPromise) return finalFlushPromise;
+                    finalFlushPromise = (async () => {
                         if (this._incomingFillQueue.length > 0) {
                             this._warn(`${this._incomingFillQueue.length} fills queued but not processed at shutdown`);
                         }
-
-                        await this._flushProcessedFillPersistence('shutdown');
-
-                        // Persist final state
+                        await this._flushProcessedFillPersistence(label);
                         if (this.manager && this.accountOrders && this.config?.botKey) {
                             try {
                                 await this.manager.persistGrid();
-                                this._log('Final grid snapshot persisted');
+                                this._log(`Final grid snapshot persisted (${label})`);
                             } catch (err: any) {
-                                this._warn(`Failed to persist final state: ${getErrorMessage(err)}`);
+                                this._warn(`Failed to persist final state (${label}): ${getErrorMessage(err)}`);
                             }
                         }
-                    }).then(() => 'acquired'),
+                    })();
+                    return finalFlushPromise;
+                };
+                const lockResult = await Promise.race([
+                    this.manager._fillProcessingLock.acquire(async () => {
+                        this._log('Fill processing lock acquired for shutdown');
+                        await startFinalFlush('shutdown');
+                    }).then(() => 'acquired').catch(() => 'lock-error'),
                     new Promise<string>((resolve: any) => {
-                        shutdownLockTimer = setTimeout(() => {
-                            // Claim the flush for the fallback path BEFORE the
-                            // race resolves, so if the lock callback starts
-                            // microseconds later it sees the claim.
-                            flushClaimed = true;
-                            resolve('timed-out');
-                        }, shutdownLockTimeoutMs);
+                        shutdownLockTimer = setTimeout(() => resolve('timed-out'), shutdownLockTimeoutMs);
                     })
                 ]).finally(() => {
                     if (shutdownLockTimer) clearTimeout(shutdownLockTimer);
                 });
 
-                if (lockResult === 'timed-out') {
+                if (lockResult !== 'acquired') {
                     this._warn(
                         `Shutdown: _fillProcessingLock not acquired within ${shutdownLockTimeoutMs}ms — ` +
                         `falling back to best-effort flush without lock.`
                     );
-                    // Best-effort flush without the lock. The lock's only
-                    // purpose during shutdown is to prevent concurrent
-                    // updates; if we're shutting down, no other updater is
-                    // running. The risk is if the bot is being restarted
-                    // (not stopped) — in which case the same race window
-                    // applies. The trade-off is: prefer losing one batch of
-                    // recent fills over skipping persistence entirely.
                     try {
-                        if (this._incomingFillQueue.length > 0) {
-                            this._warn(
-                                `${this._incomingFillQueue.length} fills queued at shutdown; ` +
-                                `persisting without lock.`
-                            );
-                        }
-                        await this._flushProcessedFillPersistence('shutdown-fallback');
-                        if (this.manager && this.accountOrders && this.config?.botKey) {
-                            try {
-                                await this.manager.persistGrid();
-                                this._log('Final grid snapshot persisted (best-effort, lock not held)');
-                            } catch (err: any) {
-                                this._warn(`Failed to persist final state (best-effort): ${getErrorMessage(err)}`);
-                            }
-                        }
+                        await startFinalFlush('shutdown-fallback');
                     } catch (err: any) {
                         this._warn(`Best-effort flush during shutdown failed: ${getErrorMessage(err)}`);
                     }
@@ -2162,9 +1981,11 @@ class DEXBot {
         if (this.config?.preferredAccount) {
             const botName = this.config.botKey;
             if (botName) {
-                fundRegistry.releaseAllocation(this.config.preferredAccount, botName).catch((err: any) => {
+                try {
+                    await fundRegistry.releaseAllocation(this.config.preferredAccount, botName);
+                } catch (err: any) {
                     this._warn(`Failed to release fund allocation for ${botName}: ${getErrorMessage(err)}`);
-                });
+                }
             }
         }
 

@@ -10,7 +10,7 @@ const assert = require('assert');
 const { PATHS } = require('../modules/paths');;
 const fs = require('fs');
 const path = require('path');
-const { calculateGapSlots, getSizingContext, createOrderGrid, initializeGrid, checkAndUpdateGridIfNeeded, hasAnyDust } = require('../modules/order/grid');
+const { calculateGapSlots, _getSizingContext, createOrderGrid, initializeGrid, checkAndUpdateGridIfNeeded, hasAnyDust } = require('../modules/order/grid');
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, BUILD_DIR } = require('../modules/constants');
 const { OrderManager } = require('../modules/order/manager');
 const { allocateFundsByWeights, getSingleDustThreshold } = require('../modules/order/utils/math');
@@ -172,7 +172,7 @@ async function runTests() {
         const sideSlots = Array.from(manager.orders.values())
             .filter(o => (o as any).type === ORDER_TYPES.BUY)
             .sort((a, b) => (a as any).price - (b as any).price);
-        const ctx = await getSizingContext(manager, 'buy');
+        const ctx = await _getSizingContext(manager, 'buy');
         const idealSizes = allocateFundsByWeights(
             ctx.budget,
             sideSlots.length,

@@ -251,20 +251,9 @@ function collectValidationIssues(entries: any[], sourceName: string): { errors: 
     });
 
     // Cross-bot validation: check for duplicate botKeys (sanitized names)
-    const seenKeys = new Map<string, number>();
-    entries.forEach((entry: any, index: number) => {
-        if (!entry.name) return;
-        const key = createBotKey(entry, index);
-        const existing = seenKeys.get(key);
-        if (existing !== undefined) {
-            errors.push(
-                `Bot[${existing}] '${entries[existing].name}' and Bot[${index}] '${entry.name}' ` +
-                `both produce botKey '${key}' — bot names must be unique.`
-            );
-        } else {
-            seenKeys.set(key, index);
-        }
-    });
+    for (const duplicateIssue of findDuplicateBotKeyIssues(entries)) {
+        errors.push(duplicateIssue);
+    }
 
     // Cross-bot validation: check if botFunds percentages sum > 100% per account
     const accountFunds: Record<string, { buy: number; sell: number; botNames: string[] }> = {};
@@ -300,11 +289,11 @@ function collectValidationIssues(entries: any[], sourceName: string): { errors: 
     return { errors, warnings };
 }
 
-function assertNoDuplicateBotKeys(entries: any[], sourceName: string): void {
+function findDuplicateBotKeyIssues(entries: any[]): string[] {
     const seenKeys = new Map<string, number>();
     const duplicates: string[] = [];
-    for (const [index, entry] of entries.entries()) {
-        if (!entry.name) continue;
+    entries.forEach((entry: any, index: number) => {
+        if (!entry.name) return;
         const key = createBotKey(entry, index);
         const existing = seenKeys.get(key);
         if (existing !== undefined) {
@@ -315,7 +304,12 @@ function assertNoDuplicateBotKeys(entries: any[], sourceName: string): void {
         } else {
             seenKeys.set(key, index);
         }
-    }
+    });
+    return duplicates;
+}
+
+function assertNoDuplicateBotKeys(entries: any[], sourceName: string): void {
+    const duplicates = findDuplicateBotKeyIssues(entries);
     if (duplicates.length > 0) {
         throw new Error(`Duplicate bot name(s) in ${sourceName}:\n${duplicates.map((e) => `  - ${e}`).join('\n')}`);
     }

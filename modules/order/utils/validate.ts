@@ -1085,7 +1085,7 @@ function buildSuccessResult({
  */
 function evaluateCommit(workingGrid: any, options: any = {}) {
     const hasLock = typeof options === 'boolean' ? options : !!options?.hasLock;
-    const currentVersion = toFiniteNumber(options?.currentVersion, undefined);
+    const currentVersion = toFiniteNumber(options?.currentVersion, null);
     const masterGrid = typeof options === 'object' ? options.masterGrid : null;
 
     if (!workingGrid) {

@@ -405,13 +405,13 @@ function getConfiguredOrDefaultNodes() {
 
 /**
  * Handle connection status change events from the native client.
- * @param {string} status - Connection status string ('open', 'connected', 'closed', 'closing', etc.)
+ * @param {string} status - Connection status string ('connected', 'connecting', 'closed')
  * @returns {boolean} Whether the event was handled
  */
 function handleConnectionStatus(status: any) {
     const canHandleFailover = nodeManager && nodeConfig?.healthCheck?.enabled !== false;
 
-    if (status === 'open' || status === 'connected') {
+    if (status === 'connected') {
         connected = true;
         lastConnectionError = null;
         if (nodeManager && nodeConfig?.healthCheck?.enabled !== false && !nodeManager.monitoringActive) {
@@ -423,17 +423,17 @@ function handleConnectionStatus(status: any) {
         return false;
     }
 
-    if (status === 'closed' || status === 'closing') {
+    if (status === 'closed') {
         connected = false;
-    }
-    if (status === 'closed' && canHandleFailover && !reconnectInProgress) {
-        if (intentionalDisconnect) {
+        if (canHandleFailover && !reconnectInProgress) {
+            if (intentionalDisconnect) {
+                return true;
+            }
+            assessFailover('Connection closed').catch((err: any) => {
+                logger.warn(`Failover assessment failed: ${getErrorMessage(err)}`);
+            });
             return true;
         }
-        assessFailover('Connection closed').catch((err: any) => {
-            logger.warn(`Failover assessment failed: ${getErrorMessage(err)}`);
-        });
-        return true;
     }
     return false;
 }

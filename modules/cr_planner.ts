@@ -1,10 +1,7 @@
 'use strict';
 
 import { toFiniteNumber } from './order/format.js';
-import { resolveConfigValue, isPercentageString } from './order/utils/math.js';
-import { DEFAULT_TARGET_CR } from './constants.js';
-import { roundToDecimals } from './order/utils/math.js';
-
+import { resolveConfigValue, isPercentageString, roundToDecimals } from './order/utils/math.js';
 
 interface CrPolicy {
     minCollateralRatio?: number;
@@ -111,40 +108,6 @@ function calculateCollateralRatio(currentCollateralAmount: unknown, currentDebtA
         return null;
     }
     return collateral / (debt * price);
-}
-
-function collateralForTargetCr(debtAmount: unknown, feedPrice: unknown, targetCr: number = DEFAULT_TARGET_CR): number {
-    const debt = Number(debtAmount);
-    const price = Number(feedPrice);
-    const target = Number(targetCr);
-    if (!Number.isFinite(debt) || !Number.isFinite(price) || !Number.isFinite(target)) {
-        return 0;
-    }
-    if (debt <= 0 || price <= 0 || target <= 0) {
-        return 0;
-    }
-    return debt * price * target;
-}
-
-function collateralDeltaForTargetCr(currentCollateral: unknown, debtAmount: unknown, feedPrice: unknown, targetCr: number = DEFAULT_TARGET_CR): number {
-    return collateralForTargetCr(debtAmount, feedPrice, targetCr) - (Number(currentCollateral) || 0);
-}
-
-function debtForTargetCr(currentCollateral: unknown, feedPrice: unknown, targetCr: number = DEFAULT_TARGET_CR): number {
-    const collateral = Number(currentCollateral);
-    const price = Number(feedPrice);
-    const target = Number(targetCr);
-    if (!Number.isFinite(collateral) || !Number.isFinite(price) || !Number.isFinite(target)) {
-        return 0;
-    }
-    if (collateral <= 0 || price <= 0 || target <= 0) {
-        return 0;
-    }
-    return collateral / (price * target);
-}
-
-function debtDeltaForTargetCr(currentCollateral: unknown, debtAmount: unknown, feedPrice: unknown, targetCr: number = DEFAULT_TARGET_CR): number {
-    return debtForTargetCr(currentCollateral, feedPrice, targetCr) - (Number(debtAmount) || 0);
 }
 
 function _buildBounds(policy: CrPolicy = {}): { minCr: number | null; maxCr: number | null; targetCr: number | null; lowerBound: number | null; upperBound: number | null } {
@@ -320,50 +283,5 @@ function buildCollateralFallbackPlan({
     };
 }
 
-function planCrAdjustment(currentCollateral: unknown, debtAmount: unknown, feedPrice: unknown, targetCr: number = DEFAULT_TARGET_CR): any {
-    const collateral = positiveOrNull(currentCollateral);
-    const debt = positiveOrNull(debtAmount);
-    const price = positiveOrNull(feedPrice);
-    const target = positiveOrNull(targetCr);
-    if (collateral === null || debt === null || price === null || target === null) {
-        return {
-            targetCr: target,
-            targetDebt: null,
-            targetCollateral: null,
-            debtDelta: 0,
-            collateralDelta: 0,
-            primaryAction: 'hold',
-            fallbackAction: 'hold',
-            needsGridReset: false,
-        };
-    }
-
-    const targetDebt = collateral / (price * target);
-    const targetCollateral = target * price * debt;
-    const debtDelta = targetDebt - debt;
-    const collateralDelta = targetCollateral - collateral;
-
-    let primaryAction: string = 'hold';
-    let fallbackAction: string = 'hold';
-    if (debtDelta < 0) {
-        primaryAction = 'reduce_debt';
-        fallbackAction = collateralDelta > 0 ? 'add_collateral' : 'hold';
-    } else if (debtDelta > 0) {
-        primaryAction = 'increase_debt';
-        fallbackAction = collateralDelta < 0 ? 'withdraw_collateral' : 'hold';
-    }
-
-    return {
-        targetCr: target,
-        targetDebt,
-        targetCollateral,
-        debtDelta,
-        collateralDelta,
-        primaryAction,
-        fallbackAction,
-        needsGridReset: primaryAction !== 'hold',
-    };
-}
-
-export { buildCollateralFallbackPlan, buildDebtFirstCrPlan, calculateCollateralRatio, collateralDeltaForTargetCr, collateralForTargetCr, debtDeltaForTargetCr, debtForTargetCr, planCrAdjustment, positiveOrNull, resolveMinCollateralIncreaseThreshold, resolveTargetCollateralRatio }
+export { buildCollateralFallbackPlan, buildDebtFirstCrPlan, positiveOrNull, resolveMinCollateralIncreaseThreshold, resolveTargetCollateralRatio }
 

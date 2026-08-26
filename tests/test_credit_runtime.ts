@@ -1255,7 +1255,7 @@ async function testRenewOnlyRejectsStandaloneCreditBorrow() {
     }, { stateDir: path.join(baseDir, 'credit_runtime') });
 
     await assert.rejects(
-      () => runtime.openCreditPosition({
+      () => runtime.buildCreditOfferAcceptOperation({
         offer: {
           id: '1.18.42',
           asset_type: '1.3.10',
@@ -3089,72 +3089,6 @@ async function testStatePersistsAcrossRestart() {
   }
 }
 
-async function testGetCollateralOffsets() {
-  const calls = [];
-  const dbCalls = [];
-  const callOrders = [
-    {
-      id: '1.8.1',
-      borrower: '1.2.3',
-      debt: { amount: 10000, asset_id: '1.3.10' },
-      collateral: { amount: 25000, asset_id: '1.3.0' },
-      call_price: {
-        base: { amount: 200, asset_id: '1.3.0' },
-        quote: { amount: 100, asset_id: '1.3.10' },
-      },
-    },
-  ];
-  const restore = installStubs(calls, dbCalls, {
-    assetsById: {
-      '1.3.10': {
-        id: '1.3.10',
-        symbol: 'HONEST.USD',
-        precision: 2,
-        bitasset_data_id: '2.4.1',
-      },
-      '1.3.0': {
-        id: '1.3.0',
-        symbol: 'BTS',
-        precision: 2,
-        bitasset_data_id: null,
-      },
-    },
-    bitassetObjects: {
-      '2.4.1': {
-        id: '2.4.1',
-        current_feed: {
-          settlement_price: {
-            base: { amount: 200, asset_id: '1.3.0' },
-            quote: { amount: 100, asset_id: '1.3.10' },
-          },
-        },
-      },
-    },
-    callOrders,
-  });
-  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-credit-offsets-'));
-
-  try {
-    delete require.cache[creditRuntimePath];
-    const CreditRuntime = require('../modules/credit_runtime').default;
-    const runtime = new CreditRuntime({
-      config: createBaseBotConfig({ botKey: 'credit-bot-offsets' }),
-      account: { id: '1.2.3', name: 'alice' },
-      accountId: '1.2.3',
-      privateKey: 'WIF-KEY',
-      _log() {},
-      _warn() {},
-    }, { stateDir: path.join(baseDir, 'credit_runtime') });
-
-    await runtime.refreshState();
-    const offsets = runtime.getCollateralOffsets(['1.3.0', '1.3.10']);
-    assert.strictEqual(offsets['1.3.0'], 260, 'total collateral for 1.3.0 should include MPA (250) + credit deal (10) in user units');
-    assert.strictEqual(offsets['1.3.10'], 0, 'total collateral for 1.3.10 should be 0 when no collateral is held');
-  } finally {
-    restore();
-    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch (err) { }
-  }
-}
 
 async function testProactiveRepayBundlesReborrowInSingleBatch() {
   const calls = [];
@@ -4592,7 +4526,6 @@ const STAGES = {
   credit_maintenance_caps_increase_at_borrow_ceiling: testCreditMaintenanceCapsIncreaseAtBorrowCeiling,
   credit_maintenance_caps_increase_at_borrow_ceiling_for_multi_collateral_offer: testCreditMaintenanceCapsIncreaseAtBorrowCeilingForMultiCollateralOffer,
   state_persists_across_restart: testStatePersistsAcrossRestart,
-  get_collateral_offsets: testGetCollateralOffsets,
   proactive_repay_bundles_reborrow_in_single_batch: testProactiveRepayBundlesReborrowInSingleBatch,
   proactive_repay_reborrow_multi_asset_offer: testProactiveRepayReborrowMultiAssetOffer,
   mismatch_deal_appears_in_new_pos_key: testMismatchDealAppearsInNewPosKey,

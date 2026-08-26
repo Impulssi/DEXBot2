@@ -146,12 +146,14 @@ class StrategyEngine {
     }
 
     /**
-     * UNIFIED PURE TARGET CALCULATION
+     * UNIFIED TARGET CALCULATION
      * Calculates the "Ideal State" grid based on current fills and market conditions.
      * 
-     * This is a PURE FUNCTION with no side effects. It takes the current state and
-     * calculates what the grid SHOULD look like after rebalancing, without modifying
-     * any actual state.
+     * This is NOT a pure function. Besides computing what the grid SHOULD look
+     * like after rebalancing, it reads and mutates manager boundary budget
+     * state: it consumes manager._gapSlots / manager._boundaryShiftBudget and
+     * writes the remaining cross-chunk shift budget back to
+     * manager._boundaryShiftBudget (boundary-crawl bookkeeping).
      *
      * ALGORITHM:
      * 1. Derive new boundary index based on fills (boundary crawl)

@@ -28,7 +28,7 @@
  *    WARNING: Blocks event loop — only use before event loop is active
  *
  * 4. writeJsonFileAtomic(filePath, data) - Atomically write JSON via tmp file + rename
- *    Returns: Promise<void>
+ *    Returns: void (synchronous)
  *    Stages to temp file in same directory, then renames into place
  *
  * ===============================================================================

@@ -630,6 +630,20 @@ function deriveDebtPolicyConstraints(accountName: string): Record<string, any> {
  * Resolve the effective policy for an account by merging layers:
  * builtin default → auto-derived debt constraints → config.default → config.accounts[accountName]
  */
+function mergePolicyLayer(base: any, layer: any): any {
+    if (!layer || typeof layer !== 'object') return base;
+    const merged = { ...base, ...layer };
+    if (layer.allowedOps && typeof layer.allowedOps === 'object') {
+        const allowedOps: Record<string, any> = { ...(base.allowedOps || {}) };
+        for (const [opName, constraints] of Object.entries(layer.allowedOps)) {
+            if (opName === '__proto__' || opName === 'constructor' || opName === 'prototype') continue;
+            allowedOps[opName] = { ...(allowedOps[opName] || {}), ...((constraints && typeof constraints === 'object') ? constraints : {}) };
+        }
+        merged.allowedOps = allowedOps;
+    }
+    return merged;
+}
+
 function resolveAccountPolicy(config: any, accountName: string): any {
     // Start with builtin (shallow copy — avoids JSON parse + stringify GC pressure)
     let policy = { ...BUILTIN_DEFAULT_POLICY, allowedOps: { ...BUILTIN_DEFAULT_POLICY.allowedOps } };
@@ -645,12 +659,12 @@ function resolveAccountPolicy(config: any, accountName: string): any {
 
     // Layer on config.default
     if (config && config.default) {
-        policy = { ...policy, ...config.default };
+        policy = mergePolicyLayer(policy, config.default);
     }
 
     // Layer on config.accounts[accountName]
     if (config && config.accounts && config.accounts[accountName]) {
-        policy = { ...policy, ...config.accounts[accountName] };
+        policy = mergePolicyLayer(policy, config.accounts[accountName]);
     }
 
     return policy;
