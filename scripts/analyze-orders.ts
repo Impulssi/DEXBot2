@@ -337,6 +337,25 @@ function stripColorCodes(str: string): string {
 // Load bot configurations
 const botsConfig = readJSON(BOTS_CONFIG).bots;
 
+/**
+ * formatBotFunds: Normalize a botFunds side value for display.
+ *
+ * botFunds accepts both percentage strings ("90%") and absolute numbers (35
+ * meaning 35 units of the side's asset) — see the README bot options table.
+ * The "Funds:" display path calls string methods (padEnd/replace) on these
+ * values, so a numeric setting crashed the whole analysis with
+ * "str.replace is not a function". Always hand the display a string.
+ *
+ * @param {string|number|null} value - raw botFunds side value from bots.json
+ * @returns {string} display representation, '-' when unset
+ */
+function formatBotFunds(value: any): string {
+  if (value == null) return '-';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '-';
+  const str = String(value);
+  return str.length > 0 ? str : '-';
+}
+
 function getConfiguredBotConfig(botKey: string, botData: any): any {
   const meta = botData?.meta || {};
   return botsConfig.find((bot: any, index: any) => {
@@ -566,8 +585,11 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
     },
     // Target active orders from config
     activeOrdersTarget: config ? config.activeOrders : null,
-    // Bot fund allocation settings from config
-    botFunds: config ? config.botFunds : null,
+    // Bot fund allocation settings from config (normalized to strings for
+    // the display paths; bots.json allows percentage strings or numbers)
+    botFunds: config && config.botFunds
+      ? { buy: formatBotFunds(config.botFunds.buy), sell: formatBotFunds(config.botFunds.sell) }
+      : null,
     // Weight distribution from config
     weightDistribution: config ? config.weightDistribution : null,
     // Resolved grid price label, value, and staleness flag
