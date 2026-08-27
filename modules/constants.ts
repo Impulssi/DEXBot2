@@ -1188,19 +1188,19 @@ let MARKET_ADAPTER = {
             name: 'AMA2 (cap 30%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 71.7,
+            slowPeriod: 72.0,
         },
         AMA3: {
             name: 'AMA3 (cap 35%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 82.7,
+            slowPeriod: 83.6,
         },
         AMA4: {
             name: 'AMA4 (cap 40%)',
             erPeriod: 781,
             fastPeriod: 5.2,
-            slowPeriod: 95.5,
+            slowPeriod: 96.9,
         },
     },
 
