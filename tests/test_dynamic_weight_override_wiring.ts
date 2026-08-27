@@ -430,8 +430,51 @@ function testResolveBotCfgPrefersExactPairOverFlippedFallback() {
     assert.strictEqual(merged.maxSlopeOffset, 0.22, 'exact pair orientation should win over a flipped fallback match');
 }
 
+function testResolveBotCfgMergesPartialKalmanOverride() {
+    const settingsJson = {
+        pairs: [
+            {
+                key: '1.3.1|1.3.0',
+                assetASymbol: 'IOB.XRP',
+                assetBSymbol: 'BTS',
+                marketAdapterSettings: {},
+                botOverrides: {
+                    'XRP-BTS': {
+                        kalman: { rNoise: 0.8 },
+                    },
+                },
+            },
+        ],
+    };
+
+    installSettingsFixture(settingsJson);
+    const { resolveBotCfg } = require('../market_adapter/market_adapter');
+
+    const bot = {
+        name: 'XRP-BTS',
+        assetA: 'IOB.XRP',
+        assetB: 'BTS',
+        assetAId: '1.3.1',
+        assetBId: '1.3.0',
+    };
+
+    // Higher-layer (globals) kalman config with multiple sub-keys.
+    const globalCfg = {
+        kalman: { rNoise: 0.5, qTactical: 0.1, qModal: 0.2, warmupBars: 30 },
+    };
+
+    const merged = resolveBotCfg(bot, globalCfg);
+
+    assert.deepStrictEqual(
+        merged.kalman,
+        { rNoise: 0.8, qTactical: 0.1, qModal: 0.2, warmupBars: 30 },
+        'partial kalman override must keep sibling keys from the higher layer'
+    );
+}
+
 const STAGES = {
     wires_missing_pair_and_bot_overrides: testResolveBotCfgWiresMissingPairAndBotOverrides,
+    merges_partial_kalman_override: testResolveBotCfgMergesPartialKalmanOverride,
     wires_missing_pair_overrides_without_bot_override: testResolveBotCfgWiresMissingPairOverridesWithoutBotOverride,
     passes_through_unmarked_ama_slope_percents: testResolveBotCfgPassesThroughUnmarkedAmaSlopePercents,
     keeps_marked_per_bar_ama_slope_percents: testResolveBotCfgKeepsMarkedPerBarAmaSlopePercents,

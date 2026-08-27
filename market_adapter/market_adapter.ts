@@ -277,7 +277,12 @@ function applyMarketAdapterOverrides(target: any, overrides: any, opts: { includ
     }
     if (overrides.peNodes) target.peNodes = overrides.peNodes;
     if (overrides.regimeTable) target.regimeTable = overrides.regimeTable;
-    if (overrides.kalman) target.kalman = overrides.kalman;
+    // Per-field merge for kalman so a partial layer override (e.g. only rNoise)
+    // does not wipe the other kalman sub-keys (qTactical/qModal/warmupBars) that
+    // were set at a higher layer (globals/pair). Mirrors asymmetricBounds/amaSlope/kalmanSlope.
+    if (overrides.kalman && typeof overrides.kalman === 'object') {
+        target.kalman = { ...(target.kalman || {}), ...overrides.kalman };
+    }
     applyKalmanSlopeOverrides(target, overrides);
     applyAmaSlopeOverrides(target, overrides);
     return target;
