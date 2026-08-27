@@ -94,7 +94,7 @@ import { parseJsonWithComments } from './order/utils/system.js';
 import { assertNoDuplicateBotKeys, loadSettingsFile } from './bot_settings.js';
 import { mergeSettings } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
-import { roundToDecimals } from './order/utils/math.js';
+import { roundToDecimals, parseRelativeMultiplier } from './order/utils/math.js';
 const storage = getStorage();
 const { writeJSON } = storage;
 
@@ -445,22 +445,33 @@ async function askWeightDistributionNoLegend(promptText: string, defaultValue?: 
 
 /**
  * Checks if a value is a multiplier string (e.g. "3x").
+ * Delegates to the shared parser so the editor and the runtime resolver
+ * agree on the exact same syntax (issue #15).
  * @param {*} value - The value to check.
  * @returns {boolean} True if it's a multiplier string.
  */
 function isMultiplierString(value: any): boolean {
-    return typeof value === 'string' && /^[-￿]*[0-9]+(?:\.[0-9]+)?x[-￿]*$/i.test(value);
+    return parseRelativeMultiplier(value) !== null;
 }
 
 /**
  * Colors a price value string for display: green when it is a relative
- * multiplier ("1.55x"), red when it is a fixed price (no relative scaling).
+ * multiplier > 1x ("1.55x"), red when it is either a fixed price (no
+ * relative scaling) or a sub-1x multiplier that resolves to the wrong side
+ * of the grid ("0.7x" => 1.43x center).
  * Used for live input feedback: turns green the moment the "x" is typed.
  * @param {string} value - The value to color.
  * @returns {string} ANSI-colored value string.
  */
 function colorMultiplierInput(value: string): string {
-    if (isMultiplierString(value)) return `${COLORS.green}${value}${COLORS.reset}`;
+    if (isMultiplierString(value)) {
+        const m = parseRelativeMultiplier(value);
+        // A bound multiplier < 1 resolves to the wrong side of the grid
+        // ("0.7x" => 1.43x center), so flag it red like a fixed/non-relative
+        // value rather than the usual "valid" green (issue #15).
+        if (m !== null && m < 1) return `${COLORS.red}${value}${COLORS.reset}`;
+        return `${COLORS.green}${value}${COLORS.reset}`;
+    }
     return `${COLORS.red}${value}${COLORS.reset}`;
 }
 
@@ -487,7 +498,9 @@ function colorPercentageInput(value: any): string {
 
 /**
  * Colors a price range value for display: green when it is a relative
- * multiplier ("1.55x"), red when it is a fixed price (no relative scaling).
+ * multiplier > 1x ("1.55x"), red when it is either a fixed price (no
+ * relative scaling) or a sub-1x multiplier resolving to the wrong side of
+ * the grid (issue #15).
  * @param {*} value - The value to color.
  * @returns {string} ANSI-colored value string.
  */
@@ -702,7 +715,9 @@ async function askIntegerInRange(promptText: string, defaultValue?: any, minVal:
 }
 
 /**
- * Prompts the user for a numeric value or a multiplier.
+ * Prompts the user for a numeric value or a multiplier. Used for price
+ * range bounds (currently only minPrice); multiplier validation assumes a
+ * price-bound context and derives its min/max explanation from promptText.
  * @param {string} promptText - The prompt text to display.
  * @param {number|string} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<number|string>} The value or '\x1b' if ESC.
@@ -717,6 +732,15 @@ async function askNumberOrMultiplier(promptText: string, defaultValue?: any): Pr
         const multiplier = parseFloat(trimmed);
         if (multiplier <= 0) {
             console.log(`Invalid ${promptText}: "${trimmed}". Multiplier must be > 0. No "0x" or negative values`);
+            return askNumberOrMultiplier(promptText, defaultValue);
+        }
+        // A sub-1x bound multiplier ("0.7x") resolves to the wrong side of
+        // the grid. Reject so the rail can't land across the book (issue #15).
+        const directionNote = /max/i.test(promptText)
+            ? 'For maxPrice, "Nx" means center*N, so a multiplier < 1 places the bound BELOW the center. Use a value > 1.'
+            : 'For minPrice, "Nx" means center/N, so a multiplier < 1 places the bound ABOVE the center. Use a value > 1 (e.g. "1.43x" for 70% of center).';
+        if (multiplier < 1) {
+            console.log(`Invalid ${promptText}: "${trimmed}". ${directionNote}`);
             return askNumberOrMultiplier(promptText, defaultValue);
         }
         return trimmed;
@@ -753,6 +777,12 @@ async function askMaxPrice(promptText: string, defaultValue?: any, minPrice?: an
             console.log(`Invalid ${promptText}: "${trimmed}". Multiplier must be > 0. No "0x" or negative values`);
             return askMaxPrice(promptText, defaultValue, minPrice);
         }
+        // For maxPrice a multiplier < 1 ("0.7x") resolves to center*0.7 — a
+        // bound BELOW the center. Reject so the rail can't land across the book.
+        if (multiplier < 1) {
+            console.log(`Invalid ${promptText}: "${trimmed}". For maxPrice, "Nx" means center*N, so a multiplier < 1 places the bound BELOW the center. Use a value > 1.`);
+            return askMaxPrice(promptText, defaultValue, minPrice);
+        }
         return trimmed;
     }
     const parsed = Number(raw);
@@ -765,11 +795,16 @@ async function askMaxPrice(promptText: string, defaultValue?: any, minPrice?: an
         console.log(`Invalid ${promptText}: ${parsed}. Must be > 0 (positive number)`);
         return askMaxPrice(promptText, defaultValue, minPrice);
     }
-    // Validate that maxPrice > minPrice
-    const minPriceValue = typeof minPrice === 'string' ? parseFloat(minPrice) : minPrice;
-    if (parsed <= minPriceValue) {
-        console.log(`Invalid ${promptText}: ${parsed}. Must be > minPrice (${minPriceValue})`);
-        return askMaxPrice(promptText, defaultValue, minPrice);
+    // Validate that maxPrice > minPrice. Only comparable when minPrice is an
+    // absolute value: a relative min ("2x") needs the grid center to resolve,
+    // so it can't be checked here — the runtime bound validation covers it
+    // (previously parseFloat("2x") == 2 wrongly rejected any absolute price <= 2).
+    if (!isMultiplierString(minPrice)) {
+        const minPriceValue = typeof minPrice === 'string' ? parseFloat(minPrice) : minPrice;
+        if (parsed <= minPriceValue) {
+            console.log(`Invalid ${promptText}: ${parsed}. Must be > minPrice (${minPriceValue})`);
+            return askMaxPrice(promptText, defaultValue, minPrice);
+        }
     }
     return parsed;
 }

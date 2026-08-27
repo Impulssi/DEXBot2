@@ -4,14 +4,16 @@
  * Pure numeric calculations, blockchain conversions, fee math, and fund allocation.
  *
  * ===============================================================================
- * TABLE OF CONTENTS (42 exported functions)
+ * TABLE OF CONTENTS (44 exported functions)
  * ===============================================================================
  *
- * SECTION 1: PARSING & VALIDATION (4 functions)
+ * SECTION 1: PARSING & VALIDATION (6 functions)
  *   - isExplicitZeroAllocation(value) - Check if value is explicitly zero
  *   - isPercentageString(v) - Check if value is percentage string
  *   - parsePercentageString(v) - Parse percentage string to decimal
+ *   - parseRelativeMultiplier(value) - Parse "3x" multiplier syntax to number
  *   - resolveRelativePrice(value, startPrice, mode) - Resolve relative price values
+ *   - validateGridPriceBounds(min, max, center) - Reject bounds not bracketing center
  *
  * SECTION 2: FUND CALCULATIONS (4 functions)
  *   - computeChainFundTotals(accountTotals, committedChain) - Compute total funds
@@ -188,24 +190,72 @@ function toDecimal(value: any) {
 }
 
 /**
+ * Parse a relative multiplier expression (e.g. "3x", " 1.5X ").
+ * Single source of truth for the x-multiplier syntax, shared by price-bound
+ * resolution and the bot editor UI.
+ *
+ * @param {*} value - Candidate value
+ * @returns {number|null} Multiplier number, or null if not a valid expression
+ */
+function parseRelativeMultiplier(value: any) {
+    if (typeof value === 'string' && /^[\s]*[0-9]+(?:\.[0-9]+)?x[\s]*$/i.test(value)) {
+        const m = parseFloat(value.trim().toLowerCase().slice(0, -1));
+        return Number.isNaN(m) ? null : m;
+    }
+    return null;
+}
+
+/**
  * Resolve a relative price expression (multiplier format) to absolute price.
  * Supports expressions like "3x" to mean 3 times the reference price.
- * 
+ *
  * @param {*} value - Value to resolve (e.g., "3x" or "0.5x")
  * @param {number} startPrice - Reference price for multiplier calculation
  * @param {string} [mode='min'] - "min" divides (price/multiplier), "max" multiplies (price*multiplier)
  * @returns {number|null} Resolved price or null if value is not a relative expression
  */
 function resolveRelativePrice(value: any, startPrice: any, mode: any = 'min') {
-    if (typeof value === 'string') {
-        if (/^[\s]*[0-9]+(?:\.[0-9]+)?x[\s]*$/i.test(value)) {
-            const multiplier = parseFloat(value.trim().toLowerCase().slice(0, -1));
-            if (!Number.isNaN(multiplier) && Number.isFinite(startPrice) && multiplier !== 0) {
-                return mode === 'min' ? startPrice / multiplier : startPrice * multiplier;
-            }
-        }
+    const multiplier = parseRelativeMultiplier(value);
+    if (multiplier !== null && Number.isFinite(startPrice) && multiplier !== 0) {
+        return mode === 'min' ? startPrice / multiplier : startPrice * multiplier;
     }
     return null;
+}
+
+/**
+ * Validate that resolved price bounds strictly bracket the grid center.
+ *
+ * x-multiplier min semantics are divisor-based ("Nx" => center/N), so a
+ * multiplier < 1 yields a lower bound ABOVE the center — a geometrically
+ * broken grid whose entire buy rail sits above market. The bot previously
+ * silently clamped startPrice into this broken window and traded anyway
+ * (see issue #15). We fail closed here instead.
+ *
+ * @param {number} minPrice - Resolved lower bound
+ * @param {number} maxPrice - Resolved upper bound
+ * @param {number} centerPrice - Grid center used as the multiplier reference
+ * @throws {Error} If bounds do not strictly bracket the center
+ */
+function validateGridPriceBounds(minPrice: any, maxPrice: any, centerPrice: any) {
+    if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice)
+        || !Number.isFinite(centerPrice) || centerPrice <= 0) {
+        return; // Non-finite/invalid prices are handled by other validators.
+    }
+    if (minPrice > centerPrice) {
+        throw new Error(
+            `Geometrically broken grid: resolved minPrice ${minPrice} is above the grid center ${centerPrice}. ` +
+            `With min x-multiplier semantics "Nx" means center/N, so a multiplier < 1 (e.g. "0.7x" => ${centerPrice / 0.7}) ` +
+            `places the lower bound ABOVE the center. Use a numeric price below the center, or a multiplier > 1 ` +
+            `(e.g. "1.43x" for 70% of center).`
+        );
+    }
+    if (maxPrice < centerPrice) {
+        throw new Error(
+            `Geometrically broken grid: resolved maxPrice ${maxPrice} is below the grid center ${centerPrice}. ` +
+            `With max x-multiplier semantics "Nx" means center*N, so a multiplier < 1 (e.g. "0.7x" => ${centerPrice * 0.7}) ` +
+            `places the upper bound below the center. Use a numeric price above the center, or a multiplier > 1 for maxPrice.`
+        );
+    }
 }
 
 // ================================================================================
@@ -1495,7 +1545,7 @@ function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any
     return idx >= sellStartIdx;
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.

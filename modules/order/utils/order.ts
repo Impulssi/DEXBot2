@@ -634,6 +634,20 @@ function getOrderTypeFromUpdatedFlags(buyUpdated: any, sellUpdated: any) {
 function resolveConfiguredPriceBound(value: any, fallback: any, startPrice: any, mode: any) {
     const configuredValue = (value === null || value === undefined || value === '') ? fallback : value;
 
+    // Bound x-multipliers must be > 1. With min semantics "Nx" => center/N and
+    // max semantics "Nx" => center*N, any multiplier < 1 resolves to a bound on
+    // the WRONG side of the grid (e.g. "0.7x" => 1.43x center), placing the
+    // whole rail across the order book. Reject sub-1x up front so a misconfig
+    // fails clearly instead of producing a broken grid (issue #15).
+    const m = MathUtils.parseRelativeMultiplier(configuredValue);
+    if (m !== null && m < 1) {
+        const boundName = mode === 'min' ? 'minPrice' : mode === 'max' ? 'maxPrice' : 'price bound';
+        const hint = mode === 'min'
+            ? `'Nx' means center/N for minPrice, so use a value > 1 (e.g. '1.43x' to place the bound at 70% of center)`
+            : `'Nx' means center*N for maxPrice, so use a value > 1`;
+        throw new Error(`Invalid ${boundName} '${configuredValue.trim()}': a bound multiplier must be > 1. ${hint}.`);
+    }
+
     const relative = MathUtils.resolveRelativePrice(configuredValue, startPrice, mode);
     if (Number.isFinite(relative)) {
         return relative;

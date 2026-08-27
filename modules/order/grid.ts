@@ -162,6 +162,7 @@ import {
     resolveOnChainRetypeType
 } from './utils/order.js';
 import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system.js';
+import * as MathUtils from './utils/math.js';
 import { derivePriceWithPoolRef } from './utils/withPoolRef.js';
 import { getWhitelistFlags } from '../market_adapter_whitelist.js';
 
@@ -976,6 +977,13 @@ export async function initializeGrid(manager: any): Promise<void> {
                 );
             }
         }
+
+        // Guard against geometrically broken bounds (issue #15): the resolved
+        // min/max must strictly bracket the grid center. With divisor-based
+        // min semantics a multiplier < 1 (e.g. "0.7x") resolves ABOVE the
+        // center and would place the entire buy rail above market. Refuse to
+        // start rather than silently clamping into a catastrophic grid.
+        MathUtils.validateGridPriceBounds(resolvedMinP, resolvedMaxP, gp);
 
         let gridStartPrice = mp;
         let offsetAdjustedStartPrice = gridStartPrice;
