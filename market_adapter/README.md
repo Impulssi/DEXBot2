@@ -936,19 +936,24 @@ the built-in presets is:
 |--------|---------|------|
 | `AMA1` | `1,602` | `66.8` |
 | `AMA2` | `1,677` | `69.9` |
-| `AMA3` | `1,758` | `73.3` |
-| `AMA4` | `1,839` | `76.6` |
+| `AMA3` | `1,764` | `73.5` |
+| `AMA4` | `1,844` | `76.8` |
 
 These totals include the ER buffer, the convergence window, and the default
 9-bar lookback used by the dynamic-weight logic. If the candle timeframe is
 not 1 hour, scale the total by the candle duration.
 
-**Why `slowPeriod` dominates:** `slowSC ≈ 2 / slowPeriod`, so `SC_avg` scales
-as `~ (2 / slowPeriod)² = 4 / slowPeriod²`. Since `convergenceBars` is
-proportional to `1 / SC_avg`, the required candle count scales as
-**O(slowPeriod²)**, not O(slowPeriod). For the AMA3 default (`slowPeriod = 82.7`)
-this is roughly 1130 convergence bars; doubling `slowPeriod` would quadruple
-that requirement.
+**How `slowPeriod` affects the warm-up:** the estimate blends the smoothing
+constant at a typical ER: `SC_avg = (ER_avg · fastSC + (1 − ER_avg) · slowSC)²`
+with `slowSC ≈ 2 / slowPeriod` (see `getAmaWarmupBars` in
+`market_adapter/core/strategies/ama.ts`). Since `convergenceBars` is
+proportional to `1 / SC_avg`, a larger `slowPeriod` extends the warm-up, but
+the `ER_avg · fastSC` term bounds `SC_avg` from below, so at the calibrated
+average ER the growth is sub-quadratic: doubling `slowPeriod` (84 → 168)
+raises the requirement only ~1.4×. The **O(slowPeriod²)** scaling (doubling
+quadruples it) applies only in the pure-choppy limit (ER → 0), where
+`SC = slowSC²`. For the `AMA3` default (see `MARKET_ADAPTER.AMAS` in
+`modules/constants.ts`) the blended estimate is ~974 convergence bars.
 
 If the adapter has fewer candles than the warmup window, the AMA output is too
 biased for grid centering and the cycle skips with reason

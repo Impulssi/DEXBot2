@@ -194,7 +194,7 @@ The pool is fetched directly by ID, bypassing pool discovery. Useful when the tr
   - Built-in presets use `fastPeriod=5.2` (fitted)
 - `slowPeriod`: Smoothing constant for choppy/sideways markets
   - Higher = more lag, filters noise
-  - Built-in presets range `slowPeriod=62.1` (AMA1) to `slowPeriod=95.5` (AMA4)
+  - Built-in presets range from `AMA1` (fastest) to `AMA4` (slowest) — see `MARKET_ADAPTER.AMAS` in `modules/constants.ts` for the exact `slowPeriod` values
 - `erSmoothPeriod`: Optional DEXBot2 extension that smooths Kaufman's raw Efficiency Ratio before the AMA smoothing constant is calculated
   - `0`: Disabled, raw Kaufman ER is used directly
   - `1`: Effectively no extra smoothing

@@ -53,10 +53,10 @@ const DEFAULT_SEARCH = {
 // Override individually via --ama1Weight, --ama2Weight, etc. CLI flags.
 
 const AMA_OBJECTIVES = [
-    { key: 'AMA1', name: 'AMA1 (min move, cap 25%)', distanceCapQuantile: 0.25, distanceWeight: 0.0031 },
-    { key: 'AMA2', name: 'AMA2 (min move, cap 30%)', distanceCapQuantile: 0.30, distanceWeight: 0.0025 },
-    { key: 'AMA3', name: 'AMA3 (min move, cap 35%)', distanceCapQuantile: 0.35, distanceWeight: 0.00185 },
-    { key: 'AMA4', name: 'AMA4 (min move, cap 40%)', distanceCapQuantile: 0.40, distanceWeight: 0.0013 },
+    { key: 'AMA1', name: 'AMA1', distanceCapQuantile: 0.25, distanceWeight: 0.0031 },
+    { key: 'AMA2', name: 'AMA2', distanceCapQuantile: 0.30, distanceWeight: 0.0025 },
+    { key: 'AMA3', name: 'AMA3', distanceCapQuantile: 0.35, distanceWeight: 0.00185 },
+    { key: 'AMA4', name: 'AMA4', distanceCapQuantile: 0.40, distanceWeight: 0.0013 },
 ];
 
 function cloneObjectives() {

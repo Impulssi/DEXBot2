@@ -191,9 +191,9 @@ function generateChartHtml(results: any, metricCache: any, fixEr: any, fixFast: 
 
     const amaAnnotations = [
         { label: 'AMA1', lambda: 0.0031, slow: 62.1, color: '#ef5350' },
-        { label: 'AMA2', lambda: 0.0025, slow: 71.7, color: '#fb8c00' },
-        { label: 'AMA3', lambda: 0.00185, slow: 82.7, color: '#5c9ee6' },
-        { label: 'AMA4', lambda: 0.0013, slow: 95.5, color: '#26a69a' },
+        { label: 'AMA2', lambda: 0.0025, slow: 72.0, color: '#fb8c00' },
+        { label: 'AMA3', lambda: 0.00185, slow: 83.6, color: '#5c9ee6' },
+        { label: 'AMA4', lambda: 0.0013, slow: 96.9, color: '#26a69a' },
     ].filter(a => a.lambda >= xs[0] && a.lambda <= xs[xs.length - 1]);
 
     return `<!DOCTYPE html>

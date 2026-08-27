@@ -74,7 +74,7 @@ node dist/analysis/tradingview/analyze_tradingview.js \
 1. Reads `profiles/bots.json` to find the bot's `assetA`, `assetB`, and `ama` settings.
 2. Resolves the candle file at `market_adapter/data/market_adapter_<bot-key>_1h.json`.
 3. Looks up the matching market profile in `profiles/market_profiles.json` for AMA defaults.
-4. AMA settings priority: bot-specific `ama` object > market profile > constants (AMA3, slowPeriod 82.7).
+4. AMA settings priority: bot-specific `ama` object > market profile > constants (AMA3, slowPeriod 83.6).
 
 > The candle file must exist — run the market adapter LP exporter first if needed (see [Getting Blockchain Data](#getting-blockchain-data)).
 
@@ -108,14 +108,34 @@ If you pass a raw JSON file, the runner normalizes the candles before rendering.
 Use the market adapter LP exporter to pull blockchain-backed candles before generating the HTML:
 
 ```bash
+# Auto mode — resolves pool + precisions from bots.json / blockchain
+node dist/market_adapter/inputs/fetch_lp_data.js --bot BTS-USDT --interval 1h --lookback 4392h
+
+# Or with an explicit date range
+node dist/market_adapter/inputs/fetch_lp_data.js --bot BTS-USDT --interval 1h --start 2026-02-23 --end 2026-08-23
+
+# Manual mode — no blockchain needed
 node dist/market_adapter/inputs/fetch_lp_data.js --pool 133 --precA 4 --precB 5 --interval 1h --lookback 26280h
 ```
 
 For date range fetching, use `--start` and `--end` (e.g. `--start 2024-03-06 --end 2025-03-06`).
 
-That writes a JSON file under `market_adapter/data/lp/` which you can then pass to the TradingView exporter.
+That writes a JSON file under `market_adapter/data/lp/` which you can then pass to the TradingView exporter:
 
-For manual pool discovery, use `--pool`, `--precA`, and `--precB` instead of `--bot`.
+```text
+market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--bot <name>` | Bot name from `profiles/bots.json` (auto-resolves pool) |
+| `--pool <id>` | Manual mode, no blockchain needed (requires `--precA/--precB`) |
+| `--interval <1m\|5m\|15m\|30m\|1h\|2h\|4h\|6h\|12h\|1d\|1w>` | Candle bucket size (bare numbers = seconds, e.g. `1800` = 30m) |
+| `--lookback <N>h` | Hours back from now |
+| `--start / --end` | Explicit date range (e.g. `2026-02-23`) |
+| `--out <path>` | Custom output path |
+
+> **Note:** the fetcher may not exit on its own after printing `Saved:` (the live BitShares WebSocket + node monitor keep the process alive). It is safe to Ctrl+C once the file is saved.
 
 ## CLI Flags
 
@@ -129,7 +149,7 @@ For manual pool discovery, use `--pool`, `--precA`, and `--precB` instead of `--
 | `--sma-period <n>` | SMA period | `500` |
 | `--ama-er-period <n>` | AMA ER period | `781` |
 | `--ama-fast-period <n>` | AMA fast period | `5.2` |
-| `--ama-slow-period <n>` | AMA slow period | `82.7` |
+| `--ama-slow-period <n>` | AMA slow period | `83.6` |
 | `--price-scale <log\|linear>` | Price axis scale | `log` |
 | `--scale <log\|linear>` | Alias for `--price-scale` | `log` |
 | `--vwap-bars <n>` | Rolling VWMA window | `500` |

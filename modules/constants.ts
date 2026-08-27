@@ -1179,25 +1179,25 @@ let MARKET_ADAPTER = {
     // pair-specific profiles in profiles/market_profiles.json.
     AMAS: {
         AMA1: {
-            name: 'AMA1 (cap 25%)',
+            name: 'AMA1',
             erPeriod: 781,
             fastPeriod: 5.2,
             slowPeriod: 62.1,
         },
         AMA2: {
-            name: 'AMA2 (cap 30%)',
+            name: 'AMA2',
             erPeriod: 781,
             fastPeriod: 5.2,
             slowPeriod: 72.0,
         },
         AMA3: {
-            name: 'AMA3 (cap 35%)',
+            name: 'AMA3',
             erPeriod: 781,
             fastPeriod: 5.2,
             slowPeriod: 83.6,
         },
         AMA4: {
-            name: 'AMA4 (cap 40%)',
+            name: 'AMA4',
             erPeriod: 781,
             fastPeriod: 5.2,
             slowPeriod: 96.9,

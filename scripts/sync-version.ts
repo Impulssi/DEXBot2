@@ -122,6 +122,10 @@ const targets: Target[] = [
         `$1${version}$2`,
       );
       result = result.replace(
+        /(v)\d+\.\d+\.\d+( \(released\))/g,
+        `$1${version}$2`,
+      );
+      result = result.replace(
         /(through the v)\d+\.\d+\.\d+( stable release)/g,
         `$1${version}$2`,
       );
@@ -158,11 +162,16 @@ const targets: Target[] = [
   {
     file: 'docs/EVOLUTION.md',
     update(content, version) {
-      const replaced = content.replace(
+      let result = content;
+      result = result.replace(
         /(through the current )\d+\.\d+\.\d+( stable release)/g,
         `$1${version}$2`,
       );
-      return replaced !== content ? replaced : null;
+      result = result.replace(
+        /(entries \(v0\.1\.0 to v)\d+\.\d+\.\d+\)/g,
+        `$1${version})`,
+      );
+      return result !== content ? result : null;
     },
   },
 ];

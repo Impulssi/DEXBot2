@@ -2,7 +2,7 @@
 
 This directory contains the comprehensive technical documentation for the DEXBot2 trading bot. It is designed to guide developers from high-level architecture down to the nuances of fund accounting and state management.
 
-**Version context:** v1.4.21 (released).
+**Version context:** v1.4.22 (released).
 
 ---
 
@@ -109,7 +109,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Market Adapter Signal Pipeline**: AMA center, dynamic weights, regime detection, and collateral advisories
 - **Credit/Debt Runtime**: Native MPA and credit offer workflows with CR planning and grid reset coupling; `creditOnly` mode for runtime-only operation without grid trading
 
-### 🔁 [Lifecycle](LIFECYCLE.md)
+### 🧬 [Lifecycle](LIFECYCLE.md)
 *The end-to-end walkthrough (start here for the big picture).*
 - **System Context**: What DEXBot2 talks to (chain, market data, storage, operator).
 - **Startup / Bootstrap**: Decrypt keys → load metadata → rebuild master grid → sync → runtime loops.
