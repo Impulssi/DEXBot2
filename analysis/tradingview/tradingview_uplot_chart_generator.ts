@@ -618,42 +618,77 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             }, { passive: false });
         }
         function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+        // Significant-digit price formatting (5 "active" digits), matching the
+        // DEXBot order-price style (formatCurrency) but with one extra digit.
+        // Very small values get SI micro-suffixes (m/µ/n/p/...); large values
+        // get comma grouping. Examples: 34.935 -> "34.935", 119.975 -> "119.98",
+        // 3014.9 -> "3,014.9", 0.00567 -> "5.67m".
         function fmtPrice(v) {
             if (v == null || !Number.isFinite(v)) return '-';
-            const abs = Math.abs(v);
-            if (abs >= 1000) return v.toFixed(2);
-            if (abs >= 100) return v.toFixed(3);
-            if (abs >= 1) return v.toFixed(4);
-            return v.toPrecision(6);
+            const num = Number(v);
+            if (num === 0) return '0';
+            const abs = Math.abs(num);
+            if (abs < 0.1) {
+                if (abs >= 0.001) return fmtPrice(num * 1000) + 'm';
+                if (abs >= 0.000001) return fmtPrice(num * 1e6) + 'µ';
+                if (abs >= 1e-9) return fmtPrice(num * 1e9) + 'n';
+                if (abs >= 1e-12) return fmtPrice(num * 1e12) + 'p';
+                if (abs >= 1e-15) return fmtPrice(num * 1e15) + 'f';
+                if (abs >= 1e-18) return fmtPrice(num * 1e18) + 'a';
+                return num.toFixed(6);
+            }
+            const digits = 4;
+            let intDigits = Math.floor(Math.log10(abs)) + 1;
+            if (abs < 1) intDigits = 1;
+            const formatted = intDigits >= digits ? String(Math.round(num)) : num.toFixed(digits - intDigits);
+            return intDigits >= 4 ? formatted.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : formatted;
         }
         function fmtPriceAxis(vals) {
             if (!Array.isArray(vals) || vals.length === 0) return [];
-            let step = Infinity;
-            for (let i = 1; i < vals.length; i++) {
-                const d = Math.abs(Number(vals[i]) - Number(vals[i - 1]));
-                if (Number.isFinite(d) && d > 0 && d < step) step = d;
-            }
-            let decimals = 4;
-            if (Number.isFinite(step) && step > 0) decimals = Math.ceil(-Math.log10(step));
-            decimals = Math.max(0, Math.min(10, decimals));
-            return vals.map((v) => (v == null || !Number.isFinite(v)) ? '' : Number(v).toFixed(decimals));
+            return vals.map((v) => (v == null || !Number.isFinite(v)) ? '' : fmtPrice(v));
         }
         function fmtPriceLabel(v) {
             if (v == null || !Number.isFinite(v)) return '-';
-            const abs = Math.abs(v);
-            if (abs >= 1000) return v.toFixed(2);
-            if (abs >= 1) return v.toFixed(4);
-            let s = v.toPrecision(6);
-            if (s.indexOf('e') >= 0) s = v.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
-            return s;
+            return fmtPrice(v);
         }
+        function logAxisSplits(self, axisIdx, scaleMin, scaleMax, foundIncr, foundSpace) {
+            if (!Number.isFinite(scaleMin) || !Number.isFinite(scaleMax) || scaleMin <= 0 || scaleMax <= 0) return [];
+            let h = 600;
+            if (self && self.bbox && Number.isFinite(self.bbox.height)) h = self.bbox.height / (self.pxRatio || 1);
+            else if (self && self.over && self.over.clientHeight) h = self.over.clientHeight;
+            const target = Math.max(8, Math.min(16, Math.floor(h / 30)));
+            const lmin = Math.log10(scaleMin);
+            const lmax = Math.log10(scaleMax);
+            const out = [];
+            for (let i = 0; i <= target; i++) {
+                out.push(Math.pow(10, lmin + (lmax - lmin) * (i / target)));
+            }
+            return out;
+        }
+        // Significant-digit volume formatting (4 "active" digits) with K/M/B/T
+        // suffixes, matching the price-axis style. Examples: 1234567 -> "1235K",
+        // 1234567890 -> "1.235B".
         function fmtVolume(v) {
             if (v == null || !Number.isFinite(v)) return '-';
-            const abs = Math.abs(v);
-            if (abs >= 1e9) return (v / 1e9).toFixed(2) + 'B';
-            if (abs >= 1e6) return (v / 1e6).toFixed(2) + 'M';
-            if (abs >= 1e3) return (v / 1e3).toFixed(2) + 'K';
-            return v.toFixed(2);
+            const num = Number(v);
+            if (num === 0) return '0';
+            const abs = Math.abs(num);
+            const units = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'K']];
+            for (const [factor, suffix] of units) {
+                if (abs >= factor) {
+                    const scaled = num / factor;
+                    const a = Math.abs(scaled);
+                    let intDigits = Math.floor(Math.log10(a)) + 1;
+                    if (a < 1) intDigits = 1;
+                    const digits = 4;
+                    const formatted = intDigits >= digits ? String(Math.round(scaled)) : scaled.toFixed(digits - intDigits);
+                    return formatted + suffix;
+                }
+            }
+            let intDigits = Math.floor(Math.log10(abs)) + 1;
+            if (abs < 1) intDigits = 1;
+            const digits = 4;
+            return intDigits >= digits ? String(Math.round(num)) : num.toFixed(digits - intDigits);
         }
         function candleDirection(open, close) {
             if (close > open) return 'up';
@@ -1447,12 +1482,15 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         scale: 'y',
                         side: 1,
                         size: 84,
-                        space: 26,
+                        space: isLogScale ? 1 : 45,
                         stroke: '#ffffff',
                         grid: { stroke: '#272f3a' },
                         ticks: { stroke: '#414b57', width: 1 },
                         font: '600 13px Segoe UI, sans-serif',
-                        values: (u, vals) => fmtPriceAxis(vals),
+                        splits: isLogScale ? logAxisSplits : undefined,
+                        values: (u, vals) => isLogScale
+                            ? vals.map((v) => (Number.isFinite(v) ? fmtPrice(v) : ''))
+                            : fmtPriceAxis(vals),
                     },
                 ],
                 hooks: {
@@ -1505,17 +1543,19 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             lastRenderedPriceScale = currentPriceScale;
             return priceChart;
         }
-        // True when clientX sits over the price-axis gutter (outside the plot
-        // proper). uPlot's .u-over spans the full canvas incl. axis gutters,
-        // so hit-testing must use chart.bbox (plot area) rather than the
-        // overlay rect. Tolerance pulls the boundary slightly into the plot.
+        // True when clientX sits over the price-axis region. The chart canvas
+        // (plot + axis gutters) can be wider than the viewport and the right
+        // gutter clipped off-screen, so we key the price zone off the ON-SCREEN
+        // chart container width (always reachable) rather than the far-right gutter.
+        // The rightmost ~120px of the container zooms price; the rest pans time.
         function inYAxisZone(chart, clientX) {
             const rootRect = chart.root.getBoundingClientRect();
-            if (!rootRect || rootRect.width <= 0 || !chart.bbox) return false;
-            const pr = chart.pxRatio || 1;
-            const plotLeft = chart.bbox.left / pr;
-            const plotRight = chart.bbox.right / pr;
-            return clientX - rootRect.left < plotLeft - 6 || clientX - rootRect.left > plotRight + 6;
+            if (!rootRect || rootRect.width <= 0) return false;
+            const x = clientX - rootRect.left;
+            if (chart === priceChart) {
+                return x > rootRect.width - 120;
+            }
+            return false;
         }
         let priceMarkerLabel = null;
         let priceMarkerLine = null;
@@ -1668,6 +1708,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const onMove = (e) => {
                 if (!dragging || !startRange) return;
                 e.preventDefault();
+                chart.root.style.cursor = 'ns-resize';
                 const deltaPx = e.clientY - startClientY;
                 if (!Number.isFinite(deltaPx) || deltaPx === 0) return;
                 const factor = Math.exp(deltaPx / 350);
@@ -1680,12 +1721,13 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (!dragging) return;
                 dragging = false;
                 startRange = null;
-                document.body.style.cursor = '';
+                chart.root.style.cursor = '';
                 window.removeEventListener('mousemove', onMove);
                 window.removeEventListener('mouseup', endDrag);
             };
             chart.root.addEventListener('mousedown', (e) => {
                 if (!e || e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey) return;
+                // capture phase so we pre-empt uPlot's own plot drag when in the y-zone
                 const rect = chart.root.getBoundingClientRect();
                 if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
                 if (chart !== priceChart || !inYAxisZone(chart, e.clientX)) return;
@@ -1696,14 +1738,14 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 dragging = true;
                 startClientY = e.clientY;
                 startRange = range;
-                document.body.style.cursor = 'ns-resize';
+                chart.root.style.cursor = 'ns-resize';
                 window.addEventListener('mousemove', onMove);
                 window.addEventListener('mouseup', endDrag, { once: true });
-            });
+            }, true);
         }
         function bindYAxisReset(chart) {
             chart.root.addEventListener('dblclick', (e) => {
-                if (chart !== priceChart || !inYAxisZone(chart, e.clientX)) return;
+                if (chart !== priceChart) return;
                 manualYRange = null;
                 const vis = visiblePriceRange(chart);
                 if (vis) chart.setScale('y', { min: vis[0], max: vis[1] });
@@ -1774,10 +1816,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                             chart.root.style.cursor = inYAxisZone(chart, e.clientX) ? 'ns-resize' : '';
                         });
                     }
-                    chart.over.addEventListener('mousemove', () => {
+                    chart.root.addEventListener('mousemove', () => {
                         if (chart.cursor.idx != null) updateLegend(chart.cursor.idx);
                     });
-                    chart.over.addEventListener('mouseleave', refreshLegend);
+                    chart.root.addEventListener('mouseleave', refreshLegend);
                     chart.root.addEventListener('mouseenter', () => chart.root.classList.add('is-hovered'));
                     chart.root.addEventListener('mouseleave', () => chart.root.classList.remove('is-hovered'));
                 });
