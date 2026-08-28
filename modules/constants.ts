@@ -1600,6 +1600,20 @@ let NATIVE_CLIENT = {
         // to avoid FC_ASSERT on nodes with a lower configured limit.
         HISTORY_LOOKBACK_MAX: 50,
 
+        // HISTORY_GAP_LOOKBACK_OPS: Number of per-account operation-history slots
+        // (1.11.x for that account, NOT global ops) BELOW the per-subscription
+        // cursor (lastDeliveredHistoryId) that fetchFillHistoryEntries re-scans
+        // after a gap is suspected. This recovers fills the live subscription feed
+        // dropped: handleNotice advances the cursor to the highest op id delivered
+        // to that account, so any fill op stranded between the old cursor and that
+        // max id is skipped by the strict "newer-than-cursor" scan and would
+        // otherwise be lost forever (causing inventory drift / oversell).
+        // Re-delivering already-seen fills in this window is safe: downstream
+        // dedups by history id. 2000 per-account ops is generous — even a hot
+        // bot does <<100 ops/hour, so this covers hours of missed fills, far
+        // beyond the 24-38 fills lost in the 2026-08-28 17-18h burst.
+        HISTORY_GAP_LOOKBACK_OPS: 2000,
+
         // HISTORY_MAX_PAGES: Default cap on pages fetched by
         // fetchFillHistoryEntries in modules/bitshares-native/subscriptions.ts
         // when the caller does not pass `options.maxPages`. Bounds the loop in

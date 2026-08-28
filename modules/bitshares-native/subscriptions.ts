@@ -57,6 +57,19 @@ function createSubscriptionManager(chainClient: any): any {
         return `${match[1]}${instance - 1}`;
     }
 
+    // Decrement an object id (e.g. "1.11.1234") by `n` instances, returning the
+    // resulting id string, or null if it would underflow below 0.
+    function decrementObjectIdBy(id: any, n: number): string | null {
+        if (typeof id !== 'string' || !Number.isFinite(n) || n <= 0) return null;
+        const match = id.match(/^(.+\.)(\d+)$/);
+        if (!match) return null;
+        const instance = Number(match[2]);
+        if (!Number.isSafeInteger(instance)) return null;
+        const next = instance - Math.floor(n);
+        if (next < 0) return null;
+        return `${match[1]}${next}`;
+    }
+
     function warnSubscription(sub: any, message: string, err: any = null): void {
         const account = sub?.accountName || sub?.accountId || 'unknown';
         const detail = err?.message ? `: ${getErrorMessage(err)}` : '';
@@ -104,10 +117,42 @@ function createSubscriptionManager(chainClient: any): any {
         const entries: any[] = [];
         const seenIds = new Set();
         const cursorInstance = parseObjectIdInstance(cursorHistoryId);
+
+        // Gap-recovery lookback: when a gap is suspected (the live feed jumped the
+        // cursor past one or more filled ops), re-scan a window BELOW the cursor so
+        // the stranded fills get recovered. Re-delivery of already-seen ops in this
+        // window is safe: downstream dedups every fill by its history id (see
+        // dexbot_fill_runtime _isNewFillKey). See AGENTS/bitshares-core for the
+        // get_account_history range semantics this relies on.
+        const lookbackOps = Number.isFinite(options?.lookbackOps) ? Math.max(0, Math.floor(options.lookbackOps)) : 0;
+        let lookbackStopHistoryId = cursorHistoryId;
+        let lookbackStopInstance = cursorInstance;
+        // Actual `stop` handed to get_account_history. For the no-lookback case this is
+        // just the cursor. With a lookback window we lower it one slot below
+        // lookbackStop so the boundary op itself is included (see below).
+        let stopHistoryId = cursorHistoryId;
+        if (lookbackOps > 0 && Number.isFinite(cursorInstance)) {
+            const decremented = decrementObjectIdBy(cursorHistoryId, lookbackOps);
+            if (decremented) {
+                lookbackStopHistoryId = decremented;
+                lookbackStopInstance = cursorInstance - lookbackOps;
+                // bitshares-core treats `stop` as EXCLUSIVE (api.cpp:443): it returns ops
+                // strictly greater than stop. To make the lookback window inclusive of the
+                // op sitting exactly at lookbackStop, lower the fetch stop by one instance.
+                const stopAdjusted = decrementObjectIdBy(lookbackStopHistoryId, 1);
+                stopHistoryId = stopAdjusted ?? lookbackStopHistoryId;
+            }
+            // else: underflow (cursor instance < lookbackOps) — keep stopHistoryId at
+            // cursor and lookbackStopInstance at cursor so the two variables stay
+            // consistent; server bounds the window anyway (1.11.0 is the floor).
+        }
+
         // Scan history using get_account_history (unfiltered, uses by_op index).
         // Parameters: (accountId, stop, limit, start)
         // API returns entries from start (newest) down to stop (cursor), with
         // start=0 being replaced by the server with the max/head operation ID.
+        // With a lookback window, `stop` is lowered to lookbackStopHistoryId so the
+        // scan also covers the gap-recovery region below the cursor.
         let startHistoryId = SUBSCRIPTIONS.HISTORY_API_OBJECT;
         let pagesFetched = 0;
         const maxPagesDefault = SUBSCRIPTIONS.HISTORY_MAX_PAGES;
@@ -127,7 +172,7 @@ function createSubscriptionManager(chainClient: any): any {
             );
         }
 
-        subscriptionsLogger.debug(`fetchFillHistoryEntries: account=${accountId}, cursor=${cursorHistoryId}, start=${startHistoryId}, maxPages=${maxPages}, pageLimit=${pageLimit}`);
+        subscriptionsLogger.debug(`fetchFillHistoryEntries: account=${accountId}, cursor=${cursorHistoryId}, lookbackOps=${lookbackOps}, stop=${stopHistoryId}, maxPages=${maxPages}, pageLimit=${pageLimit}`);
 
         const FETCH_PAGE_TIMEOUT_MS = require('../constants').TIMING.FETCH_HISTORY_PAGE_TIMEOUT_MS;
         const FETCH_TOTAL_DEADLINE_MS = require('../constants').TIMING.FETCH_HISTORY_TOTAL_DEADLINE_MS;
@@ -149,7 +194,7 @@ function createSubscriptionManager(chainClient: any): any {
             const page = await Promise.race([
                 Promise.resolve(fetchPage(
                     accountId,
-                    cursorHistoryId,
+                    stopHistoryId,
                     pageLimit,
                     startHistoryId
                 )),
@@ -164,28 +209,35 @@ function createSubscriptionManager(chainClient: any): any {
             pagesFetched++;
 
             const pageLen = Array.isArray(page) ? page.length : 0;
-            subscriptionsLogger.debug(`fetchFillHistoryEntries: page ${pagesFetched} returned ${pageLen} entries (start=${startHistoryId}, stop=${cursorHistoryId})`);
+            subscriptionsLogger.debug(`fetchFillHistoryEntries: page ${pagesFetched} returned ${pageLen} entries (start=${startHistoryId}, stop=${stopHistoryId})`);
 
             if (!Array.isArray(page) || page.length === 0) break;
 
-            let allEntriesAtOrBeforeCursor = true;
+            let allEntriesAtOrBeforeStop = true;
             let skippedCount = 0;
             for (const entry of page) {
                 if (!entry || !entry.id || seenIds.has(entry.id)) continue;
                 seenIds.add(entry.id);
 
-                // Only keep entries strictly newer than the cursor (already-delivered).
+                // Keep entries at or above the scan's lower bound. Without a lookback
+                // window that bound is the cursor (keep strictly newer than cursor, so
+                // skip <= cursor); with a lookback it is lookbackStop (keep >= lookbackStop,
+                // so skip < lookbackStop). The region between lookbackStop and the cursor
+                // is intentionally re-scanned to recover skipped fills.
                 const entryInstance = parseObjectIdInstance(entry.id);
-                if (Number.isFinite(cursorInstance) && Number.isFinite(entryInstance) && entryInstance <= cursorInstance) {
+                const atOrBeforeStop = lookbackOps > 0
+                    ? (Number.isFinite(entryInstance) && entryInstance < lookbackStopInstance)
+                    : (Number.isFinite(cursorInstance) && Number.isFinite(entryInstance) && entryInstance <= cursorInstance);
+                if (atOrBeforeStop) {
                     skippedCount++;
                     continue;
                 }
 
-                allEntriesAtOrBeforeCursor = false;
+                allEntriesAtOrBeforeStop = false;
                 entries.push(entry);
             }
             if (skippedCount > 0) {
-                subscriptionsLogger.debug(`fetchFillHistoryEntries: skipped ${skippedCount} entries at/before cursor (cursor=${cursorHistoryId})`);
+                subscriptionsLogger.debug(`fetchFillHistoryEntries: skipped ${skippedCount} entries below scan lower bound (stop=${stopHistoryId})`);
             }
 
             if (page.length < pageLimit) {
@@ -196,8 +248,8 @@ function createSubscriptionManager(chainClient: any): any {
                 subscriptionsLogger.debug(`fetchFillHistoryEntries: maxPages (${maxPages}) reached`);
                 break;
             }
-            // Stop if all entries on this page are at or before the cursor.
-            if (allEntriesAtOrBeforeCursor) break;
+            // Stop if all entries on this page are below the scan lower bound.
+            if (allEntriesAtOrBeforeStop) break;
 
             const oldestId = page[page.length - 1]?.id;
             const nextStartHistoryId = decrementObjectId(oldestId);
@@ -383,20 +435,24 @@ function createSubscriptionManager(chainClient: any): any {
             const subFills = fillObjects.filter((fill) => fillMatchesAccount(fill, sub.accountId));
             if (subFills.length === 0) continue;
 
-            // Compute cursor for this batch but do NOT advance until callbacks succeed.
-            // On failure the cursor stays unchanged so the next processObjects scan
-            // (triggered by the next notice or reconnect) will re-fetch these fills.
-            // Scan ALL notice entries (not just fills) to prevent re-fetching non-fill
-            // operations on subsequent processObjects scans. Non-fill ops may have
-            // higher IDs than fills in the same block.
+            // Compute the cursor advance from the FILL ops actually delivered to this
+            // subscription — NOT from every item in the notice. The previous logic
+            // advanced the cursor to the highest op id present in the notice, which
+            // could be a non-fill op (e.g. limit_order_create) or a later fill in the
+            // same block. Advancing past such an op silently skips any fill ops whose
+            // ids fall between the old cursor and that max id: fetchFillHistoryEntries
+            // only scans strictly newer than the cursor, so those fills are lost
+            // forever (causing inventory drift / oversell). Restricting the advance to
+            // delivered fills keeps the cursor as low as possible; any residual gap is
+            // recovered by the lookback scan (sub._gapRecovery) in processObjects.
             let latestId: string | null = null;
             let latestInstance = -1;
-            for (const item of data) {
-                if (!item || typeof item !== 'object') continue;
-                const inst = parseObjectIdInstance(item.id);
+            for (const fill of subFills) {
+                if (!fill || typeof fill !== 'object') continue;
+                const inst = parseObjectIdInstance(fill.id);
                 if (Number.isFinite(inst) && inst > latestInstance) {
                     latestInstance = inst;
-                    latestId = item.id;
+                    latestId = fill.id;
                 }
             }
 
@@ -424,6 +480,10 @@ function createSubscriptionManager(chainClient: any): any {
                 // Cursor NOT advanced — retry on next scan.
             } else if (latestId && (!sub.lastDeliveredHistoryId || parseObjectIdInstance(latestId) > parseObjectIdInstance(sub.lastDeliveredHistoryId))) {
                 sub.lastDeliveredHistoryId = latestId;
+                // A notice advanced the cursor without a full history scan, so a fill
+                // op may have been skipped between the old and new cursor. Arm the
+                // lookback scan in processObjects to recover any such gap.
+                sub._gapRecovery = true;
             }
         }
     }
@@ -478,7 +538,30 @@ function createSubscriptionManager(chainClient: any): any {
                 subscriptionsLogger.debug(`processObjects: primed lastDeliveredHistoryId=${sub.lastDeliveredHistoryId} for ${sub.accountName}`);
             }
 
-            const history = await fetchFillHistoryEntries(accountId, sub.lastDeliveredHistoryId, options);
+            let history: any[];
+            if (sub._gapRecovery) {
+                // Gap-recovery: a notice-driven cursor advance (or a reconnect) may have
+                // skipped fills that sit BELOW the cursor. Do a single lookback scan
+                // instead of a separate tail fetch + merge: the lookback returns the window
+                // [lookbackStop, head] — i.e. the below-cursor gap AND the strictly-newer
+                // tail in ONE call — already sorted oldest-first. Re-delivery of already-seen
+                // ops is safe (downstream dedups by history id).
+                // _gapRecovery is cleared only after a successful fetch so a throw/timeout
+                // keeps it armed for retry on the next poll/notice.
+                history = await fetchFillHistoryEntries(accountId, sub.lastDeliveredHistoryId, {
+                    ...options,
+                    lookbackOps: SUBSCRIPTIONS.HISTORY_GAP_LOOKBACK_OPS,
+                });
+                sub._gapRecovery = false;
+                subscriptionsLogger.info(`processObjects: gap-recovery scan (lookback=${SUBSCRIPTIONS.HISTORY_GAP_LOOKBACK_OPS}) returned ${history.length} op(s) for ${sub.accountName} (cursor=${sub.lastDeliveredHistoryId})`);
+            } else {
+                history = await fetchFillHistoryEntries(accountId, sub.lastDeliveredHistoryId, options);
+            }
+
+            // Defensive: guarantee oldest-first ordering so the cursor advance below lands
+            // on the newest op (history[last]), never a gap entry pushed onto the end.
+            sortEntriesOldestFirst(history);
+
             if (history.length === 0) {
                 sub.lastNoticeAt = Date.now();
                 subscriptionsLogger.debug(`processObjects: no history entries for ${sub.accountName} (cursor=${sub.lastDeliveredHistoryId})`);
@@ -630,6 +713,10 @@ function createSubscriptionManager(chainClient: any): any {
                 scheduleReconnectRetry(failure.entry, failure.err);
             }
 
+            // A disconnect/reconnect means fills may have been missed while offline.
+            // Arm gap recovery so the post-reconnect scan re-covers the window below
+            // the cursor (not just strictly-newer ops).
+            entry._gapRecovery = true;
             await processObjects(entry, [entry.accountId], {
                 throwOnError: true,
             });
@@ -654,6 +741,15 @@ function createSubscriptionManager(chainClient: any): any {
                 for (const [, entry] of subscriptions) {
                     if (!entry.active) continue;
                     if (entry.reconnecting) continue;
+                    // Poll is a lightweight liveness check (fetches only >cursor, ~1 page
+                    // in steady state). Gap recovery (2000 per-account ops ≈40 pages) is
+                    // already armed by handleNotice cursor advances and by
+                    // resubscribeEntry/resubscribeAll on disconnects. Poll does NOT arm
+                    // unconditionally — that would turn every 60s tick into a 40-page
+                    // re-fetch forever (~80 pages/min for bbot9+bbot4). If a gap-recovery
+                    // fetch previously threw, _gapRecovery stays true and the next poll
+                    // will run the lookback; otherwise this tick is just a plain >cursor
+                    // scan with no lookback.
                     try {
                         await processObjects(entry, [entry.accountId]);
                     } catch (err: any) {
@@ -694,6 +790,7 @@ function createSubscriptionManager(chainClient: any): any {
                 statisticsId: null,
                 lastDeliveredHistoryId: SUBSCRIPTIONS.HISTORY_API_OBJECT,
                 lastNoticeAt: Date.now(),
+                _gapRecovery: false,
                 active: false,
                 callbacks: new Set(),
                 onError: null,
@@ -855,6 +952,15 @@ function createSubscriptionManager(chainClient: any): any {
         const refreshFailureEntries = new Set(refreshFailures.map((failure: any) => failure.entry));
         for (const failure of refreshFailures) {
             scheduleReconnectRetry(failure.entry, failure.err);
+        }
+
+        // A disconnect/reconnect means fills may have been missed while offline
+        // (the exact crash-burst scenario). Arm gap recovery on every active entry so
+        // the catch-up scans below re-cover the window below each cursor — not just
+        // strictly-newer ops. resubscribeEntry does the same for the single-entry path.
+        for (const [, entry] of subscriptions) {
+            if (!entry.active) continue;
+            entry._gapRecovery = true;
         }
 
         // Catch-up scan for each entry (parallelized for multi-account setups).
