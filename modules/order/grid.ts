@@ -297,23 +297,31 @@ export async function _getSizingContext(manager: any, side: any, { skipRecalc = 
             const totalTarget = targetBuy + targetSell;
             const btsOrderType = getBtsSide(manager.config?.assetA, manager.config?.assetB);
             const isBtsSide = isBuy ? (btsOrderType === ORDER_TYPES.BUY) : (btsOrderType === ORDER_TYPES.SELL);
-            const formulaBudget = calculateOrderCreationFees(
-                manager.config.assetA,
-                manager.config.assetB,
-                totalTarget,
-                manager.config?.feeParams?.BTS_RESERVATION_MULTIPLIER
-            );
 
-            budget = adjustBudgetForBtsFees(
-                budget,
-                isBtsSide,
-                formulaBudget,
-                manager.config.min_BTS_value || 0,
-                Format.toFiniteNumber(manager.funds?.btsBalance?.free, 0),
-                Format.toFiniteNumber(isBuy ? (snap.allocatedBuy || 0) : (snap.allocatedSell || 0)),
-                Format.toFiniteNumber(snap.allocatedBuy || 0)
-                    + Format.toFiniteNumber(snap.allocatedSell || 0),
-            );
+            // Non-BTS side without btsBalance data (BTS pairs): no fee adjustment
+            // to make. Mirrors the getSideBudget guard — for BTS pairs the snapshot
+            // nulls btsBalance, and reading manager.funds.btsBalance (zeroed for
+            // BTS pairs) as btsFree=0 would carve the full fee deficit out of this
+            // side's budget.
+            if (isBtsSide || snap.btsBalance) {
+                const formulaBudget = calculateOrderCreationFees(
+                    manager.config.assetA,
+                    manager.config.assetB,
+                    totalTarget,
+                    manager.config?.feeParams?.BTS_RESERVATION_MULTIPLIER
+                );
+
+                budget = adjustBudgetForBtsFees(
+                    budget,
+                    isBtsSide,
+                    formulaBudget,
+                    manager.config.min_BTS_value || 0,
+                    Format.toFiniteNumber(snap.btsBalance?.free, 0),
+                    Format.toFiniteNumber(isBuy ? (snap.allocatedBuy || 0) : (snap.allocatedSell || 0)),
+                    Format.toFiniteNumber(snap.allocatedBuy || 0)
+                        + Format.toFiniteNumber(snap.allocatedSell || 0),
+                );
+            }
         }
 
         return {

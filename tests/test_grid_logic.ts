@@ -13,7 +13,7 @@ const path = require('path');
 const { calculateGapSlots, _getSizingContext, createOrderGrid, initializeGrid, checkAndUpdateGridIfNeeded, hasAnyDust } = require('../modules/order/grid');
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, BUILD_DIR } = require('../modules/constants');
 const { OrderManager } = require('../modules/order/manager');
-const { allocateFundsByWeights, getSingleDustThreshold } = require('../modules/order/utils/math');
+const { allocateFundsByWeights, getSingleDustThreshold, calculateOrderCreationFees } = require('../modules/order/utils/math');
 const { shouldFlagOutOfSpread, assignGridRoles } = require('../modules/order/utils/order');
 const { whitelistFile, resetMarketAdapterWhitelistCache } = require('../modules/market_adapter_whitelist');
 const { ensureDir, unlink: safeUnlink, writeJSON } = require('../modules/storage').getStorage();
@@ -195,6 +195,84 @@ async function runTests() {
 
         const partial = manager.orders.get(partialId);
         assert.strictEqual(await hasAnyDust(manager, [partial], 'buy'), true, 'BUY dust detection should match market-oriented geometric sizing');
+    }
+
+    console.log(' - Testing _getSizingContext BTS-pair fee carve skip (non-BTS side)...');
+    {
+        // Regression: for BTS pairs getChainFundsSnapshot nulls btsBalance, but
+        // _getSizingContext read manager.funds.btsBalance (zeroed) as btsFree=0,
+        // carving the full BTS fee deficit proportionally out of the non-BTS
+        // side's budget. Must mirror getSideBudget's guard: no fee adjustment
+        // on the non-BTS side when the snapshot has no btsBalance data.
+        const formulaBudget = calculateOrderCreationFees('BTS', 'USDT', 12, 5);
+        assert(formulaBudget > 0, 'test precondition: formula budget should be positive');
+
+        const btsPairManager = {
+            assets: {
+                assetA: { id: '1.3.0', symbol: 'BTS', precision: 5 },
+                assetB: { id: '1.3.2', symbol: 'USDT', precision: 5 }
+            },
+            config: {
+                assetA: 'BTS',
+                assetB: 'USDT',
+                activeOrders: { buy: 6, sell: 6 },
+                min_BTS_value: null
+            },
+            funds: {
+                // Zeroed for BTS pairs: sync engine never populates manager.btsBalance here
+                btsBalance: { free: 0, total: 0, locked: 0 }
+            },
+            recalculateFunds: async () => {},
+            getChainFundsSnapshot() {
+                // Snapshot nulls btsBalance for BTS pairs (manager.ts)
+                return {
+                    allocatedBuy: 21.7,
+                    allocatedSell: 400,
+                    chainTotalBuy: 21.7,
+                    chainTotalSell: 400,
+                    btsBalance: null
+                };
+            }
+        };
+
+        const buyCtx = await _getSizingContext(btsPairManager, 'buy');
+        assert.strictEqual(
+            buyCtx.budget,
+            21.7,
+            'BTS-pair buy budget (non-BTS side) must not be carved for BTS fees'
+        );
+
+        const sellCtx = await _getSizingContext(btsPairManager, 'sell');
+        assert.strictEqual(
+            sellCtx.budget,
+            Math.max(0, 400 - formulaBudget),
+            'BTS-pair sell budget (BTS side) must still reserve the formula fee budget'
+        );
+
+        // Non-BTS pair with real btsBalance data must still carve (guard must not over-fire)
+        const nonBtsPairManager = {
+            ...btsPairManager,
+            config: {
+                assetA: 'HONEST',
+                assetB: 'USDT',
+                activeOrders: { buy: 6, sell: 6 },
+                min_BTS_value: null
+            },
+            getChainFundsSnapshot() {
+                return {
+                    allocatedBuy: 21.7,
+                    allocatedSell: 400,
+                    chainTotalBuy: 21.7,
+                    chainTotalSell: 400,
+                    btsBalance: { free: 0, total: 0, locked: 0 }
+                };
+            }
+        };
+        const carvedCtx = await _getSizingContext(nonBtsPairManager, 'buy');
+        assert(
+            carvedCtx.budget < 21.7,
+            'non-BTS pair with zeroed btsBalance must still reserve fee share'
+        );
     }
 
     console.log(' - Testing regeneration trigger uses cache and available funds...');
