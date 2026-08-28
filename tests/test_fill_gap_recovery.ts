@@ -110,12 +110,11 @@ async function main() {
 
     // 1) Live notice delivers ONLY fill@6002 (the 5095..5099 gap + 5100/5500 were
     //    dropped from this notice). Cursor should jump 5000 -> 6002 and arm recovery.
+    //    The eager gap-recovery timer scheduled in handleNotice must recover the
+    //    gap without requiring a second no-fill notice or the 60s poll.
     handler([1, [makeOp('1.11.6002', true)]]);
 
-    // 2) A no-fill notice arrives, triggering the coalesced gap-recovery scan.
-    handler([1, [makeOp('1.11.6003', false)]]);
-
-    // Wait for NOTICE_COALESCE_MS (250ms) + async dispatch + a poll tick.
+    // Wait for the eager gap-recovery coalesce (NOTICE_COALESCE_MS 250ms) + async dispatch.
     await delay(1000);
 
     const gotGap = ['1.11.5095', '1.11.5096', '1.11.5097', '1.11.5098', '1.11.5099']

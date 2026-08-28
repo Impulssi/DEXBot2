@@ -430,6 +430,7 @@ function createSubscriptionManager(chainClient: any): any {
 
         // Batch fills per-subscription and dispatch all at once, so a single
         // callback receives all fills from one notice.
+        const gapRecoveryArmed: any[] = [];
         for (const [, sub] of subscriptions) {
             if (!sub.active) continue;
             const subFills = fillObjects.filter((fill) => fillMatchesAccount(fill, sub.accountId));
@@ -479,11 +480,52 @@ function createSubscriptionManager(chainClient: any): any {
                 }
                 // Cursor NOT advanced — retry on next scan.
             } else if (latestId && (!sub.lastDeliveredHistoryId || parseObjectIdInstance(latestId) > parseObjectIdInstance(sub.lastDeliveredHistoryId))) {
+                const oldCursorInst = parseObjectIdInstance(sub.lastDeliveredHistoryId);
+                const gap = Number.isFinite(oldCursorInst) && Number.isFinite(latestInstance) ? latestInstance - oldCursorInst : Infinity;
                 sub.lastDeliveredHistoryId = latestId;
                 // A notice advanced the cursor without a full history scan, so a fill
                 // op may have been skipped between the old and new cursor. Arm the
-                // lookback scan in processObjects to recover any such gap.
-                sub._gapRecovery = true;
+                // lookback scan only when there is at least one op slot between the
+                // old cursor and the new fill (gap > 1) — otherwise the window is
+                // contiguous and no fill could have been skipped. This avoids a
+                // 40-page history scan on every sequential fill while still
+                // covering the crash-burst case (gap >> 1).
+                if (gap > 1) {
+                    sub._gapRecovery = true;
+                    gapRecoveryArmed.push(sub);
+                }
+            }
+        }
+
+        // Eager gap-recovery: don't wait for the next non-fill notice (250ms
+        // coalesce) or the 60s poll — which leaves a correctness window in the
+        // quiet-after-gap case. Schedule a coalesced lookback scan for each
+        // armed subscription. Cost is one 40-page window per gap event, not
+        // per poll. If a scan is already pending/in-flight (_processingHistory
+        // or pendingScans), the flag stays armed and the in-flight scan will
+        // consume it (or the next tick will).
+        for (const sub of gapRecoveryArmed) {
+            if (sub._processingHistory) continue;
+            if (pendingScans.has(sub)) continue;
+            sub._processingHistory = true;
+            if (noticeCoalesceMs > 0) {
+                const entry = { timer: null as any, lastNoticeAt: Date.now() };
+                entry.timer = setTimeout(() => {
+                    pendingScans.delete(sub);
+                    (processObjects(sub, [sub.accountId]).catch((err: any) => {
+                        subscriptionsLogger.warn(`processObjects (eager gap-recovery) error for ${sub.accountName}: ${getErrorMessage(err)}`);
+                    })).finally(() => {
+                        sub._processingHistory = false;
+                    });
+                }, noticeCoalesceMs);
+                if (typeof entry.timer.unref === 'function') entry.timer.unref();
+                pendingScans.set(sub, entry);
+            } else {
+                (processObjects(sub, [sub.accountId]).catch((err: any) => {
+                    subscriptionsLogger.warn(`processObjects (eager gap-recovery) error for ${sub.accountName}: ${getErrorMessage(err)}`);
+                })).finally(() => {
+                    sub._processingHistory = false;
+                });
             }
         }
     }
@@ -741,6 +783,7 @@ function createSubscriptionManager(chainClient: any): any {
                 for (const [, entry] of subscriptions) {
                     if (!entry.active) continue;
                     if (entry.reconnecting) continue;
+                    if (entry._processingHistory) continue;
                     // Poll is a lightweight liveness check (fetches only >cursor, ~1 page
                     // in steady state). Gap recovery (2000 per-account ops ≈40 pages) is
                     // already armed by handleNotice cursor advances and by
@@ -749,7 +792,9 @@ function createSubscriptionManager(chainClient: any): any {
                     // re-fetch forever (~80 pages/min for bbot9+bbot4). If a gap-recovery
                     // fetch previously threw, _gapRecovery stays true and the next poll
                     // will run the lookback; otherwise this tick is just a plain >cursor
-                    // scan with no lookback.
+                    // scan with no lookback. Eager gap-recovery scheduled in handleNotice
+                    // already handles the quiet-after-gap case in ~250ms, so this poll
+                    // is only the safety-net fallback.
                     try {
                         await processObjects(entry, [entry.accountId]);
                     } catch (err: any) {
