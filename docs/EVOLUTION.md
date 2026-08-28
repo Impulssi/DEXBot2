@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.22 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.23 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 2,073 commits over ~9 active months
-- **Code Maturity**: Evolution from basic utilities to a ~70,000+ LoC intelligent TypeScript system
-- **Stability**: Progression from manual testing to a suite of 238 automated test files
-- **Releases**: 99 release entries (v0.1.0 to v1.4.22)
+- **Growth Phase**: 2,097 commits over ~9 active months
+- **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
+- **Stability**: Progression from manual testing to a suite of 255 automated test files
+- **Releases**: 99 release entries (v0.1.0 to v1.4.23)
 
 ---
 
@@ -106,11 +106,12 @@ Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CH
 | v1.4.19 → v1.4.20 | 5 | Grid boundary promotion hardening, recovery poison gate, analysis output centralization |
 | v1.4.20 → v1.4.21 | 15 | Runtime audit fixes, claw dedup hardening, boundary ceiling alignment, editor color feedback |
 | v1.4.21 → v1.4.22 | 4 | tsx removal completion (dist-only runtime + tests), exact AMA bootstrap sizing, research-tool production parity |
+| v1.4.22 → v1.4.23 | 12 | Even geometric AMA ladder, BTS fee-carve fix, sub-1x price-bound rejection, tradingview axis restore, doc realignment |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 26, 2026
-**Total Commits**: 2,084
-**Date Range**: December 2, 2025 – August 26, 2026
+**Last Updated**: August 28, 2026
+**Total Commits**: 2,097
+**Date Range**: December 2, 2025 – August 28, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

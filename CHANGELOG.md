@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.23] - 2026-08-28 - Even AMA Ladder, BTS Fee-Carve Fix, Price-Bound Rejection, TradingView Axis, Doc Realignment
+
+### 2026-08-26
+
+- **Fix(analysis)**: survive numeric botFunds values in analyze-orders — `botFunds` could arrive as a bare number (e.g. from upstream contribution #13) instead of the `{base,quote}` object shape the dynamic-weight path expected, throwing on property access; `analyze-orders` now normalizes numeric botFunds into the object form before use, with a regression test covering the number input (`scripts/analyze-orders.ts`, `tests/test_analyze_orders_dynamic_weight.ts`).
+
+### 2026-08-27
+
+- **Docs(readme)**: add Arch/Manjaro Git install instruction — the prerequisites block assumed apt/debian-based package managers; a one-liner for `pacman -S git` is added alongside the existing distros (`README.md`).
+- **Fix(order)**: reject sub-1x price-bound multipliers resolving above market (#15) — `minPrice`/`maxPrice` accepted multipliers like `0.5x` that resolve to a price above the current market (e.g. 0.5x of a higher anchor), silently placing the whole grid off-market; the editor now blocks sub-1x multipliers whose resolved price would sit above market, the multiplier parser reports the resolved price for validation, and `utils/math.ts`/`utils/order.ts` gain the rejection helpers with `tests/test_utils.ts` coverage (`modules/account_bots.ts`, `modules/order/grid.ts`, `modules/order/utils/math.ts`, `modules/order/utils/order.ts`, `tests/test_utils.ts`).
+- **Fix**: deep-merge nested kalman override instead of wholesale replace — the AMA-grid-price override path replaced the entire nested `kalman` config object with the raw override, dropping sibling keys; the override now deep-merges into the existing kalman subtree, with `tests/test_dynamic_weight_override_wiring.ts` coverage (`market_adapter/market_adapter.ts`, `tests/test_dynamic_weight_override_wiring.ts`).
+- **Tune**: even geometric AMA slowPeriod ladder (+16% steps) — the `AMA_SLOW_PERIOD_LADDER` used uneven spacing between rungs; the geometric step is normalized to a constant +16% ratio so preset spacing is uniform and predictable (`modules/constants.ts`).
+- **Docs**: align AMA preset references with constants ladder, fix stale warmup math — docs and a few analysis scripts cited AMA ladder values and warmup formulas that had drifted from `modules/constants.ts`; references are corrected to the live ladder, stale warmup/window math fixed, and `scripts/sync-version.ts` hardened to sync the version into the docs-derived constants it consumes (`analysis/ama_fitting/analyze_lambda_vs_slow.ts`, `analysis/ama_fitting/optimizer_high_resolution.ts`, `analysis/tradingview/README.md`, `docs/GRID_RECALCULATION.md`, `docs/README.md`, `market_adapter/README.md`, `modules/constants.ts`, `scripts/sync-version.ts`, `tests/test_market_adapter_logic.ts`).
+- **Fix(tradingview)**: working price-axis zoom, log density, and 4-digit labels — the TradingView-style chart exporter's price-axis interaction regressed: wheel zoom on the gutter, log-scale density, and 4-digit axis labels are restored with the same `UPLOT_SHARED_SCRIPT` range-callback contract used elsewhere (`analysis/tradingview/tradingview_uplot_chart_generator.ts`).
+- **Docs**: reorder Reference Docs from general to specific — `README.md`'s Reference Docs section is reordered so the broad architecture/lifecycle docs lead and the narrower per-subsystem docs follow, matching the reader's narrowing path (`README.md`).
+
+### 2026-08-28
+
+- **Docs**: enrich BitShares onboarding links and restructure closing sections — `docs/BITSHARES_ONBOARDING.md` adds more precise links to the relevant BitShares resources and reorganizes the closing sections (next steps, troubleshooting, support) for better flow (`docs/BITSHARES_ONBOARDING.md`).
+- **Fix(analysis)**: ensure charts dir exists before writing order-analysis export — `analyze-orders --export` wrote the HTML report into `analysis/charts/` but assumed the directory already existed, throwing on a fresh checkout; the export now materializes the charts directory before writing (`scripts/analyze-orders.ts`).
+- **Fix(grid)**: stop BTS-pair fee carve from clipping the non-BTS side budget — the BTS-pair fee carve adjusted the budget for both sides of a BTS-quoted pair, so carving the BTS-side fee also shrank the opposite (non-BTS) asset's budget below what it should hold; the carve now only trims the BTS leg, leaving the non-BTS side's budget intact, with extended `tests/test_grid_logic.ts` coverage (`modules/order/grid.ts`, `tests/test_grid_logic.ts`).
+
 ## [1.4.22] - 2026-08-25 - tsx Removal Completion, Exact AMA Bootstrap, Research Parity, Canonical Grid Bounds, Modules-Wide Audit
 
 ### 2026-08-26
