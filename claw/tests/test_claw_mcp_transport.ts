@@ -30,7 +30,7 @@ async function testParserAcceptsJsonlAcrossChunksAndSingleBuffer() {
       capabilities: {},
       clientInfo: {
         name: 'claw-mcp-transport-test',
-        version: '1.4.23'
+        version: '1.4.24'
       },
       protocolVersion: '2024-11-05'
     }
@@ -187,7 +187,7 @@ async function testMainEntrypointHandlesRealProcessInitialize() {
       capabilities: {},
       clientInfo: {
         name: 'claw-mcp-transport-test',
-        version: '1.4.23'
+        version: '1.4.24'
       },
       protocolVersion: '2024-11-05'
     }
