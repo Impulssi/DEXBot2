@@ -456,25 +456,30 @@ trading fees before going live (see [Fund the account](#22-fund-the-account)).
 
 ---
 
-## Further reading
-
-- [Root README](../README.md#contents) — install, config, command reference
-- [Market Adapter](../market_adapter/README.md#quick-start) — AMA pricing and grid tuning
-- [MPA and Credit Usage](MPA_CREDIT_USAGE.md#which-section-do-i-need) — borrowing and credit offer workflows
-
----
-
 ## Interaction
 
 Different ways to interact with your BitShares account:
 
 - [bts.exchange](https://bts.exchange) — Hosted reference wallet
+- [XBTS Exchange](https://trade.xbts.io/) — Hosted exchange and wallet
 - [Mobile App](https://github.com/bitshares/bitshares-mobile-app/releases) — Mobile Android app
 - [Astro UI](https://github.com/BTS-CM/astro-ui/releases) — Local UI
 - [BeetVault](https://github.com/beetapp/BeetVault) — Local Key Manager
 - [BitShares Wallet](https://pi314x.github.io/bitshares-wallet-browser-extension) — Browser Extension
 - [Paper Wallet](https://paperwallet.bitshares.eu/) — Print Wallet
 
-## Full Link Collection
+---
 
-- [BitShares IS AWESOME](https://github.com/bitshares/awesome-bitshares)
+## Further reading
+
+- [Documentation Index](README.md) — full docs hub: architecture, lifecycle, workflows, and reference docs
+- [Market Adapter](../market_adapter/README.md#quick-start) — AMA pricing and grid tuning
+- [MPA and Credit Usage](MPA_CREDIT_USAGE.md#which-section-do-i-need) — borrowing and credit offer workflows
+
+## Link Collection
+
+- [![Telegram](https://img.shields.io/badge/Telegram-%40DEXBot__2-26A5E4?logo=telegram&logoColor=white)](https://t.me/DEXBot_2)
+- [![Website](https://img.shields.io/badge/Website-dexbot.org-4FC08D?logo=internet-explorer&logoColor=white)](https://dexbot.org/)
+- [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/froooze/DEXBot2)
+- [![Awesome BitShares](https://camo.githubusercontent.com/9d49598b873146ec650fb3f275e8a532c765dabb1f61d5afa25be41e79891aa7/68747470733a2f2f617765736f6d652e72652f62616467652e737667)](https://github.com/bitshares/awesome-bitshares)
+- [![Reddit](https://img.shields.io/badge/Reddit-r%2FBitShares-ff4500?logo=reddit&logoColor=white)](https://www.reddit.com/r/BitShares/)
