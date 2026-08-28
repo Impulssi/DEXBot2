@@ -1567,6 +1567,7 @@ function generateHtmlReport(analyses: any[]) {
 </html>`;
 
   const outPath = path.join(PATHS.ANALYSIS.CHARTS_DIR, 'order-analysis.html');
+  fs.mkdirSync(PATHS.ANALYSIS.CHARTS_DIR, { recursive: true });
   fs.writeFileSync(outPath, html, 'utf-8');
   console.log(`\n📄 Order Analysis: ${formatClickablePath(outPath)}`);
 }
