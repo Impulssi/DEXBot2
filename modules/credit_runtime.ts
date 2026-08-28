@@ -697,32 +697,14 @@ class CreditRuntime {
         const cachedAt = this.state.positions[posKey]?.creditConversionRateAt || 0;
         const cachedIsFresh = cached !== null && (Date.now() - cachedAt) < CREDIT_RATE_MAX_AGE_MS;
 
-        // Liquidity pool share collateral (for_liquidity_pool) has no direct
-        // base/quote pair against the debt asset in the offer's acceptable_collateral
-        // map. Its conversion rate must be derived from the underlying AMM pool by
-        // pricing both reserve assets against the debt asset. Do this before the
-        // offer-map math so we don't fall through to a missing-offer path.
-        const collateralAssetForPool = await this._resolveAsset(collateralAssetId);
-        const debtAssetForPool = await this._resolveAsset(debtAssetId);
-        if (collateralAssetForPool?.for_liquidity_pool && debtAssetForPool?.id) {
-            const poolRate = await deriveLiquidityPoolTokenValue(BitShares, collateralAssetForPool.id, debtAssetForPool.id).catch((e: any) => {
-                this.log(`credit runtime: pool token rate derivation failed for ${collateralAssetForPool.id}/${debtAssetForPool.id}: ${getErrorMessage(e)}`);
-                return null;
-            });
-            if (poolRate != null && Number.isFinite(poolRate) && poolRate > 0) {
-                if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
-                this.state.positions[posKey].creditConversionRate = poolRate;
-                this.state.positions[posKey].creditConversionRateAt = Date.now();
-                return options.includeSource ? { price: poolRate, source: 'pool-derived' } : poolRate;
-            }
-            if (options.includeSource) {
-                return cachedIsFresh
-                    ? { price: cached, source: 'cached-offer' }
-                    : { price: null, source: 'missing-offer' };
-            }
-            return cachedIsFresh ? cached : null;
-        }
-
+        // Prefer the offer map (live-offer / owned-offer) — it provides an
+        // authoritative conversion rate even for LP share collateral that has
+        // an explicit entry in acceptable_collateral. Only when the offer map
+        // has no entry for the debt/collateral pair do we fall back to pool
+        // derivation (reserveA*priceA + reserveB*priceB / supply). This avoids
+        // re-attempting deriveLiquidityPoolTokenValue on every hourly call
+        // when a fresh live-offer rate exists and would otherwise log a pool
+        // failure even though the offer would succeed.
         const offerIds = new Set();
 
         const deals = Array.isArray(this.state.positions[posKey]?.creditDeals)
@@ -760,12 +742,9 @@ class CreditRuntime {
                     }
                 }
             }
-            if (options.includeSource) {
-                return cachedIsFresh
-                    ? { price: cached, source: 'cached-offer' }
-                    : { price: null, source: 'missing-offer' };
-            }
-            return cachedIsFresh ? cached : null;
+            // No owned-offer entry — fall through to pool derivation before
+            // returning cached/missing (pool is fallback for LP shares with
+            // no offer entry).
         }
 
         const debtAsset = await this._resolveAsset(debtAssetId);
@@ -793,6 +772,26 @@ class CreditRuntime {
                 this.state.positions[posKey].creditConversionRate = rate;
                 this.state.positions[posKey].creditConversionRateAt = Date.now();
                 return options.includeSource ? { price: rate, source: 'live-offer' } : rate;
+            }
+        }
+
+        // Offer map had no usable entry — fall back to pool derivation for LP
+        // shares. Only attempt when cached is stale to avoid hourly
+        // deriveLiquidityPoolTokenValue failures when a fresh live-offer rate
+        // would already have returned. Reuses debtAsset/collateralAsset
+        // resolved above.
+        if (!cachedIsFresh) {
+            if (collateralAsset?.for_liquidity_pool && debtAsset?.id) {
+                const poolRate = await deriveLiquidityPoolTokenValue(BitShares, collateralAsset.id, debtAsset.id).catch((e: any) => {
+                    this.log(`credit runtime: pool token rate derivation failed for ${collateralAsset.id}/${debtAsset.id}: ${getErrorMessage(e)}`);
+                    return null;
+                });
+                if (poolRate != null && Number.isFinite(poolRate) && poolRate > 0) {
+                    if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
+                    this.state.positions[posKey].creditConversionRate = poolRate;
+                    this.state.positions[posKey].creditConversionRateAt = Date.now();
+                    return options.includeSource ? { price: poolRate, source: 'pool-derived' } : poolRate;
+                }
             }
         }
 
