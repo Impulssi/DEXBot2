@@ -249,8 +249,9 @@ function collectValidationIssues(entries: any[], sourceName: string): { errors: 
             else warnings.push(issue);
         }
         // Grid capacity check: activeOrders vs Range/Incr (issue #19)
-        // Estimated levels = floor(log(max/min)/log(1+incr)) + 1
-        // Available for orders = estimated - gapSlots
+        // Per-side estimation mirrors createOrderGrid geometry:
+        //   levels on each side grow geometrically from the center,
+        //   gap slots are split around the boundary.
         if (entry.active && entry.activeOrders && entry.incrementPercent && entry.targetSpreadPercent) {
             try {
                 const incr = Number(entry.incrementPercent);
@@ -266,34 +267,46 @@ function collectValidationIssues(entries: any[], sourceName: string): { errors: 
                         const n = Number(v);
                         return Number.isFinite(n) && n > 0 ? n : null;
                     };
+                    const isXFactor = (v: any) => typeof v === 'string' && String(v).trim().toLowerCase().endsWith('x');
                     const minF = parseFactor(entry.minPrice);
                     const maxF = parseFactor(entry.maxPrice);
-                    let totalRatio: number | null = null;
+                    const minIsX = isXFactor(entry.minPrice);
+                    const maxIsX = isXFactor(entry.maxPrice);
                     if (minF !== null && maxF !== null) {
-                        // Both are "Nx" factors: min is 1/N below gridPrice, max is N above
-                        // For "1.15x" / "2.0x", total ratio = 1.15 * 2.0
-                        // For numeric absolute prices, ratio = max/min
-                        const isMinX = typeof entry.minPrice === 'string' && String(entry.minPrice).toLowerCase().endsWith('x');
-                        const isMaxX = typeof entry.maxPrice === 'string' && String(entry.maxPrice).toLowerCase().endsWith('x');
-                        if (isMinX && isMaxX) totalRatio = minF * maxF;
-                        else if (!isMinX && !isMaxX) totalRatio = maxF / minF;
-                        else totalRatio = null; // mixed types: skip check
-                    }
-                    if (totalRatio !== null && totalRatio > 1) {
                         const step = 1 + incr / 100;
-                        const estimatedLevels = Math.floor(Math.log(totalRatio) / Math.log(step)) + 1;
                         const gapSlots = Math.max(2, Math.ceil(Math.log(1 + spread / 100) / Math.log(step)) - 1);
-                        // Use same formula as grid-kuva: ceil -1, min 2
-                        // Add small buffer (2 slots) for sqrt(step) offset and ceil rounding in createOrderGrid
-                        const available = estimatedLevels - gapSlots;
-                        const required = buy + sell;
-                        if (required > available - 2) {
+                        // Buy side spans from center down to minPrice:
+                        //   x-factor min "1.15x" -> distance log(1.15)
+                        //   absolute min -> distance log(center/min); approximate center
+                        //   by geometric mean of bounds (ratio-based, no price needed).
+                        let buyDistance: number | null = null;
+                        let sellDistance: number | null = null;
+                        if (minIsX && maxIsX) {
+                            buyDistance = Math.log(minF);
+                            sellDistance = Math.log(maxF);
+                        } else if (!minIsX && !maxIsX) {
+                            const center = Math.sqrt(minF * maxF);
+                            buyDistance = Math.log(center / minF);
+                            sellDistance = Math.log(maxF / center);
+                        }
+                        if (buyDistance !== null && sellDistance !== null && buyDistance > 0 && sellDistance > 0) {
+                            const buyCapacity = Math.floor(buyDistance / Math.log(step)) - Math.floor(gapSlots / 2) - 1;
+                            const sellCapacity = Math.floor(sellDistance / Math.log(step)) - Math.ceil(gapSlots / 2) - 1;
                             const name = entry.name || `<unnamed-${index}>`;
-                            warnings.push(
-                                `Bot[${index}] '${name}' (${sourceName}): activeOrders B:${buy}/S:${sell} (${required} slots) does not fit Range [${entry.minPrice}-${entry.maxPrice}] with Incr ${incr}% (est. ${available} order slots + ${gapSlots} spread). ` +
-                                `With Incr ${incr}% and Range [${entry.minPrice}-${entry.maxPrice}] max ~${available} orders fit; widen maxPrice, lower Incr, or reduce activeOrders. ` +
-                                `Observed after reset: Active ${buy}/${sell} -> Slots ~${Math.floor(available * buy / required)}/${Math.floor(available * sell / required)} (e.g. 22/27 became 22/23).`
-                            );
+                            if (sell > sellCapacity) {
+                                warnings.push(
+                                    `Bot[${index}] '${name}' (${sourceName}): activeOrders sell:${sell} exceeds grid capacity — Range [${entry.minPrice}-${entry.maxPrice}] with Incr ${incr}% fits ~${Math.max(0, sellCapacity)} sell orders. ` +
+                                    `After reset the surplus silently stays unfilled (e.g. S:27 showed Active 22/27, Slots 23 sell). ` +
+                                    `Widen maxPrice, lower Incr, or reduce activeOrders.sell.`
+                                );
+                            }
+                            if (buy > buyCapacity) {
+                                warnings.push(
+                                    `Bot[${index}] '${name}' (${sourceName}): activeOrders buy:${buy} exceeds grid capacity — Range [${entry.minPrice}-${entry.maxPrice}] with Incr ${incr}% fits ~${Math.max(0, buyCapacity)} buy orders. ` +
+                                    `After reset the surplus silently stays unfilled. ` +
+                                    `Widen minPrice, lower Incr, or reduce activeOrders.buy.`
+                                );
+                            }
                         }
                     }
                 }
