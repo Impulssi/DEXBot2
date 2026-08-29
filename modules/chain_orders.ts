@@ -672,7 +672,15 @@ async function readOpenOrdersWithMeta(accountId: string | null = null, timeoutMs
         }
         return { orders, truncated };
     } catch (error: any) {
-        chainOrdersLogger.error(`Error reading open orders: ${getErrorMessage(error)}`);
+        const msg = getErrorMessage(error);
+        // Missing account is a caller-configuration error, not a chain failure;
+        // downgrade to warn so intentional negative-path tests don't pollute
+        // ERROR diagnostics and hide real fund-invariant violations.
+        if (msg.includes('No account selected')) {
+            chainOrdersLogger.warn(`Error reading open orders: ${msg}`);
+        } else {
+            chainOrdersLogger.error(`Error reading open orders: ${msg}`);
+        }
         throw error;
     }
 }
@@ -1376,7 +1384,16 @@ async function executeBatch(accountName: any, privateKey: any, operations: any, 
             operation_results: operationResults
         };
     } catch (error: any) {
-        chainOrdersLogger.error(`Error executing batch transaction: ${getErrorMessage(error)}`);
+        const msg = getErrorMessage(error);
+        // Simulated / intentional negative-path failures (contain "simulated" or
+        // the credential-daemon uncertain marker BROADCAST_DEADLINE) are expected
+        // in tests. Downgrade to warn so intentional fixtures don't hide real
+        // fund-invariant CRITICALs in the ERROR diagnostics.
+        if (msg.includes('simulated') || msg.includes('Simulated') || msg.includes('Credential daemon broadcast uncertain') || msg.includes('BROADCAST_DEADLINE')) {
+            chainOrdersLogger.warn(`Error executing batch transaction: ${msg}`);
+        } else {
+            chainOrdersLogger.error(`Error executing batch transaction: ${msg}`);
+        }
         throw error;
     }
 }

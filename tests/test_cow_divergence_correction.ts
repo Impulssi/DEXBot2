@@ -364,6 +364,9 @@ async function testCOWDivergenceCorrection() {
     // cancel them as surplus, keeping only true in-rail sells in the window.
     console.log('Test 6: Gap-band SELL strays excluded from the desired window and cancelled');
     {
+        // Ensure sufficient free balance for 4×100 SELL orders (previous sellFree=100 insufficient)
+        await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+        await manager.recalculateFunds();
         // boundary 5, gap 2 → sellStart 8; gap band = slots 6,7.
         manager.boundaryIdx = 5;
         manager._gapSlots = 2;
@@ -377,7 +380,7 @@ async function testCOWDivergenceCorrection() {
                 type,
                 state: ORDER_STATES.VIRTUAL,
                 size: 0
-            });
+            }, 'seed-test6', { skipAccounting: true, fee: 0 });
         }
 
         // On-chain SELL orders: two strays inside the gap band (slots 6,7 —
@@ -392,7 +395,7 @@ async function testCOWDivergenceCorrection() {
                 state: ORDER_STATES.ACTIVE,
                 size: 100,
                 orderId: `chain-gap-${i}`
-            });
+            }, 'seed-test6-active', { skipAccounting: true, fee: 0 });
         }
 
         manager._gridSidesUpdated = new Set([ORDER_TYPES.SELL]);

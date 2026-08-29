@@ -16,16 +16,106 @@
  */
 
 const assert = require('assert');
+const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
+esmMockEntry();
 
-// Stub the BitShares client and chain_orders module BEFORE requiring
-// dexbot_class so COW fill processing builds/broadcasts valid operations
-// instead of failing on a missing account/chain.
-const { installBitsharesClientStub } = require('./helpers/bitshares_client_stub');
-const bitsharesClientPath = require.resolve('../modules/bitshares_client');
-installBitsharesClientStub(bitsharesClientPath);
-
-const { installChainOrdersStub } = require('./helpers/chain_orders_stub');
-const { chainOrders: moduleChainOrders } = installChainOrdersStub();
+function makeSwappableModule(defaults) {
+    const overrides = new Map();
+    const resolved = (key) => (overrides.has(key) ? overrides.get(key) : defaults[key]);
+    const target = {};
+    for (const key of Object.keys(defaults)) {
+        target[key] = typeof defaults[key] === 'function'
+            ? (...args) => resolved(key)(...args)
+            : defaults[key];
+    }
+    return new Proxy(target, {
+        set(_t, prop, value) {
+            const key = String(prop);
+            if (target[key] === value) overrides.delete(key);
+            else overrides.set(key, value);
+            return true;
+        },
+    });
+}
+const { BroadcastUncertainError } = require('../modules/dexbot_credential_client');
+async function readWithMetaSafe(mod: any, accountId: any, timeoutMs?: any) {
+    if (mod && typeof mod.readOpenOrdersWithMeta === 'function') return mod.readOpenOrdersWithMeta(accountId, timeoutMs);
+    return { orders: await mod.readOpenOrders(accountId, timeoutMs), truncated: false };
+}
+async function readGuarded(mod: any, accountId: any, options: any = {}) {
+    const read = await readWithMetaSafe(mod, accountId, options.timeoutMs);
+    const truncated = read?.truncated === true;
+    const orders = read?.orders;
+    const empty = !Array.isArray(orders) || orders.length === 0;
+    if (!truncated && !(options.deferEmpty && empty)) return Array.isArray(orders) ? orders : [];
+    return null;
+}
+const chainOrdersDefaults = {
+    BroadcastUncertainError,
+    selectAccount: async () => {},
+    setPreferredAccount: async () => {},
+    resolveAccountId: async (accountName) => /^1\.2\.\d+$/.test(String(accountName)) ? accountName : '1.2.999',
+    resolveAccountName: async () => null,
+    readOpenOrders: async () => [],
+    readOpenOrdersWithMeta: async () => ({ orders: [], truncated: false }),
+    readOpenOrdersWithMetaSafe: readWithMetaSafe,
+    readOpenOrdersGuarded: readGuarded,
+    readSingleOrder: async () => null,
+    batchReadOrders: async () => [],
+    listenForFills: async () => () => {},
+    updateOrder: async () => { throw new Error('updateOrder not configured'); },
+    createOrder: async () => { throw new Error('createOrder not configured'); },
+    cancelOrder: async () => {},
+    getOnChainAssetBalances: async () => ({}),
+    getFillProcessingMode: () => 'history',
+    buildUpdateOrderOp: async (account, orderId) => ({
+        op: { op_name: 'limit_order_update', op_data: { fee: { amount: 0, asset_id: '1.3.0' }, fee_paying_account: account, order: orderId, delta_amount_to_sell: { amount: 1, asset_id: '1.3.1' }, new_price: { base: { amount: 1, asset_id: '1.3.1' }, quote: { amount: 1, asset_id: '1.3.0' } }, extensions: [] } },
+        finalInts: { sell: 1, receive: 1, sellAssetId: '1.3.1', receiveAssetId: '1.3.0' },
+    }),
+    buildCreateOrderOp: async (account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => {
+        const op = { op_name: 'limit_order_create', op_data: { fee: { amount: 0, asset_id: '1.3.0' }, seller: account, amount_to_sell: { amount: Math.round(Number(amountToSell) * 1e5), asset_id: sellAssetId }, min_to_receive: { amount: Math.round(Number(minToReceive) * 1e5), asset_id: receiveAssetId }, expiration: '2099-01-01T23:59:59', fill_or_kill: false, extensions: [] } };
+        return { op, finalInts: { sell: op.op_data.amount_to_sell.amount, receive: op.op_data.min_to_receive.amount, sellAssetId, receiveAssetId } };
+    },
+    buildCancelOrderOp: async (account) => ({ op: { op_name: 'limit_order_cancel', op_data: { fee: { amount: 0, asset_id: '1.3.0' }, fee_paying_account: account, order: null, extensions: [] } } }),
+    buildLiquidityPoolExchangeOp: async () => { throw new Error('not configured'); },
+    executeBatch: async (_account, _key, operations) => ({ success: true, operation_results: (operations || []).map((_op, i) => [1, `1.7.${8000 + i}`]) }),
+    findOverReducingUpdateOpError: async () => null,
+    wasRecentlyOwnCancelled: () => false,
+    recordOwnCancel: () => {},
+    broadcastTxWithClassification: async () => ({}),
+};
+const moduleChainOrders = makeSwappableModule(chainOrdersDefaults);
+defineEsmMockAbs(require.resolve('../modules/chain_orders'), [
+    'selectAccount', 'setPreferredAccount', 'resolveAccountId', 'resolveAccountName',
+    'readOpenOrders', 'readOpenOrdersWithMeta', 'readOpenOrdersWithMetaSafe', 'readOpenOrdersGuarded',
+    'readSingleOrder', 'batchReadOrders', 'listenForFills', 'updateOrder', 'createOrder', 'cancelOrder',
+    'getOnChainAssetBalances', 'getFillProcessingMode', 'buildUpdateOrderOp', 'buildCreateOrderOp',
+    'buildCancelOrderOp', 'buildLiquidityPoolExchangeOp', 'executeBatch',
+    'findOverReducingUpdateOpError', 'wasRecentlyOwnCancelled', 'recordOwnCancel',
+    'BroadcastUncertainError', 'broadcastTxWithClassification'
+], moduleChainOrders);
+defineEsmMockAbs(require.resolve('../modules/bitshares_client'), [
+    'BitShares', 'createAccountClient', 'waitForConnected', 'getConnectionStatus',
+    'disconnectClient', 'reconnectForCycle', 'setSuppressConnectionLog', 'onReconnect',
+    'withTimeout', '_assessFailover', 'getNodeManager', 'getNodeStats', 'getNodeSummary',
+    'getConnectionError', '_internal'
+], {
+    BitShares: { subscribe() {}, db: { get_assets: async () => [], lookup_asset_symbols: async () => [] } },
+    createAccountClient: () => ({ initPromise: Promise.resolve(), newTx: () => ({ broadcast: async () => [[1,'1.7.0']] }) }),
+    waitForConnected: async () => {},
+    getConnectionStatus: () => ({ connected: true }),
+    disconnectClient: async () => {},
+    reconnectForCycle: async () => {},
+    setSuppressConnectionLog() {},
+    onReconnect: () => () => {},
+    withTimeout: (p) => p,
+    _assessFailover: () => null,
+    getNodeManager: () => null,
+    getNodeStats: () => null,
+    getNodeSummary: () => null,
+    getConnectionError: () => null,
+    _internal: { connected: true },
+});
 
 const mathUtils = require('../modules/order/utils/math');
 
@@ -42,73 +132,6 @@ mathUtils._setFeeCache({
     chargesMarketFees: false,
     marketFee: { percent: 0 },
   },
-});
-
-// Module-level chain orders stubs: keep COW op-building and broadcast
-// deterministic so the test exercises the fill pipeline without emitting
-// spurious errors ("Account null not found", etc.).
-moduleChainOrders.getFillProcessingMode = () => 'history';
-moduleChainOrders.readOpenOrders = async () => [];
-moduleChainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
-moduleChainOrders.readSingleOrder = async () => null;
-moduleChainOrders.wasRecentlyOwnCancelled = () => false;
-moduleChainOrders.cancelOrder = async () => {};
-moduleChainOrders.resolveAccountId = async (accountName: any) =>
-  /^1\.2\.\d+$/.test(String(accountName)) ? accountName : '1.2.999';
-moduleChainOrders.buildCancelOrderOp = async (account: any) => ({
-  op: {
-    op_name: 'limit_order_cancel',
-    op_data: {
-      fee: { amount: 0, asset_id: '1.3.0' },
-      fee_paying_account: account,
-      order: null,
-      extensions: [],
-    },
-  },
-});
-moduleChainOrders.buildCreateOrderOp = async (
-  account: any, amountToSell: any, sellAssetId: any,
-  minToReceive: any, receiveAssetId: any,
-) => {
-  const op = {
-    op_name: 'limit_order_create',
-    op_data: {
-      fee: { amount: 0, asset_id: '1.3.0' },
-      seller: account,
-      amount_to_sell: { amount: Math.round(Number(amountToSell) * 1e5), asset_id: sellAssetId },
-      min_to_receive: { amount: Math.round(Number(minToReceive) * 1e5), asset_id: receiveAssetId },
-      expiration: '2099-01-01T23:59:59',
-      fill_or_kill: false,
-      extensions: [],
-    },
-  };
-  return {
-    op,
-    finalInts: {
-      sell: op.op_data.amount_to_sell.amount,
-      receive: op.op_data.min_to_receive.amount,
-      sellAssetId,
-      receiveAssetId,
-    },
-  };
-};
-moduleChainOrders.buildUpdateOrderOp = async (account: any, orderId: any) => ({
-  op: {
-    op_name: 'limit_order_update',
-    op_data: {
-      fee: { amount: 0, asset_id: '1.3.0' },
-      fee_paying_account: account,
-      order: orderId,
-      delta_amount_to_sell: { amount: 1, asset_id: '1.3.1' },
-      new_price: { base: { amount: 1, asset_id: '1.3.1' }, quote: { amount: 1, asset_id: '1.3.0' } },
-      extensions: [],
-    },
-  },
-  finalInts: { sell: 1, receive: 1, sellAssetId: '1.3.1', receiveAssetId: '1.3.0' },
-});
-moduleChainOrders.executeBatch = async (_account: any, _key: any, operations: any) => ({
-  success: true,
-  operation_results: (operations || []).map((_op: any, i: number) => [1, `1.7.${8000 + i}`]),
 });
 
 const DEXBot = require('../modules/dexbot_class').default;

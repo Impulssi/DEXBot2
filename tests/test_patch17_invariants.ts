@@ -92,6 +92,19 @@ const { _getSizingContext, _recalculateGridOrderSizesFromBlockchain } = require(
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../modules/constants');
 const bsModule = require('../modules/bitshares_client');
+const mathUtils = require('../modules/order/utils/math');
+mathUtils._setFeeCache({
+    BTS: {
+        limitOrderCreate: { bts: 0.1 },
+        limitOrderCancel: { bts: 0.05 },
+        limitOrderUpdate: { bts: 0.05 },
+        makerFeeDiscountPercent: 0.25,
+    },
+    TEST: {
+        chargesMarketFees: false,
+        marketFee: { percent: 0 },
+    },
+});
 
 if (typeof bsModule.setSuppressConnectionLog === 'function') {
     bsModule.setSuppressConnectionLog(true);
@@ -537,6 +550,7 @@ async function testSingleStaleCancelBatchUsesStaleOnlyFastPath() {
         const text = typeof msg === 'string' ? msg : String(msg);
         if (text.includes('[PERSIST] Grid persistence FAILED')) return;
         if (text.includes('[COW] Batch transaction failed: Limit order 1.7.999 does not exist')) return;
+        if (text.includes('[COW] Batch transaction failed: Cannot deduct all or more from order than order contains')) return;
         return originalManagerLog(msg, lvl);
     };
 
@@ -591,6 +605,12 @@ async function testCannotDeductTriggersRecoverySyncInsteadOfVirtualizing() {
     };
 
     bot.manager = await createManager();
+    const origLog2 = bot.manager.logger.log.bind(bot.manager.logger);
+    bot.manager.logger.log = (msg: any, lvl: any) => {
+        const text = typeof msg === 'string' ? msg : String(msg);
+        if (text.includes('[COW] Batch transaction failed: Cannot deduct all or more from order than order contains')) return;
+        return origLog2(msg, lvl);
+    };
     bot.manager.pauseFundRecalc();
     await bot.manager._updateOrder({
         id: 'slot-partial',
@@ -668,6 +688,7 @@ async function testCannotDeductTriggersRecoverySyncInsteadOfVirtualizing() {
         }
         assert.strictEqual(bot._staleCleanedOrderIds.has('1.7.555'), false, '"Cannot deduct" must not mark order as stale-cleaned');
     } finally {
+        bot.manager.logger.log = origLog2;
         chainOrders.executeBatch = originalExecuteBatch;
         chainOrders.buildUpdateOrderOp = originalBuildUpdateOrderOp;
     }

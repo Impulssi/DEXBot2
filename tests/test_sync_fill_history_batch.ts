@@ -57,6 +57,19 @@ defineEsmMockAbs(require.resolve('../modules/chain_orders'), [
 
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const mathUtils = require('../modules/order/utils/math');
+mathUtils._setFeeCache({
+    BTS: {
+        limitOrderCreate: { bts: 0.1 },
+        limitOrderCancel: { bts: 0.05 },
+        limitOrderUpdate: { bts: 0.05 },
+        makerFeeDiscountPercent: 0.25,
+    },
+    XRP: {
+        chargesMarketFees: false,
+        marketFee: { percent: 0 },
+    },
+});
 
 function suppressNoise() {
     const bsModule = require('../modules/bitshares_client');

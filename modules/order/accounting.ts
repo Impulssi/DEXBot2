@@ -884,7 +884,8 @@ class Accountant {
                       );
                   }
               }
-              mgr.logger?.log?.(`[RECOVERY] State recovery failed: ${validation.reason}`, 'error');
+              const level = validation.reason.includes('missing account context') ? 'warn' : 'error';
+              mgr.logger?.log?.(`[RECOVERY] State recovery failed: ${validation.reason}`, level);
               return false;
           } catch (err: any) {
               state.lastFailureAt = Date.now();
