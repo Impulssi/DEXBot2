@@ -486,6 +486,7 @@ class AccountOrders {
       this.data = this._loadData() || emptyData();
       this.data.grid = [];
       this.data.btsFeesOwed = 0;
+      this.data.boundaryIdx = null;
       this.data.lastUpdated = nowIso();
       this._persist();
       return true;

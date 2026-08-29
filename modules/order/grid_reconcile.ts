@@ -10,10 +10,11 @@ import {
 } from './grid_reconcile_internal.js';
 import { ORDER_TYPES, ORDER_STATES, TIMING } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
-import { calculatePriceTolerance, getAssetFeesSafe } from './utils/math.js';
+import { calculatePriceTolerance, getAssetFeesSafe, resolveGapBand, isSlotInRail } from './utils/math.js';
 import {
     isOrderPlaced, parseChainOrder, isOrderOnChain, chainOrderMatchesSlot,
     duplicateOrphanLogInfo,
+    isMarketAnchorFresh, projectAnchorToGrid, validateBoundaryAgainstChainEvidence,
 } from './utils/order.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -340,6 +341,99 @@ export async function reconcileGridOrders({
             'info'
         );
 
+        // P3 boundary-evidence gate (docs/GAP_BAND_ORPHAN_PREVENTION_PLAN.md):
+        // the restored boundary is disk state that may predate the last fill
+        // sweep. The reconcile below price-updates and creates orders into rail
+        // positions derived from it — validate it against the live book (and a
+        // fresh anchor projection when available) BEFORE any placement. On
+        // contradiction, re-derive from chain evidence; when no safe boundary
+        // is derivable, run this reconcile adoption-only (no creates, no
+        // price-updates, no placement-funding cancels).
+        const resolvedBand = resolveGapBand(manager);
+        let placementsAllowed = true;
+        if (resolvedBand.boundaryIdx !== null) {
+            const evidenceSlots = (Array.from(manager.orders.values()) as any[]).sort((a: any, b: any) => Number(a.price) - Number(b.price));
+            const anchor = manager._marketAnchor;
+            const anchorProjected = (anchor && isMarketAnchorFresh(anchor))
+                ? projectAnchorToGrid(anchor, evidenceSlots, resolvedBand.gapSlots)
+                : null;
+            const evidence = validateBoundaryAgainstChainEvidence({
+                boundaryIdx: resolvedBand.boundaryIdx,
+                gapSlots: resolvedBand.gapSlots,
+                allSlots: evidenceSlots,
+                chainOrders: parsedChain.map((x: any) => x.parsed),
+                anchorProjected,
+            });
+            if (!evidence.ok) {
+                placementsAllowed = false;
+                logger?.log?.(
+                    `[BOUNDARY-EVIDENCE] Boundary ${resolvedBand.boundaryIdx} contradicts chain evidence ` +
+                    `(${evidence.reasons.join(', ')}): ${evidence.detail}`,
+                    'error'
+                );
+                if (evidence.suggestedBoundary !== null) {
+                    manager._restoreBoundary(evidence.suggestedBoundary);
+                    placementsAllowed = true;
+                    logger?.log?.(
+                        `[BOUNDARY-EVIDENCE] Boundary re-derived from chain evidence: ` +
+                        `${resolvedBand.boundaryIdx} -> ${evidence.suggestedBoundary}; ` +
+                        `placements proceed on corrected geometry.`,
+                        'warn'
+                    );
+                } else {
+                    logger?.log?.(
+                        '[BOUNDARY-EVIDENCE] No safe boundary derivable from chain evidence — ' +
+                        'startup placements deferred (adoption-only reconcile).',
+                        'error'
+                    );
+                }
+            }
+        }
+
+        // P2: gap-band sweep after boundary correction (uses corrected geometry).
+        // An unmatched chain order whose price sits strictly inside the implied
+        // gap band cannot be adopted and must be cancelled. This catches honest
+        // gap orphans (e.g. slot-144 at 1.06 for boundary 5) while stale-gap
+        // orphans (e.g. buy at 1.04 for stale boundary 3) were already excluded
+        // from this sweep by being outside the corrected gap and will be
+        // correctly adopted below.
+        {
+            const gapResolved = resolveGapBand(manager);
+            if (gapResolved.boundaryIdx !== null && gapResolved.sellStartIdx !== null) {
+                const sortedForGap = Array.from(manager.orders.values() as any)
+                    .filter((s: any) => s && Number.isFinite(Number(s.price)))
+                    .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+                const toCancelGap = new Set<string>();
+                for (const u of unmatchedParsed) {
+                    if (cancelledDuplicateIds.has((u.parsed as any).orderId)) continue;
+                    const p: any = u.parsed;
+                    let impliedIdx = sortedForGap.findIndex((s: any) => Number(s.price) >= Number(p.price));
+                    if (impliedIdx < 0) impliedIdx = sortedForGap.length;
+                    const dummy = { id: `slot-${impliedIdx}` };
+                    const inRail = isSlotInRail(gapResolved.boundaryIdx, gapResolved.gapSlots, p.type, dummy);
+                    const inGap = !inRail && impliedIdx > Number(gapResolved.boundaryIdx) && impliedIdx < Number(gapResolved.sellStartIdx);
+                    if (inGap) {
+                        toCancelGap.add(p.orderId);
+                        plannedCancels.push({
+                            chainOrderId: p.orderId,
+                            chainOrderObj: u.chain,
+                            releaseUntrackedFunds: true,
+                        });
+                        logger?.log?.(
+                            `[GAP-ORPHAN] Unmatched chain order: ${p.orderId} (${p.type}, price=${Format.formatPrice6(p.price)}) sits inside gap band (boundary ${gapResolved.boundaryIdx}) — queuing cancelOnly`,
+                            'warn'
+                        );
+                    }
+                }
+                if (toCancelGap.size > 0) {
+                    for (const id of toCancelGap) cancelledDuplicateIds.add(id);
+                    unmatchedParsed = unmatchedParsed.filter((u: any) => !toCancelGap.has((u.parsed as any).orderId));
+                    unmatchedBuys = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).map((x: any) => x.chain);
+                    unmatchedSells = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).map((x: any) => x.chain);
+                }
+            }
+        }
+
         const sellResult = await _reconcileStartupSide({
             orderType: ORDER_TYPES.SELL,
             targetCount: targetSell,
@@ -354,6 +448,7 @@ export async function reconcileGridOrders({
             plannedUpdates,
             plannedCancels,
             planOnly: true,
+            placementsAllowed,
         });
 
         const buyResult = await _reconcileStartupSide({
@@ -370,6 +465,7 @@ export async function reconcileGridOrders({
             plannedUpdates,
             plannedCancels,
             planOnly: true,
+            placementsAllowed,
         });
 
         return { plannedCreates, plannedUpdates, plannedCancels, chainSellCount: sellResult.chainCount, chainBuyCount: buyResult.chainCount };

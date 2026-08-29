@@ -108,7 +108,9 @@ import {
     floatToBlockchainInt,
     calculatePriceTolerance,
     getAssetFees,
-    getBtsSide
+    getBtsSide,
+    resolveGapBand,
+    isSlotInRail
 } from './utils/math.js';
 import {
     parseChainOrder,
@@ -127,6 +129,36 @@ import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store.js';
 import { getErrorMessage } from '../utils/errors.js';
+
+/**
+ * P2 gap-band orphan check: does an unmatched chain order's price sit
+ * strictly inside the implied gap band? Maps price to implied slot index
+ * via first slot priced >= order price, then tests rail membership with
+ * the shared geometry helper. Returns true only when geometry is known
+ * and the implied slot is inside the gap.
+ */
+function isChainOrderInGapBand(mgr: any, chainOrder: any): boolean {
+    try {
+        const resolved = resolveGapBand(mgr);
+        if (resolved.boundaryIdx === null || resolved.sellStartIdx === null) return false;
+        const price = Number(chainOrder?.price);
+        if (!Number.isFinite(price)) return false;
+        const sorted = Array.from(mgr.orders.values() as any)
+            .filter((s: any) => s && Number.isFinite(Number(s.price)))
+            .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+        if (sorted.length === 0) return false;
+        let impliedIdx = sorted.findIndex((s: any) => Number(s.price) >= price);
+        if (impliedIdx < 0) impliedIdx = sorted.length;
+        // Use shared helper for rail test: inside gap iff not in own rail.
+        const dummySlot = { id: `slot-${impliedIdx}` };
+        const inRail = isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, chainOrder.type, dummySlot);
+        // inRail true => on rail, false => in gap (or boundary null which we already handled).
+        // Confirm strictly inside gap via range for both types (gap band is
+        // boundary+1 .. sellStart-1 irrespective of order type).
+        const inGapRange = impliedIdx > Number(resolved.boundaryIdx) && impliedIdx < Number(resolved.sellStartIdx);
+        return !inRail && inGapRange;
+    } catch { return false; }
+}
 
 function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision: any, calcTolerance: any, matchedGridOrderIds: Set<string> | null = null) {
     if (!mgr?.orders || !chainOrder || typeof precision !== 'number') return 'candidate diagnostics unavailable';
@@ -885,6 +917,34 @@ class SyncEngine {
                 continue;
             }
 
+            // P2: gap-band orphan sweep — before any adoption, if the price
+            // sits strictly inside the implied gap band, queue cancelOnly
+            // instead of adopting into a spread slot at the same price.
+            if (isChainOrderInGapBand(mgr, chainOrder)) {
+                unmatchedChainOrders.push({
+                    chainOrderId,
+                    type: chainOrder.type,
+                    price: chainOrder.price,
+                    size: chainOrder.size,
+                    raw: rawChainOrders.get(chainOrderId),
+                    reason: 'gap-band-orphan',
+                });
+                mgr.logger?.log?.(
+                    `[SYNC][GAP-ORPHAN] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) sits inside gap band — queuing cancelOnly`,
+                    'warn'
+                );
+                queueCorrection({
+                    gridOrder: { id: `gap-${chainOrderId}`, type: chainOrder.type, price: chainOrder.price } as any,
+                    chainOrderId,
+                    expectedPrice: chainOrder.price,
+                    size: chainOrder.size,
+                    type: chainOrder.type,
+                    isSurplus: true,
+                    cancelOnly: true,
+                });
+                continue;
+            }
+
             const match = findMatchingGridOrderByOpenOrder(
                 { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },
                 {
@@ -1042,42 +1102,69 @@ class SyncEngine {
                         'warn'
                     );
                 } else {
-                    const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                    const candidateDiagnostics = describeNearestAdoptionCandidates(
-                        mgr,
-                        chainOrder,
-                        precision,
-                        (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets),
-                        matchedGridOrderIds
-                    );
-                    const driftTag = computeOutOfToleranceDriftTag(
-                        mgr,
-                        chainOrder,
-                        (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets)
-                    );
-                    const unmatchedEntry: Record<string, any> = {
-                        chainOrderId,
-                        type: chainOrder.type,
-                        price: chainOrder.price,
-                        size: chainOrder.size,
-                        raw: rawChainOrders.get(chainOrderId),
-                        candidateDiagnostics
-                    };
-                    if (driftTag) {
-                        unmatchedEntry.reason = 'price-drift-orphan';
-                        unmatchedEntry.candidateSlotId = driftTag.candidateSlotId;
-                        unmatchedEntry.candidateSlotPrice = driftTag.candidateSlotPrice;
-                        unmatchedEntry.priceDiff = driftTag.priceDiff;
-                        unmatchedEntry.tolerance = driftTag.tolerance;
+                    // P2: gap-band orphan sweep — if the unmatched price sits
+                    // strictly inside the implied gap band, queue a cancelOnly
+                    // instead of just logging no adoptable slot.
+                    if (isChainOrderInGapBand(mgr, chainOrder)) {
+                        unmatchedChainOrders.push({
+                            chainOrderId,
+                            type: chainOrder.type,
+                            price: chainOrder.price,
+                            size: chainOrder.size,
+                            raw: rawChainOrders.get(chainOrderId),
+                            reason: 'gap-band-orphan',
+                        });
+                        mgr.logger?.log?.(
+                            `[SYNC][GAP-ORPHAN] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) sits inside gap band — queuing cancelOnly`,
+                            'warn'
+                        );
+                        queueCorrection({
+                            gridOrder: { id: `gap-${chainOrderId}`, type: chainOrder.type, price: chainOrder.price } as any,
+                            chainOrderId,
+                            expectedPrice: chainOrder.price,
+                            size: chainOrder.size,
+                            type: chainOrder.type,
+                            isSurplus: true,
+                            cancelOnly: true,
+                        });
+                    } else {
+                        const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                        const candidateDiagnostics = describeNearestAdoptionCandidates(
+                            mgr,
+                            chainOrder,
+                            precision,
+                            (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets),
+                            matchedGridOrderIds
+                        );
+                        const driftTag = computeOutOfToleranceDriftTag(
+                            mgr,
+                            chainOrder,
+                            (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets)
+                        );
+                        const unmatchedEntry: Record<string, any> = {
+                            chainOrderId,
+                            type: chainOrder.type,
+                            price: chainOrder.price,
+                            size: chainOrder.size,
+                            raw: rawChainOrders.get(chainOrderId),
+                            candidateDiagnostics
+                        };
+                        if (driftTag) {
+                            unmatchedEntry.reason = 'price-drift-orphan';
+                            unmatchedEntry.candidateSlotId = driftTag.candidateSlotId;
+                            unmatchedEntry.candidateSlotPrice = driftTag.candidateSlotPrice;
+                            unmatchedEntry.priceDiff = driftTag.priceDiff;
+                            unmatchedEntry.tolerance = driftTag.tolerance;
+                        }
+                        unmatchedChainOrders.push(unmatchedEntry);
+                        mgr.logger?.log?.(
+                            `[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +
+                            `size=${chainOrder.size}): no adoptable slot found` +
+                            (driftTag ? ` (price-drift-orphan slot=${driftTag.candidateSlotId}@${driftTag.candidateSlotPrice} diff=${driftTag.priceDiff} tol=${driftTag.tolerance})` : '') +
+                            `. Nearest candidates: ${candidateDiagnostics}`,
+                            'warn'
+                        );
                     }
-                    unmatchedChainOrders.push(unmatchedEntry);
-                    mgr.logger?.log?.(
-                        `[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +
-                        `size=${chainOrder.size}): no adoptable slot found` +
-                        (driftTag ? ` (price-drift-orphan slot=${driftTag.candidateSlotId}@${driftTag.candidateSlotPrice} diff=${driftTag.priceDiff} tol=${driftTag.tolerance})` : '') +
-                        `. Nearest candidates: ${candidateDiagnostics}`,
-                        'warn'
-                    );
                 }
             }
         }

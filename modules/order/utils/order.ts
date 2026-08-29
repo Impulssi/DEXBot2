@@ -1905,5 +1905,178 @@ function computeAnchorDivergence(projected: any, bookkept: any): number | null {
     return Number(projected) - Number(bookkept);
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, computePriceAnchoredBoundaryTarget, isShiftEligibleFill, resolveFillPrice, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, createEmptyMarketAnchor, isMarketAnchorAvailable, isMarketAnchorFresh, seedMarketAnchorFromBook, updateMarketAnchorFromFills, projectAnchorToGrid, computeAnchorDivergence }
+/**
+ * Validate a restored/bookkept boundary against CHAIN EVIDENCE before the
+ * startup reconcile is allowed to place orders against it (P3 of
+ * docs/GAP_BAND_ORPHAN_PREVENTION_PLAN.md).
+ *
+ * A persisted boundary is disk state that may predate the last fill sweep:
+ * `validatePersistedBoundary` only proves the boundary was consistent with
+ * the SNAPSHOT at write time, not with the live book the reconcile is about
+ * to mutate. Placements derived from a stale boundary create orders in
+ * positions that a later boundary correction strands inside the gap band
+ * (the orphan-creation origin).
+ *
+ * Evidence used:
+ *   1. Placed-order distribution — every live BUY must imply a slot at or
+ *      below the boundary; every live SELL at or above sellStartIdx
+ *      (boundary + gapSlots + 1, the getSellStartIdx convention). Slot
+ *      implication maps a price to the first slot priced at or above it —
+ *      the same findIndex convention as projectAnchorToGrid.
+ *   2. Market anchor (optional) — when the caller passes a FRESH anchor
+ *      projection, it is used as the preferred correction candidate and as
+ *      a contradiction veto. It never gates on its own: the anchor is a
+ *      trailing traded-range signal with known large-drift false positives,
+ *      so a divergent anchor against an otherwise-consistent book is
+ *      telemetry (the ANCHOR-DIVERGENCE warning), not a correction trigger.
+ *
+ * Correction semantics: the live book implies a feasible boundary window
+ * [liveBuyMaxIdx, liveSellMinIdx - gapSlots - 1], clamped to the shared
+ * writer ceiling [0, N-gapSlots-1] (mirrors validateBoundaryCommit). The
+ * suggested boundary is the anchor projection (preferred) or the restored
+ * value, clamped into that window. When the window is empty (crossed live
+ * book) or the fresh anchor contradicts the clamped correction beyond
+ * maxAnchorDrift slots, no safe boundary can be derived and the caller must
+ * run the reconcile adoption-only (no creates, no price-updates).
+ *
+ * @param {Object} params
+ * @param {number|null} params.boundaryIdx - Restored/bookkept boundary (null = nothing to validate)
+ * @param {number} params.gapSlots - Gap slot count between the rails
+ * @param {Array<Object>} params.allSlots - Grid slots (any order; sorted internally by price)
+ * @param {Array<Object>} params.chainOrders - Parsed live chain orders ({price, type})
+ * @param {number|null} [params.anchorProjected] - Fresh projectAnchorToGrid output, if available
+ * @param {number} [params.maxAnchorDrift=3] - Slot drift tolerated between anchor and correction
+ * @returns {{ok: boolean, reasons: string[], detail: string, suggestedBoundary: number|null,
+ *            liveBuyMaxIdx: number|null, liveSellMinIdx: number|null,
+ *            feasibleLower: number|null, feasibleUpper: number|null}}
+ */
+function validateBoundaryAgainstChainEvidence(params: {
+    boundaryIdx: any;
+    gapSlots: any;
+    allSlots: any;
+    chainOrders: any;
+    anchorProjected?: number | null;
+    maxAnchorDrift?: number;
+}): {
+    ok: boolean;
+    reasons: string[];
+    detail: string;
+    suggestedBoundary: number | null;
+    liveBuyMaxIdx: number | null;
+    liveSellMinIdx: number | null;
+    feasibleLower: number | null;
+    feasibleUpper: number | null;
+} {
+    const {
+        boundaryIdx,
+        gapSlots,
+        allSlots,
+        chainOrders,
+        anchorProjected = null,
+        maxAnchorDrift = 3,
+    } = params || {};
+
+    const result = {
+        ok: true,
+        reasons: [] as string[],
+        detail: '',
+        suggestedBoundary: null as number | null,
+        liveBuyMaxIdx: null as number | null,
+        liveSellMinIdx: null as number | null,
+        feasibleLower: null as number | null,
+        feasibleUpper: null as number | null,
+    };
+
+    if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) {
+        result.detail = 'boundary unknown — nothing to validate';
+        return result;
+    }
+    const boundary = Math.floor(Number(boundaryIdx));
+    const gap = Math.max(0, Math.floor(Number(gapSlots) || 0));
+
+    const sorted = (Array.isArray(allSlots) ? allSlots : [])
+        .filter((s: any) => s && Number.isFinite(Number(s.price)))
+        .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+    const n = sorted.length;
+
+    const impliedIdx = (price: number): number => {
+        const idx = sorted.findIndex((s: any) => Number(s.price) >= price);
+        return idx < 0 ? n : idx;
+    };
+
+    for (const co of (Array.isArray(chainOrders) ? chainOrders : [])) {
+        const price = Number(co?.price);
+        if (!Number.isFinite(price)) continue;
+        const idx = impliedIdx(price);
+        if (co.type === ORDER_TYPES.BUY) {
+            if (result.liveBuyMaxIdx === null || idx > result.liveBuyMaxIdx) result.liveBuyMaxIdx = idx;
+        } else if (co.type === ORDER_TYPES.SELL) {
+            if (result.liveSellMinIdx === null || idx < result.liveSellMinIdx) result.liveSellMinIdx = idx;
+        }
+    }
+
+    const sellStartIdx = MathUtils.getSellStartIdx(boundary, gap);
+
+    if (result.liveBuyMaxIdx !== null && result.liveBuyMaxIdx > boundary) {
+        result.ok = false;
+        result.reasons.push('LIVE_BUY_ABOVE_BOUNDARY');
+    }
+    if (result.liveSellMinIdx !== null && result.liveSellMinIdx < sellStartIdx) {
+        result.ok = false;
+        result.reasons.push('LIVE_SELL_BELOW_SELL_START');
+    }
+
+    const ceiling = n - gap - 1 >= 0 ? n - gap - 1 : Math.max(0, n - 1);
+    const lower = Math.max(0, result.liveBuyMaxIdx !== null ? result.liveBuyMaxIdx : 0);
+    const upper = Math.min(
+        ceiling,
+        result.liveSellMinIdx !== null ? result.liveSellMinIdx - gap - 1 : ceiling
+    );
+    result.feasibleLower = lower;
+    result.feasibleUpper = upper;
+
+    if (result.ok) {
+        result.suggestedBoundary = boundary;
+        result.detail =
+            `boundary=${boundary} sellStartIdx=${sellStartIdx} liveBuyMaxIdx=${result.liveBuyMaxIdx} ` +
+            `liveSellMinIdx=${result.liveSellMinIdx}`;
+        return result;
+    }
+
+    result.detail =
+        `boundary=${boundary} sellStartIdx=${sellStartIdx} liveBuyMaxIdx=${result.liveBuyMaxIdx} ` +
+        `liveSellMinIdx=${result.liveSellMinIdx} feasible=[${lower}..${upper}]`;
+
+    const hasFeasible = n > 0 && lower <= upper;
+    if (!hasFeasible) {
+        result.reasons.push('NO_FEASIBLE_BOUNDARY');
+        result.suggestedBoundary = null;
+        return result;
+    }
+
+    let candidate: number | null = null;
+    const anchorValid = anchorProjected != null
+        && Number.isFinite(Number(anchorProjected))
+        && Number.isInteger(Number(anchorProjected));
+    if (anchorValid) {
+        const ap = Math.floor(Number(anchorProjected));
+        candidate = Math.max(lower, Math.min(ap, upper));
+    } else {
+        candidate = Math.max(lower, Math.min(boundary, upper));
+    }
+
+    if (anchorValid && Number.isFinite(Number(maxAnchorDrift)) && Number(maxAnchorDrift) >= 0) {
+        const drift = Math.abs(Math.floor(Number(anchorProjected)) - candidate!);
+        if (drift > Number(maxAnchorDrift)) {
+            result.reasons.push('ANCHOR_CONTRADICTS_CORRECTION');
+            result.suggestedBoundary = null;
+            return result;
+        }
+    }
+
+    result.suggestedBoundary = candidate;
+    return result;
+}
+
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, computePriceAnchoredBoundaryTarget, isShiftEligibleFill, resolveFillPrice, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, createEmptyMarketAnchor, isMarketAnchorAvailable, isMarketAnchorFresh, seedMarketAnchorFromBook, updateMarketAnchorFromFills, projectAnchorToGrid, computeAnchorDivergence, validateBoundaryAgainstChainEvidence }
 

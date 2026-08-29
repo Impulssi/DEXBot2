@@ -2150,16 +2150,23 @@ function wireStructuralGridResyncRequest(bot: any) {
 
     bot.manager.requestStructuralGridResync = async (reason: any = 'structural recovery', details: { unmatchedChainOrders?: any[]; [key: string]: any } = {}) => {
         if (bot._shuttingDown) {
+            bot._warn(`[RECOVERY] Structural resync skip (shutting down): ${reason}`);
             return { skipped: true, reason: 'shutting down' };
         }
 
         if (bot._structuralGridResyncRunning || bot._structuralGridResyncTimer) {
-            return { skipped: true, reason: 'structural grid resync already scheduled' };
+            const why = bot._structuralGridResyncRunning ? 'already running' : 'already scheduled';
+            bot._warn(`[RECOVERY] Structural resync skip (${why}): ${reason}`);
+            return { skipped: true, reason: `structural grid resync ${why}` };
         }
 
         const unmatchedCount = Array.isArray(details?.unmatchedChainOrders)
             ? details.unmatchedChainOrders.length
             : 0;
+        // P5 max-defer: cap batchInFlight re-arm so a fill storm cannot starve
+        // the resync forever (incident: 09:33 flag never ran). After the cap,
+        // the resync forces instead of re-arming.
+        const STRUCTURAL_RESYNC_MAX_DEFER_MS = 30000;
         const runStructuralResync = async () => {
             bot._structuralGridResyncTimer = null;
             if (bot._shuttingDown) return;
@@ -2171,8 +2178,25 @@ function wireStructuralGridResyncRequest(bot: any) {
             // completes; the fill consumer is already gated on _batchInFlight,
             // so this only blocks the recovery itself, never new fills.
             if (bot._batchInFlight > 0) {
-                bot._structuralGridResyncTimer = setTimeout(runStructuralResync, TIMING.LOCK_REFRESH_MIN_MS);
-                return;
+                const now = Date.now();
+                if (!bot._structuralGridResyncDeferStartedAt) {
+                    bot._structuralGridResyncDeferStartedAt = now;
+                }
+                const deferredMs = now - bot._structuralGridResyncDeferStartedAt;
+                if (deferredMs >= STRUCTURAL_RESYNC_MAX_DEFER_MS) {
+                    bot._warn(
+                        `[RECOVERY] Structural resync max-defer reached (${deferredMs}ms, cap ${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms) — forcing despite _batchInFlight=${bot._batchInFlight}: ${reason}`
+                    );
+                    bot._structuralGridResyncDeferStartedAt = null;
+                } else {
+                    bot._warn(
+                        `[RECOVERY] Structural resync defer (batchInFlight=${bot._batchInFlight}, deferred ${deferredMs}ms/${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms): ${reason}`
+                    );
+                    bot._structuralGridResyncTimer = setTimeout(runStructuralResync, TIMING.LOCK_REFRESH_MIN_MS);
+                    return;
+                }
+            } else {
+                bot._structuralGridResyncDeferStartedAt = null;
             }
 
             bot._structuralGridResyncRunning++;

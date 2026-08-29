@@ -361,6 +361,14 @@ async function recoverFromPersistedGrid(bot: any) {
         await grid.loadGrid(bot.manager, persistedGrid, boundaryIdx);
 
         if (await bot._rejectCorruptedGridSnapshot('recovery')) {
+            // P4: rejected snapshot's boundary must not survive for rebuild.
+            // clearGrid() already wiped persisted boundaryIdx; also clear the
+            // in-memory boundary so subsequent re-derivation (P3) starts clean
+            // instead of reusing the stale restored value (131 in the incident).
+            try {
+                (bot.manager as any)._restoreBoundary?.(null);
+            } catch {}
+            (bot.manager as any).boundaryIdx = null;
             return { success: false, reason: 'corrupted grid snapshot rejected (fund drift)' };
         }
 
@@ -556,6 +564,14 @@ async function rejectCorruptedGridSnapshot(bot: any, context: any) {
             bot._warn(`${tag} Failed to delete corrupted snapshot: ${(clearErr as any)?.message ?? clearErr}`);
         }
     }
+    // P4: clear in-memory boundary together with snapshot so a stale
+    // restored value (e.g. 131 in the incident) is not reused for rebuild.
+    // clearGrid() already wiped persisted boundaryIdx; also clear manager
+    // state so P3 re-derivation starts from a clean null boundary.
+    try {
+        (bot.manager as any)._restoreBoundary?.(null);
+    } catch {}
+    (bot.manager as any).boundaryIdx = null;
     return true;
 }
 
