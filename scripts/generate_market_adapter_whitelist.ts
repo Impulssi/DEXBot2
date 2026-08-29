@@ -88,11 +88,23 @@ function buildWhitelist(bots: any, existingWhitelist: any = {}, options = parseO
         const botKey = bot.botKey;
         if (!botKey || !isAmaGridPrice(bot?.gridPrice)) continue;
         const key = String(botKey);
-        if (!entries.has(key)) {
+        const existing = entries.get(key);
+        if (!existing) {
             entries.set(key, {
                 ama: true,
                 dynamicWeight: options.dynamicWeight,
                 asymmetricBounds: options.asymmetricBounds,
+            });
+        } else {
+            // Update existing entry when a flag is explicitly provided on the
+            // command line; preserve the stored value otherwise so re-running
+            // without flags never silently disables an enabled feature.
+            const hasDynamicWeightFlag = process.argv.some(a => a.startsWith('--dynamic-weight') || a === '--with-dynamic-weight' || a === '--no-dynamic-weight');
+            const hasAsymmetricFlag = process.argv.some(a => a.startsWith('--asymmetric-bounds') || a === '--no-asymmetric-bounds');
+            entries.set(key, {
+                ama: true,
+                dynamicWeight: hasDynamicWeightFlag ? options.dynamicWeight : (existing.dynamicWeight === true),
+                asymmetricBounds: hasAsymmetricFlag ? options.asymmetricBounds : (existing.asymmetricBounds === true),
             });
         }
     }
