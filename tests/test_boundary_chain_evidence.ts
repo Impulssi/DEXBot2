@@ -221,8 +221,12 @@ async function testValidatorAnchorPreferredWhenFeasible() {
     console.log('  PASS: anchor projection used as the corrected boundary');
 }
 
-async function testValidatorAnchorContradictionVetoesCorrection() {
-    console.log('Running test: anchor contradicting the correction refuses to guess');
+async function testValidatorAnchorContradictionDoesNotVeto() {
+    console.log('Running test: contradictory anchor can NEVER veto the chain-derived boundary');
+    // Production scenario: bookkept boundary 3, chain says buys/sells imply a
+    // feasible window [5..7]; a stale anchor projects 11 (far off). The anchor
+    // must only nudge WITHIN the feasible window — it can never null the
+    // correction and force an adoption-only reconcile that cancels orders.
     const evidence = validateBoundaryAgainstChainEvidence({
         boundaryIdx: 3,
         gapSlots: 2,
@@ -233,10 +237,12 @@ async function testValidatorAnchorContradictionVetoesCorrection() {
         ],
         anchorProjected: 11,
     });
-    assert.strictEqual(evidence.ok, false, 'violation still detected');
-    assert.ok(evidence.reasons.includes('ANCHOR_CONTRADICTS_CORRECTION'), 'anchor veto recorded');
-    assert.strictEqual(evidence.suggestedBoundary, null, 'no boundary suggested when evidence contradicts');
-    console.log('  PASS: contradictory evidence defers placements instead of guessing');
+    assert.strictEqual(evidence.ok, false, 'chain violation still detected');
+    assert.ok(!evidence.reasons.includes('ANCHOR_CONTRADICTS_CORRECTION'),
+        'contradictory anchor must NOT veto the correction');
+    assert.strictEqual(evidence.suggestedBoundary, 7,
+        'chain-evidenced boundary wins: clamped into feasible window [5..7]');
+    console.log('  PASS: contradictory anchor ignored; chain boundary authoritative');
 }
 
 async function testValidatorAnchorNeverGatesAlone() {
@@ -389,7 +395,7 @@ async function runAll() {
     await testValidatorStaleHighBoundary();
     await testValidatorCrossedBook();
     await testValidatorAnchorPreferredWhenFeasible();
-    await testValidatorAnchorContradictionVetoesCorrection();
+    await testValidatorAnchorContradictionDoesNotVeto();
     await testValidatorAnchorNeverGatesAlone();
     await testValidatorDegenerateInputs();
     await testReconcileReDerivesBoundaryBeforePlacements();

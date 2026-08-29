@@ -135,31 +135,33 @@ async function testP1_PostCommitDetectorQueuesCancel() {
     console.log('  PASS: post-commit detector queues cancelOnly');
 }
 
-// ── P2: sync_engine gap-band orphan sweep ───────────────────────────────
+// ── P2: sync_engine must NOT cancel an in-gap order (adopt, don't cancel) ──
 async function testP2_SyncEngineGapSweep() {
-    console.log('\nRunning test P2-A: sync_engine sweeps gap-band orphan -> cancelOnly');
+    console.log('\nRunning test P2-A: sync_engine treats a gap-band order as adoptable, never cancelOnly');
     const mgr = createPlacedManager(5, 2);
     const grid = require('../modules/order/grid');
     await grid.loadGrid(mgr, slotGrid(5, 2), 5);
-    // Place some rails so gap is 6-7, sellStart 8
-    // Seller orphan at price exactly slot-6 gap price (1.06) with no duplicate rail
-    const sync = new SyncEngine(mgr);
-    mgr.ordersNeedingPriceCorrection = [];
-    // No duplicate price level: ensure no active sell at gap price
+    // An order priced inside the gap band (1.06 == slot-6 price; gap 6-7 under
+    // boundary 5). Previously the gap-orphan sweep cancelled it — that was the
+    // destructive behavior that broke production. Now it must remain visible so
+    // the normal reconcile/adoption path can place it on corrected geometry.
     const chainOrders = [
-        // orphan sell inside gap band at 1.06 (slot-6 price)
         {
             id: '1.7.600',
             sell_price: { base: { amount: 1000000, asset_id: '1.3.1' }, quote: { amount: Math.round(1.06 * 1000000), asset_id: '1.3.0' } },
             for_sale: 1000000,
         },
     ];
+    mgr.ordersNeedingPriceCorrection = [];
+    const sync = new SyncEngine(mgr);
     const result = await sync.syncFromOpenOrders(chainOrders, { skipAccounting: true });
     const gapQueued = mgr.ordersNeedingPriceCorrection.find((q: any) => q.chainOrderId === '1.7.600' && q.cancelOnly === true);
-    assert.ok(gapQueued, 'gap-band orphan must be queued cancelOnly via sync_engine');
+    assert.ok(!gapQueued, 'gap-band order must NOT be queued cancelOnly by sync_engine');
     const gapUnmatched = result.unmatchedChainOrders.find((u: any) => u.chainOrderId === '1.7.600' && u.reason === 'gap-band-orphan');
-    assert.ok(gapUnmatched, 'unmatched reason must be gap-band-orphan');
-    console.log('  PASS: sync_engine gap sweep queued cancel');
+    assert.ok(!gapUnmatched, 'unmatched reason must NOT be gap-band-orphan');
+    assert.ok(!result.unmatchedChainOrders.some((u: any) => u.chainOrderId === '1.7.600'),
+        'in-gap order is adopted by sync, not left unmatched as a stranded orphan');
+    console.log('  PASS: sync_engine adopts gap-band order (no destructive cancel)');
 }
 
 // ── P2: grid_reconcile gap sweep ────────────────────────────────────────
@@ -200,21 +202,20 @@ async function testP2_GridReconcileGapSweep() {
         chainOrders: chainOrdersStub,
         chainOpenOrders,
     });
-    // After P3 re-derivation, boundary must be 3 and no GAP-ORPHAN cancel queued
+    // After P3 re-derivation, boundary must be 3 and the orphan is adopted on
+    // the corrected rail — there is no destructive cancel sweep anymore.
     assert.strictEqual(mgr.boundaryIdx, 3, 'P3 should re-derive boundary 5→3 for single gap orphan');
     console.log('  PASS: grid_reconcile P3 re-derivation consumed gap orphan without spurious cancel');
 }
 
 async function testP2_GridReconcileGapSweepAnchorContradiction() {
-    console.log('\nRunning test P2-B-tight: grid_reconcile sweep fires when P3 defers (anchor contradicts)');
+    console.log('\nRunning test P2-B-tight: contradictory anchor can NOT force a cancel — chain evidence wins');
     const mgr = createPlacedManager(5, 2);
     const grid = require('../modules/order/grid');
     await grid.loadGrid(mgr, slotGrid(5, 2), 5);
     mgr.ordersNeedingPriceCorrection = [];
-    // Anchor that projects far from feasible window so P3 defers (ANCHOR_CONTRADICTS_CORRECTION).
-    // allSlots 0..11, gap 2, orphan SELL at 1.06 (idx 6) => feasible [0,3]. Anchor projecting
-    // to 9 (maxSell+minBuy at 1.11) drifts 6 slots > maxAnchorDrift 3 => P3 suggestedBoundary null,
-    // placements deferred, gap 6-7 retained, sweep must cancel orphan.
+    // A divergent anchor that would previously have vetoed the correction and
+    // forced an adoption-only reconcile whose gap sweep then cancelled the order.
     (mgr as any)._marketAnchor = {
         maxFilledSellPrice: 1.11,
         minFilledBuyPrice: 1.11,
@@ -223,7 +224,6 @@ async function testP2_GridReconcileGapSweepAnchorContradiction() {
         updatedAt: Date.now(),
         _seenKeys: new Set(),
     };
-    const { reconcileGridOrders } = require('../modules/order/grid_reconcile');
     const chainOpenOrders = [
         {
             id: '1.7.602',
@@ -241,6 +241,7 @@ async function testP2_GridReconcileGapSweepAnchorContradiction() {
         updateOrder: async () => {},
         wasRecentlyOwnCancelled: () => false,
     };
+    const { reconcileGridOrders } = require('../modules/order/grid_reconcile');
     await reconcileGridOrders({
         manager: mgr,
         config: { activeOrders: { buy: 2, sell: 2 } },
@@ -249,10 +250,11 @@ async function testP2_GridReconcileGapSweepAnchorContradiction() {
         chainOrders: chainOrdersStub,
         chainOpenOrders,
     });
-    // Boundary must stay 5 (P3 deferred), and gap orphan must have been cancelled
-    assert.strictEqual(mgr.boundaryIdx, 5, 'P3 deferred via anchor contradiction should keep boundary 5');
-    assert.ok(cancelled.includes('1.7.602'), 'P2 reconcile sweep must cancel gap orphan 1.7.602 when P3 defers');
-    console.log('  PASS: grid_reconcile gap sweep cancelled orphan when P3 deferred');
+    // Chain evidence must win: re-derive boundary 5 -> 3 despite the anchor, and
+    // the in-gap order must be adopted (placed on the corrected rail), never cancelled.
+    assert.strictEqual(mgr.boundaryIdx, 3, 'chain evidence re-derives boundary 5->3 despite anchor contradiction');
+    assert.ok(!cancelled.includes('1.7.602'), 'orphan must NOT be cancelled when chain evidence is authoritative');
+    console.log('  PASS: contradictory anchor ignored; orphan adopted, no cancellation');
 }
 
 // ── P4: snapshot-reject discards boundary ───────────────────────────────

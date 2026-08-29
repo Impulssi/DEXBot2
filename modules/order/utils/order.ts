@@ -1923,29 +1923,43 @@ function computeAnchorDivergence(projected: any, bookkept: any): number | null {
  *      (boundary + gapSlots + 1, the getSellStartIdx convention). Slot
  *      implication maps a price to the first slot priced at or above it —
  *      the same findIndex convention as projectAnchorToGrid.
- *   2. Market anchor (optional) — when the caller passes a FRESH anchor
- *      projection, it is used as the preferred correction candidate and as
- *      a contradiction veto. It never gates on its own: the anchor is a
- *      trailing traded-range signal with known large-drift false positives,
- *      so a divergent anchor against an otherwise-consistent book is
- *      telemetry (the ANCHOR-DIVERGENCE warning), not a correction trigger.
+ *   2. Market anchor (optional, NON-AUTHORITATIVE hint) — when the caller
+ *      passes `anchorProjected`, it MAY nudge the suggested boundary toward the
+ *      last-traded slot, but ONLY when that slot lies inside the chain-derived
+ *      feasible window computed below. The anchor is a trailing traded-range
+ *      signal with known large-drift false positives, so it can NEVER veto or
+ *      override a chain-evidenced boundary; a divergent anchor against an
+ *      otherwise-consistent book is telemetry (the ANCHOR-DIVERGENCE warning),
+ *      not a correction trigger.
  *
  * Correction semantics: the live book implies a feasible boundary window
  * [liveBuyMaxIdx, liveSellMinIdx - gapSlots - 1], clamped to the shared
  * writer ceiling [0, N-gapSlots-1] (mirrors validateBoundaryCommit). The
- * suggested boundary is the anchor projection (preferred) or the restored
- * value, clamped into that window. When the window is empty (crossed live
- * book) or the fresh anchor contradicts the clamped correction beyond
- * maxAnchorDrift slots, no safe boundary can be derived and the caller must
- * run the reconcile adoption-only (no creates, no price-updates).
+ * suggested boundary is:
+ *   - the anchor projection, when it is present, finite, an integer, AND lies
+ *     inside that feasible window (the anchor is preferred only as a bounded
+ *     hint);
+ *   - otherwise the chain-derived lower bound of that window.
+ * No veto is ever applied: when the window is empty (crossed live book) the
+ * caller falls back to adoption-only (no creates, no price-updates) — but an
+ * anchor can NEVER force that fallback by contradicting the book. The caller
+ * must never cancel orders as a self-healing net under a stale/contradictory
+ * boundary; it adopts and re-derives instead.
  *
  * @param {Object} params
  * @param {number|null} params.boundaryIdx - Restored/bookkept boundary (null = nothing to validate)
  * @param {number} params.gapSlots - Gap slot count between the rails
  * @param {Array<Object>} params.allSlots - Grid slots (any order; sorted internally by price)
  * @param {Array<Object>} params.chainOrders - Parsed live chain orders ({price, type})
- * @param {number|null} [params.anchorProjected] - Fresh projectAnchorToGrid output, if available
- * @param {number} [params.maxAnchorDrift=3] - Slot drift tolerated between anchor and correction
+ * @param {number|null} [params.anchorProjected] - Fresh projectAnchorToGrid output, if available.
+ *        Treated ONLY as a non-authoritative hint: when present and valid it
+ *        nudges the suggested boundary WITHIN the chain-derived feasible window.
+ *        It can never veto a valid chain-evidenced boundary. NOTE: this is a
+ *        latent path — no production caller currently passes it (grid_reconcile
+ *        passes nothing), so the hint is dormant; the contract is pinned by
+ *        tests (testValidatorAnchorPreferredWhenFeasible). Do not wire a future
+ *        caller to pass an anchor unless it can tolerate the boundary shifting
+ *        within the chain-validated window.
  * @returns {{ok: boolean, reasons: string[], detail: string, suggestedBoundary: number|null,
  *            liveBuyMaxIdx: number|null, liveSellMinIdx: number|null,
  *            feasibleLower: number|null, feasibleUpper: number|null}}
@@ -1956,7 +1970,6 @@ function validateBoundaryAgainstChainEvidence(params: {
     allSlots: any;
     chainOrders: any;
     anchorProjected?: number | null;
-    maxAnchorDrift?: number;
 }): {
     ok: boolean;
     reasons: string[];
@@ -1973,7 +1986,6 @@ function validateBoundaryAgainstChainEvidence(params: {
         allSlots,
         chainOrders,
         anchorProjected = null,
-        maxAnchorDrift = 3,
     } = params || {};
 
     const result = {
@@ -2065,15 +2077,12 @@ function validateBoundaryAgainstChainEvidence(params: {
         candidate = Math.max(lower, Math.min(boundary, upper));
     }
 
-    if (anchorValid && Number.isFinite(Number(maxAnchorDrift)) && Number(maxAnchorDrift) >= 0) {
-        const drift = Math.abs(Math.floor(Number(anchorProjected)) - candidate!);
-        if (drift > Number(maxAnchorDrift)) {
-            result.reasons.push('ANCHOR_CONTRADICTS_CORRECTION');
-            result.suggestedBoundary = null;
-            return result;
-        }
-    }
-
+    // The anchor is only a hint: when valid it may nudge `candidate` within the
+    // chain-derived feasible window (already applied above), but it can NEVER
+    // veto a valid chain-evidenced boundary. A contradictory anchor is simply
+    // ignored — chain evidence is the ground truth. (Previously an
+    // ANCHOR_CONTRADICTS_CORRECTION branch nulled the result and forced an
+    // adoption-only reconcile that cancelled legitimate boundary orders.)
     result.suggestedBoundary = candidate;
     return result;
 }

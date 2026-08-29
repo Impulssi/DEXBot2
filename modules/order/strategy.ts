@@ -51,7 +51,7 @@
 import { ORDER_TYPES, ORDER_STATES, ANCHOR } from '../constants.js';
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail } from './utils/math.js';
-import { deriveTargetBoundary, isShiftEligibleFill, resolveFillPrice, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, projectAnchorToGrid, isMarketAnchorAvailable, isMarketAnchorFresh, computeAnchorDivergence, calculateFundDrivenBoundary } from './utils/order.js';
+import { deriveTargetBoundary, isShiftEligibleFill, resolveFillPrice, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, projectAnchorToGrid, isMarketAnchorAvailable, isMarketAnchorFresh, computeAnchorDivergence } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -229,16 +229,12 @@ class StrategyEngine {
         // have drifted if targetSpreadPercent or gridLimits changed.
         const gapSlots = this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
 
-        // Phase 1 shadow telemetry + Phase 2 projection (price-first alignment)
-        // Shadow telemetry always runs (flag off = divergence histogram), projection gated by flag.
+        // Anchor shadow telemetry (price-first alignment, Phase 1). The fills-
+        // derived price anchor is used ONLY for observability ([ANCHOR-DIVERGENCE]
+        // / [ANCHOR-STALE]); it must never override the boundary — the boundary
+        // is derived from chain evidence and the burst-fill price correction in
+        // deriveTargetBoundary. The Phase-2 projection override has been removed.
         const anchor = (this.manager as any)._marketAnchor || null;
-        const projectionEnabled = (() => {
-            const cfgA = (this.manager as any).config?.anchor?.projectionEnabled;
-            if (typeof cfgA === 'boolean') return cfgA;
-            const cfgB = (this.manager as any).config?.projectionEnabled;
-            if (typeof cfgB === 'boolean') return cfgB;
-            return ANCHOR?.PROJECTION_ENABLED === true;
-        })();
         let projectedBoundary: number | null = null;
         let anchorDivergence: number | null = null;
         try {
@@ -304,65 +300,12 @@ class StrategyEngine {
             (this.manager as any)._boundaryShiftBudget = remainingBudget;
         }
 
-        // Phase 2: choose boundary — price-first projection when available, otherwise legacy
-        let newBoundaryIdx = legacyBoundaryIdx;
-        if (projectionEnabled && projectedBoundary != null) {
-            // D1 fund floor: price truth is primary; funds may pull the projected
-            // boundary toward the affordable rail by at most half an active window,
-            // never past the fund rail itself. Uses accounting-available funds
-            // (manager.funds.available) — the same "free" notion syncBoundaryToFunds
-            // balances against — falling back to chain-free snapshot values.
-            // When no funds data exists yet (both sides 0/unknown), the pull is
-            // skipped entirely: calculateFundDrivenBoundary would fabricate a
-            // mid-grid rail, and D1 routes severe shortfalls into sizing, not
-            // boundary location.
-            try {
-                const snap = typeof this.manager.getChainFundsSnapshot === 'function' ? this.manager.getChainFundsSnapshot() : null;
-                const pick = (...candidates: any[]) => {
-                    for (const c of candidates) {
-                        const n = Number(c);
-                        if (Number.isFinite(n)) return n;
-                    }
-                    return null;
-                };
-                const availA = pick((this.manager as any).funds?.available?.sell, funds?.available?.sell, snap?.chainFreeSell);
-                const availB = pick((this.manager as any).funds?.available?.buy, funds?.available?.buy, snap?.chainFreeBuy);
-                const price = this.manager.config?.startPrice;
-                let fundIdx: number | null = null;
-                if (availA != null && availB != null && (availA > 0 || availB > 0)
-                    && Number.isFinite(price as any) && allSlots.length > 0) {
-                    fundIdx = calculateFundDrivenBoundary(allSlots, availA, availB, price, gapSlots);
-                }
-                if (Number.isFinite(fundIdx as any)) {
-                    const wSell = Math.max(1, Math.floor(config.activeOrders?.sell ?? 1));
-                    const wBuy = Math.max(1, Math.floor(config.activeOrders?.buy ?? 1));
-                    const halfWindow = Math.max(Math.floor(wSell / 2), Math.floor(wBuy / 2), 1);
-                    const diff = (fundIdx as number) - (projectedBoundary as number);
-                    if (diff !== 0) {
-                        const pull = Math.sign(diff) * Math.min(Math.abs(diff), halfWindow);
-                        const constrained = (projectedBoundary as number) + pull;
-                        if (diff > 0) newBoundaryIdx = Math.min(constrained, fundIdx as number);
-                        else newBoundaryIdx = Math.max(constrained, fundIdx as number);
-                    } else {
-                        newBoundaryIdx = projectedBoundary as number;
-                    }
-                } else {
-                    newBoundaryIdx = projectedBoundary as number;
-                }
-            } catch (_: any) {
-                newBoundaryIdx = projectedBoundary as number;
-            }
-            // I4 ceiling clamp (gap-aware) — degenerate geometry falls back to legacy ceiling
-            {
-                const floorGap = Math.floor(Number(gapSlots) || 0);
-                const gapAwareCeiling = allSlots.length - floorGap - 1;
-                const legacyCeiling = allSlots.length - 1;
-                const ceiling = gapAwareCeiling >= 0 ? gapAwareCeiling : Math.max(legacyCeiling, Number(currentBoundaryIdx ?? 0));
-                newBoundaryIdx = Math.max(0, Math.min(ceiling, newBoundaryIdx));
-            }
-            // Stale-anchor continues projection (does not fall back to count crawl);
-            // count crawl remains only for truly price-less fills (I5 via legacy path when anchor cold).
-        }
+        // Boundary remains the legacy count-crawl result, price-corrected by the
+        // burst-fill anchor inside deriveTargetBoundary. The fills-derived price
+        // anchor is intentionally NOT used to override the boundary here: it is
+        // not chain-authoritative and previously placed opposite-side orders on
+        // the wrong side of the market (new sell below the highest sell, etc.).
+        const newBoundaryIdx = legacyBoundaryIdx;
 
         // 1b. Placement guard (defense-in-depth): no re-created order may sit
         // on the wrong side of a just-filled price. A SELL slot at or below

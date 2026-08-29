@@ -10,11 +10,11 @@ import {
 } from './grid_reconcile_internal.js';
 import { ORDER_TYPES, ORDER_STATES, TIMING } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
-import { calculatePriceTolerance, getAssetFeesSafe, resolveGapBand, isSlotInRail } from './utils/math.js';
+import { calculatePriceTolerance, getAssetFeesSafe, resolveGapBand } from './utils/math.js';
 import {
     isOrderPlaced, parseChainOrder, isOrderOnChain, chainOrderMatchesSlot,
     duplicateOrphanLogInfo,
-    isMarketAnchorFresh, projectAnchorToGrid, validateBoundaryAgainstChainEvidence,
+    validateBoundaryAgainstChainEvidence,
 } from './utils/order.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -353,16 +353,15 @@ export async function reconcileGridOrders({
         let placementsAllowed = true;
         if (resolvedBand.boundaryIdx !== null) {
             const evidenceSlots = (Array.from(manager.orders.values()) as any[]).sort((a: any, b: any) => Number(a.price) - Number(b.price));
-            const anchor = manager._marketAnchor;
-            const anchorProjected = (anchor && isMarketAnchorFresh(anchor))
-                ? projectAnchorToGrid(anchor, evidenceSlots, resolvedBand.gapSlots)
-                : null;
+            // Chain evidence is the ground truth for the boundary. The fills-derived
+            // price anchor is intentionally NOT passed here: it must never veto a
+            // valid chain-evidenced boundary (that veto previously forced an
+            // adoption-only reconcile that cancelled legitimate boundary orders).
             const evidence = validateBoundaryAgainstChainEvidence({
                 boundaryIdx: resolvedBand.boundaryIdx,
                 gapSlots: resolvedBand.gapSlots,
                 allSlots: evidenceSlots,
                 chainOrders: parsedChain.map((x: any) => x.parsed),
-                anchorProjected,
             });
             if (!evidence.ok) {
                 placementsAllowed = false;
@@ -390,49 +389,14 @@ export async function reconcileGridOrders({
             }
         }
 
-        // P2: gap-band sweep after boundary correction (uses corrected geometry).
-        // An unmatched chain order whose price sits strictly inside the implied
-        // gap band cannot be adopted and must be cancelled. This catches honest
-        // gap orphans (e.g. slot-144 at 1.06 for boundary 5) while stale-gap
-        // orphans (e.g. buy at 1.04 for stale boundary 3) were already excluded
-        // from this sweep by being outside the corrected gap and will be
-        // correctly adopted below.
-        {
-            const gapResolved = resolveGapBand(manager);
-            if (gapResolved.boundaryIdx !== null && gapResolved.sellStartIdx !== null) {
-                const sortedForGap = Array.from(manager.orders.values() as any)
-                    .filter((s: any) => s && Number.isFinite(Number(s.price)))
-                    .sort((a: any, b: any) => Number(a.price) - Number(b.price));
-                const toCancelGap = new Set<string>();
-                for (const u of unmatchedParsed) {
-                    if (cancelledDuplicateIds.has((u.parsed as any).orderId)) continue;
-                    const p: any = u.parsed;
-                    let impliedIdx = sortedForGap.findIndex((s: any) => Number(s.price) >= Number(p.price));
-                    if (impliedIdx < 0) impliedIdx = sortedForGap.length;
-                    const dummy = { id: `slot-${impliedIdx}` };
-                    const inRail = isSlotInRail(gapResolved.boundaryIdx, gapResolved.gapSlots, p.type, dummy);
-                    const inGap = !inRail && impliedIdx > Number(gapResolved.boundaryIdx) && impliedIdx < Number(gapResolved.sellStartIdx);
-                    if (inGap) {
-                        toCancelGap.add(p.orderId);
-                        plannedCancels.push({
-                            chainOrderId: p.orderId,
-                            chainOrderObj: u.chain,
-                            releaseUntrackedFunds: true,
-                        });
-                        logger?.log?.(
-                            `[GAP-ORPHAN] Unmatched chain order: ${p.orderId} (${p.type}, price=${Format.formatPrice6(p.price)}) sits inside gap band (boundary ${gapResolved.boundaryIdx}) — queuing cancelOnly`,
-                            'warn'
-                        );
-                    }
-                }
-                if (toCancelGap.size > 0) {
-                    for (const id of toCancelGap) cancelledDuplicateIds.add(id);
-                    unmatchedParsed = unmatchedParsed.filter((u: any) => !toCancelGap.has((u.parsed as any).orderId));
-                    unmatchedBuys = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).map((x: any) => x.chain);
-                    unmatchedSells = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).map((x: any) => x.chain);
-                }
-            }
-        }
+        // NOTE: the previous "P2 gap-band orphan sweep" that cancelled any
+        // unmatched chain order priced inside the gap band has been REMOVED.
+        // Cancelling is the most destructive action and was firing during exactly
+        // the unvalidated/stale-boundary restarts where the band itself was
+        // wrong — it destroyed legitimate boundary orders instead of rotating
+        // them. The boundary is now derived from chain evidence (above); a chain
+        // order that looks "in-gap" under a wrong boundary is simply adopted by
+        // the normal reconcile path once the boundary is corrected.
 
         const sellResult = await _reconcileStartupSide({
             orderType: ORDER_TYPES.SELL,
