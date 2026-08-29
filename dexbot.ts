@@ -150,7 +150,7 @@ const {
     saveSettingsFile,
 } = require('./modules/bot_settings');
 const { buildRuntimeScriptArgs } = require('./modules/launcher/runtime_entry');
-const { PATHS, HOME_PROFILES_DIR, getRecalculateTriggerFile } = require('./modules/paths');
+const { PATHS, getHomeProfilesDir, getRecalculateTriggerFile } = require('./modules/paths');
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
@@ -1232,7 +1232,7 @@ async function bootstrap() {
     } catch (err: any) {
         if (err && (err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'EROFS')) {
             const { spawnSync: respawn } = require('child_process') as any as any;
-            const fallbackDir = HOME_PROFILES_DIR;
+            const fallbackDir = getHomeProfilesDir();
             console.log(`Config directory not writable at: ${PROFILES_DIR}`);
             console.log(`Auto-using ${fallbackDir} instead. Set DEXBOT_PROFILE_ROOT to override.\n`);
             const newEnv = { ...process.env, DEXBOT_PROFILE_ROOT: fallbackDir };
@@ -1272,7 +1272,7 @@ async function bootstrap() {
             MARKET_ADAPTER, DEFAULT_CONFIG, FILL_PROCESSING,
             PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE,
             COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS,
-            API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER,
+            API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER, ANCHOR,
         } = require('./modules/constants');
 const { writeJSON } = storage;
 
@@ -1312,6 +1312,7 @@ const { writeJSON } = storage;
             LOGGING_CONFIG: { ...LOGGING_CONFIG },
             NATIVE_CLIENT: { ...NATIVE_CLIENT },
             LAUNCHER: { ...LAUNCHER },
+            ANCHOR: { ...ANCHOR },
         };
         writeJSON(SETTINGS_FILE, defaultSettings);
         console.log(startupSuccess('✓ Created default general.settings.json'));

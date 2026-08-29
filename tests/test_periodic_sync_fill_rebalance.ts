@@ -159,8 +159,11 @@ async function runTests() {
             },
         };
 
-        bot.updateOrdersOnChainBatch = async () => {
+        bot.updateOrdersOnChainBatch = async (rebalanceResult) => {
             batchCalls++;
+            const actions = rebalanceResult?.actions || [];
+            const create = actions.find((a) => a?.type === 'create' && a?.id === 'slot-174');
+            assert.ok(create, 'Rebalance batch should carry the sync-detected fill action');
             return { executed: false, hadRotation: false };
         };
 

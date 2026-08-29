@@ -1114,7 +1114,7 @@ function startOpenOrdersSyncLoop(bot: any) {
                                     bot._log(`Open-orders sync loop: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
                                     bot._markGridActivity?.('open-orders sync fill');
                                     const batchResult = await bot._processFillsWithBatching(
-                                        syncResult.filledOrders, new Set(), 'open-orders sync fill rebalance'
+                                        syncResult.filledOrders, new Set(), 'open-orders sync fill rebalance', { isReplay: true }
                                     );
                                     if (!batchResult?.aborted) {
                                         await bot.manager.persistGrid();
@@ -1254,7 +1254,7 @@ function setupBlockchainFetchInterval(bot: any) {
                                     bot._log(`Periodic sync: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
                                     bot._markGridActivity?.('periodic sync fill rebalance');
                                     const batchResult = await bot._processFillsWithBatching(
-                                        syncResult.filledOrders, new Set(), 'periodic sync fill rebalance'
+                                        syncResult.filledOrders, new Set(), 'periodic sync fill rebalance', { isReplay: true }
                                     );
                                     if (!batchResult?.aborted) {
                                         await bot.manager.persistGrid();
@@ -1818,12 +1818,12 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
             } catch (refetchErr: any) {
                 bot._warn(`[DUST] Cancel succeeded but refetch failed for ${(order as any).id} (${(order as any).orderId}): ${getErrorMessage(refetchErr)}`);
             }
-            syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
+            syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true, skipBoundaryShift: true });
             bot._log(`[DUST] Cancelled ${(order as any).id} (${(order as any).orderId}) size=${(order as any).size}`, 'debug');
         } catch (err: any) {
             const errMsg = getErrorMessage(err) || '';
             if (isOrderDoesNotExistError(errMsg, (order as any).orderId)) {
-                syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
+                syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true, skipBoundaryShift: true });
                 bot._log(`[DUST] Order ${(order as any).id} (${(order as any).orderId}) already gone from chain`, 'debug');
             } else {
                 bot._warn(`[DUST] Failed to cancel ${(order as any).id} (${(order as any).orderId}): ${errMsg}`);
@@ -1833,7 +1833,7 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
 
     if (syntheticFills.length === 0) return { cancelledCount: 0, batchResult: null };
     const result = await bot._processFillsWithBatching(
-        syntheticFills, new Set(), `dust cancel [${syntheticFills.map((o: any) => o.id).join(', ')}]`
+        syntheticFills, new Set(), `dust cancel [${syntheticFills.map((o: any) => o.id).join(', ')}]`, { skipAnchorUpdate: true }
     );
     if (!result.aborted) {
         await bot.manager.persistGrid();
@@ -2323,7 +2323,8 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
             const batchResult = await bot._processFillsWithBatching(
                 syncResult.filledOrders,
                 new Set(),
-                `${tag} sync-fill`
+                `${tag} sync-fill`,
+                { isReplay: true }
             );
             if (!batchResult?.aborted) {
                 // Reassign the returned snapshot to the post-fill re-read: the

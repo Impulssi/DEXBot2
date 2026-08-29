@@ -554,6 +554,7 @@ async function testManualTriggerResetRefreshesCenterPrice() {
         },
         assertUpdated: async (updated, logs) => {
             assert.strictEqual(updated.centerPrice, 123.45, 'manual reset should refresh centerPrice from amaCenterPrice');
+            assert.strictEqual(updated.gridCenterPrice, 123.45, 'manual reset should refresh gridCenterPrice from amaCenterPrice');
             assert.strictEqual(updated.gridPriceOffsetPct, 0.8, 'manual reset should preserve the AMA spread offset for the rebuild');
             assert.strictEqual(updated.lastGridResetSource, 'manual_grid_resync', 'manual reset should record manual reset provenance');
             assert.ok(

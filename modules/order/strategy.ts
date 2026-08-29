@@ -48,10 +48,10 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
+import { ORDER_TYPES, ORDER_STATES, ANCHOR } from '../constants.js';
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail } from './utils/math.js';
-import { deriveTargetBoundary, isShiftEligibleFill, resolveFillPrice, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order.js';
+import { deriveTargetBoundary, isShiftEligibleFill, resolveFillPrice, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, projectAnchorToGrid, isMarketAnchorAvailable, isMarketAnchorFresh, computeAnchorDivergence, calculateFundDrivenBoundary } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -223,16 +223,145 @@ class StrategyEngine {
 
         if (allSlots.length === 0) return { targetGrid: new Map(), boundaryIdx: currentBoundaryIdx };
 
-        // 1. Determine new boundary based on fills (Boundary Crawl)
+        // 1. Determine new boundary based on fills (Boundary Crawl + price-first projection)
         // Use the stored gapSlots from grid creation (always consistent with
         // the grid geometry) instead of recomputing from live config which may
         // have drifted if targetSpreadPercent or gridLimits changed.
         const gapSlots = this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
+
+        // Phase 1 shadow telemetry + Phase 2 projection (price-first alignment)
+        // Shadow telemetry always runs (flag off = divergence histogram), projection gated by flag.
+        const anchor = (this.manager as any)._marketAnchor || null;
+        const projectionEnabled = (() => {
+            const cfgA = (this.manager as any).config?.anchor?.projectionEnabled;
+            if (typeof cfgA === 'boolean') return cfgA;
+            const cfgB = (this.manager as any).config?.projectionEnabled;
+            if (typeof cfgB === 'boolean') return cfgB;
+            return ANCHOR?.PROJECTION_ENABLED === true;
+        })();
+        let projectedBoundary: number | null = null;
+        let anchorDivergence: number | null = null;
+        try {
+            if (anchor && isMarketAnchorAvailable(anchor)) {
+                projectedBoundary = projectAnchorToGrid(anchor, allSlots, gapSlots);
+                if (Number.isFinite(projectedBoundary as any) && Number.isFinite(currentBoundaryIdx as any)) {
+                    anchorDivergence = computeAnchorDivergence(projectedBoundary, currentBoundaryIdx);
+                    if (anchorDivergence != null && Math.abs(anchorDivergence) > ANCHOR.DIVERGENCE_INFO) {
+                        // Rate-limit divergence telemetry: a persistent drift would
+                        // otherwise log every calculateTargetGrid call. A 60s sample
+                        // still yields the Phase-1 divergence histogram.
+                        const mgr: any = this.manager;
+                        const now = Date.now();
+                        const rateLimitMs = mgr?.config?.timing?.STALE_TOTALS_WARN_RATE_LIMIT_MS ?? 60000;
+                        if (now - (mgr._lastAnchorDivergenceLogAt ?? 0) >= rateLimitMs) {
+                            mgr._lastAnchorDivergenceLogAt = now;
+                            const level = Math.abs(anchorDivergence) > ANCHOR.DIVERGENCE_WARN ? 'warn' : 'info';
+                            this.manager.logger.log(`[ANCHOR-DIVERGENCE] projected=${projectedBoundary} bookkept=${currentBoundaryIdx} drift=${anchorDivergence}`, level);
+                        }
+                    }
+                }
+                // Stale-anchor still projects (does not fall back to count crawl per plan).
+                // Rate-limit stale telemetry to avoid spamming every calculateTargetGrid call.
+                try {
+                    let curPrice: number | null = null;
+                    // Prefer live AMA center when gridPrice:ama — startPrice is often "pool"/"book"
+                    // (non-finite) or static; the AMA center moves, so isMarketAnchorFresh must track it.
+                    try {
+                        const usesAma = (() => {
+                            try { return require('../grid_price_source.js').usesAmaGridPrice(config); } catch { return false; }
+                        })();
+                        if (usesAma) {
+                            try {
+                                const sys = require('./utils/system.js');
+                                const live = sys.loadAmaCenterPrice?.(this.manager?.config?.botKey)
+                                    ?? sys.loadAmaCenterSnapshot?.(this.manager?.config?.botKey)?.gridCenterPrice;
+                                if (Number.isFinite(Number(live)) && Number(live) > 0) curPrice = Number(live);
+                            } catch {}
+                        }
+                    } catch {}
+                    if (curPrice == null) {
+                        curPrice = Number.isFinite(Number(config.startPrice)) ? Number(config.startPrice) : (Number.isFinite(anchor.lastFillPrice as any) ? Number(anchor.lastFillPrice) : null);
+                    }
+                    const incPct = Number(config.incrementPercent);
+                    if (!isMarketAnchorFresh(anchor, curPrice, incPct)) {
+                        const mgr: any = this.manager;
+                        const now = Date.now();
+                        const lastWarn = mgr._lastAnchorStaleWarnAt ?? 0;
+                        const rateLimitMs = mgr?.config?.timing?.STALE_TOTALS_WARN_RATE_LIMIT_MS ?? 60000;
+                        if (now - lastWarn >= rateLimitMs) {
+                            mgr._lastAnchorStaleWarnAt = now;
+                            this.manager.logger.log(`[ANCHOR-STALE] anchor stale age=${anchor.updatedAt ? Date.now() - anchor.updatedAt : 'unknown'}ms lastPrice=${anchor.lastFillPrice} range=[${anchor.minFilledBuyPrice},${anchor.maxFilledSellPrice}] — continuing projection from last known range`, 'info');
+                        }
+                    }
+                } catch (_: any) {}
+            }
+        } catch (_: any) {}
+
         const crossChunkBudget = (this.manager as any)._boundaryShiftBudget;
         const burstTarget = (this.manager as any)._boundaryTarget;
-        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget, burstTarget);
+        const { boundaryIdx: legacyBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget, burstTarget);
         if (crossChunkBudget != null) {
             (this.manager as any)._boundaryShiftBudget = remainingBudget;
+        }
+
+        // Phase 2: choose boundary — price-first projection when available, otherwise legacy
+        let newBoundaryIdx = legacyBoundaryIdx;
+        if (projectionEnabled && projectedBoundary != null) {
+            // D1 fund floor: price truth is primary; funds may pull the projected
+            // boundary toward the affordable rail by at most half an active window,
+            // never past the fund rail itself. Uses accounting-available funds
+            // (manager.funds.available) — the same "free" notion syncBoundaryToFunds
+            // balances against — falling back to chain-free snapshot values.
+            // When no funds data exists yet (both sides 0/unknown), the pull is
+            // skipped entirely: calculateFundDrivenBoundary would fabricate a
+            // mid-grid rail, and D1 routes severe shortfalls into sizing, not
+            // boundary location.
+            try {
+                const snap = typeof this.manager.getChainFundsSnapshot === 'function' ? this.manager.getChainFundsSnapshot() : null;
+                const pick = (...candidates: any[]) => {
+                    for (const c of candidates) {
+                        const n = Number(c);
+                        if (Number.isFinite(n)) return n;
+                    }
+                    return null;
+                };
+                const availA = pick((this.manager as any).funds?.available?.sell, funds?.available?.sell, snap?.chainFreeSell);
+                const availB = pick((this.manager as any).funds?.available?.buy, funds?.available?.buy, snap?.chainFreeBuy);
+                const price = this.manager.config?.startPrice;
+                let fundIdx: number | null = null;
+                if (availA != null && availB != null && (availA > 0 || availB > 0)
+                    && Number.isFinite(price as any) && allSlots.length > 0) {
+                    fundIdx = calculateFundDrivenBoundary(allSlots, availA, availB, price, gapSlots);
+                }
+                if (Number.isFinite(fundIdx as any)) {
+                    const wSell = Math.max(1, Math.floor(config.activeOrders?.sell ?? 1));
+                    const wBuy = Math.max(1, Math.floor(config.activeOrders?.buy ?? 1));
+                    const halfWindow = Math.max(Math.floor(wSell / 2), Math.floor(wBuy / 2), 1);
+                    const diff = (fundIdx as number) - (projectedBoundary as number);
+                    if (diff !== 0) {
+                        const pull = Math.sign(diff) * Math.min(Math.abs(diff), halfWindow);
+                        const constrained = (projectedBoundary as number) + pull;
+                        if (diff > 0) newBoundaryIdx = Math.min(constrained, fundIdx as number);
+                        else newBoundaryIdx = Math.max(constrained, fundIdx as number);
+                    } else {
+                        newBoundaryIdx = projectedBoundary as number;
+                    }
+                } else {
+                    newBoundaryIdx = projectedBoundary as number;
+                }
+            } catch (_: any) {
+                newBoundaryIdx = projectedBoundary as number;
+            }
+            // I4 ceiling clamp (gap-aware) — degenerate geometry falls back to legacy ceiling
+            {
+                const floorGap = Math.floor(Number(gapSlots) || 0);
+                const gapAwareCeiling = allSlots.length - floorGap - 1;
+                const legacyCeiling = allSlots.length - 1;
+                const ceiling = gapAwareCeiling >= 0 ? gapAwareCeiling : Math.max(legacyCeiling, Number(currentBoundaryIdx ?? 0));
+                newBoundaryIdx = Math.max(0, Math.min(ceiling, newBoundaryIdx));
+            }
+            // Stale-anchor continues projection (does not fall back to count crawl);
+            // count crawl remains only for truly price-less fills (I5 via legacy path when anchor cold).
         }
 
         // 1b. Placement guard (defense-in-depth): no re-created order may sit

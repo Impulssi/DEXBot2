@@ -186,7 +186,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             if (syncResult?.filledOrders?.length > 0) {
                                 bot._refreshDynamicWeightDistribution('post-reconnect sync fill');
                                 bot._log(`Post-reconnect sync: ${syncResult.filledOrders.length} grid order(s) found filled.`, 'info');
-                                await bot._processFillsWithBatching(syncResult.filledOrders, new Set(), 'post-reconnect sync fill');
+                                await bot._processFillsWithBatching(syncResult.filledOrders, new Set(), 'post-reconnect sync fill', { isReplay: true });
                                 if (bot._shuttingDown) return;
                             }
                             bot.manager._recentFillKeysSnapshot = bot._getRecentFillKeysSnapshot();
@@ -295,7 +295,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             if (accountingResult.status !== 'applied') {
                                 continue;
                             }
-                            const result = await bot._processFillsWithBatching([gridOrder], new Set(), `[POST-RESET] fill ${gridOrder.id}`);
+                            const result = await bot._processFillsWithBatching([gridOrder], new Set(), `[POST-RESET] fill ${gridOrder.id}`, { isReplay: true });
                             if (result.aborted) {
                                 bot._warn('[POST-RESET] Aborted batch due to illegal state; skipping grid persistence this cycle');
                                 continue;
@@ -319,7 +319,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         if (postResetChainOpenOrders !== null) {
                             const syncResult = await bot.manager.syncFromOpenOrders(postResetChainOpenOrders);
                             if (syncResult.filledOrders?.length > 0) {
-                                await bot._processFillsWithBatching(syncResult.filledOrders, new Set(), '[POST-RESET] open-orders fallback');
+                                await bot._processFillsWithBatching(syncResult.filledOrders, new Set(), '[POST-RESET] open-orders fallback', { isReplay: true });
                             }
                         }
                     }
@@ -475,7 +475,21 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 bot._refreshDynamicWeightDistribution('startup');
                 if (shouldRegenerate) {
                     await bot.manager._initializeAssets();
+                }
+                // Phase 1 D5: book-seed MarketAnchor after assets are ready (inside lock, after any _initializeAssets)
+                // Do not seed on truncated reads — partial book would mis-anchor.
+                if (!chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0 && bot.manager?.seedMarketAnchorFromBook && bot.manager.assets) {
+                    try {
+                        const parsedForAnchor = chainOpenOrders.map((o: any) => {
+                            try { return parseChainOrder(o, bot.manager.assets); } catch { return null; }
+                        }).filter(Boolean);
+                        if (parsedForAnchor.length > 0 && !bot.manager._marketAnchor) {
+                            bot.manager.seedMarketAnchorFromBook(parsedForAnchor);
+                        }
+                    } catch (_: any) {}
+                }
 
+                if (shouldRegenerate) {
                     if (!chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
                         bot._log('Generating new grid and syncing with existing on-chain orders...');
                         await botGridModule(bot).initializeGrid(bot.manager);
@@ -523,7 +537,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             bot._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
                             const batchResult = await bot._processFillsWithBatching(
                                 syncResult.filledOrders, new Set(), 'startup sync fill rebalance',
-                                { skipAccountTotalsUpdate: true }
+                                { skipAccountTotalsUpdate: true, isReplay: true }
                             );
 
                             if (!batchResult?.aborted) {

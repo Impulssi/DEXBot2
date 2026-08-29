@@ -64,7 +64,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, createEmptyMarketAnchor, seedMarketAnchorFromBook as seedAnchor, updateMarketAnchorFromFills as updateAnchor } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -406,6 +406,11 @@ class OrderManager {
     _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
     _recentFillKeysSnapshot: Record<string, number> | null;
+    _marketAnchor: any | null;
+    _lastAnchorStaleWarnAt: number;
+    _lastAnchorDivergenceLogAt: number;
+    // Note: dedupe lives inside the anchor object (`_seenKeys`), not here.
+    // Kept for backwards compat if external code checks existence; not used.
 
     _metrics: any;
     private _currentWorkingGridStack: any[];
@@ -519,6 +524,10 @@ class OrderManager {
         this._pendingRecovery = null;
         this._recentFillKeysSnapshot = null;
         this._lastStaleTotalsWarnAt = {};
+        this._marketAnchor = null;
+        this._lastAnchorStaleWarnAt = 0;
+        this._lastAnchorDivergenceLogAt = 0;
+        // _marketAnchorSeenKeys removed — anchor carries its own _seenKeys set
 
         this._metrics = {
             fundRecalcCount: 0,
@@ -1571,6 +1580,57 @@ class OrderManager {
      */
     _restoreBoundary(newIdx: number): void {
         this.boundaryIdx = newIdx;
+    }
+
+    /**
+     * Seed the MarketAnchor from the live on-chain book (Phase 1 D5).
+     * Derives initial range from highest live BUY and lowest live SELL.
+     * No persistence, in-memory only. Empty book => no anchor (cold start).
+     * @param {Array} liveOrders - Parsed chain orders ({price, type})
+     */
+    seedMarketAnchorFromBook(liveOrders: any): void {
+        try {
+            const seeded = seedAnchor(liveOrders);
+            if (seeded) {
+                this._marketAnchor = seeded;
+                this.logger?.log?.(`[ANCHOR] Seeded from book: buy=${seeded.minFilledBuyPrice} sell=${seeded.maxFilledSellPrice}`, 'info');
+            }
+        } catch (e: any) {}
+    }
+
+    /**
+     * Update the MarketAnchor from fills (Phase 1 + D4/D5).
+     * Delegates to the pure helper in order.ts (block ordering, dedupe, replay cap).
+     * Normalizes raw fill events (chain orderId → slot) so the dead raw path is viable.
+     * @param {Array} fills
+     * @param {Object} [opts] - {isReplay:boolean}
+     */
+    updateMarketAnchorFromFills(fills: any, opts: any = {}): void {
+        try {
+            if (!this._marketAnchor) {
+                this._marketAnchor = createEmptyMarketAnchor();
+            }
+            const allSlots: any[] = Array.from(this.orders.values() as any).filter((o: any) => o.price != null).sort((a: any,b:any)=>a.price-b.price);
+            const slotById = new Map(allSlots.map((s:any)=>[s.id, s]));
+            // Build chainOrderId → slot map for raw fill normalization (dead-path fix)
+            const chainIdToSlot = new Map<string, any>();
+            for (const s of allSlots) {
+                if (s.orderId) chainIdToSlot.set(String(s.orderId), s);
+            }
+            const normalized = (Array.isArray(fills) ? fills : []).map((f: any) => {
+                if (!f) return f;
+                // Already normalized (has price/type) → keep as-is
+                if (Number.isFinite(f.price) && (f.type === ORDER_TYPES.BUY || f.type === ORDER_TYPES.SELL)) return f;
+                const chainId = f.op?.[1]?.order_id ?? f.orderId ?? f.order_id;
+                const slot = chainId ? chainIdToSlot.get(String(chainId)) : null;
+                if (slot && Number.isFinite(slot.price)) {
+                    const blockNum = f.block_num ?? f.blockNum;
+                    return { ...f, price: slot.price, type: slot.type, id: slot.id, block_num: blockNum, blockNum: blockNum };
+                }
+                return f;
+            });
+            this._marketAnchor = updateAnchor(this._marketAnchor, normalized, slotById, opts);
+        } catch (e: any) {}
     }
 
     /**

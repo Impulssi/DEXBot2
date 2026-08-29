@@ -71,7 +71,7 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT } from '../../constants.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, ANCHOR } from '../../constants.js';
 import * as Format from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
@@ -1387,6 +1387,7 @@ function buildDelta(masterGrid: any, workingGrid: any, options: any = {}) {
  * @returns {boolean} True when the fill may shift the boundary
  */
 function isShiftEligibleFill(fill: any): boolean {
+    if (fill?.skipBoundaryShift === true) return false;
     return fill?.isPartial !== true || fill?.isDelayedRotationTrigger === true;
 }
 
@@ -1654,5 +1655,255 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
     );
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, computePriceAnchoredBoundaryTarget, isShiftEligibleFill, resolveFillPrice, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
+// ================================================================================
+// SECTION 11: MARKET ANCHOR (Price-First Alignment)
+// ================================================================================
+
+/**
+ * Create an empty MarketAnchor.
+ * @returns {Object} Empty anchor with null fields
+ */
+function createEmptyMarketAnchor() {
+    return {
+        lastFillPrice: null,
+        maxFilledSellPrice: null,
+        minFilledBuyPrice: null,
+        lastFillSide: null,
+        updatedAt: null,
+        lastBlockNum: null,
+        fillCount: 0,
+        // dedupe set for idempotent re-delivery (buildFillKey strings)
+        _seenKeys: new Set(),
+    };
+}
+
+/**
+ * Whether the anchor has any price data.
+ * @param {Object|null} anchor
+ * @returns {boolean}
+ */
+function isMarketAnchorAvailable(anchor: any): boolean {
+    if (!anchor) return false;
+    return anchor.lastFillPrice != null || anchor.maxFilledSellPrice != null || anchor.minFilledBuyPrice != null;
+}
+
+/**
+ * Check if the anchor is fresh per the ANCHOR_FRESHNESS rule.
+ * Fresh for FRESHNESS_MS OR until price drifts > PRICE_MOVE_INCREMENTS beyond
+ * the anchor's range.
+ * @param {Object|null} anchor
+ * @param {number|null} currentPrice - Current market price (e.g. startPrice or AMA center)
+ * @param {number|null} incrementPercent - Grid increment percent
+ * @returns {boolean}
+ */
+function isMarketAnchorFresh(anchor: any, currentPrice: any = null, incrementPercent: any = null): boolean {
+    if (!anchor || anchor.updatedAt == null) return false;
+    const age = Date.now() - anchor.updatedAt;
+    if (age > ANCHOR.FRESHNESS_MS) return false;
+    // Price-driven early expiration: if currentPrice moved >N increments beyond anchor range, stale even within time window
+    if (currentPrice != null && incrementPercent != null && Number.isFinite(currentPrice) && Number.isFinite(incrementPercent) && incrementPercent > 0) {
+        const factor = Math.pow(1 + incrementPercent / 100, ANCHOR.PRICE_MOVE_INCREMENTS);
+        const low = anchor.minFilledBuyPrice;
+        const high = anchor.maxFilledSellPrice;
+        if (low != null && high != null) {
+            const lowerBound = low / factor;
+            const upperBound = high * factor;
+            if (currentPrice < lowerBound || currentPrice > upperBound) return false;
+        } else if (high != null) {
+            const upperBound = high * factor;
+            if (currentPrice > upperBound) return false;
+        } else if (low != null) {
+            const lowerBound = low / factor;
+            if (currentPrice < lowerBound) return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Seed anchor from live on-chain book orders.
+ * Derives initial range from highest live buy and lowest live sell.
+ * @param {Array} chainOrders - Array of parsed/live orders ({price, type})
+ * @returns {Object|null} Seeded anchor or null if book empty
+ */
+function seedMarketAnchorFromBook(chainOrders: any): any | null {
+    if (!Array.isArray(chainOrders) || chainOrders.length === 0) return null;
+    let highestBuy: number | null = null;
+    let lowestSell: number | null = null;
+    for (const o of chainOrders) {
+        if (!o || o.price == null || !Number.isFinite(Number(o.price))) continue;
+        const price = Number(o.price);
+        if (o.type === ORDER_TYPES.BUY) {
+            if (highestBuy == null || price > highestBuy) highestBuy = price;
+        } else if (o.type === ORDER_TYPES.SELL) {
+            if (lowestSell == null || price < lowestSell) lowestSell = price;
+        }
+    }
+    if (highestBuy == null && lowestSell == null) return null;
+    return {
+        lastFillPrice: null,
+        maxFilledSellPrice: lowestSell,
+        minFilledBuyPrice: highestBuy,
+        lastFillSide: null,
+        updatedAt: Date.now(),
+        lastBlockNum: null,
+        fillCount: 0,
+        _seenKeys: new Set(),
+    };
+}
+
+/**
+ * Update anchor with a batch of fills.
+ * - Filters to shift-eligible fills only (isShiftEligibleFill)
+ * - Resolves price via resolveFillPrice (fill.price or slotId lookup)
+ * - Applies in block_num order (D4) when available
+ * - Idempotent under re-delivery via buildFillKey + _seenKeys
+ * - For replay windows (isReplay=true), only the latest fill (max block_num) contributes to the range (prevents 200-fill backfill slamming).
+ * @param {Object|null} anchor - Current anchor (mutated in place, or created)
+ * @param {Array} fills - Fill events
+ * @param {Map|null} slotById - Slot id -> slot map for price lookup
+ * @param {Object} opts
+ * @param {boolean} [opts.isReplay=false] - Whether this is a history replay window
+ * @param {Set<string>} [opts.seenKeys] - Optional external dedupe set (falls back to anchor._seenKeys)
+ * @returns {Object} Updated anchor
+ */
+function updateMarketAnchorFromFills(anchor: any, fills: any, slotById: Map<any, any> | null, opts: { isReplay?: boolean } = {}): any {
+    if (!Array.isArray(fills) || fills.length === 0) return anchor;
+    const target = anchor || createEmptyMarketAnchor();
+    if (!target._seenKeys) target._seenKeys = new Set();
+    const isReplay = opts.isReplay === true;
+
+    // Block ordering (D4): sort by block_num when available; ties and fills
+    // without a block_num keep the input (history) order. Never fall back to
+    // id-string comparison — that scrambles chronological order for fills
+    // without a block_num.
+    // Infinity sentinel: missing block_num sorts last (after all known blocks)
+    // instead of front-loading at 0. This mirrors the fill runtime, which
+    // processes no-block fills after all block-sorted fills, and keeps the
+    // comparator transitive — a null sentinel compared by input order against
+    // present blocks is not (cycles scramble TimSort output for mixed batches).
+    const orderIdx = new Map(fills.map((f: any, i: number) => [f, i]));
+    const sorted = [...fills].sort((a: any, b: any) => {
+        const aBlock = a?.block_num ?? a?.blockNum ?? Infinity;
+        const bBlock = b?.block_num ?? b?.blockNum ?? Infinity;
+        if (aBlock !== bBlock) return aBlock - bBlock;
+        return (orderIdx.get(a) ?? 0) - (orderIdx.get(b) ?? 0);
+    });
+
+    // Replay cap: a history-backfill window never contributes more than
+    // ANCHOR.REPLAY_MAX_FILLS (default 1) fills to the anchor range — the
+    // latest eligible fills only. Prevents a 200-fill backfill slamming the
+    // range wide.
+    let replayFills = sorted;
+    if (isReplay) {
+        const cap = Math.max(1, Math.floor(Number(ANCHOR.REPLAY_MAX_FILLS) || 1));
+        const picked: any[] = [];
+        for (let i = sorted.length - 1; i >= 0 && picked.length < cap; i--) {
+            if (!isShiftEligibleFill(sorted[i])) continue;
+            if (resolveFillPrice(sorted[i], slotById) == null) continue;
+            picked.push(sorted[i]);
+        }
+        replayFills = picked.reverse();
+    }
+
+    for (const fill of replayFills) {
+        if (!isShiftEligibleFill(fill)) continue;
+        const fillKey = buildFillKey(fill);
+        if (fillKey && target._seenKeys.has(fillKey)) continue;
+        const price = resolveFillPrice(fill, slotById);
+        if (price == null) continue;
+        if (fillKey) target._seenKeys.add(fillKey);
+        target.lastFillPrice = price;
+        target.lastFillSide = fill.type === ORDER_TYPES.SELL || fill.type === ORDER_TYPES.BUY ? fill.type : target.lastFillSide;
+        target.updatedAt = Date.now();
+        const blockNum = fill?.block_num ?? fill?.blockNum ?? null;
+        if (blockNum != null) target.lastBlockNum = blockNum;
+        target.fillCount = (target.fillCount || 0) + 1;
+        if (fill.type === ORDER_TYPES.SELL) {
+            if (target.maxFilledSellPrice == null || price > target.maxFilledSellPrice) target.maxFilledSellPrice = price;
+        } else if (fill.type === ORDER_TYPES.BUY) {
+            if (target.minFilledBuyPrice == null || price < target.minFilledBuyPrice) target.minFilledBuyPrice = price;
+        }
+    }
+    // Prune _seenKeys growth (keep last 1000)
+    if (target._seenKeys.size > 1000) {
+        const arr = Array.from(target._seenKeys);
+        target._seenKeys = new Set(arr.slice(-1000));
+    }
+    return target;
+}
+
+/**
+ * Project the MarketAnchor to a boundary index.
+ * Pure function, no side effects, reuses existing geometry helpers only.
+ * Generalized from computePriceAnchoredBoundaryTarget: gap band centered on
+ * the traded range, both directions, plus the I4 ceiling clamp.
+ * @param {Object|null} anchor - MarketAnchor
+ * @param {Array} allSlots - All grid slots sorted by price
+ * @param {number} gapSlots - Gap slot count
+ * @returns {number|null} Projected boundary index or null if anchor insufficient
+ */
+function projectAnchorToGrid(anchor: any, allSlots: any, gapSlots: any): number | null {
+    if (!anchor || !Array.isArray(allSlots) || allSlots.length === 0) return null;
+    const maxSell = anchor.maxFilledSellPrice;
+    const minBuy = anchor.minFilledBuyPrice;
+    const lastPrice = anchor.lastFillPrice;
+    const lastSide = anchor.lastFillSide;
+
+    // Need at least one price to project
+    if (maxSell == null && minBuy == null && lastPrice == null) return null;
+
+    const floorGap = Math.floor(Number(gapSlots) || 0);
+    const gapAwareCeiling = allSlots.length - floorGap - 1;
+    const legacyCeiling = allSlots.length - 1;
+    const ceiling = gapAwareCeiling >= 0 ? gapAwareCeiling : legacyCeiling;
+
+    const findSplitIdx = (price: number): number => {
+        const idx = allSlots.findIndex((s: any) => s.price >= price);
+        return idx < 0 ? allSlots.length : idx;
+    };
+
+    let candidate: number | null = null;
+
+    if (maxSell != null && minBuy != null) {
+        const upBound = findSplitIdx(maxSell) - floorGap;
+        const downBound = findSplitIdx(minBuy) - floorGap;
+        // Feasible interval [upBound, downBound] where gap covers both extremes.
+        // Reuses the same floorGap convention as computePriceAnchoredBoundaryTarget (D2).
+        if (upBound <= downBound) {
+            // Gap can cover both extremes — center it in the feasible interval.
+            // Uses only the existing up/down bounds (which themselves use getSellStartIdx geometry
+            // implicitly: sellStart = boundary+gap+1 > maxSellIdx). No new gap math.
+            candidate = Math.round((upBound + downBound) / 2);
+        } else {
+            // Wide range beyond gap capacity — prioritize trailing side
+            if (lastSide === ORDER_TYPES.SELL) candidate = upBound;
+            else if (lastSide === ORDER_TYPES.BUY) candidate = downBound;
+            else candidate = Math.round((upBound + downBound) / 2);
+        }
+    } else if (maxSell != null) {
+        candidate = findSplitIdx(maxSell) - floorGap;
+    } else if (minBuy != null) {
+        candidate = findSplitIdx(minBuy) - floorGap;
+    } else if (lastPrice != null) {
+        // Fallback to single last price via ideal boundary convention
+        candidate = calculateIdealBoundary(allSlots, lastPrice, floorGap);
+    }
+
+    if (candidate == null || !Number.isFinite(candidate)) return null;
+    return Math.max(0, Math.min(ceiling, candidate));
+}
+
+/**
+ * Compute divergence between projected and bookkept boundary for telemetry.
+ * @param {number|null} projected
+ * @param {number|null} bookkept
+ * @returns {number|null} Drift (projected - bookkept) or null if insufficient
+ */
+function computeAnchorDivergence(projected: any, bookkept: any): number | null {
+    if (!Number.isFinite(projected) || !Number.isFinite(bookkept)) return null;
+    return Number(projected) - Number(bookkept);
+}
+
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, computePriceAnchoredBoundaryTarget, isShiftEligibleFill, resolveFillPrice, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, createEmptyMarketAnchor, isMarketAnchorAvailable, isMarketAnchorFresh, seedMarketAnchorFromBook, updateMarketAnchorFromFills, projectAnchorToGrid, computeAnchorDivergence }
 

@@ -1090,6 +1090,18 @@ class DEXBot {
             'info'
         );
 
+        // Phase 1: seed/update MarketAnchor from this burst (price-first truth).
+        // Explicit isReplay only for true history backfill windows (caller passes options.isReplay).
+        // Live bursts (fill queue, bootstrap) must not be capped to latest.
+        // Synthetic fills (dust cancels, grid hygiene) are NOT market trades —
+        // their stale grid prices would pollute the anchor range, so they skip it.
+        try {
+            if (this.manager?.updateMarketAnchorFromFills && options?.skipAnchorUpdate !== true) {
+                const isReplay = options?.isReplay === true;
+                this.manager.updateMarketAnchorFromFills(fills, { isReplay });
+            }
+        } catch (_: any) {}
+
         if (typeof this.manager?.pauseFundRecalc === 'function') {
             this.manager.pauseFundRecalc();
         }
