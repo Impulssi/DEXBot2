@@ -1094,12 +1094,55 @@ class DEXBot {
             this.manager.pauseFundRecalc();
         }
         try {
-            // Set cross-chunk boundary shift budget to prevent cumulative
-            // overreaction from burst fills. Inside try so finally cleans up
-            // even if pauseFundRecalc is not used or future code is added.
+            // Boundary shift setup for the whole burst, computed ONCE before
+            // chunking. Two mechanisms cooperate:
+            //
+            // 1. Price-anchored target (_boundaryTarget): derived from ALL
+            //    burst fills via calculateIdealBoundary on the highest/lowest
+            //    fill price. Every chunk then steps toward the same target
+            //    (clamped by the remaining budget), so a 14-slot sweep chunked
+            //    into 4-op broadcasts still lands the boundary at the
+            //    price-implied slot instead of starving after the first
+            //    chunks. Cap is the full per-side window — price distance
+            //    itself bounds the shift.
+            // 2. Cross-chunk budget (_boundaryShiftBudget): remaining shift
+            //    allowance. When no fill price is resolvable (target=null) the
+            //    legacy conservative half-window cap applies to the
+            //    count-based fallback in deriveTargetBoundary.
             const activeSell = this.manager?.config?.activeOrders?.sell ?? 1;
             const activeBuy = this.manager?.config?.activeOrders?.buy ?? 1;
-            const shiftBudget = Math.max(Math.floor(activeSell / 2), Math.floor(activeBuy / 2), 1);
+            const windowCap = Math.max(Math.floor(activeSell), Math.floor(activeBuy), 1);
+            const legacyCap = Math.max(Math.floor(activeSell / 2), Math.floor(activeBuy / 2), 1);
+
+            let boundaryTarget: number | null = null;
+            try {
+                const orderUtils = require('./order/utils/order');
+                const allSlots = Array.from(this.manager?.orders?.values?.() ?? [])
+                    .filter((o: any) => o?.price != null);
+                if (allSlots.length > 0) {
+                    const gridUtils = require('./order/grid');
+                    const gapSlots = this.manager._gapSlots ??
+                        gridUtils.calculateGapSlots(
+                            this.manager.config?.incrementPercent,
+                            this.manager.config?.targetSpreadPercent,
+                            this.manager.config?.gridLimits
+                        );
+                    boundaryTarget = orderUtils.computePriceAnchoredBoundaryTarget(
+                        fills,
+                        allSlots,
+                        gapSlots
+                    );
+                }
+            } catch (targetErr: any) {
+                managerLog(
+                    `[BOUNDARY] Price-anchored target derivation failed (${getErrorMessage(targetErr)}); falling back to count-based shift.`,
+                    'warn'
+                );
+                boundaryTarget = null;
+            }
+
+            (this.manager as any)._boundaryTarget = boundaryTarget;
+            const shiftBudget = boundaryTarget != null ? windowCap : legacyCap;
             (this.manager as any)._boundaryShiftBudget = shiftBudget;
             // Keep the batch-start budget so the COW re-plan path can restore it:
             // a plan abandoned as stale consumed budget but never shipped, so the
@@ -1148,6 +1191,7 @@ class DEXBot {
             if (this.manager) {
                 delete (this.manager as any)._boundaryShiftBudget;
                 delete (this.manager as any)._boundaryShiftBudgetBase;
+                delete (this.manager as any)._boundaryTarget;
             }
             if (typeof this.manager?.resumeFundRecalc === 'function') {
                 await this.manager.resumeFundRecalc();

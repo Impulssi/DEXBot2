@@ -62,7 +62,8 @@
  *   - getOrderSize(order) - Extract order size with fallback
  *
  * SECTION 10: STRATEGY CALCULATIONS (3 functions)
- *   - deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget) - Derive boundary from fills (returns { boundaryIdx, remainingBudget })
+ *   - deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget, burstTarget) - Derive boundary from fills (returns { boundaryIdx, remainingBudget })
+ *   - computePriceAnchoredBoundaryTarget(fills, allSlots, gapSlots) - Price-anchored burst boundary target (or null when no fill price resolvable)
  *   - getSideBudget(side, funds, config, totalTarget) - Calculate side budget after fees
  *   - calculateBudgetedSizes(slots, side, budget, weightDist, incrementPercent, assets) - Calculate budgeted sizes
  *
@@ -1379,16 +1380,116 @@ function buildDelta(masterGrid: any, workingGrid: any, options: any = {}) {
 // ================================================================================
 
 /**
+ * Check whether a fill is eligible to drive boundary shift / rotation.
+ * Partials only count when they are delayed-rotation triggers.
+ *
+ * @param {Object} fill - Fill event
+ * @returns {boolean} True when the fill may shift the boundary
+ */
+function isShiftEligibleFill(fill: any): boolean {
+    return fill?.isPartial !== true || fill?.isDelayedRotationTrigger === true;
+}
+
+/**
+ * Resolve the grid price of a fill. Prefers the fill's own price, falls back
+ * to the slot price looked up by id in the provided slot map.
+ *
+ * @param {Object} fill - Fill event
+ * @param {Map|null} slotById - Slot id -> slot map (may be null)
+ * @returns {number|null} Fill price or null when unavailable
+ */
+function resolveFillPrice(fill: any, slotById: Map<any, any> | null): number | null {
+    const direct = toFiniteNumber(fill?.price);
+    if (direct != null && direct > 0) return direct;
+    const slot = slotById ? slotById.get(fill?.id) : null;
+    const slotPrice = toFiniteNumber(slot?.price);
+    return slotPrice != null && slotPrice > 0 ? slotPrice : null;
+}
+
+/**
+ * Compute a price-anchored boundary CORRECTION bound from a burst of fills.
+ *
+ * The count-based crawl shifts one slot per fill; its two failure modes are
+ * (a) interleaved BUY+SELL fills cancelling out while price swept several
+ * slots, and (b) the shift cap starving later burst chunks. The correction
+ * bound repairs both without disturbing the single-fill crawl semantics:
+ *
+ * - Trailing SELL (price swept UP, latest fill approximates the market):
+ *   every filled sell slot must end up BELOW the sell rail, i.e. the sell
+ *   rail start (boundary + gapSlots + 1) must exceed the highest filled
+ *   sell slot index -> boundary >= maxSellFillIdx - gapSlots.
+ * - Trailing BUY (price swept DOWN): slots above the lowest filled buy slot
+ *   must be sell-side, i.e. sell rail start <= lowestFilledBuyIdx + 1
+ *   -> boundary <= minBuyFillIdx - gapSlots.
+ *
+ * The direction is chosen by the LAST eligible fill (fills arrive in
+ * history order); the other side's bound is ignored so a mixed burst
+ * corrects toward its dominant trailing direction instead of oscillating.
+ *
+ * @param {Array} fills - Fill events (whole burst, not per-chunk), in
+ *   history order
+ * @param {Array} allSlots - All grid slots sorted by price
+ * @param {number} gapSlots - Number of spread gap slots
+ * @returns {{direction: string, boundIdx: number}|null} Correction bound,
+ *   or null when no fill price is resolvable (caller keeps the pure
+ *   count-based shift)
+ */
+function computePriceAnchoredBoundaryTarget(fills: any, allSlots: any, gapSlots: any): { direction: string; boundIdx: number } | null {
+    if (!Array.isArray(fills) || fills.length === 0) return null;
+    if (!Array.isArray(allSlots) || allSlots.length === 0) return null;
+
+    const slotById = new Map(allSlots.map((s: any) => [s?.id, s]));
+    let maxPrice: number | null = null;
+    let minPrice: number | null = null;
+    let trailingType: string | null = null;
+    for (const fill of fills) {
+        if (!isShiftEligibleFill(fill)) continue;
+        const price = resolveFillPrice(fill, slotById);
+        if (price == null) continue;
+        if (maxPrice == null || price > maxPrice) maxPrice = price;
+        if (minPrice == null || price < minPrice) minPrice = price;
+        if (fill.type === ORDER_TYPES.SELL || fill.type === ORDER_TYPES.BUY) {
+            trailingType = fill.type;
+        }
+    }
+    if (maxPrice == null || minPrice == null || trailingType == null) return null;
+
+    if (trailingType === ORDER_TYPES.SELL) {
+        // splitIdx = first slot at/above the highest fill price = that
+        // slot's own index on an exact price match.
+        const splitIdx = allSlots.findIndex((s: any) => s.price >= maxPrice);
+        if (splitIdx < 0) return null;
+        return { direction: 'up', boundIdx: splitIdx - Math.floor(gapSlots) };
+    }
+    const splitIdxLow = allSlots.findIndex((s: any) => s.price >= minPrice);
+    if (splitIdxLow < 0) return null;
+    return { direction: 'down', boundIdx: splitIdxLow - Math.floor(gapSlots) };
+}
+
+/**
  * Determine new boundary based on fills and current state.
+ *
+ * Base shift is the count-based crawl (one slot per eligible fill,
+ * rate-limited by the cross-chunk budget). When fill prices are resolvable,
+ * a price-anchored correction then pulls the boundary to the traded range
+ * (see computePriceAnchoredBoundaryTarget) so burst fills that the count
+ * crawl cancelled out or capped away still move the boundary with price.
+ * Without resolvable prices the conservative half-window cap retains
+ * burst-storm protection.
  *
  * @param {Array} fills - Recent fill events
  * @param {number|null} currentBoundaryIdx - Current boundary index
  * @param {Array} allSlots - All grid slots sorted by price
  * @param {Object} config - Bot configuration
  * @param {number} gapSlots - Number of spread gap slots
- * @returns {number} New boundary index
+ * @param {number|null} crossChunkBudget - Remaining cross-chunk shift budget
+ *   managed by the caller (consumed by |applied shift|)
+ * @param {Object|null} burstAnchor - Pre-computed price-anchored correction
+ *   bound for the WHOLE burst (computed before chunking); takes precedence
+ *   over per-call price derivation
+ * @returns {{boundaryIdx: number, remainingBudget: number}} New boundary index and remaining budget
  */
-function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null): { boundaryIdx: number; remainingBudget: number } {
+function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null, burstAnchor?: { direction: string; boundIdx: number } | null): { boundaryIdx: number; remainingBudget: number } {
     let newBoundaryIdx = currentBoundaryIdx;
 
     // Initial recovery if boundary is undefined
@@ -1397,36 +1498,56 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
          newBoundaryIdx = calculateIdealBoundary(allSlots, referencePrice, gapSlots);
     }
 
-    // Apply shift from fills with rate-limiting
-    let netShift = 0;
-    for (const fill of fills) {
-        const isShiftEligible =
-            fill?.isPartial !== true ||
-            fill?.isDelayedRotationTrigger === true;
-
-        if (!isShiftEligible) continue;
-        if (fill.type === ORDER_TYPES.SELL) netShift++;
-        else if (fill.type === ORDER_TYPES.BUY) netShift--;
-    }
-
-    // Cap cumulative shift to prevent overreaction from burst fills.
-    // Uses a cross-chunk budget managed by the caller — each chunk
-    // consumes from the same pool so the total across all chunks
-    // never exceeds half the active window.
-    // Falls back to a per-call cap when no budget is set.
+    // Full per-side window bounds the price-anchored correction; the
+    // half-window cap governs the count-based base shift.
+    const windowCap = Math.max(
+        Math.floor(config.activeOrders?.sell ?? 1),
+        Math.floor(config.activeOrders?.buy ?? 1),
+        1
+    );
     const fallbackCap = Math.max(
         Math.floor((config.activeOrders?.sell ?? 1) / 2),
         Math.floor((config.activeOrders?.buy ?? 1) / 2),
         1
     );
-    const effectiveBudget = crossChunkBudget ?? fallbackCap;
-    const cap = Math.min(Math.abs(effectiveBudget), fallbackCap);
-    if (Math.abs(netShift) > cap) {
-        netShift = Math.sign(netShift) * cap;
-    }
-    const remainingBudget = effectiveBudget - Math.abs(netShift);
 
+    const anchor = burstAnchor !== undefined
+        ? burstAnchor
+        : computePriceAnchoredBoundaryTarget(fills, allSlots, gapSlots);
+    const effectiveBudget = crossChunkBudget ?? (anchor != null ? windowCap : fallbackCap);
+
+    // 1. Base shift: count-based crawl, rate-limited by the budget and the
+    //    half-window cap.
+    let netShift = 0;
+    for (const fill of fills) {
+        if (!isShiftEligibleFill(fill)) continue;
+        if (fill.type === ORDER_TYPES.SELL) netShift++;
+        else if (fill.type === ORDER_TYPES.BUY) netShift--;
+    }
+    const baseCap = Math.min(Math.abs(effectiveBudget), fallbackCap);
+    if (Math.abs(netShift) > baseCap) {
+        netShift = Math.sign(netShift) * baseCap;
+    }
     newBoundaryIdx += netShift;
+
+    // 2. Price-anchored correction toward the traded range, bounded by the
+    //    remaining budget (total applied shift never exceeds the budget).
+    let applied = Math.abs(netShift);
+    if (anchor != null && Number.isFinite(Number(anchor.boundIdx))) {
+        const bound = Number(anchor.boundIdx);
+        const room = Math.max(0, Math.abs(effectiveBudget) - applied);
+        if (anchor.direction === 'up' && newBoundaryIdx < bound) {
+            const step = Math.min(bound - newBoundaryIdx, room);
+            newBoundaryIdx += step;
+            applied += step;
+        } else if (anchor.direction === 'down' && newBoundaryIdx > bound) {
+            const step = Math.min(newBoundaryIdx - bound, room);
+            newBoundaryIdx -= step;
+            applied += step;
+        }
+    }
+
+    const remainingBudget = effectiveBudget - applied;
 
     // Clamp boundary — cap at one slot before the gap band's SELL rail,
     // matching calculateFundDrivenBoundary's geometry. Degenerate geometries
@@ -1533,5 +1654,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
     );
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, computePriceAnchoredBoundaryTarget, isShiftEligibleFill, resolveFillPrice, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
 

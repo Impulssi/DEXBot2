@@ -51,7 +51,7 @@
 import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail } from './utils/math.js';
-import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order.js';
+import { deriveTargetBoundary, isShiftEligibleFill, resolveFillPrice, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -229,13 +229,68 @@ class StrategyEngine {
         // have drifted if targetSpreadPercent or gridLimits changed.
         const gapSlots = this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
         const crossChunkBudget = (this.manager as any)._boundaryShiftBudget;
-        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget);
+        const burstTarget = (this.manager as any)._boundaryTarget;
+        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget, burstTarget);
         if (crossChunkBudget != null) {
             (this.manager as any)._boundaryShiftBudget = remainingBudget;
         }
 
+        // 1b. Placement guard (defense-in-depth): no re-created order may sit
+        // on the wrong side of a just-filled price. A SELL slot at or below
+        // the highest filled SELL price is immediately marketable (the book
+        // traded through it) and economically inverted; the same holds for a
+        // BUY slot strictly above the lowest filled BUY price. Rotate such
+        // slots to the opposite rail BEFORE windowing and sizing so
+        // reconcile cancels the toxic order and replaces it across the
+        // spread. Asymmetry is intentional: re-creating a BUY at exactly the
+        // filled price is the standard anchor-refill rotation, while a SELL
+        // at/below the filled price would dump into a market that just paid
+        // more. This holds the invariant even when the boundary is stale
+        // (stale-plan re-plans, recovery paths, price-less fills).
+        const guardSlotById = new Map(allSlots.map((s: any) => [s.id, s]));
+        let maxFilledSellPrice: number | null = null;
+        let minFilledBuyPrice: number | null = null;
+        for (const fill of fills) {
+            if (!isShiftEligibleFill(fill)) continue;
+            const price = resolveFillPrice(fill, guardSlotById);
+            if (price == null) continue;
+            if (fill.type === ORDER_TYPES.SELL) {
+                if (maxFilledSellPrice == null || price > maxFilledSellPrice) maxFilledSellPrice = price;
+            } else if (fill.type === ORDER_TYPES.BUY) {
+                if (minFilledBuyPrice == null || price < minFilledBuyPrice) minFilledBuyPrice = price;
+            }
+        }
+
         // 2. Assign Roles (Buy/Sell/Spread)
         const updatedSlots = assignGridRoles(allSlots, newBoundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES, { assignOnChain: true });
+
+        let rotatedToBuy = 0;
+        let rotatedToSell = 0;
+        if (maxFilledSellPrice != null) {
+            for (const slot of updatedSlots) {
+                if (slot.type === ORDER_TYPES.SELL && Number(slot.price) <= maxFilledSellPrice) {
+                    slot.type = ORDER_TYPES.BUY;
+                    rotatedToBuy++;
+                }
+            }
+        }
+        if (minFilledBuyPrice != null) {
+            for (const slot of updatedSlots) {
+                if (slot.type === ORDER_TYPES.BUY && Number(slot.price) > minFilledBuyPrice) {
+                    slot.type = ORDER_TYPES.SELL;
+                    rotatedToSell++;
+                }
+            }
+        }
+        if (rotatedToBuy > 0 || rotatedToSell > 0) {
+            this.manager.logger.log(
+                `[PLACEMENT-GUARD] Rotated ${rotatedToBuy} sell slot(s) at/below max filled sell price ` +
+                `${maxFilledSellPrice != null ? maxFilledSellPrice.toPrecision(6) : 'n/a'} to BUY, ` +
+                `${rotatedToSell} buy slot(s) at/above min filled buy price ` +
+                `${minFilledBuyPrice != null ? minFilledBuyPrice.toPrecision(6) : 'n/a'} to SELL.`,
+                'warn'
+            );
+        }
 
         this.manager.logger.log(`[DEBUG] calculateTargetGrid: boundary=${newBoundaryIdx}, gap=${gapSlots}, allSlots=${updatedSlots.length}`, 'debug');
         updatedSlots.forEach((s: any) => this.manager.logger.log(`  Slot ${s.id}: price=${s.price}, size=${s.size ?? 'n/a'}, type=${s.type}`, 'debug'));
