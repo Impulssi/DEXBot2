@@ -248,6 +248,57 @@ function collectValidationIssues(entries: any[], sourceName: string): { errors: 
             if (entry.active) errors.push(issue);
             else warnings.push(issue);
         }
+        // Grid capacity check: activeOrders vs Range/Incr (issue #19)
+        // Estimated levels = floor(log(max/min)/log(1+incr)) + 1
+        // Available for orders = estimated - gapSlots
+        if (entry.active && entry.activeOrders && entry.incrementPercent && entry.targetSpreadPercent) {
+            try {
+                const incr = Number(entry.incrementPercent);
+                const spread = Number(entry.targetSpreadPercent);
+                const buy = Number(entry.activeOrders.buy || 0);
+                const sell = Number(entry.activeOrders.sell || 0);
+                if (Number.isFinite(incr) && incr > 0 && Number.isFinite(spread) && spread >= 0 && Number.isFinite(buy) && Number.isFinite(sell)) {
+                    const parseFactor = (v: any): number | null => {
+                        if (typeof v === 'string' && v.trim().toLowerCase().endsWith('x')) {
+                            const n = parseFloat(v);
+                            return Number.isFinite(n) && n > 0 ? n : null;
+                        }
+                        const n = Number(v);
+                        return Number.isFinite(n) && n > 0 ? n : null;
+                    };
+                    const minF = parseFactor(entry.minPrice);
+                    const maxF = parseFactor(entry.maxPrice);
+                    let totalRatio: number | null = null;
+                    if (minF !== null && maxF !== null) {
+                        // Both are "Nx" factors: min is 1/N below gridPrice, max is N above
+                        // For "1.15x" / "2.0x", total ratio = 1.15 * 2.0
+                        // For numeric absolute prices, ratio = max/min
+                        const isMinX = typeof entry.minPrice === 'string' && String(entry.minPrice).toLowerCase().endsWith('x');
+                        const isMaxX = typeof entry.maxPrice === 'string' && String(entry.maxPrice).toLowerCase().endsWith('x');
+                        if (isMinX && isMaxX) totalRatio = minF * maxF;
+                        else if (!isMinX && !isMaxX) totalRatio = maxF / minF;
+                        else totalRatio = null; // mixed types: skip check
+                    }
+                    if (totalRatio !== null && totalRatio > 1) {
+                        const step = 1 + incr / 100;
+                        const estimatedLevels = Math.floor(Math.log(totalRatio) / Math.log(step)) + 1;
+                        const gapSlots = Math.max(2, Math.ceil(Math.log(1 + spread / 100) / Math.log(step)) - 1);
+                        // Use same formula as grid-kuva: ceil -1, min 2
+                        // Add small buffer (2 slots) for sqrt(step) offset and ceil rounding in createOrderGrid
+                        const available = estimatedLevels - gapSlots;
+                        const required = buy + sell;
+                        if (required > available - 2) {
+                            const name = entry.name || `<unnamed-${index}>`;
+                            warnings.push(
+                                `Bot[${index}] '${name}' (${sourceName}): activeOrders B:${buy}/S:${sell} (${required} slots) does not fit Range [${entry.minPrice}-${entry.maxPrice}] with Incr ${incr}% (est. ${available} order slots + ${gapSlots} spread). ` +
+                                `With Incr ${incr}% and Range [${entry.minPrice}-${entry.maxPrice}] max ~${available} orders fit; widen maxPrice, lower Incr, or reduce activeOrders. ` +
+                                `Observed after reset: Active ${buy}/${sell} -> Slots ~${Math.floor(available * buy / required)}/${Math.floor(available * sell / required)} (e.g. 22/27 became 22/23).`
+                            );
+                        }
+                    }
+                }
+            } catch {}
+        }
     });
 
     // Cross-bot validation: check for duplicate botKeys (sanitized names)
