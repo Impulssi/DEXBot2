@@ -1818,12 +1818,12 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
             } catch (refetchErr: any) {
                 bot._warn(`[DUST] Cancel succeeded but refetch failed for ${(order as any).id} (${(order as any).orderId}): ${getErrorMessage(refetchErr)}`);
             }
-            syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true, skipBoundaryShift: true });
+            syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
             bot._log(`[DUST] Cancelled ${(order as any).id} (${(order as any).orderId}) size=${(order as any).size}`, 'debug');
         } catch (err: any) {
             const errMsg = getErrorMessage(err) || '';
             if (isOrderDoesNotExistError(errMsg, (order as any).orderId)) {
-                syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true, skipBoundaryShift: true });
+                syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
                 bot._log(`[DUST] Order ${(order as any).id} (${(order as any).orderId}) already gone from chain`, 'debug');
             } else {
                 bot._warn(`[DUST] Failed to cancel ${(order as any).id} (${(order as any).orderId}): ${errMsg}`);

@@ -377,13 +377,46 @@ async function recoverFromPersistedGrid(bot: any) {
         // re-create them as duplicates. A reload that cannot reconcile with
         // chain did not complete its contract — fail so the caller escalates
         // to a structural resync (which defers the same way on a clean read).
-        const chainOpenOrders = await readOpenOrdersGuarded(chainOrders, accountRef, {
+        let chainOpenOrders = await readOpenOrdersGuarded(chainOrders, accountRef, {
             log: (message: string, level: any) => bot.manager.logger.log(message, level),
             label: 'RECOVERY',
             detail: 'full grid reload from persisted snapshot',
         });
         if (chainOpenOrders === null) {
-            return { success: false, reason: 'truncated open-order read; full grid reload deferred' };
+            // Window read truncated: fall back to an ID-based read of the order
+            // ids the persisted snapshot already tracks. This recovers the bot's
+            // own orders (including creates adopted by id after a refused COW
+            // commit, whose ids are now persisted) even when the account exceeds
+            // the get_full_accounts window — without virtualizing live ACTIVE
+            // slots. It cannot discover brand-new orphans whose ids are nowhere
+            // in the snapshot; those are prevented at source by the COW adoption
+            // path (adoptPlacedBatchFromChain reads by id immediately after
+            // broadcast). When no known ids are available, still defer.
+            const knownIds = (persistedGrid || [])
+                .map((s: any) => s && s.orderId)
+                .filter((id: any) => id && /^1\.7\.\d+$/.test(String(id)));
+            let recoveredById: any[] | null = null;
+            if (knownIds.length > 0 && typeof chainOrders.batchReadOrders === 'function') {
+                try {
+                    const map = await chainOrders.batchReadOrders(knownIds);
+                    const byId: any[] = [];
+                    if (map && typeof map.forEach === 'function') {
+                        map.forEach((o: any) => { if (o) byId.push(o); });
+                    }
+                    recoveredById = byId;
+                } catch (byIdErr: any) {
+                    bot.manager.logger.log(`[RECOVERY] ID-based fallback read failed: ${getErrorMessage(byIdErr)}`, 'warn');
+                }
+            }
+            if (recoveredById && recoveredById.length > 0) {
+                bot.manager.logger.log(
+                    `[RECOVERY] Window truncated; recovered ${recoveredById.length}/${knownIds.length} known order(s) by id instead of deferring`,
+                    'warn'
+                );
+                chainOpenOrders = recoveredById;
+            } else {
+                return { success: false, reason: 'truncated open-order read; full grid reload deferred' };
+            }
         }
 
         if (chainOpenOrders.length > 0 && bot.manager?.syncFromOpenOrders) {

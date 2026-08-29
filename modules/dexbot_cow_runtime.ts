@@ -3008,7 +3008,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         '[COW] Commit refused after broadcast; adopting placed orders from chain to keep master in sync',
                         'warn'
                     );
-                    const adopted = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW]');
+                    const adopted = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW]', { placedResults: result, placedContexts: executedContexts });
                     if (!adopted) {
                         // Chain state unknown (empty/lagging read or sync failure):
                         // keep the pending-broadcast protection so a later plan
@@ -3028,6 +3028,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     // Deduct create fees for the placed orders (mirrors
                     // processBatchResults, which the refused path bypasses).
                     await applyAdoptionFeeAccounting(bot, executedContexts);
+                    await restoreBoundaryAfterAdoption(bot, workingBoundary);
                     await persistGridAndClearPendingBroadcasts(bot, '[COW]');
                     return { executed: false, hadRotation: false, commitRefused: true };
                 }
@@ -3158,6 +3159,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             return { executed: false, hadRotation: false, commitRefused: true, chainAdoptionPending: true };
                         }
                         await applyAdoptionFeeAccounting(bot, opContexts);
+                        await restoreBoundaryAfterAdoption(bot, workingBoundary);
                         await persistGridAndClearPendingBroadcasts(bot, '[COW][UNCERTAIN]');
                         return { executed: false, hadRotation: false, commitRefused: true, uncertainResolved: true };
                     }
@@ -3187,6 +3189,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     // result to extract); deduct create fees so the optimistic
                     // balance reflects the on-chain cost.
                     await applyAdoptionFeeAccounting(bot, opContexts);
+                    await restoreBoundaryAfterAdoption(bot, workingBoundary);
                     await persistGridAndClearPendingBroadcasts(bot, '[COW][UNCERTAIN]');
                     return { executed: true, hadRotation: false, uncertainResolved: true };
                 }
@@ -3271,16 +3274,183 @@ async function requestStructuralResync(bot: any, reason: string, details: any = 
  * @param {string} logPrefix - Log prefix for sync failure messages
  * @returns {Promise<boolean>}
  */
-async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: string): Promise<boolean> {
+/**
+ * Collect every on-chain order id master currently needs to converge against,
+ * so adoption can re-read them by id (immune to the get_full_accounts window
+ * truncation) instead of relying on a partial window read.
+ *
+ * Sources:
+ *  - master's own tracked order ids (existing on-chain orders);
+ *  - the batch's fresh CREATE ids extracted from the broadcast result
+ *    (operation_results[i][1] aligns positionally with placedContexts[i]).
+ *
+ * @param {any} mgr - bot.manager
+ * @param {any} placedResults - broadcast result (has operation_results); null when unavailable
+ * @param {any[]} placedContexts - opContexts (aligned with operation_results); null when unavailable
+ * @returns {string[]} Unique, well-formed 1.7.x order ids
+ */
+function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContexts: any): { masterIds: string[]; createIds: string[]; all: string[] } {
+    const masterIds = new Set<string>();
+    const grid = mgr && mgr.grid;
+    if (Array.isArray(grid)) {
+        for (const slot of grid) {
+            if (slot && slot.orderId && /^1\.7\.\d+$/.test(String(slot.orderId))) {
+                masterIds.add(String(slot.orderId));
+            }
+        }
+    }
+    const createIds = new Set<string>();
+    if (placedResults && Array.isArray(placedContexts)) {
+        const opResults = extractBatchOperationResults(placedResults);
+        if (Array.isArray(opResults)) {
+            for (let i = 0; i < placedContexts.length; i++) {
+                const ctx = placedContexts[i];
+                if (!ctx || ctx.kind !== 'create') continue;
+                const opResult = opResults[i] && opResults[i][1];
+                if (opResult && /^1\.7\.\d+$/.test(String(opResult))) {
+                    createIds.add(String(opResult));
+                }
+            }
+        }
+    }
+    const all = new Set<string>([...masterIds, ...createIds]);
+    return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
+}
+
+/**
+ * Converge master with the chain after a COW commit was refused (master moved
+ * during broadcast) or an uncertain broadcast was poll-confirmed.
+ *
+ * Preferred path (when the broadcast result is available): re-read the exact
+ * on-chain orders BY ID — every id master already tracks plus the batch's
+ * fresh CREATE ids. get_objects returns the complete, authoritative set
+ * regardless of account size, so syncFromOpenOrders converges master instead
+ * of dropping the freshest creates (which previously left permanent orphans
+ * and tripped the fund invariant). This is fully immune to the
+ * get_full_accounts window truncation that broke the old window-read path.
+ *
+ * Fallback (no broadcast result, e.g. uncertain paths, or by-id read
+ * unavailable): window read. A truncated read is ambiguous — only the
+ * freshest orders are dropped — so it MUST NOT drive adoption; we return false
+ * and let the caller keep pending-broadcast protection + structural resync.
+ *
+ * @param {any} bot
+ * @param {any} chainOrders - chain_orders module (has readOpenOrdersWithMetaSafe + batchReadOrders)
+ * @param {string} logPrefix
+ * @param {Object} [opts]
+ * @param {any} [opts.placedResults] - broadcast result carrying operation_results
+ * @param {any[]} [opts.placedContexts] - opContexts aligned with operation_results
+ * @returns {Promise<boolean>} true if master was adopted from the chain
+ */
+/**
+ * P1-atomic: after a refused/uncertain COW commit is recovered by adopting the
+ * placed orders from the chain, re-apply the rotational boundary this batch had
+ * already computed (workingBoundary) to master. The refused commit discarded
+ * the working grid, so without this the next rebalance would re-derive the
+ * boundary from a master that still reflects the pre-fill layout and could
+ * re-stamp the just-filled slot x. Applying workingBoundary commits the
+ * post-fill rotation immediately (no re-broadcast), so the next placement lands
+ * at the shifted slot, never at x.
+ *
+ * @param {any} bot
+ * @param {number} workingBoundary - boundary index the refused batch targeted
+ */
+async function restoreBoundaryAfterAdoption(bot: any, workingBoundary: any): Promise<void> {
     try {
+        if (workingBoundary === undefined || workingBoundary === null) return;
+        if (typeof bot.manager._restoreBoundary === 'function') {
+            bot.manager._restoreBoundary(workingBoundary);
+        } else {
+            bot.manager.boundaryIdx = workingBoundary;
+        }
+        bot.manager.logger.log(
+            `[COW] Restored rotational boundary ${workingBoundary} after refused/uncertain commit + chain adoption (atomic re-plan)`,
+            'info'
+        );
+    } catch (e: any) {
+        bot.manager.logger.log(`[COW] Post-adoption boundary restore failed: ${getErrorMessage(e)}`, 'warn');
+    }
+}
+
+async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: string, opts: any = {}): Promise<boolean> {
+    const { placedResults = null, placedContexts = null } = opts || {};
+    try {
+        const mgr = bot.manager;
         const accountRef = bot.accountId || bot.account?.id || bot.account;
+
+        // PREFERRED: re-read the exact placed/existing orders by id. Only when we
+        // have the broadcast result (so the set includes the freshest CREATE ids);
+        // without it the by-id set would be incomplete and would wrongly sync
+        // master against a partial picture.
+        const { all: knownIds, createIds } = placedResults
+            ? collectKnownOnChainOrderIds(mgr, placedResults, placedContexts)
+            : { all: [], createIds: [] as string[] };
+        if (knownIds.length > 0 && typeof chainOrders.batchReadOrders === 'function') {
+            let chainMap: Map<string, any> | null = null;
+            try {
+                chainMap = await chainOrders.batchReadOrders(knownIds);
+            } catch (byIdErr: any) {
+                // A by-id read failure must NOT fall through to the window read
+                // (which would also miss the freshest creates and virtualize them).
+                // Defer and keep pending-broadcast protection.
+                bot.manager.logger.log(
+                    `${logPrefix} By-id adoption read failed: ${getErrorMessage(byIdErr)}; deferring (pending-broadcast protection kept)`,
+                    'warn'
+                );
+                return false;
+            }
+            if (!chainMap) {
+                // Should not happen (try either assigned or returned), but defers
+                // safely rather than operating on a null map.
+                return false;
+            }
+
+            // Lagging-node guard (phantom-virtualization risk): a FRESHLY
+            // BROADCAST create id returning null here almost certainly means the
+            // queried node has not yet indexed the order (it was just placed), not
+            // that it is gone. If we synced a partial set, syncFromOpenOrders'
+            // phantom-cleanup would virtualize that live order and count it as a
+            // fill, re-creating a duplicate on the next cycle — the exact orphan
+            // class this path exists to prevent. Defer and keep the pending
+            // protection so a later, caught-up read adopts it.
+            for (const id of createIds) {
+                if (chainMap.get(id) == null) {
+                    bot.manager.logger.log(
+                        `${logPrefix} By-id adoption deferred: fresh CREATE ${id} absent from chain read (likely lagging node). ` +
+                        'Keeping pending-broadcast protection pending a caught-up read.',
+                        'error'
+                    );
+                    return false;
+                }
+            }
+
+            const fullChain: any[] = [];
+            if (chainMap && typeof chainMap.forEach === 'function') {
+                chainMap.forEach((order: any) => { if (order) fullChain.push(order); });
+            } else if (Array.isArray(chainMap)) {
+                for (const o of chainMap) if (o) fullChain.push(o);
+            }
+            // Informational: any other known id (master's pre-existing orders)
+            // absent is expected — those were cancelled/filled in this batch.
+            if (fullChain.length < knownIds.length) {
+                bot.manager.logger.log(
+                    `${logPrefix} By-id adoption: ${knownIds.length - fullChain.length}/${knownIds.length} known id(s) absent ` +
+                    '(expected cancels/fills); adopting the rest',
+                    'debug'
+                );
+            }
+            if (fullChain.length > 0 && typeof mgr.syncFromOpenOrders === 'function') {
+                await mgr.syncFromOpenOrders(fullChain, { skipAccounting: false });
+                bot.manager.logger.log(
+                    `${logPrefix} Adopted ${fullChain.length} on-chain order(s) by id after refused/uncertain commit (truncation-immune)`,
+                    'info'
+                );
+                return true;
+            }
+        }
+
+        // FALLBACK: window read (ambiguous when truncated).
         const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
-        // A truncated read (get_full_accounts caps the limit_orders window and
-        // fresh creates sort last) omits the very orders this batch just
-        // broadcast — the adoption sync could not register them, and clearing
-        // the pending-broadcast protection would let the next cycle re-create
-        // them as duplicates on chain. Treat truncated like an unreadable
-        // chain state: keep the protection and defer to a structural resync.
         if (freshRead.truncated) {
             bot.manager.logger.log(
                 `${logPrefix} Chain read TRUNCATED after batch broadcast; adoption deferred (pending-broadcast protection kept)`,
