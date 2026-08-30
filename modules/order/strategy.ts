@@ -269,10 +269,39 @@ class StrategyEngine {
         // (requested: price at ceiling 2.412 -> drop to 1.95 should fill
         //  deeper buys, not the 6 closest to the ceiling). See issue discussion.
         const BUY_OFFSET = 6;
-        const buySlots = allBuySlots
+        // BUY side 15 min delay: after a buy fill, keep buys virtual for 15 min
+        // to avoid rapid re-buying in volatile chop. Sell side is immediate.
+        const BUY_DELAY_MS = 15 * 60 * 1000;
+        const now = Date.now();
+        // Detect buy fills by matching fill slotId/orderId against current buy slots
+        const hasBuyFill = fills.some((f: any) => {
+            const fid = String((f as any).slotId || (f as any).filledOrderId || (f as any).orderId || (f as any).id || '');
+            if (!fid) return false;
+            // Direct slotId match (e.g. "slot-15")
+            if (allBuySlots.some((s: any) => String(s.id) === fid)) return true;
+            // OrderId match: look up order in grid by orderId
+            for (const s of allBuySlots) {
+                if (String((s as any).orderId) === fid) return true;
+            }
+            // Price heuristic: if fill price is in buy rail region (below boundary)
+            const fp = Number((f as any).price);
+            if (Number.isFinite(fp) && fp > 0) {
+                const bestBuyPrice = Math.max(...allBuySlots.map((s: any) => Number(s.price) || 0), 0);
+                if (fp <= bestBuyPrice * 1.001) return true;
+            }
+            return false;
+        });
+        const lastBuyTime = (this.manager as any)._lastBuyFillTime || 0;
+        if (hasBuyFill) (this.manager as any)._lastBuyFillTime = now;
+        const buyDelayActive = (now - lastBuyTime) < BUY_DELAY_MS && lastBuyTime !== 0;
+        if (buyDelayActive) {
+            this.manager.logger.log(`[STRATEGY] Buy delay active: ${((BUY_DELAY_MS - (now - lastBuyTime))/1000 |0)}s remaining, keeping buys virtual`, 'info');
+        }
+        const buySlotsRaw = allBuySlots
             .filter(inBuyRail)
             .sort((a: any, b: any) => b.price - a.price)
             .slice(BUY_OFFSET, BUY_OFFSET + targetCountBuy);
+        const buySlots = buyDelayActive ? [] : buySlotsRaw;
         
         const sellSlots = allSellSlots
             .filter(inSellRail)
