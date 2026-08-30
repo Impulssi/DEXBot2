@@ -456,6 +456,15 @@ let GRID_LIMITS = {
     // Ensures the cap is non-zero even for extremely cheap assets.
     PRICE_TOLERANCE_MIN_ABSOLUTE: 0.0001,
 
+    // ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: Multiplier applied to calculatePriceTolerance
+    // when adopting an unmatched chain order into the nearest empty VIRTUAL/SPREAD slot in
+    // the sync_engine pass-2 fallback (sync_engine.ts:~1001). A regeneration/re-anchor can
+    // leave the bot's own live orders unmatched by strict tolerance (~0.036); widening lets
+    // the recovery/startup reconcile re-adopt them into the nearest empty slot instead of
+    // orphaning them. Only affects empty slots (requireAvailableSlot), so it cannot steal an
+    // occupied slot. ~4× strict tolerance ≈ 0.25 grid step at typical spacing.
+    ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: 4,
+
     // GRID_REGENERATION_PERCENTAGE: Trigger threshold for automatic grid size recalculation.
     // Formula: IF (availableFunds / allocatedCapital) × 100 ≥ threshold → regenerate
     // Rationale: After fills, free balance rises relative to allocated grid capital.

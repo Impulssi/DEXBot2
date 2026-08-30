@@ -300,11 +300,27 @@ function popPushedWorkingGrid(bot: any, cowResult: any) {
  */
 async function deferUncertainBroadcastRead(bot: any, detail: string, suffix: string, resyncReason: string, resyncOptions: any = {}) {
     bot.manager.logger.log(
-        `[COW][UNCERTAIN] ${detail}; keeping pending-broadcast protection and requesting structural resync ${suffix}`,
+        `[COW][UNCERTAIN] ${detail}; keeping pending-broadcast protection ${suffix}`,
         'warn'
     );
-    if (typeof bot.manager.requestStructuralGridResync === 'function') {
+    // Fix #6 (LADDER_RECENTER_ORPHAN_ROOT_CAUSE): an ambiguous/truncated chain read is
+    // node lag, not a missing order — the broadcast already succeeded. Previously every
+    // such read requested a structural resync, piling pending broadcasts (up to 14) and
+    // forcing a resync mid-broadcast (the T-BTS 06:43Z thrash). The pending-broadcast
+    // protection already prevents double-creates on the next cycle, so we keep it and
+    // only escalate to a structural resync once per cooldown window. The next clean
+    // read adopts any landed orders without the churn.
+    const cooldownMs = (bot.config?.maintenance?.uncertainReadResyncCooldownMs as number) || 30_000;
+    const lastAt = (bot as any)._lastUncertainResyncAt || 0;
+    if (Date.now() - lastAt >= cooldownMs && typeof bot.manager.requestStructuralGridResync === 'function') {
+        (bot as any)._lastUncertainResyncAt = Date.now();
         await bot.manager.requestStructuralGridResync(resyncReason, resyncOptions);
+    } else {
+        bot.manager.logger.log(
+            `[COW][UNCERTAIN] Structural resync escalation suppressed (cooldown ${cooldownMs}ms) — ` +
+            `pending-broadcast protection retained; next clean read adopts landed orders.`,
+            'debug'
+        );
     }
     return { executed: false, hadRotation: false, uncertain: true, ambiguousRead: true };
 }

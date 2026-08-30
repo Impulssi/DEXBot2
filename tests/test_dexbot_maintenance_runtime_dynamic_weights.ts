@@ -780,11 +780,11 @@ async function testRmsDivergenceRunsFullGridResync() {
     await executeMaintenanceLogic(self, 'unit-test-rms');
 
     assert.deepStrictEqual(resyncOptions, {
-        refreshCenterPrice: true,
+        refreshCenterPrice: false,
         centerRefreshContext: 'RMS structural grid resync',
         centerRefreshLabel: 'RMS structural grid resync',
         resetSource: 'rms_structural_grid_resync',
-    }, 'RMS divergence should run full grid resync from the latest AMA center snapshot');
+    }, 'RMS divergence should run full grid resync as state repair WITHOUT re-anchoring (LADDER_RECENTER_ORPHAN_ROOT_CAUSE fix #1: re-anchoring orphaned live orders)');
     assert.strictEqual(correctionCalled, false, 'RMS divergence should not use correction-only path');
     assert.strictEqual(spreadChecked, false, 'maintenance should stop after full RMS resync');
     assert.ok(

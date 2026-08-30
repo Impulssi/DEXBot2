@@ -1619,6 +1619,7 @@ class OrderManager {
             );
         }
         this.boundaryIdx = newIdx;
+        this._logBoundaryDebug('set', newIdx);
     }
 
     /**
@@ -1632,6 +1633,43 @@ class OrderManager {
      */
     _restoreBoundary(newIdx: number | null): void {
         this.boundaryIdx = newIdx;
+        this._logBoundaryDebug('restore', newIdx);
+    }
+
+    /**
+     * Observability (fix #4, LADDER_RECENTER_ORPHAN_ROOT_CAUSE): emit the live
+     * boundary whenever roles are (re)assigned, so a silent boundary crawl that
+     * re-rolls slots into the wrong rail is diagnosable in real time. Debug-level
+     * only; no behavioral effect.
+     */
+    _logBoundaryDebug(source: string, newIdx: number | null): void {
+        try {
+            const self: any = this;
+            const boundary = newIdx == null ? self.boundaryIdx : newIdx;
+            if (boundary == null) return;
+            const gapSlots = typeof self._gapSlots === 'number' ? self._gapSlots : 0;
+            const sellStart = boundary + 1 + gapSlots;
+            const countActive = (type: any) => {
+                let n = 0;
+                for (const o of (self.orders?.values?.() || [])) {
+                    if (o && o.type === type && o.orderId) n++;
+                }
+                return n;
+            };
+            const anchor = self._marketAnchor;
+            const maxFilledSell = anchor && typeof anchor.maxFilledSellPrice === 'number' ? anchor.maxFilledSellPrice : null;
+            const anchorProjected = anchor && (anchor.projectedBoundary ?? anchor.projected) != null ? (anchor.projectedBoundary ?? anchor.projected) : null;
+            this.logger?.log?.(
+                `[BOUNDARY] ${source} boundary=${boundary} sellStart=${sellStart} gapSlots=${gapSlots} ` +
+                `spreadCount=${self.currentSpreadCount ?? self.initialSpreadCount ?? '?'} ` +
+                `activeBuy=${countActive(ORDER_TYPES.BUY)} activeSell=${countActive(ORDER_TYPES.SELL)} ` +
+                `maxFilledSell=${maxFilledSell == null ? 'n/a' : maxFilledSell.toFixed(6)} ` +
+                `anchorProjected=${anchorProjected == null ? 'n/a' : anchorProjected}`,
+                'debug'
+            );
+        } catch {
+            /* observability only — never throw from logging */
+        }
     }
 
     /**

@@ -1297,6 +1297,17 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
                     manager.logger?.log?.(`Error during startup order reconciliation: ${getErrorMessage(err)}`, 'error');
                     throw new Error(`Grid recalculation failed during order reconciliation: ${getErrorMessage(err)}`);
                 }
+                // Fix #5 (Mode D): the P3 boundary-evidence gate above may have
+                // re-derived the boundary via manager._restoreBoundary. recalculateGrid's
+                // earlier persistGrid (before initializeGrid) captured the stale value, so
+                // without this flush the corrected boundary never reaches disk and the
+                // [BOUNDARY-EVIDENCE] contradiction re-fires on every resync. Persist the
+                // reconciled grid (corrected boundary included) now.
+                try {
+                    await manager.persistGrid(undefined);
+                } catch (persistErr: any) {
+                    manager.logger?.log?.(`Error persisting boundary-corrected grid after reconcile: ${getErrorMessage(persistErr)}`, 'warn');
+                }
                 if (_resyncAborted) return;
 
                 manager.logger?.log?.('Full resync complete.', 'info');

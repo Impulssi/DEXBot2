@@ -97,7 +97,7 @@ const GRID_RESYNC_REASONS = Object.freeze({
     ...MARKET_ADAPTER_TRIGGER_RESETS,
     manual_grid_resync: MANUAL_TRIGGER_METADATA,
     rms_structural_grid_resync: {
-        shouldRefreshCenterPrice: true,
+        shouldRefreshCenterPrice: false,
         centerRefreshContext: 'RMS structural grid resync',
         centerRefreshLabel: 'RMS structural grid resync',
     },
@@ -1126,6 +1126,41 @@ function startOpenOrdersSyncLoop(bot: any) {
                             // threshold (but did not trigger the full-fill gate in the
                             // main processFills path) are caught promptly instead of
                             // waiting up to BLOCKCHAIN_FETCH_INTERVAL_MIN.
+                            // Fix #5 (Mode D): if a prior reconcile hit NO_FEASIBLE_BOUNDARY and
+                            // armed a re-validation, retry boundary derivation on the next sync tick
+                            // (bounded) instead of waiting for a fill-driven rotation path to unstick
+                            // the adoption-only freeze. reconcileGridOrders re-runs the P3 gate; when
+                            // the boundary becomes derivable it clears the pending flag and places.
+                            if (bot.manager && bot.manager._boundaryRevalidationPending) {
+                                const pend: any = bot.manager._boundaryRevalidationPending;
+                                const cooldownMs = (bot.config?.maintenance?.boundaryRevalidationCooldownMs as number) || 5 * 60 * 1000;
+                                const maxAttempts = (bot.config?.maintenance?.boundaryRevalidationMaxAttempts as number) || 20;
+                                if (Date.now() - (pend.since || 0) >= cooldownMs && (pend.attempts || 0) < maxAttempts) {
+                                    bot._log('[BOUNDARY-EVIDENCE] Re-running boundary re-validation (NO_FEASIBLE recovery) on periodic sync tick.', 'warn');
+                                    try {
+                                        const reChain = (typeof bot._readOpenOrdersHook === 'function')
+                                            ? await bot._readOpenOrdersHook()
+                                            : await readOpenOrdersGuarded(chainOrders, bot.accountId, {
+                                                log: (m: string, l: any) => bot._log(m, l),
+                                                label: 'BOUNDARY-REVAL',
+                                            });
+                                        if (reChain && Array.isArray(reChain)) {
+                                            await reconcileGridOrders({
+                                                manager: bot.manager,
+                                                config: bot.manager.config,
+                                                account: bot.account,
+                                                privateKey: bot.privateKey,
+                                                chainOrders,
+                                                chainOpenOrders: reChain,
+                                            });
+                                            await bot.manager.persistGrid?.(undefined);
+                                        }
+                                    } catch (reErr: any) {
+                                        bot._warn(`Boundary re-validation attempt failed: ${getErrorMessage(reErr)}`);
+                                    }
+                                }
+                            }
+
                             await performPeriodicGridChecks(bot);
                         });
                     }
@@ -1580,7 +1615,15 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             bot.manager, bot.account, bot.privateKey, chainOrders
         );
         if (correctionResult.failed > 0) {
-            bot._warn(`[MAINT] ${correctionResult.failed}/${pendingCorrections} price correction(s) failed`);
+            const failedDetails = (correctionResult.results || [])
+                .filter((r: any) => !(r.result && r.result.success))
+                .slice(0, 3)
+                .map((r: any) => `${r.chainOrderId ?? '?'}: ${r.result?.error ?? 'unknown'}`)
+                .join(' | ');
+            bot._warn(
+                `[MAINT] ${correctionResult.failed}/${pendingCorrections} price correction(s) failed` +
+                (failedDetails ? ` — ${failedDetails}` : '')
+            );
         }
     }
 
@@ -2181,22 +2224,36 @@ function wireStructuralGridResyncRequest(bot: any) {
                 const now = Date.now();
                 if (!bot._structuralGridResyncDeferStartedAt) {
                     bot._structuralGridResyncDeferStartedAt = now;
+                    bot._structuralGridResyncDeferCount = 0;
                 }
+                bot._structuralGridResyncDeferCount = (bot._structuralGridResyncDeferCount || 0) + 1;
                 const deferredMs = now - bot._structuralGridResyncDeferStartedAt;
                 if (deferredMs >= STRUCTURAL_RESYNC_MAX_DEFER_MS) {
                     bot._warn(
-                        `[RECOVERY] Structural resync max-defer reached (${deferredMs}ms, cap ${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms) — forcing despite _batchInFlight=${bot._batchInFlight}: ${reason}`
+                        `[RECOVERY] Structural resync max-defer reached (${deferredMs}ms, cap ${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms, deferred ${bot._structuralGridResyncDeferCount}x) — forcing despite _batchInFlight=${bot._batchInFlight}: ${reason}`
                     );
                     bot._structuralGridResyncDeferStartedAt = null;
+                    bot._structuralGridResyncDeferCount = 0;
                 } else {
-                    bot._warn(
-                        `[RECOVERY] Structural resync defer (batchInFlight=${bot._batchInFlight}, deferred ${deferredMs}ms/${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms): ${reason}`
-                    );
+                    // Fix #7 (LADDER_RECENTER_ORPHAN_ROOT_CAUSE): throttle the defer log to the
+                    // first occurrence per cap window (the H-BTS freeze emitted ~110 lines in 30s);
+                    // count the rest and surface them only in the final forced message.
+                    if (bot._structuralGridResyncDeferCount === 1) {
+                        bot._warn(
+                            `[RECOVERY] Structural resync defer (batchInFlight=${bot._batchInFlight}, deferred ${deferredMs}ms/${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms): ${reason}`
+                        );
+                    } else {
+                        bot.manager?.logger?.log?.(
+                            `[RECOVERY] Structural resync defer (suppressed; count=${bot._structuralGridResyncDeferCount}, deferred ${deferredMs}ms/${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms): ${reason}`,
+                            'debug'
+                        );
+                    }
                     bot._structuralGridResyncTimer = setTimeout(runStructuralResync, TIMING.LOCK_REFRESH_MIN_MS);
                     return;
                 }
             } else {
                 bot._structuralGridResyncDeferStartedAt = null;
+                bot._structuralGridResyncDeferCount = 0;
             }
 
             bot._structuralGridResyncRunning++;
@@ -2224,7 +2281,7 @@ function wireStructuralGridResyncRequest(bot: any) {
                 const suffix = unmatchedCount > 0 ? ` (${unmatchedCount} unmatched chain order(s))` : '';
                     bot._warn(`[RECOVERY] Running structural full grid resync for ${reason}${suffix}`);
                     const resetResult = await bot.requestGridReset('rms_structural_grid_resync', {
-                        refreshCenterPrice: true,
+                        refreshCenterPrice: false,
                         // Structural resync is a chain-read/rebuild; do not let a
                         // fill storm starve it behind the idle cooldown or the
                         // fill-processing lock.

@@ -263,6 +263,12 @@ export async function reconcileGridOrders({
         const plannedCancels: any[] = [];
         const cancelledDuplicateIds = new Set<string>();
         const activeGridOrders = (Array.from(manager.orders.values()) as any[]).filter((o: any) => o && o.orderId && isOrderPlaced(o));
+        // Update-first policy: unmatched chain orders are NEVER cancelled here.
+        // They flow into _reconcileStartupSide below, which price-updates them onto
+        // rail slots in a single batch (plannedUpdates), creates missing orders, and
+        // cancels only true surplus (chainCount > targetCount). Pre-emptive
+        // cancellation would turn one batched update into per-order cancel+create
+        // churn and strip the bot's own live orders during a reset.
         for (const u of unmatchedParsed) {
             const p = u.parsed!;
             const desc = `Unmatched chain order: ${p.orderId} (${p.type === ORDER_TYPES.BUY ? 'BUY' : 'SELL'}), price=${Format.formatPrice6(p.price)}, size=${Format.formatSizeByOrderType(p.size ?? 0, p.type, manager.assets)}`;
@@ -379,13 +385,32 @@ export async function reconcileGridOrders({
                         `placements proceed on corrected geometry.`,
                         'warn'
                     );
+                    // Fix #5 (Mode D): a valid boundary was established — clear any armed
+                    // re-validation so the periodic sync does not loop on a healthy grid.
+                    try { (manager as any)._boundaryRevalidationPending = null; } catch { /* ignore */ }
                 } else {
+                    // Fix #5 (Mode D): previously this froze placements with only an error
+                    // log and no retry, so the bot could stay adoption-only for hours (the
+                    // H-BTS ~2h48m freeze). Log at WARN and arm a bounded re-validation: the
+                    // periodic sync re-runs boundary validation on the next tick instead of
+                    // waiting for a fill-driven rotation path to unstick it.
                     logger?.log?.(
                         '[BOUNDARY-EVIDENCE] No safe boundary derivable from chain evidence — ' +
-                        'startup placements deferred (adoption-only reconcile).',
-                        'error'
+                        'startup placements deferred (adoption-only reconcile). ' +
+                        'Arming next-tick boundary re-validation (NO_FEASIBLE recovery).',
+                        'warn'
                     );
+                    try {
+                        (manager as any)._boundaryRevalidationPending = {
+                            since: Date.now(),
+                            attempts: ((manager as any)._boundaryRevalidationPending?.attempts || 0) + 1,
+                        };
+                    } catch { /* ignore */ }
                 }
+            } else {
+                // Boundary already consistent with chain evidence — clear any armed
+                // re-validation (it would have been set by a prior NO_FEASIBLE cycle).
+                try { (manager as any)._boundaryRevalidationPending = null; } catch { /* ignore */ }
             }
         }
 
