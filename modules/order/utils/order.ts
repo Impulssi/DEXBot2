@@ -71,7 +71,7 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, ANCHOR } from '../../constants.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, ANCHOR, COW_PERFORMANCE, ORDER_PLACEMENT } from '../../constants.js';
 import * as Format from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
@@ -499,8 +499,159 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
 }
 
 /**
+ * Finalize bookkeeping for a correction whose chain order is confirmed gone
+ * (batch-cancelled or discovered absent). Mirrors the per-entry cleanup in
+ * correctOrderPriceOnChain: duplicate-orphan detection reset, unmatched-list
+ * filter, queue removal, and (for surplus entries) grid-slot virtualization.
+ */
+async function _resolveCancelledCorrection(manager: any, entry: any): Promise<void> {
+    const chainOrderId = entry.chainOrderId;
+    if (entry.cancelOnly) {
+        clearDuplicateOrphanDetection(chainOrderId);
+    }
+    if (!entry.cancelOnly && entry.isSurplus && entry.gridOrder && manager._applyOrderUpdate) {
+        const spreadOrder = convertToSpreadPlaceholder(entry.gridOrder);
+        await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', {
+            skipAccounting: false,
+            fee: 0
+        });
+    }
+    _filterUnmatchedChainOrders(manager, chainOrderId);
+    manager.ordersNeedingPriceCorrection = (manager.ordersNeedingPriceCorrection || [])
+        .filter((c: any) => c.chainOrderId !== chainOrderId);
+}
+
+/**
+ * Broadcast all cancel-type corrections (cancelOnly duplicate orphans +
+ * surplus cancellations) together in chunked multi-op transactions.
+ *
+ * Rationale: the serial path issued one cancelOrder tx per orphan with a sleep
+ * between each, draining at ~1 order per block (~3s). A large duplicate-orphan
+ * backlog blocked CREATES for minutes while the queue drained
+ * one-by-one. Cancels are zero-fee and reference no balance state, so they are
+ * safe to pack densely (MAX_CANCELS_PER_BROADCAST).
+ *
+ * Safety:
+ *  - Pre-broadcast existence read: a cancel op for an already-dead order makes
+ *    the chain reject the ENTIRE transaction, so gone ids are resolved first
+ *    and excluded from the batch.
+ *  - Chunks are independent (cancels never interact), so a failed chunk does
+ *    not abort the others. Failed-chunk ids are re-read post-broadcast: ids
+ *    confirmed gone (uncertain broadcast that landed) are resolved; ids still
+ *    live are returned UNRESOLVED so the caller retries them through the
+ *    single-entry path (which keeps its own verified-after-failure logic).
+ *
+ * @returns {Promise<{corrected: number, failed: number, unresolved: Array}>}
+ */
+async function _batchCancelCorrections(manager: any, entries: any[], accountName: any, privateKey: any, accountOrders: any) {
+    const logger = manager?.logger;
+    const unresolved: any[] = [];
+    let corrected = 0;
+    let failed = 0;
+
+    const byId = new Map<string, any>();
+    for (const e of entries) {
+        if (e?.chainOrderId && !byId.has(e.chainOrderId)) byId.set(e.chainOrderId, e);
+    }
+    const ids = [...byId.keys()];
+
+    let presentIds = ids;
+    const preRead = typeof accountOrders?.batchReadOrders === 'function';
+    if (preRead) {
+        try {
+            const orderMap = await accountOrders.batchReadOrders(ids);
+            const goneIds: string[] = [];
+            presentIds = [];
+            for (const id of ids) {
+                if (orderMap.get(id)) presentIds.push(id); else goneIds.push(id);
+            }
+            for (const id of goneIds) {
+                await _resolveCancelledCorrection(manager, byId.get(id));
+                corrected++;
+            }
+        } catch (err: any) {
+            logger?.log?.(
+                `[CORRECTION] Batch pre-read of ${ids.length} cancel candidate(s) failed; proceeding with broadcast: ${getErrorMessage(err)}`,
+                'warn'
+            );
+            presentIds = ids;
+        }
+    }
+    if (presentIds.length === 0) return { corrected, failed, unresolved };
+
+    let ops: { id: string; op: any; }[] = [];
+    try {
+        for (const id of presentIds) {
+            const op = await accountOrders.buildCancelOrderOp(accountName, id);
+            ops.push({ id, op });
+        }
+    } catch (err: any) {
+        // Op construction failed (e.g. account resolution): fall back entirely.
+        logger?.log?.(
+            `[CORRECTION] Batch cancel build failed (${presentIds.length} order(s)): ${getErrorMessage(err)}; falling back to serial cancels`,
+            'warn'
+        );
+        return { corrected, failed, unresolved: entries.filter((e: any) => presentIds.includes(e.chainOrderId)) };
+    }
+
+    const configuredMax = Number(COW_PERFORMANCE?.MAX_CANCELS_PER_BROADCAST);
+    const maxCancels = Number.isFinite(configuredMax) && configuredMax >= 1 ? Math.floor(configuredMax) : 1;
+    const chunks: typeof ops[] = [];
+    for (let i = 0; i < ops.length; i += maxCancels) {
+        chunks.push(ops.slice(i, i + maxCancels));
+    }
+    logger?.log?.(
+        `[CORRECTION] Batch-cancelling ${ops.length} duplicate/surplus order(s) in ${chunks.length} transaction(s) (max ${maxCancels} cancels/broadcast)`,
+        'info'
+    );
+
+    const failedChunks: typeof ops[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        try {
+            await accountOrders.executeBatch(accountName, privateKey, chunk.map((o: any) => o.op));
+            for (const { id } of chunk) {
+                await _resolveCancelledCorrection(manager, byId.get(id));
+                corrected++;
+            }
+            logger?.log?.(`[CORRECTION] Batch chunk ${i + 1}/${chunks.length} cancelled ${chunk.length} order(s)`, 'info');
+        } catch (err: any) {
+            logger?.log?.(
+                `[CORRECTION] Batch chunk ${i + 1}/${chunks.length} failed (${chunk.length} order(s)): ${getErrorMessage(err)}; verifying per order`,
+                'warn'
+            );
+            failedChunks.push(chunk);
+        }
+    }
+
+    for (const chunk of failedChunks) {
+        let verifyMap: Map<string, any> | null = null;
+        if (preRead) {
+            try {
+                verifyMap = await accountOrders.batchReadOrders(chunk.map((o: any) => o.id));
+            } catch (_: any) {
+                verifyMap = null;
+            }
+        }
+        for (const { id } of chunk) {
+            const stillLive = verifyMap ? verifyMap.get(id) : true;
+            if (!stillLive && verifyMap) {
+                // Uncertain broadcast that actually landed — order is gone.
+                await _resolveCancelledCorrection(manager, byId.get(id));
+                corrected++;
+            } else {
+                unresolved.push(byId.get(id));
+            }
+        }
+    }
+
+    return { corrected, failed, unresolved };
+}
+
+/**
  * Correct all pending price mismatches atomically.
- * Processes corrections sequentially with sync delays between operations.
+ * Cancel-type corrections (duplicate orphans, surplus) are batched into
+ * chunked multi-op transactions; price updates run sequentially.
  * 
  * @param {Object} manager - OrderManager instance
  * @param {string} accountName - Account name for blockchain transactions
@@ -521,7 +672,24 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
             return true;
         });
 
-        for (const correctionInfo of ordersToCorrect) {
+        const canBatch = ordersToCorrect.length > 1
+            && typeof accountOrders?.buildCancelOrderOp === 'function'
+            && typeof accountOrders?.executeBatch === 'function';
+        let serialEntries = ordersToCorrect;
+        if (canBatch) {
+            const cancelEntries = ordersToCorrect.filter((c: any) => c.cancelOnly === true || c.isSurplus === true);
+            const updateEntries = ordersToCorrect.filter((c: any) => !(c.cancelOnly === true || c.isSurplus === true));
+            if (cancelEntries.length > 1) {
+                const batchOutcome = await _batchCancelCorrections(
+                    manager, cancelEntries, accountName, privateKey, accountOrders
+                );
+                corrected += batchOutcome.corrected;
+                failed += batchOutcome.failed;
+                serialEntries = [...batchOutcome.unresolved, ...updateEntries];
+            }
+        }
+
+        for (const correctionInfo of serialEntries) {
             const result = await correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders);
             results.push({ ...correctionInfo, result });
             if (result && result.success) corrected++; else failed++;
@@ -672,7 +840,10 @@ function resolveConfiguredPriceBound(value: any, fallback: any, startPrice: any,
  */
 function virtualizeOrder(order: any) {
     if (!order) return order;
-    const { btsFeeState, ...rest } = order;
+    // Drop btsFeeState and the createUncertain orphan marker: an explicit
+    // virtualize is a known-clean hole transition, so durable "possibly
+    // landed CREATE" evidence no longer applies to the resulting object.
+    const { btsFeeState, createUncertain, ...rest } = order;
     return { ...rest, state: ORDER_STATES.VIRTUAL, orderId: null, rawOnChain: null };
 }
 
@@ -1392,19 +1563,63 @@ function isShiftEligibleFill(fill: any): boolean {
 }
 
 /**
+ * Derive plausibility bounds from a MarketAnchor's established range.
+ * Used to reject fill prices resolved from stale slot state: a price more
+ * than `factor`x beyond the traded extremes cannot come from legitimate
+ * rotation, only from a slot whose stored price no longer matches the chain
+ * (stale-slot poisoning: e.g. a 10x-off fill price vs the established range).
+ *
+ * @param {Object|null} anchor - MarketAnchor (min/max filled prices)
+ * @param {number} factor - Per-side multiplicative tolerance (> 1)
+ * @returns {{low: number, high: number}|null} Bounds or null when no side is established
+ */
+function deriveAnchorBounds(anchor: any, factor: any): { low: number; high: number } | null {
+    const f = Number(factor);
+    if (!Number.isFinite(f) || f <= 1) return null;
+    const low = anchor && anchor.minFilledBuyPrice != null ? Number(anchor.minFilledBuyPrice) / f : null;
+    const high = anchor && anchor.maxFilledSellPrice != null ? Number(anchor.maxFilledSellPrice) * f : null;
+    if (low == null && high == null) return null;
+    return { low: low ?? -Infinity, high: high ?? Infinity };
+}
+
+/**
+ * Whether a price lies inside plausibility bounds (inclusive).
+ * @param {number} price - Candidate price
+ * @param {{low: number, high: number}|null} bounds - Derived bounds or null (no guard)
+ * @returns {boolean} True when bounds are null (unguarded) or price is inside
+ */
+function isPriceWithinBounds(price: any, bounds: { low: number; high: number } | null): boolean {
+    if (!bounds) return true;
+    const p = Number(price);
+    if (!Number.isFinite(p)) return false;
+    return p >= bounds.low && p <= bounds.high;
+}
+
+/**
  * Resolve the grid price of a fill. Prefers the fill's own price, falls back
  * to the slot price looked up by id in the provided slot map.
  *
  * @param {Object} fill - Fill event
  * @param {Map|null} slotById - Slot id -> slot map (may be null)
- * @returns {number|null} Fill price or null when unavailable
+ * @param {{low: number, high: number}|null} [bounds] - Optional plausibility
+ *   bounds (deriveAnchorBounds): when the resolved price lies outside, null
+ *   is returned so the fill is skipped by rotation/anchor consumers. Fund
+ *   accounting does NOT use this helper and is unaffected.
+ * @returns {number|null} Fill price or null when unavailable/implausible
  */
-function resolveFillPrice(fill: any, slotById: Map<any, any> | null): number | null {
+function resolveFillPrice(fill: any, slotById: Map<any, any> | null, bounds: { low: number; high: number } | null = null): number | null {
     const direct = toFiniteNumber(fill?.price);
-    if (direct != null && direct > 0) return direct;
-    const slot = slotById ? slotById.get(fill?.id) : null;
-    const slotPrice = toFiniteNumber(slot?.price);
-    return slotPrice != null && slotPrice > 0 ? slotPrice : null;
+    let resolved: number | null;
+    if (direct != null && direct > 0) {
+        resolved = direct;
+    } else {
+        const slot = slotById ? slotById.get(fill?.id) : null;
+        const slotPrice = toFiniteNumber(slot?.price);
+        resolved = slotPrice != null && slotPrice > 0 ? slotPrice : null;
+    }
+    if (resolved == null) return null;
+    if (!isPriceWithinBounds(resolved, bounds)) return null;
+    return resolved;
 }
 
 /**
@@ -1431,11 +1646,14 @@ function resolveFillPrice(fill: any, slotById: Map<any, any> | null): number | n
  *   history order
  * @param {Array} allSlots - All grid slots sorted by price
  * @param {number} gapSlots - Number of spread gap slots
+ * @param {{low: number, high: number}|null} [bounds] - Optional plausibility
+ *   bounds (deriveAnchorBounds); implausible fill prices are skipped so a
+ *   stale-slot poisoning cannot drag the correction bound to a far rail
  * @returns {{direction: string, boundIdx: number}|null} Correction bound,
  *   or null when no fill price is resolvable (caller keeps the pure
  *   count-based shift)
  */
-function computePriceAnchoredBoundaryTarget(fills: any, allSlots: any, gapSlots: any): { direction: string; boundIdx: number } | null {
+function computePriceAnchoredBoundaryTarget(fills: any, allSlots: any, gapSlots: any, bounds: { low: number; high: number } | null = null): { direction: string; boundIdx: number } | null {
     if (!Array.isArray(fills) || fills.length === 0) return null;
     if (!Array.isArray(allSlots) || allSlots.length === 0) return null;
 
@@ -1445,7 +1663,7 @@ function computePriceAnchoredBoundaryTarget(fills: any, allSlots: any, gapSlots:
     let trailingType: string | null = null;
     for (const fill of fills) {
         if (!isShiftEligibleFill(fill)) continue;
-        const price = resolveFillPrice(fill, slotById);
+        const price = resolveFillPrice(fill, slotById, bounds);
         if (price == null) continue;
         if (maxPrice == null || price > maxPrice) maxPrice = price;
         if (minPrice == null || price < minPrice) minPrice = price;
@@ -1488,9 +1706,12 @@ function computePriceAnchoredBoundaryTarget(fills: any, allSlots: any, gapSlots:
  * @param {Object|null} burstAnchor - Pre-computed price-anchored correction
  *   bound for the WHOLE burst (computed before chunking); takes precedence
  *   over per-call price derivation
+ * @param {{low: number, high: number}|null} [bounds] - Optional plausibility
+ *   bounds threaded to the per-call price correction when no burstAnchor is
+ *   supplied (the precomputed path applies its own guard at the caller)
  * @returns {{boundaryIdx: number, remainingBudget: number}} New boundary index and remaining budget
  */
-function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null, burstAnchor?: { direction: string; boundIdx: number } | null): { boundaryIdx: number; remainingBudget: number } {
+function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null, burstAnchor?: { direction: string; boundIdx: number } | null, bounds?: { low: number; high: number } | null): { boundaryIdx: number; remainingBudget: number } {
     let newBoundaryIdx = currentBoundaryIdx;
 
     // Initial recovery if boundary is undefined
@@ -1514,7 +1735,7 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
 
     const anchor = burstAnchor !== undefined
         ? burstAnchor
-        : computePriceAnchoredBoundaryTarget(fills, allSlots, gapSlots);
+        : computePriceAnchoredBoundaryTarget(fills, allSlots, gapSlots, bounds ?? null);
     const effectiveBudget = crossChunkBudget ?? (anchor != null ? windowCap : fallbackCap);
 
     // 1. Base shift: count-based crawl, rate-limited by the budget and the
@@ -1773,6 +1994,16 @@ function updateMarketAnchorFromFills(anchor: any, fills: any, slotById: Map<any,
     if (!target._seenKeys) target._seenKeys = new Set();
     const isReplay = opts.isReplay === true;
 
+    // Outlier self-guard: bound candidate fill prices to the anchor's own
+    // PRE-update range. A price resolved from a stale slot (grid state that
+    // no longer matches the chain) can otherwise poison lastFillPrice and
+    // slam the range wide, which drags boundary projection and refill
+    // planning to a far rail. Legitimate range extension stays possible:
+    // the guard only rejects prices beyond PRICE_OUTLIER_FACTOR x the traded
+    // extremes. Rejected fills keep their dedupe keys unclaimed so a
+    // re-delivery can still apply them if the range legitimately moves.
+    const outlierBounds = deriveAnchorBounds(target, ANCHOR.PRICE_OUTLIER_FACTOR);
+
     // Block ordering (D4): sort by block_num when available; ties and fills
     // without a block_num keep the input (history) order. Never fall back to
     // id-string comparison — that scrambles chronological order for fills
@@ -1800,7 +2031,7 @@ function updateMarketAnchorFromFills(anchor: any, fills: any, slotById: Map<any,
         const picked: any[] = [];
         for (let i = sorted.length - 1; i >= 0 && picked.length < cap; i--) {
             if (!isShiftEligibleFill(sorted[i])) continue;
-            if (resolveFillPrice(sorted[i], slotById) == null) continue;
+            if (resolveFillPrice(sorted[i], slotById, outlierBounds) == null) continue;
             picked.push(sorted[i]);
         }
         replayFills = picked.reverse();
@@ -1810,8 +2041,19 @@ function updateMarketAnchorFromFills(anchor: any, fills: any, slotById: Map<any,
         if (!isShiftEligibleFill(fill)) continue;
         const fillKey = buildFillKey(fill);
         if (fillKey && target._seenKeys.has(fillKey)) continue;
-        const price = resolveFillPrice(fill, slotById);
-        if (price == null) continue;
+        const price = resolveFillPrice(fill, slotById, outlierBounds);
+        if (price == null) {
+            // Distinguish implausible (guard-rejected) from unresolvable so
+            // the manager can surface stale-slot poisoning telemetry.
+            if (outlierBounds) {
+                const raw = resolveFillPrice(fill, slotById, null);
+                if (raw != null && !isPriceWithinBounds(raw, outlierBounds)) {
+                    target.rejectedOutlierFills = (target.rejectedOutlierFills || 0) + 1;
+                    target.lastRejectedOutlier = { price: raw, id: fill?.id ?? null, at: Date.now() };
+                }
+            }
+            continue;
+        }
         if (fillKey) target._seenKeys.add(fillKey);
         target.lastFillPrice = price;
         target.lastFillSide = fill.type === ORDER_TYPES.SELL || fill.type === ORDER_TYPES.BUY ? fill.type : target.lastFillSide;
@@ -1903,6 +2145,70 @@ function projectAnchorToGrid(anchor: any, allSlots: any, gapSlots: any): number 
 function computeAnchorDivergence(projected: any, bookkept: any): number | null {
     if (!Number.isFinite(projected) || !Number.isFinite(bookkept)) return null;
     return Number(projected) - Number(bookkept);
+}
+
+/**
+ * Derive a live market reference price from the MarketAnchor's traded range
+ * (mid of [minFilledBuyPrice, maxFilledSellPrice]; single-bound fallback).
+ * The anchor is fills-derived + book-seeded and guarded against stale-slot
+ * poisoning (deriveAnchorBounds), making it the best in-process proxy for
+ * "where the market actually trades". config.startPrice is deliberately NOT
+ * used as a fallback reference: a stale startPrice is exactly the poisoning
+ * this gate defends against.
+ *
+ * @param {Object|null} anchor - MarketAnchor
+ * @returns {number|null} Reference price or null when unavailable
+ */
+function deriveMarketReferencePrice(anchor: any): number | null {
+    if (!anchor) return null;
+    const low = toFiniteNumber(anchor.minFilledBuyPrice);
+    const high = toFiniteNumber(anchor.maxFilledSellPrice);
+    if (low != null && low > 0 && high != null && high > 0) return (low + high) / 2;
+    if (low != null && low > 0) return low;
+    if (high != null && high > 0) return high;
+    return null;
+}
+
+/**
+ * Whether a planned price is within `maxDeviation` of a reference price.
+ * Unjudgeable inputs (non-finite price, non-positive reference, invalid
+ * deviation) evaluate to true — the gate must never fire on bad metadata,
+ * only on a genuinely far price vs a valid reference.
+ *
+ * @param {number} price - Planned order price
+ * @param {number|null} refPrice - Market reference (null → allowed)
+ * @param {number} [maxDeviation] - Relative tolerance (ORDER_PLACEMENT.MAX_PRICE_DEVIATION)
+ * @returns {boolean}
+ */
+function isPriceWithinMarketTolerance(price: any, refPrice: any, maxDeviation: any = ORDER_PLACEMENT.MAX_PRICE_DEVIATION): boolean {
+    const p = Number(price);
+    const ref = Number(refPrice);
+    const dev = Number(maxDeviation);
+    if (!Number.isFinite(p) || p <= 0 || !Number.isFinite(ref) || ref <= 0) return true;
+    if (!Number.isFinite(dev) || dev < 0) return true;
+    return Math.abs(p / ref - 1) <= dev;
+}
+
+/**
+ * Placement price sanity check against the anchor-derived market reference.
+ * Used as a pre-broadcast gate: a planned price more than
+ * ORDER_PLACEMENT.MAX_PRICE_DEVIATION from the traded-range mid is rejected
+ * (skip create/update + aggregated warn) instead of being broadcast into
+ * instant fills.
+ *
+ * @param {number} price - Planned order price
+ * @param {Object|null} anchor - manager._marketAnchor
+ * @param {number} [maxDeviation] - Relative tolerance override
+ * @returns {{ok: boolean, refPrice: number|null, deviation: number|null, reason: string|null}}
+ */
+function checkPlacementPriceSanity(price: any, anchor: any, maxDeviation: any = ORDER_PLACEMENT.MAX_PRICE_DEVIATION): { ok: boolean; refPrice: number | null; deviation: number | null; reason: string | null } {
+    const ref = deriveMarketReferencePrice(anchor);
+    if (ref == null) return { ok: true, refPrice: null, deviation: null, reason: 'no-reference' };
+    const p = Number(price);
+    if (!Number.isFinite(p) || p <= 0) return { ok: true, refPrice: ref, deviation: null, reason: 'invalid-price' };
+    const deviation = Math.abs(p / ref - 1);
+    const ok = isPriceWithinMarketTolerance(p, ref, maxDeviation);
+    return { ok, refPrice: ref, deviation, reason: ok ? null : 'out-of-tolerance' };
 }
 
 /**
@@ -2087,5 +2393,5 @@ function validateBoundaryAgainstChainEvidence(params: {
     return result;
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, computePriceAnchoredBoundaryTarget, isShiftEligibleFill, resolveFillPrice, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, createEmptyMarketAnchor, isMarketAnchorAvailable, isMarketAnchorFresh, seedMarketAnchorFromBook, updateMarketAnchorFromFills, projectAnchorToGrid, computeAnchorDivergence, validateBoundaryAgainstChainEvidence }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, computePriceAnchoredBoundaryTarget, isShiftEligibleFill, resolveFillPrice, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, createEmptyMarketAnchor, isMarketAnchorAvailable, isMarketAnchorFresh, seedMarketAnchorFromBook, updateMarketAnchorFromFills, deriveAnchorBounds, isPriceWithinBounds, deriveMarketReferencePrice, isPriceWithinMarketTolerance, checkPlacementPriceSanity, projectAnchorToGrid, computeAnchorDivergence, validateBoundaryAgainstChainEvidence }
 

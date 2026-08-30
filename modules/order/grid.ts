@@ -757,6 +757,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
 
             manager.pauseRecalcLogging();
             manager.pauseFundRecalc();
+            let sanitizedSizedVirtual: string[] = [];
             try {
                 // RC-2: Use applyOrderUpdate (PRIVATE/UNLOCKED)
                 for (const order of grid) {
@@ -765,24 +766,35 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                         manager.logger?.log?.(`Sanitizing corrupted order ${order.id}: ACTIVE/PARTIAL without orderId -> VIRTUAL`, 'warn');
                         currentOrder = { ...order, state: ORDER_STATES.VIRTUAL };
                     }
-                    // Sized VIRTUAL slot with no on-chain id: a CREATE whose broadcast
-                    // result was lost before the orderId was durably attached to the
-                    // persisted master. It is NOT a placed order, yet its size would
-                    // otherwise survive reload (isPhantomOrder only flags ACTIVE/PARTIAL)
-                    // and dilute sizing / mask the real spread. Normalize to a clean
-                    // empty so re-derivation or spread correction re-places it next cycle.
+                    // Sized VIRTUAL slot with no on-chain id AND durable orphan
+                    // evidence (createUncertain: set only where a CREATE
+                    // broadcast result was lost — COW uncertain-restore and
+                    // startup uncertain-create handlers). Unflagged sized
+                    // VIRTUAL slots are the NORMAL planned-but-unplaced grid
+                    // state (budgeted sizes cover the whole rail and persist
+                    // by design), so their sizes must survive reload; only
+                    // flagged orphans get zeroed so re-derivation or spread
+                    // correction re-places them next cycle. One aggregate
+                    // warn instead of per-slot spam.
                     if (
                         currentOrder.state === ORDER_STATES.VIRTUAL
                         && !hasOnChainId(currentOrder)
                         && Number(currentOrder.size || 0) > 0
+                        && currentOrder.createUncertain === true
                     ) {
-                        manager.logger?.log?.(
-                            `Sanitizing orphaned sized slot ${currentOrder.id}: VIRTUAL with size but no orderId -> empty (size dropped)`,
-                            'warn'
-                        );
-                        currentOrder = { ...currentOrder, size: 0 };
+                        sanitizedSizedVirtual.push(currentOrder.id);
+                        currentOrder = { ...currentOrder, size: 0, createUncertain: false };
                     }
                     await manager._applyOrderUpdate(currentOrder, 'grid-load', { skipAccounting: true });
+                }
+                if (sanitizedSizedVirtual.length > 0) {
+                    const preview = sanitizedSizedVirtual.slice(0, 10).join(', ');
+                    manager.logger?.log?.(
+                        `Sanitized ${sanitizedSizedVirtual.length} creation-uncertain sized slot(s) on load ` +
+                        `(VIRTUAL with size but no orderId -> size dropped): ${preview}` +
+                        (sanitizedSizedVirtual.length > 10 ? ' …' : ''),
+                        'warn'
+                    );
                 }
                  // Gap-band occupancy for the spread metric.  Empty slots are
                  // normalized to SPREAD (side-neutral) above, so a raw

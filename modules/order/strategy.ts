@@ -51,7 +51,7 @@
 import { ORDER_TYPES, ORDER_STATES, ANCHOR } from '../constants.js';
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail } from './utils/math.js';
-import { deriveTargetBoundary, isShiftEligibleFill, resolveFillPrice, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, projectAnchorToGrid, isMarketAnchorAvailable, isMarketAnchorFresh, computeAnchorDivergence } from './utils/order.js';
+import { deriveTargetBoundary, isShiftEligibleFill, resolveFillPrice, deriveAnchorBounds, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, projectAnchorToGrid, isMarketAnchorAvailable, isMarketAnchorFresh, computeAnchorDivergence } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -295,7 +295,11 @@ class StrategyEngine {
 
         const crossChunkBudget = (this.manager as any)._boundaryShiftBudget;
         const burstTarget = (this.manager as any)._boundaryTarget;
-        const { boundaryIdx: legacyBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget, burstTarget);
+        // Outlier guard: fill prices resolved from stale slot state must not
+        // drag the burst correction to a far rail. Bound candidate prices to
+        // the anchor's established range (same guard the anchor update uses).
+        const outlierBounds = deriveAnchorBounds(anchor, ANCHOR.PRICE_OUTLIER_FACTOR);
+        const { boundaryIdx: legacyBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget, burstTarget, outlierBounds);
         if (crossChunkBudget != null) {
             (this.manager as any)._boundaryShiftBudget = remainingBudget;
         }
@@ -324,7 +328,7 @@ class StrategyEngine {
         let minFilledBuyPrice: number | null = null;
         for (const fill of fills) {
             if (!isShiftEligibleFill(fill)) continue;
-            const price = resolveFillPrice(fill, guardSlotById);
+            const price = resolveFillPrice(fill, guardSlotById, outlierBounds);
             if (price == null) continue;
             if (fill.type === ORDER_TYPES.SELL) {
                 if (maxFilledSellPrice == null || price > maxFilledSellPrice) maxFilledSellPrice = price;

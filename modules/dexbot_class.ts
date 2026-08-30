@@ -1139,10 +1139,19 @@ class DEXBot {
                             this.manager.config?.targetSpreadPercent,
                             this.manager.config?.gridLimits
                         );
+                    // Outlier guard: bound candidate fill prices to the
+                    // anchor's established range so a stale-slot price
+                    // (grid state diverged from the chain) cannot drag the
+                    // burst target to a far rail.
+                    const bounds = orderUtils.deriveAnchorBounds(
+                        this.manager?._marketAnchor,
+                        (require('./constants') as any).ANCHOR.PRICE_OUTLIER_FACTOR
+                    );
                     boundaryTarget = orderUtils.computePriceAnchoredBoundaryTarget(
                         fills,
                         allSlots,
-                        gapSlots
+                        gapSlots,
+                        bounds
                     );
                 }
             } catch (targetErr: any) {

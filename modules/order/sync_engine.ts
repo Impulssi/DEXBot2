@@ -547,6 +547,43 @@ class SyncEngine {
 
         mgr.logger?.log?.(`[SYNC] Starting synchronization from ${parsedChainOrders.size} blockchain orders...`, 'info');
 
+        // SUSPECT EMPTY READ GUARD (Fix C): an empty chain read while the grid
+        // still holds placed orders (slots with orderIds) is far more likely a
+        // lagging/partial node response than a genuinely emptied account — a
+        // 0-order read treated as authoritative has virtualized live orders
+        // ("phantom" resets). Refuse to reconcile on a
+        // suspect empty; the guard is self-expiring: after
+        // TIMING.SYNC_SUSPECT_EMPTY_READ_LIMIT consecutive empty reads the
+        // account really is empty and the sync accepts it. Any non-empty read
+        // resets the counter.
+        if (parsedChainOrders.size === 0) {
+            const gridOrderIds = Array.from(mgr.orders.values() as any[]).filter((o: any) => o?.orderId).length;
+            if (gridOrderIds > 0) {
+                const suspect: any = (mgr as any)._suspectEmptyReads || { count: 0, firstAt: 0 };
+                suspect.count += 1;
+                if (!suspect.firstAt) suspect.firstAt = Date.now();
+                (mgr as any)._suspectEmptyReads = suspect;
+                const limit = Math.max(1, Number(TIMING.SYNC_SUSPECT_EMPTY_READ_LIMIT) || 3);
+                if (suspect.count < limit) {
+                    mgr.logger?.log?.(
+                        `[SYNC] Suspect empty read (${suspect.count}/${limit} consecutive) with ${gridOrderIds} grid orderIds — ` +
+                        `refusing reconciliation (phantom protection); accepting after ${limit} consecutive empties or next non-empty read`,
+                        'warn'
+                    );
+                    return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
+                }
+                mgr.logger?.log?.(
+                    `[SYNC] Empty read confirmed after ${suspect.count} consecutive attempts — reconciling to empty account`,
+                    'warn'
+                );
+                (mgr as any)._suspectEmptyReads = { count: 0, firstAt: 0 };
+            } else {
+                (mgr as any)._suspectEmptyReads = { count: 0, firstAt: 0 };
+            }
+        } else {
+            (mgr as any)._suspectEmptyReads = { count: 0, firstAt: 0 };
+        }
+
         // Collect all order IDs that might be modified during reconciliation
         // Lock them to prevent concurrent modifications from createOrder/cancelOrder
         const orderIdsToLock = new Set<string>();

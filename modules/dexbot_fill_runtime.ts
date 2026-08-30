@@ -10,6 +10,7 @@ import { getErrorMessage } from './utils/errors.js';
 import { isOrderDoesNotExistError } from './dexbot_maintenance_runtime.js';
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
+function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
 function retryPersistenceIfNeeded(...args: any) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
 const { readOpenOrdersGuarded } = chainOrders;
 
@@ -21,12 +22,77 @@ interface SweepOrphanFillOptions {
 }
 
 /**
+ * Whether an unknown fill's order plausibly belongs to THIS bot's grid and
+ * should be adopted before its proceeds are credited. The by-id chain read
+ * confirms the order is still live; the asset and price checks (inside the
+ * grid's slot price extremes expanded by a 1.25 factor) filter out foreign
+ * orders on shared accounts or other markets, which keep the legacy
+ * credit-as-orphan path.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {any} fillOp - Fill operation ({order_id, ...})
+ * @returns {Promise<boolean>} True when the order is live and in-grid-range
+ */
+async function isUnknownFillOrderAdoptable(bot: any, fillOp: any): Promise<boolean> {
+    try {
+        const orderId = fillOp?.order_id != null ? String(fillOp.order_id) : null;
+        if (!orderId) return false;
+        const chainMap = await chainOrders.batchReadOrders([orderId]);
+        const liveOrder = chainMap ? chainMap.get(orderId) : undefined;
+        if (!liveOrder) return false;
+
+        // Asset gate: only orders in THIS bot's market can be ours. Shared
+        // accounts hold other bots'/markets' orders — never adopt those.
+        const assetAId = bot.manager?.assets?.assetA?.id;
+        const assetBId = bot.manager?.assets?.assetB?.id;
+        const sellPrice = liveOrder?.sell_price;
+        const baseId = sellPrice?.base?.asset_id;
+        const quoteId = sellPrice?.quote?.asset_id;
+        if (!baseId || !quoteId) return false;
+        const assetsMatch = (baseId === assetAId && quoteId === assetBId) || (baseId === assetBId && quoteId === assetAId);
+        if (!assetsMatch) return false;
+
+        const parsed = parseChainOrder(liveOrder, bot.manager.assets);
+        const price = Number(parsed?.price);
+        if (!Number.isFinite(price) || price <= 0) return false;
+
+        // Price gate: inside the current grid's slot price extremes expanded
+        // by a factor. A stray order at a price our grid could plausibly own
+        // (e.g. just rotated out of range, or an adoption miss) is deferred to
+        // the adoption sync; anything far outside is not ours to adopt.
+        let minPrice = Infinity;
+        let maxPrice = 0;
+        for (const o of (bot.manager?.orders?.values?.() ?? []) as any[]) {
+            const p = Number(o?.price);
+            if (!Number.isFinite(p) || p <= 0) continue;
+            if (p < minPrice) minPrice = p;
+            if (p > maxPrice) maxPrice = p;
+        }
+        if (!Number.isFinite(minPrice) || maxPrice <= 0) return false;
+        const rangeFactor = 1.25;
+        return price >= minPrice / rangeFactor && price <= maxPrice * rangeFactor;
+    } catch {
+        // Read failure → not adoptable here; caller falls back to crediting.
+        return false;
+    }
+}
+
+/**
  * Handle a sweep fill whose grid order could not be resolved (orphan): derive a
  * replay-safe key (with degraded fallback), skip already-processed fills, credit
  * the fill's proceeds via replay-safe orphan accounting, and report whether the
  * fill was missing a history key (which should trigger an open-orders sync).
  * Shared by the bootstrap/post-reset/orphan-fill sweep loops.
- * @returns true when the fill was missing a replay-safe history identifier.
+ *
+ * Adoption-before-credit (Fix E): when the unknown order is still LIVE on-chain
+ * and priced inside this bot's grid range, its proceeds are NOT credited
+ * outside slot accounting — the function returns true so the caller triggers
+ * the open-orders sync whose pass-2 adoption brings the order into the grid
+ * (fills credited unaccounted because the order was never adopted). Only
+ * confirmed-gone (fully filled) or read-failure/foreign orders take the
+ * legacy credit path.
+ *
+ * @returns true when the fill was missing a replay-safe history identifier OR
+ *   the fill was deferred to the adoption sync (order still live on-chain).
  */
 async function processSweepOrphanFill(bot: any, fill: any, fillOp: any, processedFillKeys: Set<any>, opts: SweepOrphanFillOptions): Promise<boolean> {
     let orphanFillKey = buildFillKey(fill);
@@ -35,6 +101,20 @@ async function processSweepOrphanFill(bot: any, fill: any, fillOp: any, processe
     }
     if (orphanFillKey && !bot._isNewFillKey(orphanFillKey, processedFillKeys, opts.label, fillOp.order_id)) {
         return false;
+    }
+
+    if (await isUnknownFillOrderAdoptable(bot, fillOp)) {
+        (opts.logger ?? bot.manager.logger).log(
+            `[${opts.label}] Unknown order ${fillOp.order_id} is LIVE on-chain inside grid range — deferring proceeds credit to adoption sync`,
+            'warn'
+        );
+        // Release the dedupe key consumed by _isNewFillKey so the fill can be
+        // re-processed against the adopted slot after the sync runs.
+        if (orphanFillKey) {
+            processedFillKeys.delete(orphanFillKey);
+            bot._recentlyQueuedFills?.delete?.(orphanFillKey);
+        }
+        return true;
     }
 
     (opts.logger ?? bot.manager.logger).log(
@@ -559,7 +639,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
         return;
     }
 
-    if (bot._batchInFlight || bot._recoverySyncInFlight) {
+    if (bot._batchInFlight || bot._recoverySyncInFlight || bot.manager?.isBroadcastingActive?.()) {
         bot.manager?.logger?.log?.(
             `Fill processing deferred: order pipeline active (${bot._incomingFillQueue.length} queued)`,
             'debug'

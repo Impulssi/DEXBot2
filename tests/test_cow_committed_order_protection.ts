@@ -1,6 +1,6 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/index').default;
-const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
 
 // Compiled ESM namespaces are frozen: seed the fee cache via the _setFeeCache
@@ -17,6 +17,19 @@ require('../modules/order/utils/math')._setFeeCache({
 
 async function runTests() {
     console.log('Running Committed Order Protection Tests...');
+
+    // Suspect-empty-read guard (Fix C): the FIRST empty read with placed
+    // orders is refused (phantom protection). Pump empty syncs until the
+    // guard's consecutive-empty limit confirms the account really is empty;
+    // the LAST result is the reconciled one.
+    const syncEmptyUntilConfirmed = async (manager: any) => {
+        const limit = Math.max(1, Number(TIMING.SYNC_SUSPECT_EMPTY_READ_LIMIT) || 3);
+        let result: any;
+        for (let i = 0; i < limit; i++) {
+            result = await manager.sync.syncFromOpenOrders([], {});
+        }
+        return result;
+    };
 
     const createManager = async () => {
         const mgr = new OrderManager({
@@ -51,9 +64,10 @@ async function runTests() {
             id: 'slot-2', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
             size: 100, price: 50, orderId: '1.7.101'
         });
-        const result = await manager.sync.syncFromOpenOrders([], {});
+        // Suspect-empty-read guard: pump until the empty account is confirmed.
+        const result = await syncEmptyUntilConfirmed(manager);
         const order = manager.orders.get('slot-2');
-        assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Non-committed order should be virtualized');
+        assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Non-committed order should be virtualized after confirmed empty');
         assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported for non-committed order');
         assert.strictEqual(result.filledOrders[0].id, 'slot-2', 'Fill should reference the correct slot');
     }
@@ -67,7 +81,7 @@ async function runTests() {
         });
         manager._committedOrderIds.add('1.7.102');
         manager._committedOrderIds.delete('1.7.102');
-        const result = await manager.sync.syncFromOpenOrders([], {});
+        const result = await syncEmptyUntilConfirmed(manager);
         const order = manager.orders.get('slot-3');
         assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Order removed from committed set should be virtualized');
         assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported');
@@ -110,7 +124,9 @@ async function runTests() {
         });
         manager._committedOrderIds.add('1.7.200');
         manager._committedOrderIdsBuiltAt = Date.now();
-        const result = await manager.sync.syncFromOpenOrders([], {});
+        // Pump past the suspect-empty-read guard (refuses the first empty
+        // read while placed orders exist); ghost cleanup then proceeds.
+        const result = await syncEmptyUntilConfirmed(manager);
         const order = manager.orders.get('ghost-slot');
         assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Ghost order (PARTIAL+size=0) should be virtualized despite being in committed set');
         assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported for ghost order');
@@ -126,7 +142,7 @@ async function runTests() {
         });
         manager._committedOrderIds.add('1.7.201');
         manager._committedOrderIdsBuiltAt = 1;
-        const result = await manager.sync.syncFromOpenOrders([], {});
+        const result = await syncEmptyUntilConfirmed(manager);
         const order = manager.orders.get('old-committed');
         assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Old committed order should be virtualized via time-based hatch');
         assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported for old committed order');

@@ -778,9 +778,14 @@ class OrderManager {
      * @returns {void}
      */
     startBroadcasting() {
-        if (this._broadcastingFlag === 0) {
-            this._broadcastingStartedAt = Date.now();
-        }
+        // Refresh the stale-watchdog timestamp on EVERY increment, not just
+        // the 0→1 transition: with refcounted holders (e.g. structural
+        // Phase-2 reconcile + an inner COW batch) measuring only from the
+        // first holder's start lets the 120s watchdog hard-reset while a
+        // later holder is still legitimately active. Each new holder
+        // restarts the window; the commit-refusal backstop bounds any
+        // pathological stream of short holders.
+        this._broadcastingStartedAt = Date.now();
         this._broadcastingFlag++;
         this.logger?.log?.('[BROADCAST] Flag incremented — fill processing will be deferred until stopBroadcasting()', 'debug');
     }
@@ -1673,6 +1678,33 @@ class OrderManager {
     }
 
     /**
+     * Record a price-sanity rejection from a placement gate (Fix B backstop).
+     * Aggregates counts and rate-limits one warn per window so a stale grid
+     * rail is loud without spamming per-slot logs.
+     * @param {string} slotId - Rejected slot id
+     * @param {number} price - Rejected planned price
+     * @param {Object} sanity - checkPlacementPriceSanity result
+     */
+    _recordPriceSanityRejection(slotId: any, price: any, sanity: any): void {
+        try {
+            const state: any = (this as any)._priceSanityRejections || { count: 0, lastAt: 0, last: null as any };
+            state.count += 1;
+            state.last = { slotId, price, refPrice: sanity?.refPrice ?? null, deviation: sanity?.deviation ?? null };
+            (this as any)._priceSanityRejections = state;
+            const now = Date.now();
+            const rateLimitMs = this.config?.timing?.STALE_TOTALS_WARN_RATE_LIMIT_MS ?? 60000;
+            if (now - state.lastAt >= rateLimitMs) {
+                state.lastAt = now;
+                this.logger?.log?.(
+                    `[PRICE-SANITY] Rejected ${state.count} placement(s) >max deviation from market reference ` +
+                    `last=${price} (slot ${slotId}, ref=${state.last?.refPrice}, dev=${state.last?.deviation != null ? (state.last.deviation * 100).toFixed(1) + '%' : 'n/a'}) — stale grid rail?`,
+                    'error'
+                );
+            }
+        } catch {}
+    }
+
+    /**
      * Seed the MarketAnchor from the live on-chain book (Phase 1 D5).
      * Derives initial range from highest live BUY and lowest live SELL.
      * No persistence, in-memory only. Empty book => no anchor (cold start).
@@ -1700,6 +1732,7 @@ class OrderManager {
             if (!this._marketAnchor) {
                 this._marketAnchor = createEmptyMarketAnchor();
             }
+            const prevOutlierCount = Number((this._marketAnchor as any).rejectedOutlierFills) || 0;
             const allSlots: any[] = Array.from(this.orders.values() as any).filter((o: any) => o.price != null).sort((a: any,b:any)=>a.price-b.price);
             const slotById = new Map(allSlots.map((s:any)=>[s.id, s]));
             // Build chainOrderId → slot map for raw fill normalization (dead-path fix)
@@ -1720,6 +1753,24 @@ class OrderManager {
                 return f;
             });
             this._marketAnchor = updateAnchor(this._marketAnchor, normalized, slotById, opts);
+            // Surface stale-slot price poisoning: the anchor guard rejected
+            // fill price(s) as implausible vs the established range. Rate
+            // limited to one warn per rate-limit window.
+            const newOutlierCount = Number((this._marketAnchor as any).rejectedOutlierFills) || 0;
+            if (newOutlierCount > prevOutlierCount) {
+                const now = Date.now();
+                const rateLimitMs = this.config?.timing?.STALE_TOTALS_WARN_RATE_LIMIT_MS ?? 60000;
+                if (now - (this as any)._lastAnchorOutlierWarnAt >= rateLimitMs) {
+                    (this as any)._lastAnchorOutlierWarnAt = now;
+                    const last = (this._marketAnchor as any).lastRejectedOutlier;
+                    this.logger?.log?.(
+                        `[ANCHOR-OUTLIER] Rejected ${newOutlierCount - prevOutlierCount} implausible fill price(s) ` +
+                        `(stale slot price? poisoning guard) lastRejected=${last?.price} orderId=${last?.id ?? 'n/a'} ` +
+                        `range=[${(this._marketAnchor as any).minFilledBuyPrice},${(this._marketAnchor as any).maxFilledSellPrice}]`,
+                        'warn'
+                    );
+                }
+            }
         } catch (e: any) {}
     }
 
@@ -1947,12 +1998,60 @@ class OrderManager {
     }
 
     /**
+     * Wait (bounded) until any non-COW broadcast/placement activity — the
+     * refcounted _broadcastingFlag — has released. Startup/structural
+     * reconcile Phase-2 placement now holds this flag across its create/update
+     * groups; launching a fill-driven COW rebalance on top of it mutates the
+     * master mid-broadcast, forcing a commit refusal and leaving a
+     * previous-generation order set on chain as duplicate-price orphans
+     * that block placements until drained.
+     *
+     * The wait is capped: after the timeout the rebalance proceeds anyway —
+     * the existing commit-refusal + chain-adoption machinery remains the
+     * backstop, so the worst case equals the pre-guard behavior.
+     *
+     * @param {number} [timeoutMs]
+     * @returns {Promise<{waitedMs: number, timedOut: boolean}>}
+     */
+    async _awaitBroadcastIdle(timeoutMs: number = 30000): Promise<{ waitedMs: number; timedOut: boolean }> {
+        if (!this.isBroadcastingActive()) return { waitedMs: 0, timedOut: false };
+        const startedAt = Date.now();
+        let logged = false;
+        while (this.isBroadcastingActive()) {
+            const waited = Date.now() - startedAt;
+            if (waited >= timeoutMs) {
+                this.logger?.log?.(
+                    `[SAFE-REBALANCE] Broadcast still active after ${waited}ms; proceeding (commit-refusal + chain adoption remains the backstop)`,
+                    'warn'
+                );
+                return { waitedMs: waited, timedOut: true };
+            }
+            if (!logged) {
+                this.logger?.log?.(
+                    '[SAFE-REBALANCE] Deferring: broadcast/placement activity active (startup/structural reconcile or another batch)',
+                    'info'
+                );
+                logged = true;
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        return { waitedMs: Date.now() - startedAt, timedOut: false };
+    }
+
+    /**
      * @param {Array} [fills] - Fill events triggering rebalance
      * @param {Set<string>} [excludeIds] - Order IDs to exclude
+     * @param {Object} [options]
+     * @param {boolean} [options.skipBroadcastWait] - Set by the COW re-plan path,
+     *   which runs INSIDE its own startBroadcasting() region and must not wait
+     *   on the flag it holds itself.
      * @returns {Promise<any>}
      */
-    async performSafeRebalance(fills: any = [], excludeIds: any = new Set()) {
+    async performSafeRebalance(fills: any = [], excludeIds: any = new Set(), options: any = {}) {
         this.logger.log("[SAFE-REBALANCE] Starting with COW...", "info");
+        if (!options?.skipBroadcastWait) {
+            await this._awaitBroadcastIdle();
+        }
         return await this._gridLock.acquire(async () => {
             return await this._applySafeRebalanceCOW(fills, excludeIds);
         });

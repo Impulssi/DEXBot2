@@ -23,6 +23,7 @@ const {
     convertToSpreadPlaceholder,
     buildOutsideInPairGroups,
     isOrderPlaced,
+    checkPlacementPriceSanity,
 } = orderUtils as any;
 import * as validate from './order/utils/validate.js';
 const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = validate as any;
@@ -37,6 +38,7 @@ const {
     ORDER_STATES,
     ORDER_TYPES,
     REBALANCE_STATES,
+    ORDER_PLACEMENT,
 } = constantsModule as any;
 import { acquireIfNotHeld } from './order/async_lock.js';
 import * as FormatModule from './order/format.js';
@@ -736,6 +738,11 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
                                 size: entry.order.size,
                                 price: entry.order.price,
                                 state: ORDER_STATES.VIRTUAL,
+                                // Durable orphan evidence: this sized VIRTUAL slot
+                                // is the product of a lost CREATE broadcast result,
+                                // not a normal planned slot. The loadGrid sanitizer
+                                // only drops the size for flagged slots.
+                                createUncertain: true,
                                 // Clear any stale order identity: the broadcast
                                 // MAY have landed, but the slot must look like a
                                 // clean adoption target (no orderId/rawOnChain)
@@ -2009,9 +2016,13 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
             (bot.manager as any)._boundaryShiftBudget = (bot.manager as any)._boundaryShiftBudgetBase;
         }
         if (typeof bot.manager.performSafeRebalance === 'function') {
+            // skipBroadcastWait: this frame is itself inside the executor's
+            // startBroadcasting() region — waiting on the flag we hold would
+            // stall the re-plan for the full _awaitBroadcastIdle timeout.
             replanned = await bot.manager.performSafeRebalance(
                 cowResult.fills,
-                cowResult.excludeIds || new Set()
+                cowResult.excludeIds || new Set(),
+                { skipBroadcastWait: true }
             );
         }
     } catch (replanErr: any) {
@@ -2577,6 +2588,29 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         continue;
                     }
 
+                    // Market-sanity gate (Fix B): refuse to broadcast a CREATE
+                    // priced far from the traded range (stale grid rail). The
+                    // plan-level gates should have caught this; this is the
+                    // last stop before the op enters the batch.
+                    const createSanity = checkPlacementPriceSanity(
+                        effectiveOrder.price,
+                        bot.manager._marketAnchor,
+                        ORDER_PLACEMENT.MAX_PRICE_DEVIATION
+                    );
+                    if (!createSanity.ok) {
+                        bot.manager.logger.log(
+                            `[COW] Skipping CREATE for ${order.id} at ${Format.formatPrice6(effectiveOrder.price)}: ` +
+                            `${((createSanity.deviation ?? 0) * 100).toFixed(1)}% off market reference ` +
+                            `${Format.formatPrice6(createSanity.refPrice ?? 0)} (max ` +
+                            `${((ORDER_PLACEMENT.MAX_PRICE_DEVIATION as number) * 100).toFixed(1)}%) — stale grid rail?`,
+                            'error'
+                        );
+                        try {
+                            bot.manager._recordPriceSanityRejection?.(order.id, effectiveOrder.price, createSanity);
+                        } catch {}
+                        continue;
+                    }
+
                     const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
                     const buildResult = await chainOrders.buildCreateOrderOp(
                         bot.account,
@@ -2632,6 +2666,28 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                 `Skipping rotation update ${action.id} -> ${action.newGridId}: ${rotationSizeValidation.reason}`,
                                 'warn'
                             );
+                            continue;
+                        }
+
+                        // Market-sanity gate (Fix B): a rotation moving a live
+                        // order onto a far-off-market rail price is the same
+                        // hazard as an off-market create.
+                        const rotationSanity = checkPlacementPriceSanity(
+                            newPrice,
+                            bot.manager._marketAnchor,
+                            ORDER_PLACEMENT.MAX_PRICE_DEVIATION
+                        );
+                        if (!rotationSanity.ok) {
+                            bot.manager.logger.log(
+                                `[COW] Skipping rotation update ${action.id} -> ${action.newGridId}: target price ` +
+                                `${Format.formatPrice6(newPrice)} is ${((rotationSanity.deviation ?? 0) * 100).toFixed(1)}% off ` +
+                                `market reference ${Format.formatPrice6(rotationSanity.refPrice ?? 0)} (max ` +
+                                `${((ORDER_PLACEMENT.MAX_PRICE_DEVIATION as number) * 100).toFixed(1)}%) — stale grid rail?`,
+                                'error'
+                            );
+                            try {
+                                bot.manager._recordPriceSanityRejection?.(action.newGridId || action.id, newPrice, rotationSanity);
+                            } catch {}
                             continue;
                         }
 
@@ -3366,42 +3422,64 @@ async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: 
             ? collectKnownOnChainOrderIds(mgr, placedResults, placedContexts)
             : { all: [], createIds: [] as string[] };
         if (knownIds.length > 0 && typeof chainOrders.batchReadOrders === 'function') {
+            // Retry/backoff (fix #6): a fresh CREATE absent from the first read
+            // is a lagging node, not a missing order; a read error is equally
+            // transient. Retry with backoff before deferring to the structural
+            // resync path — deferral blocks CREATEs for minutes.
+            const maxAttempts = Math.max(1, Number(COW_PERFORMANCE.ADOPTION_READ_MAX_ATTEMPTS) || 3);
+            const baseBackoff = Math.max(250, Number(COW_PERFORMANCE.ADOPTION_READ_BACKOFF_MS) || 2000);
             let chainMap: Map<string, any> | null = null;
-            try {
-                chainMap = await chainOrders.batchReadOrders(knownIds);
-            } catch (byIdErr: any) {
-                // A by-id read failure must NOT fall through to the window read
-                // (which would also miss the freshest creates and virtualize them).
-                // Defer and keep pending-broadcast protection.
+            let laggingCreateIds: string[] = [];
+            let lastReadError: string | null = null;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                chainMap = null;
+                laggingCreateIds = [];
+                lastReadError = null;
+                try {
+                    chainMap = await chainOrders.batchReadOrders(knownIds);
+                } catch (byIdErr: any) {
+                    // A by-id read failure must NOT fall through to the window read
+                    // (which would also miss the freshest creates and virtualize them).
+                    lastReadError = getErrorMessage(byIdErr);
+                }
+                if (chainMap) {
+                    // Lagging-node guard (phantom-virtualization risk): a FRESHLY
+                    // BROADCAST create id returning null here almost certainly means the
+                    // queried node has not yet indexed the order (it was just placed), not
+                    // that it is gone. If we synced a partial set, syncFromOpenOrders'
+                    // phantom-cleanup would virtualize that live order and count it as a
+                    // fill, re-creating a duplicate on the next cycle — the exact orphan
+                    // class this path exists to prevent.
+                    for (const id of createIds) {
+                        if (chainMap.get(id) == null) laggingCreateIds.push(id);
+                    }
+                }
+                if (chainMap && laggingCreateIds.length === 0) break;
+                if (attempt < maxAttempts) {
+                    const wait = baseBackoff * Math.pow(2, attempt - 1);
+                    bot.manager.logger.log(
+                        `${logPrefix} By-id adoption read retry ${attempt}/${maxAttempts - 1} in ${wait}ms ` +
+                        `(${chainMap ? `fresh CREATE(s) absent: ${laggingCreateIds.join(', ')}` : `read failed: ${lastReadError}`})`,
+                        'warn'
+                    );
+                    await sleep(wait);
+                }
+            }
+            if (!chainMap) {
                 bot.manager.logger.log(
-                    `${logPrefix} By-id adoption read failed: ${getErrorMessage(byIdErr)}; deferring (pending-broadcast protection kept)`,
+                    `${logPrefix} By-id adoption read failed after ${maxAttempts} attempt(s): ${lastReadError}; deferring (pending-broadcast protection kept)`,
                     'warn'
                 );
                 return false;
             }
-            if (!chainMap) {
-                // Should not happen (try either assigned or returned), but defers
-                // safely rather than operating on a null map.
+            if (laggingCreateIds.length > 0) {
+                bot.manager.logger.log(
+                    `${logPrefix} By-id adoption deferred: fresh CREATE(s) ${laggingCreateIds.join(', ')} absent from ` +
+                    `${maxAttempts} chain read(s) (likely lagging node). ` +
+                    'Keeping pending-broadcast protection pending a caught-up read.',
+                    'error'
+                );
                 return false;
-            }
-
-            // Lagging-node guard (phantom-virtualization risk): a FRESHLY
-            // BROADCAST create id returning null here almost certainly means the
-            // queried node has not yet indexed the order (it was just placed), not
-            // that it is gone. If we synced a partial set, syncFromOpenOrders'
-            // phantom-cleanup would virtualize that live order and count it as a
-            // fill, re-creating a duplicate on the next cycle — the exact orphan
-            // class this path exists to prevent. Defer and keep the pending
-            // protection so a later, caught-up read adopts it.
-            for (const id of createIds) {
-                if (chainMap.get(id) == null) {
-                    bot.manager.logger.log(
-                        `${logPrefix} By-id adoption deferred: fresh CREATE ${id} absent from chain read (likely lagging node). ` +
-                        'Keeping pending-broadcast protection pending a caught-up read.',
-                        'error'
-                    );
-                    return false;
-                }
             }
 
             const fullChain: any[] = [];
@@ -3780,7 +3858,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults };
+export { buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain };
 
 
 export default {

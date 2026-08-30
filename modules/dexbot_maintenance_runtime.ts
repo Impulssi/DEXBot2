@@ -2207,8 +2207,8 @@ function wireStructuralGridResyncRequest(bot: any) {
             ? details.unmatchedChainOrders.length
             : 0;
         // P5 max-defer: cap batchInFlight re-arm so a fill storm cannot starve
-        // the resync forever (incident: 09:33 flag never ran). After the cap,
-        // the resync forces instead of re-arming.
+        // the resync forever (a fill-storm defer loop once kept the flag armed
+        // indefinitely). After the cap, the resync forces instead of re-arming.
         const STRUCTURAL_RESYNC_MAX_DEFER_MS = 30000;
         const runStructuralResync = async () => {
             bot._structuralGridResyncTimer = null;
@@ -2236,8 +2236,9 @@ function wireStructuralGridResyncRequest(bot: any) {
                     bot._structuralGridResyncDeferCount = 0;
                 } else {
                     // Fix #7 (LADDER_RECENTER_ORPHAN_ROOT_CAUSE): throttle the defer log to the
-                    // first occurrence per cap window (the H-BTS freeze emitted ~110 lines in 30s);
-                    // count the rest and surface them only in the final forced message.
+                    // first occurrence per cap window (a fill storm can emit hundreds of
+                    // defer lines in seconds); count the rest and surface them only in
+                    // the final forced message.
                     if (bot._structuralGridResyncDeferCount === 1) {
                         bot._warn(
                             `[RECOVERY] Structural resync defer (batchInFlight=${bot._batchInFlight}, deferred ${deferredMs}ms/${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms): ${reason}`
@@ -2280,14 +2281,27 @@ function wireStructuralGridResyncRequest(bot: any) {
 
                 const suffix = unmatchedCount > 0 ? ` (${unmatchedCount} unmatched chain order(s))` : '';
                     bot._warn(`[RECOVERY] Running structural full grid resync for ${reason}${suffix}`);
-                    const resetResult = await bot.requestGridReset('rms_structural_grid_resync', {
-                        refreshCenterPrice: false,
-                        // Structural resync is a chain-read/rebuild; do not let a
-                        // fill storm starve it behind the idle cooldown or the
-                        // fill-processing lock.
-                        skipIdle: true,
-                        skipFillLock: true,
-                    });
+                    // Same protection as the persisted-grid reload above: the
+                    // reset's reconcile Phase-2 placement runs for minutes; a
+                    // fill arriving mid-reset must not start a COW batch whose
+                    // broadcast overlaps it (commit refusal + duplicate
+                    // generation orphans). _recoverFromPersistedGrid already
+                    // incremented and released the counter; increment again
+                    // for the full-resync branch.
+                    bot._recoverySyncInFlight = (bot._recoverySyncInFlight || 0) + 1;
+                    let resetResult: any;
+                    try {
+                        resetResult = await bot.requestGridReset('rms_structural_grid_resync', {
+                            refreshCenterPrice: false,
+                            // Structural resync is a chain-read/rebuild; do not let a
+                            // fill storm starve it behind the idle cooldown or the
+                            // fill-processing lock.
+                            skipIdle: true,
+                            skipFillLock: true,
+                        });
+                    } finally {
+                        bot._recoverySyncInFlight = Math.max(0, (bot._recoverySyncInFlight || 0) - 1);
+                    }
                 if (resetResult && bot.manager?._recoveryState) {
                     bot.manager._recoveryState = { ...bot.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
                 }

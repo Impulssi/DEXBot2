@@ -53,6 +53,8 @@
  * - price: Price level
  * - size: Order size in base asset
  * - orderId: Blockchain order ID (null for VIRTUAL)
+ * - createUncertain: (optional, only when true) slot keeps its size because a
+ *   CREATE broadcast result was lost; consumed by the loadGrid orphan sanitizer
  *
  * ===============================================================================
  */
@@ -184,7 +186,7 @@ class AccountOrders {
   /**
    * Create an AccountOrders instance.
    * @param {Object} options - Configuration options
-   * @param {string} options.botKey - Bot identifier (e.g., 'xrp-bts-0', 'h-bts-1')
+   * @param {string} options.botKey - Bot identifier (e.g., 'asset1-asset2-0', 'market-a-1')
    * @param {string} [options.ordersDir] - Optional override for the per-bot storage directory
    * @param {string} [options.profilesPath] - Optional override for the per-bot storage file path
    */
@@ -638,7 +640,7 @@ class AccountOrders {
         orderId = '';
     }
 
-    const serialized = {
+    const serialized: Record<string, any> = {
       id: order.id || null,
       type: order.type || null,
       state: state,
@@ -646,6 +648,14 @@ class AccountOrders {
       size: Number.isFinite(sizeValue) ? sizeValue : 0,
       orderId
     };
+
+    // Durable marker: a CREATE whose broadcast result was lost (uncertain)
+    // leaves the slot VIRTUAL with its planned size. Only that flagged state
+    // is a true sized-orphan candidate at load (grid.ts sanitizer) — plain
+    // sized VIRTUAL slots are the normal planned-but-unplaced grid state.
+    if (order.createUncertain === true) {
+      serialized.createUncertain = true;
+    }
 
     return serialized;
   }

@@ -494,6 +494,16 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         bot._log('Generating new grid and syncing with existing on-chain orders...');
                         await botGridModule(bot).initializeGrid(bot.manager);
                         await bot.manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true });
+                        // Drain queued fills BEFORE re-placement (P3 ordering): fills
+                        // replayed from history reference the PRE-restart order ids.
+                        // Processing them now (freshly synced grid) keeps their slot
+                        // provenance; processing them after reconcile re-placement
+                        // finds no grid order and falls back to orphan proceeds
+                        // credits, which drift the fund bookkeeping.
+                        if (bot._incomingFillQueue.length > 0) {
+                            bot._log(`[STARTUP] Processing ${bot._incomingFillQueue.length} queued fill(s) before re-placement (order provenance intact)`, 'info');
+                            await bot._processFillsWithBootstrapMode(chainOrders);
+                        }
                         const rebalanceResult = await reconcileMod.reconcileGridOrders({
                             manager: bot.manager,
                             config: bot.config,
@@ -552,6 +562,17 @@ async function finishStartupSequence(bot: any, startupState: any) {
                                 }
                             }
                         }
+                    }
+
+                    // P3 ordering: drain queued (and shutdown-surviving replayed)
+                    // fills against the LOADED grid before reconcile re-placement
+                    // changes it. The loaded grid still maps the pre-restart order
+                    // ids to their slots, so proceeds/fill accounting attach to the
+                    // right slots instead of degrading to orphan "unknown order"
+                    // proceeds credits that drift the fund bookkeeping.
+                    if (bot._incomingFillQueue.length > 0) {
+                        bot._log(`[STARTUP] Processing ${bot._incomingFillQueue.length} queued fill(s) before reconcile (order provenance intact)`, 'info');
+                        await bot._processFillsWithBootstrapMode(chainOrders);
                     }
 
                     if (chainReadTruncated) {

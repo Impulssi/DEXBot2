@@ -233,6 +233,14 @@ let TIMING = {
     // Uses Promise.race() to enforce timeout on lock acquisition attempts
     SYNC_LOCK_TIMEOUT_MS: 20000,  // 20 seconds - prevents deadlocks while allowing slow operations
 
+    // Suspect-empty-read guard (Fix C): an empty open-orders read while the
+    // grid still holds placed orders is usually a lagging/partial node, not a
+    // genuinely emptied account. Reconciliation is refused for this many
+    // consecutive empty reads; only after the limit is confirmed does the
+    // sync accept the empty account (virtualize everything). Any non-empty
+    // read resets the counter.
+    SYNC_SUSPECT_EMPTY_READ_LIMIT: 3,
+
     // Connection and initialization timeouts
     CONNECTION_TIMEOUT_MS: 30000,  // 30 seconds - BitShares client connection establishment timeout
     DAEMON_STARTUP_TIMEOUT_MS: 60000,  // 60 seconds - Private key daemon startup timeout
@@ -708,6 +716,14 @@ let ANCHOR = {
     // fill to the anchor range (the latest fill only).
     REPLAY_MAX_FILLS: 1,
 
+    // Outlier guard: a fill price beyond this per-side multiplicative factor
+    // outside the anchor's established [minFilledBuyPrice, maxFilledSellPrice]
+    // range is treated as implausible (stale-slot price poisoning) and is
+    // skipped for anchor updates, burst boundary correction, and the
+    // placement guard. Legitimate range extension requires the market to
+    // move >2x beyond the traded extremes in a single fill.
+    PRICE_OUTLIER_FACTOR: 2,
+
     // Phase-2 flag: when true, calculateTargetGrid uses the price-anchored
     // projection when the anchor is fresh; cold anchors fall back to legacy.
     PROJECTION_ENABLED: false,
@@ -728,6 +744,18 @@ let API_LIMITS = {
     ORDERBOOK_DEPTH: 5,
     // Maximum page for LP history API queries (market adapter)
     LP_API_MAX_PAGE: 101,
+};
+
+// Order placement sanity parameters.
+// Guards against broadcasting orders at prices catastrophically far from the
+// live market (e.g. a stale grid rail at 3.0 while the market trades 0.30 —
+// such orders are instantly marketable and drain funds).
+let ORDER_PLACEMENT = {
+    // Max relative deviation of a planned order price from the live market
+    // reference (anchor traded-range mid). |planned/ref - 1| beyond this is
+    // rejected (create skipped / update skipped) with an aggregated warn.
+    // 0.05 = 5%.
+    MAX_PRICE_DEVIATION: 0.05,
 };
 
 // Fill processing configuration
@@ -1437,7 +1465,27 @@ let COW_PERFORMANCE = {
     // fill cap is a weak proxy for broadcast size. Batches larger than this
     // cap are split into sequential broadcasts of at most this many ops each,
     // bounding per-transaction stress on the chain.
-    MAX_OPS_PER_BROADCAST: 4
+    MAX_OPS_PER_BROADCAST: 4,
+
+    // MAX_CANCELS_PER_BROADCAST: Maximum number of limit_order_cancel ops in a
+    // single batched orphan/surplus cancellation transaction
+    // (correctAllPriceMismatches). Cancels are zero-fee and carry no balance
+    // state, so they can be far denser than MAX_OPS_PER_BROADCAST creates.
+    // This replaces the old serial path (one cancel tx + sleep per orphan,
+    // ~1 order per 3s block) that let a 50-orphan duplicate backlog starve
+    // CREATES for minutes.
+    MAX_CANCELS_PER_BROADCAST: 20,
+
+    // ADOPTION_READ_MAX_ATTEMPTS: Total by-id read attempts (initial + retries)
+    // when adopting freshly broadcast CREATEs after a refused/uncertain commit.
+    // A fresh create id absent from the first read is a lagging node, not a
+    // missing order; retrying closes that window instead of deferring to a
+    // structural resync (the open fix #6 in the orphan root-cause doc).
+    ADOPTION_READ_MAX_ATTEMPTS: 3,
+
+    // ADOPTION_READ_BACKOFF_MS: Base backoff between by-id adoption read
+    // retries (doubled per retry: 2s, 4s for the default 3 attempts).
+    ADOPTION_READ_BACKOFF_MS: 2000
 };
 
 // Native BitShares Client Configuration
@@ -1829,6 +1877,7 @@ Object.freeze(MARKET_ADAPTER.AMAS);
 Object.freeze(MARKET_ADAPTER);
 Object.freeze(CREDENTIAL_PROMPTS);
 Object.freeze(ANCHOR);
+Object.freeze(ORDER_PLACEMENT);
 
-export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS, ANCHOR }
+export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS, ANCHOR, ORDER_PLACEMENT }
 
