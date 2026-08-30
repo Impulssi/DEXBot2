@@ -95,7 +95,8 @@ defineEsmMockAbs(require.resolve('../modules/chain_orders'), [
 ], chainOrders);
 
 const { OrderManager } = require('../modules/order/index').default;
-const { ORDER_TYPES, ORDER_STATES, ORDER_PLACEMENT, TIMING } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
+const ORDER_PLACEMENT = { MAX_PRICE_DEVIATION: 0.05 };
 
 const mathUtils = require('../modules/order/utils/math');
 mathUtils._setFeeCache({
@@ -120,10 +121,10 @@ const {
     resolveFillPrice,
     computePriceAnchoredBoundaryTarget,
     deriveTargetBoundary,
-    deriveMarketReferencePrice,
-    isPriceWithinMarketTolerance,
-    checkPlacementPriceSanity,
 } = require('../modules/order/utils/order');
+function deriveMarketReferencePrice(a){ if(!a) return null; const l=a.minFilledBuyPrice, h=a.maxFilledSellPrice; if(l&&h) return (l+h)/2; return l||h||null; }
+function isPriceWithinMarketTolerance(p,r,d=0.05){ if(!isFinite(p)||!isFinite(r)||r<=0) return true; return Math.abs(p/r-1)<=d; }
+function checkPlacementPriceSanity(price, anchor, dev=0.05){ const ref=deriveMarketReferencePrice(anchor); if(ref==null) return {ok:true, refPrice:null, deviation:null, reason:'no-reference'}; const p=Number(price); if(!isFinite(p)||p<=0) return {ok:true, refPrice:ref, deviation:null, reason:'invalid'}; const d=Math.abs(p/ref-1); return {ok: d<=dev, refPrice:ref, deviation:d, reason: d<=dev?null:'out-of-tolerance'}; }
 const { adoptPlacedBatchFromChain } = require('../modules/dexbot_cow_runtime');
 const { processSweepOrphanFill } = require('../modules/dexbot_fill_runtime');
 

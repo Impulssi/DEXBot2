@@ -23,7 +23,6 @@ const {
     convertToSpreadPlaceholder,
     buildOutsideInPairGroups,
     isOrderPlaced,
-    checkPlacementPriceSanity,
 } = orderUtils as any;
 import * as validate from './order/utils/validate.js';
 const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = validate as any;
@@ -38,7 +37,6 @@ const {
     ORDER_STATES,
     ORDER_TYPES,
     REBALANCE_STATES,
-    ORDER_PLACEMENT,
 } = constantsModule as any;
 import { acquireIfNotHeld } from './order/async_lock.js';
 import * as FormatModule from './order/format.js';
@@ -2588,29 +2586,6 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         continue;
                     }
 
-                    // Market-sanity gate (Fix B): refuse to broadcast a CREATE
-                    // priced far from the traded range (stale grid rail). The
-                    // plan-level gates should have caught this; this is the
-                    // last stop before the op enters the batch.
-                    const createSanity = checkPlacementPriceSanity(
-                        effectiveOrder.price,
-                        bot.manager._marketAnchor,
-                        ORDER_PLACEMENT.MAX_PRICE_DEVIATION
-                    );
-                    if (!createSanity.ok) {
-                        bot.manager.logger.log(
-                            `[COW] Skipping CREATE for ${order.id} at ${Format.formatPrice6(effectiveOrder.price)}: ` +
-                            `${((createSanity.deviation ?? 0) * 100).toFixed(1)}% off market reference ` +
-                            `${Format.formatPrice6(createSanity.refPrice ?? 0)} (max ` +
-                            `${((ORDER_PLACEMENT.MAX_PRICE_DEVIATION as number) * 100).toFixed(1)}%) — stale grid rail?`,
-                            'error'
-                        );
-                        try {
-                            bot.manager._recordPriceSanityRejection?.(order.id, effectiveOrder.price, createSanity);
-                        } catch {}
-                        continue;
-                    }
-
                     const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
                     const buildResult = await chainOrders.buildCreateOrderOp(
                         bot.account,
@@ -2666,28 +2641,6 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                 `Skipping rotation update ${action.id} -> ${action.newGridId}: ${rotationSizeValidation.reason}`,
                                 'warn'
                             );
-                            continue;
-                        }
-
-                        // Market-sanity gate (Fix B): a rotation moving a live
-                        // order onto a far-off-market rail price is the same
-                        // hazard as an off-market create.
-                        const rotationSanity = checkPlacementPriceSanity(
-                            newPrice,
-                            bot.manager._marketAnchor,
-                            ORDER_PLACEMENT.MAX_PRICE_DEVIATION
-                        );
-                        if (!rotationSanity.ok) {
-                            bot.manager.logger.log(
-                                `[COW] Skipping rotation update ${action.id} -> ${action.newGridId}: target price ` +
-                                `${Format.formatPrice6(newPrice)} is ${((rotationSanity.deviation ?? 0) * 100).toFixed(1)}% off ` +
-                                `market reference ${Format.formatPrice6(rotationSanity.refPrice ?? 0)} (max ` +
-                                `${((ORDER_PLACEMENT.MAX_PRICE_DEVIATION as number) * 100).toFixed(1)}%) — stale grid rail?`,
-                                'error'
-                            );
-                            try {
-                                bot.manager._recordPriceSanityRejection?.(action.newGridId || action.id, newPrice, rotationSanity);
-                            } catch {}
                             continue;
                         }
 

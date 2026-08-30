@@ -7,10 +7,10 @@
 
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION, ORDER_PLACEMENT } from '../constants.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, resolveGapBand, isSlotInRail } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, checkPlacementPriceSanity } from './utils/order.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -396,24 +396,6 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
             `collides with placed order ${priceCollision.id} (${priceCollision.orderId}) at ${Format.formatPrice6(priceCollision.price)}`,
             'warn'
         );
-        return null;
-    }
-
-    // Market-sanity gate (backstop): refuse to broadcast an order priced
-    // catastrophically far from the traded range (stale grid rail / stale
-    // slot price). Skip — the next reconcile pass against a refreshed grid
-    // re-prices the slot; broadcasting would invite instant off-market fills.
-    const priceSanity = checkPlacementPriceSanity(createPrice, (manager as any)._marketAnchor, ORDER_PLACEMENT.MAX_PRICE_DEVIATION);
-    if (!priceSanity.ok) {
-        manager.logger?.log?.(
-            `[_createOrderFromGrid] SKIP: Create for ${gridOrder.id} at ${Format.formatPrice6(createPrice)} is ` +
-            `${(priceSanity.deviation! * 100).toFixed(1)}% off the market reference ${Format.formatPrice6(priceSanity.refPrice!)} ` +
-            `(max ${((ORDER_PLACEMENT.MAX_PRICE_DEVIATION as number) * 100).toFixed(1)}%) — stale grid rail?`,
-            'error'
-        );
-        try {
-            (manager as any)._recordPriceSanityRejection?.(gridOrder.id, createPrice, priceSanity);
-        } catch {}
         return null;
     }
 
@@ -1571,20 +1553,6 @@ async function _reconcileStartupSide({
     const neededSlots = Math.max(0, targetCount - matchedOnGrid);
     const desiredSlots = _pickVirtualSlotsToActivate(manager, orderType, neededSlots);
 
-    // Market-sanity gate (Fix B): planned update/create prices must sit
-    // within ORDER_PLACEMENT.MAX_PRICE_DEVIATION of the anchor-derived market
-    // reference. A stale grid rail (slot prices far from the traded range)
-    // must NOT be broadcast — orders there fill instantly and drain funds.
-    // Rejections are aggregated into one warn at the end of the side pass;
-    // the slots stay untouched for the next pass against a refreshed grid.
-    const sanityRejections: any[] = [];
-    const isPriceSane = (slot: any): boolean => {
-        const sanity = checkPlacementPriceSanity(slot?.price, (manager as any)._marketAnchor, ORDER_PLACEMENT.MAX_PRICE_DEVIATION);
-        if (sanity.ok) return true;
-        sanityRejections.push({ id: slot?.id, price: slot?.price, sanity });
-        return false;
-    };
-
     const sortedUnmatched = unmatchedSideOrders.slice(0).sort(sortUpdateComparator);
     const updateCount = Math.min(sortedUnmatched.length, desiredSlots.length);
     let cancelledIndex: number | null = null;
@@ -1639,8 +1607,6 @@ async function _reconcileStartupSide({
             continue;
         }
 
-        if (!isPriceSane(gridOrder)) continue;
-
         logger?.log?.(
             `Startup: Updating chain ${sideUpper} ${chainOrder.id} -> grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatSizeByOrderType(gridOrder.size, orderType, manager.assets)})`,
             'info'
@@ -1659,7 +1625,7 @@ async function _reconcileStartupSide({
 
     if (cancelledIndex !== null && !dryRun) {
         const targetGridOrder = desiredSlots[cancelledIndex];
-        if (targetGridOrder && isPriceSane(targetGridOrder)) {
+        if (targetGridOrder) {
             logger?.log?.(
                 `Startup: Creating new ${sideUpper} for cancelled slot at grid ${targetGridOrder.id} (price=${Format.formatPrice6(targetGridOrder.price)}, size=${Format.formatSizeByOrderType(targetGridOrder.size, orderType, manager.assets)})`,
                 'info'
@@ -1683,7 +1649,6 @@ async function _reconcileStartupSide({
 
     for (let i = 0; i < Math.min(createCount, remainingSlots.length); i++) {
         const gridOrder = remainingSlots[i];
-        if (!isPriceSane(gridOrder)) continue;
         logger?.log?.(
             `Startup: Creating ${sideUpper} for grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatSizeByOrderType(gridOrder.size, orderType, manager.assets)})`,
             'info'
@@ -1778,16 +1743,7 @@ async function _reconcileStartupSide({
         }
     }
 
-    if (sanityRejections.length > 0) {
-        const worst = sanityRejections.reduce((a: any, b: any) => ((b.sanity?.deviation ?? 0) > (a.sanity?.deviation ?? 0) ? b : a));
-        logger?.log?.(
-            `[PRICE-SANITY] Startup ${sideUpper}: rejected ${sanityRejections.length} placement(s) beyond ` +
-            `${((ORDER_PLACEMENT.MAX_PRICE_DEVIATION as number) * 100).toFixed(1)}% of market reference ` +
-            `${Format.formatPrice6(worst.sanity.refPrice)} — worst slot ${worst.id} at ${Format.formatPrice6(worst.price)} ` +
-            `(${((worst.sanity.deviation ?? 0) * 100).toFixed(1)}% off). Stale grid rail? Slots left for the next pass.`,
-            'error'
-        );
-    }
+
 
     return {
         chainCount,

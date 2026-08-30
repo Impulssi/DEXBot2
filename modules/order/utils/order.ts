@@ -71,7 +71,7 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, ANCHOR, COW_PERFORMANCE, ORDER_PLACEMENT } from '../../constants.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, ANCHOR, COW_PERFORMANCE } from '../../constants.js';
 import * as Format from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
@@ -2148,70 +2148,6 @@ function computeAnchorDivergence(projected: any, bookkept: any): number | null {
 }
 
 /**
- * Derive a live market reference price from the MarketAnchor's traded range
- * (mid of [minFilledBuyPrice, maxFilledSellPrice]; single-bound fallback).
- * The anchor is fills-derived + book-seeded and guarded against stale-slot
- * poisoning (deriveAnchorBounds), making it the best in-process proxy for
- * "where the market actually trades". config.startPrice is deliberately NOT
- * used as a fallback reference: a stale startPrice is exactly the poisoning
- * this gate defends against.
- *
- * @param {Object|null} anchor - MarketAnchor
- * @returns {number|null} Reference price or null when unavailable
- */
-function deriveMarketReferencePrice(anchor: any): number | null {
-    if (!anchor) return null;
-    const low = toFiniteNumber(anchor.minFilledBuyPrice);
-    const high = toFiniteNumber(anchor.maxFilledSellPrice);
-    if (low != null && low > 0 && high != null && high > 0) return (low + high) / 2;
-    if (low != null && low > 0) return low;
-    if (high != null && high > 0) return high;
-    return null;
-}
-
-/**
- * Whether a planned price is within `maxDeviation` of a reference price.
- * Unjudgeable inputs (non-finite price, non-positive reference, invalid
- * deviation) evaluate to true — the gate must never fire on bad metadata,
- * only on a genuinely far price vs a valid reference.
- *
- * @param {number} price - Planned order price
- * @param {number|null} refPrice - Market reference (null → allowed)
- * @param {number} [maxDeviation] - Relative tolerance (ORDER_PLACEMENT.MAX_PRICE_DEVIATION)
- * @returns {boolean}
- */
-function isPriceWithinMarketTolerance(price: any, refPrice: any, maxDeviation: any = ORDER_PLACEMENT.MAX_PRICE_DEVIATION): boolean {
-    const p = Number(price);
-    const ref = Number(refPrice);
-    const dev = Number(maxDeviation);
-    if (!Number.isFinite(p) || p <= 0 || !Number.isFinite(ref) || ref <= 0) return true;
-    if (!Number.isFinite(dev) || dev < 0) return true;
-    return Math.abs(p / ref - 1) <= dev;
-}
-
-/**
- * Placement price sanity check against the anchor-derived market reference.
- * Used as a pre-broadcast gate: a planned price more than
- * ORDER_PLACEMENT.MAX_PRICE_DEVIATION from the traded-range mid is rejected
- * (skip create/update + aggregated warn) instead of being broadcast into
- * instant fills.
- *
- * @param {number} price - Planned order price
- * @param {Object|null} anchor - manager._marketAnchor
- * @param {number} [maxDeviation] - Relative tolerance override
- * @returns {{ok: boolean, refPrice: number|null, deviation: number|null, reason: string|null}}
- */
-function checkPlacementPriceSanity(price: any, anchor: any, maxDeviation: any = ORDER_PLACEMENT.MAX_PRICE_DEVIATION): { ok: boolean; refPrice: number | null; deviation: number | null; reason: string | null } {
-    const ref = deriveMarketReferencePrice(anchor);
-    if (ref == null) return { ok: true, refPrice: null, deviation: null, reason: 'no-reference' };
-    const p = Number(price);
-    if (!Number.isFinite(p) || p <= 0) return { ok: true, refPrice: ref, deviation: null, reason: 'invalid-price' };
-    const deviation = Math.abs(p / ref - 1);
-    const ok = isPriceWithinMarketTolerance(p, ref, maxDeviation);
-    return { ok, refPrice: ref, deviation, reason: ok ? null : 'out-of-tolerance' };
-}
-
-/**
  * Validate a restored/bookkept boundary against CHAIN EVIDENCE before the
  * startup reconcile is allowed to place orders against it (P3 of
  * docs/GAP_BAND_ORPHAN_PREVENTION_PLAN.md).
@@ -2393,5 +2329,5 @@ function validateBoundaryAgainstChainEvidence(params: {
     return result;
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, computePriceAnchoredBoundaryTarget, isShiftEligibleFill, resolveFillPrice, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, createEmptyMarketAnchor, isMarketAnchorAvailable, isMarketAnchorFresh, seedMarketAnchorFromBook, updateMarketAnchorFromFills, deriveAnchorBounds, isPriceWithinBounds, deriveMarketReferencePrice, isPriceWithinMarketTolerance, checkPlacementPriceSanity, projectAnchorToGrid, computeAnchorDivergence, validateBoundaryAgainstChainEvidence }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, computePriceAnchoredBoundaryTarget, isShiftEligibleFill, resolveFillPrice, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, createEmptyMarketAnchor, isMarketAnchorAvailable, isMarketAnchorFresh, seedMarketAnchorFromBook, updateMarketAnchorFromFills, deriveAnchorBounds, isPriceWithinBounds, projectAnchorToGrid, computeAnchorDivergence, validateBoundaryAgainstChainEvidence }
 

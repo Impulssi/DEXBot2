@@ -48,8 +48,7 @@ import {
     isExplicitZeroAllocation,
     floatToBlockchainInt,
     validateBoundaryCommit,
-    resolveGapSlots,
-    resolveGapBand
+    resolveGapSlots
 } from './utils/math.js';
 import {
     validateOrder,
@@ -65,8 +64,6 @@ import {
     evaluateCommit
 } from './utils/validate.js';
 import { resolveSpreadOrderSide, parseSlotIndex, createEmptyMarketAnchor, seedMarketAnchorFromBook as seedAnchor, updateMarketAnchorFromFills as updateAnchor } from './utils/order.js';
-import { getSellStartIdx } from './utils/math.js';
-import { isOrderPlaced } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -238,54 +235,6 @@ class COWRebalanceEngine {
             }
             optimizedActions.length = 0;
             optimizedActions.push(...guarded);
-        }
-
-        // P1: gap-band stranding must cancel in the same COW plan that moves
-        // the boundary — not a later cycle. The strategy window already
-        // excludes stray in-band slots (isSlotInRail) so reconcile produces a
-        // VIRTUAL target and a surplus cancel, but rotation pairing can
-        // preserve the stray as an UPDATE or the slot could be SPREAD-typed.
-        // Inject explicit CANCELs for any PLACED order whose slot index falls
-        // strictly inside the new gap band so the cancel rides with the
-        // boundary commit (detector in _assertGapBandIntactPostCommit is only
-        // belt-and-braces after the fact).
-        if (targetBoundary !== null && Number.isFinite(Number(targetBoundary))) {
-            try {
-                const gapSlots = (this as any)._gapSlots ?? resolveGapSlots(this);
-                const sellStartIdx = getSellStartIdx(Number(targetBoundary), gapSlots);
-                if (Number.isFinite(sellStartIdx)) {
-                    const haveActionFor = (order: any) => {
-                        const oid = String(order.orderId || '');
-                        const sid = String(order.id || '');
-                        return optimizedActions.some((a: any) => {
-                            if (a?.orderId && oid && String(a.orderId) === oid) return true;
-                            if (a?.id && sid && String(a.id) === sid) return true;
-                            if (a?.newGridId && sid && String(a.newGridId) === sid) return true;
-                            return false;
-                        });
-                    };
-                    for (const [slotId, masterOrder] of masterGrid.entries()) {
-                        if (!masterOrder || !isOrderPlaced(masterOrder)) continue;
-                        const idx = parseSlotIndex(slotId);
-                        if (idx === null) continue;
-                        const inGap = idx > Number(targetBoundary) && idx < sellStartIdx;
-                        if (!inGap) continue;
-                        if (haveActionFor(masterOrder)) continue;
-                        this.logger?.log?.(
-                            `[COW][GAP-STRAND] Cancelling stranded ${masterOrder.type || 'order'} ${masterOrder.id}` +
-                            ` @ ${masterOrder.price} (slot ${idx} inside gap ${Number(targetBoundary) + 1}..${sellStartIdx - 1})` +
-                            ` in same batch as boundary ${boundaryIdx}→${targetBoundary}`,
-                            'warn'
-                        );
-                        optimizedActions.push({
-                            type: COW_ACTIONS.CANCEL,
-                            id: masterOrder.id,
-                            orderId: masterOrder.orderId,
-                            reason: 'gap-band-stranding',
-                        });
-                    }
-                }
-            } catch (_: any) {}
         }
 
         projectTargetToWorkingGrid(workingGrid, targetGrid, { actions: optimizedActions });
@@ -1678,33 +1627,6 @@ class OrderManager {
     }
 
     /**
-     * Record a price-sanity rejection from a placement gate (Fix B backstop).
-     * Aggregates counts and rate-limits one warn per window so a stale grid
-     * rail is loud without spamming per-slot logs.
-     * @param {string} slotId - Rejected slot id
-     * @param {number} price - Rejected planned price
-     * @param {Object} sanity - checkPlacementPriceSanity result
-     */
-    _recordPriceSanityRejection(slotId: any, price: any, sanity: any): void {
-        try {
-            const state: any = (this as any)._priceSanityRejections || { count: 0, lastAt: 0, last: null as any };
-            state.count += 1;
-            state.last = { slotId, price, refPrice: sanity?.refPrice ?? null, deviation: sanity?.deviation ?? null };
-            (this as any)._priceSanityRejections = state;
-            const now = Date.now();
-            const rateLimitMs = this.config?.timing?.STALE_TOTALS_WARN_RATE_LIMIT_MS ?? 60000;
-            if (now - state.lastAt >= rateLimitMs) {
-                state.lastAt = now;
-                this.logger?.log?.(
-                    `[PRICE-SANITY] Rejected ${state.count} placement(s) >max deviation from market reference ` +
-                    `last=${price} (slot ${slotId}, ref=${state.last?.refPrice}, dev=${state.last?.deviation != null ? (state.last.deviation * 100).toFixed(1) + '%' : 'n/a'}) — stale grid rail?`,
-                    'error'
-                );
-            }
-        } catch {}
-    }
-
-    /**
      * Seed the MarketAnchor from the live on-chain book (Phase 1 D5).
      * Derives initial range from highest live BUY and lowest live SELL.
      * No persistence, in-memory only. Empty book => no anchor (cold start).
@@ -1772,100 +1694,6 @@ class OrderManager {
                 }
             }
         } catch (e: any) {}
-    }
-
-    /**
-     * DEFENSE-IN-DEPTH (runs after every COW commit): verify the committed
-     * state still has an intact gap band — implied geometry inside the slot
-     * array, and no placed order strictly inside the implied spread.
-     *
-     * This is a DETECTOR, not a guard: the grid is already committed when it
-     * runs.  Violations are logged loudly and flagged via _recoveryState
-     * (structuralResyncRequested) so the maintenance loop reconciles against
-     * the chain.  Purpose is any-writer detection — if a path other than the
-     * promotion clamp commits a boundary that invades the opposite rail or
-     * strands placed orders inside the spread, this fires.
-     */
-    _assertGapBandIntactPostCommit(): void {
-        try {
-            const resolved = resolveGapBand(this);
-            if (resolved.boundaryIdx === null || resolved.sellStartIdx === null) return;
-            const { boundaryIdx, sellStartIdx } = resolved;
-
-            const sorted = Array.from(this.orders.values() as Iterable<any>)
-                .filter((o: any) => o && o.price != null && Number.isFinite(Number(o.price)))
-                .sort((a: any, b: any) => Number(a.price) - Number(b.price));
-            const maxIdx = sorted.length - 1;
-
-            const problems: string[] = [];
-            const strandedOrders: any[] = [];
-            if (maxIdx < 0 || boundaryIdx < 0 || boundaryIdx > maxIdx) {
-                problems.push(`boundary ${boundaryIdx} outside slot range [0, ${maxIdx}]`);
-            }
-            if (sellStartIdx > maxIdx + 1) {
-                problems.push(`implied sellStart ${sellStartIdx} beyond slot range (${maxIdx})`);
-            }
-            for (let idx = 0; idx < sorted.length; idx++) {
-                const o = sorted[idx];
-                if (!o.orderId) continue;
-                if (idx > boundaryIdx && idx < sellStartIdx) {
-                    problems.push(
-                        `placed ${o.type || 'order'} ${o.id} @ ${o.price} sits inside gap band ` +
-                        `(${boundaryIdx + 1}..${sellStartIdx - 1})`
-                    );
-                    strandedOrders.push(o);
-                }
-            }
-
-            if (problems.length > 0) {
-                this.logger.log(
-                    `[COW] GAP-BAND INVARIANT VIOLATION after commit: ${problems.slice(0,5).join('; ')}` +
-                    `${problems.length > 5 ? ` (+${problems.length - 5} more)` : ''}. Requesting structural resync.`,
-                    'error'
-                );
-                if (this._recoveryState) {
-                    this._recoveryState = {
-                        ...this._recoveryState,
-                        lastFailureAt: Date.now(),
-                        structuralResyncRequested: true
-                    };
-                }
-                // P1 belt-and-braces: queue cancelOnly for every stranded order
-                // that slipped through the COW plan's same-batch cancel. The plan
-                // above already tries to cancel in-batch; this ensures any writer
-                // path that evaded it still gets a correction queued for the next
-                // maintenance/sync cycle instead of just a flag.
-                if (strandedOrders.length > 0) {
-                    if (!Array.isArray(this.ordersNeedingPriceCorrection)) {
-                        this.ordersNeedingPriceCorrection = [];
-                    }
-                    for (const so of strandedOrders) {
-                        const exists = this.ordersNeedingPriceCorrection.some(
-                            (q: any) => q?.chainOrderId === so.orderId && q?.cancelOnly === true
-                        );
-                        if (exists) continue;
-                        this.ordersNeedingPriceCorrection.push({
-                            gridOrder: { ...so },
-                            chainOrderId: so.orderId,
-                            expectedPrice: so.price,
-                            size: so.size,
-                            type: so.type,
-                            isSurplus: true,
-                            cancelOnly: true,
-                            reason: 'gap-band-stranding-post-commit',
-                        });
-                        this.logger.log(
-                            `[COW][GAP-STRAND] Queued cancelOnly for stranded ${so.type || 'order'} ${so.id}` +
-                            ` @ ${so.price} (orderId ${so.orderId})`,
-                            'error'
-                        );
-                    }
-                }
-            }
-        } catch (err: any) {
-            // Detector must never break the commit path.
-            this.logger.log(`[COW] Gap-band post-commit check failed: ${getErrorMessage(err)}`, 'warn');
-        }
     }
 
     /**
@@ -2238,8 +2066,6 @@ class OrderManager {
                 releaseStackEntry();
                 return false;
             }
-
-            this._assertGapBandIntactPostCommit();
 
             try {
                 if (!skipRecalc) {

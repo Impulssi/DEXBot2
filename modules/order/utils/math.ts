@@ -1375,7 +1375,7 @@ function resolveGapBand(manager: { _gapSlots?: any; boundaryIdx?: any; config?: 
  *   band (stranding).  Honest writers never produce this — the promotion walk
  *   caps depth upstream and syncBoundaryToFunds clamps between typed rails —
  *   so it is OFF at commit time (a refusal could not repair the placement
- *   anyway; _assertGapBandIntactPostCommit detects it post-commit) but ON for
+ *   anyway) but ON for
  *   persisted-state validation, where stranding is exactly the poison
  *   signature and the safe fallback is a rebuild.
  *

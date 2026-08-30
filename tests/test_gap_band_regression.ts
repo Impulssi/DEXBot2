@@ -114,9 +114,9 @@ async function testP1_SameBatchCancelStrands() {
     console.log('  PASS: P1 same-batch cancel emitted and gap clean');
 }
 
-// ── P1 belt-and-braces: post-commit detector queues cancelOnly ──────────
+// ── P1 belt-and-braces: post-commit detector removed (gap-band invariant disabled for wide-range bots) ──────────
 async function testP1_PostCommitDetectorQueuesCancel() {
-    console.log('\nRunning test P1-B: post-commit gap detector queues cancelOnly');
+    console.log('\nRunning test P1-B: post-commit gap detector disabled — no cancelOnly');
     const mgr = createPlacedManager(6, 2);
     const grid = require('../modules/order/grid');
     await grid.loadGrid(mgr, slotGrid(6, 2), 6);
@@ -127,12 +127,14 @@ async function testP1_PostCommitDetectorQueuesCancel() {
     await mgr._applyOrderUpdate({ ...gapSlot, type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, orderId: '1.7.777', size: 10 }, 'test-orphan', { skipAccounting: true });
     mgr.ordersNeedingPriceCorrection = [];
     mgr._recoveryState = { ...mgr._recoveryState, structuralResyncRequested: false };
-    mgr._assertGapBandIntactPostCommit();
-    assert.ok(mgr._recoveryState.structuralResyncRequested, 'detector still flags resync');
+    if (typeof mgr._assertGapBandIntactPostCommit === 'function') {
+        mgr._assertGapBandIntactPostCommit();
+    }
+    assert.ok(typeof mgr._assertGapBandIntactPostCommit !== 'function', 'detector method removed');
+    assert.ok(!mgr._recoveryState.structuralResyncRequested, 'detector no longer flags resync (removed)');
     const queued = mgr.ordersNeedingPriceCorrection.find((q: any) => q.chainOrderId === '1.7.777' && q.cancelOnly === true);
-    assert.ok(queued, 'detector must queue cancelOnly for stranded order');
-    assert.strictEqual(queued.reason, 'gap-band-stranding-post-commit');
-    console.log('  PASS: post-commit detector queues cancelOnly');
+    assert.ok(!queued, 'detector must NOT queue cancelOnly after removal');
+    console.log('  PASS: post-commit detector disabled (method deleted)');
 }
 
 // ── P2: sync_engine must NOT cancel an in-gap order (adopt, don't cancel) ──

@@ -746,18 +746,6 @@ let API_LIMITS = {
     LP_API_MAX_PAGE: 101,
 };
 
-// Order placement sanity parameters.
-// Guards against broadcasting orders at prices catastrophically far from the
-// live market (e.g. a stale grid rail at 3.0 while the market trades 0.30 —
-// such orders are instantly marketable and drain funds).
-let ORDER_PLACEMENT = {
-    // Max relative deviation of a planned order price from the live market
-    // reference (anchor traded-range mid). |planned/ref - 1| beyond this is
-    // rejected (create skipped / update skipped) with an aggregated warn.
-    // 0.05 = 5%.
-    MAX_PRICE_DEVIATION: 0.05,
-};
-
 // Fill processing configuration
 let FILL_PROCESSING = {
     // Mode for fill processing: 'history' reads from historical fills
@@ -1877,7 +1865,6 @@ Object.freeze(MARKET_ADAPTER.AMAS);
 Object.freeze(MARKET_ADAPTER);
 Object.freeze(CREDENTIAL_PROMPTS);
 Object.freeze(ANCHOR);
-Object.freeze(ORDER_PLACEMENT);
 
-export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS, ANCHOR, ORDER_PLACEMENT }
+export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS, ANCHOR }
 
