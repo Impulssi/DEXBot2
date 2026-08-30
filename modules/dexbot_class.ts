@@ -1767,6 +1767,28 @@ class DEXBot {
     }
 
     /**
+     * Wire the manager's broadcast-region-end hook to drain the deferred fill
+     * queue. The fill consumer defers while a broadcasting region is held and
+     * never reschedules itself, so without this hook fills enqueued during a
+     * long region (e.g. the structural resync's Phase-2 placement) would
+     * starve indefinitely — which also keeps the maintenance idle gate shut
+     * forever (the queue-length check returns the full settle delay).
+     */
+    _wireBroadcastRegionEndDrain() {
+        const manager: any = this.manager;
+        if (!manager || manager._onBroadcastRegionEnd) return;
+        manager._onBroadcastRegionEnd = () => {
+            if (this._shuttingDown) return;
+            // A recovery sync wrapping the region keeps the consumer gated;
+            // requestGridReset's finally drains once the counter clears.
+            if ((this as any)._recoverySyncInFlight) return;
+            if (!this._incomingFillQueue || this._incomingFillQueue.length === 0) return;
+            this._log(`[FILL-QUEUE] Broadcasting region ended; draining ${this._incomingFillQueue.length} deferred fill(s).`, 'info');
+            this._scheduleFillConsumerRestart(chainOrders);
+        };
+    }
+
+    /**
      * Get current metrics for monitoring and debugging.
      * @returns {Object} Metrics snapshot
      */

@@ -2221,6 +2221,8 @@ function validateBoundaryAgainstChainEvidence(params: {
     liveSellMinIdx: number | null;
     feasibleLower: number | null;
     feasibleUpper: number | null;
+    conflictingBuyIds: string[];
+    conflictingSellIds: string[];
 } {
     const {
         boundaryIdx,
@@ -2239,6 +2241,8 @@ function validateBoundaryAgainstChainEvidence(params: {
         liveSellMinIdx: null as number | null,
         feasibleLower: null as number | null,
         feasibleUpper: null as number | null,
+        conflictingBuyIds: [] as string[],
+        conflictingSellIds: [] as string[],
     };
 
     if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) {
@@ -2305,6 +2309,22 @@ function validateBoundaryAgainstChainEvidence(params: {
     if (!hasFeasible) {
         result.reasons.push('NO_FEASIBLE_BOUNDARY');
         result.suggestedBoundary = null;
+        // The overlap is structurally unrepairable while the straddling orders
+        // stay live: no boundary satisfies both rails. Enumerate the minimal
+        // cancel candidates per side, boundary-independent and chain-evidenced:
+        // buys priced above the ceiling forced by the lowest live sell, and
+        // sells priced below the floor forced by the highest live buy. The
+        // caller cancels one side and re-derives the boundary.
+        for (const co of (Array.isArray(chainOrders) ? chainOrders : [])) {
+            const price = Number(co?.price);
+            if (!Number.isFinite(price)) continue;
+            const idx = impliedIdx(price);
+            if (co.type === ORDER_TYPES.BUY && idx > upper) {
+                if (co.orderId != null) result.conflictingBuyIds.push(String(co.orderId));
+            } else if (co.type === ORDER_TYPES.SELL && idx < lower + gap + 1) {
+                if (co.orderId != null) result.conflictingSellIds.push(String(co.orderId));
+            }
+        }
         return result;
     }
 

@@ -194,13 +194,15 @@ async function testValidatorCrossedBook() {
         gapSlots: 2,
         allSlots: slotGrid(5),
         chainOrders: [
-            { price: 1.10, type: ORDER_TYPES.BUY },
-            { price: 1.02, type: ORDER_TYPES.SELL },
+            { orderId: '1.7.301', price: 1.10, type: ORDER_TYPES.BUY },
+            { orderId: '1.7.401', price: 1.02, type: ORDER_TYPES.SELL },
         ],
     });
     assert.strictEqual(evidence.ok, false, 'crossed book rejected');
     assert.ok(evidence.reasons.includes('NO_FEASIBLE_BOUNDARY'), 'infeasible window reported');
     assert.strictEqual(evidence.suggestedBoundary, null, 'no boundary suggested for a crossed book');
+    assert.deepStrictEqual(evidence.conflictingBuyIds, ['1.7.301'], 'straddling BUY enumerated for cancel ladder');
+    assert.deepStrictEqual(evidence.conflictingSellIds, ['1.7.401'], 'straddling SELL enumerated for cancel ladder');
     console.log('  PASS: crossed book defers to adoption-only');
 }
 
@@ -349,15 +351,19 @@ async function testReconcileReDerivesBoundaryBeforePlacements() {
     console.log('  PASS: placements proceeded on corrected geometry, band untouched');
 }
 
-async function testReconcileAdoptionOnlyWhenNoSafeBoundary() {
-    console.log('Running test: reconcile runs adoption-only when no safe boundary is derivable');
+async function testReconcileCancelsStraddlersWhenNoSafeBoundary() {
+    console.log('Running test: reconcile cancels straddling orders when no safe boundary is derivable');
 
     const manager = createManager({ boundaryIdx: 3, _gapSlots: 2 });
     for (const slot of slotGrid(3)) {
         manager.orders.set(slot.id, slot);
     }
 
-    // Crossed live book: BUY priced above a SELL -> no feasible boundary.
+    // Crossed live book: BUY priced above a SELL -> no feasible boundary while
+    // both straddle. The cancel ladder repairs the geometry instead of freezing
+    // placements: single-side removals are infeasible here (each order sits
+    // inside the opposite rail), so both straddlers are cancelled and the
+    // reconcile proceeds on the corrected geometry (surplus semantics).
     const chainOpenOrders = [
         buyChainOrder('1.7.301', 1.11),
         sellChainOrder('1.7.401', 1.02),
@@ -373,17 +379,56 @@ async function testReconcileAdoptionOnlyWhenNoSafeBoundary() {
         chainOpenOrders,
     });
 
-    assert.strictEqual(manager.boundaryIdx, 3, 'bookkept boundary untouched when no correction is safe');
+    assert.strictEqual(manager.boundaryIdx, 3, 'boundary re-derived from the surviving evidence');
     assert.ok(manager.logs.some(l => l.msg.includes('[BOUNDARY-EVIDENCE] Boundary 3 contradicts chain evidence')
         && l.msg.includes('NO_FEASIBLE_BOUNDARY')), 'infeasibility logged');
-    assert.ok(manager.logs.some(l => l.msg.includes('No safe boundary derivable from chain evidence')),
-        'adoption-only decision logged');
-    assert.ok(manager.logs.some(l => l.msg.includes('placements deferred (adoption-only)')),
-        'per-side deferral logged');
-    assert.strictEqual(captures.updateOps.length, 0, 'no price-updates in adoption-only mode');
-    assert.strictEqual(captures.creates, 0, 'no creates in adoption-only mode');
-    assert.strictEqual(captures.cancels, 0, 'over-keep: no cancels in adoption-only mode');
-    console.log('  PASS: crossed book defers all placements without touching the book');
+    assert.ok(manager.logs.some(l => l.msg.includes('NO_FEASIBLE recovery: cancelling 2 straddling')),
+        'straddle cancel repair logged');
+    assert.ok(manager.logs.some(l => l.msg.includes('Boundary re-derived after straddle cancel')),
+        'post-cancel boundary re-derivation logged');
+    assert.ok(!manager.logs.some(l => l.msg.includes('No safe boundary derivable from chain evidence')),
+        'no adoption-only freeze once the ladder repairs the geometry');
+    assert.strictEqual(captures.cancels, 2, 'both straddlers cancelled');
+    assert.strictEqual(captures.updateOps.length, 0, 'no price-updates needed for the cancelled straddlers');
+    assert.ok(captures.creates > 0, 'placements proceed after the repair');
+    console.log('  PASS: crossed book repaired via straddle cancels, placements proceed');
+}
+
+async function testReconcileCancelsSingleStraddlingSide() {
+    console.log('Running test: reconcile cancels the smaller straddling side (H-BTS reset case)');
+
+    const manager = createManager({ boundaryIdx: 3, _gapSlots: 2 });
+    for (const slot of slotGrid(3)) {
+        manager.orders.set(slot.id, slot);
+    }
+
+    // A dust BUY parked in the spread zone while the SELL rail is intact:
+    // cancelling the BUY alone reopens a feasible boundary — the SELL rail
+    // survives and the reconcile proceeds without touching it.
+    const chainOpenOrders = [
+        buyChainOrder('1.7.501', 1.05),
+        sellChainOrder('1.7.502', 1.07),
+        sellChainOrder('1.7.503', 1.08),
+    ];
+
+    const captures = { updateOps: [], creates: 0, cancels: 0 };
+    await reconcileGridOrders({
+        manager,
+        config: { activeOrders: { buy: 2, sell: 2 } },
+        account: 'acct',
+        privateKey: 'pk',
+        chainOrders: chainFacade(captures),
+        chainOpenOrders,
+    });
+
+    assert.strictEqual(manager.boundaryIdx, 3, 'boundary consistent with the surviving SELL rail');
+    assert.ok(manager.logs.some(l => l.msg.includes('NO_FEASIBLE recovery: cancelling 1 straddling')
+        && l.msg.includes('1.7.501')), 'single straddling BUY cancelled');
+    assert.ok(!manager.logs.some(l => l.msg.includes('No safe boundary derivable from chain evidence')),
+        'no adoption-only freeze');
+    assert.strictEqual(captures.cancels, 1, 'only the straddling BUY cancelled');
+    assert.ok(captures.creates > 0, 'placements proceed after the repair');
+    console.log('  PASS: smaller straddling side cancelled, SELL rail preserved');
 }
 
 // ── runner ──────────────────────────────────────────────────────────────
@@ -399,7 +444,8 @@ async function runAll() {
     await testValidatorAnchorNeverGatesAlone();
     await testValidatorDegenerateInputs();
     await testReconcileReDerivesBoundaryBeforePlacements();
-    await testReconcileAdoptionOnlyWhenNoSafeBoundary();
+    await testReconcileCancelsStraddlersWhenNoSafeBoundary();
+    await testReconcileCancelsSingleStraddlingSide();
     console.log('All boundary chain-evidence gate tests passed');
 }
 

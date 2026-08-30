@@ -83,8 +83,17 @@ async function initializeStartupState(bot: any) {
         bot.manager.accountOrders = bot.accountOrders;
     }
     bot._wireStructuralGridResyncRequest();
+    bot._wireBroadcastRegionEndDrain();
     bot._wireProcessedFillTracking();
-    bot.manager.startBootstrap();
+    // No startBootstrap() here: the OrderManager constructor already enters
+    // bootstrap mode (_bootstrapping = 1), and this extra level permanently
+    // unbalanced the trigger-reset startup path. The normal grid-init flow
+    // unwinds two levels (interior finish + finally) and happened to absorb
+    // it, but the trigger-reset path has only ONE finishBootstrap — so after
+    // a pending-trigger reset the refcount stayed at 1 forever: every fill
+    // was routed through the bootstrap consumer (which skips dust detection
+    // and post-fill grid maintenance) and checkGridHealth no-op'd on the
+    // same stuck flag, leaving dust remnants uncancellable.
 
     try {
         if (bot.accountId && bot.config.assetA && bot.config.assetB) {
@@ -674,6 +683,7 @@ async function placeInitialOrdersImpl(bot: any) {
         bot.manager.accountOrders = bot.accountOrders;
     }
     bot._wireStructuralGridResyncRequest();
+    bot._wireBroadcastRegionEndDrain();
     bot.manager.startBootstrap();
     try {
         try {

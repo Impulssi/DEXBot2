@@ -748,6 +748,11 @@ class OrderManager {
         }
         if (this._broadcastingFlag === 0) {
             this._broadcastingStartedAt = 0;
+            // Runtime hook (wired by the bot): the fill consumer defers while
+            // this flag is held and its defer branch returns without
+            // rescheduling, so fills enqueued during a long region would
+            // starve indefinitely. Fire once when the last region ends.
+            (this as any)._onBroadcastRegionEnd?.();
         }
     }
 

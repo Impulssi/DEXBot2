@@ -53,6 +53,9 @@ function calculateSwapInAmount(...args: any) { return require('./order/utils/mat
 function floatToBlockchainInt(...args: any) { return require('./order/utils/math').floatToBlockchainInt(...args); }
 function blockchainToFloat(...args: any) { return require('./order/utils/math').blockchainToFloat(...args); }
 function updateDynamicGridSnapshotSync(...args: any) { return require('../market_adapter/utils/dynamic_grid_snapshot').updateDynamicGridSnapshotSync(...args); }
+// Lazy require: dexbot_fill_runtime imports this module, so a static import
+// would be circular; at call time both modules are fully loaded.
+function scheduleFillConsumerRestartFn(...args: any) { return require('./dexbot_fill_runtime').scheduleFillConsumerRestart(...args); }
 function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
 function formatUnmatchedChainOrder(...args: any) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
 function getSideBudget(...args: any) { return require('./order/utils/order').getSideBudget(...args); }
@@ -965,8 +968,11 @@ async function handlePendingTriggerReset(bot: any) {
     const triggerInfo = readTriggerMetadata(bot.triggerFile);
 
     let resetSucceeded = false;
+    // skipIdle: a pending trigger is an explicit reset command that must run
+    // before the startup sequence. The idle gate can block it indefinitely
+    // when the fill queue never drains, which would silently drop the reset.
     await bot.manager._fillProcessingLock.acquire(async () => {
-        resetSucceeded = await performGridResync(bot, buildGridResyncOptions(triggerInfo));
+        resetSucceeded = await performGridResync(bot, { ...buildGridResyncOptions(triggerInfo), skipIdle: true });
     });
 
     if (!resetSucceeded) {
@@ -1013,7 +1019,13 @@ async function setupTriggerFileDetection(bot: any) {
                             const triggerInfo = readTriggerMetadata(bot.triggerFile);
                             bot.manager._fillProcessingLock.acquire(async () => {
                                 if (bot._shuttingDown) return;
-                                const ok = await performGridResync(bot, buildGridResyncOptions(triggerInfo));
+                                // skipIdle: a trigger file is an explicit reset command.
+                                // Deferring it behind the idle cooldown can loop forever
+                                // when grid activity is continuous (fills arriving during
+                                // placement batches refresh the settle window); the fill
+                                // lock below already serializes the reset with in-flight
+                                // batches.
+                                const ok = await performGridResync(bot, { ...buildGridResyncOptions(triggerInfo), skipIdle: true });
                                 if (!ok) {
                                     bot._warn('Runtime trigger reset failed; retaining existing grid state.');
                                 }
@@ -2144,6 +2156,26 @@ function setupDustHealthCheckInterval(bot: any) {
 }
 
 /**
+ * Retrigger the fill consumer once the recovery/pipeline window has fully
+ * cleared. The consumer's defer branch (batchInFlight / recoverySyncInFlight /
+ * broadcasting) returns WITHOUT rescheduling, so fills enqueued during a long
+ * window would otherwise sit in the queue forever — which also keeps the
+ * maintenance idle gate shut (queue-length check returns the full settle
+ * delay) and blocks deferred grid resyncs and periodic maintenance.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ */
+function drainFillQueueAfterPipelineClear(bot: any) {
+    try {
+        if (!bot || bot._shuttingDown) return;
+        if ((bot._recoverySyncInFlight || 0) > 0) return;
+        if (bot.manager?.isBroadcastingActive?.()) return;
+        if (!bot._incomingFillQueue || bot._incomingFillQueue.length === 0) return;
+        bot._log(`[FILL-QUEUE] Pipeline cleared; draining ${bot._incomingFillQueue.length} deferred fill(s).`, 'info');
+        scheduleFillConsumerRestartFn(bot, chainOrders);
+    } catch {}
+}
+
+/**
  * Request a full grid reset from fresh on-chain state.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [reason='structural change']
@@ -2178,6 +2210,7 @@ async function requestGridReset(bot: any, reason: any = 'structural change', opt
             return await performGridResync(bot, resetOptions);
         } finally {
             bot._recoverySyncInFlight = Math.max(0, (bot._recoverySyncInFlight || 0) - 1);
+            if ((bot._recoverySyncInFlight || 0) === 0) drainFillQueueAfterPipelineClear(bot);
         }
     }
 
@@ -2301,6 +2334,7 @@ function wireStructuralGridResyncRequest(bot: any) {
                         });
                     } finally {
                         bot._recoverySyncInFlight = Math.max(0, (bot._recoverySyncInFlight || 0) - 1);
+                        if ((bot._recoverySyncInFlight || 0) === 0) drainFillQueueAfterPipelineClear(bot);
                     }
                 if (resetResult && bot.manager?._recoveryState) {
                     bot.manager._recoveryState = { ...bot.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };

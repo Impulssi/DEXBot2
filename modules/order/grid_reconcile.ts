@@ -389,23 +389,85 @@ export async function reconcileGridOrders({
                     // re-validation so the periodic sync does not loop on a healthy grid.
                     try { (manager as any)._boundaryRevalidationPending = null; } catch { /* ignore */ }
                 } else {
-                    // Fix #5 (Mode D): previously this froze placements with only an error
-                    // log and no retry, so the bot could stay adoption-only for hours.
-                    // Log at WARN and arm a bounded re-validation: the
-                    // periodic sync re-runs boundary validation on the next tick instead of
-                    // waiting for a fill-driven rotation path to unstick it.
-                    logger?.log?.(
-                        '[BOUNDARY-EVIDENCE] No safe boundary derivable from chain evidence — ' +
-                        'startup placements deferred (adoption-only reconcile). ' +
-                        'Arming next-tick boundary re-validation (NO_FEASIBLE recovery).',
-                        'warn'
-                    );
-                    try {
-                        (manager as any)._boundaryRevalidationPending = {
-                            since: Date.now(),
-                            attempts: ((manager as any)._boundaryRevalidationPending?.attempts || 0) + 1,
-                        };
-                    } catch { /* ignore */ }
+                    // NO_FEASIBLE means live BUY(s) and SELL(s) overlap inside the
+                    // gap band: no boundary exists while both straddle, so a pure
+                    // adoption-only freeze can never repair the geometry. Escalate
+                    // a cancel ladder — smaller single side, other single side,
+                    // both sides — stopping at the first set whose removal makes
+                    // the remaining chain evidence feasible (chain-evidenced,
+                    // boundary-independent). Surplus semantics: orders that cannot
+                    // fit the geometry are cancelled and re-placed, not frozen.
+                    const buyOffenders = evidence.conflictingBuyIds;
+                    const sellOffenders = evidence.conflictingSellIds;
+                    const smallerFirst = buyOffenders.length <= sellOffenders.length;
+                    const ladder: string[][] = [
+                        smallerFirst ? buyOffenders : sellOffenders,
+                        smallerFirst ? sellOffenders : buyOffenders,
+                        [...buyOffenders, ...sellOffenders],
+                    ];
+                    let repaired = false;
+                    for (const candidateIds of ladder) {
+                        const cancelIds = new Set<string>(candidateIds);
+                        if (cancelIds.size === 0) continue;
+                        // Simulate the cancels against the remaining evidence; the
+                        // queued orders leave the book in Phase 2.
+                        const remainingParsed = parsedChain
+                            .filter((x: any) => !cancelIds.has(String(x.parsed?.orderId)))
+                            .map((x: any) => x.parsed);
+                        const recheck = validateBoundaryAgainstChainEvidence({
+                            boundaryIdx: resolvedBand.boundaryIdx,
+                            gapSlots: resolvedBand.gapSlots,
+                            allSlots: evidenceSlots,
+                            chainOrders: remainingParsed,
+                        });
+                        if (recheck.suggestedBoundary === null) continue;
+                        logger?.log?.(
+                            `[BOUNDARY-EVIDENCE] NO_FEASIBLE recovery: cancelling ${cancelIds.size} straddling ` +
+                            `order(s) [${[...cancelIds].join(', ')}] whose price occupies the gap band; ` +
+                            `re-deriving boundary afterwards.`,
+                            'warn'
+                        );
+                        for (const u of parsedChain) {
+                            if (!u?.parsed || !cancelIds.has(String(u.parsed.orderId))) continue;
+                            plannedCancels.push({
+                                chainOrderId: u.parsed.orderId,
+                                chainOrderObj: u.chain,
+                                releaseUntrackedFunds: true,
+                            });
+                        }
+                        unmatchedParsed = unmatchedParsed.filter((u: any) => !cancelIds.has(String(u.parsed?.orderId)));
+                        unmatchedBuys = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).map((x: any) => x.chain);
+                        unmatchedSells = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).map((x: any) => x.chain);
+                        manager._restoreBoundary(recheck.suggestedBoundary);
+                        placementsAllowed = true;
+                        logger?.log?.(
+                            `[BOUNDARY-EVIDENCE] Boundary re-derived after straddle cancel: ` +
+                            `${resolvedBand.boundaryIdx} -> ${recheck.suggestedBoundary}; ` +
+                            `placements proceed on corrected geometry.`,
+                            'warn'
+                        );
+                        repaired = true;
+                        break;
+                    }
+                    if (!repaired) {
+                        // Fix #5 (Mode D): previously this froze placements with only an error
+                        // log and no retry, so the bot could stay adoption-only for hours.
+                        // Log at WARN and arm a bounded re-validation: the
+                        // periodic sync re-runs boundary validation on the next tick instead of
+                        // waiting for a fill-driven rotation path to unstick it.
+                        logger?.log?.(
+                            '[BOUNDARY-EVIDENCE] No safe boundary derivable from chain evidence — ' +
+                            'startup placements deferred (adoption-only reconcile). ' +
+                            'Arming next-tick boundary re-validation (NO_FEASIBLE recovery).',
+                            'warn'
+                        );
+                        try {
+                            (manager as any)._boundaryRevalidationPending = {
+                                since: Date.now(),
+                                attempts: ((manager as any)._boundaryRevalidationPending?.attempts || 0) + 1,
+                            };
+                        } catch { /* ignore */ }
+                    }
                 }
             } else {
                 // Boundary already consistent with chain evidence — clear any armed
