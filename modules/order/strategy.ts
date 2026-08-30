@@ -265,10 +265,14 @@ class StrategyEngine {
         const inSellRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o);
 
         // Sort Closest-First for windowing
+        // BUY_OFFSET = 6 steps below boundary to avoid buying the top
+        // (requested: price at ceiling 2.412 -> drop to 1.95 should fill
+        //  deeper buys, not the 6 closest to the ceiling). See issue discussion.
+        const BUY_OFFSET = 6;
         const buySlots = allBuySlots
             .filter(inBuyRail)
             .sort((a: any, b: any) => b.price - a.price)
-            .slice(0, targetCountBuy);
+            .slice(BUY_OFFSET, BUY_OFFSET + targetCountBuy);
         
         const sellSlots = allSellSlots
             .filter(inSellRail)
