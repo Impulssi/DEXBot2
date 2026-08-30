@@ -264,26 +264,21 @@ class StrategyEngine {
         const inBuyRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o);
         const inSellRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o);
 
-        // Sort Closest-First for windowing
-        // BUY_OFFSET = 6 steps below boundary to avoid buying the top
-        // (requested: price at ceiling 2.412 -> drop to 1.95 should fill
-        //  deeper buys, not the 6 closest to the ceiling). See issue discussion.
-        const BUY_OFFSET = 6;
-        // BUY side 15 min delay: after a buy fill, keep buys virtual for 15 min
-        // to avoid rapid re-buying in volatile chop. Sell side is immediate.
+        // Buy window: KEEP LOW — do not crawl buys to the ceiling.
+        // Requested: after InitializeGrid 0.001196-0.001290, buys must stay
+        // there even when price goes to 2.412 and sells fill at the top.
+        // Previous BUY_OFFSET=6 still crawled near market (2.16). Now pick the
+        // *farthest* (lowest) buys in the rail, not the closest to boundary.
+        // BUY side 15 min delay still applies (sell side immediate).
         const BUY_DELAY_MS = 15 * 60 * 1000;
         const now = Date.now();
-        // Detect buy fills by matching fill slotId/orderId against current buy slots
         const hasBuyFill = fills.some((f: any) => {
             const fid = String((f as any).slotId || (f as any).filledOrderId || (f as any).orderId || (f as any).id || '');
             if (!fid) return false;
-            // Direct slotId match (e.g. "slot-15")
             if (allBuySlots.some((s: any) => String(s.id) === fid)) return true;
-            // OrderId match: look up order in grid by orderId
             for (const s of allBuySlots) {
                 if (String((s as any).orderId) === fid) return true;
             }
-            // Price heuristic: if fill price is in buy rail region (below boundary)
             const fp = Number((f as any).price);
             if (Number.isFinite(fp) && fp > 0) {
                 const bestBuyPrice = Math.max(...allBuySlots.map((s: any) => Number(s.price) || 0), 0);
@@ -297,10 +292,11 @@ class StrategyEngine {
         if (buyDelayActive) {
             this.manager.logger.log(`[STRATEGY] Buy delay active: ${((BUY_DELAY_MS - (now - lastBuyTime))/1000 |0)}s remaining, keeping buys virtual`, 'info');
         }
+        // Farthest (lowest price) buys — static low ladder, no crawl to ceiling
         const buySlotsRaw = allBuySlots
             .filter(inBuyRail)
-            .sort((a: any, b: any) => b.price - a.price)
-            .slice(BUY_OFFSET, BUY_OFFSET + targetCountBuy);
+            .sort((a: any, b: any) => a.price - b.price)
+            .slice(0, targetCountBuy);
         const buySlots = buyDelayActive ? [] : buySlotsRaw;
         
         const sellSlots = allSellSlots
