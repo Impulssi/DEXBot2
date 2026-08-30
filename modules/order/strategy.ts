@@ -306,7 +306,22 @@ class StrategyEngine {
         const buySizeById = new Map(allBuySortedForSizing.map((slot: any, i: any) => [slot.id, fullBuySizes[i] || 0]));
         const sellSizeById = new Map(allSellSortedForSizing.map((slot: any, i: any) => [slot.id, fullSellSizes[i] || 0]));
 
-        const buySizes = buySlots.map((slot: any) => buySizeById.get(slot.id) || 0);
+        // MIN_BUY_USDT: skip buys that would be <0.5 USDT (dust-like but larger than fee dust).
+        // Keeps remaining funds as free (virtualReservation not locked) instead of
+        // shrinking all orders to 0.45, 0.30, ... as fills eat the budget.
+        const MIN_BUY_USDT = 0.5;
+        const filteredBuySlots: any[] = [];
+        buySlots.forEach((slot: any) => {
+            const sz = buySizeById.get(slot.id) || 0;
+            const usdt = sz * Number(slot.price || 0);
+            if (usdt >= MIN_BUY_USDT) {
+                filteredBuySlots.push(slot);
+            } else if (sz > 0) {
+                this.manager.logger.log(`[STRATEGY] Skipping buy ${slot.id} @${Number(slot.price).toPrecision(4)} size ${sz.toFixed(2)} BTS (~${usdt.toFixed(3)} USDT) < ${MIN_BUY_USDT} USDT minimum`, 'info');
+            }
+        });
+        const buySlotsToUse = filteredBuySlots;
+        const buySizes = buySlotsToUse.map((slot: any) => buySizeById.get(slot.id) || 0);
         const sellSizes = sellSlots.map((slot: any) => sellSizeById.get(slot.id) || 0);
 
         // Apply sizes to target grid map
@@ -330,7 +345,7 @@ class StrategyEngine {
             });
         };
 
-        applySizes(buySlots, buySizes);
+        applySizes(buySlotsToUse, buySizes);
         applySizes(sellSlots, sellSizes);
         
         // Handle slots outside the window: preserve their calculated sizes
