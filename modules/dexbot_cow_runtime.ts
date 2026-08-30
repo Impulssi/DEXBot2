@@ -10,7 +10,7 @@
 
 import * as chainOrdersModule from './chain_orders.js';
 const chainOrders = chainOrdersModule as any;
-const { readOpenOrdersWithMetaSafe, readOpenOrdersGuarded } = chainOrdersModule as any;
+const { readOpenOrdersWithMetaSafe } = chainOrdersModule as any;
 import { BroadcastUncertainError as BroadcastUncertainErrorBinding } from './dexbot_credential_client.js';
 const BroadcastUncertainError = BroadcastUncertainErrorBinding as any;
 import * as orderUtils from './order/utils/order.js';
@@ -135,103 +135,6 @@ function findMissingCreateResultContexts(operationResults: any, opContexts: any)
     }
 
     return missing;
-}
-
-/**
- * Run an immediate chain sync after a successful CREATE broadcast returned incomplete ids.
- * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {string} [reason]
- * @returns {Promise<void>}
- */
-async function recoverAfterMissingCreateResults(bot: any, reason: any = 'missing create operation results') {
-    try {
-        const accountRef = bot.accountId || bot.account?.id || bot.account;
-        if (!accountRef || !bot.manager || !chainOrders?.readOpenOrders) {
-            bot.manager?.logger?.log?.(`[COW] Recovery sync unavailable after ${reason}`, 'warn');
-            return;
-        }
-        const preRecoveryMissingCreateBlockers = Array.isArray(bot.manager._lastUnmatchedChainOrders)
-            ? bot.manager._lastUnmatchedChainOrders
-                .filter((order: any) => order?.reason === 'missing-create-result')
-                .map((order: any) => ({ ...order }))
-            : [];
-        // Truncated-read guard: the freshest CREATEs sort last and are exactly
-        // the orders a partial get_full_accounts window omits — syncing would
-        // virtualize them (phantom cleanup). Defer; blockers stay registered
-        // so the COW guard retries the recovery on a clean read.
-        const openOrders = await readOpenOrdersGuarded(chainOrders, accountRef, {
-            log: (message: string, level: any) => bot.manager?.logger?.log?.(message, level),
-            label: 'COW',
-            detail: `recovery sync after ${reason}`,
-        });
-        if (openOrders === null) {
-            bot.manager?.logger?.log?.(
-                `[COW] Deferring recovery sync after ${reason}: open-order read ambiguous (truncated); blockers retained for retry.`,
-                'warn'
-            );
-            return;
-        }
-        const recoveryResult = await bot.manager.syncFromOpenOrders(openOrders, {
-            skipAccounting: false,
-        });
-        preserveMissingCreateBlockersAfterRecovery(bot, preRecoveryMissingCreateBlockers, recoveryResult);
-        if (typeof bot.manager.persistGrid === 'function') {
-            await bot.manager.persistGrid();
-        }
-    } catch (err: any) {
-        bot.manager?.logger?.log?.(`[COW] CRITICAL: Recovery sync failed after ${reason}: ${getErrorMessage(err)}`, 'error');
-        if (typeof bot.manager?.requestStructuralGridResync === 'function') {
-            try {
-                await bot.manager.requestStructuralGridResync(`recovery sync failed after ${reason}`, {
-                    error: getErrorMessage(err)
-                });
-            } catch (scheduleErr: any) {
-                bot.manager?.logger?.log?.(
-                    `[COW] CRITICAL: Failed to schedule structural resync after recovery failure: ${getErrorMessage(scheduleErr)}`,
-                    'error'
-                );
-            }
-        }
-    }
-}
-
-/**
- * Restore unresolved missing-create blockers after recovery if sync did not adopt them.
- * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {Array} blockers
- * @param {Object} recoveryResult
- */
-function preserveMissingCreateBlockersAfterRecovery(bot: any, blockers: any, recoveryResult: any) {
-    if (!Array.isArray(blockers) || blockers.length === 0 || !bot.manager) return;
-
-    const adoptedSlotIds = new Set(
-        (Array.isArray(recoveryResult?.updatedOrders) ? recoveryResult.updatedOrders : [])
-            .filter((order: any) => order?.id && order?.orderId)
-            .map((order: any) => order.id)
-    );
-    const unresolvedBlockers = blockers.filter((blocker: any) => !blocker.slotId || !adoptedSlotIds.has(blocker.slotId));
-    if (unresolvedBlockers.length === 0) return;
-
-    const currentUnmatched = Array.isArray(bot.manager._lastUnmatchedChainOrders)
-        ? bot.manager._lastUnmatchedChainOrders
-        : [];
-    const currentKeys = new Set(currentUnmatched.map((order: any) => `${order.reason || ''}:${order.slotId || ''}:${order.operationIndex ?? ''}`));
-    const restored = [...currentUnmatched];
-
-    for (const blocker of unresolvedBlockers) {
-        const key = `${blocker.reason || ''}:${blocker.slotId || ''}:${blocker.operationIndex ?? ''}`;
-        if (!currentKeys.has(key)) restored.push({ ...blocker });
-    }
-
-    if (restored.length !== currentUnmatched.length) {
-        bot.manager._lastUnmatchedChainOrders = restored;
-        bot.manager._lastUnmatchedChainOrdersAt = Date.now();
-        bot.manager.logger?.log?.(
-            `[COW] Preserving ${restored.length - currentUnmatched.length} missing-create blocker(s) after recovery sync; ` +
-            `chain snapshot did not account for the affected slot(s).`,
-            'warn'
-        );
-    }
 }
 
 /**
@@ -2963,21 +2866,82 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         .map((item: any) => item.ctx?.order?.id || item.ctx?.id || `op-${item.index}`)
                         .join(', ');
                     bot.manager.logger.log(
-                        `[COW] Refusing to commit working grid: ${missingCreateResults.length} CREATE op(s) ` +
-                        `returned no chainOrderId (${missingSlots}). Discarding working grid and syncing from chain.`,
-                        'error'
+                        `[COW] ${missingCreateResults.length} CREATE op(s) returned no chainOrderId ` +
+                        `(${missingSlots}). Resolving from chain before commit (normalize, don't reject).`,
+                        'warn'
                     );
-                    popPushedWorkingGrid(bot, cowResult);
-                    markMissingCreateResultsAsStructuralBlocker(bot, missingCreateResults);
-                    await recoverAfterMissingCreateResults(bot, 'missing create operation results');
-                    return {
-                        executed: false,
-                        hadRotation: false,
-                        missingCreateResults: missingCreateResults.map((item: any) => ({
-                            index: item.index,
-                            slotId: item.ctx?.order?.id || item.ctx?.id || null
-                        }))
-                    };
+                    // Layer 2 (normalize, don't reject + uncertain-broadcast routing):
+                    // the batch otherwise succeeded, so a missing id is the
+                    // "broadcast succeeded but attach lost" ambiguous case. Poll the
+                    // chain to separate REAL on-chain orders (adopt their id into the
+                    // working grid so they commit normally) from PHANTOMS (normalize the
+                    // slot in place to a clean empty). Either way the REST of the batch
+                    // commits — we never discard a whole batch over one missing id.
+                    const confirmation = await pollChainForConfirmation(
+                        bot,
+                        missingCreateResults.map((m: any) => m.ctx)
+                    );
+                    const accountRef = bot.accountId || bot.account?.id || bot.account;
+                    let chainSnap: any = null;
+                    try {
+                        const cr = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
+                        if (cr && !cr.truncated) chainSnap = cr.orders;
+                    } catch { /* best-effort; confirmed set already known from poll */ }
+
+                    let adoptedCount = 0;
+                    let normalizedCount = 0;
+                    for (const item of missingCreateResults) {
+                        const slotId = item.ctx?.order?.id || item.ctx?.id;
+                        const slot = workingGrid.get(slotId);
+                        if (!slot) continue;
+                        const isConfirmed = confirmation.confirmed.some(
+                            (c: any) => (c?.order?.id || c?.id) === slotId
+                        );
+                        if (isConfirmed && chainSnap) {
+                            const match = findChainOrderForSlot(bot, chainSnap, slotId, {
+                                sell: item.ctx?.finalInts?.sell,
+                                receive: item.ctx?.finalInts?.receive,
+                                orderType: item.ctx?.order?.type,
+                                fingerprint: buildCreateOpFingerprint({
+                                    side: item.ctx?.order?.type,
+                                    assetA: bot.manager?.assets?.assetA?.id,
+                                    assetB: bot.manager?.assets?.assetB?.id,
+                                    sellInt: item.ctx?.finalInts?.sell,
+                                    receiveInt: item.ctx?.finalInts?.receive,
+                                    slotId
+                                })
+                            });
+                            if (match?.id) {
+                                workingGrid.set(slotId, { ...slot, orderId: match.id });
+                                adoptedCount++;
+                                continue;
+                            }
+                        }
+                        // Normalize: drop the size so the slot cannot persist as a
+                        // phantom placed order (VIRTUAL + size>0 + no orderId) — the
+                        // exact corrupt shape that recurs as a sized orphan. It commits
+                        // as a clean empty and is re-placed by the next cycle / spread
+                        // correction.
+                        workingGrid.set(slotId, {
+                            ...slot,
+                            size: 0,
+                            orderId: null,
+                            state: ORDER_STATES.VIRTUAL
+                        });
+                        normalizedCount++;
+                    }
+                    bot.manager.logger.log(
+                        `[COW] Missing CREATEs resolved: ${adoptedCount} adopted from chain, ` +
+                        `${normalizedCount} normalized in place; committing remainder of batch.`,
+                        'warn'
+                    );
+                    // NOTE: we intentionally do NOT mark these as structural blockers.
+                    // Normalizing the slot to a clean empty lets the next cycle re-create
+                    // it, and the regular open-orders sync adopts any order that really
+                    // did land on chain — so a permanent block (which would reject every
+                    // subsequent CREATE batch) is avoided.
+                    // DO NOT pop/discard the working grid — fall through to commit the
+                    // rest of the batch below.
                 }
 
                 // Pre-apply rotation state transitions to the working grid so the
@@ -3800,7 +3764,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, recoverAfterMissingCreateResults, preserveMissingCreateBlockersAfterRecovery, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults };
+export { buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults };
 
 
 export default {
@@ -3808,8 +3772,6 @@ export default {
     buildOutsideInPairGroupsForCreateEntries,
     extractOperationResults,
     findMissingCreateResultContexts,
-    recoverAfterMissingCreateResults,
-    preserveMissingCreateBlockersAfterRecovery,
     markMissingCreateResultsAsStructuralBlocker,
     formatUnmatchedChainOrderForLog,
     recordPendingBroadcast,

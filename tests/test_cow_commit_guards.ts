@@ -225,7 +225,14 @@ function createCowExecutionFixture(masterOrders = new Map()) {
         stopBroadcasting: () => {},
         pauseFundRecalc: () => {},
         resumeFundRecalc: async () => {},
-        _commitWorkingGrid: async (): Promise<boolean> => true,
+        _committedWorkingGrid: null as any,
+        _commitWorkingGrid: async (wg: any): Promise<boolean> => {
+            // Capture the working grid presented for commit so tests can assert
+            // on its in-place (normalized) state at the commit boundary. The real
+            // implementation writes it to manager.orders; this mock just records it.
+            (manager as any)._committedWorkingGrid = wg;
+            return true;
+        },
         persistGrid: async () => {},
         _clearWorkingGridRef: () => {},
         getChainFundsSnapshot: () => ({ chainFreeSell: 1e9, chainFreeBuy: 1e9 }),
@@ -513,6 +520,16 @@ async function testNoPostBatchCacheDeductionForCreates() {
 
     const { bot, manager, postBatchAdjustments } = createCowExecutionFixture();
     const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 0 });
+    // The COW planner would have materialized the CREATE slot into the working
+    // grid before broadcast; mirror that here so Layer 2 can normalize it.
+    workingGrid.set('slot-create-buy', {
+        id: 'slot-create-buy',
+        type: ORDER_TYPES.BUY,
+        price: 1,
+        size: 1.23456789,
+        state: ORDER_STATES.VIRTUAL,
+        orderId: null
+    });
 
     const actions = [{
         type: COW_ACTIONS.CREATE,
@@ -579,17 +596,22 @@ async function testNoPostBatchCacheDeductionForCreates() {
         chainOrders.executeBatch = originalExecuteBatch;
     }
 
-    assert.strictEqual(result.executed, false, 'Missing create result must abort local commit');
-    assert.strictEqual(Array.isArray(result.missingCreateResults), true, 'Missing create result should be reported via missingCreateResults key');
-    assert.strictEqual(result.missingCreateResults.length, 1, 'Single missing create result should be reported');
-    assert.strictEqual(recoverySyncCalls, 1, 'Missing create result must trigger immediate recovery sync');
-    assert.strictEqual((manager as any)._lastUnmatchedChainOrders.length, 1, 'Missing create result should leave a structural create blocker');
-    assert.strictEqual((manager as any)._lastUnmatchedChainOrders[0].reason, 'missing-create-result', 'Blocker should identify missing create result');
-    // Cache deduction now happens in real-time via updateOptimisticFreeBalance
-    // (inside _commitWorkingGrid), not as a separate post-batch step.
-    // No cow-placements deductions should occur (would be double-deducting).
-    assert.strictEqual(postBatchAdjustments.length, 0,
-        'No post-batch cache deduction expected (handled in real-time by updateOptimisticFreeBalance)');
+    // Layer 2 (normalize, don't reject): a CREATE that returned no chainOrderId
+    // while the batch otherwise succeeded must be normalized IN PLACE (size 0,
+    // no orderId) at the commit boundary — NOT abort the whole commit (which
+    // would drop every other action and leave a permanent structural blocker
+    // that blocks all future CREATEs). The committed working grid must show the
+    // slot as a clean empty, never as a phantom (VIRTUAL + size>0 + no orderId).
+    assert.strictEqual(result.executed, true, 'Batch with one missing create id must still commit (normalize, don\'t reject)');
+    const cg007 = (manager as any)._committedWorkingGrid;
+    const normalized007 = cg007?.get('slot-create-buy');
+    assert(normalized007, 'Missing-create slot must be present in the committed working grid');
+    assert.strictEqual(Number(normalized007.size || 0), 0, 'Missing-create slot must be normalized to a clean empty (size 0)');
+    assert.strictEqual(normalized007.orderId, null, 'Normalized slot must not carry a phantom orderId');
+    assert.strictEqual(recoverySyncCalls, 0, 'Missing create resolved via chain poll, not the full recovery sync');
+    const blockers007 = ((manager as any)._lastUnmatchedChainOrders || []).filter((o: any) => o.reason === 'missing-create-result');
+    assert.strictEqual(blockers007.length, 0, 'No permanent missing-create structural blocker (would block future CREATEs)');
+    assert.strictEqual(postBatchAdjustments.length, 0, 'No post-batch cache deduction expected');
 
     console.log('✓ COW-COMMIT-007 passed');
 }
@@ -599,6 +621,16 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
 
     const { bot, manager, postBatchAdjustments } = createCowExecutionFixture();
     const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 0 });
+    // The COW planner would have materialized the CREATE slots into the working
+    // grid before broadcast; mirror that here so Layer 2 can normalize/adopt.
+    workingGrid.set('slot-create-buy', {
+        id: 'slot-create-buy', type: ORDER_TYPES.BUY, price: 1, size: 1,
+        state: ORDER_STATES.VIRTUAL, orderId: null
+    });
+    workingGrid.set('slot-create-sell', {
+        id: 'slot-create-sell', type: ORDER_TYPES.SELL, price: 2, size: 2,
+        state: ORDER_STATES.VIRTUAL, orderId: null
+    });
 
     const actions = [
         {
@@ -697,12 +729,28 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
         chainOrders.executeBatch = originalExecuteBatch;
     }
 
-    assert.strictEqual(result.executed, false, 'Missing mixed create result must abort local commit');
-    assert.strictEqual(Array.isArray(result.missingCreateResults), true, 'Missing mixed create result should be reported via missingCreateResults key');
-    assert.strictEqual(result.missingCreateResults.length, 1, 'Single missing mixed create result should be reported');
-    assert.strictEqual(recoverySyncCalls, 1, 'Missing mixed create result must trigger recovery sync');
-    assert.strictEqual((manager as any)._lastUnmatchedChainOrders.length, 1, 'Missing mixed create result should leave a structural create blocker');
-    assert.strictEqual((manager as any)._lastUnmatchedChainOrders[0].reason, 'missing-create-result', 'Mixed create blocker should identify missing result');
+    // Layer 2 (normalize, don't reject): exactly one CREATE (the one that
+    // returned no chainOrderId) is normalized in place (size 0, no orderId) at
+    // the commit boundary; the other (confirmed) keeps its size and is adopted
+    // with its chain id by processBatchResults post-commit. The batch still
+    // commits and no permanent structural blocker is left.
+    assert.strictEqual(result.executed, true, 'Mixed batch with one missing create id must still commit');
+    const cg008 = (manager as any)._committedWorkingGrid;
+    const buy008 = cg008?.get('slot-create-buy');
+    const sell008 = cg008?.get('slot-create-sell');
+    assert(buy008 && sell008, 'Both CREATE slots must be present in the committed working grid');
+    const phantom008 = [buy008, sell008].find((o: any) => Number(o.size || 0) > 0 && !o.orderId);
+    // At the commit boundary the CONFIRMED slot legitimately has no orderId yet
+    // (adoption happens in processBatchResults post-commit), so a size>0 slot
+    // without an id here is acceptable. The dangerous shape is a size>0 slot
+    // that was the MISSING one — that must have been normalized to size 0.
+    const normalized008 = [buy008, sell008].find((o: any) => Number(o.size || 0) === 0 && !o.orderId);
+    assert(normalized008, 'The missing-create slot must be normalized to a clean empty (size 0) at the commit boundary');
+    assert.strictEqual([buy008, sell008].filter((o: any) => Number(o.size || 0) === 0).length, 1,
+        'Exactly one (the missing) slot is normalized; the confirmed slot keeps its size');
+    assert.strictEqual(recoverySyncCalls, 0, 'Missing create resolved via chain poll, not the full recovery sync');
+    const blockers008 = ((manager as any)._lastUnmatchedChainOrders || []).filter((o: any) => o.reason === 'missing-create-result');
+    assert.strictEqual(blockers008.length, 0, 'No permanent missing-create structural blocker (would block future CREATEs)');
     // Cache deduction now happens in real-time via updateOptimisticFreeBalance
     // (inside _commitWorkingGrid), not as a separate post-batch step.
     assert.strictEqual(postBatchAdjustments.length, 0,

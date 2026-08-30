@@ -765,6 +765,23 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                         manager.logger?.log?.(`Sanitizing corrupted order ${order.id}: ACTIVE/PARTIAL without orderId -> VIRTUAL`, 'warn');
                         currentOrder = { ...order, state: ORDER_STATES.VIRTUAL };
                     }
+                    // Sized VIRTUAL slot with no on-chain id: a CREATE whose broadcast
+                    // result was lost before the orderId was durably attached to the
+                    // persisted master. It is NOT a placed order, yet its size would
+                    // otherwise survive reload (isPhantomOrder only flags ACTIVE/PARTIAL)
+                    // and dilute sizing / mask the real spread. Normalize to a clean
+                    // empty so re-derivation or spread correction re-places it next cycle.
+                    if (
+                        currentOrder.state === ORDER_STATES.VIRTUAL
+                        && !hasOnChainId(currentOrder)
+                        && Number(currentOrder.size || 0) > 0
+                    ) {
+                        manager.logger?.log?.(
+                            `Sanitizing orphaned sized slot ${currentOrder.id}: VIRTUAL with size but no orderId -> empty (size dropped)`,
+                            'warn'
+                        );
+                        currentOrder = { ...currentOrder, size: 0 };
+                    }
                     await manager._applyOrderUpdate(currentOrder, 'grid-load', { skipAccounting: true });
                 }
                  // Gap-band occupancy for the spread metric.  Empty slots are
@@ -2588,9 +2605,10 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             .slice(0, missingSlots);
 
         // Secondary candidates: orphaned virtual slots that have lost their
-        // order (e.g. stale-cleaned after a race condition during a crash).
-        // These sit inside the active window and are invisible to the
-        // gap-band SPREAD filter above.
+        // order (e.g. stale-cleaned after a race condition during a crash, or a
+        // lowest-sell slot dust-cancelled and then left unplaced after a
+        // boundary shift). These sit inside the active window and are invisible
+        // to the gap-band SPREAD filter above.
         //
         // Empty slots are stored SPREAD (side-neutral) after normalization, so
         // the stored type can be railType OR SPREAD — what matters is that the
@@ -2599,12 +2617,23 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         // whose boundary position has moved into the spread or opposite zone are
         // NOT re-activated on the stale side — doing so would compound inventory
         // at prices where the bot already traded.
+        //
+        // NOTE: we deliberately accept BOTH zero-size and sized virtual slots
+        // here. A sized sell/buy slot that lost its orderId (the classic
+        // boundary-oscillation orphan) has size > 0 but no on-chain order — the
+        // old `size === 0` guard excluded it, so spread correction silently
+        // planned 0 orders and the gap never closed. Dropping the guard is safe:
+        // create targets are rebuilt from `current: 0` + the fresh ideal from
+        // allocateFundsByWeights (grid.ts:2790-2800, 2861-2870), so a sized
+        // orphan's stale stored size never leaks into a placement; getMinOrderSize
+        // is only a collision-tolerance fallback (grid.ts:2712), not the primary
+        // sizer. Orphans are excluded from the sideSlots sizing denominator too,
+        // so this also removes the prior dilution of every other order.
         const orphanedVirtualCandidates = allOrders
             .filter((o: any) =>
                 (o.type === railType || o.type === ORDER_TYPES.SPREAD)
                 && o.state === ORDER_STATES.VIRTUAL
                 && !o.orderId
-                && Number(o.size || 0) === 0
                 && getSlotCorrectType(o) === railType
             )
             .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price)

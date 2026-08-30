@@ -476,8 +476,29 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
    * bestSellSlot: Lowest sell price (first sell after boundary, closest to market)
    * The spread between these is the "real" spread of the grid
    */
-  const bestBuySlot = grid[boundaryIdx];
-  const bestSellSlot = grid.slice(boundaryIdx + 1).find((s: any) => s.type === ORDER_TYPES.SELL);
+  // Best prices come from the ACTUALLY PLACED orders (orderId present), not
+  // merely the slot geometry. A sized virtual slot that lost its orderId (e.g.
+  // after a boundary shift / divergence reconciliation) would otherwise be
+  // reported as the spread edge, masking a real on-chain gap and showing a
+  // false (too-tight) spread. Fall back to geometry only when no placed order
+  // exists on a side (e.g. dry-run or pre-placement grids).
+  //
+  // NOTE (mixed-fallback): the two edges are chosen independently. If only one
+  // side has a placed order, the spread mixes a real on-chain edge with a
+  // geometry edge — it will read artificially tight. This is accepted by
+  // design (a partially-placed grid IS partially masked); it is not a bug, but
+  // the output should be read with that caveat in mind.
+  const hasOrderId = (s: any) => !!(s && s.orderId);
+  const placedBuys = grid.slice(0, boundaryIdx + 1).filter((s: any) => s.type === ORDER_TYPES.BUY && hasOrderId(s));
+  const placedSells = grid.slice(boundaryIdx + 1).filter((s: any) => s.type === ORDER_TYPES.SELL && hasOrderId(s));
+  const geoBuy = grid.slice(0, boundaryIdx + 1).filter((s: any) => s.type === ORDER_TYPES.BUY);
+  const geoSell = grid.slice(boundaryIdx + 1).filter((s: any) => s.type === ORDER_TYPES.SELL);
+  const bestBuySlot = placedBuys.length
+    ? placedBuys.reduce((a: any, b: any) => (b.price > a.price ? b : a))
+    : (geoBuy.length ? geoBuy.reduce((a: any, b: any) => (b.price > a.price ? b : a)) : (grid[boundaryIdx] || null));
+  const bestSellSlot = placedSells.length
+    ? placedSells.reduce((a: any, b: any) => (b.price < a.price ? b : a))
+    : (geoSell.length ? geoSell.reduce((a: any, b: any) => (b.price < a.price ? b : a)) : null);
 
   /**
    * Real Spread Calculation
