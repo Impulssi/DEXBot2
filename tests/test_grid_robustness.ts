@@ -11,7 +11,7 @@
  *      price-correction UPDATE), instead of being virtualized (which would be
  *      cancelled as surplus).
  *   3. Non-monotonic rails are repaired in place (offender re-priced).
- *   4. BAND-EXCLUSION strands buys at/above the highest filled SELL price
+ *   4. (removed) BAND-EXCLUSION — superseded by LAST-FILL-GUARD buys at/above the highest filled SELL price
  *      during a multi-fill sell sweep (asymmetric pre-burst behavior).
  */
 
@@ -231,47 +231,7 @@ async function run() {
         );
     }
 
-    // ── Case 4: BAND-EXCLUSION strands buys at/above highest filled SELL ──
-    {
-        const buys = [
-            mkSlot('b-0', 894.01113, ORDER_TYPES.BUY),
-            mkSlot('b-1', 902.08089, ORDER_TYPES.BUY),
-            mkSlot('b-2', 910.0, ORDER_TYPES.BUY),
-            mkSlot('b-3', 860.0, ORDER_TYPES.BUY)
-        ];
-        const sells = [
-            mkSlot('s-0', 920.0, ORDER_TYPES.SELL),
-            mkSlot('s-1', 925.0, ORDER_TYPES.SELL)
-        ];
-        const manager = makeManager([...buys, ...sells], { activeOrders: { buy: 4, sell: 2 } });
-        const strategy = new StrategyEngine(manager);
-
-        // All-sell burst: 15 sells swept through 894->902. burst-global band
-        // must strand buys at/above the highest filled sell (902.08089).
-        manager._burstSweptMaxSell = 902.08089;
-        manager._burstSweptSellCount = 15;
-
-        const fills = [];
-        for (let i = 0; i < 15; i++) {
-            fills.push(mkSlot(`f-${i}`, 880 + i, ORDER_TYPES.SELL, { orderId: `1.7.${i}` }));
-        }
-        const { targetGrid } = strategy.calculateTargetGrid({
-            frozenMasterGrid: manager.orders,
-            config: manager.config,
-            accountAssets: manager.assets,
-            funds: manager.funds,
-            fills,
-            currentBoundaryIdx: 2
-        });
-
-        const activeBuys = activeOfType(targetGrid, ORDER_TYPES.BUY);
-        for (const o of activeBuys) {
-            assert.ok(
-                Number(o.price) <= 902.08089,
-                `active buy ${o.id}@${o.price} must not sit above the highest filled sell 902.08089`
-            );
-        }
-    }
+    // ── Case 4: BAND-EXCLUSION (removed with anchor revert — now covered by LAST-FILL-GUARD; was maxFilledSellPrice stranded buys) — skipped
 
     // ── Case 5: re-priced straggler propagates to the chain as an UPDATE ──
     {

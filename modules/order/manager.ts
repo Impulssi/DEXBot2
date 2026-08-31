@@ -63,7 +63,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, createEmptyMarketAnchor, seedMarketAnchorFromBook as seedAnchor, updateMarketAnchorFromFills as updateAnchor } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -406,9 +406,9 @@ class OrderManager {
     _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
     _recentFillKeysSnapshot: Record<string, number> | null;
-    _marketAnchor: any | null;
-    _lastAnchorStaleWarnAt: number;
-    _lastAnchorDivergenceLogAt: number;
+    _lastFilledBuyPrice: number | null;
+    _lastFilledSellPrice: number | null;
+    // anchor fields removed
     // Note: dedupe lives inside the anchor object (`_seenKeys`), not here.
     // Kept for backwards compat if external code checks existence; not used.
 
@@ -525,9 +525,9 @@ class OrderManager {
         this._pendingRecovery = null;
         this._recentFillKeysSnapshot = null;
         this._lastStaleTotalsWarnAt = {};
-        this._marketAnchor = null;
-        this._lastAnchorStaleWarnAt = 0;
-        this._lastAnchorDivergenceLogAt = 0;
+        this._lastFilledBuyPrice = null;
+        this._lastFilledSellPrice = null;
+        // anchor init removed
         // _marketAnchorSeenKeys removed — anchor carries its own _seenKeys set
 
         this._metrics = {
@@ -1636,15 +1636,10 @@ class OrderManager {
                 }
                 return n;
             };
-            const anchor = self._marketAnchor;
-            const maxFilledSell = anchor && typeof anchor.maxFilledSellPrice === 'number' ? anchor.maxFilledSellPrice : null;
-            const anchorProjected = anchor && (anchor.projectedBoundary ?? anchor.projected) != null ? (anchor.projectedBoundary ?? anchor.projected) : null;
             this.logger?.log?.(
                 `[BOUNDARY] ${source} boundary=${boundary} sellStart=${sellStart} gapSlots=${gapSlots} ` +
                 `spreadCount=${self.currentSpreadCount ?? self.initialSpreadCount ?? '?'} ` +
-                `activeBuy=${countActive(ORDER_TYPES.BUY)} activeSell=${countActive(ORDER_TYPES.SELL)} ` +
-                `maxFilledSell=${maxFilledSell == null ? 'n/a' : maxFilledSell.toFixed(6)} ` +
-                `anchorProjected=${anchorProjected == null ? 'n/a' : anchorProjected}`,
+                `activeBuy=${countActive(ORDER_TYPES.BUY)} activeSell=${countActive(ORDER_TYPES.SELL)}`,
                 'debug'
             );
         } catch {
@@ -1653,73 +1648,60 @@ class OrderManager {
     }
 
     /**
-     * Seed the MarketAnchor from the live on-chain book (Phase 1 D5).
-     * Derives initial range from highest live BUY and lowest live SELL.
-     * No persistence, in-memory only. Empty book => no anchor (cold start).
-     * @param {Array} liveOrders - Parsed chain orders ({price, type})
+     * Record last filled prices for simple price-guard (BUY above last buy, SELL below last sell).
+     * Called from fill processing path; in-memory only, not persisted. Cold start => guard disabled.
+     * @param {Array} fills
      */
-    seedMarketAnchorFromBook(liveOrders: any): void {
-        try {
-            const seeded = seedAnchor(liveOrders);
-            if (seeded) {
-                this._marketAnchor = seeded;
-                this.logger?.log?.(`[ANCHOR] Seeded from book: buy=${seeded.minFilledBuyPrice} sell=${seeded.maxFilledSellPrice}`, 'info');
+    recordLastFilledPrices(fills: any): void {
+        if (!Array.isArray(fills) || fills.length === 0) return;
+        for (const f of fills) {
+            if (!f || (f.type !== ORDER_TYPES.BUY && f.type !== ORDER_TYPES.SELL)) continue;
+            if ((f as any).skipBoundaryShift === true) continue;
+            let price: number | null = Number(f.price ?? f.order?.price);
+            if (!Number.isFinite(price) || (price as number) <= 0) {
+                // Fallback to slot price lookup (fills without explicit price)
+                try {
+                    const slot = f.id ? (this.orders as any)?.get?.(f.id) : null;
+                    price = slot ? Number((slot as any).price) : null;
+                } catch { price = null; }
             }
-        } catch (e: any) {}
+            if (!Number.isFinite(price as number) || (price as number) <= 0) continue;
+            if (f.type === ORDER_TYPES.BUY) this._lastFilledBuyPrice = price as number;
+            else if (f.type === ORDER_TYPES.SELL) this._lastFilledSellPrice = price as number;
+        }
     }
 
     /**
-     * Update the MarketAnchor from fills (Phase 1 + D4/D5).
-     * Delegates to the pure helper in order.ts (block ordering, dedupe, replay cap).
-     * Normalizes raw fill events (chain orderId → slot) so the dead raw path is viable.
-     * @param {Array} fills
-     * @param {Object} [opts] - {isReplay:boolean}
+     * Seed last-filled guard from the live book at startup. Book-derived
+     * (survives restart), analogous to the deleted MarketAnchor book-seed.
+     * Closes the in-memory-only window where LAST-FILL-GUARD would be
+     * disabled until the first fill arrives.
+     * @param {Array} chainOpenOrders - raw chain open orders (from readOpenOrdersGuarded)
      */
-    updateMarketAnchorFromFills(fills: any, opts: any = {}): void {
+    seedLastFilledPricesFromBook(chainOpenOrders: any): void {
+        if (!Array.isArray(chainOpenOrders) || chainOpenOrders.length === 0) return;
+        // Only seed when cold (no fills yet) — don't overwrite a live value.
+        if (this._lastFilledBuyPrice != null && this._lastFilledSellPrice != null) return;
         try {
-            if (!this._marketAnchor) {
-                this._marketAnchor = createEmptyMarketAnchor();
-            }
-            const prevOutlierCount = Number((this._marketAnchor as any).rejectedOutlierFills) || 0;
-            const allSlots: any[] = Array.from(this.orders.values() as any).filter((o: any) => o.price != null).sort((a: any,b:any)=>a.price-b.price);
-            const slotById = new Map(allSlots.map((s:any)=>[s.id, s]));
-            // Build chainOrderId → slot map for raw fill normalization (dead-path fix)
-            const chainIdToSlot = new Map<string, any>();
-            for (const s of allSlots) {
-                if (s.orderId) chainIdToSlot.set(String(s.orderId), s);
-            }
-            const normalized = (Array.isArray(fills) ? fills : []).map((f: any) => {
-                if (!f) return f;
-                // Already normalized (has price/type) → keep as-is
-                if (Number.isFinite(f.price) && (f.type === ORDER_TYPES.BUY || f.type === ORDER_TYPES.SELL)) return f;
-                const chainId = f.op?.[1]?.order_id ?? f.orderId ?? f.order_id;
-                const slot = chainId ? chainIdToSlot.get(String(chainId)) : null;
-                if (slot && Number.isFinite(slot.price)) {
-                    const blockNum = f.block_num ?? f.blockNum;
-                    return { ...f, price: slot.price, type: slot.type, id: slot.id, block_num: blockNum, blockNum: blockNum };
-                }
-                return f;
-            });
-            this._marketAnchor = updateAnchor(this._marketAnchor, normalized, slotById, opts);
-            // Surface stale-slot price poisoning: the anchor guard rejected
-            // fill price(s) as implausible vs the established range. Rate
-            // limited to one warn per rate-limit window.
-            const newOutlierCount = Number((this._marketAnchor as any).rejectedOutlierFills) || 0;
-            if (newOutlierCount > prevOutlierCount) {
-                const now = Date.now();
-                const rateLimitMs = this.config?.timing?.STALE_TOTALS_WARN_RATE_LIMIT_MS ?? 60000;
-                if (now - (this as any)._lastAnchorOutlierWarnAt >= rateLimitMs) {
-                    (this as any)._lastAnchorOutlierWarnAt = now;
-                    const last = (this._marketAnchor as any).lastRejectedOutlier;
-                    this.logger?.log?.(
-                        `[ANCHOR-OUTLIER] Rejected ${newOutlierCount - prevOutlierCount} implausible fill price(s) ` +
-                        `(stale slot price? poisoning guard) lastRejected=${last?.price} orderId=${last?.id ?? 'n/a'} ` +
-                        `range=[${(this._marketAnchor as any).minFilledBuyPrice},${(this._marketAnchor as any).maxFilledSellPrice}]`,
-                        'warn'
-                    );
+            let maxBuy: number | null = null;
+            let minSell: number | null = null;
+            for (const o of chainOpenOrders) {
+                const parsed = parseChainOrder(o, this.assets);
+                if (!parsed) continue;
+                const price = Number(parsed.price);
+                if (!Number.isFinite(price) || price <= 0) continue;
+                if (parsed.type === ORDER_TYPES.BUY) {
+                    if (maxBuy == null || price > maxBuy) maxBuy = price;
+                } else if (parsed.type === ORDER_TYPES.SELL) {
+                    if (minSell == null || price < minSell) minSell = price;
                 }
             }
-        } catch (e: any) {}
+            if (maxBuy != null && this._lastFilledBuyPrice == null) this._lastFilledBuyPrice = maxBuy;
+            if (minSell != null && this._lastFilledSellPrice == null) this._lastFilledSellPrice = minSell;
+            if (maxBuy != null || minSell != null) {
+                try { this.logger?.log?.(`[LAST-FILL-GUARD] Seeded from book: lastBuy=${maxBuy} lastSell=${minSell}`, 'info'); } catch {}
+            }
+        } catch {}
     }
 
     /**

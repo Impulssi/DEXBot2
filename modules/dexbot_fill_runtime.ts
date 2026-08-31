@@ -766,15 +766,6 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                     }
                 }
 
-                // Phase 1: maintain MarketAnchor from live fills (block-ordered, deduped)
-                if (validFills.length > 0) {
-                    try {
-                        if (bot.manager?.updateMarketAnchorFromFills) {
-                            bot.manager.updateMarketAnchorFromFills(validFills, { isReplay: false });
-                        }
-                    } catch (_: any) {}
-                }
-
                 const cleanupTimestamp = Date.now();
                 let cleanedCount = 0;
                 for (const [key, timestamp] of bot._recentlyQueuedFills) {

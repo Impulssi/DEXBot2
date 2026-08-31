@@ -706,39 +706,6 @@ let CREDENTIAL_PROMPTS = {
     MAX_MASTER_PASSWORD_ATTEMPTS: 3,
 };
 
-// MarketAnchor (price-first alignment) tuning
-// Controls freshness, divergence telemetry thresholds, and the Phase-2
-// projection flag. See docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §4
-// (the Phase-2 projection override was removed 2026-08-29; PROJECTION_ENABLED
-// below is retained unused for rollback archaeology).
-let ANCHOR = {
-    // Freshness: anchor considered fresh for 15 min OR until price moves
-    // beyond the anchor range by this many grid increments (whichever first).
-    FRESHNESS_MS: 15 * 60 * 1000,
-    PRICE_MOVE_INCREMENTS: 3,
-
-    // Divergence telemetry thresholds (in boundary slots).
-    // |drift| > DIVERGENCE_INFO logs, > DIVERGENCE_WARN logs at warn level.
-    DIVERGENCE_INFO: 1,
-    DIVERGENCE_WARN: 3,
-
-    // Replay cap: a history-replay window never contributes more than one
-    // fill to the anchor range (the latest fill only).
-    REPLAY_MAX_FILLS: 1,
-
-    // Outlier guard: a fill price beyond this per-side multiplicative factor
-    // outside the anchor's established [minFilledBuyPrice, maxFilledSellPrice]
-    // range is treated as implausible (stale-slot price poisoning) and is
-    // skipped for anchor updates, burst boundary correction, and the
-    // placement guard. Legitimate range extension requires the market to
-    // move >2x beyond the traded extremes in a single fill.
-    PRICE_OUTLIER_FACTOR: 2,
-
-    // Phase-2 flag: when true, calculateTargetGrid uses the price-anchored
-    // projection when the anchor is fresh; cold anchors fall back to legacy.
-    PROJECTION_ENABLED: false,
-};
-
 // BTS blockchain precision constant.
 // Number of decimal places for BTS on BitShares (5 decimals → 1 satoshi = 0.00001 BTS).
 // Used for converting raw chain deferred_fee to float BTS in sync/reconcile paths.
@@ -1807,7 +1774,6 @@ if (settings) {
         LAUNCHER,
         NODE_MANAGEMENT,
         MARKET_ADAPTER,
-        ANCHOR,
     });
     LOG_LEVEL = merged.LOG_LEVEL;
     TIMING = merged.TIMING;
@@ -1827,7 +1793,6 @@ if (settings) {
     LAUNCHER = merged.LAUNCHER;
     NODE_MANAGEMENT = merged.NODE_MANAGEMENT;
     MARKET_ADAPTER = merged.MARKET_ADAPTER;
-    ANCHOR = merged.ANCHOR;
 }
 
 // Post-merge derivations: compute values from their documented relationships
@@ -1874,7 +1839,6 @@ Object.freeze(MARKET_ADAPTER.AMAS.AMA4);
 Object.freeze(MARKET_ADAPTER.AMAS);
 Object.freeze(MARKET_ADAPTER);
 Object.freeze(CREDENTIAL_PROMPTS);
-Object.freeze(ANCHOR);
 
-export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS, ANCHOR }
+export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS }
 

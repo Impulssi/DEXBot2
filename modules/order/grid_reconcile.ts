@@ -10,11 +10,10 @@ import {
 } from './grid_reconcile_internal.js';
 import { ORDER_TYPES, ORDER_STATES, TIMING } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
-import { calculatePriceTolerance, getAssetFeesSafe, resolveGapBand } from './utils/math.js';
+import { calculatePriceTolerance, getAssetFeesSafe } from './utils/math.js';
 import {
     isOrderPlaced, parseChainOrder, isOrderOnChain, chainOrderMatchesSlot,
     duplicateOrphanLogInfo,
-    validateBoundaryAgainstChainEvidence,
 } from './utils/order.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -347,144 +346,6 @@ export async function reconcileGridOrders({
             'info'
         );
 
-        // P3 boundary-evidence gate (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §1):
-        // the restored boundary is disk state that may predate the last fill
-        // sweep. The reconcile below price-updates and creates orders into rail
-        // positions derived from it — validate it against the live book (and a
-        // fresh anchor projection when available) BEFORE any placement. On
-        // contradiction, re-derive from chain evidence; when no safe boundary
-        // is derivable, run this reconcile adoption-only (no creates, no
-        // price-updates, no placement-funding cancels).
-        const resolvedBand = resolveGapBand(manager);
-        let placementsAllowed = true;
-        if (resolvedBand.boundaryIdx !== null) {
-            const evidenceSlots = (Array.from(manager.orders.values()) as any[]).sort((a: any, b: any) => Number(a.price) - Number(b.price));
-            // Chain evidence is the ground truth for the boundary. The fills-derived
-            // price anchor is intentionally NOT passed here: it must never veto a
-            // valid chain-evidenced boundary (that veto previously forced an
-            // adoption-only reconcile that cancelled legitimate boundary orders).
-            const evidence = validateBoundaryAgainstChainEvidence({
-                boundaryIdx: resolvedBand.boundaryIdx,
-                gapSlots: resolvedBand.gapSlots,
-                allSlots: evidenceSlots,
-                chainOrders: parsedChain.map((x: any) => x.parsed),
-            });
-            if (!evidence.ok) {
-                placementsAllowed = false;
-                logger?.log?.(
-                    `[BOUNDARY-EVIDENCE] Boundary ${resolvedBand.boundaryIdx} contradicts chain evidence ` +
-                    `(${evidence.reasons.join(', ')}): ${evidence.detail}`,
-                    'error'
-                );
-                if (evidence.suggestedBoundary !== null) {
-                    manager._restoreBoundary(evidence.suggestedBoundary);
-                    placementsAllowed = true;
-                    logger?.log?.(
-                        `[BOUNDARY-EVIDENCE] Boundary re-derived from chain evidence: ` +
-                        `${resolvedBand.boundaryIdx} -> ${evidence.suggestedBoundary}; ` +
-                        `placements proceed on corrected geometry.`,
-                        'warn'
-                    );
-                    // Fix #5 (Mode D): a valid boundary was established — clear any armed
-                    // re-validation so the periodic sync does not loop on a healthy grid.
-                    try { (manager as any)._boundaryRevalidationPending = null; } catch { /* ignore */ }
-                } else {
-                    // NO_FEASIBLE means live BUY(s) and SELL(s) overlap inside the
-                    // gap band: no boundary exists while both straddle, so a pure
-                    // adoption-only freeze can never repair the geometry. Escalate
-                    // a cancel ladder — smaller single side, other single side,
-                    // both sides — stopping at the first set whose removal makes
-                    // the remaining chain evidence feasible (chain-evidenced,
-                    // boundary-independent). Surplus semantics: orders that cannot
-                    // fit the geometry are cancelled and re-placed, not frozen.
-                    const buyOffenders = evidence.conflictingBuyIds;
-                    const sellOffenders = evidence.conflictingSellIds;
-                    const smallerFirst = buyOffenders.length <= sellOffenders.length;
-                    const ladder: string[][] = [
-                        smallerFirst ? buyOffenders : sellOffenders,
-                        smallerFirst ? sellOffenders : buyOffenders,
-                        [...buyOffenders, ...sellOffenders],
-                    ];
-                    let repaired = false;
-                    for (const candidateIds of ladder) {
-                        const cancelIds = new Set<string>(candidateIds);
-                        if (cancelIds.size === 0) continue;
-                        // Simulate the cancels against the remaining evidence; the
-                        // queued orders leave the book in Phase 2.
-                        const remainingParsed = parsedChain
-                            .filter((x: any) => !cancelIds.has(String(x.parsed?.orderId)))
-                            .map((x: any) => x.parsed);
-                        const recheck = validateBoundaryAgainstChainEvidence({
-                            boundaryIdx: resolvedBand.boundaryIdx,
-                            gapSlots: resolvedBand.gapSlots,
-                            allSlots: evidenceSlots,
-                            chainOrders: remainingParsed,
-                        });
-                        if (recheck.suggestedBoundary === null) continue;
-                        logger?.log?.(
-                            `[BOUNDARY-EVIDENCE] NO_FEASIBLE recovery: cancelling ${cancelIds.size} straddling ` +
-                            `order(s) [${[...cancelIds].join(', ')}] whose price occupies the gap band; ` +
-                            `re-deriving boundary afterwards.`,
-                            'warn'
-                        );
-                        for (const u of parsedChain) {
-                            if (!u?.parsed || !cancelIds.has(String(u.parsed.orderId))) continue;
-                            plannedCancels.push({
-                                chainOrderId: u.parsed.orderId,
-                                chainOrderObj: u.chain,
-                                releaseUntrackedFunds: true,
-                            });
-                        }
-                        unmatchedParsed = unmatchedParsed.filter((u: any) => !cancelIds.has(String(u.parsed?.orderId)));
-                        unmatchedBuys = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).map((x: any) => x.chain);
-                        unmatchedSells = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).map((x: any) => x.chain);
-                        manager._restoreBoundary(recheck.suggestedBoundary);
-                        placementsAllowed = true;
-                        logger?.log?.(
-                            `[BOUNDARY-EVIDENCE] Boundary re-derived after straddle cancel: ` +
-                            `${resolvedBand.boundaryIdx} -> ${recheck.suggestedBoundary}; ` +
-                            `placements proceed on corrected geometry.`,
-                            'warn'
-                        );
-                        repaired = true;
-                        break;
-                    }
-                    if (!repaired) {
-                        // Fix #5 (Mode D): previously this froze placements with only an error
-                        // log and no retry, so the bot could stay adoption-only for hours.
-                        // Log at WARN and arm a bounded re-validation: the
-                        // periodic sync re-runs boundary validation on the next tick instead of
-                        // waiting for a fill-driven rotation path to unstick it.
-                        logger?.log?.(
-                            '[BOUNDARY-EVIDENCE] No safe boundary derivable from chain evidence — ' +
-                            'startup placements deferred (adoption-only reconcile). ' +
-                            'Arming next-tick boundary re-validation (NO_FEASIBLE recovery).',
-                            'warn'
-                        );
-                        try {
-                            (manager as any)._boundaryRevalidationPending = {
-                                since: Date.now(),
-                                attempts: ((manager as any)._boundaryRevalidationPending?.attempts || 0) + 1,
-                            };
-                        } catch { /* ignore */ }
-                    }
-                }
-            } else {
-                // Boundary already consistent with chain evidence — clear any armed
-                // re-validation (it would have been set by a prior NO_FEASIBLE cycle).
-                try { (manager as any)._boundaryRevalidationPending = null; } catch { /* ignore */ }
-            }
-        }
-
-        // NOTE: the previous "P2 gap-band orphan sweep" that cancelled any
-        // unmatched chain order priced inside the gap band has been REMOVED.
-        // Cancelling is the most destructive action and was firing during exactly
-        // the unvalidated/stale-boundary restarts where the band itself was
-        // wrong — it destroyed legitimate boundary orders instead of rotating
-        // them. The boundary is now derived from chain evidence (above); a chain
-        // order that looks "in-gap" under a wrong boundary is simply adopted by
-        // the normal reconcile path once the boundary is corrected.
-
         const sellResult = await _reconcileStartupSide({
             orderType: ORDER_TYPES.SELL,
             targetCount: targetSell,
@@ -499,7 +360,6 @@ export async function reconcileGridOrders({
             plannedUpdates,
             plannedCancels,
             planOnly: true,
-            placementsAllowed,
         });
 
         const buyResult = await _reconcileStartupSide({
@@ -516,7 +376,6 @@ export async function reconcileGridOrders({
             plannedUpdates,
             plannedCancels,
             planOnly: true,
-            placementsAllowed,
         });
 
         return { plannedCreates, plannedUpdates, plannedCancels, chainSellCount: sellResult.chainCount, chainBuyCount: buyResult.chainCount };

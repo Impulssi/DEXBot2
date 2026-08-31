@@ -1094,132 +1094,18 @@ class DEXBot {
             'info'
         );
 
-        // Phase 1: seed/update MarketAnchor from this burst (price-first truth).
-        // Explicit isReplay only for true history backfill windows (caller passes options.isReplay).
-        // Live bursts (fill queue, bootstrap) must not be capped to latest.
-        // Synthetic fills (dust cancels, grid hygiene) are NOT market trades —
-        // their stale grid prices would pollute the anchor range, so they skip it.
-        try {
-            if (this.manager?.updateMarketAnchorFromFills && options?.skipAnchorUpdate !== true) {
-                const isReplay = options?.isReplay === true;
-                this.manager.updateMarketAnchorFromFills(fills, { isReplay });
-            }
-        } catch (_: any) {}
+        // Track last filled prices for BUY-above-last-buy guard (re-introduced after anchor revert)
+        try { (this.manager as any)?.recordLastFilledPrices?.(fills); } catch {}
 
         if (typeof this.manager?.pauseFundRecalc === 'function') {
             this.manager.pauseFundRecalc();
         }
         try {
-            // Boundary shift setup for the whole burst, computed ONCE before
-            // chunking. Two mechanisms cooperate:
-            //
-            // 1. Price-anchored target (_boundaryTarget): derived from ALL
-            //    burst fills via calculateIdealBoundary on the highest/lowest
-            //    fill price. Every chunk then steps toward the same target
-            //    (clamped by the remaining budget), so a 14-slot sweep chunked
-            //    into 4-op broadcasts still lands the boundary at the
-            //    price-implied slot instead of starving after the first
-            //    chunks. Cap is the full per-side window — price distance
-            //    itself bounds the shift.
-            // 2. Cross-chunk budget (_boundaryShiftBudget): remaining shift
-            //    allowance. When no fill price is resolvable (target=null) the
-            //    legacy conservative half-window cap applies to the
-            //    count-based fallback in deriveTargetBoundary.
             const activeSell = this.manager?.config?.activeOrders?.sell ?? 1;
             const activeBuy = this.manager?.config?.activeOrders?.buy ?? 1;
-            const windowCap = Math.max(Math.floor(activeSell), Math.floor(activeBuy), 1);
             const legacyCap = Math.max(Math.floor(activeSell / 2), Math.floor(activeBuy / 2), 1);
-
-            let boundaryTarget: number | null = null;
-            try {
-                const orderUtils = require('./order/utils/order');
-                const allSlots = Array.from(this.manager?.orders?.values?.() ?? [])
-                    .filter((o: any) => o?.price != null);
-                if (allSlots.length > 0) {
-                    const gridUtils = require('./order/grid');
-                    const gapSlots = this.manager._gapSlots ??
-                        gridUtils.calculateGapSlots(
-                            this.manager.config?.incrementPercent,
-                            this.manager.config?.targetSpreadPercent,
-                            this.manager.config?.gridLimits
-                        );
-                    // Outlier guard: bound candidate fill prices to the
-                    // anchor's established range so a stale-slot price
-                    // (grid state diverged from the chain) cannot drag the
-                    // burst target to a far rail.
-                    const bounds = orderUtils.deriveAnchorBounds(
-                        this.manager?._marketAnchor,
-                        (require('./constants') as any).ANCHOR.PRICE_OUTLIER_FACTOR
-                    );
-                    boundaryTarget = orderUtils.computePriceAnchoredBoundaryTarget(
-                        fills,
-                        allSlots,
-                        gapSlots,
-                        bounds
-                    );
-                }
-            } catch (targetErr: any) {
-                managerLog(
-                    `[BOUNDARY] Price-anchored target derivation failed (${getErrorMessage(targetErr)}); falling back to count-based shift.`,
-                    'warn'
-                );
-                boundaryTarget = null;
-            }
-
-            // Burst-global swept band [minBuy,maxSell] + SELL fill count,
-            // derived ONCE from the WHOLE burst so BAND-EXCLUSION in
-            // calculateTargetGrid sees the full sweep instead of a per-chunk
-            // local max (15 sells 894->902 previously chunked gave chunk1
-            // max 870 -> window still contained 894, chunk4 with budget 0 ->
-            // Actions=0). strategy.ts falls back to per-chunk fills when these
-            // are absent.
-            let burstSweptMaxSell: number | null = null;
-            let burstSweptMinBuy: number | null = null;
-            let burstSweptSellCount: number | undefined = undefined;
-            try {
-                const orderUtils = require('./order/utils/order');
-                const ORDER_TYPES = (require('./constants') as any).ORDER_TYPES;
-                const allSlots = Array.from(this.manager?.orders?.values?.() ?? [])
-                    .filter((o: any) => o?.price != null);
-                const slotById = new Map(allSlots.map((s: any) => [s.id, s]));
-                const bounds = orderUtils.deriveAnchorBounds(
-                    this.manager?._marketAnchor,
-                    (require('./constants') as any).ANCHOR.PRICE_OUTLIER_FACTOR
-                );
-                for (const fill of fills) {
-                    if (!orderUtils.isShiftEligibleFill(fill)) continue;
-                    const price = orderUtils.resolveFillPrice(fill, slotById, bounds);
-                    if (price == null) continue;
-                    if (fill.type === ORDER_TYPES.SELL) {
-                        if (burstSweptMaxSell == null || price > burstSweptMaxSell) burstSweptMaxSell = price;
-                        burstSweptSellCount = (burstSweptSellCount ?? 0) + 1;
-                    } else if (fill.type === ORDER_TYPES.BUY) {
-                        if (burstSweptMinBuy == null || price < burstSweptMinBuy) burstSweptMinBuy = price;
-                    }
-                }
-            } catch (bandErr: any) {
-                managerLog(
-                    `[BAND-EXCLUSION] Burst sweep-band derivation failed (${getErrorMessage(bandErr)}); falling back to per-chunk fills.`,
-                    'warn'
-                );
-                // Leave the props undefined (not 0): strategy.ts reads
-                // `_burstSweptSellCount ?? <per-chunk count>`, so a hard 0
-                // here would silently disable the multi-sell-sweep rule for
-                // the whole burst. Undefined lets the fallback trigger.
-                burstSweptMaxSell = null;
-                burstSweptMinBuy = null;
-                burstSweptSellCount = undefined;
-            }
-            (this.manager as any)._burstSweptMaxSell = burstSweptMaxSell;
-            (this.manager as any)._burstSweptMinBuy = burstSweptMinBuy;
-            (this.manager as any)._burstSweptSellCount = burstSweptSellCount;
-
-            (this.manager as any)._boundaryTarget = boundaryTarget;
-            const shiftBudget = boundaryTarget != null ? windowCap : legacyCap;
+            const shiftBudget = legacyCap;
             (this.manager as any)._boundaryShiftBudget = shiftBudget;
-            // Keep the batch-start budget so the COW re-plan path can restore it:
-            // a plan abandoned as stale consumed budget but never shipped, so the
-            // re-plan must re-derive from the FULL batch budget, not the leftover.
             (this.manager as any)._boundaryShiftBudgetBase = shiftBudget;
             let i = 0;
             while (i < totalFills) {
@@ -1264,10 +1150,6 @@ class DEXBot {
             if (this.manager) {
                 delete (this.manager as any)._boundaryShiftBudget;
                 delete (this.manager as any)._boundaryShiftBudgetBase;
-                delete (this.manager as any)._boundaryTarget;
-                delete (this.manager as any)._burstSweptMaxSell;
-                delete (this.manager as any)._burstSweptMinBuy;
-                delete (this.manager as any)._burstSweptSellCount;
             }
             if (typeof this.manager?.resumeFundRecalc === 'function') {
                 await this.manager.resumeFundRecalc();

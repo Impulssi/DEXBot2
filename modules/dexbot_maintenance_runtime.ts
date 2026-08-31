@@ -1138,41 +1138,6 @@ function startOpenOrdersSyncLoop(bot: any) {
                             // threshold (but did not trigger the full-fill gate in the
                             // main processFills path) are caught promptly instead of
                             // waiting up to BLOCKCHAIN_FETCH_INTERVAL_MIN.
-                            // Fix #5 (Mode D): if a prior reconcile hit NO_FEASIBLE_BOUNDARY and
-                            // armed a re-validation, retry boundary derivation on the next sync tick
-                            // (bounded) instead of waiting for a fill-driven rotation path to unstick
-                            // the adoption-only freeze. reconcileGridOrders re-runs the P3 gate; when
-                            // the boundary becomes derivable it clears the pending flag and places.
-                            if (bot.manager && bot.manager._boundaryRevalidationPending) {
-                                const pend: any = bot.manager._boundaryRevalidationPending;
-                                const cooldownMs = (bot.config?.maintenance?.boundaryRevalidationCooldownMs as number) || 5 * 60 * 1000;
-                                const maxAttempts = (bot.config?.maintenance?.boundaryRevalidationMaxAttempts as number) || 20;
-                                if (Date.now() - (pend.since || 0) >= cooldownMs && (pend.attempts || 0) < maxAttempts) {
-                                    bot._log('[BOUNDARY-EVIDENCE] Re-running boundary re-validation (NO_FEASIBLE recovery) on periodic sync tick.', 'warn');
-                                    try {
-                                        const reChain = (typeof bot._readOpenOrdersHook === 'function')
-                                            ? await bot._readOpenOrdersHook()
-                                            : await readOpenOrdersGuarded(chainOrders, bot.accountId, {
-                                                log: (m: string, l: any) => bot._log(m, l),
-                                                label: 'BOUNDARY-REVAL',
-                                            });
-                                        if (reChain && Array.isArray(reChain)) {
-                                            await reconcileGridOrders({
-                                                manager: bot.manager,
-                                                config: bot.manager.config,
-                                                account: bot.account,
-                                                privateKey: bot.privateKey,
-                                                chainOrders,
-                                                chainOpenOrders: reChain,
-                                            });
-                                            await bot.manager.persistGrid?.(undefined);
-                                        }
-                                    } catch (reErr: any) {
-                                        bot._warn(`Boundary re-validation attempt failed: ${getErrorMessage(reErr)}`);
-                                    }
-                                }
-                            }
-
                             await performPeriodicGridChecks(bot);
                         });
                     }

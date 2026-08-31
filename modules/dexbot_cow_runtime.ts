@@ -2525,6 +2525,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     // chain orders). Built after the batch-level pending/unmatched guards so
     // it reflects any sync they triggered.
     const crossingCandidates = buildCrossingCandidates(bot);
+    const intraBatchCandidates: any[] = [];
 
     const { assetA, assetB } = bot.manager.assets;
 
@@ -2679,15 +2680,50 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             return o && oid && !cancelOpIndexByOrderId.has(oid);
                         }
                     );
-                    if (createCrossed) {
+                    const intraBatchCrossed = createCrossed ? null : findCrossedOrder(
+                        intraBatchCandidates,
+                        createPrice,
+                        order.type,
+                        bot.manager.assets
+                    );
+                    const effectiveCrossed = createCrossed || intraBatchCrossed;
+                    if (effectiveCrossed) {
                         bot.manager.logger.log(
                             `[COW-CROSS-GUARD] Skipping CREATE for ${order.id} at ` +
                             `${Format.formatPrice6(createPrice)}: crosses live ` +
-                            `${crossedOrderLabel(createCrossed)}; re-planned after its cancel confirms.`,
+                            `${crossedOrderLabel(effectiveCrossed)}; re-planned after its cancel confirms.`,
                             'warn'
                         );
                         continue;
                     }
+
+                    // LAST-FILL PRICE GUARD (re-introduced after anchor revert): don't create a BUY above the last filled BUY
+                    // (and symmetrically a SELL below the last filled SELL). This reinstates the pre-revert check against
+                    // placing orders back inside the just-traded band at a worse price. Uses price tolerance so dust-near
+                    // equality does not trip the guard; guard is disabled while cold (no last fill yet).
+                    try {
+                        const lastBuy = (bot.manager as any)?._lastFilledBuyPrice;
+                        const lastSell = (bot.manager as any)?._lastFilledSellPrice;
+                        if (order.type === ORDER_TYPES.BUY && Number.isFinite(Number(lastBuy))) {
+                            const tol = math.calculatePriceTolerance(Math.min(Number(createPrice), Number(lastBuy)), Number(order.size || 0), ORDER_TYPES.BUY, bot.manager.assets) ?? 0;
+                            if (Number(createPrice) > Number(lastBuy) + Number(tol)) {
+                                bot.manager.logger.log(
+                                    `[LAST-FILL-GUARD] Skipping BUY CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: above last filled BUY ${Format.formatPrice6(lastBuy)} (tol ${Format.formatPrice6(tol)}); re-planned after market moves`,
+                                    'warn'
+                                );
+                                continue;
+                            }
+                        } else if (order.type === ORDER_TYPES.SELL && Number.isFinite(Number(lastSell))) {
+                            const tol = math.calculatePriceTolerance(Math.min(Number(createPrice), Number(lastSell)), Number(order.size || 0), ORDER_TYPES.SELL, bot.manager.assets) ?? 0;
+                            if (Number(createPrice) < Number(lastSell) - Number(tol)) {
+                                bot.manager.logger.log(
+                                    `[LAST-FILL-GUARD] Skipping SELL CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: below last filled SELL ${Format.formatPrice6(lastSell)} (tol ${Format.formatPrice6(tol)}); re-planned after market moves`,
+                                    'warn'
+                                );
+                                continue;
+                            }
+                        }
+                    } catch (_e: any) { /* guard is best-effort */ }
 
                     const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
                     const buildResult = await chainOrders.buildCreateOrderOp(
@@ -2707,6 +2743,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     }
                     operations.push(buildResult.op);
                     opContexts.push({ kind: 'create', id: order.id, order: effectiveOrder, args, finalInts: buildResult.finalInts });
+                    intraBatchCandidates.push(effectiveOrder);
                     recordPendingBroadcast(bot, {
                         opIndex: operations.length - 1,
                         ctxIndex: opContexts.length - 1,
@@ -2760,7 +2797,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         // old commitment and the next plan re-evaluates once
                         // the crossed order's cancel confirms.
                         const crossedOrder = findCrossedOrder(
-                            crossingCandidates,
+                            [...crossingCandidates, ...intraBatchCandidates],
                             newPrice,
                             orderType,
                             bot.manager.assets,
@@ -2784,6 +2821,37 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             );
                             continue;
                         }
+
+                        // LAST-FILL PRICE GUARD (UPDATE path): same as CREATE — re-pricing a BUY above last filled BUY (or SELL below last filled SELL) is deferred
+                        try {
+                            const lastBuy = (bot.manager as any)?._lastFilledBuyPrice;
+                            const lastSell = (bot.manager as any)?._lastFilledSellPrice;
+                            if (orderType === ORDER_TYPES.BUY && Number.isFinite(Number(lastBuy))) {
+                                const tol = math.calculatePriceTolerance(Math.min(Number(newPrice), Number(lastBuy)), Number(newSize || 0), ORDER_TYPES.BUY, bot.manager.assets) ?? 0;
+                                if (Number(newPrice) > Number(lastBuy) + Number(tol)) {
+                                    skippedUpdateCount++;
+                                    if (action.id) skippedUpdateSlotIds.add(action.id);
+                                    if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                                    bot.manager.logger.log(
+                                        `[LAST-FILL-GUARD] Skipping BUY UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: above last filled BUY ${Format.formatPrice6(lastBuy)} (tol ${Format.formatPrice6(tol)})`,
+                                        'warn'
+                                    );
+                                    continue;
+                                }
+                            } else if (orderType === ORDER_TYPES.SELL && Number.isFinite(Number(lastSell))) {
+                                const tol = math.calculatePriceTolerance(Math.min(Number(newPrice), Number(lastSell)), Number(newSize || 0), ORDER_TYPES.SELL, bot.manager.assets) ?? 0;
+                                if (Number(newPrice) < Number(lastSell) - Number(tol)) {
+                                    skippedUpdateCount++;
+                                    if (action.id) skippedUpdateSlotIds.add(action.id);
+                                    if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                                    bot.manager.logger.log(
+                                        `[LAST-FILL-GUARD] Skipping SELL UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: below last filled SELL ${Format.formatPrice6(lastSell)} (tol ${Format.formatPrice6(tol)})`,
+                                        'warn'
+                                    );
+                                    continue;
+                                }
+                            }
+                        } catch (_e: any) { /* best-effort */ }
 
                         const { amountToSell, minToReceive } = buildCreateOrderArgs(
                             { type: orderType, size: newSize, price: newPrice },
@@ -2820,6 +2888,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             },
                             finalInts: buildResult.finalInts
                         });
+                        intraBatchCandidates.push({ type: orderType, price: newPrice, orderId: action.orderId, id: action.newGridId || action.id });
                         continue;
                     }
 
@@ -2848,6 +2917,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         continue;
                     }
                     operations.push(op.op);
+                    if (masterOrder?.price != null) intraBatchCandidates.push({ type: orderType, price: masterOrder.price, orderId: action.orderId, id: action.id });
                     const partialOrder = masterOrder || {
                         id: action.id,
                         orderId: action.orderId,

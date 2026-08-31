@@ -431,6 +431,11 @@ async function finishStartupSequence(bot: any, startupState: any) {
         // resume/regenerate on ambiguous data), so it gets the empty list.
         const chainReadTruncated = guardedChainOrders === null;
         const chainOpenOrders = guardedChainOrders === null ? [] : guardedChainOrders;
+        // Seed LAST-FILL-GUARD from the live book so it survives restarts
+        // (closes the in-memory-only window until the first fill arrives).
+        if (!chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
+            try { bot.manager?.seedLastFilledPricesFromBook?.(chainOpenOrders); } catch {}
+        }
 
         const reconcileMod = botReconcileModule(bot);
         let shouldRegenerate = false;
@@ -486,19 +491,6 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 if (shouldRegenerate) {
                     await bot.manager._initializeAssets();
                 }
-                // Phase 1 D5: book-seed MarketAnchor after assets are ready (inside lock, after any _initializeAssets)
-                // Do not seed on truncated reads — partial book would mis-anchor.
-                if (!chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0 && bot.manager?.seedMarketAnchorFromBook && bot.manager.assets) {
-                    try {
-                        const parsedForAnchor = chainOpenOrders.map((o: any) => {
-                            try { return parseChainOrder(o, bot.manager.assets); } catch { return null; }
-                        }).filter(Boolean);
-                        if (parsedForAnchor.length > 0 && !bot.manager._marketAnchor) {
-                            bot.manager.seedMarketAnchorFromBook(parsedForAnchor);
-                        }
-                    } catch (_: any) {}
-                }
-
                 if (shouldRegenerate) {
                     if (!chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
                         bot._log('Generating new grid and syncing with existing on-chain orders...');
@@ -569,6 +561,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                                 if (reReadOrders !== null) {
                                     startupChainOpenOrders = reReadOrders;
                                     await bot.manager.synchronizeWithChain(startupChainOpenOrders, 'readOpenOrders');
+                                    try { bot.manager?.seedLastFilledPricesFromBook?.(startupChainOpenOrders); } catch {}
                                 }
                             }
                         }

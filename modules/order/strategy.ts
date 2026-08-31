@@ -48,10 +48,10 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, ANCHOR } from '../constants.js';
+import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail } from './utils/math.js';
-import { deriveTargetBoundary, isShiftEligibleFill, resolveFillPrice, deriveAnchorBounds, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, projectAnchorToGrid, isMarketAnchorAvailable, isMarketAnchorFresh, computeAnchorDivergence } from './utils/order.js';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -223,129 +223,15 @@ class StrategyEngine {
 
         if (allSlots.length === 0) return { targetGrid: new Map(), boundaryIdx: currentBoundaryIdx };
 
-        // 1. Determine new boundary based on fills (Boundary Crawl + price-first projection)
+        // 1. Determine new boundary based on fills (Boundary Crawl)
         // Use the stored gapSlots from grid creation (always consistent with
         // the grid geometry) instead of recomputing from live config which may
         // have drifted if targetSpreadPercent or gridLimits changed.
         const gapSlots = this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
-
-        // Anchor shadow telemetry (price-first alignment, Phase 1). The fills-
-        // derived price anchor is used ONLY for observability ([ANCHOR-DIVERGENCE]
-        // / [ANCHOR-STALE]); it must never override the boundary — the boundary
-        // is derived from chain evidence and the burst-fill price correction in
-        // deriveTargetBoundary. The Phase-2 projection override has been removed.
-        const anchor = (this.manager as any)._marketAnchor || null;
-        let projectedBoundary: number | null = null;
-        let anchorDivergence: number | null = null;
-        try {
-            if (anchor && isMarketAnchorAvailable(anchor)) {
-                projectedBoundary = projectAnchorToGrid(anchor, allSlots, gapSlots);
-                if (Number.isFinite(projectedBoundary as any) && Number.isFinite(currentBoundaryIdx as any)) {
-                    anchorDivergence = computeAnchorDivergence(projectedBoundary, currentBoundaryIdx);
-                    if (anchorDivergence != null && Math.abs(anchorDivergence) > ANCHOR.DIVERGENCE_INFO) {
-                        // Rate-limit divergence telemetry: a persistent drift would
-                        // otherwise log every calculateTargetGrid call. A 60s sample
-                        // still yields the Phase-1 divergence histogram.
-                        const mgr: any = this.manager;
-                        const now = Date.now();
-                        const rateLimitMs = mgr?.config?.timing?.STALE_TOTALS_WARN_RATE_LIMIT_MS ?? 60000;
-                        if (now - (mgr._lastAnchorDivergenceLogAt ?? 0) >= rateLimitMs) {
-                            mgr._lastAnchorDivergenceLogAt = now;
-                            const level = Math.abs(anchorDivergence) > ANCHOR.DIVERGENCE_WARN ? 'warn' : 'info';
-                            this.manager.logger.log(`[ANCHOR-DIVERGENCE] projected=${projectedBoundary} bookkept=${currentBoundaryIdx} drift=${anchorDivergence}`, level);
-                        }
-                    }
-                }
-                // Stale-anchor still projects (does not fall back to count crawl per plan).
-                // Rate-limit stale telemetry to avoid spamming every calculateTargetGrid call.
-                try {
-                    let curPrice: number | null = null;
-                    // Prefer live AMA center when gridPrice:ama — startPrice is often "pool"/"book"
-                    // (non-finite) or static; the AMA center moves, so isMarketAnchorFresh must track it.
-                    try {
-                        const usesAma = (() => {
-                            try { return require('../grid_price_source.js').usesAmaGridPrice(config); } catch { return false; }
-                        })();
-                        if (usesAma) {
-                            try {
-                                const sys = require('./utils/system.js');
-                                const live = sys.loadAmaCenterPrice?.(this.manager?.config?.botKey)
-                                    ?? sys.loadAmaCenterSnapshot?.(this.manager?.config?.botKey)?.gridCenterPrice;
-                                if (Number.isFinite(Number(live)) && Number(live) > 0) curPrice = Number(live);
-                            } catch {}
-                        }
-                    } catch {}
-                    if (curPrice == null) {
-                        curPrice = Number.isFinite(Number(config.startPrice)) ? Number(config.startPrice) : (Number.isFinite(anchor.lastFillPrice as any) ? Number(anchor.lastFillPrice) : null);
-                    }
-                    const incPct = Number(config.incrementPercent);
-                    if (!isMarketAnchorFresh(anchor, curPrice, incPct)) {
-                        const mgr: any = this.manager;
-                        const now = Date.now();
-                        const lastWarn = mgr._lastAnchorStaleWarnAt ?? 0;
-                        const rateLimitMs = mgr?.config?.timing?.STALE_TOTALS_WARN_RATE_LIMIT_MS ?? 60000;
-                        if (now - lastWarn >= rateLimitMs) {
-                            mgr._lastAnchorStaleWarnAt = now;
-                            this.manager.logger.log(`[ANCHOR-STALE] anchor stale age=${anchor.updatedAt ? Date.now() - anchor.updatedAt : 'unknown'}ms lastPrice=${anchor.lastFillPrice} range=[${anchor.minFilledBuyPrice},${anchor.maxFilledSellPrice}] — continuing projection from last known range`, 'info');
-                        }
-                    }
-                } catch (_: any) {}
-            }
-        } catch (_: any) {}
-
         const crossChunkBudget = (this.manager as any)._boundaryShiftBudget;
-        const burstTarget = (this.manager as any)._boundaryTarget;
-        // Outlier guard: fill prices resolved from stale slot state must not
-        // drag the burst correction to a far rail. Bound candidate prices to
-        // the anchor's established range (same guard the anchor update uses).
-        const outlierBounds = deriveAnchorBounds(anchor, ANCHOR.PRICE_OUTLIER_FACTOR);
-        const { boundaryIdx: legacyBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget, burstTarget, outlierBounds);
+        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget);
         if (crossChunkBudget != null) {
             (this.manager as any)._boundaryShiftBudget = remainingBudget;
-        }
-
-        // Boundary remains the legacy count-crawl result, price-corrected by the
-        // burst-fill anchor inside deriveTargetBoundary. The fills-derived price
-        // anchor is intentionally NOT used to override the boundary here: it is
-        // not chain-authoritative and previously placed opposite-side orders on
-        // the wrong side of the market (new sell below the highest sell, etc.).
-        const newBoundaryIdx = legacyBoundaryIdx;
-
-        // 1c. Swept-band exclusion (replaces the removed placement guard).
-        // When the boundary is budget-frozen, the price-anchored boundary
-        // correction cannot clear a band the book just traded through, and
-        // stale live orders survive INSIDE the swept range. Rather than
-        // re-typing slots in place — which kept the stale slot price and
-        // instantly self-crossed the opposite rail during chunked
-        // broadcasts (production incident: multiple self-fills, large COW
-        // plans flip-flopping every ~30s on batch-local extremes, fatal
-        // fund assertion) — slots priced inside the filled band are
-        // excluded from the active-window rails: they fall out of the
-        // window (target VIRTUAL), reconcile cancels the stranded live
-        // orders, and the window re-forms OUTSIDE the band. A cancel-only
-        // transition cannot self-trade, and the COW-layer crossing guard
-        // (findCrossedOrder) covers the re-placement side.
-        // Burst-global: the swept band must span the WHOLE burst's sweep
-        // [minBuy,maxSell], not a per-chunk local max. 15 sells 894->902
-        // previously chunked gave chunk1 max 870 -> window still contained
-        // 894, chunk4 with budget 0 -> Actions=0. The manager caches the
-        // burst-global band at batch start; fall back to this chunk's fills
-        // when it is absent.
-        let maxFilledSellPrice: number | null = (this.manager as any)._burstSweptMaxSell ?? null;
-        let minFilledBuyPrice: number | null = (this.manager as any)._burstSweptMinBuy ?? null;
-        const hasBurstBand = maxFilledSellPrice != null || minFilledBuyPrice != null;
-        if (!hasBurstBand) {
-            const slotById = new Map(allSlots.map((s: any) => [s.id, s]));
-            for (const fill of fills) {
-                if (!isShiftEligibleFill(fill)) continue;
-                const price = resolveFillPrice(fill, slotById, outlierBounds);
-                if (price == null) continue;
-                if (fill.type === ORDER_TYPES.SELL) {
-                    if (maxFilledSellPrice == null || price > maxFilledSellPrice) maxFilledSellPrice = price;
-                } else if (fill.type === ORDER_TYPES.BUY) {
-                    if (minFilledBuyPrice == null || price < minFilledBuyPrice) minFilledBuyPrice = price;
-                }
-            }
         }
 
         // 2. Assign Roles (Buy/Sell/Spread)
@@ -375,41 +261,14 @@ class StrategyEngine {
         // inside the gap (spread removed). Exclude stray slots by geometry
         // (shared MathUtils.isSlotInRail helper) so reconcile treats them as
         // surplus and relocates them back onto the rail.
-        // Exclusion predicates: a slot priced inside the filled band is not
-        // window-eligible even when geometry still places it on the rail
-        // (budget-frozen boundary). Applied AFTER the SPREAD GUARD keeps
-        // live orders typed, so exclusion only removes them from the
-        // window — reconcile cancels them as surplus, types stay intact.
-        // Asymmetry (inherited from the removed guard): a SELL at or below
-        // the highest filled sell price is stranded (the market traded
-        // through it and paid more), while a BUY strictly above the lowest
-        // filled buy price is stranded but a BUY AT the filled price is the
-        // standard anchor-refill rotation and must stay window-eligible.
-        const burstSellCount = (this.manager as any)._burstSweptSellCount ??
-            fills.filter((f: any) => isShiftEligibleFill(f) && f.type === ORDER_TYPES.SELL).length;
-        const multiFillSellSweep = burstSellCount >= 2;
-        const sweptSell = (o: any) => maxFilledSellPrice != null && Number(o.price) <= maxFilledSellPrice;
-        const sweptBuy = (o: any) =>
-            (minFilledBuyPrice != null && Number(o.price) > minFilledBuyPrice) ||
-            (multiFillSellSweep && maxFilledSellPrice != null && Number(o.price) > maxFilledSellPrice);
-        const bandExcludedSells = allSellSlots.filter((o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o) && sweptSell(o)).length;
-        const bandExcludedBuys = allBuySlots.filter((o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o) && sweptBuy(o)).length;
-        if (bandExcludedSells > 0 || bandExcludedBuys > 0) {
-            this.manager.logger.log(
-                `[BAND-EXCLUSION] Excluded ${bandExcludedSells} sell slot(s) at/below the highest filled sell price ` +
-                `${maxFilledSellPrice != null ? maxFilledSellPrice.toPrecision(6) : 'n/a'} and ` +
-                `${bandExcludedBuys} buy slot(s) above the swept band edge ` +
-                `${maxFilledSellPrice != null && multiFillSellSweep ? maxFilledSellPrice.toPrecision(6) : (minFilledBuyPrice != null ? minFilledBuyPrice.toPrecision(6) : 'n/a')} ` +
-                `from the active window; stranded live orders will be cancelled and the rail re-forms outside the swept band.`,
-                'info'
-            );
-        }
-        const inBuyRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o) && !sweptBuy(o);
-        const inSellRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o) && !sweptSell(o);
+        const inBuyRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o);
+        const inSellRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o);
 
         // Sort Closest-First for windowing, then collapse duplicate price levels
         // before slicing so the active window keeps as many unique-priced
-        // slots as the target count allows.
+        // slots as the target count allows. Self-contained robustness guard
+        // (no anchor/band dependency) — restores production incident fix for
+        // duplicate levels after rotation re-typing (e.g. 902.08089 x2).
         const buyCandidates = allBuySlots
             .filter(inBuyRail)
             .sort((a: any, b: any) => b.price - a.price);
@@ -417,49 +276,9 @@ class StrategyEngine {
             .filter(inSellRail)
             .sort((a: any, b: any) => a.price - b.price);
 
-        // Robustness by construction: enforce strict monotonicity and unique
-        // price levels on the WINDOWED rails. Grid geometry is monotonic by
-        // construction, but rotation (anchor-refill re-typing) can place two
-        // slots at the same price level (production incident: 902.08089 x2,
-        // 894.01113 x3 after a 15-sell burst).
-        //
-        // UPDATE-NOT-CANCEL: the straggler is RE-PRICED to a unique adjacent
-        // ladder level and stays ACTIVE instead of being virtualized. A
-        // virtualized straggler would be cancelled by reconcile as surplus; a
-        // re-priced straggler propagates to the chain as an in-place
-        // price-correction UPDATE (sync detects the grid-vs-chain price
-        // mismatch and corrects without touching the order's size). Re-pricing
-        // always moves AWAY from the market (buys down, sells up), so a
-        // re-priced order can never self-fill. When a price level is
-        // contested, the slot already carrying an on-chain order keeps its
-        // price and the other slot moves.
-        //
-        // Guarantees / edge cases:
-        // - The COW commit-time price tolerance is incrementPercent/1000
-        //   (manager._getCowComparePrecisions), so a full ladder step
-        //   (incrementPercent/100) always exceeds it 10x — the re-priced
-        //   delta is never suppressed by the ordersEqual check.
-        // - The re-priced level is clamped to [config.minPrice,
-        //   config.maxPrice] when those bounds are set. If clamping leaves no
-        //   unique in-bounds level (duplicate pinned at a grid bound), the
-        //   straggler falls back to surplus (cancelled) instead of being
-        //   placed out of bounds.
-        // - Retention is conditional on the window: in an oversubscribed
-        //   window the re-priced (farthest-from-market) straggler can be
-        //   sliced off and surplus-cancelled — the log below therefore does
-        //   not promise unconditional retention.
-        // - Re-pricing is a one-time drift: the repaired price is written
-        //   back to the target and the next cycle starts from it, so there is
-        //   no repeated compounding.
         const tolerance = 1e-8;
         const stepPct = Number(config.incrementPercent);
         const safeStepPct = Number.isFinite(stepPct) && stepPct > 0 ? stepPct : 1;
-        // COW delta price tolerance (manager._getCowComparePrecisions) with a
-        // 2x safety margin; max with the ladder step keeps the structural 10x
-        // headroom explicit (normally a no-op). Note the configurable
-        // RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT governs only the SIZE
-        // comparison (nearlyEqualRelative) — and re-priced slots preserve
-        // their on-chain size — so it cannot suppress the price update.
         const cowPriceTolRatio = safeStepPct / 1000;
         const stepRatio = Math.max(safeStepPct / 100, cowPriceTolRatio * 2);
         const ladderStep = (price: any, dir: number) =>
@@ -483,9 +302,6 @@ class StrategyEngine {
                     kept.push(s);
                     continue;
                 }
-                // Duplicate price level. Prefer keeping the slot that already
-                // carries an on-chain order at this price; the other slot is
-                // re-priced away.
                 if (!isOrderPlaced(dup) && isOrderPlaced(s)) {
                     kept[kept.indexOf(dup)] = s;
                     stragglers.push(dup);
@@ -503,9 +319,6 @@ class StrategyEngine {
                     candidate = clampToBounds(ladderStep(candidate, dir));
                 }
                 if (kept.some((k: any) => Math.abs(Number(k.price) - candidate) < tolerance)) {
-                    // No unique in-bounds level (duplicate pinned at a grid
-                    // bound): leave the slot out of the window; reconcile
-                    // cancels it as surplus.
                     this.manager.logger.log(
                         `[GRID-DEDUPE] ${side} slot ${st.id}@${st.price} has no unique in-bounds ` +
                         `level; surplus-cancelled instead of re-priced.`,
