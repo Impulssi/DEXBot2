@@ -208,9 +208,16 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
                 // MIN_BUY_USDT floor for BUY activations: sub-floor slots are
                 // skipped in place (window is fixed to the rail bottom — no
                 // walk-up toward the boundary).
-                if (type === ORDER_TYPES.BUY
-                    && (Number(effectiveSize) * Number(slot.price || 0)) < MIN_BUY_USDT) {
-                    continue;
+                if (type === ORDER_TYPES.BUY) {
+                    const notional = Number(effectiveSize) * Number(slot.price || 0);
+                    if (notional < MIN_BUY_USDT) {
+                        manager.logger?.log?.(
+                            `[ACTIVATE] skip ${slot.id} @${Number(slot.price).toPrecision(4)} ` +
+                            `size=${Number(effectiveSize).toFixed(2)} notional=${notional.toFixed(3)} < ${MIN_BUY_USDT}`,
+                            'info'
+                        );
+                        continue;
+                    }
                 }
                 // Re-type the picked slot to the activation side: empty slots are
                 // stored SPREAD (side-neutral), but an order being placed here must
@@ -223,6 +230,15 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
                 });
             }
         }
+    }
+
+    if (type === ORDER_TYPES.BUY) {
+        manager.logger?.log?.(
+            `[ACTIVATE] ${type}: window=${candidates.length} picked=${valid.length} ` +
+            `first=${candidates[0]?.id ?? 'n/a'}@${Number(candidates[0]?.price || 0).toPrecision(4)} ` +
+            `firstSize=${Number(candidates[0]?.size || 0).toFixed(2)} firstState=${candidates[0]?.state ?? 'n/a'} firstOrderId=${candidates[0]?.orderId ?? 'none'}`,
+            'info'
+        );
     }
 
     return valid;
