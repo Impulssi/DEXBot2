@@ -49,6 +49,11 @@
 
 
 import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
+
+// BUY_DELAY_MS: after a BUY fill, keep new buys virtual for 15 min to avoid
+// rapid re-buying in chop. Sell side is immediate. Module-level constant so
+// both processFillsOnly (arming) and calculateTargetGrid (checking) agree.
+const BUY_DELAY_MS = 15 * 60 * 1000;
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail } from './utils/math.js';
 import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order.js';
@@ -117,6 +122,13 @@ class StrategyEngine {
 
             const isPartial = filledOrder.isPartial === true;
             mgr.logger.log(`[STRATEGY] Processing fill: id=${filledOrder.id}, type=${filledOrder.type}, price=${filledOrder.price}, size=${filledOrder.size}, partial=${isPartial}`, 'debug');
+
+            // BUY_DELAY_MS bookkeeping: any BUY fill (full or delayed-rotation
+            // partial) arms the 15 min buy-side delay used by calculateTargetGrid.
+            if (filledOrder.type === ORDER_TYPES.BUY) {
+                (mgr as any)._lastBuyFillTime = Date.now();
+                mgr.logger.log(`[STRATEGY] Buy fill detected — buy-side updates paused ${BUY_DELAY_MS / 1000 |0}s`, 'info');
+            }
 
             if (!isPartial || filledOrder.isDelayedRotationTrigger) {
                 const currentSlot = mgr.orders.get(filledOrder.id);
@@ -267,30 +279,13 @@ class StrategyEngine {
         // Buy window: KEEP LOW — do not crawl buys to the ceiling.
         // Requested: after InitializeGrid 0.001196-0.001290, buys must stay
         // there even when price goes to 2.412 and sells fill at the top.
-        // Previous BUY_OFFSET=6 still crawled near market (2.16). Now pick the
-        // *farthest* (lowest) buys in the rail, not the closest to boundary.
-        // BUY side 15 min delay still applies (sell side immediate).
-        const BUY_DELAY_MS = 15 * 60 * 1000;
-        const now = Date.now();
-        const hasBuyFill = fills.some((f: any) => {
-            const fid = String((f as any).slotId || (f as any).filledOrderId || (f as any).orderId || (f as any).id || '');
-            if (!fid) return false;
-            if (allBuySlots.some((s: any) => String(s.id) === fid)) return true;
-            for (const s of allBuySlots) {
-                if (String((s as any).orderId) === fid) return true;
-            }
-            const fp = Number((f as any).price);
-            if (Number.isFinite(fp) && fp > 0) {
-                const bestBuyPrice = Math.max(...allBuySlots.map((s: any) => Number(s.price) || 0), 0);
-                if (fp <= bestBuyPrice * 1.001) return true;
-            }
-            return false;
-        });
+        // Pick the *farthest* (lowest) buys in the rail, not the closest to
+        // boundary. BUY side 15 min delay arms in processFillsOnly (any BUY
+        // fill) and holds new buys virtual here; sell side is immediate.
         const lastBuyTime = (this.manager as any)._lastBuyFillTime || 0;
-        if (hasBuyFill) (this.manager as any)._lastBuyFillTime = now;
-        const buyDelayActive = (now - lastBuyTime) < BUY_DELAY_MS && lastBuyTime !== 0;
+        const buyDelayActive = lastBuyTime !== 0 && (Date.now() - lastBuyTime) < BUY_DELAY_MS;
         if (buyDelayActive) {
-            this.manager.logger.log(`[STRATEGY] Buy delay active: ${((BUY_DELAY_MS - (now - lastBuyTime))/1000 |0)}s remaining, keeping buys virtual`, 'info');
+            this.manager.logger.log(`[STRATEGY] Buy delay active: ${((BUY_DELAY_MS - (Date.now() - lastBuyTime))/1000 |0)}s remaining, keeping buys virtual`, 'info');
         }
         // Farthest (lowest price) buys — static low ladder, no crawl to ceiling
         const buySlotsRaw = allBuySlots
