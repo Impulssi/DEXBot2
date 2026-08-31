@@ -1062,8 +1062,9 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                             manager.logger.log(`[DIVERGENCE-COW] Skipping BUY create for ${slot.id} — buy delay active`, 'info');
                             continue;
                         }
-                        if ((Number(slot.size) * Number(slot.price || 0)) < MIN_BUY_USDT) {
-                            manager.logger.log(`[DIVERGENCE-COW] Skipping BUY create for ${slot.id} — notional ${(Number(slot.size) * Number(slot.price)).toFixed(3)} USDT < ${MIN_BUY_USDT}`, 'info');
+                        // BUY size is in quote (USDT) — the size IS the notional.
+                        if (Number(slot.size) < MIN_BUY_USDT) {
+                            manager.logger.log(`[DIVERGENCE-COW] Skipping BUY create for ${slot.id} — size ${Number(slot.size).toFixed(3)} USDT < ${MIN_BUY_USDT}`, 'info');
                             continue;
                         }
                     }

@@ -336,15 +336,16 @@ class StrategyEngine {
         // MIN_BUY_USDT: skip buys that would be <0.75 USDT (dust-like but larger than fee dust).
         // Keeps remaining funds as free (virtualReservation not locked) instead of
         // shrinking all orders to 0.45, 0.30, ... as fills eat the budget.
+        // NOTE: BUY slot sizes are already denominated in the quote asset
+        // (USDT) — the size IS the notional, do NOT multiply by price.
         const MIN_BUY_USDT = 0.75;
         const filteredBuySlots: any[] = [];
         buySlots.forEach((slot: any) => {
             const sz = buySizeById.get(slot.id) || 0;
-            const usdt = sz * Number(slot.price || 0);
-            if (usdt >= MIN_BUY_USDT) {
+            if (sz >= MIN_BUY_USDT) {
                 filteredBuySlots.push(slot);
             } else if (sz > 0) {
-                this.manager.logger.log(`[STRATEGY] Skipping buy ${slot.id} @${Number(slot.price).toPrecision(4)} size ${sz.toFixed(2)} BTS (~${usdt.toFixed(3)} USDT) < ${MIN_BUY_USDT} USDT minimum`, 'info');
+                this.manager.logger.log(`[STRATEGY] Skipping buy ${slot.id} @${Number(slot.price).toPrecision(4)} size ${sz.toFixed(3)} USDT < ${MIN_BUY_USDT} USDT minimum`, 'info');
             }
         });
         const buySlotsToUse = filteredBuySlots;

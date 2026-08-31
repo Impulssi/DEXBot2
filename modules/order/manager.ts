@@ -133,12 +133,12 @@ const MIN_BUY_USDT = 0.75;
 function minBuySizeDropReason(action: any): string | null {
     if (!action || (action.type !== COW_ACTIONS.CREATE && action.type !== COW_ACTIONS.UPDATE)) return null;
     if (action?.order?.type !== ORDER_TYPES.BUY) return null;
+    // BUY order size is denominated in the quote asset (USDT) — the size IS
+    // the notional. Do NOT multiply by price.
     const size = Number(action?.order?.size || 0);
-    const price = Number(action?.order?.price || 0);
-    if (!Number.isFinite(size) || !Number.isFinite(price) || size <= 0 || price <= 0) return null;
-    const usdtValue = size * price;
-    if (usdtValue < MIN_BUY_USDT) {
-        return `BUY ${action.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${action.id}: notional ${usdtValue.toFixed(3)} USDT < ${MIN_BUY_USDT} USDT minimum`;
+    if (!Number.isFinite(size) || size <= 0) return null;
+    if (size < MIN_BUY_USDT) {
+        return `BUY ${action.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${action.id}: notional ${size.toFixed(3)} USDT < ${MIN_BUY_USDT} USDT minimum`;
     }
     return null;
 }
@@ -1566,8 +1566,8 @@ class OrderManager {
         const validBuys: any[] = [];
         for (const o of buysFarthestFirst) {
             if (floatToBlockchainInt(o.size, buyPrecision) < minBuySizeInt) continue;
-            const usdtValue = Number(o.size || 0) * Number(o.price || 0);
-            if (usdtValue < MIN_BUY_USDT) continue;
+            // BUY size is in quote (USDT) — the size IS the notional.
+            if (Number(o.size || 0) < MIN_BUY_USDT) continue;
             validBuys.push(o);
         }
         // Reverse for placement order (lowest first)

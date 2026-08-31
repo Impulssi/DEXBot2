@@ -209,11 +209,12 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
                 // skipped in place (window is fixed to the rail bottom — no
                 // walk-up toward the boundary).
                 if (type === ORDER_TYPES.BUY) {
-                    const notional = Number(effectiveSize) * Number(slot.price || 0);
+                    // BUY size is in quote (USDT) — the size IS the notional.
+                    const notional = Number(effectiveSize);
                     if (notional < MIN_BUY_USDT) {
                         manager.logger?.log?.(
                             `[ACTIVATE] skip ${slot.id} @${Number(slot.price).toPrecision(4)} ` +
-                            `size=${Number(effectiveSize).toFixed(2)} notional=${notional.toFixed(3)} < ${MIN_BUY_USDT}`,
+                            `size=${notional.toFixed(3)} USDT < ${MIN_BUY_USDT}`,
                             'info'
                         );
                         continue;
