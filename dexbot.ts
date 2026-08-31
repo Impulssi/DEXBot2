@@ -403,6 +403,63 @@ function printMasterPasswordFailure(err: any) {
     console.error(startupError(`❌ ${getErrorMessage(err)}`));
 }
 
+const BOT_START_RESTART = Object.freeze({ MAX_ATTEMPTS: 3, RETRY_DELAY_MS: 30000 });
+const botStartRetryState = new Map<string, { attempts: number; timer: any }>();
+
+function botRetryKey(entry: any): string {
+    return String(entry?.name || entry?.botKey || 'unnamed');
+}
+
+function clearBotStartRetry(botName: string): void {
+    const state = botStartRetryState.get(botName);
+    if (state && state.timer) {
+        clearTimeout(state.timer);
+    }
+    botStartRetryState.delete(botName);
+}
+
+function scheduleBotStartRetry(entry: any, { forceDryRun = false, reason = '' }: { forceDryRun?: boolean; reason?: string } = {}): void {
+    const botName = botRetryKey(entry);
+    if (botName === 'unnamed') return;
+    const state = botStartRetryState.get(botName) || { attempts: 0, timer: null };
+    botStartRetryState.set(botName, state);
+    if (state.attempts >= BOT_START_RESTART.MAX_ATTEMPTS) {
+        botStartRetryState.delete(botName);
+        console.error(startupError(
+            `Bot '${botName}' failed to start ${BOT_START_RESTART.MAX_ATTEMPTS + 1} time(s); giving up — ` +
+            `manual restart required ('dexbot restart ${botName}'). Last error: ${reason}`
+        ));
+        return;
+    }
+    state.attempts += 1;
+    console.warn(
+        `Bot '${botName}' failed to start; scheduling restart in ${BOT_START_RESTART.RETRY_DELAY_MS / 1000}s ` +
+        `(attempt ${state.attempts}/${BOT_START_RESTART.MAX_ATTEMPTS}): ${reason}`
+    );
+    state.timer = setTimeout(async () => {
+        state.timer = null;
+        try {
+            const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
+            const entries = resolveRawBotEntries(config);
+            const match = entries.find((b: any) => b.name === botName);
+            if (!match || match.active === false) {
+                console.log(`Auto-restart: bot '${botName}' is no longer active in ${path.basename(PROFILES_BOTS_FILE)}; giving up.`);
+                clearBotStartRetry(botName);
+                return;
+            }
+            const entryCopy = JSON.parse(JSON.stringify(match));
+            entryCopy.active = true;
+            if (forceDryRun) entryCopy.dryRun = true;
+            await runBotInstances([entryCopy], {
+                forceDryRun,
+                sourceName: `auto-restart (attempt ${state.attempts}/${BOT_START_RESTART.MAX_ATTEMPTS})`,
+            });
+        } catch (err: any) {
+            scheduleBotStartRetry(entry, { forceDryRun, reason: getErrorMessage(err) });
+        }
+    }, BOT_START_RESTART.RETRY_DELAY_MS);
+}
+
 /**
  * Execute the provided bot entries after validation and authentication.
  * This is the main orchestration function that:
@@ -594,6 +651,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                 botCleanupHandler = () => bot.shutdown();
                 registerCleanup(botCleanupName, botCleanupHandler);
                 await bot.start(masterPassword);
+                clearBotStartRetry(botRetryKey(entry));
                 instances.push(bot);
             } catch (err: any) {
                 // The bot's _runStartupSequence already invoked shutdown() once on
@@ -624,6 +682,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                     console.info(` - Alternatively, set a numeric \`startPrice\` directly in ${PROFILES_BOTS_FILE} for this bot to avoid auto-derive.`);
                     console.info(' - You can also set LIVE_BOT_NAME or BOT_NAME to select a different bot from the profiles settings.');
                 }
+                scheduleBotStartRetry(entry, { forceDryRun, reason: getErrorMessage(err) });
             }
         }
 

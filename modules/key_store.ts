@@ -16,8 +16,27 @@ import { getStorage } from './storage/index.js';
 import { runtime } from './runtime.js';
 import { sleep } from './order/utils/system.js';
 import { getErrorMessage } from './utils/errors.js';
+import { registerExitWipe } from './graceful_shutdown.js';
+import Logger from './order/logger.js';
 
 const storage = getStorage();
+const keyStoreLogger = new Logger('key-store');
+
+const liveDaemonTokens = new Set<any>();
+let exitWipeRegistered = false;
+
+function trackDaemonTokenForExitWipe(token: any): void {
+    if (!token || typeof token !== 'object') return;
+    liveDaemonTokens.add(token);
+    if (exitWipeRegistered) return;
+    exitWipeRegistered = true;
+    registerExitWipe('SigningTokenHmacSecretWipe', () => {
+        for (const t of liveDaemonTokens) {
+            try { t.botHmacSecret = null; } catch (_) {}
+        }
+        liveDaemonTokens.clear();
+    });
+}
 
 export interface SigningResult {
     success: boolean;
@@ -83,7 +102,9 @@ export class DaemonKeyStore implements KeyStore {
                     PATHS.PROFILES.DAEMON_POLICIES_JSON,
                     { quiet: true }
                 );
-                return chainKeys.createDaemonSigningToken(accountName, { sessionId, botHmacSecret });
+                const token = chainKeys.createDaemonSigningToken(accountName, { sessionId, botHmacSecret });
+                trackDaemonTokenForExitWipe(token);
+                return token;
             } catch {
                 const unlockSecret = await chainKeys.authenticate();
                 return chainKeys.resolvePrivateKey(accountName, unlockSecret, chainClient);
@@ -100,6 +121,13 @@ export class DaemonKeyStore implements KeyStore {
 
     async executeOperations(accountName: string, operations: any[], signingKey: any, extraOptions: Record<string, any> = {}): Promise<SigningResult> {
         if (this.isDaemonSigningKey(signingKey)) {
+            if (!signingKey.botHmacSecret) {
+                keyStoreLogger.error(
+                    `Daemon signing token for ${accountName} has no botHmacSecret — the daemon will reject this request ` +
+                    `(Strict Mode). This happens when a broadcast is attempted after the bot shut down or the token lost ` +
+                    `its secret. Restarting the bot resolves it.`
+                );
+            }
             try {
                 const result = await executeOperationsViaCredentialDaemon(accountName, operations, buildDaemonBroadcastOptions(signingKey, extraOptions));
                 return normalizeDaemonResult(result);
@@ -123,6 +151,17 @@ export class DaemonKeyStore implements KeyStore {
                     signingKey.sessionId = newSessionId;
 
                     if (isSourceAuthError) {
+                        try {
+                            const freshSecret = credentialPolicy.loadBotHmacSecret(
+                                accountName,
+                                PATHS.PROFILES.DAEMON_POLICIES_JSON,
+                                { quiet: true }
+                            );
+                            if (freshSecret && freshSecret !== signingKey.botHmacSecret) {
+                                signingKey.botHmacSecret = freshSecret;
+                                keyStoreLogger.warn(`Reloaded botHmacSecret from disk for ${accountName} before retry`);
+                            }
+                        } catch (_) {}
                         await sleep(500);
                     }
 

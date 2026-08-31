@@ -27,7 +27,7 @@ const {
 import * as validate from './order/utils/validate.js';
 const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = validate as any;
 import * as math from './order/utils/math.js';
-const { validateOrderSize, findPriceCollision } = math as any;
+const { validateOrderSize, findPriceCollision, findCrossedOrder } = math as any;
 // Lazy accessor so test mocks on the math module export take effect at call time.
 function getAssetFeesSafe(...args: any) { return require('./order/utils/math').getAssetFeesSafe(...args); }
 import * as constantsModule from './constants.js';
@@ -2097,11 +2097,17 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
  * synchronously (before the next await) once this resolves so the
  * check-and-set stays atomic and two planning batches cannot both win the
  * broadcast slot.
+ *
+ * Returns true when the caller must abort the batch (shutdown began before or
+ * during the wait — proceeding would broadcast with post-shutdown state),
+ * false when the caller may proceed to claim the broadcast slot.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} label - Stage label for the deferral log (e.g. 'entry', 'pre-broadcast')
+ * @returns {Promise<boolean>}
  */
-async function waitForCowBroadcastSingleFlight(bot: any, label: string) {
-    if (!bot._cowBroadcastInFlight) return;
+async function waitForCowBroadcastSingleFlight(bot: any, label: string): Promise<boolean> {
+    if (bot._shuttingDown) return true;
+    if (!bot._cowBroadcastInFlight) return false;
     bot.manager.logger.log(
         `[COW] ${label}: a COW broadcast is already in flight; deferring this batch until it settles (prevents overlapping-broadcast commit collision).`,
         'warn'
@@ -2111,12 +2117,20 @@ async function waitForCowBroadcastSingleFlight(bot: any, label: string) {
         if (bot._shuttingDown || Date.now() > waitDeadline) break;
         await sleep(250);
     }
+    if (bot._shuttingDown) {
+        bot.manager.logger.log(
+            `[COW] ${label}: shutdown began while waiting for the in-flight broadcast; aborting this batch.`,
+            'warn'
+        );
+        return true;
+    }
     if (bot._cowBroadcastInFlight) {
         bot.manager.logger.log(
             `[COW] ${label}: waited for in-flight broadcast but it did not settle within the cap; proceeding (commit guard + chain adoption will close divergence).`,
             'warn'
         );
     }
+    return false;
 }
 
 /**
@@ -2219,7 +2233,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     // -> snapshot reload that can drop the adopted order and produce an
     // orphan fill. This entry wait is an optimization; the authoritative
     // atomic check-and-set happens right before the broadcast below.
-    await waitForCowBroadcastSingleFlight(bot, 'entry');
+    if (await waitForCowBroadcastSingleFlight(bot, 'entry')) {
+        popPushedWorkingGrid(bot, cowResult);
+        return { executed: false, aborted: true, reason: 'SHUTDOWN_IN_PROGRESS', hadRotation: false };
+    }
 
     const chainOrderCandidates = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
         ? bot.manager._lastUnmatchedChainOrders
@@ -2482,6 +2499,12 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     const opContexts: any[] = [];
     const skippedUpdateSlotIds = new Set();
     let skippedUpdateCount = 0;
+    // orderId -> operations index of its cancel op. A crossing re-pricing
+    // update is only safe when the crossed order's cancel was already queued
+    // at an earlier position: ops broadcast in MAX_OPS_PER_BROADCAST chunks,
+    // so an earlier index means the cancel confirms on chain (same or earlier
+    // chunk, applied sequentially) before the crossing order lands.
+    const cancelOpIndexByOrderId = new Map<string, number>();
 
     const idsToLock = new Set();
     for (const action of actions) {
@@ -2518,6 +2541,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 try {
                     const op = await chainOrders.buildCancelOrderOp(bot.account, action.orderId);
                     operations.push(op);
+                    if (action.orderId) cancelOpIndexByOrderId.set(action.orderId, operations.length - 1);
                     const order = bot.manager.orders.get(action.id) || { id: action.id, orderId: action.orderId };
                     opContexts.push({ kind: 'cancel', order });
                 } catch (err: any) {
@@ -2639,6 +2663,42 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         if (!rotationSizeValidation.isValid) {
                             bot.manager.logger.log(
                                 `Skipping rotation update ${action.id} -> ${action.newGridId}: ${rotationSizeValidation.reason}`,
+                                'warn'
+                            );
+                            continue;
+                        }
+
+                        // CROSSING-PLACEMENT GUARD: re-pricing an order must
+                        // never cross an opposite-side live order whose cancel
+                        // is not already queued at an earlier op position.
+                        // Re-pricing a buy upward across our own live sell
+                        // ladder self-trades during the chunked broadcast
+                        // window (XRP-BTS2 2026-08-31: a startup buy @805 was
+                        // re-priced to @862 and filled against our own live
+                        // sells @865-916 that this same plan was still
+                        // cancelling in later chunks — 68 self-fills, fatal
+                        // fund assert). Skipping is safe: the slot keeps its
+                        // old commitment and the next plan re-evaluates once
+                        // the crossed order's cancel confirms.
+                        const crossedOrder = findCrossedOrder(
+                            bot.manager.orders.values(),
+                            newPrice,
+                            orderType,
+                            bot.manager.assets,
+                            (o: any) => o
+                                && o.orderId
+                                && o.orderId !== action.orderId
+                                && !cancelOpIndexByOrderId.has(o.orderId)
+                        );
+                        if (crossedOrder) {
+                            skippedUpdateCount++;
+                            if (action.id) skippedUpdateSlotIds.add(action.id);
+                            if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                            bot.manager.logger.log(
+                                `[COW-CROSS-GUARD] Skipping rotation update ${action.id} -> ${action.newGridId}: ` +
+                                `new ${orderType} @${Format.formatPrice6(newPrice)} crosses live ${crossedOrder.type} ` +
+                                `${crossedOrder.id} (${crossedOrder.orderId}) @${Format.formatPrice6(crossedOrder.price)}; ` +
+                                `re-planned after its cancel confirms.`,
                                 'warn'
                             );
                             continue;
@@ -2868,7 +2928,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         // for it to settle, then claim the slot synchronously (no await
         // between the check inside waitForCowBroadcastSingleFlight and the
         // assignment below), so two batches can never broadcast together.
-        await waitForCowBroadcastSingleFlight(bot, 'pre-broadcast');
+        if (await waitForCowBroadcastSingleFlight(bot, 'pre-broadcast')) {
+            popPushedWorkingGrid(bot, cowResult);
+            return { executed: false, aborted: true, reason: 'SHUTDOWN_IN_PROGRESS', hadRotation: false };
+        }
         bot._cowBroadcastInFlight = true;
         heldBroadcastSlot = true;
         await bot._ensureCredentialDaemonWritable('COW batch broadcast');

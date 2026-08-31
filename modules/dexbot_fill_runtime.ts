@@ -513,6 +513,10 @@ function scheduleFillConsumerRestart(bot: any, chainOrders: any) {
  * @returns {Promise<void>}
  */
 async function processFillsWithBootstrapMode(bot: any, chainOrders: any) {
+    if (bot._shuttingDown) {
+        bot._warn('Fill processing skipped: shutdown in progress');
+        return;
+    }
     if (bot._incomingFillQueue.length === 0) return;
 
     const startTime = Date.now();
@@ -588,6 +592,11 @@ async function processFillsWithBootstrapMode(bot: any, chainOrders: any) {
     await bot._flushProcessedFillPersistence('bootstrap-batch');
 
     if (validFills.length === 0) return;
+
+    if (bot._shuttingDown) {
+        bot._warn(`[BOOTSTRAP] Fill processing skipped: shutdown in progress (${validFills.length} fill(s) discarded)`);
+        return;
+    }
 
     try {
         bot._log(`[BOOTSTRAP] Processing ${validFills.length} fill(s) through standard pipeline`, 'info');

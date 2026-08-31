@@ -297,6 +297,7 @@ class OrderManager {
     _endOfBootstrapValidationDone: boolean;
     _broadcastingFlag: number;
     _broadcastingStartedAt: number;
+    _shuttingDown: boolean;
     _illegalStateSignal: any;
     _accountingFailureSignal: any;
     _recoveryStateValue: { phase: string; attemptCount: number; lastAttemptAt: number; inFlight: boolean; lastFailureAt: number; structuralResyncRequested?: boolean };
@@ -444,6 +445,7 @@ class OrderManager {
         this._endOfBootstrapValidationDone = false;
         this._broadcastingFlag = 0;
         this._broadcastingStartedAt = 0;
+        this._shuttingDown = false;
         this._illegalStateSignal = null;
         this._accountingFailureSignal = null;
         this._recoveryStateValue = {
@@ -647,6 +649,25 @@ class OrderManager {
      */
     isBroadcastingActive() {
         return this._broadcastingFlag > 0;
+    }
+
+    /**
+     * Whether the owning bot has begun shutting down. Mirrors the
+     * bot-level `_shuttingDown` flag (set via setShuttingDown() from
+     * DEXBot._shutdownImpl) so manager-level wait loops can bail out
+     * instead of proceeding with broadcasts after shutdown completed.
+     * @returns {boolean}
+     */
+    isShuttingDown() {
+        return this._shuttingDown === true;
+    }
+
+    /**
+     * @param {boolean} value
+     * @returns {void}
+     */
+    setShuttingDown(value: any) {
+        this._shuttingDown = value === true;
     }
 
     /**
@@ -1846,18 +1867,28 @@ class OrderManager {
      * @param {number} [timeoutMs]
      * @returns {Promise<{waitedMs: number, timedOut: boolean}>}
      */
-    async _awaitBroadcastIdle(timeoutMs: number = 30000): Promise<{ waitedMs: number; timedOut: boolean }> {
-        if (!this.isBroadcastingActive()) return { waitedMs: 0, timedOut: false };
+    async _awaitBroadcastIdle(timeoutMs: number = 30000): Promise<{ waitedMs: number; timedOut: boolean; shutdown: boolean }> {
+        if (this._shuttingDown) {
+            return { waitedMs: 0, timedOut: false, shutdown: true };
+        }
+        if (!this.isBroadcastingActive()) return { waitedMs: 0, timedOut: false, shutdown: false };
         const startedAt = Date.now();
         let logged = false;
         while (this.isBroadcastingActive()) {
+            if (this._shuttingDown) {
+                this.logger?.log?.(
+                    `[SAFE-REBALANCE] Broadcast wait aborted: shutdown in progress after ${Date.now() - startedAt}ms`,
+                    'warn'
+                );
+                return { waitedMs: Date.now() - startedAt, timedOut: false, shutdown: true };
+            }
             const waited = Date.now() - startedAt;
             if (waited >= timeoutMs) {
                 this.logger?.log?.(
                     `[SAFE-REBALANCE] Broadcast still active after ${waited}ms; proceeding (commit-refusal + chain adoption remains the backstop)`,
                     'warn'
                 );
-                return { waitedMs: waited, timedOut: true };
+                return { waitedMs: waited, timedOut: true, shutdown: false };
             }
             if (!logged) {
                 this.logger?.log?.(
@@ -1868,7 +1899,7 @@ class OrderManager {
             }
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
-        return { waitedMs: Date.now() - startedAt, timedOut: false };
+        return { waitedMs: Date.now() - startedAt, timedOut: false, shutdown: false };
     }
 
     /**
@@ -1883,7 +1914,11 @@ class OrderManager {
     async performSafeRebalance(fills: any = [], excludeIds: any = new Set(), options: any = {}) {
         this.logger.log("[SAFE-REBALANCE] Starting with COW...", "info");
         if (!options?.skipBroadcastWait) {
-            await this._awaitBroadcastIdle();
+            const idle = await this._awaitBroadcastIdle();
+            if (idle.shutdown || this._shuttingDown) {
+                this.logger.log('[SAFE-REBALANCE] Aborting rebalance: shutdown in progress', 'warn');
+                return buildAbortedResult('Shutdown in progress — safe rebalance aborted');
+            }
         }
         return await this._gridLock.acquire(async () => {
             return await this._applySafeRebalanceCOW(fills, excludeIds);

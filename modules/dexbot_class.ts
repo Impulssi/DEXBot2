@@ -1937,6 +1937,9 @@ class DEXBot {
     async _shutdownImpl() {
         this._log('Initiating graceful shutdown...');
         this._processedFillStore.setShuttingDown(true);
+        if (this.manager && typeof this.manager.setShuttingDown === 'function') {
+            this.manager.setShuttingDown(true);
+        }
 
         // Stop accepting new work
         this._stopBlockchainFetchInterval();
@@ -2108,12 +2111,6 @@ class DEXBot {
         this._log(`Shutdown complete. Final metrics: fills=${metrics.fillsProcessed}, batches=${metrics.batchesExecuted}, ` +
             `avgProcessingTime=${metrics.fillsProcessed > 0 ? Format.formatMetric2(metrics.fillProcessingTimeMs / metrics.fillsProcessed) : 0}ms, ` +
             `lockContentions=${metrics.lockContentionEvents}, maxQueueDepth=${metrics.maxQueueDepth}`);
-
-        // Drop botHmacSecret reference from the signing token (V8 string cannot
-        // be zeroed in place, but dropping the reference allows GC to reclaim it).
-        if (this.privateKey && getKeyStore().isDaemonSigningKey(this.privateKey)) {
-            this.privateKey.botHmacSecret = null;
-        }
 
         await this.manager?.logger?.flush();
     }
