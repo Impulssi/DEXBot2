@@ -134,6 +134,8 @@ class DEXBot {
     _shutdownPromise: Promise<void> | null;
     _blockchainFetchInterval: any;
     _blockchainFetchInFlight: number;
+    _botsConfigPollInterval: any;
+    _botsConfigPollInFlight: boolean;
     _fillsUnsubscribe: any;
     _triggerWatcher: any;
     _triggerDebounceTimer: any;
@@ -237,6 +239,8 @@ class DEXBot {
         // Runtime handles for graceful lifecycle management
         this._blockchainFetchInterval = null;
         this._blockchainFetchInFlight = 0;
+        this._botsConfigPollInterval = null;
+        this._botsConfigPollInFlight = false;
         this._fillsUnsubscribe = null;
         this._triggerWatcher = null;
         this._triggerDebounceTimer = null;
@@ -1649,6 +1653,23 @@ class DEXBot {
         return DexbotMaintenanceRuntime.stopBlockchainFetchInterval(this);
     }
 
+    /**
+     * Set up periodic bots.json fingerprint poll interval (max 5min SLA).
+     * Decoupled from blockchain fetch so config changes are visible quickly.
+     * @private
+     */
+    _setupBotsConfigPollInterval() {
+        return DexbotMaintenanceRuntime.setupBotsConfigPollInterval(this);
+    }
+
+    /**
+     * Stop the periodic bots.json poll interval.
+     * @private
+     */
+    _stopBotsConfigPollInterval() {
+        return DexbotMaintenanceRuntime.stopBotsConfigPollInterval(this);
+    }
+
     async _releaseMarketAdapterRuntime(context: any = 'shutdown') {
         return DexbotMaintenanceRuntime.releaseMarketAdapterRuntime(this, this.config?.botKey || this.config?.name, context);
     }
@@ -1919,6 +1940,12 @@ class DEXBot {
 
         // Stop accepting new work
         this._stopBlockchainFetchInterval();
+        if (typeof this._stopBotsConfigPollInterval === 'function') {
+            this._stopBotsConfigPollInterval();
+        } else if (this._botsConfigPollInterval) {
+            try { clearInterval(this._botsConfigPollInterval); } catch (_) {}
+            this._botsConfigPollInterval = null;
+        }
 
         if (this._triggerDebounceTimer) {
             clearTimeout(this._triggerDebounceTimer);

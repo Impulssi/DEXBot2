@@ -1354,6 +1354,73 @@ function stopBlockchainFetchInterval(bot: any) {
 }
 
 /**
+ * Set up the periodic bots.json fingerprint poll interval.
+ * Decoupled from the heavy blockchain fetch interval (default 240min) so
+ * config changes are visible within BOTS_CONFIG_POLL_INTERVAL_MS (default 5min).
+ * Uses the shared fingerprint via syncMarketAdapterOnPeriodicConfigCheck so
+ * the market adapter start/stop logic stays in one place.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ */
+function setupBotsConfigPollInterval(bot: any) {
+    // Allow per-bot timing override (e.g. tests or per-bot tuning)
+    let intervalMs = bot.config?.timing?.BOTS_CONFIG_POLL_INTERVAL_MS;
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+        intervalMs = Number(TIMING.BOTS_CONFIG_POLL_INTERVAL_MS);
+    }
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+        bot._log(`Bots-config poll interval disabled (value: ${intervalMs}). Fingerprint changes will only be seen on blockchain fetch ticks.`);
+        return;
+    }
+
+    // Ensure the fingerprint exists before the first interval fires.
+    // setupBlockchainFetchInterval already fires syncMarketAdapterOnPeriodicConfigCheck
+    // at startup, so this is a fallback for bots that never run the blockchain interval
+    // (e.g. dryRun or accountId missing).
+    if (!bot._marketAdapterWatchdogFingerprint) {
+        syncMarketAdapterOnPeriodicConfigCheck(bot, 'startup bots-config poll setup').catch((err: any) => {
+            bot._warn(`Bots-config poll setup failed: ${getErrorMessage(err)}`);
+        });
+    }
+
+    if (bot._botsConfigPollInterval !== null && bot._botsConfigPollInterval !== undefined) {
+        stopBotsConfigPollInterval(bot);
+    }
+
+    bot._botsConfigPollInterval = setInterval(async () => {
+        if (bot._shuttingDown) return;
+        // Coalesce with the blockchain-fetch tick: if its tick is already
+        // driving the watchdog, skip to avoid double PM2 queries.
+        if (bot._marketAdapterWatchdogInFlight) return;
+        if (bot._botsConfigPollInFlight) return;
+        bot._botsConfigPollInFlight = true;
+        try {
+            await syncMarketAdapterOnPeriodicConfigCheck(bot, 'bots-config poll');
+        } catch (err: any) {
+            bot._warn(`Bots-config poll failed: ${getErrorMessage(err)}`);
+        } finally {
+            bot._botsConfigPollInFlight = false;
+        }
+    }, intervalMs);
+    if (typeof bot._botsConfigPollInterval.unref === 'function') {
+        bot._botsConfigPollInterval.unref();
+    }
+
+    bot._log(`Started bots-config poll interval: every ${Math.round(intervalMs / 1000)}s (fingerprint check)`);
+}
+
+/**
+ * Stop the periodic bots.json fingerprint poll interval.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ */
+function stopBotsConfigPollInterval(bot: any) {
+    if (bot._botsConfigPollInterval !== null && bot._botsConfigPollInterval !== undefined) {
+        clearInterval(bot._botsConfigPollInterval);
+        bot._botsConfigPollInterval = null;
+        bot._log('Stopped bots-config poll interval');
+    }
+}
+
+/**
  * Release the market adapter runtime for a bot.
  * In PM2 mode this is a no-op; in direct mode it calls the shared runtime's releaseBot.
  * @param {import('./dexbot_class.js').DEXBot} bot
@@ -2479,7 +2546,7 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }
 }
-export { loadBotsConfigSnapshot, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, executeMaintenanceLogic, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
+export { loadBotsConfigSnapshot, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
 
 
 export default {
@@ -2495,6 +2562,8 @@ export default {
     stopOpenOrdersSyncLoop,
     setupBlockchainFetchInterval,
     stopBlockchainFetchInterval,
+    setupBotsConfigPollInterval,
+    stopBotsConfigPollInterval,
     executeMaintenanceLogic,
     cancelDustOrders,
     isOrderDoesNotExistError,

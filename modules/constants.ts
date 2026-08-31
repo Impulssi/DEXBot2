@@ -283,6 +283,14 @@ let TIMING = {
     // flooding the log during sustained error conditions.
     LOG_THROTTLE_INTERVAL_MS: 30000,
 
+    // BOTS_CONFIG_POLL_INTERVAL_MS: How often to poll bots.json for changes
+    // (fingerprint check via sha1). Guarantees that new/updated active bot
+    // entries are detected within this window. Decoupled from the heavy
+    // BLOCKCHAIN_FETCH_INTERVAL_MIN (240min) so config changes are visible
+    // quickly even on single-bot accounts. 5min = satisfies max-5min
+    // recognition SLA while keeping FS + hash cost negligible.
+    BOTS_CONFIG_POLL_INTERVAL_MS: 5 * 60 * 1000,
+
     // CREDENTIAL_BROADCAST_TIMEOUT_MS: Outer timeout for a credential-daemon broadcast
     // request, enforced by the bot socket client (modules/dexbot_credential_client.ts).
     // Rationale: Broadcasts can take much longer than read-only daemon calls because the

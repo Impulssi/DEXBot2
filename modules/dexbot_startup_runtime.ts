@@ -379,6 +379,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
             await bot._refreshAndSyncCreditRuntime();
             await bot._runCreditRuntimeMaintenance('startup');
             bot._setupBlockchainFetchInterval();
+            if (typeof bot._setupBotsConfigPollInterval === 'function') bot._setupBotsConfigPollInterval();
             bot._setupCreditWatchdogInterval();
             bot._setupCredentialDaemonWatchdogInterval();
             bot._setupDustHealthCheckInterval();
@@ -651,6 +652,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
         await bot._refreshAndSyncCreditRuntime();
         await bot._runCreditRuntimeMaintenance('startup');
         bot._setupBlockchainFetchInterval();
+        if (typeof bot._setupBotsConfigPollInterval === 'function') bot._setupBotsConfigPollInterval();
         bot._setupCreditWatchdogInterval();
         bot._setupCredentialDaemonWatchdogInterval();
 

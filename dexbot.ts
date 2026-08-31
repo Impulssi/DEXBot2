@@ -695,7 +695,8 @@ async function setBotActiveState(botName: string | null | undefined, active: boo
     if (!botName) {
         let updated = false;
         entries.forEach((entry: any) => {
-            if (entry.active !== active) {
+            const effectiveActive = entry.active !== false;
+            if (effectiveActive !== active) {
                 entry.active = active;
                 updated = true;
             }
@@ -713,7 +714,7 @@ async function setBotActiveState(botName: string | null | undefined, active: boo
         console.error(startupError(`Could not find any bot named '${botName}' to ${action}.`));
         process.exit(1);
     }
-    if (match.active === active) {
+    if ((match.active !== false) === active) {
         console.log(`Bot '${botName}' is already ${inWord}.`);
         return;
     }
