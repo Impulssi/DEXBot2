@@ -326,10 +326,10 @@ class StrategyEngine {
         const buySizeById = new Map(allBuySortedForSizing.map((slot: any, i: any) => [slot.id, fullBuySizes[i] || 0]));
         const sellSizeById = new Map(allSellSortedForSizing.map((slot: any, i: any) => [slot.id, fullSellSizes[i] || 0]));
 
-        // MIN_BUY_USDT: skip buys that would be <0.5 USDT (dust-like but larger than fee dust).
+        // MIN_BUY_USDT: skip buys that would be <0.75 USDT (dust-like but larger than fee dust).
         // Keeps remaining funds as free (virtualReservation not locked) instead of
         // shrinking all orders to 0.45, 0.30, ... as fills eat the budget.
-        const MIN_BUY_USDT = 0.5;
+        const MIN_BUY_USDT = 0.75;
         const filteredBuySlots: any[] = [];
         buySlots.forEach((slot: any) => {
             const sz = buySizeById.get(slot.id) || 0;
