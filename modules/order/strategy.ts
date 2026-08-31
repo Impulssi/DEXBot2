@@ -125,9 +125,16 @@ class StrategyEngine {
 
             // BUY_DELAY_MS bookkeeping: any BUY fill (full or delayed-rotation
             // partial) arms the 15 min buy-side delay used by calculateTargetGrid.
+            // DEADLINE semantics: re-arm only when the previous window has fully
+            // expired. A sliding re-arm lets live sub-floor dust orders (which
+            // keep filling on every oscillation) postpone new buys forever.
             if (filledOrder.type === ORDER_TYPES.BUY) {
-                (mgr as any)._lastBuyFillTime = Date.now();
-                mgr.logger.log(`[STRATEGY] Buy fill detected — buy-side updates paused ${BUY_DELAY_MS / 1000 |0}s`, 'info');
+                const mgrAny = mgr as any;
+                const prev = mgrAny._lastBuyFillTime || 0;
+                if (prev === 0 || (Date.now() - prev) >= BUY_DELAY_MS) {
+                    mgrAny._lastBuyFillTime = Date.now();
+                    mgr.logger.log(`[STRATEGY] Buy fill detected — buy-side updates paused ${BUY_DELAY_MS / 1000 |0}s`, 'info');
+                }
             }
 
             if (!isPartial || filledOrder.isDelayedRotationTrigger) {
