@@ -118,6 +118,30 @@ function stalePlacementDropReason(action: any, planBoundary: number): string | n
     }
     return null;
 }
+
+// MIN_BUY_USDT: single chokepoint for every BUY placement path (strategy
+// target, startup reconcile, bootstrap activation). Any BUY CREATE/UPDATE
+// below this USDT value is dropped from the COW plan regardless of which
+// planner produced it. Mirrors the constant in strategy.ts.
+const MIN_BUY_USDT = 0.75;
+
+/**
+ * Drop BUY placements whose notional (size × price) is below MIN_BUY_USDT.
+ * Returns a drop reason string, or null when the action may proceed.
+ * SELL actions and non-placement actions are never dropped here.
+ */
+function minBuySizeDropReason(action: any): string | null {
+    if (!action || (action.type !== COW_ACTIONS.CREATE && action.type !== COW_ACTIONS.UPDATE)) return null;
+    if (action?.order?.type !== ORDER_TYPES.BUY) return null;
+    const size = Number(action?.order?.size || 0);
+    const price = Number(action?.order?.price || 0);
+    if (!Number.isFinite(size) || !Number.isFinite(price) || size <= 0 || price <= 0) return null;
+    const usdtValue = size * price;
+    if (usdtValue < MIN_BUY_USDT) {
+        return `BUY ${action.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${action.id}: notional ${usdtValue.toFixed(3)} USDT < ${MIN_BUY_USDT} USDT minimum`;
+    }
+    return null;
+}
 //
 // COPY-ON-WRITE (COW) PATTERN FOR SAFE REBALANCING
 //
@@ -231,6 +255,30 @@ class COWRebalanceEngine {
             if (guarded.length < before) {
                 this.logger?.log(
                     `[COW] Stale-placement guard removed ${before - guarded.length} placement(s); ${guarded.length} action(s) remain`,
+                    'warn'
+                );
+            }
+            optimizedActions.length = 0;
+            optimizedActions.push(...guarded);
+        }
+
+        // MIN_BUY_USDT guard: drop dust-size BUY placements from ANY planner
+        // (strategy target, startup reconcile, bootstrap activation) so the
+        // exchange never sees a buy below the floor. Runs unconditionally —
+        // unlike the boundary guard above, dust buys have no valid deferral.
+        {
+            const before = optimizedActions.length;
+            const guarded = optimizedActions.filter((a: any) => {
+                const dropReason = minBuySizeDropReason(a);
+                if (dropReason) {
+                    this.logger?.log(`[COW] Dropping dust ${dropReason}`, 'warn');
+                    return false;
+                }
+                return true;
+            });
+            if (guarded.length < before) {
+                this.logger?.log(
+                    `[COW] MIN_BUY guard removed ${before - guarded.length} placement(s); ${guarded.length} action(s) remain`,
                     'warn'
                 );
             }
@@ -1504,16 +1552,23 @@ class OrderManager {
         // Reverse for placement order (highest first)
         validSells.sort((a: any, b: any) => b.price - a.price);
 
-        // Get closest virtual buys (highest prices first = closest to market),
-        // selecting up to buyCount orders that pass the minimum-size filter.
-        const buysClosestFirst = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
-            .sort((a: any, b: any) => b.price - a.price);
+        // Get FARTHEST virtual buys (lowest prices first = farthest below market).
+        // Mirrors strategy.ts keep-low window: the buy ladder must stay at the
+        // bottom of the rail even at startup/reset, not crawl to the market.
+        // Also applies the MIN_BUY_USDT floor (same as strategy.ts) so the
+        // startup path cannot place dust-size buys that the fill path would
+        // refuse. Chain-order matching (sync adoption) is unaffected: it
+        // matches by price level, not by this selection.
+        const MIN_BUY_USDT = 0.75;
+        const buysFarthestFirst = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
+            .sort((a: any, b: any) => a.price - b.price);
         const validBuys: any[] = [];
-        for (const o of buysClosestFirst) {
+        for (const o of buysFarthestFirst) {
             if (validBuys.length >= buyCount) break;
-            if (floatToBlockchainInt(o.size, buyPrecision) >= minBuySizeInt) {
-                validBuys.push(o);
-            }
+            if (floatToBlockchainInt(o.size, buyPrecision) < minBuySizeInt) continue;
+            const usdtValue = Number(o.size || 0) * Number(o.price || 0);
+            if (usdtValue < MIN_BUY_USDT) continue;
+            validBuys.push(o);
         }
         // Reverse for placement order (lowest first)
         validBuys.sort((a: any, b: any) => a.price - b.price);

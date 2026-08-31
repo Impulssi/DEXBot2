@@ -156,10 +156,17 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     const typeFilter = boundaryKnown
         ? (slot: any) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
         : (slot: any) => slot && slot.type === type;
+    // Keep-low BUY selection (mirrors strategy.ts farthest-first window):
+    // BUY slots are picked lowest-price first (farthest below market) so the
+    // startup/reconcile ladder stays at the bottom of the rail instead of
+    // crawling to the boundary. SELL keeps closest-first (lowest price).
+    // MIN_BUY_USDT floor: a BUY whose notional (size × price) is below the
+    // floor is skipped — same constant as strategy.ts / manager.ts guard.
+    const MIN_BUY_USDT = 0.75;
     const slotsOfType = (Array.from(manager.orders.values()) as any[])
         .filter(typeFilter)
         .filter(inRail)
-        .sort((a: any, b: any) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+        .sort((a: any, b: any) => a.price - b.price);
 
     let effectiveMin = 0;
     try {
@@ -191,6 +198,12 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
             }
 
             if (slot.id && effectiveSize >= effectiveMin) {
+                // MIN_BUY_USDT floor for BUY activations: skip dust-notional
+                // slots and walk further up the rail for a funded one.
+                if (type === ORDER_TYPES.BUY
+                    && (Number(effectiveSize) * Number(slot.price || 0)) < MIN_BUY_USDT) {
+                    continue;
+                }
                 // Re-type the picked slot to the activation side: empty slots are
                 // stored SPREAD (side-neutral), but an order being placed here must
                 // carry the concrete BUY/SELL rail type (SPREAD+ACTIVE is illegal,
