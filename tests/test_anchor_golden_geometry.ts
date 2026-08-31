@@ -3,7 +3,7 @@
  *
  * Pins the rail conventions for boundary helpers so an future off-by-one
  * is located immediately. Canonical fixture × gap × price position × direction.
- * No helper moves; this is the executable spec per PRICE_FIRST_ALIGNMENT_PLAN.
+ * No helper moves; this is the executable spec per docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §4.
  */
 const assert = require('assert');
 const { calculateIdealBoundary, projectAnchorToGrid } = require('../modules/order/utils/order');

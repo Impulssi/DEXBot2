@@ -1044,7 +1044,7 @@ class SyncEngine {
                             const strict = calculatePriceTolerance(p, s, t, mgr.assets);
                             // Widen so a regeneration/re-anchor's own live orders, left just
                             // outside strict tolerance, are re-adopted into the nearest empty
-                            // slot instead of orphaned (LADDER_RECENTER_ORPHAN_ROOT_CAUSE fix #2).
+                            // slot instead of orphaned (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2 fix #2).
                             const mult = (mgr?.config?.gridLimits?.ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER as number) || 4;
                             return strict == null ? null : strict * mult;
                         },

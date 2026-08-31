@@ -700,7 +700,9 @@ let CREDENTIAL_PROMPTS = {
 
 // MarketAnchor (price-first alignment) tuning
 // Controls freshness, divergence telemetry thresholds, and the Phase-2
-// projection flag. See docs/PRICE_FIRST_ALIGNMENT_PLAN.md.
+// projection flag. See docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §4
+// (the Phase-2 projection override was removed 2026-08-29; PROJECTION_ENABLED
+// below is retained unused for rollback archaeology).
 let ANCHOR = {
     // Freshness: anchor considered fresh for 15 min OR until price moves
     // beyond the anchor range by this many grid increments (whichever first).

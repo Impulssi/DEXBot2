@@ -2268,7 +2268,7 @@ function wireStructuralGridResyncRequest(bot: any) {
                     bot._structuralGridResyncDeferStartedAt = null;
                     bot._structuralGridResyncDeferCount = 0;
                 } else {
-                    // Fix #7 (LADDER_RECENTER_ORPHAN_ROOT_CAUSE): throttle the defer log to the
+                    // Fix #7 (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2): throttle the defer log to the
                     // first occurrence per cap window (a fill storm can emit hundreds of
                     // defer lines in seconds); count the rest and surface them only in
                     // the final forced message.

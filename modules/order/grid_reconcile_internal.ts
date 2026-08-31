@@ -1009,7 +1009,7 @@ async function _adoptPossiblyLandedCreate({
  * size. This durable marker is the ONLY evidence that distinguishes a true
  * sized-VIRTUAL orphan from a normal planned slot, so the persisted grid's
  * loadGrid sanitizer drops sizes only for flagged slots (see grid.ts and
- * docs/GAP_BAND_ORPHAN_PREVENTION_PLAN.md lineage).
+ * docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §3 lineage).
  */
 async function _markSlotsCreateUncertain(manager: any, slotIds: any[], logger?: any): Promise<void> {
     if (!manager?.orders || typeof manager.applyGridUpdateBatch !== 'function') return;

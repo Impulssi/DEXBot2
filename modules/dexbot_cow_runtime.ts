@@ -303,7 +303,7 @@ async function deferUncertainBroadcastRead(bot: any, detail: string, suffix: str
         `[COW][UNCERTAIN] ${detail}; keeping pending-broadcast protection ${suffix}`,
         'warn'
     );
-    // Fix #6 (LADDER_RECENTER_ORPHAN_ROOT_CAUSE): an ambiguous/truncated chain read is
+    // Fix #6 (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2): an ambiguous/truncated chain read is
     // node lag, not a missing order — the broadcast already succeeded. Previously every
     // such read requested a structural resync, piling pending broadcasts (up to 14) and
     // forcing a resync mid-broadcast (the T-BTS 06:43Z thrash). The pending-broadcast

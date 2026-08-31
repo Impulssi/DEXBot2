@@ -169,6 +169,7 @@ See `analysis/README.md` for full doc and usage examples.
 - `analyze_risk_profile.ts` - Inventory risk divergence quantile measurement
 - `analyze_trade_heatmap.ts` - 2D trade volume heatmap
 - `trade_profitability.ts` - Trade PnL from Kibana fill data (LIFO/FIFO)
+- `grid_correction_check.ts` - Grid monotonicity regression gate (sell rising / buy falling between consecutive same-direction fills; `npm run analysis:grid-check`)
 - `amafitting/` under `analysis/` (`analysis/ama_fitting/`) - AMA parameter fitting (optimizer, LP fetch, convergence calibration)
 - `bot_fitting/` - Grid parameter sweep backtests for AMA winners
 - `tradingview/` - Standalone TradingView-style HTML chart exporter

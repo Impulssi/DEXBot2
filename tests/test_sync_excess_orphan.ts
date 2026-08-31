@@ -98,7 +98,7 @@ async function testSmallDriftOrphanIsAdopted() {
     const chainOrder = makeChainOrder('1.7.572311650', ORDER_TYPES.SELL, driftPrice, 10);
     const result = await engine.syncFromOpenOrders([chainOrder], { skipAccounting: true });
 
-    assert.strictEqual(result.unmatchedChainOrders.length, 0, 'Small-drift orphan should be adopted (pass-2 fallback widened by ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER, LADDER_RECENTER_ORPHAN_ROOT_CAUSE fix #2)');
+    assert.strictEqual(result.unmatchedChainOrders.length, 0, 'Small-drift orphan should be adopted (pass-2 fallback widened by ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER, docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2 fix #2)');
     const slot = mgr.orders.get('sell-3');
     assert.strictEqual(slot.orderId, '1.7.572311650', 'Slot should now be bound to the re-anchored chain order');
     assert.ok([ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL].includes(slot.state), 'Adopted slot should be ACTIVE or PARTIAL');

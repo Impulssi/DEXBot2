@@ -1,7 +1,7 @@
 /**
  * tests/test_market_anchor.ts — Phase 1 MarketAnchor unit tests
  *
- * Covers the PRICE_FIRST_ALIGNMENT_PLAN Phase 1 gate: idempotent
+ * Covers the docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §4 Phase 1 gate: idempotent
  * re-delivery, block ordering (D4), replay cap, freshness, book-seeding
  * (including the empty-book cold start). Pure-function tests against
  * modules/order/utils/order.js — no manager required.

@@ -1596,7 +1596,7 @@ class OrderManager {
     }
 
     /**
-     * Observability (fix #4, LADDER_RECENTER_ORPHAN_ROOT_CAUSE): emit the live
+     * Observability (fix #4, docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2): emit the live
      * boundary whenever roles are (re)assigned, so a silent boundary crawl that
      * re-rolls slots into the wrong rail is diagnosable in real time. Debug-level
      * only; no behavioral effect.

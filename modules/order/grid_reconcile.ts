@@ -347,7 +347,7 @@ export async function reconcileGridOrders({
             'info'
         );
 
-        // P3 boundary-evidence gate (docs/GAP_BAND_ORPHAN_PREVENTION_PLAN.md):
+        // P3 boundary-evidence gate (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §1):
         // the restored boundary is disk state that may predate the last fill
         // sweep. The reconcile below price-updates and creates orders into rail
         // positions derived from it — validate it against the live book (and a

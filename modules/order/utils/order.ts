@@ -2150,7 +2150,7 @@ function computeAnchorDivergence(projected: any, bookkept: any): number | null {
 /**
  * Validate a restored/bookkept boundary against CHAIN EVIDENCE before the
  * startup reconcile is allowed to place orders against it (P3 of
- * docs/GAP_BAND_ORPHAN_PREVENTION_PLAN.md).
+ * docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §1).
  *
  * A persisted boundary is disk state that may predate the last fill sweep:
  * `validatePersistedBoundary` only proves the boundary was consistent with

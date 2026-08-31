@@ -89,6 +89,7 @@
     "ama:chart:lp-local": "npm run build && node dist/analysis/ama_fitting/generate_unified_comparison_chart.js",
     "analysis:derivatives": "npm run build && node dist/analysis/analyze_derivatives.js",
     "analysis:trade-pnl": "npm run build && node dist/analysis/trade_profitability.js",
+    "analysis:grid-check": "npm run build && node dist/analysis/grid_correction_check.js",
     "native:release-gates": "npm run build && npm run build:tests && node dist/scripts/native_release_gates.js",
     "native:serial-snapshots": "npm run build && npm run build:tests && node dist/tests/test_native_serial_ops.js",
     "native:ecc-invariants": "npm run build && npm run build:tests && node dist/tests/test_native_ecc.js",
