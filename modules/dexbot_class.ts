@@ -1166,6 +1166,54 @@ class DEXBot {
                 boundaryTarget = null;
             }
 
+            // Burst-global swept band [minBuy,maxSell] + SELL fill count,
+            // derived ONCE from the WHOLE burst so BAND-EXCLUSION in
+            // calculateTargetGrid sees the full sweep instead of a per-chunk
+            // local max (15 sells 894->902 previously chunked gave chunk1
+            // max 870 -> window still contained 894, chunk4 with budget 0 ->
+            // Actions=0). strategy.ts falls back to per-chunk fills when these
+            // are absent.
+            let burstSweptMaxSell: number | null = null;
+            let burstSweptMinBuy: number | null = null;
+            let burstSweptSellCount: number | undefined = undefined;
+            try {
+                const orderUtils = require('./order/utils/order');
+                const ORDER_TYPES = (require('./constants') as any).ORDER_TYPES;
+                const allSlots = Array.from(this.manager?.orders?.values?.() ?? [])
+                    .filter((o: any) => o?.price != null);
+                const slotById = new Map(allSlots.map((s: any) => [s.id, s]));
+                const bounds = orderUtils.deriveAnchorBounds(
+                    this.manager?._marketAnchor,
+                    (require('./constants') as any).ANCHOR.PRICE_OUTLIER_FACTOR
+                );
+                for (const fill of fills) {
+                    if (!orderUtils.isShiftEligibleFill(fill)) continue;
+                    const price = orderUtils.resolveFillPrice(fill, slotById, bounds);
+                    if (price == null) continue;
+                    if (fill.type === ORDER_TYPES.SELL) {
+                        if (burstSweptMaxSell == null || price > burstSweptMaxSell) burstSweptMaxSell = price;
+                        burstSweptSellCount = (burstSweptSellCount ?? 0) + 1;
+                    } else if (fill.type === ORDER_TYPES.BUY) {
+                        if (burstSweptMinBuy == null || price < burstSweptMinBuy) burstSweptMinBuy = price;
+                    }
+                }
+            } catch (bandErr: any) {
+                managerLog(
+                    `[BAND-EXCLUSION] Burst sweep-band derivation failed (${getErrorMessage(bandErr)}); falling back to per-chunk fills.`,
+                    'warn'
+                );
+                // Leave the props undefined (not 0): strategy.ts reads
+                // `_burstSweptSellCount ?? <per-chunk count>`, so a hard 0
+                // here would silently disable the multi-sell-sweep rule for
+                // the whole burst. Undefined lets the fallback trigger.
+                burstSweptMaxSell = null;
+                burstSweptMinBuy = null;
+                burstSweptSellCount = undefined;
+            }
+            (this.manager as any)._burstSweptMaxSell = burstSweptMaxSell;
+            (this.manager as any)._burstSweptMinBuy = burstSweptMinBuy;
+            (this.manager as any)._burstSweptSellCount = burstSweptSellCount;
+
             (this.manager as any)._boundaryTarget = boundaryTarget;
             const shiftBudget = boundaryTarget != null ? windowCap : legacyCap;
             (this.manager as any)._boundaryShiftBudget = shiftBudget;
@@ -1217,6 +1265,9 @@ class DEXBot {
                 delete (this.manager as any)._boundaryShiftBudget;
                 delete (this.manager as any)._boundaryShiftBudgetBase;
                 delete (this.manager as any)._boundaryTarget;
+                delete (this.manager as any)._burstSweptMaxSell;
+                delete (this.manager as any)._burstSweptMinBuy;
+                delete (this.manager as any)._burstSweptSellCount;
             }
             if (typeof this.manager?.resumeFundRecalc === 'function') {
                 await this.manager.resumeFundRecalc();
