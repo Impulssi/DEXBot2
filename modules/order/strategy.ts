@@ -311,62 +311,38 @@ class StrategyEngine {
         // the wrong side of the market (new sell below the highest sell, etc.).
         const newBoundaryIdx = legacyBoundaryIdx;
 
-        // 1b. Placement guard (defense-in-depth): no re-created order may sit
-        // on the wrong side of a just-filled price. A SELL slot at or below
-        // the highest filled SELL price is immediately marketable (the book
-        // traded through it) and economically inverted; the same holds for a
-        // BUY slot strictly above the lowest filled BUY price. Rotate such
-        // slots to the opposite rail BEFORE windowing and sizing so
-        // reconcile cancels the toxic order and replaces it across the
-        // spread. Asymmetry is intentional: re-creating a BUY at exactly the
-        // filled price is the standard anchor-refill rotation, while a SELL
-        // at/below the filled price would dump into a market that just paid
-        // more. This holds the invariant even when the boundary is stale
-        // (stale-plan re-plans, recovery paths, price-less fills).
-        const guardSlotById = new Map(allSlots.map((s: any) => [s.id, s]));
+        // 1c. Swept-band exclusion (replaces the removed placement guard).
+        // When the boundary is budget-frozen, the price-anchored boundary
+        // correction cannot clear a band the book just traded through, and
+        // stale live orders survive INSIDE the swept range. Rather than
+        // re-typing slots in place — which kept the stale slot price and
+        // instantly self-crossed the opposite rail during chunked
+        // broadcasts (production incident: multiple self-fills, large COW
+        // plans flip-flopping every ~30s on batch-local extremes, fatal
+        // fund assertion) — slots priced inside the filled band are
+        // excluded from the active-window rails: they fall out of the
+        // window (target VIRTUAL), reconcile cancels the stranded live
+        // orders, and the window re-forms OUTSIDE the band. A cancel-only
+        // transition cannot self-trade, and the COW-layer crossing guard
+        // (findCrossedOrder) covers the re-placement side.
         let maxFilledSellPrice: number | null = null;
         let minFilledBuyPrice: number | null = null;
-        for (const fill of fills) {
-            if (!isShiftEligibleFill(fill)) continue;
-            const price = resolveFillPrice(fill, guardSlotById, outlierBounds);
-            if (price == null) continue;
-            if (fill.type === ORDER_TYPES.SELL) {
-                if (maxFilledSellPrice == null || price > maxFilledSellPrice) maxFilledSellPrice = price;
-            } else if (fill.type === ORDER_TYPES.BUY) {
-                if (minFilledBuyPrice == null || price < minFilledBuyPrice) minFilledBuyPrice = price;
+        {
+            const slotById = new Map(allSlots.map((s: any) => [s.id, s]));
+            for (const fill of fills) {
+                if (!isShiftEligibleFill(fill)) continue;
+                const price = resolveFillPrice(fill, slotById, outlierBounds);
+                if (price == null) continue;
+                if (fill.type === ORDER_TYPES.SELL) {
+                    if (maxFilledSellPrice == null || price > maxFilledSellPrice) maxFilledSellPrice = price;
+                } else if (fill.type === ORDER_TYPES.BUY) {
+                    if (minFilledBuyPrice == null || price < minFilledBuyPrice) minFilledBuyPrice = price;
+                }
             }
         }
 
         // 2. Assign Roles (Buy/Sell/Spread)
         const updatedSlots = assignGridRoles(allSlots, newBoundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES, { assignOnChain: true });
-
-        let rotatedToBuy = 0;
-        let rotatedToSell = 0;
-        if (maxFilledSellPrice != null) {
-            for (const slot of updatedSlots) {
-                if (slot.type === ORDER_TYPES.SELL && Number(slot.price) <= maxFilledSellPrice) {
-                    slot.type = ORDER_TYPES.BUY;
-                    rotatedToBuy++;
-                }
-            }
-        }
-        if (minFilledBuyPrice != null) {
-            for (const slot of updatedSlots) {
-                if (slot.type === ORDER_TYPES.BUY && Number(slot.price) > minFilledBuyPrice) {
-                    slot.type = ORDER_TYPES.SELL;
-                    rotatedToSell++;
-                }
-            }
-        }
-        if (rotatedToBuy > 0 || rotatedToSell > 0) {
-            this.manager.logger.log(
-                `[PLACEMENT-GUARD] Rotated ${rotatedToBuy} sell slot(s) at/below max filled sell price ` +
-                `${maxFilledSellPrice != null ? maxFilledSellPrice.toPrecision(6) : 'n/a'} to BUY, ` +
-                `${rotatedToSell} buy slot(s) at/above min filled buy price ` +
-                `${minFilledBuyPrice != null ? minFilledBuyPrice.toPrecision(6) : 'n/a'} to SELL.`,
-                'warn'
-            );
-        }
 
         this.manager.logger.log(`[DEBUG] calculateTargetGrid: boundary=${newBoundaryIdx}, gap=${gapSlots}, allSlots=${updatedSlots.length}`, 'debug');
         updatedSlots.forEach((s: any) => this.manager.logger.log(`  Slot ${s.id}: price=${s.price}, size=${s.size ?? 'n/a'}, type=${s.type}`, 'debug'));
@@ -392,8 +368,32 @@ class StrategyEngine {
         // inside the gap (spread removed). Exclude stray slots by geometry
         // (shared MathUtils.isSlotInRail helper) so reconcile treats them as
         // surplus and relocates them back onto the rail.
-        const inBuyRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o);
-        const inSellRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o);
+        // Exclusion predicates: a slot priced inside the filled band is not
+        // window-eligible even when geometry still places it on the rail
+        // (budget-frozen boundary). Applied AFTER the SPREAD GUARD keeps
+        // live orders typed, so exclusion only removes them from the
+        // window — reconcile cancels them as surplus, types stay intact.
+        // Asymmetry (inherited from the removed guard): a SELL at or below
+        // the highest filled sell price is stranded (the market traded
+        // through it and paid more), while a BUY strictly above the lowest
+        // filled buy price is stranded but a BUY AT the filled price is the
+        // standard anchor-refill rotation and must stay window-eligible.
+        const sweptSell = (o: any) => maxFilledSellPrice != null && Number(o.price) <= maxFilledSellPrice;
+        const sweptBuy = (o: any) => minFilledBuyPrice != null && Number(o.price) > minFilledBuyPrice;
+        const bandExcludedSells = allSellSlots.filter((o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o) && sweptSell(o)).length;
+        const bandExcludedBuys = allBuySlots.filter((o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o) && sweptBuy(o)).length;
+        if (bandExcludedSells > 0 || bandExcludedBuys > 0) {
+            this.manager.logger.log(
+                `[BAND-EXCLUSION] Excluded ${bandExcludedSells} sell slot(s) at/below the highest filled sell price ` +
+                `${maxFilledSellPrice != null ? maxFilledSellPrice.toPrecision(6) : 'n/a'} and ` +
+                `${bandExcludedBuys} buy slot(s) at/above the lowest filled buy price ` +
+                `${minFilledBuyPrice != null ? minFilledBuyPrice.toPrecision(6) : 'n/a'} from the active window; ` +
+                `stranded live orders will be cancelled and the rail re-forms outside the swept band.`,
+                'info'
+            );
+        }
+        const inBuyRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o) && !sweptBuy(o);
+        const inSellRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o) && !sweptSell(o);
 
         // Sort Closest-First for windowing
         const buySlots = allBuySlots

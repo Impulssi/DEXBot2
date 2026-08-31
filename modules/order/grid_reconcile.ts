@@ -561,7 +561,9 @@ export async function reconcileGridOrders({
                     );
                 } catch (cancelErr: any) {
                     logger?.log?.(
-                        `Startup: Failed to cancel queued order ${cancelPlan.chainOrderId}: ${getErrorMessage(cancelErr)}`,
+                        `Startup: Failed to cancel queued order ${cancelPlan.chainOrderId}: ${getErrorMessage(cancelErr)}. ` +
+                        `The order stays live: the relocation/create phases will skip any placement ` +
+                        `that would cross it (STARTUP-CROSS-GUARD) and re-align on the next cycle.`,
                         'error'
                     );
                 }

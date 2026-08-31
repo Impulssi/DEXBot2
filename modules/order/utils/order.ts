@@ -464,6 +464,36 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
     }
 
     let shouldRemove = false;
+
+    // CROSSING-PLACEMENT GUARD: re-pricing the chain order to its slot's
+    // committed price must not cross an opposite-side live order (only
+    // reachable when the grid geometry itself is broken). Drop the entry —
+    // the next sync's price-mismatch detection re-queues the correction
+    // once the crossed order is resolved (same lifecycle as a 'skipped'
+    // update below).
+    const crossed = MathUtils.findCrossedOrder(
+        manager.orders.values(),
+        expectedPrice,
+        type,
+        manager.assets,
+        (o: any) => o && o.orderId && o.orderId !== chainOrderId
+    );
+    if (crossed) {
+        manager.logger?.log?.(
+            `[CROSS-GUARD] Skipping price correction for ${chainOrderId} -> ${type} @${expectedPrice}: ` +
+            `crosses live ${crossed.type} ${crossed.id} (${crossed.orderId}) @${crossed.price}; ` +
+            `retried after the crossed order resolves.`,
+            'warn'
+        );
+        // The guard returns before the try/finally below, so drop the entry
+        // from the correction queue here — otherwise it would linger forever
+        // and re-attempt on every sync cycle.
+        manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(
+            (c: any) => c.chainOrderId !== chainOrderId
+        );
+        return { success: false, skipped: true, error: 'crossed-placement-guard' };
+    }
+
     try {
         const updateResult = await accountOrders.updateOrder(accountName, privateKey, chainOrderId, { amountToSell, minToReceive });
         if (updateResult === null) {

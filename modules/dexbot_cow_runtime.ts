@@ -241,6 +241,51 @@ function clearPendingBroadcasts(pendingBroadcasts: any) {
 }
 
 /**
+ * Human-readable label for an order returned by findCrossedOrder.
+ * Master orders carry id/orderId; unmatched chain orders carry
+ * chainOrderId; pending-broadcast entries carry slotId and order.
+ * @param {Object} crossed
+ * @returns {string}
+ */
+function crossedOrderLabel(crossed: any): string {
+    if (!crossed) return 'unknown';
+    const id = crossed.id || crossed.chainOrderId || crossed.slotId || 'unknown';
+    const orderId = crossed.orderId || crossed.chainOrderId || 'n/a';
+    const type = crossed.type || crossed.order?.type || 'unknown';
+    const price = crossed.price ?? crossed.order?.price;
+    return `${type} ${id} (${orderId}) @${price != null ? Format.formatPrice6(price) : 'n/a'}`;
+}
+
+/**
+ * Build the candidate set for crossing-placement checks: master orders
+ * plus chain-side orders that may exist on chain but are not (yet)
+ * adopted into the master grid — pending broadcasts from earlier
+ * uncertain batches and unmatched chain orders (orphans). Without these,
+ * an UPDATE-only rotation batch can re-price across an un-adopted chain
+ * order that master-grid-only checks cannot see (the pending/unmatched
+ * batch guards fire only for CREATE batches).
+ * @param {Object} bot
+ * @returns {any[]}
+ */
+function buildCrossingCandidates(bot: any): any[] {
+    const mgr = bot?.manager;
+    if (!mgr) return [];
+    const candidates: any[] = mgr.orders instanceof Map ? [...mgr.orders.values()] : [];
+    if (mgr._pendingBroadcasts instanceof Map) {
+        for (const entry of mgr._pendingBroadcasts.values()) {
+            const o = entry?.order;
+            if (o && o.type != null && o.price != null) candidates.push(o);
+        }
+    }
+    if (Array.isArray(mgr._lastUnmatchedChainOrders)) {
+        for (const o of mgr._lastUnmatchedChainOrders) {
+            if (o && o.type != null && o.price != null) candidates.push(o);
+        }
+    }
+    return candidates;
+}
+
+/**
  * Drop only the pending-broadcast entries for the given CREATE slots.
  *
  * Used by the re-plan path: the original plan's ops are abandoned with its
@@ -2476,6 +2521,11 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         };
     }
 
+    // Crossing-check candidate set (master + pending-broadcast + unmatched
+    // chain orders). Built after the batch-level pending/unmatched guards so
+    // it reflects any sync they triggered.
+    const crossingCandidates = buildCrossingCandidates(bot);
+
     const { assetA, assetB } = bot.manager.assets;
 
     // CROSSED-BOOK GATE: refuse to broadcast any batch whose simulated result
@@ -2610,6 +2660,35 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         continue;
                     }
 
+                    // CROSSING-PLACEMENT GUARD (create variant): the batch-level
+                    // validators (validateCreateTargetSlots, detectCrossedBookPlan)
+                    // simulated the PLANNED price, but the pre-broadcast price
+                    // freshness rebuild above can move the op's price. Re-check
+                    // crossing on the FINAL price against live and chain-side
+                    // orders not already cancelled at an earlier op position —
+                    // an opposite-side order cancelled in a later chunk would
+                    // otherwise coexist with this create mid-broadcast and
+                    // self-trade (production incident class).
+                    const createCrossed = findCrossedOrder(
+                        crossingCandidates,
+                        createPrice,
+                        order.type,
+                        bot.manager.assets,
+                        (o: any) => {
+                            const oid = o?.orderId || o?.chainOrderId;
+                            return o && oid && !cancelOpIndexByOrderId.has(oid);
+                        }
+                    );
+                    if (createCrossed) {
+                        bot.manager.logger.log(
+                            `[COW-CROSS-GUARD] Skipping CREATE for ${order.id} at ` +
+                            `${Format.formatPrice6(createPrice)}: crosses live ` +
+                            `${crossedOrderLabel(createCrossed)}; re-planned after its cancel confirms.`,
+                            'warn'
+                        );
+                        continue;
+                    }
+
                     const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
                     const buildResult = await chainOrders.buildCreateOrderOp(
                         bot.account,
@@ -2673,22 +2752,25 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         // is not already queued at an earlier op position.
                         // Re-pricing a buy upward across our own live sell
                         // ladder self-trades during the chunked broadcast
-                        // window (XRP-BTS2 2026-08-31: a startup buy @805 was
-                        // re-priced to @862 and filled against our own live
-                        // sells @865-916 that this same plan was still
-                        // cancelling in later chunks — 68 self-fills, fatal
-                        // fund assert). Skipping is safe: the slot keeps its
+                        // window (production incident: a startup buy was
+                        // re-priced upward and filled against our own live
+                        // opposite-side sells that this same plan was still
+                        // cancelling in later chunks — dozens of self-fills,
+                        // fatal fund assert). Skipping is safe: the slot keeps its
                         // old commitment and the next plan re-evaluates once
                         // the crossed order's cancel confirms.
                         const crossedOrder = findCrossedOrder(
-                            bot.manager.orders.values(),
+                            crossingCandidates,
                             newPrice,
                             orderType,
                             bot.manager.assets,
-                            (o: any) => o
-                                && o.orderId
-                                && o.orderId !== action.orderId
-                                && !cancelOpIndexByOrderId.has(o.orderId)
+                            (o: any) => {
+                                const oid = o?.orderId || o?.chainOrderId;
+                                return o
+                                    && oid
+                                    && oid !== action.orderId
+                                    && !cancelOpIndexByOrderId.has(oid);
+                            }
                         );
                         if (crossedOrder) {
                             skippedUpdateCount++;
@@ -2696,9 +2778,8 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
                             bot.manager.logger.log(
                                 `[COW-CROSS-GUARD] Skipping rotation update ${action.id} -> ${action.newGridId}: ` +
-                                `new ${orderType} @${Format.formatPrice6(newPrice)} crosses live ${crossedOrder.type} ` +
-                                `${crossedOrder.id} (${crossedOrder.orderId}) @${Format.formatPrice6(crossedOrder.price)}; ` +
-                                `re-planned after its cancel confirms.`,
+                                `new ${orderType} @${Format.formatPrice6(newPrice)} crosses live ` +
+                                `${crossedOrderLabel(crossedOrder)}; re-planned after its cancel confirms.`,
                                 'warn'
                             );
                             continue;
@@ -2828,6 +2909,32 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                         `[COW] Skipping CREATE fallback for ${targetSlotId} at ${Format.formatPrice6(fbPrice)}: ` +
                                         `same-batch CREATE ${fbBatchCollision.id} already at ` +
                                         `price ${Format.formatPrice6(fbBatchCollision.order.price)}.`,
+                                        'warn'
+                                    );
+                                    continue;
+                                }
+                                // CROSSING-PLACEMENT GUARD (fallback variant):
+                                // the not-found conversion re-prices to the
+                                // rotation's target price, so it must obey the
+                                // same crossing rule as the rotation UPDATE it
+                                // replaces — no crossing of an opposite-side
+                                // live order whose cancel is not already
+                                // queued at an earlier op position.
+                                const fbCrossed = findCrossedOrder(
+                                    crossingCandidates,
+                                    fbPrice,
+                                    fbType,
+                                    bot.manager.assets,
+                                    (o: any) => {
+                                        const oid = o?.orderId || o?.chainOrderId;
+                                        return o && oid && !cancelOpIndexByOrderId.has(oid);
+                                    }
+                                );
+                                if (fbCrossed) {
+                                    bot.manager.logger.log(
+                                        `[COW-CROSS-GUARD] Skipping CREATE fallback for ${targetSlotId} at ` +
+                                        `${Format.formatPrice6(fbPrice)}: new ${fbType} crosses live ` +
+                                        `${crossedOrderLabel(fbCrossed)}; re-planned after its cancel confirms.`,
                                         'warn'
                                     );
                                     continue;

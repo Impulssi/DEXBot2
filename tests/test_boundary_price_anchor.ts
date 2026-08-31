@@ -181,7 +181,9 @@ async function run() {
         const strategy = new StrategyEngine(manager);
 
         // Burst of sells swept through slot-24 (price 124) but the boundary
-        // is stale at 13 — without the guard, sells at 114..124 survive.
+        // is stale at 13 — the swept-band exclusion virtualizes the sells
+        // at 114..124 (reconcile cancels them) and the window re-forms
+        // above the band.
         const fills = [];
         for (let i = 0; i < 12; i++) fills.push(sellFill(`slot-${13 + i}`, 113 + i));
 
@@ -196,10 +198,13 @@ async function run() {
         const { targetGrid } = strategy.calculateTargetGrid(params);
 
         for (const [, order] of targetGrid.entries()) {
-            if (order.type === ORDER_TYPES.SELL) {
+            // VIRTUAL sell-typed slots inside the swept band are the desired
+            // exclusion outcome (window-eligible=False, reconcile cancels
+            // any stranded live order). Only LIVE-target sells are toxic.
+            if (order.type === ORDER_TYPES.SELL && order.state !== ORDER_STATES.VIRTUAL) {
                 assert.ok(
                     order.price > 124,
-                    `no sell may remain at/below the highest fill price 124 (got ${order.price})`
+                    `no live sell may remain at/below the highest fill price 124 (got ${order.price})`
                 );
             }
             if (order.type === ORDER_TYPES.BUY) {
@@ -210,8 +215,8 @@ async function run() {
             }
         }
         assert.ok(
-            logs.some(l => l.includes('[PLACEMENT-GUARD]')),
-            'guard should log when it rotates slots'
+            logs.some(l => l.includes('[BAND-EXCLUSION]')),
+            'swept-band exclusion should log when it virtualizes slots'
         );
     }
 
@@ -261,10 +266,12 @@ async function run() {
         const { targetGrid } = strategy.calculateTargetGrid(params);
 
         for (const [, order] of targetGrid.entries()) {
-            if (order.type === ORDER_TYPES.BUY) {
+            // VIRTUAL buy-typed slots inside the swept band are the desired
+            // exclusion outcome; only LIVE-target buys are toxic.
+            if (order.type === ORDER_TYPES.BUY && order.state !== ORDER_STATES.VIRTUAL) {
                 assert.ok(
                     order.price <= 109,
-                    `no buy may remain above the lowest filled buy price 109 (got ${order.price})`
+                    `no live buy may remain above the lowest filled buy price 109 (got ${order.price})`
                 );
             }
         }

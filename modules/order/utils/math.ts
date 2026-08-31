@@ -887,6 +887,82 @@ function findPriceCollision(
 }
 
 /**
+ * Find an opposite-side order that a candidate placement would CROSS.
+ *
+ * A BUY at `price` crosses every SELL priced at or below it (within price
+ * tolerance); a SELL at `price` crosses every BUY priced at or above it.
+ * A crossing placement that broadcasts while the crossed order is still
+ * live self-trades against our own book: BitShares has no self-trade
+ * prevention, and the COW rebalance broadcasts in 4-op chunks over ~30s,
+ * so a re-priced buy lands several chunks before the crossed sell's
+ * cancel confirms (production incident: multiple self-fills where the
+ * sell ladder was re-priced into marketable buys, triggering a fatal
+ * fund assertion).
+ *
+ * Unlike findPriceCollision (same-price check), this catches crossings at
+ * ANY price overlap and is intended for the re-pricing UPDATE / CREATE
+ * paths. The caller decides the exemption policy (e.g. crossed orders
+ * cancelled earlier in the same plan).
+ *
+ * @param {Iterable<any>} items - Candidate orders (e.g. manager.orders.values())
+ * @param {number} price - Candidate placement price
+ * @param {string} type - Candidate placement type (ORDER_TYPES.BUY / SELL)
+ * @param {any} assets - Asset metadata (precisions) for tolerance
+ * @param {((item: any) => boolean)|null} [isValid] - Optional filter
+ * @returns {any|null} The first crossed order, or null when the placement crosses nothing
+ */
+function findCrossedOrder(
+    items: Iterable<any>,
+    price: number,
+    type: string,
+    assets: any,
+    isValid?: ((item: any) => boolean) | null
+): any {
+    if (price == null || !Number.isFinite(Number(price)) || type == null) return null;
+    for (const item of items) {
+        if (!item || (isValid && !isValid(item))) continue;
+        const itemType = item.type ?? item.order?.type;
+        if (itemType == null || itemType === type) continue;
+        const itemPrice = item.price ?? item.order?.price;
+        if (itemPrice == null || !Number.isFinite(Number(itemPrice))) continue;
+
+        // Tolerance-widened crossing test. The forbidden band extends from
+        // the candidate price INTO the crossing direction by the price
+        // tolerance, so an opposite-side order within tolerance of the
+        // candidate price is flagged (re-pricing onto it would self-trade
+        // at precision dust). The comparison alone decides the outcome —
+        // do not pre-gate on the raw inequality, or near-equality cases
+        // (sell priced a dust-width above the candidate buy) escape.
+        const combinedSize = Math.max(item.size ?? item.order?.size ?? 0, 0);
+        const toleranceTarget = calculatePriceTolerance(
+            Math.min(itemPrice, price),
+            combinedSize,
+            type,
+            assets
+        );
+        let tolerance = toleranceTarget;
+        if (toleranceTarget != null && itemType != null) {
+            const toleranceItem = calculatePriceTolerance(
+                Math.min(itemPrice, price),
+                combinedSize,
+                itemType,
+                assets
+            );
+            if (toleranceItem != null) {
+                tolerance = Math.min(toleranceTarget, toleranceItem);
+            }
+        }
+        if (tolerance == null) continue;
+        if (type === ORDER_TYPES.BUY) {
+            if (Number(itemPrice) <= Number(price) + tolerance) return item;
+        } else {
+            if (Number(itemPrice) >= Number(price) - tolerance) return item;
+        }
+    }
+    return null;
+}
+
+/**
  * Validate order amounts are within blockchain limits (0 < INT64_MAX).
  * Converts floats to blockchain integers and checks they fit in signed 64-bit integers.
  * 
@@ -1545,7 +1621,7 @@ function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any
     return idx >= sellStartIdx;
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
 
 /**
  * Round a value to a given factor.
