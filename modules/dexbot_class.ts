@@ -1803,6 +1803,7 @@ class DEXBot {
             // A recovery sync wrapping the region keeps the consumer gated;
             // requestGridReset's finally drains once the counter clears.
             if ((this as any)._recoverySyncInFlight) return;
+            if ((this as any)._batchInFlight) return;
             if (!this._incomingFillQueue || this._incomingFillQueue.length === 0) return;
             this._log(`[FILL-QUEUE] Broadcasting region ended; draining ${this._incomingFillQueue.length} deferred fill(s).`, 'info');
             this._scheduleFillConsumerRestart(chainOrders);

@@ -648,7 +648,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
         return;
     }
 
-    if (bot._batchInFlight || bot._recoverySyncInFlight || bot.manager?.isBroadcastingActive?.()) {
+    if (bot._batchInFlight || bot._recoverySyncInFlight) {
         bot.manager?.logger?.log?.(
             `Fill processing deferred: order pipeline active (${bot._incomingFillQueue.length} queued)`,
             'debug'

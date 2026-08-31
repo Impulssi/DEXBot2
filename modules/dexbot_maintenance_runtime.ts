@@ -2235,6 +2235,7 @@ function drainFillQueueAfterPipelineClear(bot: any) {
     try {
         if (!bot || bot._shuttingDown) return;
         if ((bot._recoverySyncInFlight || 0) > 0) return;
+        if ((bot._batchInFlight || 0) > 0) return;
         if (bot.manager?.isBroadcastingActive?.()) return;
         if (!bot._incomingFillQueue || bot._incomingFillQueue.length === 0) return;
         bot._log(`[FILL-QUEUE] Pipeline cleared; draining ${bot._incomingFillQueue.length} deferred fill(s).`, 'info');
