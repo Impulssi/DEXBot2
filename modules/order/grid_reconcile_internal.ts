@@ -157,9 +157,13 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
         ? (slot: any) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
         : (slot: any) => slot && slot.type === type;
     // Keep-low BUY selection (mirrors strategy.ts farthest-first window):
-    // BUY slots are picked lowest-price first (farthest below market) so the
-    // startup/reconcile ladder stays at the bottom of the rail instead of
-    // crawling to the boundary. SELL keeps closest-first (lowest price).
+    // BUY candidates are limited to the BOTTOM `count` slots of the rail
+    // (farthest below market). The MIN_BUY_USDT floor then filters WITHIN
+    // that window — a sub-floor slot is skipped WITHOUT walking up the rail,
+    // otherwise the floor would redirect selection to the heavier
+    // boundary-adjacent slots (i.e. buying near the market, the exact
+    // behavior this window exists to prevent). Unfunded bottom slots simply
+    // stay virtual and their funds remain free. SELL keeps closest-first.
     // MIN_BUY_USDT floor: a BUY whose notional (size × price) is below the
     // floor is skipped — same constant as strategy.ts / manager.ts guard.
     const MIN_BUY_USDT = 0.75;
@@ -167,6 +171,9 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
         .filter(typeFilter)
         .filter(inRail)
         .sort((a: any, b: any) => a.price - b.price);
+    const candidates = type === ORDER_TYPES.BUY
+        ? slotsOfType.slice(0, count)
+        : slotsOfType;
 
     let effectiveMin = 0;
     try {
@@ -177,7 +184,7 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     // Derived budgeted size per slot, built once (O(n)) so below-min lookups
     // don't recompute full-side sizing for every candidate (avoid O(n²)).
     const derivedSizes = _deriveBudgetedSideSizes(manager, type);
-    for (const slot of slotsOfType) {
+    for (const slot of candidates) {
         if (valid.length >= count) break;
         if (!slot.orderId && slot.state === ORDER_STATES.VIRTUAL) {
             // Role invariant: Only pick slots that make sense for this type based on current market pivot
@@ -198,8 +205,9 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
             }
 
             if (slot.id && effectiveSize >= effectiveMin) {
-                // MIN_BUY_USDT floor for BUY activations: skip dust-notional
-                // slots and walk further up the rail for a funded one.
+                // MIN_BUY_USDT floor for BUY activations: sub-floor slots are
+                // skipped in place (window is fixed to the rail bottom — no
+                // walk-up toward the boundary).
                 if (type === ORDER_TYPES.BUY
                     && (Number(effectiveSize) * Number(slot.price || 0)) < MIN_BUY_USDT) {
                     continue;

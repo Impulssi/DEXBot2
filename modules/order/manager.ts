@@ -1553,18 +1553,18 @@ class OrderManager {
         validSells.sort((a: any, b: any) => b.price - a.price);
 
         // Get FARTHEST virtual buys (lowest prices first = farthest below market).
-        // Mirrors strategy.ts keep-low window: the buy ladder must stay at the
-        // bottom of the rail even at startup/reset, not crawl to the market.
-        // Also applies the MIN_BUY_USDT floor (same as strategy.ts) so the
-        // startup path cannot place dust-size buys that the fill path would
-        // refuse. Chain-order matching (sync adoption) is unaffected: it
+        // Mirrors strategy.ts keep-low window: the candidate set is limited to
+        // the BOTTOM buyCount slots — the MIN_BUY_USDT floor filters WITHIN
+        // that window and must never redirect selection to the heavier
+        // boundary-adjacent slots (that would buy near the market).
+        // Chain-order matching (sync adoption) is unaffected: it
         // matches by price level, not by this selection.
         const MIN_BUY_USDT = 0.75;
         const buysFarthestFirst = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
-            .sort((a: any, b: any) => a.price - b.price);
+            .sort((a: any, b: any) => a.price - b.price)
+            .slice(0, buyCount);
         const validBuys: any[] = [];
         for (const o of buysFarthestFirst) {
-            if (validBuys.length >= buyCount) break;
             if (floatToBlockchainInt(o.size, buyPrecision) < minBuySizeInt) continue;
             const usdtValue = Number(o.size || 0) * Number(o.price || 0);
             if (usdtValue < MIN_BUY_USDT) continue;
