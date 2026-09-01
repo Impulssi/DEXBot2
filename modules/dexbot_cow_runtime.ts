@@ -1609,6 +1609,39 @@ function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike
 }
 
 /**
+ * LAST-FILL-GUARD helper — pivot ± halfIncrement (replaces price-tolerance).
+ *  last fill @x with increment i: BUY < x*(1 - i/2/100), SELL > x*(1 + i/2/100)
+ *  e.g. x=1000, i=0.5% => BUY < 997.5, SELL > 1002.5
+ * Cold (pivot null or lastType null) => disabled. Spread correction bypasses via cowResult.origin === 'spread-correction'.
+ * @param {number} price - Target order price
+ * @param {number} size - Order size (unused, kept for compat)
+ * @param {string} type - ORDER_TYPES.BUY/SELL
+ * @param {number|null} lastPrice - Most recent fill price
+ * @param {string|null} lastType - Most recent fill side (BUY/SELL)
+ * @param {number|any} incrementPercent - Grid increment percent (e.g. 0.5). If assets object passed, falls back to default.
+ * @returns {{blocked: boolean, pivot: number|null, halfInc: number, threshold: number|null}}
+ */
+function isLastFillGuardBlocked(price: any, _size: any, type: any, lastPrice: any, lastType: any, incrementPercent: any): { blocked: boolean; pivot: number|null; halfInc?: number; threshold?: number|null } {
+    const numPrice = Number(price);
+    if (!Number.isFinite(numPrice)) return { blocked: false, pivot: null };
+    if (lastPrice == null || !Number.isFinite(Number(lastPrice)) || lastType == null) return { blocked: false, pivot: null };
+    const pivot = Number(lastPrice);
+    // Resolve increment: fallback to default 0.5 (also covers legacy assets-object 6th arg)
+    let inc = Number(incrementPercent);
+    if (!Number.isFinite(inc) || inc <= 0) {
+        inc = Number((constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+    }
+    if (!Number.isFinite(inc) || inc <= 0) return { blocked: false, pivot: null };
+    const halfInc = inc / 2;
+    const halfPct = halfInc / 100;
+    const buyThreshold = pivot * (1 - halfPct);
+    const sellThreshold = pivot * (1 + halfPct);
+    if (type === ORDER_TYPES.BUY && numPrice > buyThreshold) return { blocked: true, pivot, halfInc, threshold: buyThreshold };
+    if (type === ORDER_TYPES.SELL && numPrice < sellThreshold) return { blocked: true, pivot, halfInc, threshold: sellThreshold };
+    return { blocked: false, pivot: null, halfInc, threshold: null };
+}
+
+/**
  * Build COW actions array from a simple plan object.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object|Array} plan
@@ -1779,7 +1812,8 @@ function buildCowResultFromPlan(bot: any, plan: any) {
         workingGrid,
         workingIndexes: workingGrid.getIndexes(),
         workingBoundary,
-        actions
+        actions,
+        origin: (plan as any)?.origin
     };
 }
 
@@ -2782,27 +2816,18 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         continue;
                     }
 
-                    // LAST-FILL PRICE GUARD (re-introduced after anchor revert): don't create a BUY above the last filled BUY
-                    // (and symmetrically a SELL below the last filled SELL). This reinstates the pre-revert check against
-                    // placing orders back inside the just-traded band at a worse price. Uses price tolerance so dust-near
-                    // equality does not trip the guard; guard is disabled while cold (no last fill yet).
+                    // LAST-FILL PRICE GUARD: pivot ± halfIncrement (BUY < pivot*(1-half), SELL > pivot*(1+half)).
+                    // Spread correction bypasses so gap repair can close. Cold (null) => disabled.
                     try {
-                        const lastBuy = (bot.manager as any)?._lastFilledBuyPrice;
-                        const lastSell = (bot.manager as any)?._lastFilledSellPrice;
-                        if (order.type === ORDER_TYPES.BUY && Number.isFinite(Number(lastBuy))) {
-                            const tol = math.calculatePriceTolerance(Math.min(Number(createPrice), Number(lastBuy)), Number(order.size || 0), ORDER_TYPES.BUY, bot.manager.assets) ?? 0;
-                            if (Number(createPrice) > Number(lastBuy) + Number(tol)) {
+                        if ((cowResult as any)?.origin !== 'spread-correction') {
+                            const lastPrice = (bot.manager as any)?._lastFilledPrice;
+                            const lastType = (bot.manager as any)?._lastFilledType;
+                            const inc = Number(bot.manager?.config?.incrementPercent ?? (bot as any)?.config?.incrementPercent ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+                            const check = isLastFillGuardBlocked(createPrice, order.size, order.type, lastPrice, lastType, inc);
+                            if (check.blocked) {
+                                const dir = order.type === ORDER_TYPES.BUY ? 'above' : 'below';
                                 bot.manager.logger.log(
-                                    `[LAST-FILL-GUARD] Skipping BUY CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: above last filled BUY ${Format.formatPrice6(lastBuy)} (tol ${Format.formatPrice6(tol)}); re-planned after market moves`,
-                                    'warn'
-                                );
-                                continue;
-                            }
-                        } else if (order.type === ORDER_TYPES.SELL && Number.isFinite(Number(lastSell))) {
-                            const tol = math.calculatePriceTolerance(Math.min(Number(createPrice), Number(lastSell)), Number(order.size || 0), ORDER_TYPES.SELL, bot.manager.assets) ?? 0;
-                            if (Number(createPrice) < Number(lastSell) - Number(tol)) {
-                                bot.manager.logger.log(
-                                    `[LAST-FILL-GUARD] Skipping SELL CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: below last filled SELL ${Format.formatPrice6(lastSell)} (tol ${Format.formatPrice6(tol)}); re-planned after market moves`,
+                                    `[LAST-FILL-GUARD] Skipping ${order.type} CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)}); re-planned after market moves`,
                                     'warn'
                                 );
                                 continue;
@@ -2930,30 +2955,20 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             continue;
                         }
 
-                        // LAST-FILL PRICE GUARD (UPDATE path): same as CREATE — re-pricing a BUY above last filled BUY (or SELL below last filled SELL) is deferred
+                        // LAST-FILL PRICE GUARD (UPDATE rotation): pivot ± halfIncrement — same as CREATE.
                         try {
-                            const lastBuy = (bot.manager as any)?._lastFilledBuyPrice;
-                            const lastSell = (bot.manager as any)?._lastFilledSellPrice;
-                            if (orderType === ORDER_TYPES.BUY && Number.isFinite(Number(lastBuy))) {
-                                const tol = math.calculatePriceTolerance(Math.min(Number(newPrice), Number(lastBuy)), Number(newSize || 0), ORDER_TYPES.BUY, bot.manager.assets) ?? 0;
-                                if (Number(newPrice) > Number(lastBuy) + Number(tol)) {
+                            if ((cowResult as any)?.origin !== 'spread-correction') {
+                                const lastPrice = (bot.manager as any)?._lastFilledPrice;
+                                const lastType = (bot.manager as any)?._lastFilledType;
+                                const inc = Number(bot.manager?.config?.incrementPercent ?? (bot as any)?.config?.incrementPercent ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+                                const check = isLastFillGuardBlocked(newPrice, newSize, orderType, lastPrice, lastType, inc);
+                                if (check.blocked) {
                                     skippedUpdateCount++;
                                     if (action.id) skippedUpdateSlotIds.add(action.id);
                                     if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                                    const dir = orderType === ORDER_TYPES.BUY ? 'above' : 'below';
                                     bot.manager.logger.log(
-                                        `[LAST-FILL-GUARD] Skipping BUY UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: above last filled BUY ${Format.formatPrice6(lastBuy)} (tol ${Format.formatPrice6(tol)})`,
-                                        'warn'
-                                    );
-                                    continue;
-                                }
-                            } else if (orderType === ORDER_TYPES.SELL && Number.isFinite(Number(lastSell))) {
-                                const tol = math.calculatePriceTolerance(Math.min(Number(newPrice), Number(lastSell)), Number(newSize || 0), ORDER_TYPES.SELL, bot.manager.assets) ?? 0;
-                                if (Number(newPrice) < Number(lastSell) - Number(tol)) {
-                                    skippedUpdateCount++;
-                                    if (action.id) skippedUpdateSlotIds.add(action.id);
-                                    if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
-                                    bot.manager.logger.log(
-                                        `[LAST-FILL-GUARD] Skipping SELL UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: below last filled SELL ${Format.formatPrice6(lastSell)} (tol ${Format.formatPrice6(tol)})`,
+                                        `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)})`,
                                         'warn'
                                     );
                                     continue;
@@ -4173,7 +4188,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain };
+export { isLastFillGuardBlocked, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain };
 
 
 export default {

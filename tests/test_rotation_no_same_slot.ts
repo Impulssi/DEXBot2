@@ -4,11 +4,6 @@
  * Proves the core guarantee behind the same-slot fill loop fix:
  *   a fill at slot X must NOT cause a new order to be placed at slot X.
  * The boundary must crawl/rotate so the replacement order lands at X +/- 1.
- *
- * This is the exact behavior that broke when dust-cancel synthetic fills
- * carried `skipBoundaryShift: true` (test-branch regression 1bbf1a23):
- * the boundary froze, so the rotational re-stamp landed back on the just-filled
- * slot. The fix removes `skipBoundaryShift`, restoring main-branch rotation.
  */
 
 const assert = require('assert');
@@ -84,8 +79,7 @@ async function testRotationSellShiftsUp() {
 }
 
 async function testShiftEligibleFillContract() {
-    console.log('\n[ROT-3] isShiftEligibleFill contract (documents the fix)...');
-    // Fixed: a delayed-rotation trigger (dust synthetic fill) IS shift-eligible.
+    console.log('\n[ROT-3] isShiftEligibleFill contract...');
     assert.strictEqual(
         isShiftEligibleFill({ isPartial: true, isDelayedRotationTrigger: true }),
         true,
@@ -97,31 +91,11 @@ async function testShiftEligibleFillContract() {
         false,
         'plain partial must be excluded'
     );
-    // Regression guard: the removed bug flag must exclude the fill.
-    assert.strictEqual(
-        isShiftEligibleFill({ isPartial: true, isDelayedRotationTrigger: true, skipBoundaryShift: true }),
-        false,
-        'skipBoundaryShift must exclude the fill (this is what froze rotation)'
-    );
     console.log('✓ ROT-3 passed');
 }
 
-async function testSkipBoundaryShiftWouldHaveFrozenRotation() {
-    console.log('\n[ROT-4] Regression: if skipBoundaryShift were present, boundary would NOT shift (the bug)...');
-    const boundary = 50;
-    const filledSlot = boundary - 1;
-    const buggyFill = { ...dustFill(`slot${filledSlot}`, ORDER_TYPES.BUY), skipBoundaryShift: true }; // the removed regression
-
-    const res = deriveTargetBoundary([buggyFill], boundary, ALL_SLOTS, CONFIG, GAP);
-    assert.strictEqual(res.boundaryIdx, boundary, 'with skipBoundaryShift the boundary freezes (no rotation)');
-    const newTopBuy = res.boundaryIdx - 1;
-    assert.strictEqual(newTopBuy, filledSlot, 'frozen boundary re-stamps the filled slot X (the bug)');
-    console.log(`  (demonstrates) frozen boundary re-stamps slot ${filledSlot} — this is exactly the loop we fixed ✓`);
-    console.log('✓ ROT-4 passed');
-}
-
 async function testBurstMixedFills() {
-    console.log('\n[ROT-5] Mixed BUY+SELL burst rotates (no filled slot re-stamped)...');
+    console.log('\n[ROT-4] Mixed BUY+SELL burst rotates (no filled slot re-stamped)...');
     const boundary = 50;
     const filledBuySlots = [49, 48]; // topmost BUY slots in the burst
     const filledSellSlot = 52;       // bottommost SELL slot in the burst
@@ -141,14 +115,13 @@ async function testBurstMixedFills() {
     const newBottomSell = res.boundaryIdx + GAP + 1;
     assert.notStrictEqual(newBottomSell, filledSellSlot, `new bottom SELL slot (${newBottomSell}) must not re-stamp filled SELL slot ${filledSellSlot}`);
     console.log(`  boundary ${boundary} -> ${res.boundaryIdx}; filled SELL slot ${filledSellSlot} not re-stamped (mixed BUY re-stamp allowed post-revert) ✓`);
-    console.log('✓ ROT-5 passed');
+    console.log('✓ ROT-4 passed');
 }
 
 async function main() {
     await testRotationBuyShiftsDown();
     await testRotationSellShiftsUp();
     await testShiftEligibleFillContract();
-    await testSkipBoundaryShiftWouldHaveFrozenRotation();
     await testBurstMixedFills();
     console.log('\nAll rotation regression tests passed.');
 }

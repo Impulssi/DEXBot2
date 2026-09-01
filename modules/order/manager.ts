@@ -427,6 +427,8 @@ class OrderManager {
     _recentFillKeysSnapshot: Record<string, number> | null;
     _lastFilledBuyPrice: number | null;
     _lastFilledSellPrice: number | null;
+    _lastFilledPrice: number | null;
+    _lastFilledType: string | null;
     // anchor fields removed
     // Note: dedupe lives inside the anchor object (`_seenKeys`), not here.
     // Kept for backwards compat if external code checks existence; not used.
@@ -546,6 +548,8 @@ class OrderManager {
         this._lastStaleTotalsWarnAt = {};
         this._lastFilledBuyPrice = null;
         this._lastFilledSellPrice = null;
+        this._lastFilledPrice = null;
+        this._lastFilledType = null;
         // anchor init removed
         // _marketAnchorSeenKeys removed — anchor carries its own _seenKeys set
 
@@ -1667,24 +1671,25 @@ class OrderManager {
     }
 
     /**
-     * Record last filled prices for simple price-guard (BUY above last buy, SELL below last sell).
-     * Called from fill processing path; in-memory only, not persisted. Cold start => guard disabled.
+     * Record last filled price for side-gated guard: only the side of the most recent fill is gated
+     * (BUY after BUY must be lower, SELL after SELL must be higher). Spread-correction bypasses.
+     * Cold start (null) => disabled. Per-type fields kept for observability/back-compat.
      * @param {Array} fills
      */
     recordLastFilledPrices(fills: any): void {
         if (!Array.isArray(fills) || fills.length === 0) return;
         for (const f of fills) {
             if (!f || (f.type !== ORDER_TYPES.BUY && f.type !== ORDER_TYPES.SELL)) continue;
-            if ((f as any).skipBoundaryShift === true) continue;
             let price: number | null = Number(f.price ?? f.order?.price);
             if (!Number.isFinite(price) || (price as number) <= 0) {
-                // Fallback to slot price lookup (fills without explicit price)
                 try {
                     const slot = f.id ? (this.orders as any)?.get?.(f.id) : null;
                     price = slot ? Number((slot as any).price) : null;
                 } catch { price = null; }
             }
             if (!Number.isFinite(price as number) || (price as number) <= 0) continue;
+            this._lastFilledPrice = price as number;
+            this._lastFilledType = f.type;
             if (f.type === ORDER_TYPES.BUY) this._lastFilledBuyPrice = price as number;
             else if (f.type === ORDER_TYPES.SELL) this._lastFilledSellPrice = price as number;
         }
@@ -1699,6 +1704,8 @@ class OrderManager {
      */
     seedLastFilledPricesFromBook(chainOpenOrders: any): void {
         if (!Array.isArray(chainOpenOrders) || chainOpenOrders.length === 0) return;
+        if (this._lastFilledPrice != null) return;
+        if (this._lastFilledType != null) return;
         // Only seed when cold (no fills yet) — don't overwrite a live value.
         if (this._lastFilledBuyPrice != null && this._lastFilledSellPrice != null) return;
         try {
@@ -1717,8 +1724,20 @@ class OrderManager {
             }
             if (maxBuy != null && this._lastFilledBuyPrice == null) this._lastFilledBuyPrice = maxBuy;
             if (minSell != null && this._lastFilledSellPrice == null) this._lastFilledSellPrice = minSell;
+            if (this._lastFilledPrice == null) {
+                if (maxBuy != null && minSell != null) this._lastFilledPrice = (maxBuy + minSell) / 2;
+                else if (maxBuy != null) this._lastFilledPrice = maxBuy;
+                else if (minSell != null) this._lastFilledPrice = minSell;
+            }
+            if (this._lastFilledType == null) {
+                if (maxBuy != null && minSell != null) {
+                    // Seed is ambiguous (no real fill yet) — leave type null so guard stays disabled until first fill
+                    this._lastFilledType = null;
+                } else if (maxBuy != null) this._lastFilledType = ORDER_TYPES.BUY;
+                else if (minSell != null) this._lastFilledType = ORDER_TYPES.SELL;
+            }
             if (maxBuy != null || minSell != null) {
-                try { this.logger?.log?.(`[LAST-FILL-GUARD] Seeded from book: lastBuy=${maxBuy} lastSell=${minSell}`, 'info'); } catch {}
+                try { this.logger?.log?.(`[LAST-FILL-GUARD] Seeded from book: lastBuy=${maxBuy} lastSell=${minSell} lastPrice=${this._lastFilledPrice} lastType=${this._lastFilledType}`, 'info'); } catch {}
             }
         } catch {}
     }

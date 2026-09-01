@@ -2776,7 +2776,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
 
         if (!edgePartial && spreadCandidates.length === 0) {
             manager.logger?.log?.(`[SPREAD-CORRECTION] No suitable partials, orphaned virtual slots, or spread slots found. Skipping.`, 'warn');
-            return { ordersToPlace: [], ordersToUpdate: [] };
+            return { ordersToPlace: [], ordersToUpdate: [], origin: 'spread-correction' };
         }
 
         const orphanedIds = new Set(orphanedVirtualCandidates.map((o: any) => o.id));
@@ -2790,7 +2790,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
 
         const ctx = await _getSizingContext(manager, sideName);
         if (!ctx || ctx.budget <= 0 || syntheticSideSlots.length === 0) {
-            return { ordersToPlace: [], ordersToUpdate: [] };
+            return { ordersToPlace: [], ordersToUpdate: [], origin: 'spread-correction' };
         }
         const precisionEpsilon = getPrecisionSlack(ctx.precision, 1);
 
@@ -2845,7 +2845,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         }
 
         if (prioritizedTargets.length === 0) {
-            return { ordersToPlace: [], ordersToUpdate: [] };
+            return { ordersToPlace: [], ordersToUpdate: [], origin: 'spread-correction' };
         }
 
         const totalNeeded = prioritizedTargets.reduce((sum: any, t: any) => sum + Math.max(0, Number(t.needed || 0)), 0);
@@ -3003,5 +3003,5 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             );
         }
 
-        return { ordersToPlace, ordersToUpdate: combinedUpdates, ...(boundaryIdx === undefined ? {} : { boundaryIdx }) };
+        return { ordersToPlace, ordersToUpdate: combinedUpdates, ...(boundaryIdx === undefined ? {} : { boundaryIdx }), origin: 'spread-correction' };
     }

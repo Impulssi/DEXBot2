@@ -4,10 +4,21 @@
 /**
  * GRID CORRECTION CHECK
  *
- * Validates grid discipline: two consecutive fills in the same direction
- * must be monotonic - sells should be at increasing prices, buys at
- * decreasing prices. Any inversion indicates a grid misconfiguration or
- * logic error.
+ * Validates LAST-FILL-GUARD discipline (ceb53819): pivot ± halfIncrement
+ *   Last fill @x with increment i (half=i/2) gates BOTH sides regardless of
+ *   last side — BUY must be < x*(1-half/100), SELL > x*(1+half/100).
+ *   e.g. x=1000, i=0.5% => BUY < 997.5 / SELL > 1002.5.
+ *   Cold start (no previous fill) is disabled.
+ *   Intentional offline gaps (documented, acceptable):
+ *   - Runtime pivots on _lastFilledPrice/_lastFilledType at decision time; tool
+ *     checks consecutive fill pairs. For batch-placed orders (multiple orders
+ *     guarded against the same pivot in one COW batch) this diverges — inherent
+ *     offline approximation.
+ *   - Spread-correction bypass (cowResult.origin === 'spread-correction') is
+ *     not simulated — every consecutive pair is checked.
+ *
+ * Mirrors modules/dexbot_cow_runtime.ts:isLastFillGuardBlocked 1:1 and
+ * modules/constants.ts:DEFAULT_CONFIG.incrementPercent fallback (0.5).
  *
  * Fetches fill_order operations from Kibana (same pipeline as
  * trade_profitability.ts) and checks for price-order violations.
@@ -18,6 +29,7 @@
  *   node dist/analysis/grid_correction_check.js --bot-key <bot-key> --hours 720 --account 1.2.123
  *   node dist/analysis/grid_correction_check.js --bot-key <bot-key> --hours 720 --json results.json
  *   node dist/analysis/grid_correction_check.js --bot-key <bot-key> --hours 720 --csv violations.csv
+ *   node dist/analysis/grid_correction_check.js --bot-key <bot-key> --hours 720 --increment 0.5
  *   node dist/analysis/grid_correction_check.js --list-bots
  */
 
@@ -122,6 +134,9 @@ interface Violation {
     curr: TradeFill;
     priceDelta: number;
     priceDeltaPct: number;
+    pivot: number;
+    halfInc: number;
+    threshold: number;
 }
 interface AggregatedOrder {
     orderId: string;
@@ -137,13 +152,64 @@ interface AggregatedOrder {
     isMaker: boolean;
 }
 
+// ─── LAST-FILL-GUARD helper (1:1 with dexbot_cow_runtime.ts) ─────────────────
+
+/**
+ * LAST-FILL-GUARD helper — pivot ± halfIncrement (replaces price-tolerance).
+ *  last fill @x with increment i: BUY < x*(1 - i/2/100), SELL > x*(1 + i/2/100)
+ *  e.g. x=1000, i=0.5% => BUY < 997.5, SELL > 1002.5
+ * Cold (pivot null or lastType null) => disabled.
+ * @param {number} price - Target order price
+ * @param {string} type - buy/sell
+ * @param {number|null} lastPrice - Most recent fill price
+ * @param {string|null} lastType - Most recent fill side (buy/sell)
+ * @param {number|any} incrementPercent - Grid increment percent (e.g. 0.5). If not finite/<=0 falls back to DEFAULT_CONFIG.
+ * @returns {{blocked: boolean, pivot: number|null, halfInc: number, threshold: number|null}}
+ */
+function isLastFillGuardBlocked(
+    price: any,
+    type: any,
+    lastPrice: any,
+    lastType: any,
+    incrementPercent: any,
+): { blocked: boolean; pivot: number | null; halfInc?: number; threshold?: number | null } {
+    const numPrice = Number(price);
+    if (!Number.isFinite(numPrice)) return { blocked: false, pivot: null };
+    if (lastPrice == null || !Number.isFinite(Number(lastPrice)) || lastType == null) return { blocked: false, pivot: null };
+    const pivot = Number(lastPrice);
+    let inc = Number(incrementPercent);
+    if (!Number.isFinite(inc) || inc <= 0) {
+        inc = Number((C as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+    }
+    if (!Number.isFinite(inc) || inc <= 0) return { blocked: false, pivot: null };
+    const halfInc = inc / 2;
+    const halfPct = halfInc / 100;
+    const buyThreshold = pivot * (1 - halfPct);
+    const sellThreshold = pivot * (1 + halfPct);
+    if (type === 'buy' && numPrice > buyThreshold) return { blocked: true, pivot, halfInc, threshold: buyThreshold };
+    if (type === 'sell' && numPrice < sellThreshold) return { blocked: true, pivot, halfInc, threshold: sellThreshold };
+    return { blocked: false, pivot: null, halfInc, threshold: null };
+}
+
+function resolveIncrementPercent(botMeta: any, override: number | null): number {
+    if (override != null && Number.isFinite(override) && override > 0) return override;
+    const fromBot = Number(botMeta?.incrementPercent);
+    if (Number.isFinite(fromBot) && fromBot > 0) return fromBot;
+    const fromDefault = Number((C as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+    if (Number.isFinite(fromDefault) && fromDefault > 0) return fromDefault;
+    return 0.5;
+}
+
 // ─── CLI ──────────────────────────────────────────────────────────────────────
 function printHelp() {
     console.log(`\
 Usage: node dist/analysis/grid_correction_check.js --bot-key <key> [options]
 
-Validates grid discipline: two consecutive fills in the same direction
-must be monotonic (sell prices rising, buy prices falling).
+Validates LAST-FILL-GUARD discipline (pivot ± halfIncrement):
+  last fill @x with increment i (half=i/2) gates both sides —
+  BUY must be < x*(1-half/100), SELL > x*(1+half/100).
+  e.g. x=1000, i=0.5% => BUY < 997.5 / SELL > 1002.5.
+  Mirrors dexbot_cow_runtime:isLastFillGuardBlocked 1:1.
 
 Required:
   --bot-key <key>        Bot key (e.g. my-grid-bot) or bot name (use --list-bots)
@@ -157,9 +223,10 @@ Options:
   --account <id>         Override account ID (default: from bot preferredAccount)
   --lookup               Resolve account name to ID via BitShares node
   --node <url>           BitShares node URL for --lookup / precision resolution
+  --increment <pct>      Grid increment percent (default: from bot config or ${Number((C as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5)})
+  --tolerance <pct>      Deprecated alias for --increment (kept for compat, prefer --increment)
   --per-fill             Check at fill granularity (default: per-order aggregated)
   --include-cross-pair   Check consecutive fills across different pairs (default: same pair only)
-  --tolerance <pct>      Price tolerance percent before flagging (default: 0)
   --json <file>          Export violations as JSON
   --csv <file>           Export violations as CSV
   --verbose              Show all consecutive pairs, not just violations
@@ -169,7 +236,7 @@ Options:
 Examples:
   node dist/analysis/grid_correction_check.js --bot-key <bot-key> --hours 720
   node dist/analysis/grid_correction_check.js --bot-key "<bot-key>" --start 2025-01-01 --end 2025-06-01
-  node dist/analysis/grid_correction_check.js --bot-key <bot-key> --hours 168 --tolerance 0.01
+  node dist/analysis/grid_correction_check.js --bot-key <bot-key> --hours 168 --increment 1.0
 `);
 }
 
@@ -198,7 +265,7 @@ function parseArgs() {
         node: C.NODE_MANAGEMENT.DEFAULT_NODES[0],
         perFill: false,
         includeCrossPair: false,
-        tolerancePct: 0,
+        incrementPercent: null as number | null,
         json: null,
         csv: null,
         verbose: false,
@@ -215,7 +282,15 @@ function parseArgs() {
             case '--node': opts.node = args[++i]; break;
             case '--per-fill': opts.perFill = true; break;
             case '--include-cross-pair': opts.includeCrossPair = true; break;
-            case '--tolerance': opts.tolerancePct = parseFloat(args[++i]); break;
+            case '--increment': opts.incrementPercent = parseFloat(args[++i]); break;
+            case '--tolerance': {
+                const v = parseFloat(args[++i]);
+                // Back-compat: old --tolerance was adverse pct before flagging; now map to increment if user still passes it
+                // Prefer explicit --increment; don't overwrite if already set
+                if (opts.incrementPercent == null) opts.incrementPercent = v > 0 ? v * 2 : null; // heuristic: old tolerance ~ halfInc, so inc ~ 2*tolerance
+                console.warn(`[warn] --tolerance is deprecated, use --increment <pct> (e.g. --increment ${v > 0 ? (v*2) : 0.5})`);
+                break;
+            }
             case '--json': opts.json = args[++i]; break;
             case '--csv': opts.csv = args[++i]; break;
             case '--verbose': opts.verbose = true; break;
@@ -232,8 +307,8 @@ function parseArgs() {
         process.exit(1);
     }
     if (!opts.hours && !opts.start) opts.hours = 168;
-    if (isNaN(opts.tolerancePct) || opts.tolerancePct < 0) {
-        console.error('Error: --tolerance must be a non-negative number');
+    if (opts.incrementPercent != null && (isNaN(opts.incrementPercent) || opts.incrementPercent < 0)) {
+        console.error('Error: --increment must be a non-negative number');
         process.exit(1);
     }
     return opts;
@@ -509,62 +584,67 @@ function aggregateByOrder(trades: TradeFill[]): AggregatedOrder[] {
     return orders.sort((a, b) => a.sequence - b.sequence);
 }
 
-// ─── Violation detection ─────────────────────────────────────────────────────
+// ─── Violation detection (LAST-FILL-GUARD 1:1) ────────────────────────────────
 function detectViolations(
     items: (TradeFill | AggregatedOrder)[],
     includeCrossPair: boolean,
-    tolerancePct: number,
+    incrementPercent: number,
 ): { violations: Violation[]; checkedPairs: number; sameDirectionPairs: number } {
     const violations: Violation[] = [];
     let checkedPairs = 0;
     let sameDirectionPairs = 0;
 
-    for (let i = 0; i < items.length - 1; i++) {
-        const a = items[i];
-        const b = items[i + 1];
-        // Require same direction
-        if (a.direction !== b.direction) continue;
-        // By default require same market pair
-        const pairA = `${a.baseAsset}:${a.quoteAsset}`;
-        const pairB = `${b.baseAsset}:${b.quoteAsset}`;
-        if (!includeCrossPair && pairA !== pairB) continue;
-        // Skip same orderId (multi-fill split of one order)
-        if ((a as any).orderId && (a as any).orderId === (b as any).orderId) continue;
+    // Helper for a single chronological sequence (already filtered to one pair or global)
+    function checkSequence(seq: (TradeFill | AggregatedOrder)[]) {
+        for (let i = 1; i < seq.length; i++) {
+            const prev = seq[i - 1] as any;
+            const curr = seq[i] as any;
+            // Skip same orderId (multi-fill split of one order) — aggregated mode already collapsed, but per-fill may split
+            if (prev.orderId && prev.orderId === curr.orderId) continue;
+            checkedPairs++;
+            if (prev.direction === curr.direction) sameDirectionPairs++;
 
-        checkedPairs++;
-        sameDirectionPairs++;
-
-        const isSell = a.direction === 'sell';
-        // tolerance: allow small adverse move before flagging
-        // Sell violation = second sell LOWER than first (buy violation = second buy HIGHER)
-        // Equal price is OK. With tolerance, small inversions within pct are forgiven.
-        const toleranceFactor = tolerancePct / 100;
-        let isViolation: boolean;
-        if (isSell) {
-            // Sell: second must NOT be lower than first
-            if (tolerancePct === 0) isViolation = b.price < a.price;
-            else isViolation = b.price < a.price * (1 - toleranceFactor);
-        } else {
-            // Buy: second must NOT be higher than first
-            if (tolerancePct === 0) isViolation = b.price > a.price;
-            else isViolation = b.price > a.price * (1 + toleranceFactor);
-        }
-
-        if (isViolation) {
-            const delta = b.price - a.price;
-            const deltaPct = a.price !== 0 ? (delta / a.price) * 100 : 0;
-            violations.push({
-                index: i,
-                pair: pairA,
-                direction: a.direction,
-                expected: isSell ? 'higher' : 'lower',
-                prev: a as TradeFill,
-                curr: b as TradeFill,
-                priceDelta: delta,
-                priceDeltaPct: deltaPct,
-            });
+            const check = isLastFillGuardBlocked(curr.price, curr.direction, prev.price, prev.direction, incrementPercent);
+            if (check.blocked) {
+                const delta = curr.price - prev.price;
+                const deltaPct = prev.price !== 0 ? (delta / prev.price) * 100 : 0;
+                const isSell = curr.direction === 'sell';
+                violations.push({
+                    index: i,
+                    pair: `${curr.baseAsset}:${curr.quoteAsset}`,
+                    direction: curr.direction,
+                    expected: isSell ? `> ${check.threshold?.toFixed(6)} (pivot ${check.pivot} +${check.halfInc}%)` : `< ${check.threshold?.toFixed(6)} (pivot ${check.pivot} -${check.halfInc}%)`,
+                    prev: prev as TradeFill,
+                    curr: curr as TradeFill,
+                    priceDelta: delta,
+                    priceDeltaPct: deltaPct,
+                    pivot: check.pivot as number,
+                    halfInc: check.halfInc as number,
+                    threshold: check.threshold as number,
+                });
+            }
         }
     }
+
+    if (includeCrossPair) {
+        // Global consecutive check regardless of pair
+        const sorted = [...items].sort((a, b) => (a as any).sequence - (b as any).sequence);
+        checkSequence(sorted);
+    } else {
+        // Per-pair independent sequences (bot trades one pair; cross-pair interleaving is irrelevant)
+        const byPair = new Map<string, (TradeFill | AggregatedOrder)[]>();
+        for (const it of items) {
+            const k = `${(it as any).baseAsset}:${(it as any).quoteAsset}`;
+            if (!byPair.has(k)) byPair.set(k, []);
+            byPair.get(k)!.push(it);
+        }
+        for (const [, seq] of byPair) {
+            seq.sort((a: any, b: any) => a.sequence - b.sequence);
+            checkSequence(seq);
+        }
+    }
+    // Sort violations chronologically for reporting
+    violations.sort((a, b) => new Date(a.curr.time).getTime() - new Date(b.curr.time).getTime());
     return { violations, checkedPairs, sameDirectionPairs };
 }
 
@@ -579,6 +659,7 @@ function printReport(
     orders: AggregatedOrder[] | null,
     violations: Violation[],
     checkedPairs: number,
+    sameDirectionPairs: number,
     skipped: number,
     rangeLabel: string,
     botKey: string,
@@ -586,7 +667,7 @@ function printReport(
     botMeta: any,
     perFill: boolean,
     includeCrossPair: boolean,
-    tolerancePct: number,
+    incrementPercent: number,
     gte: string,
     _lte: string,
 ) {
@@ -597,16 +678,19 @@ function printReport(
         pairGroups.get(k)!.push(t);
     }
 
+    const halfInc = incrementPercent / 2;
+
     console.log('');
     console.log('═══════════════════════════════════════════════════════════════════');
-    console.log('  GRID CORRECTION CHECK');
+    console.log('  GRID CORRECTION CHECK — LAST-FILL-GUARD (pivot ± halfIncrement)');
     console.log('═══════════════════════════════════════════════════════════════════');
     console.log(`  Bot key:      ${botKey}${botMeta?.name ? `  (name: ${botMeta.name})` : ''}`);
     if (botMeta) console.log(`  Pair:         ${botMeta.assetA ?? '?'} / ${botMeta.assetB ?? '?'}`);
     console.log(`  Account:      ${accountId}`);
     console.log(`  Range:        ${rangeLabel}`);
     console.log(`  Mode:         ${perFill ? 'per-fill' : 'per-order (aggregated)'}${includeCrossPair ? ', cross-pair enabled' : ', same-pair only'}`);
-    if (tolerancePct > 0) console.log(`  Tolerance:    ${tolerancePct}%`);
+    console.log(`  Increment:    ${incrementPercent}%  (halfInc ${halfInc}%)`);
+    console.log(`  Guard:        BUY < pivot*(1-${halfInc}%) / SELL > pivot*(1+${halfInc}%)  — both sides, global pivot`);
     console.log('');
 
     const buyCount = trades.filter(t => t.direction === 'buy').length;
@@ -615,16 +699,16 @@ function printReport(
     if (orders) console.log(`  Orders (aggregated):  ${orders.length}  (from ${trades.length} fills)`);
     console.log(`  Pairs observed:       ${[...pairGroups.keys()].join(', ') || '-'}`);
     if (skipped > 0) console.log(`  Skipped (precision):  ${skipped}`);
-    console.log(`  Pairs checked:        ${checkedPairs} consecutive same-direction pairs`);
+    console.log(`  Pairs checked:        ${checkedPairs} consecutive pairs (same-direction pairs: ${sameDirectionPairs})`);
     console.log(`  Violations:           ${violations.length}${checkedPairs > 0 ? `  (${((violations.length / checkedPairs) * 100).toFixed(2)}%)` : ''}`);
     console.log('');
 
     if (violations.length === 0) {
-        console.log('  ✅  PASS — no grid inversions detected.');
+        console.log('  ✅  PASS — no grid inversions detected (all BUY < pivot-half, SELL > pivot+half).');
         console.log('');
         if (checkedPairs === 0) {
-            console.log('  Note: no consecutive same-direction pairs in range to check.');
-            console.log('  (Need at least two buys or two sells in a row on the same pair.)');
+            console.log('  Note: no consecutive pairs in range to check.');
+            console.log('  (Need at least two fills/orders on the same pair.)');
         }
         console.log('');
         return;
@@ -633,10 +717,10 @@ function printReport(
     console.log(`  ❌  FAIL — ${violations.length} violation(s) detected:`);
     console.log('');
 
-    // Per-direction breakdown
+    // Per-direction breakdown (blocked side = curr direction)
     const buyV = violations.filter(v => v.direction === 'buy').length;
     const sellV = violations.filter(v => v.direction === 'sell').length;
-    console.log(`  Breakdown:  sell violations: ${sellV}  (expected rising),  buy violations: ${buyV}  (expected falling)`);
+    console.log(`  Breakdown:  sell violations: ${sellV}  (SELL < pivot+half),  buy violations: ${buyV}  (BUY > pivot-half)`);
     console.log('');
 
     // Timeline clustering by day
@@ -668,9 +752,9 @@ function printReport(
     console.log('');
 
     // Detailed violation table
-    console.log('  ── Violations (consecutive same-direction price inversion) ──');
+    console.log('  ── Violations (pivot ± halfIncrement) ──');
     console.log('');
-    const hdr = '  #  Pair          Dir   Prev Price     Curr Price     Δ%        Prev Time              Curr Time              Prev Order          Curr Order';
+    const hdr = '  #  Pair          Dir   Prev Price     Curr Price     Thr            Δ%        Half%   Prev Time              Curr Time              Prev Order          Curr Order';
     console.log(hdr);
     console.log('  ' + '─'.repeat(hdr.length - 2));
     for (let i = 0; i < violations.length; i++) {
@@ -679,24 +763,28 @@ function printReport(
         const dir = v.direction.padEnd(4);
         const pPrice = fmt(v.prev.price, 6).padStart(12);
         const cPrice = fmt(v.curr.price, 6).padStart(12);
+        const thr = fmt(v.threshold, 6).padStart(12);
         const delta = (v.priceDeltaPct >= 0 ? '+' : '') + v.priceDeltaPct.toFixed(4) + '%';
         const deltaStr = delta.padStart(9);
+        const halfStr = (v.halfInc.toFixed(3) + '%').padStart(6);
         const pTime = (v.prev.time || '').slice(0, 19).replace('T', ' ').padEnd(19);
         const cTime = (v.curr.time || '').slice(0, 19).replace('T', ' ').padEnd(19);
         const pOrd = (v.prev.orderId || '-').slice(0, 16).padEnd(16);
         const cOrd = (v.curr.orderId || '-').slice(0, 16).padEnd(16);
-        const marker = v.direction === 'sell' ? 'should be ↑' : 'should be ↓';
-        console.log(`  ${(String(i + 1)).padStart(2)}  ${pairLabel}  ${dir}  ${pPrice}  ${cPrice}  ${deltaStr}  ${pTime}  ${cTime}  ${pOrd}  ${cOrd}  ${marker}`);
+        const marker = v.direction === 'sell' ? `SELL < ${fmt(v.threshold,4)}` : `BUY > ${fmt(v.threshold,4)}`;
+        console.log(`  ${(String(i + 1)).padStart(2)}  ${pairLabel}  ${dir}  ${pPrice}  ${cPrice}  ${thr}  ${deltaStr}  ${halfStr}  ${pTime}  ${cTime}  ${pOrd}  ${cOrd}  ${marker}`);
     }
     console.log('');
-    console.log(`  Expected: sell→sell with rising price (2nd > 1st), buy→buy with falling price (2nd < 1st)`);
-    if (tolerancePct > 0) console.log(`  Tolerance: ${tolerancePct}% adverse move allowed before flagging`);
+    console.log(`  Guard: BUY must be < pivot*(1-${halfInc}%), SELL > pivot*(1+${halfInc}%) — blocked if violated (mirrors bot).`);
+    console.log(`  Increment ${incrementPercent}% => halfInc ${halfInc}% — e.g. pivot 1000 => BUY thr ${(1000*(1-halfInc/100)).toFixed(4)}, SELL thr ${(1000*(1+halfInc/100)).toFixed(4)}`);
     console.log('');
 }
 
-function exportJson(filePath: string, violations: Violation[], trades: TradeFill[], rangeLabel: string, botKey: string, accountId: string) {
+function exportJson(filePath: string, violations: Violation[], trades: TradeFill[], rangeLabel: string, botKey: string, accountId: string, incrementPercent: number) {
     const payload = {
         botKey, accountId, range: rangeLabel,
+        incrementPercent,
+        halfIncrement: incrementPercent / 2,
         totalFills: trades.length,
         violations: violations.map(v => ({
             pair: `${assetSymbol(v.prev.baseAsset)}/${assetSymbol(v.prev.quoteAsset)}`,
@@ -705,6 +793,9 @@ function exportJson(filePath: string, violations: Violation[], trades: TradeFill
             expected: v.expected,
             prev: { time: v.prev.time, orderId: v.prev.orderId, price: v.prev.price, baseAmount: v.prev.baseAmount, quoteAmount: v.prev.quoteAmount, isMaker: v.prev.isMaker },
             curr: { time: v.curr.time, orderId: v.curr.orderId, price: v.curr.price, baseAmount: v.curr.baseAmount, quoteAmount: v.curr.quoteAmount, isMaker: v.curr.isMaker },
+            pivot: v.pivot,
+            halfInc: v.halfInc,
+            threshold: v.threshold,
             priceDelta: v.priceDelta,
             priceDeltaPct: v.priceDeltaPct,
         })),
@@ -714,7 +805,7 @@ function exportJson(filePath: string, violations: Violation[], trades: TradeFill
 }
 
 function exportCsv(filePath: string, violations: Violation[]) {
-    const header = 'index,pair,direction,expected,prev_time,prev_order,prev_price,curr_time,curr_order,curr_price,delta_pct';
+    const header = 'index,pair,direction,expected,prev_time,prev_order,prev_price,curr_time,curr_order,curr_price,threshold,halfInc,pivot,delta_pct';
     const rows = violations.map((v, i) =>
         [
             i + 1,
@@ -722,6 +813,7 @@ function exportCsv(filePath: string, violations: Violation[]) {
             v.direction, v.expected,
             v.prev.time, v.prev.orderId, v.prev.price,
             v.curr.time, v.curr.orderId, v.curr.price,
+            v.threshold, v.halfInc, v.pivot,
             v.priceDeltaPct.toFixed(6),
         ].map(x => `"${String(x).replace(/"/g, '""')}"`).join(',')
     );
@@ -739,6 +831,8 @@ async function main() {
 
     const { accountId, botMeta } = await resolveAccountForBot(opts.botKey, opts.account, opts.node, opts.lookup);
     console.log(`Account: ${accountId}${botMeta ? `  (${botMeta.assetA}/${botMeta.assetB})` : ''}`);
+    const incrementPercent = resolveIncrementPercent(botMeta, opts.incrementPercent);
+    console.log(`Increment: ${incrementPercent}% (halfInc ${incrementPercent/2}%)${opts.incrementPercent == null && botMeta?.incrementPercent != null ? ' — from bot config' : opts.incrementPercent != null ? ' — from --increment' : ' — default'}`);
 
     console.log(`\nFetching fills from Kibana...`);
     const fills = await fetchAllFills({}, accountId, gte, lte);
@@ -780,21 +874,18 @@ async function main() {
         items = orders;
     }
 
-    const { violations, checkedPairs } = detectViolations(items, opts.includeCrossPair, opts.tolerancePct);
-
-    // Re-sort violations chronologically (already in order, but ensure)
-    violations.sort((a, b) => new Date(a.curr.time).getTime() - new Date(b.curr.time).getTime());
+    const { violations, checkedPairs, sameDirectionPairs } = detectViolations(items, opts.includeCrossPair, incrementPercent);
 
     const ordersForReport = opts.perFill ? null : (items as AggregatedOrder[]);
-    printReport(trades, ordersForReport, violations, checkedPairs, skipped, label, opts.botKey, accountId, botMeta, opts.perFill, opts.includeCrossPair, opts.tolerancePct, gte, lte);
+    printReport(trades, ordersForReport, violations, checkedPairs, sameDirectionPairs, skipped, label, opts.botKey, accountId, botMeta, opts.perFill, opts.includeCrossPair, incrementPercent, gte, lte);
 
-    if (opts.json) exportJson(opts.json, violations, trades, label, opts.botKey, accountId);
+    if (opts.json) exportJson(opts.json, violations, trades, label, opts.botKey, accountId, incrementPercent);
     if (opts.csv) exportCsv(opts.csv, violations);
 
     process.exit(violations.length > 0 ? 2 : 0);
 }
 
-export { classifyFills, aggregateByOrder, detectViolations, TradeFill, FillRecord, Violation, AggregatedOrder };
+export { isLastFillGuardBlocked, classifyFills, aggregateByOrder, detectViolations, TradeFill, FillRecord, Violation, AggregatedOrder };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     main().catch(e => {

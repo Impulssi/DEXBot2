@@ -1587,7 +1587,6 @@ function buildDelta(masterGrid: any, workingGrid: any, options: any = {}) {
  * @returns {boolean} True when the fill may shift the boundary
  */
 function isShiftEligibleFill(fill: any): boolean {
-    if (fill?.skipBoundaryShift === true) return false;
     return fill?.isPartial !== true || fill?.isDelayedRotationTrigger === true;
 }
 
