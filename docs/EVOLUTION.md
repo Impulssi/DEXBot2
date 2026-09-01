@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.24 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.4.25 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 2,101 commits over ~9 active months
+- **Growth Phase**: 2,125 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
-- **Stability**: Progression from manual testing to a suite of 256 automated test files
-- **Releases**: 100 release entries (v0.1.0 to v1.4.24)
+- **Stability**: Progression from manual testing to a suite of 248 automated test files
+- **Releases**: 101 release entries (v0.1.0 to v1.4.25)
 
 ---
 
@@ -61,7 +61,7 @@ v1.4.12 completed the module transition to native ES modules (root + claw `"type
 
 ### Phase 9: Post-ESM Cleanup, Consolidation & Hardening (August 2026)
 
-The post-ESM releases consolidated state, code, and tooling while hardening the grid engine. **State & packaging** (v1.4.14–v1.4.17): all user/runtime state centralized on a resolver-derived profiles dir (`~/.config/dexbot2/profiles`) safe from re-clones, read-only prefixes, and npm wipes; divergence surplus/hole pairs became in-place order rotations; npm auto-update shipped; duplicated EC-crypto/settings/asset-resolution code collapsed; dead exports purged; analysis tooling moved under strict TypeScript. **Grid hardening** (v1.4.19–v1.4.21): COW broadcasts capped at `MAX_OPS_PER_BROADCAST` (4) with chunked retry-on-uncertain; boundary promotion and persisted-boundary restore gated against gap-floor overrun poison behind a shared sell-rail ceiling enforced at commit and restore time; spread-collapse fixed via the shared `isSlotInRail` filter; silent-failure runtime defects from a modules-wide audit fixed (NaN fund-invariant tolerance, always-flush fill store, double-decremented fill guard). **Tooling & UX** (v1.4.20–v1.4.22): live/research clip parity with centralized chart sliders and analysis outputs on the central path resolver; claw logic deduplicated with hardened error paths; browser storage adapter persists deletions; editor green/red input feedback extended to funds and prices; compile-first runtime completed — tsx removed entirely, every entry point and the test suite running compiled dist under plain node through frozen-ESM-safe seams, plus exact AMA cold-start bootstrap sizing and research tools unified onto production slope/bounds math. Post-v1.4.22 work followed the same themes: bot-fitting backtests re-modeled on the production grid lifecycle (slot rotation with realized-only scoring), analysis tooling consolidated onto market_adapter sources with folder-audit bug fixes, a Kibana client hardened against proxy connection resets, and TradingView-style price-axis interaction added to the chart exporter. **v1.4.24** delivered the critical native-client fill gap recovery that closed the subscription notice inventory drift which had caused 24–38 fills to be lost in the 2026-08-28 crash burst and quiet-gap eager retry, plus the credit-runtime LP collateral offer-first pricing fix.
+The post-ESM releases consolidated state, code, and tooling while hardening the grid engine. **State & packaging** (v1.4.14–v1.4.17): all user/runtime state centralized on a resolver-derived profiles dir (`~/.config/dexbot2/profiles`) safe from re-clones, read-only prefixes, and npm wipes; divergence surplus/hole pairs became in-place order rotations; npm auto-update shipped; duplicated EC-crypto/settings/asset-resolution code collapsed; dead exports purged; analysis tooling moved under strict TypeScript. **Grid hardening** (v1.4.19–v1.4.21): COW broadcasts capped at `MAX_OPS_PER_BROADCAST` (4) with chunked retry-on-uncertain; boundary promotion and persisted-boundary restore gated against gap-floor overrun poison behind a shared sell-rail ceiling enforced at commit and restore time; spread-collapse fixed via the shared `isSlotInRail` filter; silent-failure runtime defects from a modules-wide audit fixed (NaN fund-invariant tolerance, always-flush fill store, double-decremented fill guard). **Tooling & UX** (v1.4.20–v1.4.22): live/research clip parity with centralized chart sliders and analysis outputs on the central path resolver; claw logic deduplicated with hardened error paths; browser storage adapter persists deletions; editor green/red input feedback extended to funds and prices; compile-first runtime completed — tsx removed entirely, every entry point and the test suite running compiled dist under plain node through frozen-ESM-safe seams, plus exact AMA cold-start bootstrap sizing and research tools unified onto production slope/bounds math. Post-v1.4.22 work followed the same themes: bot-fitting backtests re-modeled on the production grid lifecycle, analysis tooling consolidated onto market_adapter sources, Kibana proxy-reset hardening, and TradingView price-axis interaction. **v1.4.24** fixed native fill-gap recovery and LP pricing; **v1.4.25** freezes genesis price-slots and hardens grid orphan/self-trade/fill-guard/shutdown paths.
 
 ---
 
@@ -108,11 +108,12 @@ Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CH
 | v1.4.21 → v1.4.22 | 4 | tsx removal completion (dist-only runtime + tests), exact AMA bootstrap sizing, research-tool production parity |
 | v1.4.22 → v1.4.23 | 12 | Even geometric AMA ladder, BTS fee-carve fix, sub-1x price-bound rejection, tradingview axis restore, doc realignment |
 | v1.4.23 → v1.4.24 | 3 | Native fill gap recovery with eager coalesced retry, LP collateral offer-first pricing |
+| v1.4.24 → v1.4.25 | 23 | Genesis-frozen price-slots, self-trade & fill-guard hardening, orphan & gap-band fixes, trigger/shutdown hardening, bot poll, grid monotonicity gate |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: August 28, 2026
-**Total Commits**: 2,101
-**Date Range**: December 2, 2025 – August 28, 2026
+**Last Updated**: September 02, 2026
+**Total Commits**: 2,125
+**Date Range**: December 2, 2025 – September 02, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
