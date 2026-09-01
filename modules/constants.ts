@@ -241,6 +241,14 @@ let TIMING = {
     // read resets the counter.
     SYNC_SUSPECT_EMPTY_READ_LIMIT: 3,
 
+    // Delay before the confirming re-read when a grid resync observes an EMPTY
+    // open-order read. A trigger reset that wipes a live grid on a single
+    // 0-order read is the phantom-reset failure mode; the resync demands one
+    // confirming re-read (after this delay) before treating the account as
+    // genuinely empty. A contradicted re-read (non-empty) aborts acceptance
+    // and feeds the fresh snapshot to the resync instead.
+    SYNC_EMPTY_READ_CONFIRM_DELAY_MS: 2000,
+
     // Connection and initialization timeouts
     CONNECTION_TIMEOUT_MS: 30000,  // 30 seconds - BitShares client connection establishment timeout
     DAEMON_STARTUP_TIMEOUT_MS: 60000,  // 60 seconds - Private key daemon startup timeout

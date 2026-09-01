@@ -773,6 +773,72 @@ class SyncEngine {
                 const chainSizeInt = floatToBlockchainInt(chainOrder.size, precision);
 
                 if (currentSizeInt !== chainSizeInt) {
+                    // SIZE-CONSISTENCY TIEBREAK (mis-tracked duplicate): the
+                    // tracked order's chain size disagrees with the slot's
+                    // booked remaining size. Before adopting the chain size,
+                    // check whether ANOTHER chain order at this price level
+                    // matches the booked size exactly. The grid allows at most
+                    // one order per level, so a second order whose size equals
+                    // the booked remaining means the slot's orderId was
+                    // mis-assigned (duplicate-price order created by a stale
+                    // rebuild racing the fill booking) and the real order is
+                    // the other one. Rebind the slot to it; the previously
+                    // tracked order falls through to pass 2 as a duplicate-
+                    // price orphan and is queued for cancellation there.
+                    let swapMatch: any = null;
+                    if (currentSizeInt > 0) {
+                        for (const [candidateId, candidateOrder] of parsedChainOrders) {
+                            if (candidateId === gridOrder.orderId) continue;
+                            if (chainOrderIdsOnGrid.has(candidateId)) continue;
+                            if (!candidateOrder || candidateOrder.type !== chainOrder.type) continue;
+                            // Per-candidate price tolerance (same convention as
+                            // the pass-2 duplicate guard below).
+                            const candidateTolerance = calculatePriceTolerance(
+                                Math.min(candidateOrder.price, gridOrder.price),
+                                Math.max(candidateOrder.size, gridOrder.size),
+                                gridOrder.type, mgr.assets
+                            );
+                            if (Math.abs(candidateOrder.price - gridOrder.price) > (candidateTolerance ?? 0)) continue;
+                            if (floatToBlockchainInt(candidateOrder.size, precision) !== currentSizeInt) continue;
+                            swapMatch = { id: candidateId, order: candidateOrder };
+                            break;
+                        }
+                    }
+                    if (swapMatch) {
+                        const swapRaw = rawChainOrders.get(swapMatch.id);
+                        const reboundOrder: any = {
+                            ...gridOrder,
+                            orderId: swapMatch.id,
+                            rawOnChain: swapRaw
+                                ? { ...swapRaw, fetchedAt: Date.now() }
+                                : gridOrder.rawOnChain,
+                        };
+                        // Restore fee lifecycle / partial-fill evidence from the
+                        // adopted order's deferred_fee (same convention as the
+                        // pass-2 adoption path below: deferred_fee > 0 → fee
+                        // state; deferred_fee === 0 with for_sale > 0 → the
+                        // order was partially filled).
+                        const rawDeferredFee = toFiniteNumber(reboundOrder.rawOnChain?.deferred_fee, null);
+                        if (rawDeferredFee !== null && rawDeferredFee > 0) {
+                            reboundOrder.btsFeeState = { deferredFee: blockchainToFloat(rawDeferredFee, BTS_PRECISION) };
+                        } else if (rawDeferredFee !== null && rawDeferredFee <= 0
+                            && toFiniteNumber(reboundOrder.rawOnChain?.for_sale, 0) > 0) {
+                            reboundOrder.state = ORDER_STATES.PARTIAL;
+                        }
+                        chainOrderIdsOnGrid.delete(gridOrder.orderId);
+                        chainOrderIdsOnGrid.add(swapMatch.id);
+                        await mgr._applyOrderUpdate(reboundOrder, 'sync-pass1-duplicate-swap', { skipAccounting: skipAccounting, fee: 0 });
+                        updatedOrders.push(reboundOrder);
+                        mgr.logger?.log?.(
+                            `[SYNC] Size tiebreak for ${gridOrder.id}: tracked order ${gridOrder.orderId} ` +
+                            `(chain size ${chainOrder.size}) disagrees with booked size ${gridOrder.size}, but ` +
+                            `duplicate-price order ${swapMatch.id} (chain size ${swapMatch.order.size}) matches ` +
+                            `it exactly — rebinding slot to ${swapMatch.id}; ${gridOrder.orderId} falls through ` +
+                            `to pass 2 as a duplicate-price orphan (queued for cancellation).`,
+                            'warn'
+                        );
+                        continue;
+                    }
                     const newSize = blockchainToFloat(chainSizeInt, precision);
                     const newInt = floatToBlockchainInt(newSize, precision);
 

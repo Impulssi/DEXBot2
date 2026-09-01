@@ -2255,6 +2255,51 @@ function detectCrossedBookPlan(manager: any, actions: any[]): string | null {
     }
 }
 
+/**
+ * Derive an update action's planned target size (shared by the rotation and
+ * plain size-update op builders).
+ * @param {Object} action - COW action
+ * @returns {number}
+ */
+function plannedUpdateSize(action: any) {
+    return Number.isFinite(Number(action.newSize))
+        ? Number(action.newSize)
+        : Number(action.order?.size || 0);
+}
+
+/**
+ * Post-fill size invariant for COW UPDATE ops: a partially-filled order
+ * (slot state PARTIAL — the fill is already booked into slot.size) must
+ * never be GROWN in place by a plan update. Growing it would restore the
+ * pre-fill size on chain while the fill accounting stays on the booked
+ * remaining size — chain and books diverge and the fill effectively
+ * vanishes from the bot's ledger. Clamp the target to the booked remaining
+ * size and keep the plan's price intent; a deliberate full-size top-up must
+ * go through a cancel+create cycle, not a silent in-place grow.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Object} masterOrder - Live master-grid slot for the action
+ * @param {number} newSize - Plan's target size for the update op
+ * @param {Object} action - The COW action being built
+ * @returns {number} The (possibly clamped) target size
+ */
+function clampPostFillUpdateSize(bot: any, masterOrder: any, newSize: any, action: any) {
+    const target = Number(newSize);
+    if (!masterOrder || masterOrder.state !== ORDER_STATES.PARTIAL) return target;
+    const booked = Number(masterOrder.size);
+    if (!Number.isFinite(target) || !Number.isFinite(booked) || booked <= 0) return target;
+    if (target > booked) {
+        bot.manager.logger.log(
+            `[COW] Post-fill size clamp for ${action?.id || masterOrder?.id}: slot is PARTIAL with ` +
+            `booked remaining ${Format.formatAmount(booked)} but the plan targets ` +
+            `${Format.formatAmount(target)} — clamping to booked remaining. ` +
+            `A partially-filled order must not be grown in place by a COW update (fill accounting divergence).`,
+            'warn'
+        );
+        return booked;
+    }
+    return target;
+}
+
 async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: any = {}) {
     const replanDepth = Number.isFinite(Number(options?.replanDepth)) ? Number(options.replanDepth) : 0;
     bot._currentCycleId = (Number.isFinite(Number(bot._currentCycleId)) ? Number(bot._currentCycleId) : 0) + 1;
@@ -2281,6 +2326,41 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     if (await waitForCowBroadcastSingleFlight(bot, 'entry')) {
         popPushedWorkingGrid(bot, cowResult);
         return { executed: false, aborted: true, reason: 'SHUTDOWN_IN_PROGRESS', hadRotation: false };
+    }
+
+    // DRAIN PENDING CORRECTIONS before the batch is planned/broadcast.
+    // Cancel-only corrections (duplicate-price orphans) queued by an earlier
+    // sync must not sit while batches run back-to-back (startup create
+    // groups, fill bursts) — with the open-orders sync loop disabled they
+    // would otherwise linger indefinitely, keep blocking same-level CREATEs,
+    // and risk cancelling the wrong side of a duplicate later. Draining here
+    // also keeps this batch's collision checks (chain_orphan_collision)
+    // honest: orphaned chain orders already queued for cancellation are
+    // resolved before the plan validates its CREATE targets against them.
+    const pendingCorrectionCount = Array.isArray(bot.manager?.ordersNeedingPriceCorrection)
+        ? bot.manager.ordersNeedingPriceCorrection.length
+        : 0;
+    if (pendingCorrectionCount > 0 && !bot._shuttingDown) {
+        try {
+            bot.manager.logger.log(
+                `[COW] Draining ${pendingCorrectionCount} pending correction(s) before batch`,
+                'info'
+            );
+            const drainResult = await (orderUtils as any).correctAllPriceMismatches(
+                bot.manager, bot.account, bot.privateKey, chainOrders
+            );
+            if (drainResult?.failed > 0) {
+                bot.manager.logger.log(
+                    `[COW] ${drainResult.failed} correction(s) failed pre-batch; remaining entries retry on next sync/maintenance tick`,
+                    'warn'
+                );
+            }
+        } catch (drainErr: any) {
+            bot.manager.logger.log(
+                `[COW] Pre-batch correction drain failed: ${getErrorMessage(drainErr)}`,
+                'warn'
+            );
+        }
     }
 
     const chainOrderCandidates = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
@@ -2550,6 +2630,11 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     const opContexts: any[] = [];
     const skippedUpdateSlotIds = new Set();
     let skippedUpdateCount = 0;
+    // Slots whose size-update op was broadcast with a post-fill-clamped
+    // target: the working grid still holds the planned (larger) size, so the
+    // slots are re-synced from master before commit to keep the committed
+    // books equal to the broadcast chain amounts.
+    const clampedUpdateSlotIds = new Set();
     // orderId -> operations index of its cancel op. A crossing re-pricing
     // update is only safe when the crossed order's cancel was already queued
     // at an earlier position: ops broadcast in MAX_OPS_PER_BROADCAST chunks,
@@ -2761,11 +2846,34 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         const newPrice = Number.isFinite(Number(action.newPrice))
                             ? Number(action.newPrice)
                             : Number(action.order?.price);
-                        const newSize = Number.isFinite(Number(action.newSize))
-                            ? Number(action.newSize)
-                            : Number(action.order?.size || 0);
+                        const newSize = plannedUpdateSize(action);
 
                         if (!masterOrder || !action.orderId || !orderType || !Number.isFinite(newPrice) || newSize <= 0) {
+                            continue;
+                        }
+
+                        // POST-FILL GROWTH GUARD (rotation): a rotation must
+                        // not GROW a partially-filled order back above its
+                        // booked remaining size — the fill is already booked
+                        // into slot.size, and growing in place diverges the
+                        // fill accounting (chain restores the pre-fill size
+                        // while the books keep the post-fill remainder). Skip
+                        // like the guards above: the working grid restores the
+                        // slot from master and the next plan re-evaluates.
+                        if (masterOrder.state === ORDER_STATES.PARTIAL
+                            && Number.isFinite(Number(masterOrder.size))
+                            && Number(masterOrder.size) > 0
+                            && newSize > Number(masterOrder.size)) {
+                            skippedUpdateCount++;
+                            if (action.id) skippedUpdateSlotIds.add(action.id);
+                            if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                            bot.manager.logger.log(
+                                `[COW] Skipping rotation update ${action.id} -> ${action.newGridId}: ` +
+                                `slot is PARTIAL with booked remaining ${Format.formatAmount(Number(masterOrder.size))} ` +
+                                `but the plan targets ${Format.formatAmount(newSize)} — a partially-filled order ` +
+                                `must not be grown in place (fill accounting divergence).`,
+                                'warn'
+                            );
                             continue;
                         }
 
@@ -2892,11 +3000,12 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         continue;
                     }
 
-                    const newSize = Number.isFinite(Number(action.newSize))
-                        ? Number(action.newSize)
-                        : Number(action.order?.size || 0);
-
                     const masterOrder = bot.manager.orders.get(action.id);
+                    const plannedNewSize = plannedUpdateSize(action);
+                    const newSize = clampPostFillUpdateSize(bot, masterOrder, plannedNewSize, action);
+                    if (newSize !== plannedNewSize) {
+                        clampedUpdateSlotIds.add(action.id);
+                    }
                     const orderType = action.order?.type || masterOrder?.type;
                     const cachedRawOnChain = masterOrder?.rawOnChain || action.order?.rawOnChain || null;
 
@@ -3057,6 +3166,19 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
 
         if (skippedUpdateCount > 0) {
             restoreSkippedUpdateSlotsInWorkingGrid(bot, workingGrid, skippedUpdateSlotIds, skippedUpdateCount);
+        }
+
+        if (clampedUpdateSlotIds.size > 0) {
+            const masterVersion = Number.isFinite(Number(bot.manager?._gridVersion))
+                ? Number(bot.manager._gridVersion)
+                : undefined;
+            for (const slotId of clampedUpdateSlotIds) {
+                workingGrid.syncFromMaster(bot.manager.orders, slotId, masterVersion);
+            }
+            bot.manager.logger.log(
+                `[COW] Re-synced ${clampedUpdateSlotIds.size} post-fill-clamped slot(s) from master before commit`,
+                'debug'
+            );
         }
 
         if (operations.length === 0) {

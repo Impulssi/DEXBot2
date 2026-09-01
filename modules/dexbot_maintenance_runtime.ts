@@ -882,13 +882,40 @@ function performGridResync(bot: any, options: {
             // of virtualizing live ACTIVE slots; the trigger file is retained
             // so the resync retries on a clean read.
             let resyncReadAmbiguous = false;
+            const readOpenOrdersForResync = (label: string) => readOpenOrdersGuarded(chainOrders, self.accountId, {
+                log: (message: string, level: any) => self._log(message, level),
+                label,
+                detail: 'trigger-file resync',
+            });
+            // Empty-read confirm guard: an EMPTY read during a trigger reset is
+            // only accepted after one confirming re-read. A single 0-order
+            // snapshot from a lagging/partial node must never wipe a live grid
+            // and rebuild over existing orders (phantom reset — duplicated
+            // price levels and mis-tracked orders). A contradicted re-read
+            // (non-empty) feeds the fresh snapshot to the resync so the rebuild
+            // reconciles against the real chain state instead of overwriting it.
             const readFn = async () => {
-                const orders = await readOpenOrdersGuarded(chainOrders, self.accountId, {
-                    log: (message: string, level: any) => self._log(message, level),
-                    label: 'GRID-RESYNC',
-                    detail: 'trigger-file resync',
-                });
-                if (orders === null) resyncReadAmbiguous = true;
+                const orders = await readOpenOrdersForResync('GRID-RESYNC');
+                if (orders === null) {
+                    resyncReadAmbiguous = true;
+                    return orders;
+                }
+                if (orders.length > 0) return orders;
+                await sleep(TIMING.SYNC_EMPTY_READ_CONFIRM_DELAY_MS);
+                const confirmed = await readOpenOrdersForResync('GRID-RESYNC-CONFIRM');
+                if (confirmed === null) {
+                    resyncReadAmbiguous = true;
+                    return orders;
+                }
+                if (confirmed.length > 0) {
+                    self._log(
+                        `[GRID-RESYNC] Empty open-order read contradicted by confirm re-read ` +
+                        `(${confirmed.length} order(s) present) — using fresh non-empty snapshot`,
+                        'warn'
+                    );
+                    return confirmed;
+                }
+                self._log('[GRID-RESYNC] Empty open-order read confirmed by re-read — accepting empty account', 'info');
                 return orders;
             };
             await recalculateGrid(self.manager, {

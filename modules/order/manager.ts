@@ -268,6 +268,25 @@ class COWRebalanceEngine {
             'info'
         );
 
+        // Per-action plan detail. UPDATE/ROTATE ops are the dangerous ones —
+        // their target size/price must be visible in production logs without
+        // on-chain archaeology (a mis-sized update op is only diagnosable from
+        // the chain afterwards otherwise).
+        for (const a of optimizedActions) {
+            if (!a || !a.type || !a.id) continue;
+            const size = Number.isFinite(Number(a.newSize))
+                ? Number(a.newSize)
+                : Number(a.order?.size);
+            const price = Number.isFinite(Number(a.newPrice))
+                ? Number(a.newPrice)
+                : Number(a.order?.price);
+            const rotationSuffix = (a.newGridId && a.newGridId !== a.id) ? ` -> ${a.newGridId}` : '';
+            const line = `[COW] Plan action: ${a.type} ${a.id}${rotationSuffix} ` +
+                `(orderId=${a.orderId || 'none'}, size=${Number.isFinite(size) ? Format.formatAmount(size) : 'n/a'}, ` +
+                `price=${Number.isFinite(price) ? Format.formatPrice6(price) : 'n/a'})`;
+            this.logger?.log(line, a.type === COW_ACTIONS.UPDATE ? 'info' : 'debug');
+        }
+
         return buildSuccessResult({
             actions: optimizedActions,
             stateUpdates,
