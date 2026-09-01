@@ -358,7 +358,8 @@ async function recoverFromPersistedGrid(bot: any) {
             }
         }
 
-        await grid.loadGrid(bot.manager, persistedGrid, boundaryIdx);
+        const persistedGenesis = bot.accountOrders.loadGenesis?.(true) ?? null;
+        await grid.loadGrid(bot.manager, persistedGrid, boundaryIdx, persistedGenesis);
 
         if (await bot._rejectCorruptedGridSnapshot('recovery')) {
             // P4: rejected snapshot's boundary must not survive for rebuild.

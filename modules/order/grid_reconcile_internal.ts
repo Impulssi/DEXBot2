@@ -1598,7 +1598,6 @@ async function _reconcileStartupSide({
     plannedUpdates,
     plannedCancels,
     planOnly = false,
-    placementsAllowed = true,
 }: {
     orderType: any;
     targetCount: any;
@@ -1613,26 +1612,11 @@ async function _reconcileStartupSide({
     plannedUpdates: any;
     plannedCancels: any[];
     planOnly?: boolean;
-    placementsAllowed?: boolean;
 }): Promise<{ chainCount: any }> {
     const logger = manager?.logger;
     const sideUpper = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
     const balanceKey = orderType === ORDER_TYPES.SELL ? 'sellFree' : 'buyFree';
     const balanceSymbol = orderType === ORDER_TYPES.SELL ? manager.assets.assetA.symbol : manager.assets.assetB.symbol;
-
-    // P3 adoption-only mode: the caller failed to derive a boundary consistent
-    // with chain evidence. Every path below either mutates orders (updates move
-    // chain orders onto rail prices) or frees/commits funds to enable such
-    // mutations — all of them would legalize the unvalidated geometry. Over-keep
-    // instead: leave the book untouched this cycle; excess/duplicate handling
-    // resumes once a validated boundary pass completes.
-    if (!placementsAllowed) {
-        logger?.log?.(
-            `Startup ${sideUpper}: boundary unvalidated against chain evidence — placements deferred (adoption-only).`,
-            'warn'
-        );
-        return { chainCount: chainSideOrders.length };
-    }
 
     const {
         sortUpdateComparator,

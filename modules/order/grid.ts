@@ -142,6 +142,9 @@ import {
     validatePersistedBoundary,
     adjustBudgetForBtsFees,
     clamp,
+    buildGenesisFromPriceLevels,
+    assertSlotPriceInvariant,
+    hashPriceLevels,
 } from './utils/math.js';
 import {
     filterOrdersByType,
@@ -454,6 +457,18 @@ export function createOrderGrid(config: any): any {
 
         // Sort all levels from lowest to highest (Master Rail order)
         priceLevels.sort((a: any, b: any) => a - b);
+        // Dedupe geometric levels that collide at float precision (tiny increments);
+        // keeps slot-N ↔ index mapping stable vs migration dedupe (grid.ts:652)
+        {
+            const seen = new Set<string>();
+            const deduped: number[] = [];
+            for (const p of priceLevels) {
+                const key = Number(p).toFixed(12);
+                if (!seen.has(key)) { seen.add(key); deduped.push(p); }
+            }
+            priceLevels.length = 0;
+            priceLevels.push(...deduped);
+        }
 
         if (priceLevels.length === 0) {
             throw new Error(
@@ -510,7 +525,9 @@ export function createOrderGrid(config: any): any {
             sell: gapSlots - Math.floor(gapSlots / 2)
         };
 
-        return { orders: updatedOrders, boundaryIdx, initialSpreadCount, gapSlots };
+        const genesis = buildGenesisFromPriceLevels(startPrice, incrementPercent, gapSlots, priceLevels);
+
+        return { orders: updatedOrders, boundaryIdx, initialSpreadCount, gapSlots, priceLevels, genesis };
     }
 
     /**
@@ -553,9 +570,133 @@ function _clearOrderCachesLogic(manager: any): void {
      * @param {number|null} [boundaryIdx=null] - The master boundary index.
      * @returns {Promise<void>}
      */
-export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null): Promise<any> {
+export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null, genesisInput: any = null): Promise<any> {
         if (!Array.isArray(grid)) return;
         return await manager._gridLock.acquire(async () => {
+            // Genesis determinism: if snapshot provided genesis, validate slots
+            // against it; if legacy snapshot has no genesis, migrate by building
+            // genesis from live config and re-sorting to canonical price order.
+            let genesis: any = genesisInput || manager._genesis || null;
+            // Validate genesis hash if present (wired for stale-pair detection #3)
+            // On mismatch we only warn — genesis is still used for validation (log mode) / virtualization (enforce mode);
+            // a stale persisted snapshot vs fresh manager._genesis scenario is covered by the log/enforce gate above
+            if (genesis && Array.isArray(genesis.priceLevels) && typeof genesis.priceLevelsHash === 'string') {
+                try {
+                    const recomputed = hashPriceLevels(genesis.priceLevels);
+                    if (recomputed !== genesis.priceLevelsHash) {
+                        manager.logger?.log?.(`[GENESIS] hash mismatch persisted=${genesis.priceLevelsHash} recomputed=${recomputed} — persisted genesis hash does not match recomputed hash; continuing with persisted genesis`, 'warn');
+                    }
+                } catch {}
+            }
+            const validationMode = (() => {
+                try {
+                    const raw = (typeof process !== 'undefined' && (process as any).env?.GRID_PRICE_SLOT_VALIDATION) || 'log';
+                    return String(raw).toLowerCase() === 'enforce' ? 'enforce' : 'log';
+                } catch { return 'log'; }
+            })();
+            if (genesis && Array.isArray(genesis.priceLevels)) {
+                // Validate each slot's price against genesis; virtualize only in enforce mode (plan §13)
+                const newGrid: any[] = [];
+                for (const slot of grid) {
+                    try {
+                        assertSlotPriceInvariant(slot, genesis);
+                        newGrid.push(slot);
+                    } catch (e: any) {
+                        const msg = `[GENESIS] Slot ${slot?.id} price mismatch vs genesis → ${validationMode === 'enforce' ? 'virtualize' : 'log-only'}: ${getErrorMessage(e)}`;
+                        manager.logger?.log?.(msg, 'warn');
+                        if (validationMode === 'enforce') {
+                            newGrid.push({ ...slot, state: ORDER_STATES.VIRTUAL, size: 0, orderId: '' });
+                        } else {
+                            newGrid.push(slot);
+                        }
+                    }
+                }
+                grid = newGrid;
+                // Ensure canonical price-sorted order matches slot-N order
+                // Quirk fix: previously `isPriceSorted && parsed!==i` gated re-sort, so a shuffled
+                // array with misaligned ids but unsorted prices incorrectly skipped re-sort.
+                // Now: re-sort if any parseable id != index (price order is authoritative via slot-N).
+                const idxOrderMatchesPriceOrder = (() => {
+                    for (let i = 0; i < grid.length; i++) {
+                        const parsed = parseSlotIndex(grid[i]?.id);
+                        if (parsed === null) return false;
+                        if (parsed !== i) return false;
+                    }
+                    return true;
+                })();
+                if (!idxOrderMatchesPriceOrder) {
+                    const sorted = [...grid].sort((a: any, b: any) => {
+                        const pa = parseSlotIndex(a?.id);
+                        const pb = parseSlotIndex(b?.id);
+                        if (pa !== null && pb !== null) return pa - pb;
+                        return Number(a.price) - Number(b.price);
+                    });
+                    // Detect if re-sort actually changes order
+                    let changed = false;
+                    for (let i = 0; i < grid.length; i++) if (grid[i].id !== sorted[i].id) { changed = true; break; }
+                    if (changed) {
+                        manager.logger?.log?.(`[GENESIS] Re-sorted persisted grid to canonical slot-N order`, 'warn');
+                        grid = sorted;
+                    }
+                }
+                // Guard: explicit persistedGenesis should not blindly overwrite a fresher in-memory _genesis
+                // from an in-process rebuild (currently unreachable but latent hazard if flows change)
+                if ((manager as any)._genesis && (manager as any)._genesis.priceLevelsHash && genesis.priceLevelsHash && (manager as any)._genesis.priceLevelsHash !== genesis.priceLevelsHash) {
+                    manager.logger?.log?.(`[GENESIS] persisted genesis hash ${genesis.priceLevelsHash} differs from in-memory ${ (manager as any)._genesis.priceLevelsHash} — keeping in-memory genesis`, 'warn');
+                } else {
+                    manager._genesis = genesis;
+                }
+            } else if (grid.length > 0) {
+                // Migration: build genesis from live geometric rail (plan §4.1/§10)
+                // Do NOT derive priceLevels from persisted slot prices — a truncated
+                // persisted array would permanently shrink genesis. Recompute from
+                // startPrice/min/max/increment per createOrderGrid §2.1.
+                const startPrice = Number(manager.config?.startPrice);
+                const minPrice = Number(manager.config?.minPrice);
+                const maxPrice = Number(manager.config?.maxPrice);
+                const incPct = Number(manager.config?.incrementPercent);
+                if (Number.isFinite(startPrice) && Number.isFinite(minPrice) && Number.isFinite(maxPrice) && Number.isFinite(incPct)) {
+                    try {
+                        const stepUp = 1 + (incPct / 100);
+                        const stepDown = 1 - (incPct / 100);
+                        const priceLevels: number[] = [];
+                        let upPrice = startPrice * Math.sqrt(stepUp);
+                        while (upPrice <= maxPrice) { priceLevels.push(upPrice); upPrice *= stepUp; }
+                        let downPrice = startPrice * Math.sqrt(stepDown);
+                        while (downPrice >= minPrice) { priceLevels.push(downPrice); downPrice *= stepDown; }
+                        priceLevels.sort((a: any, b: any) => a - b);
+                        // Dedupe (floatToBlockchainInt equality via fixed 12-decimals)
+                        const uniq: number[] = [];
+                        const seen = new Set<string>();
+                        for (const p of priceLevels) {
+                            const key = Number(p).toFixed(12);
+                            if (!seen.has(key)) { seen.add(key); uniq.push(p); }
+                        }
+                        const gapSlotsForGenesis = calculateGapSlots(incPct, manager.config?.targetSpreadPercent, manager.config?.gridLimits);
+                        const built = buildGenesisFromPriceLevels(startPrice, incPct, gapSlotsForGenesis, uniq);
+                        // Cross-check: if user edited startPrice/min/max/increment across restarts on a legacy snapshot,
+                        // the new-config rail will mismatch most persisted slot prices → noisy log / mass-virtualize
+                        // in enforce mode and the mismatched genesis would be persisted. Count failures first.
+                        let mismatchCount = 0;
+                        for (const slot of grid) {
+                            try { assertSlotPriceInvariant(slot, built); } catch { mismatchCount++; }
+                        }
+                        const mismatchRatio = grid.length > 0 ? mismatchCount / grid.length : 0;
+                        if (mismatchRatio > 0.5) {
+                            manager.logger?.log?.(`[GENESIS] Migration: ${mismatchCount}/${grid.length} slots mismatch new-config rail (ratio ${mismatchRatio.toFixed(2)}) — config may have changed since snapshot; NOT adopting migration genesis (validation would ${validationMode === 'enforce' ? 'mass-virtualize' : 'be noisy'}). Persisted grid will be kept as-is until a clean rebuild`, 'warn');
+                        } else {
+                            if (mismatchCount > 0) {
+                                manager.logger?.log?.(`[GENESIS] Migration: ${mismatchCount}/${grid.length} slots mismatch new-config rail — will be logged${validationMode === 'enforce' ? '/virtualized' : ''} on next load`, 'warn');
+                            }
+                            manager._genesis = built;
+                            genesis = built;
+                            manager.logger?.log?.(`[GENESIS] Migrated legacy grid: built genesis with ${uniq.length} levels (hash ${built.priceLevelsHash})`, 'info');
+                        }
+                    } catch (e: any) {
+                        manager.logger?.log?.(`[GENESIS] Migration failed: ${getErrorMessage(e)}`, 'warn');
+                    }
+                }
+            }
             try {
                 await withBlockchainRetry(
                     () => manager._initializeAssets(),
@@ -652,11 +793,10 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
             }
 
             // Reassign slot types based on current boundary.
-            // Every slot's type must match its position in the price-sorted rail
-            // relative to the boundary + gapSlots.  Stale persisted types cause
-            // split spread zones and ILLEGAL_SPREAD_STATE errors.  The subsequent
-            // sync will detect type mismatches with chain orders (e.g. a BUY-zone
-            // slot holding a SELL chain order) and auto-cancel + recreate them.
+            // Every slot's type must match its price-slot index (parseSlotIndex)
+            // relative to the boundary + gapSlots, not array position.  After
+            // genesis freeze the persisted array may have been re-sorted, but
+            // slot-N is the canonical identity.
             if (restoredBoundary !== null) {
                 const gapSlots = loadGapSlots;
                 manager._gapSlots = gapSlots;
@@ -664,9 +804,22 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                 const sellStartIdx = getSellStartIdx(restoredBoundary, gapSlots);
                 let reassignCount = 0;
                 grid = grid.map((slot: any, i: any) => {
-                    const correctType = (i <= buyEndIdx)
+                    const parsedIdx = parseSlotIndex(slot?.id);
+                    // Plan §4.3: unparseable ids are invalid per decision #3 — enforce virtualizes,
+                    // log mode keeps index fallback (legacy grids with ids like 'b1'/'planned' need type via position)
+                    if (parsedIdx === null) {
+                        if (validationMode === 'enforce') {
+                            manager.logger?.log?.(`[GENESIS] unparseable slot id ${slot?.id} at index ${i} → virtualize (SPREAD)`, 'warn');
+                            reassignCount++;
+                            return { ...slot, state: ORDER_STATES.VIRTUAL, size: 0, orderId: '', type: ORDER_TYPES.SPREAD };
+                        }
+                        manager.logger?.log?.(`[GENESIS] unparseable slot id ${slot?.id} at index ${i} → log-only, using index fallback ${i} for type`, 'warn');
+                        // fall through with idx = i so legacy sized VIRTUAL rail slots (e.g. 'planned') keep their size/type
+                    }
+                    const idx = parsedIdx !== null ? parsedIdx : i;
+                    const correctType = (idx <= buyEndIdx)
                         ? ORDER_TYPES.BUY
-                        : (i >= sellStartIdx)
+                        : (idx >= sellStartIdx)
                             ? ORDER_TYPES.SELL
                             : ORDER_TYPES.SPREAD;
 
@@ -706,7 +859,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                         // comparison false and wrongly resolves below-center
                         // slots to SELL.
                         if (newType === ORDER_TYPES.SPREAD && isOrderOnChain(slot)) {
-                            newType = resolveOnChainRetypeType(slot, i, buyEndIdx, ORDER_TYPES);
+                            newType = resolveOnChainRetypeType(slot, idx, buyEndIdx, ORDER_TYPES);
                         }
                         reassignCount++;
                         return { ...slot, type: newType };
@@ -1112,13 +1265,14 @@ export async function initializeGrid(manager: any): Promise<void> {
             throw new Error(`Cannot initialize grid without account totals: ${getErrorMessage(e)}`);
         }
 
-        const { orders, boundaryIdx, initialSpreadCount, gapSlots } = createOrderGrid({
+        const { orders, boundaryIdx, initialSpreadCount, gapSlots, genesis } = createOrderGrid({
             ...manager.config,
             startPrice: gridStartPrice,
             minPrice: resolvedMinP,
             maxPrice: resolvedMaxP,
         });
         manager._gapSlots = gapSlots;
+        if (genesis) manager._genesis = genesis;
 
         // RC-8: Update boundary with notification to dependent systems
         // Persist master boundary for StrategyEngine

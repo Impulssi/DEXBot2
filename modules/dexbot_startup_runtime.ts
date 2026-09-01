@@ -136,6 +136,7 @@ async function initializeStartupState(bot: any) {
     const persistedBoundaryIdx = bot.accountOrders.loadBoundaryIdx();
     const persistedBtsBalance = bot.accountOrders.loadBtsBalance();
     const persistedRecentFillKeys = bot.accountOrders.loadRecentFillKeys();
+    const persistedGenesis = bot.accountOrders.loadGenesis?.() ?? null;
 
     return {
         persistedGrid: repairedGrid,
@@ -143,6 +144,7 @@ async function initializeStartupState(bot: any) {
         persistedBoundaryIdx,
         persistedBtsBalance,
         persistedRecentFillKeys,
+        persistedGenesis,
     };
 }
 
@@ -158,6 +160,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
         persistedBoundaryIdx,
         persistedBtsBalance,
         persistedRecentFillKeys,
+        persistedGenesis,
     } = startupState;
 
     try {
@@ -453,6 +456,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     await bot.manager.persistGrid(orders);
                 },
                 boundaryIdx: persistedBoundaryIdx,
+                genesis: persistedGenesis,
                 attemptResumeFn: reconcileMod.attemptResumePersistedGridByPriceMatch,
             });
             shouldRegenerate = decision.shouldRegenerate;
@@ -529,7 +533,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     await bot._persistAndRecoverIfNeeded();
                 } else {
                     bot._log('Found active session. Loading and syncing existing grid.');
-                    await botGridModule(bot).loadGrid(bot.manager, persistedGrid, persistedBoundaryIdx);
+                    await botGridModule(bot).loadGrid(bot.manager, persistedGrid, persistedBoundaryIdx, persistedGenesis);
                     let startupChainOpenOrders = chainOpenOrders;
                     if (chainReadTruncated) {
                         // Sync on a partial window would virtualize live ACTIVE

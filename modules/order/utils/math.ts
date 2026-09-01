@@ -78,6 +78,7 @@ import * as Format from '../format.js';
 import Logger from '../../order/logger.js';
 import * as fundRegistry from '../../fund_registry.js';
 import { getErrorMessage } from '../../utils/errors.js';
+import { parseSlotIndex } from './slot.js';
 const { isValidNumber, toFiniteNumber } = Format;
 const mathLogger = new Logger('Math');
 
@@ -1610,10 +1611,9 @@ function countGapBandSpread(manager: any, orders: Iterable<any>, resolveIndex: (
  */
 function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any): boolean {
     if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) return true;
-    const match = /^slot-(\d+)$/.exec(String(slot?.id ?? ''));
-    if (!match) return true;
-    const idx = parseInt(match[1], 10);
-    if (!Number.isFinite(idx)) return true;
+    const parsed = parseSlotIndex(slot?.id);
+    if (parsed === null) return true;
+    const idx = parsed;
     if (orderType === ORDER_TYPES.BUY) return idx <= Number(boundaryIdx);
     if (orderType !== ORDER_TYPES.SELL) return true;
     const sellStartIdx = getSellStartIdx(boundaryIdx, gapSlots);
@@ -1621,7 +1621,111 @@ function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any
     return idx >= sellStartIdx;
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals }
+// ================================================================================
+// SECTION 10: GENESIS PRICE-SLOT DETERMINISM
+// ================================================================================
+
+export type GridGenesis = {
+    startPrice: number;
+    incrementPercent: number;
+    gapSlots: number;
+    priceLevels: number[];
+    priceLevelsHash: string;
+    createdAt: number;
+};
+
+function hashPriceLevels(priceLevels: number[]): string {
+    // Simple deterministic hash: join with high precision and hash via tiny FNV.
+    const str = priceLevels.map(p => p.toFixed(12)).join('|');
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+function priceLevelsForGenesis(genesis: GridGenesis): number[] {
+    return [...genesis.priceLevels];
+}
+
+function priceForSlot(idx: number, genesis: GridGenesis): number {
+    if (!genesis || !Array.isArray(genesis.priceLevels)) throw new Error('Invalid genesis for priceForSlot');
+    if (idx < 0 || idx >= genesis.priceLevels.length) throw new Error(`Slot index ${idx} out of bounds (0..${genesis.priceLevels.length - 1})`);
+    return genesis.priceLevels[idx];
+}
+
+function slotIndexForPrice(price: number, genesis: GridGenesis): number {
+    const levels = genesis?.priceLevels;
+    if (!Array.isArray(levels) || levels.length === 0) throw new Error('Invalid genesis priceLevels for slotIndexForPrice');
+    if (!Number.isFinite(price)) throw new Error(`slotIndexForPrice: non-finite price ${price}`);
+    if (price <= levels[0]) return 0;
+    if (price >= levels[levels.length - 1]) return levels.length - 1;
+    // Binary search for nearest index (levels are sorted ascending).
+    let lo = 0;
+    let hi = levels.length - 1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const midPrice = levels[mid];
+        if (midPrice === price) return mid;
+        if (midPrice < price) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    // lo is insertion point, hi = lo - 1
+    const lower = hi;
+    const upper = lo;
+    if (lower < 0) return upper;
+    if (upper >= levels.length) return lower;
+    const diffLower = Math.abs(price - levels[lower]);
+    const diffUpper = Math.abs(levels[upper] - price);
+    // Tie → lower wins (deterministic)
+    return diffLower <= diffUpper ? lower : upper;
+}
+
+function slotIdForPrice(price: number, genesis: GridGenesis): string {
+    return `slot-${slotIndexForPrice(price, genesis)}`;
+}
+
+function assertSlotPriceInvariant(slot: any, genesis: GridGenesis): void {
+    const idx = parseSlotIndex(slot?.id);
+    if (idx === null) throw new Error(`assertSlotPriceInvariant: unparseable slot id ${slot?.id}`);
+    const expected = priceForSlot(idx, genesis);
+    // Use blockchain integer equality for single-epsilon check.
+    // Need asset precision: fall back to generic epsilon if unknown.
+    // For invariant we use absolute relative tolerance 1e-9 or integer check when precision known.
+    const price = Number(slot.price);
+    if (!Number.isFinite(price)) throw new Error(`assertSlotPriceInvariant: slot ${slot.id} has non-finite price`);
+    // If slot has no asset context, use tight epsilon.
+    const diff = Math.abs(price - expected);
+    const rel = diff / Math.max(1e-12, Math.abs(expected));
+    if (rel > 1e-9 && diff > 1e-12) {
+        throw new Error(`Slot price invariant violated for ${slot.id}: price ${price} != expected ${expected} (idx ${idx})`);
+    }
+}
+
+function priceSlotEqual(a: number, b: number, precision: number): boolean {
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+    if (!Number.isFinite(precision)) return a === b;
+    try {
+        return floatToBlockchainInt(a, precision) === floatToBlockchainInt(b, precision);
+    } catch {
+        return a === b;
+    }
+}
+
+function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: number, gapSlots: number, priceLevels: number[]): GridGenesis {
+    const hash = hashPriceLevels(priceLevels);
+    return {
+        startPrice,
+        incrementPercent,
+        gapSlots,
+        priceLevels: [...priceLevels],
+        priceLevelsHash: hash,
+        createdAt: Date.now()
+    };
+}
+
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
 
 /**
  * Round a value to a given factor.

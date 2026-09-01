@@ -22,9 +22,9 @@
 ## 1. Gap-Band Orphan — Prevention Plan (P1–P6) — from `GAP_BAND_ORPHAN_PREVENTION_PLAN.md` (Status: implemented `f94d6ec4` 2026-08-29, with subsequent amendments — landing map below)
 
 **Landing map (corrected 2026-08-31):**
-- **P1** — landed `f94d6ec4` (same-batch CANCEL injection in `COWRebalanceEngine.execute` + `_assertGapBandIntactPostCommit` cancelOnly). **REVERTED `e2898e51`** ("remove placement guards that interfered with normal operation") — both sites removed; stranding is now handled by the P3 chain-evidence gate + adoption path instead of cancellation.
-- **P2** — landed `f94d6ec4`; **REVERTED `3713c496`** after a live-bot incident (the sweep cancelled two legitimate boundary buys under a stale boundary). In-gap chain orders are now *adopted* by the normal reconcile path once the boundary is re-derived from chain evidence; cancellation is never used as a self-healing net.
-- **P3** — landed `f94d6ec4` (`validateBoundaryAgainstChainEvidence` + reconcile phase-1 gate + `placementsAllowed` adoption-only mode); amended `3713c496` (anchor demoted to non-authoritative hint, can never veto); extended `a54863ca` (NO_FEASIBLE escalates a straddle-cancel ladder instead of freezing). **Live** — `grid_reconcile.ts:359-502`.
+- **P1** — landed `f94d6ec4` (same-batch CANCEL injection in `COWRebalanceEngine.execute` + `_assertGapBandIntactPostCommit` cancelOnly). **REVERTED `e2898e51`** ("remove placement guards that interfered with normal operation") — both sites removed; stranding is now handled by `calculateIdealBoundary` + `LAST-FILL-GUARD` + adoption path (P3 gate removed `e7231534`).
+- **P2** — landed `f94d6ec4`; **REVERTED `3713c496`** after a live-bot incident (the sweep cancelled two legitimate boundary buys under a stale boundary). In-gap chain orders are now *adopted* by the normal reconcile path once the boundary is re-derived via `calculateIdealBoundary`; cancellation is never used as a self-healing net.
+- **P3** — landed `f94d6ec4` (`validateBoundaryAgainstChainEvidence` + reconcile phase-1 gate + `placementsAllowed` adoption-only mode); amended `3713c496` (anchor demoted to non-authoritative hint, can never veto); extended `a54863ca` (NO_FEASIBLE escalates a straddle-cancel ladder instead of freezing). **REVERTED `e7231534`** — `validateBoundaryAgainstChainEvidence` (`grid_reconcile.ts:359`) and `placementsAllowed` (`grid_reconcile_internal.ts:1601`) removed; **current** boundary derives from `calculateIdealBoundary` (`order/utils/order.ts:1216` via `grid.ts:160`) + `LAST-FILL-GUARD` (`manager.ts:1679`/`dexbot_cow_runtime.ts:1624`), not a P3 chain-evidence gate.
 - **P4** — landed `f94d6ec4` (`dexbot_state_recovery.ts:581 rejectCorruptedGridSnapshot` clears in-memory + persisted boundary on reject). Live.
 - **P5** — landed `f94d6ec4` (skip/defer logging + `STRUCTURAL_RESYNC_MAX_DEFER_MS` force, `dexbot_maintenance_runtime.ts:2242-2266`). Live.
 - **P6** — landed `f94d6ec4` as `tests/test_gap_band_regression.ts` + `tests/test_boundary_chain_evidence.ts` (updated by `3713c496`/`e2898e51`/`a54863ca` to the amended behavior).
@@ -46,28 +46,28 @@
 ### 1.3 P2 — Gap-band orphan sweep (self-healing net) *(LANDED `f94d6ec4`; REVERTED `3713c496` — replaced by adopt-after-chain-evidence-correction; see landing map)*
 - Sync pass-2 (`sync_engine.ts` unmatched-chain branch) + runtime reconcile (`grid_reconcile.ts` phase-1): when unmatched chain price sits **strictly inside implied gap band** (shared `MathUtils.isSlotInRail` geometry test) → queue `cancelOnly` instead of `no adoptable slot found` / `no active same-side grid order exists`. Cleans any already-live orphan within one sync cycle.
 
-### 1.4 P3 — Never place against unvalidated boundary (origin) *(LANDED `f94d6ec4`; amended `3713c496`, `a54863ca` — live)*
+### 1.4 P3 — Never place against unvalidated boundary (origin) *(LANDED `f94d6ec4`; amended `3713c496`, `a54863ca`; **REVERTED `e7231534`** — gate removed, retained as historical context)*
 Poison input was `_restoreBoundary(131)` from stale snapshot; `validatePersistedBoundary` couldn't catch (band empty at restore, stranding created by placement).
-- After restore/rebuild, re-derive boundary from chain before placement: placed-order distribution (highest live BUY / lowest live SELL), market anchor, recent fill evidence via `computePriceAnchoredBoundaryTarget` (`order/utils/order.ts`). If derived disagrees beyond threshold, use derived + loud log.
-- Gate `_reconcileStartupSide` (`grid_reconcile_internal.ts`): adoption of existing chain orders to slots is safe; **creating/price-updating into rail requires boundary validated against chain+fills** in current session; without validation → adoption-only, defer placements.
+- **As landed:** after restore/rebuild, re-derived boundary from chain before placement: placed-order distribution (highest live BUY / lowest live SELL), market anchor, recent fill evidence via `computePriceAnchoredBoundaryTarget` (`order/utils/order.ts`). If derived disagreed beyond threshold, used derived + loud log.
+- **Gate (removed):** `_reconcileStartupSide` (`grid_reconcile_internal.ts`) had `placementsAllowed` adoption-only mode — creating/price-updating into rail required boundary validated against chain+fills; without validation → deferred placements. Removed `e7231534` (P3 reverted) and fully deleted as dead code in current determinism cleanup — boundary now via `calculateIdealBoundary` + `LAST-FILL-GUARD`, not chain-evidence veto.
 
 ### 1.5 P4 — Snapshot-reject must discard boundary *(LANDED `f94d6ec4` — live)*
-Sequence `Restored boundary index: 131` *then* `[SNAPSHOT-REJECT] Deleting corrupted snapshot` — rejected boundary stayed. In `recoverFromPersistedGrid` (`dexbot_state_recovery.ts`): validate first, restore only on pass; on fail discard boundary with snapshot, fall through to P3 re-derivation.
+Sequence `Restored boundary index: 131` *then* `[SNAPSHOT-REJECT] Deleting corrupted snapshot` — rejected boundary stayed. In `recoverFromPersistedGrid` (`dexbot_state_recovery.ts`): validate first, restore only on pass; on fail discard boundary with snapshot, fall through to re-derivation (originally P3 `validateBoundaryAgainstChainEvidence`; P3 reverted `e7231534` — now `calculateIdealBoundary` + `LAST-FILL-GUARD`).
 
 ### 1.6 P5 — Structural resync requests must not vanish *(LANDED `f94d6ec4` — live)*
 `09:33:57 Requesting structural resync` swallowed (`requestStructuralGridResync` in `dexbot_maintenance_runtime.ts` skips if already scheduled/running, `_batchInFlight` deferral re-arms timer uncapped). Hours unanswered.
 - Log every skip/defer with reason; add max-defer deadline forcing resync after re-arms.
 
-### 1.7 P6 — Regression tests *(LANDED `f94d6ec4` as `test_gap_band_regression.ts` + `test_boundary_chain_evidence.ts`)*
-- A (P1): stale boundary → startup updates into slot X → boundary snaps past X → assert cancel emitted same batch, no live in-band.
-- B (P2): seed live orphan strictly inside gap with no duplicate price → sync/reconcile → assert `cancelOnly` within one cycle.
-- C (P3/P4): corrupted snapshot stale vs fill evidence → rebuild → assert placements use re-derived boundary, rejected boundary not reused.
+### 1.7 P6 — Regression tests *(LANDED `f94d6ec4` as `test_gap_band_regression.ts` + `test_boundary_chain_evidence.ts`; **DELETED `e7231534`** — both files removed with P3 revert; no P6 tests remain at HEAD)*
+- A (P1): stale boundary → startup updates into slot X → boundary snaps past X → assert cancel emitted same batch, no live in-band. (P1 later reverted `e2898e51`.)
+- B (P2): seed live orphan strictly inside gap with no duplicate price → sync/reconcile → assert `cancelOnly` within one cycle. (P2 reverted `3713c496`.)
+- C (P3/P4): corrupted snapshot stale vs fill evidence → rebuild → assert placements use re-derived boundary, rejected boundary not reused. **Both tests deleted `e7231534`** with P3 revert; P4 behavior now covered by `test_dexbot_state_recovery` + `test_periodic_sync_fill_rebalance`.
 
 ### 1.8 Rollout order
 1. **P1+P2+P4** (writer cancel + sweep + reject-discard) — self-enforcing invariant
 2. **P5** observability/force
-3. **P3** re-derivation gate (largest surface, fast-follow)
-4. **P6** tests accompany each step
+3. **P3** re-derivation gate (largest surface, fast-follow) — **REVERTED `e7231534`** (gate removed; `placementsAllowed` deleted)
+4. **P6** tests accompany each step (**DELETED `e7231534`** — no P6 tests remain)
 
 ---
 
@@ -146,7 +146,7 @@ Debug line: `[BOUNDARY] boundary=123 sellStart=128 spread=4 anchorProjected=138 
 **#7 Sync-lock/maintenance observability — LANDED.**
 Throttle `Structural resync defer` to first/last per cap window (was 120/30s); log/retry `[MAINT] n/m failed` with orderId/reason.
 
-**Mode C hardening — OPEN.** (a) COW pre-broadcast gap-band reject; (b) order-existence check off slot→orderId map. Note: the GAP-P1 same-batch cancel that covered commit-time in-gap placement was reverted `e2898e51`; commit-time in-gap placement is currently caught only by the P3 boundary-evidence gate + adoption.
+**Mode C hardening — OPEN.** (a) COW pre-broadcast gap-band reject; (b) order-existence check off slot→orderId map. Note: the GAP-P1 same-batch cancel that covered commit-time in-gap placement was reverted `e2898e51`; **P3 gate removed `e7231534`** — commit-time in-gap placement is currently covered by `LAST-FILL-GUARD` + adoption (no chain-evidence veto).
 
 ### 2.7 Relation to PRICE_FIRST draft
 #1 removes Mode A & major boundary churn; PRICE_FIRST fixes Mode B (09:32 triple direct target, 17:27 sweep budget < displacement shows lag at scale); #5 complementary (draft solves *which* boundary, #5 makes it stick). Sequence: #1 → PRICE_FIRST flag → #2/#3 → #4/#5.
@@ -249,13 +249,13 @@ Goal (Phase 2): I1–I6 property pass, full suite green, harness random, 48h per
 4. **LADDER #2/#3** identity + update-first hardening. — *done (`4838bcb0`).*
 5. **LADDER #5 / ORPHAN P0 recovery-by-ID** persistence (long freeze). — *done (`4838bcb0`, extended `a54863ca`; recovery-by-ID `1b27f6eb`).*
 6. **ORPHAN P0 ID-based adoption** + **P1 atomicity** (stale-plan race). — *P0 done (`1b27f6eb`, retry `d808c052`); atomicity partial.*
-7. **ORPHAN P1 rotation + P1 duplicate + GAP P3/P5 + Mode C guards + P2 guardrails** fast-follow. — *rotation + GAP P3/P5 done; duplicate-cancel hard-error, Mode C guards and P2 counters open.*
+7. **ORPHAN P1 rotation + P1 duplicate + GAP P3/P5 + Mode C guards + P2 guardrails** fast-follow. — *rotation + GAP P5 done; GAP P3 reverted `e7231534` (`validateBoundaryAgainstChainEvidence`/`placementsAllowed` removed); duplicate-cancel hard-error, Mode C guards and P2 counters open.*
 8. **PRICE Phase 3/4** only after evidence (`grid_correction_check` see §7). If soak never clean, stop at Phase 2. — *Phase 3 moot; Phase 4 golden tests landed.*
 
 ---
 
 ## 6. Consolidated invariants (what must hold after all fixes)
-- **Gap-band (amended `3713c496`/`e2898e51`):** in-gap chain orders are never cancelled as a self-healing net; they are adopted by the normal reconcile path once the boundary is re-derived from chain evidence (P3 gate). Placement into the band is prevented by the boundary gate, not by cancellation sweeps.
+- **Gap-band (amended `3713c496`/`e2898e51`; **P3 reverted `e7231534`**):** in-gap chain orders are never cancelled as a self-healing net; they are adopted by the normal reconcile path once the boundary is re-derived via `calculateIdealBoundary` (P3 `validateBoundaryAgainstChainEvidence` gate removed `e7231534`). Placement into the band is prevented by `LAST-FILL-GUARD` / `findCrossedOrder`, not by P3 cancellation sweeps.
 - **Identity:** every resync (incl. startup reconcile) leaves no live order unmanaged (adopted-or-cancelled-as-surplus, surplus = `chainCount-targetCount` farthest-first).
 - **Monotonicity (grid-check):** adjacent same-direction fills monotonic rising sell / falling buy (equal OK).
 - **I1–I6 PRICE_FIRST** plus COW-commit-only boundary writes and price-less degrades conservatively.

@@ -550,8 +550,6 @@ class OrderManager {
         this._lastFilledSellPrice = null;
         this._lastFilledPrice = null;
         this._lastFilledType = null;
-        // anchor init removed
-        // _marketAnchorSeenKeys removed — anchor carries its own _seenKeys set
 
         this._metrics = {
             fundRecalcCount: 0,

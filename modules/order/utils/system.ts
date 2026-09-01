@@ -801,6 +801,7 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
         const fillKeys = recentFillKeys || manager._recentFillKeysSnapshot || undefined;
         const btsFeesOwed = fundSnapshot?.btsFeesOwed ?? manager.funds.btsFeesOwed;
         const accountTotals = (fundSnapshot?.accountTotals ?? manager.accountTotals) || null;
+        const genesis = (manager as any)._genesis || null;
         await accountOrders.storeMasterGrid(
             orders,
             btsFeesOwed,
@@ -812,7 +813,8 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
                 accountTotals,
                 btsBalance
             },
-            fillKeys
+            fillKeys,
+            genesis
         );
         return true;
     } catch (e: any) {

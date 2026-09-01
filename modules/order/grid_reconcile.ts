@@ -37,6 +37,7 @@ export async function attemptResumePersistedGridByPriceMatch({
     logger,
     storeGrid,
     boundaryIdx = null,
+    genesis = null,
 }: {
     manager: any;
     persistedGrid: any[];
@@ -44,6 +45,7 @@ export async function attemptResumePersistedGridByPriceMatch({
     logger: any;
     storeGrid: any;
     boundaryIdx?: number | null;
+    genesis?: any;
 }) {
     if (!Array.isArray(persistedGrid) || persistedGrid.length === 0) return { resumed: false, matchedCount: 0 };
     if (!Array.isArray(chainOpenOrders) || chainOpenOrders.length === 0) return { resumed: false, matchedCount: 0 };
@@ -52,7 +54,9 @@ export async function attemptResumePersistedGridByPriceMatch({
     try {
         logger && logger.log && logger.log('No matching active order IDs found. Attempting to match by price...', 'info');
         const { loadGrid } = require('./grid');
-        await loadGrid(manager, persistedGrid, boundaryIdx);
+        // Prefer explicit genesis if caller wired it, else fall back to manager._genesis
+        const genesisArg = genesis ?? (manager as any)?._genesis ?? null;
+        await loadGrid(manager, persistedGrid, boundaryIdx, genesisArg);
         await manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
         const matchedOrderIds = new Set(
@@ -102,6 +106,7 @@ export async function decideStartupGridAction({
     logger,
     storeGrid,
     boundaryIdx = null,
+    genesis = null,
     attemptResumeFn = attemptResumePersistedGridByPriceMatch,
 }: {
     persistedGrid: any[];
@@ -110,6 +115,7 @@ export async function decideStartupGridAction({
     logger: any;
     storeGrid: any;
     boundaryIdx?: number | null;
+    genesis?: any;
     attemptResumeFn?: any;
 }) {
     const persisted = Array.isArray(persistedGrid) ? persistedGrid : [];
@@ -126,7 +132,7 @@ export async function decideStartupGridAction({
     }
 
     if (chain.length > 0) {
-        const resume = await attemptResumeFn({ manager, persistedGrid: persisted, chainOpenOrders: chain, logger, storeGrid, boundaryIdx });
+        const resume = await attemptResumeFn({ manager, persistedGrid: persisted, chainOpenOrders: chain, logger, storeGrid, boundaryIdx, genesis });
         return { shouldRegenerate: !resume.resumed, hasActiveMatch: false, resumedByPrice: !!resume.resumed, matchedCount: resume.matchedCount || 0 };
     }
 

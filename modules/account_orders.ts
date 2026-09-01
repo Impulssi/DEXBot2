@@ -158,6 +158,7 @@ function emptyData() {
     debugInputs: null,
     processedFills: {},
     recentFillKeys: {},
+    genesis: null,
     createdAt: timestamp,
     lastUpdated: timestamp
   };
@@ -332,8 +333,9 @@ class AccountOrders {
    * @param {Object|null} assets - Optional asset metadata { assetA, assetB }
    * @param {Object|null} debugInputs - Optional debug-only input snapshot
    * @param {Object|null} recentFillKeys - Optional fill key dedup snapshot for crash recovery
+   * @param {Object|null} genesis - Optional frozen genesis (priceLevels etc)
    */
-  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null) {
+  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null) {
     // Use AsyncLock to serialize read-modify-write operations
     await this._persistenceLock.acquire(async () => {
       // Reload from disk before writing to prevent race conditions
@@ -377,6 +379,10 @@ class AccountOrders {
         this.data.recentFillKeys = {};
       }
 
+      if (genesis && typeof genesis === 'object' && Array.isArray(genesis.priceLevels)) {
+        this.data.genesis = genesis;
+      }
+
       const timestamp = nowIso();
       this.data.lastUpdated = timestamp;
       if (this.data.meta) this.data.meta.updatedAt = timestamp;
@@ -394,6 +400,16 @@ class AccountOrders {
       this.data = this._loadData() || emptyData();
     }
     return (this.data && Array.isArray(this.data.grid)) ? this.data.grid : null;
+  }
+
+  loadGenesis(forceReload: boolean = false) {
+    if (forceReload) {
+      this.data = this._loadData() || emptyData();
+    }
+    if (this.data && this.data.genesis && Array.isArray(this.data.genesis.priceLevels)) {
+      return this.data.genesis;
+    }
+    return null;
   }
 
   /**
