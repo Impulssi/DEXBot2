@@ -227,7 +227,7 @@ class StrategyEngine {
         // Use the stored gapSlots from grid creation (always consistent with
         // the grid geometry) instead of recomputing from live config which may
         // have drifted if targetSpreadPercent or gridLimits changed.
-        const gapSlots = this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
+        const gapSlots = (this.manager as any)._genesis?.gapSlots ?? this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
         const crossChunkBudget = (this.manager as any)._boundaryShiftBudget;
         const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget);
         if (crossChunkBudget != null) {
@@ -276,71 +276,21 @@ class StrategyEngine {
             .filter(inSellRail)
             .sort((a: any, b: any) => a.price - b.price);
 
-        const tolerance = 1e-8;
-        const stepPct = Number(config.incrementPercent);
-        const safeStepPct = Number.isFinite(stepPct) && stepPct > 0 ? stepPct : 1;
-        const cowPriceTolRatio = safeStepPct / 1000;
-        const stepRatio = Math.max(safeStepPct / 100, cowPriceTolRatio * 2);
-        const ladderStep = (price: any, dir: number) =>
-            dir > 0
-                ? Number(price) * (1 + stepRatio)
-                : Number(price) * (1 - stepRatio);
-        const minBound = Number(config.minPrice);
-        const maxBound = Number(config.maxPrice);
-        const clampToBounds = (p: number) => {
-            if (Number.isFinite(minBound)) p = Math.max(minBound, p);
-            if (Number.isFinite(maxBound)) p = Math.min(maxBound, p);
-            return p;
-        };
-        const snapRail = (slots: any[], side: string, dir: number) => {
+        const snapRail = (slots: any[], dir: number) => {
             const kept: any[] = [];
-            const stragglers: any[] = [];
             for (const s of slots) {
-                const price = Number(s.price);
-                const dup = kept.find((k: any) => Math.abs(Number(k.price) - price) < tolerance);
-                if (dup == null) {
-                    kept.push(s);
-                    continue;
-                }
-                if (!isOrderPlaced(dup) && isOrderPlaced(s)) {
-                    kept[kept.indexOf(dup)] = s;
-                    stragglers.push(dup);
-                } else {
-                    stragglers.push(s);
+                if (!kept.some((k: any) => k.id === s.id)) kept.push(s);
+                else if (!isOrderPlaced(kept.find((k: any) => k.id === s.id)) && isOrderPlaced(s)) {
+                    const idx = kept.findIndex((k: any) => k.id === s.id);
+                    kept[idx] = s;
                 }
             }
-            for (const st of stragglers) {
-                let candidate = clampToBounds(ladderStep(st.price, dir));
-                let guard = 0;
-                while (
-                    kept.some((k: any) => Math.abs(Number(k.price) - candidate) < tolerance) &&
-                    guard++ < 100
-                ) {
-                    candidate = clampToBounds(ladderStep(candidate, dir));
-                }
-                if (kept.some((k: any) => Math.abs(Number(k.price) - candidate) < tolerance)) {
-                    this.manager.logger.log(
-                        `[GRID-DEDUPE] ${side} slot ${st.id}@${st.price} has no unique in-bounds ` +
-                        `level; surplus-cancelled instead of re-priced.`,
-                        'warn'
-                    );
-                    continue;
-                }
-                this.manager.logger.log(
-                    `[GRID-DEDUPE] Re-priced ${side} slot ${st.id}@${st.price} -> ${candidate} ` +
-                    `(duplicate price level, unique ladder re-price).`,
-                    'warn'
-                );
-                kept.push({ ...st, price: candidate });
-            }
-            kept.sort((a: any, b: any) =>
-                dir > 0 ? Number(a.price) - Number(b.price) : Number(b.price) - Number(a.price)
-            );
+            kept.sort((a: any, b: any) => dir > 0 ? Number(a.price) - Number(b.price) : Number(b.price) - Number(a.price));
             return kept;
         };
 
-        const buySlots = snapRail(buyCandidates, 'buy', -1).slice(0, targetCountBuy);
-        const sellSlots = snapRail(sellCandidates, 'sell', +1).slice(0, targetCountSell);
+        const buySlots = snapRail(buyCandidates, -1).slice(0, targetCountBuy);
+        const sellSlots = snapRail(sellCandidates, +1).slice(0, targetCountSell);
         
         // IMPORTANT:
         // Size distribution must be computed on the FULL side topology, not only

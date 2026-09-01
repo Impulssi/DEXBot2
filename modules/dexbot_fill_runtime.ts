@@ -8,6 +8,8 @@ import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store.j
 import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants.js';
 import { getErrorMessage } from './utils/errors.js';
 import { isOrderDoesNotExistError } from './dexbot_maintenance_runtime.js';
+import { slotIndexForPrice, isSlotInRail } from './order/utils/math.js';
+import { ORDER_STATES } from './constants.js';
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
@@ -55,10 +57,20 @@ async function isUnknownFillOrderAdoptable(bot: any, fillOp: any): Promise<boole
         const price = Number(parsed?.price);
         if (!Number.isFinite(price) || price <= 0) return false;
 
-        // Price gate: inside the current grid's slot price extremes expanded
-        // by a factor. A stray order at a price our grid could plausibly own
-        // (e.g. just rotated out of range, or an adoption miss) is deferred to
-        // the adoption sync; anything far outside is not ours to adopt.
+        // Genesis-frozen: price gate via nearest-slot determinism. If genesis exists, check if nearest slot is available and in-rail.
+        const genesis = (bot.manager as any)?._genesis;
+        if (genesis && Array.isArray(genesis.priceLevels) && genesis.priceLevels.length > 0) {
+            try {
+                const idx = slotIndexForPrice(price, genesis);
+                const slotId = `slot-${idx}`;
+                const slot = bot.manager.orders.get(slotId);
+                if (!slot) return false;
+                const boundaryIdx = (bot.manager as any).boundaryIdx;
+                const gapSlots = genesis.gapSlots ?? (bot.manager as any)._gapSlots ?? 0;
+                if (boundaryIdx != null && !isSlotInRail(boundaryIdx, gapSlots, parsed.type, { id: slotId } as any)) return false;
+                return slot.state === ORDER_STATES.VIRTUAL || !slot.orderId;
+            } catch { return false; }
+        }
         let minPrice = Infinity;
         let maxPrice = 0;
         for (const o of (bot.manager?.orders?.values?.() ?? []) as any[]) {

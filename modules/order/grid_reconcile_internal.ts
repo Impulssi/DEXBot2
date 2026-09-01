@@ -9,21 +9,19 @@
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
-import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, findCrossedOrder, resolveGapBand, isSlotInRail } from './utils/math.js';
+import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual } from './utils/math.js';
 import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
 
 function computePlacementPriceCollision(manager: any, gridOrder: any): any {
-    const createPrice = gridOrder.price;
-    const createSize = gridOrder.size;
-    return createPrice != null && findPriceCollision(
-        manager.orders.values(),
-        gridOrder.id,
-        createPrice, createSize, gridOrder.type, manager.assets,
-        isOrderPlaced
-    );
+    const precision = gridOrder.type === ORDER_TYPES.SELL ? manager.assets.assetA.precision : manager.assets.assetB.precision;
+    for (const o of manager.orders.values()) {
+        if (!isOrderPlaced(o) || o.id === gridOrder.id) continue;
+        if (priceSlotEqual(o.price, gridOrder.price, precision)) return o;
+    }
+    return null;
 }
 
 /**

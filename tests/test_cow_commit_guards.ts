@@ -961,7 +961,7 @@ async function testToleranceViolationFiltersCreatesOnly() {
             workingBoundary: 0,
             actions: [
                 { type: COW_ACTIONS.CREATE, id: 'slot-2', order: { id: 'slot-2', type: ORDER_TYPES.BUY, price: 1.1, size: 10, state: ORDER_STATES.VIRTUAL, orderId: null } },
-                { type: COW_ACTIONS.CREATE, id: 'slot-3', order: { id: 'slot-3', type: ORDER_TYPES.BUY, price: 1.1, size: 10, state: ORDER_STATES.VIRTUAL, orderId: null } },
+                { type: COW_ACTIONS.CREATE, id: 'slot-2', order: { id: 'slot-2', type: ORDER_TYPES.BUY, price: 1.1, size: 10, state: ORDER_STATES.VIRTUAL, orderId: null } },
                 { type: COW_ACTIONS.CREATE, id: 'slot-4', order: { id: 'slot-4', type: ORDER_TYPES.BUY, price: 1.2, size: 10, state: ORDER_STATES.VIRTUAL, orderId: null } },
                 { type: COW_ACTIONS.CANCEL, id: 'slot-1', orderId: '1.7.100' }
             ]
@@ -970,10 +970,9 @@ async function testToleranceViolationFiltersCreatesOnly() {
         assert.strictEqual(result.executed, true, 'batch with filtered tolerance violations must still execute');
         assert.strictEqual(executeBatchCalls, 1, 'executeBatch must be called exactly once');
 
-        // 3 ops: 2 CREATEs (slot-2, slot-4) + 1 CANCEL (slot-1).
-        // slot-3 CREATE was filtered out by same_batch_price_collision.
-        assert.strictEqual(executeBatchOps.length, 3,
-            `expected 3 broadcast ops (2 CREATEs + 1 CANCEL), got ${executeBatchOps.length}`);
+        // 2 ops: 1 CREATE (slot-4) + 1 CANCEL (slot-1). Duplicate slot-2 CREATEs both filtered as same_batch.
+        assert.strictEqual(executeBatchOps.length, 2,
+            `expected 2 broadcast ops (1 CREATE + 1 CANCEL), got ${executeBatchOps.length}`);
 
         const loggedFilter = logMessages.some((m: string) =>
             /tolerance-violating CREATE\(s\)/.test(m)

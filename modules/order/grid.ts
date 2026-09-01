@@ -134,7 +134,7 @@ import {
     calculateSpreadFromOrders,
     allocateFundsByWeights,
     calculateGapSlots as _mathGapSlots,
-    findPriceCollision,
+    priceSlotEqual,
     getBtsSide,
     getSellStartIdx,
     resolveGapBand,
@@ -2368,19 +2368,16 @@ export async function checkWindowDust(manager: any): Promise<any> {
             .filter((o: any) => o.type === ORDER_TYPES.SELL && isLiveOrder(o))
             .sort((a: any, b: any) => a.price - b.price)[0];
 
-        // Check if an order has a duplicate price level — an active sibling at the
-        // same price within tolerance. If so, cancelling won't create a grid gap.
-        // Only checks ACTIVE siblings. If two PARTIALs share a price with no active
-        // sibling, neither qualifies and the gap is left to the rebalancer.
-        // Uses the LARGER size of the two orders for tolerance calculation to prevent
-        // a tiny dust order from inflating the tolerance window.
-        const hasDuplicatePriceLevel = (order: any, assets: any): boolean =>
-            findPriceCollision(
-                allOrders,
-                order.id,
-                order.price, order.size, order.type, assets,
-                (o: any) => o.type === order.type && o.state === ORDER_STATES.ACTIVE && !!o.orderId && o.price != null
-            ) != null;
+        // Check if an order has a duplicate slot — an active sibling with same price via integer round-trip.
+        const hasDuplicatePriceLevel = (order: any, assets: any): boolean => {
+            const precision = order.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
+            for (const o of allOrders) {
+                if (o.id === order.id) continue;
+                if (o.type !== order.type || o.state !== ORDER_STATES.ACTIVE || !o.orderId || o.price == null) continue;
+                try { if (priceSlotEqual(o.price, order.price, precision)) return true; } catch { if (o.price === order.price) return true; }
+            }
+            return false;
+        };
 
         const assets = manager.assets;
         const allPartials = allOrders.filter((o: any) => isLiveOrder(o) && o.state === ORDER_STATES.PARTIAL);
@@ -2905,15 +2902,13 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             const preFilter = spreadCandidates.length;
             spreadCandidates = spreadCandidates.filter((c: any) => {
                 if (c.price == null) return false;
-                // Resolve candidate size: if zero/missing, use minimum so tolerance
-                // doesn't collapse to zero (calculatePriceTolerance returns null for size <= 0).
-                const cs = (c.size && c.size > 0) ? c.size : getMinOrderSize(railType, manager.assets);
-                return !findPriceCollision(
-                    allOrders,
-                    c.id,
-                    c.price, cs, railType, manager.assets,
-                    (o: any) => isOrderPlaced(o) && o.price != null
-                );
+                const precision = railType === ORDER_TYPES.SELL ? manager.assets.assetA.precision : manager.assets.assetB.precision;
+                for (const o of allOrders) {
+                    if (!isOrderPlaced(o) || o.price == null) continue;
+                    if (o.id === c.id) continue;
+                    try { if (priceSlotEqual(o.price, c.price, precision)) return false; } catch { if (o.price === c.price) return false; }
+                }
+                return true;
             });
             const filteredCount = preFilter - spreadCandidates.length;
             if (filteredCount > 0) {

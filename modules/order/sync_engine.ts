@@ -108,7 +108,10 @@ import {
     floatToBlockchainInt,
     calculatePriceTolerance,
     getAssetFees,
-    getBtsSide
+    getBtsSide,
+    slotIndexForPrice,
+    isSlotInRail,
+    priceSlotEqual
 } from './utils/math.js';
 import {
     parseChainOrder,
@@ -215,6 +218,51 @@ function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision:
  * @param {Function} calcToleranceFn - calculatePriceTolerance function
  * @returns {{candidateSlotId: string, candidateSlotPrice: number, priceDiff: number, tolerance: number}|null}
  */
+async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, chainOrderId: string, rawChainOrders: Map<string, any>, matchedGridOrderIds: Set<string>, chainOrderIdsOnGrid: Set<string>, filledOrders: any[], updatedOrders: any[], skipAccounting: boolean) {
+    let bestMatch: any = { ...slot };
+    const wasVirtual = slot.state === ORDER_STATES.VIRTUAL;
+    const wasPartial = slot.state === ORDER_STATES.PARTIAL;
+    bestMatch.orderId = chainOrderId;
+    bestMatch.state = wasVirtual ? ORDER_STATES.ACTIVE : slot.state;
+    const bestMatchRaw = rawChainOrders.get(chainOrderId);
+    bestMatch.rawOnChain = bestMatchRaw ? { ...bestMatchRaw, fetchedAt: Date.now() } : bestMatchRaw;
+    matchedGridOrderIds.add(bestMatch.id);
+    if (bestMatch.rawOnChain) {
+        const rawDeferredFee = toFiniteNumber(bestMatch.rawOnChain.deferred_fee, null);
+        if (rawDeferredFee !== null && rawDeferredFee > 0) {
+            bestMatch.btsFeeState = { deferredFee: blockchainToFloat(rawDeferredFee, BTS_PRECISION) };
+        } else if (wasVirtual && rawDeferredFee !== null && rawDeferredFee <= 0 && bestMatch.rawOnChain.for_sale > 0) {
+            bestMatch.state = ORDER_STATES.PARTIAL;
+        }
+    }
+    const precision = (bestMatch.type === ORDER_TYPES.SELL) ? mgr.assets.assetA.precision : mgr.assets.assetB.precision;
+    const targetInt = floatToBlockchainInt(slot.size, precision);
+    const chainInt = floatToBlockchainInt(chainOrder.size, precision);
+    if (targetInt !== chainInt) {
+        const updated = await applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size);
+        if (updated) bestMatch = { ...bestMatch, ...updated };
+        if (chainInt > 0) {
+            if (wasVirtual && bestMatch.state !== ORDER_STATES.PARTIAL) bestMatch.state = ORDER_STATES.ACTIVE;
+            else if (chainInt < targetInt) bestMatch.state = ORDER_STATES.PARTIAL;
+            else if (wasPartial) bestMatch.state = ORDER_STATES.PARTIAL;
+            else bestMatch.state = ORDER_STATES.ACTIVE;
+        } else {
+            const spreadOrder = convertToSpreadPlaceholder(bestMatch);
+            filledOrders.push({ ...bestMatch });
+            await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting: skipAccounting, fee: 0 });
+            updatedOrders.push(spreadOrder);
+            chainOrderIdsOnGrid.add(chainOrderId);
+            return true; // filled path
+        }
+    } else if (wasPartial) {
+        bestMatch.state = ORDER_STATES.PARTIAL;
+    }
+    await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting: skipAccounting, fee: 0 });
+    updatedOrders.push(bestMatch);
+    chainOrderIdsOnGrid.add(chainOrderId);
+    return false;
+}
+
 function computeOutOfToleranceDriftTag(mgr: any, chainOrder: any, calcToleranceFn: any) {
     if (!mgr?.orders || !chainOrder) return null;
     const chainPrice = toFiniteNumber(chainOrder.price);
@@ -751,11 +799,18 @@ class SyncEngine {
                     });
                     continue;
                 } else {
-                    const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets);
-                    const normalizedTolerance = (priceTolerance === null) ? 0 : priceTolerance;
-
-                    // Null tolerance is strict mode (0).
-                    if (Math.abs(chainOrder.price - gridOrder.price) > normalizedTolerance) {
+                    const genesisForPass1 = (mgr as any)._genesis;
+                    let isPriceEqual = false;
+                    if (genesisForPass1 && Array.isArray(genesisForPass1.priceLevels)) {
+                        const precision = gridOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision;
+                        // Genesis path: single epsilon via integer round-trip
+                        try { isPriceEqual = priceSlotEqual(chainOrder.price, gridOrder.price, precision); } catch { isPriceEqual = chainOrder.price === gridOrder.price; }
+                    } else {
+                        const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets);
+                        const normalizedTolerance = (priceTolerance === null) ? 0 : priceTolerance;
+                        isPriceEqual = Math.abs(chainOrder.price - gridOrder.price) <= normalizedTolerance;
+                    }
+                    if (!isPriceEqual) {
                         queueCorrection({
                             gridOrder: { ...gridOrder },
                             chainOrderId: gridOrder.orderId,
@@ -791,14 +846,17 @@ class SyncEngine {
                             if (candidateId === gridOrder.orderId) continue;
                             if (chainOrderIdsOnGrid.has(candidateId)) continue;
                             if (!candidateOrder || candidateOrder.type !== chainOrder.type) continue;
-                            // Per-candidate price tolerance (same convention as
-                            // the pass-2 duplicate guard below).
-                            const candidateTolerance = calculatePriceTolerance(
-                                Math.min(candidateOrder.price, gridOrder.price),
-                                Math.max(candidateOrder.size, gridOrder.size),
-                                gridOrder.type, mgr.assets
-                            );
-                            if (Math.abs(candidateOrder.price - gridOrder.price) > (candidateTolerance ?? 0)) continue;
+                            // Per-candidate price check: genesis → priceSlotEqual, else tolerance
+                            const genesisForSwap = (mgr as any)._genesis;
+                            let swapPriceEqual = false;
+                            if (genesisForSwap && Array.isArray(genesisForSwap.priceLevels)) {
+                                const precision = gridOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision;
+                                try { swapPriceEqual = priceSlotEqual(candidateOrder.price, gridOrder.price, precision); } catch { swapPriceEqual = candidateOrder.price === gridOrder.price; }
+                            } else {
+                                const candidateTolerance = calculatePriceTolerance(Math.min(candidateOrder.price, gridOrder.price), Math.max(candidateOrder.size, gridOrder.size), gridOrder.type, mgr.assets);
+                                swapPriceEqual = Math.abs(candidateOrder.price - gridOrder.price) <= (candidateTolerance ?? 0);
+                            }
+                            if (!swapPriceEqual) continue;
                             if (floatToBlockchainInt(candidateOrder.size, precision) !== currentSizeInt) continue;
                             swapMatch = { id: candidateId, order: candidateOrder };
                             break;
@@ -932,175 +990,90 @@ class SyncEngine {
         }
 
         // ====================================================================
-        // PASS 2: CHAIN → GRID - Match unmatched chain orders to grid
+        // PASS 2: CHAIN → GRID - Nearest-slot deterministic adoption (genesis-frozen)
         // ====================================================================
-        for (const [chainOrderId, chainOrder] of parsedChainOrders) {
+        const genesis = (mgr as any)._genesis;
+        const hasGenesis = genesis && Array.isArray(genesis.priceLevels) && genesis.priceLevels.length > 0;
+        const anchorPrice = hasGenesis ? genesis.startPrice : mgr.config?.startPrice;
+        const sortedChainEntries = [...parsedChainOrders.entries()].sort((a: any, b: any) => {
+            const pa = toFiniteNumber(a[1].price);
+            const pb = toFiniteNumber(b[1].price);
+            const da = Number.isFinite(pa) && Number.isFinite(anchorPrice) ? Math.abs(pa - anchorPrice) : Infinity;
+            const db = Number.isFinite(pb) && Number.isFinite(anchorPrice) ? Math.abs(pb - anchorPrice) : Infinity;
+            return da - db;
+        });
+        for (const [chainOrderId, chainOrder] of sortedChainEntries) {
             if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
 
-            // The grid allows at most one order per price level. If a placed
-            // grid order already exists at the orphan's price (within tolerance),
-            // this orphan is a stale duplicate — skip adoption so the reconcile
-            // layer cancels it. Size is irrelevant; any duplicate violates the
-            // invariant. Check BEFORE any adoption attempt, including the first
-            // match (line 684), because a VIRTUAL slot at a nearby price can
-            // otherwise silently adopt the orphan before the duplicate guard runs.
-            const duplicatePriceOrder: any = Array.from(mgr.orders.values()).find((o: any) => {
-                const co: any = chainOrder;
-                return o.type === co.type &&
-                    isOrderPlaced(o) &&
-                    co != null &&
-                    Math.abs(o.price - co.price) <= (calculatePriceTolerance as any)(
-                        Math.min(o.price, co.price),
-                        Math.max(o.size, co.size),
-                        o.type, mgr.assets
-                    );
-            }
-            );
-            if (duplicatePriceOrder) {
-                unmatchedChainOrders.push({
-                    chainOrderId,
-                    type: chainOrder.type,
-                    price: chainOrder.price,
-                    size: chainOrder.size,
-                    raw: rawChainOrders.get(chainOrderId),
-                    reason: 'duplicate-price-level',
-                    candidateSlotId: duplicatePriceOrder.id,
-                });
-                const { level, suffix } = duplicateOrphanLogInfo(chainOrderId);
-                mgr.logger?.log?.(
-                    `[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +
-                    `size=${chainOrder.size}) — NOT adopted: duplicates price level of active ` +
-                    `${duplicatePriceOrder.id} (${duplicatePriceOrder.orderId} at ${duplicatePriceOrder.price})${suffix}`,
-                    level
-                );
-                // Gap 2: Queue duplicate chain order for cancellation via the correction
-                // mechanism (called from _performSyncFromOpenOrders). Duplicate price levels
-                // block new placements. Cancelling proactively unblocks CREATEs.
-                queueCorrection({
-                    gridOrder: duplicatePriceOrder,
-                    chainOrderId,
-                    expectedPrice: chainOrder.price,
-                    size: chainOrder.size,
-                    type: chainOrder.type,
-                    isSurplus: true,
-                    cancelOnly: true,
-                });
+            // Genesis path: nearest-slot is single authority (no tolerance)
+            if (hasGenesis) {
+                let idx: number;
+                try { idx = slotIndexForPrice(chainOrder.price, genesis); } catch {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot' });
+                    queueCorrection({ gridOrder: { id: `slot-unknown-${chainOrderId}`, type: chainOrder.type } as any, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                    continue;
+                }
+                const slotId = `slot-${idx}`;
+                const gapSlots = genesis.gapSlots ?? (mgr as any)._gapSlots ?? 0;
+                const boundaryIdx = (mgr as any).boundaryIdx;
+                // Duplicate-price guard becomes slotId equality: if placed order already occupies this slot
+                const occupying = mgr.orders.get(slotId);
+                if (occupying && isOrderPlaced(occupying) && occupying.type === chainOrder.type) {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'duplicate-price-level', candidateSlotId: slotId });
+                    const { level, suffix } = duplicateOrphanLogInfo(chainOrderId);
+                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: duplicates slot ${slotId} (${occupying.orderId})${suffix}`, level);
+                    queueCorrection({ gridOrder: occupying, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                    continue;
+                }
+                // Gap exclusion: nearest slot in SPREAD gap → no adopt. When boundaryIdx == null (pre-boundary sync) the gap is unknown so we allow adoption — the next reconcile will relocate gap stray per §10 table's cancelOnly intent (documented hole).
+                if (boundaryIdx != null && Number.isFinite(Number(boundaryIdx))) {
+                    const inRail = isSlotInRail(boundaryIdx, gapSlots, chainOrder.type, { id: slotId } as any);
+                    if (!inRail) {
+                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
+                        queueCorrection({ gridOrder: { id: slotId, type: chainOrder.type } as any, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                        continue;
+                    }
+                }
+                const slot: any = mgr.orders.get(slotId);
+                if (!slot || matchedGridOrderIds.has(slot.id) || slot.orderId) {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
+                    const diag = describeNearestAdoptionCandidates(mgr, chainOrder, (chainOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision), (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), matchedGridOrderIds);
+                    mgr.logger?.log?.(`[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}): nearest slot ${slotId} not adoptable. Nearest candidates: ${diag}`, 'warn');
+                    continue;
+                }
+                const typeCompat = slot.type === chainOrder.type || slot.type === ORDER_TYPES.SPREAD;
+                if (!typeCompat) {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
+                    continue;
+                }
+                await adoptChainOrderIntoSlot(mgr, slot, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
                 continue;
             }
 
+            // Legacy fallback when genesis unavailable (migration)
+            const duplicatePriceOrder: any = Array.from(mgr.orders.values()).find((o: any) => {
+                const co: any = chainOrder;
+                return o.type === co.type && isOrderPlaced(o) && co != null && Math.abs(o.price - co.price) <= (calculatePriceTolerance as any)(Math.min(o.price, co.price), Math.max(o.size, co.size), o.type, mgr.assets);
+            });
+            if (duplicatePriceOrder) {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'duplicate-price-level', candidateSlotId: duplicatePriceOrder.id });
+                const { level, suffix } = duplicateOrphanLogInfo(chainOrderId);
+                mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: duplicates price level of active ${duplicatePriceOrder.id} (${duplicatePriceOrder.orderId} at ${duplicatePriceOrder.price})${suffix}`, level);
+                queueCorrection({ gridOrder: duplicatePriceOrder, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                continue;
+            }
             const match = findMatchingGridOrderByOpenOrder(
                 { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },
-                {
-                    orders: mgr.orders,
-                    assets: mgr.assets,
-                    calcToleranceFn: (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets),
-                    logger: mgr.logger,
-                    allowSmallerChainSize: true,
-                    requireAvailableSlot: true,
-                    excludeGridOrderIds: matchedGridOrderIds
-                }
+                { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger, allowSmallerChainSize: true, requireAvailableSlot: true, excludeGridOrderIds: matchedGridOrderIds }
             );
-
             if (match && !matchedGridOrderIds.has(match.id)) {
-                let bestMatch = { ...match };
-                const wasVirtual = match.state === ORDER_STATES.VIRTUAL;
-                const wasPartial = match.state === ORDER_STATES.PARTIAL;
-                bestMatch.orderId = chainOrderId;
-                bestMatch.state = wasVirtual ? ORDER_STATES.ACTIVE : match.state;
-                const bestMatchRaw = rawChainOrders.get(chainOrderId);
-                bestMatch.rawOnChain = bestMatchRaw
-                    ? { ...bestMatchRaw, fetchedAt: Date.now() }
-                    : bestMatchRaw;
-                matchedGridOrderIds.add(bestMatch.id);
-
-                // Reconstruct btsFeeState from raw chain order's deferred_fee.
-                // After a grid reset, in-memory orders lose btsFeeState. The chain's
-                // limit_order_object stores the original deferred_fee (or 0 after a
-                // partial fill). Restoring it ensures correct fee lifecycle accounting
-                // (cancel refunds, fill maker discounts) on the reconciled order.
-                // Only set btsFeeState when deferred_fee > 0 — _resolveBtsFeeLifecycle
-                // deletes btsFeeState when nextDeferred is 0, so setting it to 0 here
-                // would be an unnecessary set-then-delete cycle.
-                if (bestMatch.rawOnChain) {
-                    const rawDeferredFee = toFiniteNumber(bestMatch.rawOnChain.deferred_fee, null);
-                    if (rawDeferredFee !== null && rawDeferredFee > 0) {
-                        bestMatch.btsFeeState = { deferredFee: blockchainToFloat(rawDeferredFee, BTS_PRECISION) };
-                    } else if (wasVirtual && rawDeferredFee !== null && rawDeferredFee <= 0 && bestMatch.rawOnChain.for_sale > 0) {
-                        // Core zeros deferred_fee on every fill (fill_limit_order db_market.cpp:1895).
-                        // If deferred_fee is 0 while for_sale > 0, the order was partially filled.
-                        bestMatch.state = ORDER_STATES.PARTIAL;
-                    }
-                }
-
-                const precision = (bestMatch.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                const targetInt = floatToBlockchainInt(match.size, precision);
-                const chainInt = floatToBlockchainInt(chainOrder.size, precision);
-                if (targetInt !== chainInt) {
-                    const updated = await applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size);
-                    if (updated) bestMatch = { ...bestMatch, ...updated };
-
-                    if (chainInt > 0) {
-                        if (wasVirtual) {
-                            // Only override to ACTIVE if partial-fill check above didn't already
-                            // set PARTIAL via deferred_fee === 0. Skip override to preserve signal.
-                            if (bestMatch.state !== ORDER_STATES.PARTIAL) {
-                                bestMatch.state = ORDER_STATES.ACTIVE;
-                            }
-                        } else if (chainInt < targetInt) {
-                            bestMatch.state = ORDER_STATES.PARTIAL;
-                        } else if (wasPartial) {
-                            bestMatch.state = ORDER_STATES.PARTIAL;
-                        } else {
-                            bestMatch.state = ORDER_STATES.ACTIVE;
-                        }
-                    } else {
-                        const spreadOrder = convertToSpreadPlaceholder(bestMatch);
-                        filledOrders.push({ ...bestMatch });
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting: skipAccounting, fee: 0 });
-                        updatedOrders.push(spreadOrder);
-                        chainOrderIdsOnGrid.add(chainOrderId);
-                        continue;
-                    }
-                } else if (wasPartial) {
-                    bestMatch.state = ORDER_STATES.PARTIAL;
-                }
-                await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting: skipAccounting, fee: 0 });
-                updatedOrders.push(bestMatch);
-                chainOrderIdsOnGrid.add(chainOrderId);
+                await adoptChainOrderIntoSlot(mgr, match, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
             } else if (match) {
-                mgr.logger?.log?.(
-                    `Warning: Orphan chain order ${chainOrderId} matched grid order ${match.id}, ` +
-                    `but grid order was already matched to another chain order. Queuing orphan for cancellation.`,
-                    'warn'
-                );
-                queueCorrection({
-                    gridOrder: match,
-                    chainOrderId,
-                    expectedPrice: chainOrder.price,
-                    size: chainOrder.size,
-                    type: chainOrder.type,
-                    isSurplus: true,
-                    cancelOnly: true,
-                });
-                // Also push to unmatchedChainOrders so the existing auto-cancel
-                // path at dexbot_class.ts:4262 can pick it up if the correction
-                // mechanism does not fire first.
-                unmatchedChainOrders.push({
-                    chainOrderId,
-                    type: chainOrder.type,
-                    price: chainOrder.price,
-                    size: chainOrder.size,
-                    raw: rawChainOrders.get(chainOrderId),
-                    reason: 'already-matched-slot',
-                    candidateSlotId: match.id,
-                });
+                mgr.logger?.log?.(`Warning: Orphan chain order ${chainOrderId} matched grid order ${match.id}, but grid order was already matched to another chain order. Queuing orphan for cancellation.`, 'warn');
+                queueCorrection({ gridOrder: match, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'already-matched-slot', candidateSlotId: match.id });
             } else {
-                // No grid slot matched by type+price+size in the first pass.
-                // Fallback: adopt into the nearest VIRTUAL/spread slot so the
-                // orphan becomes visible to checkWindowDust for dust auto-cancel.
-                // The duplicate-price-level guard already ran above so it is not
-                // repeated here.
-
+                // Legacy spread-orphan fallback: adopt into nearest VIRTUAL/spread slot (allowSpreadType + skipSizeMatch) with widened tolerance
                 const adoptedSlot = findMatchingGridOrderByOpenOrder(
                     { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },
                     {
@@ -1108,9 +1081,6 @@ class SyncEngine {
                         assets: mgr.assets,
                         calcToleranceFn: (p: number, s: number, t: any) => {
                             const strict = calculatePriceTolerance(p, s, t, mgr.assets);
-                            // Widen so a regeneration/re-anchor's own live orders, left just
-                            // outside strict tolerance, are re-adopted into the nearest empty
-                            // slot instead of orphaned (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2 fix #2).
                             const mult = (mgr?.config?.gridLimits?.ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER as number) || 4;
                             return strict == null ? null : strict * mult;
                         },
@@ -1120,7 +1090,6 @@ class SyncEngine {
                         excludeGridOrderIds: matchedGridOrderIds
                     }
                 );
-
                 if (adoptedSlot && !matchedGridOrderIds.has(adoptedSlot.id) && !adoptedSlot.orderId) {
                     const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                     const chainInt = floatToBlockchainInt(chainOrder.size, precision);
@@ -1137,57 +1106,22 @@ class SyncEngine {
                         state: adoptedState,
                         size: chainOrder.size,
                         price: chainOrder.price,
-                        rawOnChain: adoptedRaw
-                            ? { ...adoptedRaw, fetchedAt: Date.now() }
-                            : adoptedRaw,
+                        rawOnChain: adoptedRaw ? { ...adoptedRaw, fetchedAt: Date.now() } : adoptedRaw,
                         ...(adoptedBtsFeeState ? { btsFeeState: adoptedBtsFeeState } : {}),
                     };
                     matchedGridOrderIds.add(adoptedSlot.id);
                     chainOrderIdsOnGrid.add(chainOrderId);
                     await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: skipAccounting, fee: 0 });
                     updatedOrders.push(adoptedOrder);
-                    mgr.logger?.log?.(
-                        `[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +
-                        `size=${chainOrder.size}) adopted into slot ${adoptedSlot.id} (was ${adoptedSlot.type})`,
-                        'warn'
-                    );
+                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) adopted into slot ${adoptedSlot.id} (was ${adoptedSlot.type})`, 'warn');
                 } else {
                     const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                    const candidateDiagnostics = describeNearestAdoptionCandidates(
-                        mgr,
-                        chainOrder,
-                        precision,
-                        (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets),
-                        matchedGridOrderIds
-                    );
-                    const driftTag = computeOutOfToleranceDriftTag(
-                        mgr,
-                        chainOrder,
-                        (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets)
-                    );
-                    const unmatchedEntry: Record<string, any> = {
-                        chainOrderId,
-                        type: chainOrder.type,
-                        price: chainOrder.price,
-                        size: chainOrder.size,
-                        raw: rawChainOrders.get(chainOrderId),
-                        candidateDiagnostics
-                    };
-                    if (driftTag) {
-                        unmatchedEntry.reason = 'price-drift-orphan';
-                        unmatchedEntry.candidateSlotId = driftTag.candidateSlotId;
-                        unmatchedEntry.candidateSlotPrice = driftTag.candidateSlotPrice;
-                        unmatchedEntry.priceDiff = driftTag.priceDiff;
-                        unmatchedEntry.tolerance = driftTag.tolerance;
-                    }
+                    const candidateDiagnostics = describeNearestAdoptionCandidates(mgr, chainOrder, precision, (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), matchedGridOrderIds);
+                    const driftTag = computeOutOfToleranceDriftTag(mgr, chainOrder, (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets));
+                    const unmatchedEntry: Record<string, any> = { chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), candidateDiagnostics };
+                    if (driftTag) { unmatchedEntry.reason = 'price-drift-orphan'; unmatchedEntry.candidateSlotId = driftTag.candidateSlotId; unmatchedEntry.candidateSlotPrice = driftTag.candidateSlotPrice; unmatchedEntry.priceDiff = driftTag.priceDiff; unmatchedEntry.tolerance = driftTag.tolerance; }
                     unmatchedChainOrders.push(unmatchedEntry);
-                    mgr.logger?.log?.(
-                        `[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, ` +
-                        `size=${chainOrder.size}): no adoptable slot found` +
-                        (driftTag ? ` (price-drift-orphan slot=${driftTag.candidateSlotId}@${driftTag.candidateSlotPrice} diff=${driftTag.priceDiff} tol=${driftTag.tolerance})` : '') +
-                        `. Nearest candidates: ${candidateDiagnostics}`,
-                        'warn'
-                    );
+                    mgr.logger?.log?.(`[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}): no adoptable slot found` + (driftTag ? ` (price-drift-orphan slot=${driftTag.candidateSlotId}@${driftTag.candidateSlotPrice} diff=${driftTag.priceDiff} tol=${driftTag.tolerance})` : '') + `. Nearest candidates: ${candidateDiagnostics}`, 'warn');
                 }
             }
         }

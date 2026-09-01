@@ -27,7 +27,17 @@ const {
 import * as validate from './order/utils/validate.js';
 const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = validate as any;
 import * as math from './order/utils/math.js';
-const { validateOrderSize, findPriceCollision, findCrossedOrder } = math as any;
+const { validateOrderSize, findCrossedOrder, priceSlotEqual } = math as any;
+function hasSlotPriceCollision(items: any[], targetPrice: number, precision: number, excludeId: string | null, predicate?: (it:any)=>boolean) {
+    for (const it of items) {
+        if (predicate && !predicate(it)) continue;
+        if (excludeId && (it.id === excludeId || it.orderId === excludeId)) continue;
+        const p = it.order ? it.order.price : it.price;
+        if (p == null) continue;
+        try { if (priceSlotEqual(p, targetPrice, precision)) return it; } catch { if (p === targetPrice) return it; }
+    }
+    return null;
+}
 // Lazy accessor so test mocks on the math module export take effect at call time.
 function getAssetFeesSafe(...args: any) { return require('./order/utils/math').getAssetFeesSafe(...args); }
 import * as constantsModule from './constants.js';
@@ -2761,14 +2771,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     }
 
                     const createPrice = effectiveOrder.price;
-                    const createSize = effectiveOrder.size;
 
-                    const batchCollision = findPriceCollision(
-                        opContexts,
-                        order.id,
-                        createPrice, createSize, order.type, bot.manager.assets,
-                        (ctx: any) => ctx.kind === 'create'
-                    );
+                    const precision = order.type === ORDER_TYPES.SELL ? bot.manager.assets.assetA.precision : bot.manager.assets.assetB.precision;
+                    const batchCollision = hasSlotPriceCollision(opContexts as any, createPrice, precision, order.id, (ctx:any)=> ctx.kind==='create' && ctx.order?.price != null);
                     if (batchCollision) {
                         bot.manager.logger.log(
                             `[COW] Skipping CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ` +
@@ -3077,12 +3082,8 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                     'warn'
                                 );
                             } else if (fbType && fbSize > 0 && fbPrice > 0) {
-                                const fbCollision = findPriceCollision(
-                                    bot.manager.orders.values(),
-                                    targetSlotId,
-                                    fbPrice, fbSize, fbType, bot.manager.assets,
-                                    isOrderPlaced
-                                );
+                                const fbPrecision = fbType === ORDER_TYPES.SELL ? bot.manager.assets.assetA.precision : bot.manager.assets.assetB.precision;
+                                const fbCollision = hasSlotPriceCollision([...bot.manager.orders.values()], fbPrice, fbPrecision, targetSlotId, isOrderPlaced);
                                 if (fbCollision) {
                                     bot.manager.logger.log(
                                         `[COW] Skipping CREATE fallback for ${targetSlotId} at ${Format.formatPrice6(fbPrice)}: ` +
@@ -3092,12 +3093,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                     );
                                     continue;
                                 }
-                                const fbBatchCollision = findPriceCollision(
-                                    opContexts,
-                                    targetSlotId,
-                                    fbPrice, fbSize, fbType, bot.manager.assets,
-                                    (ctx: any) => ctx.kind === 'create'
-                                );
+                                const fbBatchCollision = hasSlotPriceCollision(opContexts as any, fbPrice, fbPrecision, targetSlotId, (ctx:any)=> ctx.kind==='create');
                                 if (fbBatchCollision) {
                                     bot.manager.logger.log(
                                         `[COW] Skipping CREATE fallback for ${targetSlotId} at ${Format.formatPrice6(fbPrice)}: ` +

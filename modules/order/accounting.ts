@@ -81,6 +81,7 @@ const require = createRequire(import.meta.url);
 import { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS, GRID_LIMITS } from '../constants.js';
 import { resolveAccountRef } from './utils/system.js';
 import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order.js';
+import { isSlotInRail } from './utils/math.js';
 import * as Format from './format.js';
 import * as fundRegistry from '../fund_registry.js';
 import * as chainOrders from '../chain_orders.js';
@@ -391,8 +392,19 @@ class Accountant {
              // - SPREAD type: derive from price relation to startPrice (market midpoint)
              //   * price < startPrice → BUY side (lower prices are bids)
              //   * price >= startPrice → SELL side (higher prices are asks)
-              const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && resolveSpreadOrderSide(order.price, mgr.config.startPrice) === ORDER_TYPES.BUY);
-              const isSell = order.type === ORDER_TYPES.SELL || (order.type === ORDER_TYPES.SPREAD && resolveSpreadOrderSide(order.price, mgr.config.startPrice) === ORDER_TYPES.SELL);
+              const genesis = (mgr as any)._genesis;
+              const boundaryIdx = (mgr as any).boundaryIdx;
+              const gapSlots = genesis?.gapSlots ?? (mgr as any)._gapSlots ?? 0;
+              let spreadSide: string | null = null;
+              if (order.type === ORDER_TYPES.SPREAD && genesis && boundaryIdx != null && Number.isFinite(Number(boundaryIdx))) {
+                  if (isSlotInRail(boundaryIdx, gapSlots, ORDER_TYPES.BUY, order)) spreadSide = ORDER_TYPES.BUY;
+                  else if (isSlotInRail(boundaryIdx, gapSlots, ORDER_TYPES.SELL, order)) spreadSide = ORDER_TYPES.SELL;
+                  else spreadSide = null;
+              } else if (order.type === ORDER_TYPES.SPREAD) {
+                  spreadSide = resolveSpreadOrderSide(order.price, mgr.config.startPrice);
+              }
+              const isBuy = order.type === ORDER_TYPES.BUY || spreadSide === ORDER_TYPES.BUY;
+              const isSell = order.type === ORDER_TYPES.SELL || spreadSide === ORDER_TYPES.SELL;
 
              if (isBuy) {
                  if (isActive) {

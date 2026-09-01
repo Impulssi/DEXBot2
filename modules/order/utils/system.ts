@@ -935,7 +935,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         const workingBoundaryIdx = (pendingBoundaryIdx !== null && pendingBoundaryIdx !== undefined && Number.isFinite(Number(pendingBoundaryIdx)))
             ? Number(pendingBoundaryIdx)
             : manager.boundaryIdx;
-        const gapSlots = manager._gapSlots ?? MathUtils.calculateGapSlots(
+        const gapSlots = (manager as any)._genesis?.gapSlots ?? manager._gapSlots ?? MathUtils.calculateGapSlots(
             manager.config?.incrementPercent,
             manager.config?.targetSpreadPercent,
             manager.config?.gridLimits

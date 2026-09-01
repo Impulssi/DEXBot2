@@ -480,13 +480,10 @@ let GRID_LIMITS = {
     // Ensures the cap is non-zero even for extremely cheap assets.
     PRICE_TOLERANCE_MIN_ABSOLUTE: 0.0001,
 
-    // ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: Multiplier applied to calculatePriceTolerance
-    // when adopting an unmatched chain order into the nearest empty VIRTUAL/SPREAD slot in
-    // the sync_engine pass-2 fallback (sync_engine.ts:~1001). A regeneration/re-anchor can
-    // leave the bot's own live orders unmatched by strict tolerance (~0.036); widening lets
-    // the recovery/startup reconcile re-adopt them into the nearest empty slot instead of
-    // orphaning them. Only affects empty slots (requireAvailableSlot), so it cannot steal an
-    // occupied slot. ~4× strict tolerance ≈ 0.25 grid step at typical spacing.
+    // ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: Legacy fallback multiplier for calculatePriceTolerance
+    // (sync_engine pass-2 before genesis). With genesis-frozen nearest-slot (slotIndexForPrice)
+    // this multiplier is deprecated — deterministic slotId equality replaces widening. Kept for
+    // migration fallback when genesis missing; otherwise unused.
     ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: 4,
 
     // GRID_REGENERATION_PERCENTAGE: Trigger threshold for automatic grid size recalculation.
@@ -566,10 +563,9 @@ let GRID_LIMITS = {
     // Note: Final blockchain update filtering still happens with integer precision checks.
     RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT: 0.1,
 
-    // PRICE_DRIFT_TOLERANCE_MULTIPLIER: Tolerance multiplier for matching
-    // chain-order price drift against planned grid slots in sync_engine.ts.
-    // Drift beyond strict tolerance but within multiplier × tolerance is
-    // tagged as "price-drift-orphan" instead of rejected outright.
+    // PRICE_DRIFT_TOLERANCE_MULTIPLIER: Legacy for price-drift-orphan tagging when genesis missing.
+    // With genesis-frozen nearest-slot, drift is deterministic no-available-nearest-slot (gap/occupied)
+    // not a tolerance band. Kept for diagnostics fallback only.
     PRICE_DRIFT_TOLERANCE_MULTIPLIER: 4,
 
 };

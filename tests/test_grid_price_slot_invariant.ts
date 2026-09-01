@@ -113,9 +113,9 @@ async function run() {
         assert.strictEqual(priceSlotEqual(1.000001, 1.000002, 5), true, 'within same sat truncates');
     }
 
-    // 7. isSlotInRail fail-open (legacy) — unparseable never excluded
+    // 7. isSlotInRail fail-closed (plan §2.1) — unparseable excluded
     {
-        assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.BUY, { id: 'slot-x' }), true, 'unparseable not excluded');
+        assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.BUY, { id: 'slot-x' }), false, 'unparseable excluded');
         assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.SELL, { id: 'slot-11' }), false, 'gap excluded');
     }
 

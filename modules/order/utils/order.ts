@@ -78,7 +78,7 @@ import { sleep } from './system.js';
 import { getErrorMessage } from '../../utils/errors.js';
 import { parseSlotIndex as parseSlotIndexShared } from './slot.js';
 const { isValidNumber, toFiniteNumber } = Format;
-const { blockchainToFloat, floatToBlockchainInt, quantizeFloat, calculatePriceTolerance } = MathUtils;
+const { blockchainToFloat, floatToBlockchainInt, quantizeFloat, priceSlotEqual } = MathUtils;
 const orderLogger = new Logger('Order');
 
 const ORDER_GONE_ERROR_FRAGMENT = 'not found';
@@ -925,8 +925,11 @@ function parseSlotIndex(id: any): number | null {
 function chainOrderMatchesSlot(parsed: any, slot: any, assets: any): boolean {
     if (!parsed || !slot || !assets) return false;
     if (parsed.type !== slot.type && slot.type !== ORDER_TYPES.SPREAD) return false;
-    const priceTolerance = calculatePriceTolerance(slot.price, slot.size, parsed.type, assets) || 0;
-    if (Math.abs(parsed.price - slot.price) > priceTolerance) return false;
+    // Genesis-frozen: price equality via integer round-trip (single epsilon); slot id is handled by caller via slotIndexForPrice
+    {
+        const precision = parsed.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
+        if (!priceSlotEqual(parsed.price, slot.price, precision)) return false;
+    }
     const precision = parsed.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
     const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(slot.size, precision) * 0.01));
     if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(slot.size, precision)) > sizeTolerance) return false;

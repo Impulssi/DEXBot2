@@ -10,14 +10,13 @@ import {
 } from './grid_reconcile_internal.js';
 import { ORDER_TYPES, ORDER_STATES, TIMING } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
-import { calculatePriceTolerance, getAssetFeesSafe } from './utils/math.js';
+import { getAssetFeesSafe, priceSlotEqual } from './utils/math.js';
 import {
     isOrderPlaced, parseChainOrder, isOrderOnChain, chainOrderMatchesSlot,
     duplicateOrphanLogInfo,
 } from './utils/order.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
-const SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5;
 
 
 /**
@@ -280,17 +279,13 @@ export async function reconcileGridOrders({
             let nearest: any = null;
             for (const gridOrder of activeGridOrders) {
                 if (gridOrder.type !== p.type) continue;
+                const precision = p.type === ORDER_TYPES.SELL ? manager.assets.assetA.precision : manager.assets.assetB.precision;
+                const isEqual = priceSlotEqual(p.price, gridOrder.price, precision);
                 const priceDiff = Math.abs(p.price - gridOrder.price);
-                const tolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, manager.assets) || 0;
-                const candidate = {
-                    gridOrder,
-                    priceDiff,
-                    tolerance,
-                    looseTolerance: tolerance * SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER,
-                };
+                const candidate = { gridOrder, priceDiff, isEqual };
                 if (!nearest || priceDiff < nearest.priceDiff) nearest = candidate;
             }
-            if (nearest && nearest.priceDiff <= nearest.looseTolerance) {
+            if (nearest && nearest.isEqual) {
                 // The sync layer already owns this duplicate: PASS 2 queues a
                 // cancel-only correction, and startup runs it (correctAllPriceMismatches)
                 // before reconcile — leaving a stale snapshot where the order is already
@@ -314,8 +309,7 @@ export async function reconcileGridOrders({
                 logger?.log?.(
                     `SUSPECTED DUPLICATE: ${desc} - nearest active grid ${nearest.gridOrder.id} ` +
                     `(orderId=${nearest.gridOrder.orderId}, price=${Format.formatPrice6(nearest.gridOrder.price)}, ` +
-                    `diff=${Format.formatPrice6(nearest.priceDiff)}, tolerance=${Format.formatPrice6(nearest.tolerance)}, ` +
-                    `looseTolerance=${Format.formatPrice6(nearest.looseTolerance)})${suffix}`,
+                    `diff=${Format.formatPrice6(nearest.priceDiff)}, slotEqual=${nearest.isEqual})${suffix}`,
                     level
                 );
                 // Queue duplicate for Phase 2 cancellation instead of executing under lock
@@ -329,8 +323,7 @@ export async function reconcileGridOrders({
                 logger?.log?.(
                     `${desc}; nearest active same-side grid ${nearest.gridOrder.id} ` +
                     `(orderId=${nearest.gridOrder.orderId}, price=${Format.formatPrice6(nearest.gridOrder.price)}, ` +
-                    `diff=${Format.formatPrice6(nearest.priceDiff)}, tolerance=${Format.formatPrice6(nearest.tolerance)}, ` +
-                    `looseTolerance=${Format.formatPrice6(nearest.looseTolerance)})`,
+                    `diff=${Format.formatPrice6(nearest.priceDiff)}, slotEqual=${nearest.isEqual})`,
                     'warn'
                 );
             } else {

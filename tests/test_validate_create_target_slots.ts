@@ -58,27 +58,22 @@ async function runTests() {
         assert.strictEqual(result.violations[0].reason, 'slot_occupied', 'reason should be slot_occupied');
     }
 
-    // ── 2. Master grid price collision ─────────────────────────────────
-    console.log(' - 2. Master grid price collision...');
+    // ── 2. Master grid price collision — REMOVED (genesis-frozen determinism)
+    // Same-price different-slot is now VALID (price not authority, slot id is).
+    console.log(' - 2. Master grid price collision (now valid)...');
     {
         const orders = mapToOrders([
-            // slot-a is the existing placed order; slot-b is the CREATE target
             makeOrder('slot-a', ORDER_TYPES.SELL, 123.45, 30, ORDER_STATES.ACTIVE, '1.7.10'),
             makeOrder('slot-b', ORDER_TYPES.SELL, 123.45, 30, ORDER_STATES.VIRTUAL, null)
         ]);
         const actions = [makeCreateAction('slot-b', 123.45, ORDER_TYPES.SELL)];
         const result = validateCreateTargetSlots(actions, orders, dummyAssets);
-        assert.strictEqual(result.isValid, false, 'colliding price should be invalid');
-        assert.strictEqual(result.violations.length, 1, 'exactly one violation');
-        assert.strictEqual(result.violations[0].reason, 'price_collision', 'reason should be price_collision');
-        assert.strictEqual(result.violations[0].currentOrderId, '1.7.10', 'should reference the existing order');
+        assert.strictEqual(result.isValid, true, 'same-price different-slot should now be valid (price collision layer removed)');
+        assert.strictEqual(result.violations.length, 0, 'zero violations');
     }
 
-    // ── 3. Same price on different side is still a collision ───────────
-    // findPriceCollision checks price tolerance, not side — two orders at the
-    // same price collide regardless of type.  Only the excluded slot id and
-    // the isValid predicate filter items out.
-    console.log(' - 2b. Same price different side is still a collision...');
+    // ── 3. Same price on different side is now VALID ───────────
+    console.log(' - 2b. Same price different side is now valid...');
     {
         const orders = mapToOrders([
             makeOrder('slot-buy', ORDER_TYPES.BUY, 100, 50, ORDER_STATES.ACTIVE, '1.7.20'),
@@ -86,8 +81,8 @@ async function runTests() {
         ]);
         const actions = [makeCreateAction('slot-sell', 100, ORDER_TYPES.SELL)];
         const result = validateCreateTargetSlots(actions, orders, dummyAssets);
-        assert.strictEqual(result.isValid, false, 'same price different side is still a collision');
-        assert.strictEqual(result.violations[0].reason, 'price_collision', 'reason should be price_collision');
+        assert.strictEqual(result.isValid, true, 'same price different side is now valid');
+        assert.strictEqual(result.violations.length, 0, 'zero violations');
     }
 
     // ── 4. Chain orphan collision ─────────────────────────────────────
@@ -98,7 +93,7 @@ async function runTests() {
         ]);
         const actions = [makeCreateAction('slot-new', 200, ORDER_TYPES.BUY)];
         const chainOrderCandidates = [
-            { chainOrderId: '1.7.99', price: 200, size: 10, type: ORDER_TYPES.BUY }
+            { chainOrderId: '1.7.99', chainSlotId: 'slot-new', candidateSlotId: 'slot-new', price: 200, size: 10, type: ORDER_TYPES.BUY }
         ];
         const result = validateCreateTargetSlots(actions, orders, dummyAssets, chainOrderCandidates);
         assert.strictEqual(result.isValid, false, 'chain orphan collision should be invalid');
@@ -106,16 +101,15 @@ async function runTests() {
         assert.strictEqual(result.violations[0].reason, 'chain_orphan_collision', 'reason should be chain_orphan_collision');
     }
 
-    // ── 5. Same-batch duplicate ───────────────────────────────────────
+    // ── 5. Same-batch duplicate (duplicate slotId) ──────────────────────
     console.log(' - 4. Same-batch duplicate...');
     {
         const orders = mapToOrders([
-            makeOrder('slot-x', ORDER_TYPES.BUY, 50, 20, ORDER_STATES.VIRTUAL, null),
-            makeOrder('slot-y', ORDER_TYPES.BUY, 50, 20, ORDER_STATES.VIRTUAL, null)
+            makeOrder('slot-x', ORDER_TYPES.BUY, 50, 20, ORDER_STATES.VIRTUAL, null)
         ]);
         const actions = [
             makeCreateAction('slot-x', 50, ORDER_TYPES.BUY),
-            makeCreateAction('slot-y', 50, ORDER_TYPES.BUY)
+            makeCreateAction('slot-x', 50, ORDER_TYPES.BUY)
         ];
         const result = validateCreateTargetSlots(actions, orders, dummyAssets);
         assert.strictEqual(result.isValid, false, 'same-batch duplicate should be invalid');
