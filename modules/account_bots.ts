@@ -87,7 +87,7 @@
 import { path } from './path_api.js';
 import { getStorage } from './storage/index.js';
 import { ensureProfilesDirectory, readInput } from './order/utils/system.js';
-import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER, MARKET_ADAPTER, NODE_MANAGEMENT, FILL_PROCESSING, PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE, COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER } from './constants.js';
+import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, RANGE_QUALITY, LOG_LEVEL, UPDATER, MARKET_ADAPTER, NODE_MANAGEMENT, FILL_PROCESSING, PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE, COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER } from './constants.js';
 import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
 import { parseJsonWithComments } from './order/utils/system.js';
@@ -505,7 +505,45 @@ function colorPercentageInput(value: any): string {
  * @returns {string} ANSI-colored value string.
  */
 function colorPriceRangeValue(value: any): string {
-    return colorMultiplierInput(String(value));
+    return colorRangeValueByQuality(String(value));
+}
+
+/**
+ * Returns quality tier for a range multiplier: green/yellow/orange/red/fixed.
+ * Uses RANGE_QUALITY thresholds: green ≥2.0x, yellow ≥1.55x, orange ≥1.45x, red ≤1.35x.
+ * @param {*} value - Raw range value (e.g. "2x" or numeric).
+ * @returns {string} Tier key.
+ */
+function getRangeQuality(value: any): string {
+    const m = parseRelativeMultiplier(value);
+    if (m === null) return 'fixed';
+    if (m >= RANGE_QUALITY.GREEN_MIN) return 'green';
+    if (m >= RANGE_QUALITY.YELLOW_MIN) return 'yellow';
+    if (m >= RANGE_QUALITY.ORANGE_MIN) return 'orange';
+    return 'red';
+}
+
+/**
+ * Colors a range value by quality tier (mountain-style legend):
+ *  ≥2.0x green wide, ≥1.55x yellow effeciant, ≥1.45x orange tight, ≤1.35x red suizidal, fixed → red.
+ * @param {string} value - Raw value string.
+ * @returns {string} ANSI-colored value.
+ */
+function colorRangeValueByQuality(value: string): string {
+    // retain colorMultiplierInput for fixed-value fallback compatibility
+    void colorMultiplierInput;
+    const tier = getRangeQuality(value);
+    if (tier === 'green') return `${COLORS.green}${value}${COLORS.reset}`;
+    if (tier === 'yellow') return `${COLORS.yellowBold}${value}${COLORS.reset}`;
+    if (tier === 'orange') return `${COLORS.orange}${value}${COLORS.reset}`;
+    return `${COLORS.red}${value}${COLORS.reset}`;
+}
+
+/**
+ * Prints pre-entry legend for Range inputs (mirrors weight mountain legend).
+ */
+function printRangeQualityLegend(): void {
+    console.log(`  ${COLORS.green}≥2.0x: wide${COLORS.reset} ←→ ${COLORS.yellowBold}≥1.55x: effeciant${COLORS.reset} ←→ ${COLORS.orange}≥1.45x: tight${COLORS.reset} ←→ ${COLORS.red}≤1.35x: suizidal${COLORS.reset}`);
 }
 
 /**
@@ -723,8 +761,10 @@ async function askIntegerInRange(promptText: string, defaultValue?: any, minVal:
  * @returns {Promise<number|string>} The value or '\x1b' if ESC.
  */
 async function askNumberOrMultiplier(promptText: string, defaultValue?: any): Promise<any> {
+    // Pre-entry legend for Range bounds (mirrors weight mountain legend)
+    if (/^(minPrice|maxPrice)/i.test(promptText)) printRangeQualityLegend();
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${colorPriceRangeValue(defaultValue)}]` : '';
-    const raw = (await readInput(`${promptText}${suffix}: `, { colorize: (input) => colorMultiplierInput(input) })).trim();
+    const raw = (await readInput(`${promptText}${suffix}: `, { colorize: (input) => colorRangeValueByQuality(input) })).trim();
     if (raw === '\x1b') return '\x1b';
     if (raw === '') return defaultValue;
     if (isMultiplierString(raw)) {
@@ -766,8 +806,9 @@ async function askNumberOrMultiplier(promptText: string, defaultValue?: any): Pr
  * @returns {Promise<number|string>} The value or '\x1b' if ESC.
  */
 async function askMaxPrice(promptText: string, defaultValue?: any, minPrice?: any): Promise<any> {
+    printRangeQualityLegend();
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${colorPriceRangeValue(defaultValue)}]` : '';
-    const raw = (await readInput(`${promptText}${suffix}: `, { colorize: (input) => colorMultiplierInput(input) })).trim();
+    const raw = (await readInput(`${promptText}${suffix}: `, { colorize: (input) => colorRangeValueByQuality(input) })).trim();
     if (raw === '\x1b') return '\x1b';
     if (raw === '') return defaultValue;
     if (isMultiplierString(raw)) {
@@ -996,7 +1037,7 @@ async function promptBotData(base = {}) {
     while (!finished) {
         if (showMenu) {
              console.log(`\n${COLORS.bold}--- Bot Editor: ` + (data.name || 'New Bot') + ` ---${COLORS.reset}`);
-             console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.red}${data.assetA || '?'} / ${data.assetB || '?'} ${COLORS.reset}`);
+             console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
              console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} , ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} , ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
              console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
