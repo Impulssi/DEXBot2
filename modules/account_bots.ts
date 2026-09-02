@@ -401,7 +401,7 @@ async function askAssetB(promptText: string, defaultValue?: any, assetA?: string
 async function askWeightDistribution(promptText: string, defaultValue?: any): Promise<any> {
     const MIN_WEIGHT = -1;
     const MAX_WEIGHT = 2;
-    console.log(`  ${COLORS.cyan}-1=SuperValley${COLORS.reset} ←→ ${COLORS.blue}0=Valley${COLORS.reset} ←→ ${COLORS.gray}0.5=Neutral${COLORS.reset} ←→ ${COLORS.orange}1=Mountain${COLORS.reset} ←→ ${COLORS.redStrong}2=SuperMountain${COLORS.reset}`);
+    console.log(`  ${COLORS.cyan}-1=SuperValley${COLORS.reset} ←→ ${COLORS.blue}0=Valley${COLORS.reset} ←→ ${COLORS.gray}0.5=Neutral${COLORS.reset} ←→ ${COLORS.bold}${COLORS.orange}1=Mountain${COLORS.reset} ←→ ${COLORS.redStrong}2=SuperMountain${COLORS.reset}`);
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
     if (raw === '\x1b') return '\x1b';
