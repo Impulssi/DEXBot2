@@ -178,6 +178,7 @@ Keep the default settings first, and tune these:
    This writes `market_adapter_whitelist.json` in the profiles directory. New AMA bots get AMA
    live writes and range scaling. Use `dexbot white --dynamic-weight` for
    newly generated dynamic-weight entries; existing entries are preserved.
+   To overwrite an existing bot: `dexbot white --dynamic-weight --bot <botKey>`.
 
 6. **Start DEXBot2** with `dexbot start`.
 

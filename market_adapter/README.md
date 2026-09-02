@@ -91,6 +91,15 @@ To keep asymmetric bounds disabled:
 dexbot white --no-asymmetric-bounds
 ```
 
+To overwrite an existing entry (existing entries are otherwise preserved):
+
+```bash
+dexbot white --dynamic-weight --bot <botKey>
+dexbot white --no-asymmetric-bounds --bot <botKey>
+```
+
+`--bot` implies overwrite for that key only; without it, `dexbot white` only adds missing bots.
+
 Remove stale whitelist entries (bots no longer in `bots.json`):
 
 ```bash
@@ -325,6 +334,7 @@ Dry-run log lines include `[DRY RUN]` or `[suppressed, dry-run]`.
 | Generate whitelist | `dexbot white` |
 | Opt new whitelist entries into dynamic weights | `dexbot white --dynamic-weight` |
 | Generate AMA-only entries without range scaling | `dexbot white --no-asymmetric-bounds` |
+| Overwrite existing entry for a specific bot | `dexbot white --dynamic-weight --bot <botKey>` |
 | Prune stale whitelist entries (bots removed from bots.json) | `dexbot white --prune` |
 | Probe public CEX availability | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --check-only` |
 | Seed synthetic cross candles | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --bot-key <bot-key>` |

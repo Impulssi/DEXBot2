@@ -275,6 +275,12 @@ To leave range scaling disabled while allowing AMA pricing:
 dexbot white --no-asymmetric-bounds
 ```
 
+To overwrite an existing bot's flags (otherwise preserved):
+
+```bash
+dexbot white --dynamic-weight --bot <botKey>
+```
+
 The snapshot fields involved are:
 
 - `amaSlope`: latest slope diagnostic
