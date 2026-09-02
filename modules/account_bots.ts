@@ -510,7 +510,7 @@ function colorPriceRangeValue(value: any): string {
 
 /**
  * Returns quality tier for a range multiplier: green/yellow/orange/red/fixed.
- * Uses RANGE_QUALITY thresholds: green ≥2.0x, yellow ≥1.55x, orange ≥1.45x, red ≤1.35x.
+ * Uses RANGE_QUALITY thresholds: green ≥2.0x, yellow ≥1.55x, orange 1.45x–1.55x, red <1.45x.
  * @param {*} value - Raw range value (e.g. "2x" or numeric).
  * @returns {string} Tier key.
  */
@@ -519,13 +519,14 @@ function getRangeQuality(value: any): string {
     if (m === null) return 'fixed';
     if (m >= RANGE_QUALITY.GREEN_MIN) return 'green';
     if (m >= RANGE_QUALITY.YELLOW_MIN) return 'yellow';
+    if (m < RANGE_QUALITY.RED_MAX) return 'red';
     if (m >= RANGE_QUALITY.ORANGE_MIN) return 'orange';
-    return 'red';
+    return 'orange';
 }
 
 /**
  * Colors a range value by quality tier (mountain-style legend):
- *  ≥2.0x green wide, ≥1.55x yellow effeciant, ≥1.45x orange tight, ≤1.35x red suizidal, fixed → red.
+ *  ≥2.0x green wide, ≥1.55x yellow effeciant, ≥1.45x orange tight, <1.45x red suizidal, fixed → red.
  * @param {string} value - Raw value string.
  * @returns {string} ANSI-colored value.
  */
@@ -543,7 +544,7 @@ function colorRangeValueByQuality(value: string): string {
  * Prints pre-entry legend for Range inputs (mirrors weight mountain legend).
  */
 function printRangeQualityLegend(): void {
-    console.log(`  ${COLORS.green}≥2.0x: wide${COLORS.reset} ←→ ${COLORS.yellowBold}≥1.55x: effeciant${COLORS.reset} ←→ ${COLORS.orange}≥1.45x: tight${COLORS.reset} ←→ ${COLORS.red}≤1.35x: suizidal${COLORS.reset}`);
+    console.log(`  ${COLORS.green}≥2.0x: wide${COLORS.reset} ←→ ${COLORS.yellowBold}≥1.55x: effeciant${COLORS.reset} ←→ ${COLORS.orange}≥1.45x: tight${COLORS.reset} ←→ ${COLORS.red}<1.45x: suizidal${COLORS.reset}`);
 }
 
 /**
